@@ -8,7 +8,7 @@ from datetime import datetime
 import os
 
 # Database setup
-from database_config import (
+from backend.database_config import (
     operational_engine, 
     archive_engine, 
     Base, 
