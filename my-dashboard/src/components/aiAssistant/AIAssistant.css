@@ -1,0 +1,128 @@
+/* AI Assistant Avatar */
+.ai-assistant-avatar {
+  position: fixed;
+  width: 60px;
+  height: 60px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 50%;
+  cursor: grab;
+  box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  user-select: none;
+}
+
+.ai-assistant-avatar:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 25px rgba(102, 126, 234, 0.6);
+}
+
+.ai-assistant-avatar.dragging {
+  cursor: grabbing;
+  transform: scale(1.05);
+  box-shadow: 0 8px 30px rgba(102, 126, 234, 0.7);
+}
+
+/* Avatar Icon */
+.avatar-icon {
+  width: 32px;
+  height: 32px;
+  color: white;
+  position: relative;
+  z-index: 2;
+  animation: float 3s ease-in-out infinite;
+}
+
+.avatar-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: white;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+/* Pulse Rings */
+.pulse-ring,
+.pulse-ring-delayed {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 3px solid rgba(102, 126, 234, 0.6);
+  animation: pulse 2s ease-out infinite;
+}
+
+.pulse-ring-delayed {
+  animation-delay: 1s;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+/* Tooltip */
+.avatar-tooltip {
+  position: absolute;
+  bottom: -35px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+  pointer-events: none;
+}
+
+.ai-assistant-avatar:hover .avatar-tooltip {
+  opacity: 1;
+  visibility: visible;
+  bottom: -40px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .ai-assistant-avatar {
+    width: 55px;
+    height: 55px;
+  }
+
+  .avatar-icon {
+    width: 28px;
+    height: 28px;
+  }
+}
+
+@media (max-width: 480px) {
+  .ai-assistant-avatar {
+    width: 50px;
+    height: 50px;
+  }
+
+  .avatar-icon {
+    width: 24px;
+    height: 24px;
+  }
+}

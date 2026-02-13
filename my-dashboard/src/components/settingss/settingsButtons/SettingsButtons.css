@@ -1,0 +1,217 @@
+/* settingsButtons/SettingsButton.css */
+
+/* Settings Item Button Base */
+.settings-item-btn {
+  display: flex;
+  align-items: center;
+  padding: 16px;
+  margin-bottom: 8px;
+  background: white;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+}
+
+.settings-item-btn:hover {
+  background: #f8f9fa;
+  transform: translateX(-4px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.settings-item-btn.no-hover:hover {
+  transform: none;
+}
+
+.settings-btn-icon {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, #1abc9c 0%, #16a085 100%);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 14px;
+  flex-shrink: 0;
+}
+
+.settings-btn-icon.red {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+}
+
+.settings-btn-icon.blue {
+  background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+}
+
+.settings-btn-icon.purple {
+  background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%);
+}
+
+.settings-btn-icon.orange {
+  background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+}
+
+.settings-btn-icon svg {
+  width: 22px;
+  height: 22px;
+  fill: white;
+}
+
+.settings-btn-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-btn-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: #2b4257;
+}
+
+.settings-btn-description {
+  font-size: 13px;
+  color: #7f8c8d;
+}
+
+.arrow-icon {
+  width: 20px;
+  height: 20px;
+  fill: #7f8c8d;
+  flex-shrink: 0;
+}
+
+/* Toggle Switch Styles */
+.toggle-switch {
+  position: relative;
+  width: 48px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ccc;
+  transition: 0.3s;
+  border-radius: 34px;
+}
+
+.toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.3s;
+  border-radius: 50%;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background-color: #1abc9c;
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(22px);
+}
+
+/* Network Info Styles */
+.network-info-container {
+  background: white;
+  border-radius: 10px;
+  padding: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.network-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.network-item:last-child {
+  border-bottom: none;
+}
+
+.network-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #5a6c7d;
+}
+
+.network-value {
+  font-size: 14px;
+  color: #2b4257;
+  font-weight: 500;
+}
+
+.network-value.online {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #1abc9c;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  background: #1abc9c;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Logout Button Styles */
+.logout-button {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: all 0.2s ease;
+}
+
+.logout-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
+}
+
+.logout-button svg {
+  width: 20px;
+  height: 20px;
+  fill: white;
+}

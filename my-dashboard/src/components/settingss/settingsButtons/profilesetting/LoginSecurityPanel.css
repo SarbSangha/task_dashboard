@@ -1,0 +1,277 @@
+/* Overlay*/
+.login-security-overlay {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  background: rgba(0, 0, 0, 0.5) !important;
+  z-index: 2000 !important;
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Main Panel - Matching Settings Sidebar Style */
+.login-security-panel {
+  position: fixed !important;
+  right: 260px !important;
+  top: 120px !important;
+  width: 320px !important;
+  height: calc(100vh - 140px) !important;
+  background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15) !important;
+  z-index: 2001 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  animation: slideIn 0.3s ease-out;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+}
+
+@keyframes slideIn {
+  from { 
+    transform: translateX(50px);
+    opacity: 0;
+  }
+  to { 
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Header - Matching Sidebar Header */
+.login-security-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  padding: 24px 20px !important;
+  background: rgba(0, 0, 0, 0.15) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 10 !important;
+}
+
+.login-security-header h2 {
+  margin: 0 !important;
+  font-size: 16px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.5px !important;
+  color: white !important;
+}
+
+.close-btn {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border: none !important;
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 6px !important;
+  cursor: pointer !important;
+  font-size: 18px !important;
+  color: white !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: all 0.2s !important;
+}
+
+.close-btn:hover {
+  background: rgba(255, 255, 255, 0.2) !important;
+  transform: scale(1.05) !important;
+}
+
+/* Message */
+.message {
+  padding: 12px 20px !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  animation: slideDown 0.3s ease-out;
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: white !important;
+  border-left: 3px solid rgba(255, 255, 255, 0.5) !important;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Content */
+.login-security-content {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  padding: 20px !important;
+  background: transparent !important;
+}
+
+/* Custom Scrollbar */
+.login-security-content::-webkit-scrollbar {
+  width: 6px !important;
+}
+
+.login-security-content::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-radius: 10px !important;
+}
+
+.login-security-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-radius: 10px !important;
+}
+
+.login-security-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3) !important;
+}
+
+/* Security Cards */
+.security-card {
+  display: flex !important;
+  gap: 14px !important;
+  padding: 18px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 8px !important;
+  margin-bottom: 12px !important;
+  transition: all 0.2s !important;
+}
+
+.security-card:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+/* Card Icons */
+.card-icon {
+  flex-shrink: 0 !important;
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 10px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 22px !important;
+  background: rgba(255, 255, 255, 0.15) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+.checkbox-icon {
+  background: rgba(255, 255, 255, 0.15) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+.lock-icon {
+  background: rgba(255, 255, 255, 0.15) !important;
+  color: white !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+.status-icon {
+  background: rgba(255, 255, 255, 0.15) !important;
+  color: white !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+.custom-checkbox {
+  width: 22px !important;
+  height: 22px !important;
+  cursor: pointer !important;
+  accent-color: white !important;
+}
+
+/* Card Content */
+.card-content {
+  flex: 1 !important;
+}
+
+.card-title {
+  margin: 0 0 6px 0 !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  color: white !important;
+  letter-spacing: -0.2px !important;
+}
+
+.card-description {
+  margin: 0 0 10px 0 !important;
+  font-size: 13px !important;
+  color: rgba(255, 255, 255, 0.75) !important;
+  line-height: 1.5 !important;
+  font-weight: 400 !important;
+}
+
+.card-status {
+  margin-top: 8px !important;
+}
+
+.status-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 4px 10px !important;
+  border-radius: 10px !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.2px !important;
+}
+
+.status-badge.active {
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: white !important;
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+}
+
+.status-badge.inactive {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(255, 255, 255, 0.7) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Footer */
+.login-security-footer {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 10px !important;
+  padding: 16px 20px !important;
+  background: rgba(0, 0, 0, 0.15) !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+.footer-icon {
+  font-size: 18px !important;
+  line-height: 1 !important;
+}
+
+.footer-text {
+  margin: 0 !important;
+  font-size: 12px !important;
+  color: rgba(255, 255, 255, 0.75) !important;
+  line-height: 1.6 !important;
+  font-weight: 400 !important;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .login-security-panel {
+    width: 300px !important;
+    right: 220px !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .login-security-panel {
+    width: 90% !important;
+    right: 5% !important;
+    top: 100px !important;
+  }
+} 

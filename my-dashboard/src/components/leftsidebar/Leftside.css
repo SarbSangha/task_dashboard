@@ -1,0 +1,219 @@
+/* Functional Menu - Left Sidebar Container with INCREASED margins */
+.functional-menu {
+  position: fixed;
+  top: 120px;  /* Increased spacing from navbar */
+  left: 20px;  /* Increased from 10px to 20px */
+  width: 220px;
+  height: calc(100vh - 140px);  /* Adjusted height calculation */
+  background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: all 0.3s ease;
+  z-index: 900;
+}
+/* Outbox Button Styling - Add to your sidebar CSS */
+.outbox-trigger-btn,
+.sidebar-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 20px;
+  background: transparent;
+  border: none;
+  border-left: 4px solid transparent;
+  color: #b8c5d6;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-align: left;
+  margin: 4px 0;
+  font-family: inherit;
+}
+
+.outbox-trigger-btn:hover,
+.sidebar-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  border-left-color: #3b82f6;
+}
+
+.outbox-trigger-btn.active,
+.sidebar-menu-item.active {
+  background: #2dd4bf;
+  color: white;
+  border-left-color: #14b8a6;
+}
+
+.outbox-trigger-btn .menu-icon,
+.sidebar-menu-item .menu-icon {
+  font-size: 18px;
+  width: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.outbox-trigger-btn .menu-text,
+.sidebar-menu-item .menu-text {
+  font-size: 15px;
+  font-weight: 500;
+  flex: 1;
+}
+
+
+.functional-menu.collapsed {
+  width: 70px;
+}
+
+/* Custom Scrollbar */
+.functional-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.functional-menu::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+}
+
+.functional-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+}
+
+.functional-menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Menu Header */
+.menu-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24px 16px;  /* Increased padding */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  position: sticky;
+  top: 0;
+  background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%);
+  z-index: 10;
+}
+
+.menu-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: white;
+  letter-spacing: 1px;
+  margin: 0;
+  white-space: nowrap;
+  transition: opacity 0.3s ease;
+}
+
+.functional-menu.collapsed .menu-title {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+}
+
+.collapse-btn {
+  width: 32px;
+  height: 32px;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05);
+}
+
+.collapse-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: white;
+}
+
+/* Menu Items Container with MORE spacing */
+.menu-items {
+  padding: 12px 0;  /* Increased from 8px to 12px */
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .functional-menu {
+    width: 200px;
+    top: 110px;
+    left: 15px;
+    height: calc(100vh - 125px);
+  }
+}
+
+@media (max-width: 768px) {
+  .functional-menu {
+    width: 70px;
+    top: 180px;
+    left: 12px;
+    height: calc(100vh - 192px);
+  }
+
+  .menu-title {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .functional-menu {
+    width: 60px;
+    border-radius: 10px;
+    top: 175px;
+    left: 10px;
+    height: calc(100vh - 185px);
+  }
+
+  .menu-header {
+    padding: 16px 8px;
+  }
+}
+/* Inbox container inside sidebar */
+.inbox-container {
+  margin-top: 20px;
+  padding: 0 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.inbox-container .inbox-section {
+  padding: 12px 8px;
+}
+
+.inbox-container .inbox-grid {
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.inbox-container .inbox-task-card.expanded {
+  grid-column: span 1;
+}
+
+.inbox-container .inbox-filters {
+  gap: 6px;
+}
+
+.inbox-container .inbox-filter-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+/* Make sidebar taller when inbox is open */
+.functional-menu.inbox-open {
+  height: 100vh;
+  overflow-y: auto;
+}

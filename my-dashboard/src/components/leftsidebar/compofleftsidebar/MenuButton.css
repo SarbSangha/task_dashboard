@@ -1,0 +1,96 @@
+/* menuButtons/MenuButton.css */
+
+.menu-button {
+  display: flex;
+  align-items: center;
+  padding: 16px 16px;  /* Increased from 14px to 16px */
+  margin: 8px 12px;  /* Increased margin from 4px 8px to 8px 12px */
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  color: rgba(255, 255, 255, 0.7);
+  border: none;
+  background: transparent;
+  width: calc(100% - 24px);  /* Adjusted for new margins */
+  text-align: left;
+  font-family: inherit;
+}
+
+.menu-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  transform: translateX(4px);
+}
+
+.menu-button.active {
+  background: #1abc9c;
+  color: white;
+  box-shadow: 0 2px 8px rgba(26, 188, 156, 0.3);
+}
+
+.menu-button.highlighted {
+  background: rgba(26, 188, 156, 0.2);
+  border-left: 3px solid #1abc9c;
+}
+
+.menu-button-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 14px;  /* Increased from 12px to 14px */
+  flex-shrink: 0;
+}
+
+.functional-menu.collapsed .menu-button-icon {
+  margin-right: 0;
+}
+
+.menu-button-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.menu-button-label {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: opacity 0.3s ease;
+}
+
+.functional-menu.collapsed .menu-button-label {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .menu-button {
+    justify-content: center;
+    padding: 14px 8px;
+    margin: 6px 4px;
+  }
+
+  .menu-button-label {
+    display: none;
+  }
+
+  .menu-button-icon {
+    margin-right: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .menu-button {
+    padding: 12px 6px;
+    margin: 6px 4px;
+  }
+
+  .menu-button-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+}

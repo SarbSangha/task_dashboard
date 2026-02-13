@@ -1,0 +1,197 @@
+/* Settings Sidebar - Right Side Popup */
+.settings-sidebar {
+  position: fixed !important;
+  right: -320px !important;
+  top: 120px !important;
+  width: 260px !important;
+  max-height: calc(100vh - 140px) !important;
+  background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%)!important;
+  box-shadow: -4px 4px 20px rgba(0, 0, 0, 0.25) !important;
+  z-index: 1000 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  transition: right 0.3s ease-out !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif !important;
+  border-radius: 16px 0 0 16px !important;
+  overflow: hidden !important;
+}
+
+.settings-sidebar.open {
+  right: 0 !important;
+}
+
+/* Brand Header (Optional - can be removed) */
+.settings-brand {
+  display: none !important;
+}
+
+/* Settings Header */
+.settings-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  padding: 16px 18px !important;
+  background: #37474f !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+.settings-header h2 {
+  margin: 0 !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: white !important;
+  text-transform: uppercase !important;
+  letter-spacing: 1.2px !important;
+}
+
+.settings-toggle-btn {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border: none !important;
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: white !important;
+  font-size: 16px !important;
+  transition: all 0.2s !important;
+}
+
+.settings-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.2) !important;
+}
+
+.settings-close-btn {
+  background: transparent !important;
+  border: none !important;
+  width: 24px !important;
+  height: 24px !important;
+  cursor: pointer !important;
+  font-size: 18px !important;
+  color: white !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: all 0.2s !important;
+  opacity: 0.8 !important;
+}
+
+.settings-close-btn:hover {
+  opacity: 1 !important;
+}
+
+/* Settings Menu */
+.settings-menu {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  padding: 8px 0 !important;
+}
+
+/* Menu Items - Matching Reference Style */
+.settings-menu-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  padding: 12px 18px !important;
+  background: transparent !important;
+  border: none !important;
+  border-left: 3px solid transparent !important;
+  color: rgba(255, 255, 255, 0.8) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  transition: all 0.2s !important;
+  width: 100% !important;
+  text-align: left !important;
+  position: relative !important;
+}
+
+.settings-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: white !important;
+  border-left-color: rgba(255, 255, 255, 0.5) !important;
+}
+
+.settings-menu-item.active {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: white !important;
+  border-left-color: white !important;
+}
+
+/* Menu Item Icons */
+.settings-menu-item svg:first-child {
+  width: 18px !important;
+  height: 18px !important;
+  flex-shrink: 0 !important;
+  opacity: 0.9 !important;
+}
+
+.settings-menu-item:hover svg:first-child,
+.settings-menu-item.active svg:first-child {
+  opacity: 1 !important;
+}
+
+/* Menu Item Text */
+.settings-menu-item span {
+  flex: 1 !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+}
+
+/* Chevron Arrow - Hidden for cleaner look */
+.chevron-right {
+  width: 14px !important;
+  height: 14px !important;
+  opacity: 0.4 !important;
+  transition: opacity 0.2s, transform 0.2s !important;
+}
+
+.settings-menu-item:hover .chevron-right {
+  opacity: 0.7 !important;
+  transform: translateX(2px) !important;
+}
+
+/* Scrollbar */
+.settings-menu::-webkit-scrollbar {
+  width: 5px !important;
+}
+
+.settings-menu::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1) !important;
+}
+
+.settings-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-radius: 3px !important;
+}
+
+.settings-menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3) !important;
+}
+
+/* Backdrop */
+.settings-backdrop {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  background: rgba(0, 0, 0, 0.5) !important;
+  z-index: 999 !important;
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .settings-sidebar {
+    width: 240px !important;
+    top: 60px !important;
+  }
+}

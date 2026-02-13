@@ -1,0 +1,177 @@
+/* Global App Container */
+.App {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100vh;
+  background-color: #e8ecef;
+}
+
+/* Main Content Area - Adjusted for navbar and sidebar */
+.App-content {
+  margin-top: 100px;  /* Changed from 90px to match menu top position */
+  margin-left: 240px;
+  padding: 20px;
+  min-height: calc(100vh - 100px);
+  transition: margin-left 0.3s ease;
+}
+
+/* Content Container */
+.content-container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.content-container h1 {
+  font-size: 32px;
+  color: #2b4257;
+  margin-bottom: 12px;
+  font-weight: 700;
+}
+
+.content-container > p {
+  font-size: 16px;
+  color: #5a6c7d;
+  margin-bottom: 30px;
+}
+
+/* Placeholder Content Grid */
+.placeholder-content {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.placeholder-card {
+  background: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  transition: all 0.3s ease;
+}
+
+.placeholder-card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  transform: translateY(-4px);
+}
+
+.placeholder-card h3 {
+  font-size: 20px;
+  color: #2b4257;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.placeholder-card p {
+  font-size: 14px;
+  color: #7f8c8d;
+  margin: 0;
+}
+
+/* Responsive Design */
+
+/* Tablet - 768px to 1024px */
+@media (max-width: 1024px) {
+  .App-content {
+    margin-left: 220px;
+    margin-top: 90px;
+    padding: 18px;
+  }
+
+  .content-container h1 {
+    font-size: 28px;
+  }
+
+  .placeholder-content {
+    gap: 16px;
+  }
+}
+
+/* Mobile - Below 768px */
+@media (max-width: 768px) {
+  .App-content {
+    margin-left: 80px;
+    margin-top: 160px;  /* Matches menu top position */
+    padding: 16px;
+  }
+
+  .content-container h1 {
+    font-size: 24px;
+  }
+
+  .content-container > p {
+    font-size: 14px;
+  }
+
+  .placeholder-content {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .placeholder-card {
+    padding: 20px;
+  }
+}
+
+/* Small Mobile - Below 480px */
+@media (max-width: 480px) {
+  .App-content {
+    margin-left: 70px;
+    margin-top: 155px;
+    padding: 12px;
+  }
+
+  .content-container h1 {
+    font-size: 20px;
+  }
+
+  .content-container > p {
+    font-size: 13px;
+    margin-bottom: 20px;
+  }
+
+  .placeholder-card {
+    padding: 16px;
+  }
+
+  .placeholder-card h3 {
+    font-size: 18px;
+  }
+
+  .placeholder-card p {
+    font-size: 13px;
+  }
+}
+
+/* Extra Small Mobile - Below 360px */
+@media (max-width: 360px) {
+  .App-content {
+    margin-left: 60px;
+    padding: 10px;
+  }
+
+  .content-container h1 {
+    font-size: 18px;
+  }
+}
+
+/* When functional menu is collapsed */
+.functional-menu.collapsed ~ .App-content {
+  margin-left: 90px;
+}
+
+@media (max-width: 768px) {
+  .functional-menu.collapsed ~ .App-content {
+    margin-left: 80px;
+  }
+}
+
+/* Print Styles */
+@media print {
+  .App-content {
+    margin-left: 0;
+    margin-top: 0;
+    padding: 0;
+  }
+}

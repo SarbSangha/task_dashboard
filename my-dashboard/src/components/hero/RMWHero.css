@@ -1,0 +1,150 @@
+/* Full‑height centered hero */
+.rmw-hero {
+  width: 100%;
+  min-height: calc(100vh - 140px); /* adjust for navbar height */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  background: radial-gradient(circle at top, #f8fbff 0%, #eef2f7 45%, #e6ebf2 100%);
+}
+
+.rmw-hero-inner {
+  max-width: 800px;
+  text-align: center;
+  color: #1c2230;
+}
+
+/* Eye icon */
+.rmw-hero-eye {
+  width: 84px;
+  height: 84px;
+  margin: 0 auto 28px;
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rmw-hero-eye svg {
+  width: 40px;
+  height: 40px;
+  fill: #1c2230;
+}
+
+/* Title */
+.rmw-hero-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.rmw-main {
+  font-size: 88px;
+  font-weight: 800;
+  letter-spacing: 8px;
+  color: #111827;
+}
+
+.rmw-sub {
+  font-size: 88px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  color: rgba(148, 163, 184, 0.45);
+}
+
+/* Subline */
+.rmw-hero-subline {
+  margin-top: 4px;
+  margin-bottom: 24px;
+  font-size: 11px;
+  letter-spacing: 0.35em;
+  color: #9ca3af;
+}
+
+/* Description */
+.rmw-hero-description {
+  max-width: 540px;
+  margin: 0 auto 36px;
+  font-size: 13px;
+  line-height: 1.7;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+/* Button */
+.rmw-hero-button {
+  margin-top: 8px;
+  padding: 16px 36px;
+  border-radius: 999px;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  background: #020617;
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.35);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.rmw-hero-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 22px 46px rgba(15, 23, 42, 0.45);
+  background: #02081f;
+}
+
+.rmw-hero-button-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 20%, #4f46e5 0%, #1d4ed8 60%, #020617 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rmw-hero-button-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: #e5e7eb;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .rmw-main,
+  .rmw-sub {
+    font-size: 56px;
+  }
+
+  .rmw-hero-description {
+    font-size: 12px;
+  }
+
+  .rmw-hero-button {
+    padding: 14px 28px;
+    font-size: 12px;
+    letter-spacing: 0.18em;
+  }
+}
+
+@media (max-width: 480px) {
+  .rmw-main,
+  .rmw-sub {
+    font-size: 42px;
+  }
+
+  .rmw-hero {
+    padding: 32px 16px;
+  }
+}
