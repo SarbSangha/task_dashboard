@@ -8,7 +8,7 @@ from datetime import datetime
 import os
 
 # Database setup
-from backend.database_config import (
+from .database_config import (
     operational_engine, 
     archive_engine, 
     Base, 
@@ -18,18 +18,18 @@ from backend.database_config import (
 )
 
 # Import models to ensure tables are created
-from models_new import User, Task, TaskParticipant, TaskStatusHistory, ArchivedTask, ActivityLog
+from .models_new import User, Task, TaskParticipant, TaskStatusHistory, ArchivedTask, ActivityLog
 
 # Import routers
-from routers import auth_router
-from routers import tasks_router
-from routers import drafts_router
-from routers import archive_router
-from routers import approvals
-from routers import upload
+from .routers import auth_router
+from .routers import tasks_router
+from .routers import drafts_router
+from .routers import archive_router
+from .routers import approvals
+from .routers import upload
 
 # Import auth utilities for system status
-from auth import SESSION_STORE
+from .auth import SESSION_STORE
 
 
 # ==================== CONFIGURATION ====================
