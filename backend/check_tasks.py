@@ -2,8 +2,8 @@
 import sys
 sys.path.append('.')
 
-from database_config import OperationalSessionLocal
-from models_new import User, Task, TaskParticipant
+from .database_config import OperationalSessionLocal
+from .models_new import User, Task, TaskParticipant
 
 def check_database():
     """Check database status"""

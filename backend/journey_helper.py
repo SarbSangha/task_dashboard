@@ -1,7 +1,8 @@
 # journey_helper.py - ENHANCED VERSION
 
 from sqlalchemy.orm import Session
-from database import TaskJourney, User
+from .database_config import get_operational_db
+from .models_new import Task, TaskStatusHistory, User
 from datetime import datetime
 from typing import Optional, Dict, Any
 

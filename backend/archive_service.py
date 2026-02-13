@@ -1,7 +1,7 @@
 # archive_service.py - Archive Management Service
 from sqlalchemy.orm import Session
-from models_new import Task, ArchivedTask, ActivityLog, TaskParticipant, TaskStatusHistory
-from database_config import get_dual_db
+from .models_new import Task, ArchivedTask, ActivityLog, TaskParticipant, TaskStatusHistory
+from .database_config import get_dual_db
 from datetime import datetime
 import json
 

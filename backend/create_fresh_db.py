@@ -2,8 +2,8 @@
 import sys
 sys.path.append('.')
 
-from database_config import operational_engine, archive_engine, Base, ArchiveBase
-from models_new import *
+from .database_config import operational_engine, archive_engine, Base, ArchiveBase
+from .models_new import *
 
 def create_databases():
     """Create fresh databases"""

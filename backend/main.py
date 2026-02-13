@@ -21,12 +21,12 @@ from .database_config import (
 from .models_new import User, Task, TaskParticipant, TaskStatusHistory, ArchivedTask, ActivityLog
 
 # Import routers
-from .routers import auth_router
-from .routers import tasks_router
-from .routers import drafts_router
-from .routers import archive_router
-from .routers import approvals
-from .routers import upload
+from routers import auth_router
+from routers import tasks_router
+from routers import drafts_router
+from routers import archive_router
+from routers import approvals
+from routers import upload
 
 # Import auth utilities for system status
 from .auth import SESSION_STORE

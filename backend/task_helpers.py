@@ -1,6 +1,6 @@
 # task_helpers.py - Helper functions for task operations
 from sqlalchemy.orm import Session
-from models_new import Task, TaskParticipant, User, ParticipantRole, TaskStatus
+from .models_new import Task, TaskParticipant, User, ParticipantRole, TaskStatus
 from typing import List, Optional
 from datetime import datetime
 
