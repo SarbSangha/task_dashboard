@@ -1,7 +1,7 @@
 # main.py - Clean and Consolidated
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -83,6 +83,7 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://task-dashboard-1-um9m.onrender.com",
         "http://localhost:3000",
         "http://localhost:5173",
         "http://127.0.0.1:3000",
@@ -91,6 +92,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Set-Cookie"],
 )
 
 
@@ -136,6 +138,8 @@ app.include_router(upload.router)
 @app.get("/")
 async def root():
     """Root endpoint - API info"""
+    if os.path.exists("dist/index.html"):
+        return FileResponse("dist/index.html")
     return {
         "name": "Task Management System API",
         "version": "2.0.0",
