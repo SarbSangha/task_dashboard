@@ -163,12 +163,13 @@ async def root():
         "interactive_docs": "/redoc"
     }
 
+# ==================== ROOT & STATIC FILES ====================
 
+# Health check (API route)
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
     try:
-        # Test operational DB
         op_db = OperationalSessionLocal()
         op_db.execute("SELECT 1")
         op_db.close()
@@ -177,7 +178,6 @@ async def health_check():
         op_status = f"unhealthy: {str(e)}"
     
     try:
-        # Test archive DB
         ar_db = ArchiveSessionLocal()
         ar_db.execute("SELECT 1")
         ar_db.close()
@@ -193,22 +193,17 @@ async def health_check():
         "databases": {
             "operational": op_status,
             "archive": ar_status
-        },
-        "uptime": "99.9%"
+        }
     }
-
 
 @app.get("/api/system/status")
 async def system_status():
-    """Get system status - shows operational metrics"""
+    """Get system status"""
     try:
         op_db = OperationalSessionLocal()
-        
-        # Count entities
         user_count = op_db.query(User).count()
         task_count = op_db.query(Task).count()
         active_tasks = op_db.query(Task).filter(Task.is_deleted == False).count()
-        
         op_db.close()
         
         return {
@@ -219,52 +214,44 @@ async def system_status():
                 "total_tasks": task_count,
                 "active_tasks": active_tasks,
                 "active_sessions": len(SESSION_STORE)
-            },
-            "databases": {
-                "operational": "connected",
-                "archive": "connected"
             }
         }
     except Exception as e:
-        return {
-            "status": "error",
-            "timestamp": datetime.utcnow().isoformat(),
-            "error": str(e)
-        }
+        return {"status": "error", "error": str(e)}
 
-
-# ==================== DEBUG ENDPOINTS ====================
-@app.get("/api/debug/routes")
-async def list_routes():
-    """List all registered routes (for debugging)"""
-    routes = []
-    for route in app.routes:
-        if hasattr(route, "methods"):
-            routes.append({
-                "path": route.path,
-                "methods": list(route.methods),
-                "name": route.name
-            })
+# ==================== STATIC FILES - MUST BE AFTER API ROUTES ====================
+if os.path.exists("dist"):
+    print("✅ Serving frontend from dist/")
     
-    return {
-        "total_routes": len(routes),
-        "routes": sorted(routes, key=lambda x: x["path"])
-    }
-
+    # Mount assets folder for JS/CSS/images
+    if os.path.exists("dist/assets"):
+        app.mount("/assets", StaticFiles(directory="dist/assets"), name="assets")
+        print("✅ Mounted /assets")
+    
+    # Catch-all for SPA routing (MUST BE LAST)
+    @app.get("/{full_path:path}")
+    async def serve_react_app(full_path: str):
+        """Serve React app for all non-API routes"""
+        # Skip API routes
+        if full_path.startswith("api/"):
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        
+        # Serve index.html for all other routes (React Router support)
+        return FileResponse("dist/index.html")
+else:
+    print("⚠️ dist folder not found - API only mode")
+    
+    @app.get("/")
+    async def root_no_frontend():
+        return {
+            "name": "Task Management System API",
+            "version": "2.0.0",
+            "status": "operational",
+            "message": "Frontend not built. Run: cd my-dashboard && npm run build",
+            "documentation": "/docs"
+        }
 
 # ==================== RUN APP ====================
 if __name__ == "__main__":
     import uvicorn
-    
-    print("\n" + "="*60)
-    print("  TASK MANAGEMENT SYSTEM")
-    print("  Starting development server...")
-    print("="*60 + "\n")
-    
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
