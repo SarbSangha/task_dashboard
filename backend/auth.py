@@ -14,15 +14,32 @@ RESET_TOKEN_STORE = {}
 
 
 # ==================== PASSWORD FUNCTIONS ====================
+# backend/auth.py - UPDATE THIS FUNCTION
+
 def get_password_hash(password: str) -> str:
-    """Hash a password"""
+    """Hash a password - handles bcrypt 72 byte limit"""
+    # Bcrypt has a 72 byte maximum
+    # Encode to bytes and truncate if needed
+    password_bytes = password.encode('utf-8')
+    
+    if len(password_bytes) > 72:
+        # Truncate to 72 bytes
+        password = password_bytes[:72].decode('utf-8', errors='ignore')
+    
     return pwd_context.hash(password)
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify password against hash"""
-    return pwd_context.verify(plain_password, hashed_password)
 
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against hash - handles bcrypt 72 byte limit"""
+    # Bcrypt has a 72 byte maximum
+    password_bytes = plain_password.encode('utf-8')
+    
+    if len(password_bytes) > 72:
+        # Truncate to 72 bytes
+        plain_password = password_bytes[:72].decode('utf-8', errors='ignore')
+    
+    return pwd_context.verify(plain_password, hashed_password)
 
 def authenticate_user(db: Session, email: str, password: str):
     """Authenticate user with email and password"""
