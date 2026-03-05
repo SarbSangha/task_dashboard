@@ -1,4 +1,7 @@
 /* src/components/leftsidebar/compofleftsidebar/outbox/OutboxModal.css */
+:root {
+  --leftbar-popup-top-offset: 120px;
+}
 
 .outbox-modal-overlay {
   position: fixed;
@@ -11,7 +14,7 @@
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding-top: 80px;
+  padding-top: var(--leftbar-popup-top-offset);
   animation: fadeIn 0.3s ease;
 }
 
@@ -23,8 +26,8 @@
 .outbox-modal-container {
   width: 900px;
   max-width: 95vw;
-  height: calc(85vh - 80px);
-  max-height: 720px;
+  height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
+  max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   background: #ffffff;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
   border-radius: 16px;
@@ -33,6 +36,26 @@
   animation: slideDown 0.4s ease;
   overflow: hidden;
   border: 1px solid #e5e5e5;
+}
+
+/* Tracking Theme Override */
+.outbox-modal-container {
+  background: #1f2937;
+  border: 1px solid #374151;
+}
+
+.outbox-modal-header {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.16) 0%, rgba(118, 75, 162, 0.16) 100%);
+  border-bottom: 1px solid #374151;
+}
+
+.outbox-modal-header h2,
+.user-info {
+  color: #fff;
+}
+
+.outbox-modal-content {
+  background: #111b2b;
 }
 
 @keyframes slideDown {

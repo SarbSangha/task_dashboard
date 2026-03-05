@@ -5,11 +5,18 @@ import './LoginSecurityPanel.css';
 const LoginSecurityPanel = ({ isOpen, onClose }) => {
   const { isEnabled, toggle } = useKeepLoggedIn();
   const [message, setMessage] = useState('');
+  const [syncedEnabled, setSyncedEnabled] = useState(isEnabled);
+
+  // Update syncedEnabled when isEnabled changes (syncs from login or other panels)
+  React.useEffect(() => {
+    setSyncedEnabled(isEnabled);
+  }, [isEnabled]);
 
   if (!isOpen) return null;
 
   const handleToggle = () => {
     const newValue = toggle();
+    setSyncedEnabled(newValue);
     
     // Show feedback message
     setMessage(
@@ -73,7 +80,7 @@ const LoginSecurityPanel = ({ isOpen, onClose }) => {
             <input
               type="checkbox"
               id="keepLoggedIn"
-              checked={isEnabled}
+              checked={syncedEnabled}
               onChange={handleToggle}
               className="custom-checkbox"
             />
@@ -90,7 +97,7 @@ const LoginSecurityPanel = ({ isOpen, onClose }) => {
               Stay signed in for 30 days. 
             </p> */}
             <div className="card-status">
-              {isEnabled ? (
+              {syncedEnabled ? (
                 <span className="status-badge active">
                   {/* Check SVG */}
                   <svg

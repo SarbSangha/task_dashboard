@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import '../../SettingSidebar.css';
 import { useAuth } from '../../../../context/AuthContext';
 import { AvatarUpload } from '../../../profile/AvatarUpload';
+import { authAPI } from '../../../../services/api';
 import './ProfileSettingsPanel.css';
 
 const ProfileSettingsPanel = ({ isOpen, onClose }) => {
@@ -11,13 +12,54 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
     name: user?.name || '',
     email: user?.email || '',
     position: user?.position || '',
-    department: 'Engineering',
-    employeeId: 'EMP-2024-1234',
+    department: user?.department || '',
+    employeeId: user?.employeeId || '',
     flag: user?.department || '',
     avatar: user?.avatar || null
   });
 
   const [requestChangeFlag, setRequestChangeFlag] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
+  const [departmentOptions, setDepartmentOptions] = useState([]);
+  const [employeeIdOptions, setEmployeeIdOptions] = useState([]);
+
+  const POSITION_OPTIONS = ['NORMAL', 'FACULTY', 'HOD', 'SPOC', 'ADMIN'];
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const loadOptions = async () => {
+      try {
+        const [departmentsRes, employeeIdsRes] = await Promise.all([
+          authAPI.getDepartments(),
+          authAPI.getEmployeeIdOptions()
+        ]);
+        setDepartmentOptions(departmentsRes.departments || []);
+        setEmployeeIdOptions(employeeIdsRes.options || []);
+        if (!profileData.employeeId && employeeIdsRes.suggested) {
+          setProfileData(prev => ({ ...prev, employeeId: employeeIdsRes.suggested }));
+        }
+      } catch (error) {
+        setStatusMessage(error?.response?.data?.detail || 'Failed to load dropdown options');
+      }
+    };
+    loadOptions();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const loadLatestStatus = async () => {
+      try {
+        const response = await authAPI.getLatestProfileChange();
+        const request = response?.request;
+        if (request?.status === 'rejected' && request?.reviewNotes) {
+          setStatusMessage(`Your previous profile request was denied: ${request.reviewNotes}`);
+        }
+      } catch {
+        // silent
+      }
+    };
+    loadLatestStatus();
+  }, [isOpen]);
 
   const handleAvatarUpdate = (newAvatar) => {
     setProfileData(prev => ({ ...prev, avatar: newAvatar }));
@@ -30,10 +72,26 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
     }
   };
 
-  const handleSaveProfile = () => {
-    console.log('Saving profile:', profileData);
-    alert('Profile updated successfully!');
+  const handleSaveProfile = async () => {
+    try {
+      const response = await authAPI.requestProfileChange({
+        name: profileData.name,
+        email: profileData.email,
+        employee_id: profileData.employeeId,
+        position: profileData.position,
+        department: profileData.department
+      });
+      setStatusMessage(response.message || 'Request submitted');
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      if (Array.isArray(detail)) {
+        setStatusMessage(detail.map((d) => `${d.loc?.[d.loc.length - 1]}: ${d.msg}`).join(', '));
+      } else {
+        setStatusMessage(detail || error.message || 'Failed to submit request');
+      }
+    }
   };
+
 
   if (!isOpen) return null;
 
@@ -88,12 +146,14 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
 
             <div className="profile-field">
               <label>Position</label>
-              <input
-                type="text"
+              <select
                 value={profileData.position}
                 onChange={(e) => setProfileData({ ...profileData, position: e.target.value })}
-                placeholder="Your position"
-              />
+              >
+                {POSITION_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt} className="department-option">{opt}</option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -138,14 +198,20 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
           <div className="profile-section">
             <h4 className="section-title">Organization Details</h4>
             
-            <div className="profile-field readonly">
+            <div className="profile-field">
               <label>Employee ID</label>
-              <div className="readonly-value">
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/>
-                </svg>
-                <span>{profileData.employeeId}</span>
-              </div>
+              <input
+                type="text"
+                value={profileData.employeeId}
+                onChange={(e) => setProfileData({ ...profileData, employeeId: e.target.value })}
+                list="employee-id-options"
+                placeholder="EMP-2026-0001"
+              />
+              <datalist id="employee-id-options">
+                {employeeIdOptions.map((id) => (
+                  <option key={id} value={id} />
+                ))}
+              </datalist>
             </div>
 
             <div className="profile-field">
@@ -154,12 +220,14 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
                 value={profileData.department}
                 onChange={(e) => setProfileData({ ...profileData, department: e.target.value })}
               >
-                <option  className="department-option" value="Engineering">Engineering</option>
-                <option className="department-option" value="Marketing">Marketing</option>
-                <option className="department-option" value="Sales">Sales</option>
-                <option className="department-option" value="HR">Human Resources</option>
-                <option className="department-option" value="Finance">Finance</option>
-                <option className="department-option" value="Operations">Operations</option>
+                {departmentOptions.length === 0 && (
+                  <option className="department-option" value={profileData.department || ''}>
+                    {profileData.department || 'Select Department'}
+                  </option>
+                )}
+                {departmentOptions.map((dep) => (
+                  <option key={dep} className="department-option" value={dep}>{dep}</option>
+                ))}
               </select>
             </div>
           </div>
@@ -167,9 +235,13 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
           {/* Save Button */}
           <div className="profile-actions">
             <button className="save-profile-btn" onClick={handleSaveProfile}>
-              Save Changes
+              Submit
             </button>
           </div>
+          {statusMessage && (
+            <div className="profile-status-message">{statusMessage}</div>
+          )}
+
         </div>
       </div>
     </>

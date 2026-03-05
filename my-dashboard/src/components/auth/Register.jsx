@@ -1,26 +1,41 @@
+// src/components/auth/Register.jsx - FIXED
+
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
-export function Register() {
+// ✅ CHANGED: Use const instead of export function
+const Register = () => {
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     password: '',
     confirmPassword: '',
-    position: '' // User position/role
+    position: '',
+    department: ''
   });
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const { register } = useAuth();
   const navigate = useNavigate();
 
   const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    });
-    // Clear error when user types
+    const { name, value } = e.target;
+    
+    // Clear department when switching to FACULTY
+    if (name === 'position' && value === 'FACULTY') {
+      setFormData({
+        ...formData,
+        [name]: value,
+        department: ''
+      });
+    } else {
+      setFormData({
+        ...formData,
+        [name]: value
+      });
+    }
     if (error) setError('');
   };
 
@@ -50,12 +65,19 @@ export function Register() {
       return false;
     }
 
+    // Department is required only if position is not FACULTY
+    if (formData.position !== 'FACULTY' && !formData.department) {
+      setError('Please select a department');
+      return false;
+    }
+
     return true;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setSuccessMessage('');
 
     if (!validateForm()) {
       return;
@@ -64,24 +86,27 @@ export function Register() {
     setLoading(true);
 
     try {
-      // Pass all required data to register function
-      await register(
+      const result = await register(
         formData.email, 
         formData.password, 
         formData.name, 
-        formData.position
+        formData.position,
+        formData.department
       );
       
-      console.log('✅ Registration successful!');
-      navigate('/');
+      if (result.success) {
+        console.log('Registration submitted!');
+        setSuccessMessage(result.message || 'Registration submitted. Wait for admin approval.');
+        setTimeout(() => navigate('/login'), 2000);
+      } else {
+        setError(result.error || 'Registration failed');
+      }
     } catch (err) {
       console.error('❌ Registration error:', err);
       
-      // Handle different error types
       if (err.response?.data?.detail) {
         const detail = err.response.data.detail;
         
-        // If detail is array (Pydantic validation errors)
         if (Array.isArray(detail)) {
           const errors = detail.map(e => {
             const field = e.loc[e.loc.length - 1];
@@ -106,9 +131,9 @@ export function Register() {
         <p style={styles.subtitle}>Join us today!</p>
 
         {error && <div style={styles.error}>⚠️ {error}</div>}
+        {successMessage && <div style={styles.success}>✓ {successMessage}</div>}
 
-        <form onSubmit={handleSubmit}>
-          {/* Full Name */}
+        <form onSubmit={handleSubmit} noValidate>
           <div style={styles.formGroup}>
             <label style={styles.label}>Full Name *</label>
             <input
@@ -116,15 +141,12 @@ export function Register() {
               name="name"
               value={formData.name}
               onChange={handleChange}
-              required
               style={styles.input}
               placeholder="John Doe"
               autoComplete="name"
-              minLength={2}
             />
           </div>
 
-          {/* Email */}
           <div style={styles.formGroup}>
             <label style={styles.label}>Email *</label>
             <input
@@ -132,14 +154,12 @@ export function Register() {
               name="email"
               value={formData.email}
               onChange={handleChange}
-              required
               style={styles.input}
               placeholder="your@email.com"
               autoComplete="email"
             />
           </div>
 
-          {/* Position - Dropdown */}
           <div style={styles.formGroup}>
             <label htmlFor="position" style={styles.label}>
               Position *
@@ -149,7 +169,6 @@ export function Register() {
               name="position"
               value={formData.position}
               onChange={handleChange}
-              required
               style={styles.select}
             >
               <option value="">Select Position</option>
@@ -160,7 +179,30 @@ export function Register() {
             <small style={styles.hint}>Choose your role in the organization</small>
           </div>
 
-          {/* Password */}
+          {formData.position !== 'FACULTY' && (
+            <div style={styles.formGroup}>
+              <label htmlFor="department" style={styles.label}>
+                Department *
+              </label>
+              <select
+                id="department"
+                name="department"
+                value={formData.department}
+                onChange={handleChange}
+                style={styles.select}
+              >
+                <option value="">Select Department</option>
+                <option value="CREATIVE">Creative</option>
+                <option value="CONTENT">Content</option>
+                <option value="CONTENT CREATOR">Content Creator</option>
+                <option value="CRACK TEAM">Crack Team</option>
+                <option value="DIGITAL">Digital</option>
+                <option value="GEN AI">Gen AI</option>
+              </select>
+              <small style={styles.hint}>Choose your department</small>
+            </div>
+          )}
+
           <div style={styles.formGroup}>
             <label style={styles.label}>Password *</label>
             <input
@@ -168,16 +210,13 @@ export function Register() {
               name="password"
               value={formData.password}
               onChange={handleChange}
-              required
               style={styles.input}
               placeholder="••••••••"
               autoComplete="new-password"
-              minLength={6}
             />
             <small style={styles.hint}>At least 6 characters</small>
           </div>
 
-          {/* Confirm Password */}
           <div style={styles.formGroup}>
             <label style={styles.label}>Confirm Password *</label>
             <input
@@ -185,14 +224,12 @@ export function Register() {
               name="confirmPassword"
               value={formData.confirmPassword}
               onChange={handleChange}
-              required
               style={styles.input}
               placeholder="••••••••"
               autoComplete="new-password"
             />
           </div>
 
-          {/* Submit Button */}
           <button 
             type="submit" 
             disabled={loading} 
@@ -206,7 +243,6 @@ export function Register() {
           </button>
         </form>
 
-        {/* Footer */}
         <div style={styles.footer}>
           <span style={styles.footerText}>Already have an account?</span>
           <Link to="/login" style={styles.link}>Sign In</Link>
@@ -214,7 +250,7 @@ export function Register() {
       </div>
     </div>
   );
-}
+};
 
 const styles = {
   container: { 
@@ -304,8 +340,16 @@ const styles = {
     borderRadius: '6px', 
     marginBottom: '20px',
     fontSize: '14px',
-    border: '1px solid #fcc',
-    animation: 'shake 0.3s'
+    border: '1px solid #fcc'
+  },
+  success: {
+    background: '#ecfdf3',
+    color: '#166534',
+    padding: '12px',
+    borderRadius: '6px',
+    marginBottom: '20px',
+    fontSize: '14px',
+    border: '1px solid #bbf7d0'
   },
   footer: {
     marginTop: '25px',
@@ -326,3 +370,6 @@ const styles = {
     transition: 'color 0.3s'
   }
 };
+
+// ✅ ADD THIS AT THE END
+export default Register;

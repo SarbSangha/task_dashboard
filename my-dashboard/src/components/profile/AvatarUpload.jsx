@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { authAPI } from '../../api/authService';
+import { authAPI } from '../../services/api';
 import './AvatarUpload.css';
 
 export function AvatarUpload({ currentAvatar, onAvatarUpdate }) {

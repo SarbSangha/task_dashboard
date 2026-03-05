@@ -1,3 +1,7 @@
+:root {
+  --leftbar-popup-top-offset: 120px;
+}
+
 /* Backdrop */
 .assign-modal-backdrop {
   position: fixed;
@@ -5,29 +9,42 @@
   background: rgba(15, 23, 42, 0.45);
   backdrop-filter: blur(4px);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding-top: var(--leftbar-popup-top-offset);
   z-index: 1400;
+  transition: opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.assign-modal-backdrop.disabled {
+  background: transparent;
+  backdrop-filter: none;
 }
 
 /* Card */
 .assign-modal {
   width: 880px;
   max-width: 95%;
-  max-height: 90vh;
+  max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   background: #f3f4f6;
   border-radius: 18px;
   box-shadow: 0 18px 45px rgba(15, 23, 42, 0.45);
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  animation: assign-modal-in 0.25s ease-out;
+  animation: assign-modal-in 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: width, height, top, left, transform;
+  transition: width 0.34s cubic-bezier(0.22, 1, 0.36, 1), height 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    max-height 0.34s cubic-bezier(0.22, 1, 0.36, 1), top 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    left 0.34s cubic-bezier(0.22, 1, 0.36, 1), right 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    bottom 0.34s cubic-bezier(0.22, 1, 0.36, 1), transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @keyframes assign-modal-in {
   from {
     opacity: 0;
-    transform: translateY(20px) scale(0.98);
+    transform: translateY(10px) scale(0.985);
   }
   to {
     opacity: 1;
@@ -46,6 +63,7 @@
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  cursor: default;
 }
 
 .assign-close-icon {
@@ -57,8 +75,57 @@
   padding: 4px;
 }
 
+.assign-window-btn {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.assign-window-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
 .assign-close-icon:hover {
   color: #f97373;
+}
+
+.assign-modal.minimized {
+  position: fixed;
+  width: 360px;
+  height: 64px;
+  max-height: 64px;
+  top: auto;
+  left: auto;
+  right: 20px;
+  bottom: 20px;
+  transform: none;
+  border-radius: 12px;
+  z-index: 1401;
+}
+
+.assign-modal.minimized .assign-modal-header-bar {
+  cursor: pointer;
+}
+
+.assign-modal.maximized {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  max-width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  transform: none;
+  border-radius: 0;
 }
 
 /* Body */
@@ -743,3 +810,183 @@
   background: rgba(255, 255, 255, 0.3);
 }
 
+/* Department Users Selection Styles */
+.department-users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 15px;
+  max-height: 250px;
+  overflow-y: auto;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 8px;
+}
+
+.user-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s;
+  background: white;
+  border: 1px solid #e5e7eb;
+}
+
+.user-checkbox-item:hover {
+  background: #f9fafb;
+  border-color: #3b82f6;
+  box-shadow: 0 2px 4px rgba(59, 130, 246, 0.1);
+}
+
+.user-checkbox-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: #3b82f6;
+}
+
+.user-checkbox-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.user-checkbox-label strong {
+  font-weight: 600;
+  color: #1f2937;
+  font-size: 14px;
+}
+
+.user-checkbox-label small {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+/* Scrollbar for department users list */
+.department-users-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.department-users-list::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 3px;
+}
+
+.department-users-list::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.3);
+  border-radius: 3px;
+}
+
+.department-users-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.5);
+}
+
+.project-id-actions {
+  max-width: 320px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.project-id-btn-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.project-id-btn-row .assign-secondary-btn,
+.project-id-btn-row .assign-draft-btn {
+  flex: 1;
+  min-height: 42px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.project-id-status {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.project-id-status.success {
+  color: #16a34a;
+}
+
+.project-id-status.error {
+  color: #dc2626;
+}
+
+/* Light theme overrides for attachment and link blocks */
+.assign-modal .assign-attachment-box {
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+}
+
+.assign-modal .assign-attachment-box:hover {
+  border-color: #94a3b8;
+  background: #f1f5f9;
+}
+
+.assign-modal .assign-attachment-box p {
+  color: #334155;
+}
+
+.assign-modal .file-item {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+}
+
+.assign-modal .file-item:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.assign-modal .file-name {
+  color: #0f172a;
+}
+
+.assign-modal .file-size {
+  color: #64748b;
+}
+
+.assign-modal .link-input {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #0f172a;
+}
+
+.assign-modal .link-input:focus {
+  border-color: #4f46e5;
+  background: #ffffff;
+}
+
+.assign-modal .link-input::placeholder {
+  color: #94a3b8;
+}
+
+.assign-modal .link-count {
+  color: #64748b;
+}
+
+.assign-modal .link-item {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+}
+
+.assign-modal .link-item:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.assign-modal .link-item a {
+  color: #1d4ed8;
+}
+
+.assign-modal .link-item a:hover {
+  color: #1e40af;
+}

@@ -1,20 +1,36 @@
 // src/components/leftsidebar/compofleftsidebar/InboxButton.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './MenuButton.css';
+import { useAuth } from '../../../context/AuthContext';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const InboxButton = ({ isActive, onClick }) => {
+  const { user } = useAuth();
   const [unreadCount, setUnreadCount] = useState(0);
+  const inFlightRef = useRef(false);
 
   useEffect(() => {
+    if (!user) {
+      setUnreadCount(0);
+      return undefined;
+    }
+
     fetchUnreadCount();
     // Poll for new messages every 30 seconds
-    const interval = setInterval(fetchUnreadCount, 30000);
+    const interval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      fetchUnreadCount();
+    }, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [user]);
 
   const fetchUnreadCount = async () => {
+    if (!user) return;
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
-      const response = await fetch('http://localhost:8000/api/tasks/inbox/unread-count', {
+      const response = await fetch(`${API_BASE}/api/tasks/inbox/unread-count`, {
         credentials: 'include'
       });
       const data = await response.json();
@@ -23,6 +39,8 @@ const InboxButton = ({ isActive, onClick }) => {
       }
     } catch (error) {
       console.error('Error fetching unread count:', error);
+    } finally {
+      inFlightRef.current = false;
     }
   };
 

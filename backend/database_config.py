@@ -1,16 +1,70 @@
-# database_config.py - Dual Database Configuration
+# database_config.py - Dual Database Configuration (Env-driven, SQLite/PostgreSQL)
+import os
+import re
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 
+
+def _load_env_file_if_needed(env_path: str = ".env") -> None:
+    """
+    Lightweight .env loader (no external dependency).
+    Only sets keys that are not already in process env.
+    """
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as fp:
+            for raw in fp:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = re.split(r"\s+#", value.strip(), maxsplit=1)[0]
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        # Fallback silently; process env may already be configured by runtime.
+        return
+
+
+_load_env_file_if_needed()
+
+# ==================== DATABASE URLS ====================
+OPERATIONAL_DB_URL = (os.getenv("DATABASE_URL") or "").strip()
+ARCHIVE_DB_URL = (os.getenv("ARCHIVE_DATABASE_URL") or "").strip()
+
+if not OPERATIONAL_DB_URL:
+    raise RuntimeError("DATABASE_URL is required (PostgreSQL/Supabase).")
+
+if not ARCHIVE_DB_URL:
+    # Keep archive on the same hosted DB when dedicated archive URL is not provided.
+    ARCHIVE_DB_URL = OPERATIONAL_DB_URL
+
+
+def _normalize_db_url(url: str) -> str:
+    # Prefer psycopg (v3) for PostgreSQL.
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return url
+
+
+def _create_engine(url: str):
+    normalized = _normalize_db_url(url)
+    if not normalized.startswith("postgresql+psycopg://"):
+        raise RuntimeError("Only PostgreSQL connection URLs are supported in this environment.")
+    kwargs = {
+        "echo": False,
+        "pool_pre_ping": True,
+    }
+    return create_engine(normalized, **kwargs)
+
+
 # ==================== OPERATIONAL DATABASE ====================
-OPERATIONAL_DB_URL = "sqlite:///./task_db.sqlite"
-operational_engine = create_engine(
-    OPERATIONAL_DB_URL,
-    connect_args={"check_same_thread": False},
-    echo=False  # Set to True for SQL debugging
-)
+operational_engine = _create_engine(OPERATIONAL_DB_URL)
 OperationalSessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
@@ -18,12 +72,7 @@ OperationalSessionLocal = sessionmaker(
 )
 
 # ==================== ARCHIVE DATABASE ====================
-ARCHIVE_DB_URL = "sqlite:///./archive_db.sqlite"
-archive_engine = create_engine(
-    ARCHIVE_DB_URL,
-    connect_args={"check_same_thread": False},
-    echo=False
-)
+archive_engine = _create_engine(ARCHIVE_DB_URL)
 ArchiveSessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,

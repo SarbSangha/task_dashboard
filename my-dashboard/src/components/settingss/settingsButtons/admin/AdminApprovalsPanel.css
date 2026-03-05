@@ -1,0 +1,105 @@
+.admin-approvals-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 2000;
+}
+
+.admin-approvals-panel {
+  position: fixed;
+  right: 260px;
+  top: 120px;
+  width: 420px;
+  max-height: calc(100vh - 140px);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%);
+  border-radius: 12px;
+  z-index: 2001;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+.admin-approvals-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.admin-approvals-header h3 {
+  margin: 0;
+  color: #fff;
+}
+
+.admin-approvals-header button {
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.admin-approvals-content {
+  padding: 12px;
+  overflow: auto;
+}
+
+.admin-loading,
+.admin-message {
+  margin: 0 0 10px;
+  color: #d1fae5;
+  font-size: 12px;
+}
+
+.admin-queue-block {
+  margin-bottom: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.admin-queue-block h4 {
+  margin: 0 0 10px;
+  color: #fff;
+  font-size: 13px;
+}
+
+.admin-request-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.admin-request-row p {
+  margin: 2px 0 0;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+}
+
+.admin-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.admin-actions button {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 11px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.admin-actions button.reject {
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fecaca;
+}

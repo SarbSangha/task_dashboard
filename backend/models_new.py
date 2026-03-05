@@ -1,5 +1,5 @@
 # models_new.py - New Database Models
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Boolean, ForeignKey, JSON, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from database_config import Base, ArchiveBase
@@ -7,12 +7,19 @@ import enum
 
 
 # ==================== ENUMS ====================
+def enum_values(enum_cls):
+    return [member.value for member in enum_cls]
+
+
 class TaskStatus(enum.Enum):
     DRAFT = "draft"
     PENDING = "pending"
+    FORWARDED = "forwarded"
+    ASSIGNED = "assigned"
     IN_PROGRESS = "in_progress"
     SUBMITTED = "submitted"
     UNDER_REVIEW = "under_review"
+    NEED_IMPROVEMENT = "need_improvement"
     APPROVED = "approved"
     REJECTED = "rejected"
     COMPLETED = "completed"
@@ -25,6 +32,10 @@ class ParticipantRole(enum.Enum):
     REVIEWER = "reviewer"
     APPROVER = "approver"
     OBSERVER = "observer"
+    HOD = "hod"
+    SPOC = "spoc"
+    FACULTY = "faculty"
+    EMPLOYEE = "employee"
 
 
 class Priority(enum.Enum):
@@ -34,6 +45,13 @@ class Priority(enum.Enum):
     URGENT = "urgent"
 
 
+class ActivityStatus(enum.Enum):
+    ACTIVE = "ACTIVE"
+    IDLE = "IDLE"
+    AWAY = "AWAY"
+    OFFLINE = "OFFLINE"
+
+
 # ==================== OPERATIONAL DATABASE MODELS ====================
 
 class User(Base):
@@ -41,13 +59,19 @@ class User(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
+    employee_id = Column(String, unique=True, index=True)
     name = Column(String, nullable=False)
     hashed_password = Column(String, nullable=False)
     department = Column(String)
     position = Column(String)
     avatar = Column(Text)  # Base64 encoded or URL
+    roles_json = Column(JSON)  # Optional explicit role list for multi-role users
     is_active = Column(Boolean, default=True)
     mfa_enabled = Column(Boolean, default=False)  # ← ADD THIS
+    is_admin = Column(Boolean, default=False, index=True)
+    rejection_reason = Column(Text)
+    approved_by = Column(Integer, ForeignKey("users.id"))
+    approved_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime)
     
@@ -62,7 +86,12 @@ class Task(Base):
     
     # Core Fields
     id = Column(Integer, primary_key=True, index=True)
-    task_number = Column(String, unique=True, index=True)  # Auto-generated: TASK-2026-0001
+    task_number = Column(String, unique=True, index=True)  # Generated on assignment
+    task_id_project_hex = Column(String)
+    task_id_customer_hex = Column(String)
+    project_id = Column(String, index=True)
+    project_id_raw = Column(String)
+    project_id_hex = Column(String)
     title = Column(String, nullable=False)
     description = Column(Text)
     
@@ -70,7 +99,15 @@ class Task(Base):
     project_name = Column(String)
     task_type = Column(String, default="task")
     task_tag = Column(String)
-    priority = Column(SQLEnum(Priority), default=Priority.MEDIUM)
+    priority = Column(
+        SQLEnum(
+            Priority,
+            name="priority",
+            values_callable=enum_values,
+            validate_strings=True,
+        ),
+        default=Priority.MEDIUM,
+    )
     
     # Ownership & Departments
     creator_id = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -78,8 +115,18 @@ class Task(Base):
     to_department = Column(String)
     
     # Status & Workflow
-    status = Column(SQLEnum(TaskStatus), default=TaskStatus.DRAFT, index=True)
+    status = Column(
+        SQLEnum(
+            TaskStatus,
+            name="task_status",
+            values_callable=enum_values,
+            validate_strings=True,
+        ),
+        default=TaskStatus.DRAFT,
+        index=True,
+    )
     workflow_stage = Column(String)
+    current_assignee_ids_json = Column(JSON)
     
     # Deadlines & Timing
     deadline = Column(DateTime)
@@ -91,6 +138,8 @@ class Task(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
+    submitted_at = Column(DateTime)
+    submitted_by = Column(Integer, ForeignKey("users.id"))
     
     # Soft Delete
     is_deleted = Column(Boolean, default=False, index=True)
@@ -99,6 +148,11 @@ class Task(Base):
     
     # Metadata
     metadata_json = Column(JSON)  # For flexible extra data
+    task_version = Column(Integer, default=1)
+    result_version = Column(Integer, default=0)
+    task_edit_locked = Column(Boolean, default=False)
+    result_edit_locked = Column(Boolean, default=True)
+    result_text = Column(Text)
     
     # Relationships
     creator = relationship("User", foreign_keys=[creator_id], back_populates="created_tasks")
@@ -111,6 +165,11 @@ class Task(Base):
         return {
             "id": self.id,
             "taskNumber": self.task_number,
+            "taskIdProjectHex": self.task_id_project_hex,
+            "taskIdCustomerHex": self.task_id_customer_hex,
+            "projectId": self.project_id,
+            "projectIdRaw": self.project_id_raw,
+            "projectIdHex": self.project_id_hex,
             "title": self.title,
             "description": self.description,
             "projectName": self.project_name,
@@ -127,6 +186,12 @@ class Task(Base):
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "startedAt": self.started_at.isoformat() if self.started_at else None,
             "completedAt": self.completed_at.isoformat() if self.completed_at else None,
+            "submittedAt": self.submitted_at.isoformat() if self.submitted_at else None,
+            "submittedBy": self.submitted_by,
+            "taskVersion": self.task_version,
+            "resultVersion": self.result_version,
+            "taskEditLocked": self.task_edit_locked,
+            "resultEditLocked": self.result_edit_locked,
             "isDeleted": self.is_deleted
         }
 
@@ -138,7 +203,15 @@ class TaskParticipant(Base):
     id = Column(Integer, primary_key=True)
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    role = Column(SQLEnum(ParticipantRole), nullable=False)
+    role = Column(
+        SQLEnum(
+            ParticipantRole,
+            name="participant_role",
+            values_callable=enum_values,
+            validate_strings=True,
+        ),
+        nullable=False,
+    )
     
     # Interaction tracking
     is_read = Column(Boolean, default=False)
@@ -230,6 +303,7 @@ class TaskComment(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     
     comment = Column(Text, nullable=False)
+    comment_type = Column(String, default="general")  # suggestion / need_improvement / approved / general
     is_internal = Column(Boolean, default=False)  # Internal notes vs public comments
     
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -238,6 +312,150 @@ class TaskComment(Base):
     # Relationships
     task = relationship("Task", back_populates="comments")
     user = relationship("User", back_populates="comments")
+
+
+class TaskForward(Base):
+    """Track forwarding chain between users/departments"""
+    __tablename__ = "task_forwards"
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    from_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    to_user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    from_department = Column(String)
+    to_department = Column(String)
+    reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TaskNotification(Base):
+    """In-app notifications for workflow actions"""
+    __tablename__ = "task_notifications"
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    event_type = Column(String, nullable=False, index=True)  # forwarded/assigned/approved/need_improvement/etc
+    task_number = Column(String, index=True)
+    project_id = Column(String, index=True)
+    title = Column(String, nullable=False)
+    message = Column(Text)
+    is_read = Column(Boolean, default=False, index=True)
+    metadata_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    read_at = Column(DateTime)
+
+
+class TaskView(Base):
+    """Seen-by entries per task"""
+    __tablename__ = "task_views"
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    seen_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TaskEditLog(Base):
+    """Track task and result edits with before/after snapshots"""
+    __tablename__ = "task_edit_logs"
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    edit_scope = Column(String, nullable=False)  # task/result
+    before_json = Column(JSON)
+    after_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class IdSequence(Base):
+    """Central sequence table for configurable IDs"""
+    __tablename__ = "id_sequences"
+
+    id = Column(Integer, primary_key=True)
+    sequence_key = Column(String, unique=True, nullable=False, index=True)
+    prefix = Column(String, nullable=False)
+    year = Column(Integer, nullable=False)
+    next_value = Column(Integer, nullable=False, default=1)
+
+
+class UserApprovalRequest(Base):
+    __tablename__ = "user_approval_requests"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    request_type = Column(String, nullable=False, default="signup")  # signup/profile_update
+    status = Column(String, nullable=False, default="pending", index=True)  # pending/approved/rejected
+    payload_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    reviewed_at = Column(DateTime)
+    reviewed_by = Column(Integer, ForeignKey("users.id"))
+    review_notes = Column(Text)
+
+
+class UserActivity(Base):
+    __tablename__ = "user_activities"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+
+    login_time = Column(DateTime)
+    logout_time = Column(DateTime)
+    total_session_duration = Column(Integer, default=0)  # seconds
+    active_time = Column(Integer, default=0)  # seconds
+    idle_time = Column(Integer, default=0)  # seconds
+    away_time = Column(Integer, default=0)  # seconds
+
+    status = Column(
+        SQLEnum(
+            ActivityStatus,
+            name="activity_status",
+            values_callable=enum_values,
+            validate_strings=True,
+        ),
+        default=ActivityStatus.ACTIVE,
+        index=True,
+    )
+    last_seen = Column(DateTime, default=datetime.utcnow, index=True)
+    heartbeat_count = Column(Integer, default=0)
+
+
+# ==================== GROUP CHAT MODELS ====================
+
+class GroupChat(Base):
+    __tablename__ = "group_chats"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_message_at = Column(DateTime, default=datetime.utcnow, index=True)
+    is_archived = Column(Boolean, default=False, index=True)
+
+
+class GroupChatMember(Base):
+    __tablename__ = "group_chat_members"
+
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey("group_chats.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String, default="member", index=True)  # admin/member
+    joined_at = Column(DateTime, default=datetime.utcnow, index=True)
+    is_active = Column(Boolean, default=True, index=True)
+
+
+class GroupChatMessage(Base):
+    __tablename__ = "group_chat_messages"
+
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey("group_chats.id"), nullable=False, index=True)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    message = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    edited_at = Column(DateTime)
 
 
 # ==================== ARCHIVE DATABASE MODELS ====================

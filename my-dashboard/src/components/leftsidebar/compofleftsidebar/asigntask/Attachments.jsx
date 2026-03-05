@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
 
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
 export default function AttachmentBox({ attachments = [], onChange }) {
   const [files, setFiles] = useState(attachments);
   const [progress, setProgress] = useState(0);
@@ -49,8 +51,9 @@ export default function AttachmentBox({ attachments = [], onChange }) {
     try {
       setUploading(true);
 
-      const response = await axios.post("http://localhost:8000/upload", formData, {
+      const response = await axios.post(`${API_BASE}/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
+        withCredentials: true,
         onUploadProgress: (progressEvent) => {
           const percent = Math.round(
             (progressEvent.loaded * 100) / progressEvent.total

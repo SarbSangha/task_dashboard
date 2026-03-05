@@ -1,4 +1,7 @@
 /* Enhanced Outbox Task Card Styles */
+:root {
+  --leftbar-popup-top-offset: 120px;
+}
 
 .outbox-task-card {
   background: white;
@@ -9,6 +12,7 @@
   transition: all 0.3s ease;
   cursor: pointer;
   border-left: 4px solid transparent;
+  position: relative;
 }
 
 .outbox-task-card:hover {
@@ -70,9 +74,64 @@
 
 .status-and-track {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-end;
   gap: 8px;
+}
+
+.outbox-card-menu-wrap {
+  position: relative;
+}
+
+.outbox-card-menu-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.outbox-card-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.outbox-card-menu {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  min-width: 140px;
+  background: #111827;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 6px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+}
+
+.outbox-card-menu button {
+  border: none;
+  background: transparent;
+  color: #e5e7eb;
+  text-align: left;
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.outbox-card-menu button:hover {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.outbox-card-menu-empty {
+  color: #94a3b8;
+  padding: 8px 10px;
+  font-size: 12px;
 }
 
 /* Track Button */
@@ -248,8 +307,9 @@
   bottom: 0;
   background: rgba(0, 0, 0, 0.6);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding-top: var(--leftbar-popup-top-offset);
   z-index: 1000;
   animation: fadeIn 0.2s;
 }
@@ -259,12 +319,29 @@
   border-radius: 16px;
   width: 90%;
   max-width: 700px;
-  max-height: 85vh;
+  max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
   animation: slideUp 0.3s;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+/* Tracking Theme Override */
+.journey-modal {
+  background: #1f2937;
+  border: 1px solid #374151;
+}
+
+.journey-modal-header {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.16) 0%, rgba(118, 75, 162, 0.16) 100%);
+  border-bottom: 1px solid #374151;
+}
+
+.journey-modal-info,
+.journey-modal-body {
+  background: #111b2b;
+  color: rgba(255, 255, 255, 0.82);
 }
 
 .journey-modal-header {
@@ -524,6 +601,63 @@
   cursor: pointer;
 }
 
+.extra-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mini-action-btn {
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #374151;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mini-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.attachment-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.link-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.attachment-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.copy-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2500;
+  background: rgba(17, 24, 39, 0.95);
+  color: #e5e7eb;
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
 .creator-info {
   margin-top: 12px;
   padding-top: 12px;
@@ -545,4 +679,183 @@
 
 .recipients-stats .unread {
   color: #999999;
+}
+
+/* Inbox-like visual style for outbox cards */
+.outbox-task-card {
+  background: #1f2d45;
+  border: 1px solid #334766;
+  border-left: 1px solid #334766;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+  box-shadow: none;
+  color: #e5e7eb;
+  transform: none;
+}
+
+.outbox-task-card:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: #3d567a;
+}
+
+.outbox-task-card.expanded {
+  border-left: 1px solid #334766;
+}
+
+.outbox-task-header {
+  margin-bottom: 10px;
+}
+
+.outbox-avatar {
+  width: 40px;
+  height: 40px;
+  font-size: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.outbox-task-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.2;
+  color: #f8fafc;
+}
+
+.outbox-project-name {
+  margin-top: 3px;
+  font-size: 12px;
+  color: rgba(229, 231, 235, 0.85);
+}
+
+.outbox-status-pill {
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.outbox-card-menu-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.workflow-stage-badge {
+  margin-bottom: 10px;
+}
+
+.stage-indicator {
+  background: transparent;
+  color: #e5e7eb;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.outbox-task-meta {
+  margin-top: 8px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #334766;
+  background: #172743;
+  gap: 8px 12px;
+}
+
+.outbox-label {
+  color: #9fb1c9;
+}
+
+.outbox-value {
+  color: #e5e7eb;
+}
+
+.outbox-task-badges {
+  margin-bottom: 10px;
+}
+
+.priority-badge,
+.tag-badge,
+.type-badge,
+.deadline-badge {
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.timeline-progress {
+  background: #172743;
+  border: 1px solid #334766;
+}
+
+.outbox-task-extra {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #334766;
+  background: #172743;
+}
+
+.outbox-task-extra .extra-col {
+  background: #f8fafc12;
+  border: 1px solid #334766;
+  padding: 12px;
+  border-radius: 12px;
+}
+
+.outbox-task-extra .extra-col h4 {
+  color: #e5e7eb;
+  margin: 0 0 6px;
+}
+
+.outbox-task-extra .extra-col p,
+.outbox-task-extra .extra-col li,
+.outbox-task-extra .extra-col span {
+  color: #dbe5f1;
+}
+
+.outbox-task-extra .attachment-list,
+.outbox-task-extra .link-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.outbox-task-extra .attachment-list li,
+.outbox-task-extra .link-list li {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid #334766;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.outbox-task-extra .attachment-list li:hover,
+.outbox-task-extra .link-list li:hover {
+  border-color: #4b6186;
+  transform: none;
+  box-shadow: none;
+}
+
+.outbox-task-extra .attachment-list a,
+.outbox-task-extra .link-list a {
+  color: #93c5fd;
+  text-decoration: underline;
+}
+
+.outbox-task-extra .mini-action-btn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e5e7eb;
+}
+
+/* Keep text size close to inbox card */
+.outbox-task-card,
+.outbox-task-card * {
+  font-size: 13px;
 }

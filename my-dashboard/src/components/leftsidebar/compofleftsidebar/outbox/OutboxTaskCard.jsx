@@ -1,25 +1,29 @@
 // src/components/outbox/OutboxTaskCard.jsx
 import React, { useState } from 'react';
 import PropTypes from 'prop-types';
-import axios from 'axios';
 import './OutboxTaskCard.css';
 
 const OutboxTaskCard = ({ 
   task, 
   isExpanded, 
   onClick, 
+  onTaskAction,
+  onTrackClick,
   formatDate, 
   formatTime, 
   getStatusClass 
 }) => {
-  const [showJourneyModal, setShowJourneyModal] = useState(false);
-  const [journey, setJourney] = useState([]);
-  const [loadingJourney, setLoadingJourney] = useState(false);
+  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
 
   const {
     id,
     projectName,
+    title,
     taskName,
+    description,
     toDepartment,
     fromDepartment,
     status,
@@ -43,32 +47,67 @@ const OutboxTaskCard = ({
     trackingInfo,
     journeyCount
   } = task;
+  const displayTaskName = taskName || title || 'Untitled Task';
+  const displayTaskDetails = taskDetails || description || '';
 
-  // Fetch journey when Track button is clicked
-  const handleTrackClick = async (e) => {
-    e.stopPropagation(); // Prevent card expansion
-    setShowJourneyModal(true);
-    setLoadingJourney(true);
-
+  const menuActions = [
+    'track',
+    ...(task.availableActions || []).filter((action) => action === 'edit_task')
+  ];
+  const requestTypeLabel = (() => {
+    const type = (taskType || 'task').toLowerCase();
+    if (type === 'task_approval') return 'Task Approval';
+    if (type === 'submission_result') return 'Submission Result';
+    return 'Task';
+  })();
+  const buildFileActionUrl = (file, action, fallbackName) => {
+    const params = new URLSearchParams();
+    if (file?.url) params.set('url', file.url);
+    if (file?.path) params.set('path', file.path);
+    if (action === 'download') {
+      params.set('filename', fallbackName || file?.originalName || file?.filename || 'download');
+    }
+    return `${apiBase}/api/files/${action}?${params.toString()}`;
+  };
+  const forceDownload = (file, filename) => {
+    const downloadUrl = buildFileActionUrl(file, 'download', filename);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+  const copyToClipboard = async (text) => {
+    const value = `${text || ''}`.trim();
+    if (!value) return;
     try {
-      const response = await axios.get(`http://localhost:8000/api/tasks/${id}/journey`, {
-        withCredentials: true
-      });
-      
-      if (response.data.success) {
-        setJourney(response.data.journey);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const temp = document.createElement('textarea');
+        temp.value = value;
+        document.body.appendChild(temp);
+        temp.select();
+        document.execCommand('copy');
+        document.body.removeChild(temp);
       }
+      setCopied(true);
+      setToastMessage('Copied to clipboard');
+      window.setTimeout(() => setCopied(false), 1200);
+      window.setTimeout(() => setToastMessage(''), 1400);
     } catch (error) {
-      console.error('Error fetching journey:', error);
-      alert('Failed to load journey');
-    } finally {
-      setLoadingJourney(false);
+      console.warn('Copy failed:', error);
     }
   };
+  const copyLink = async (link, e) => {
+    if (e) e.stopPropagation();
+    await copyToClipboard(link);
+  };
 
-  const closeModal = (e) => {
+  const handleTrackClick = (e) => {
     e.stopPropagation();
-    setShowJourneyModal(false);
+    onTrackClick?.(task);
   };
 
   return (
@@ -84,7 +123,7 @@ const OutboxTaskCard = ({
           </div>
           <div className="outbox-header-text">
             <h3 className="outbox-task-title">
-              {taskName}
+              {displayTaskName}
               {isResult && <span className="result-badge">📊 Result</span>}
             </h3>
             <p className="outbox-project-name">📁 {projectName}</p>
@@ -93,14 +132,28 @@ const OutboxTaskCard = ({
             <span className={`outbox-status-pill ${getStatusClass(status)}`}>
               {status?.replace('_', ' ')}
             </span>
-            {/* Track Button */}
-            <button 
-              className="track-button"
-              onClick={handleTrackClick}
-              title="View Journey"
-            >
-              🛤️ Track
-            </button>
+            <div className="outbox-card-menu-wrap" onClick={(e) => e.stopPropagation()}>
+              <button className="outbox-card-menu-btn" onClick={() => setMenuOpen((prev) => !prev)}>⋮</button>
+              {menuOpen && (
+                <div className="outbox-card-menu">
+                  {menuActions.map((action) => (
+                    <button
+                      key={action}
+                      onClick={(e) => {
+                        setMenuOpen(false);
+                        if (action === 'track') {
+                          handleTrackClick(e);
+                          return;
+                        }
+                        onTaskAction?.(task, action);
+                      }}
+                    >
+                      {action === 'track' ? 'Track' : 'Edit Task'}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -110,11 +163,6 @@ const OutboxTaskCard = ({
             <span className={`stage-indicator stage-${workflowStage}`}>
               {getStageIcon(workflowStage)} {workflowStage?.replace('_', ' ')}
             </span>
-            {journeyCount > 0 && (
-              <span className="journey-count-badge">
-                {journeyCount} {journeyCount === 1 ? 'entry' : 'entries'}
-              </span>
-            )}
           </div>
         )}
 
@@ -152,6 +200,7 @@ const OutboxTaskCard = ({
 
         {/* Badges */}
         <div className="outbox-task-badges">
+          <span className="type-badge request-type">📨 {requestTypeLabel}</span>
           <span className={`priority-badge priority-${priority?.toLowerCase()}`}>
             {getPriorityIcon(priority)} {priority}
           </span>
@@ -196,8 +245,21 @@ const OutboxTaskCard = ({
           <div className="outbox-task-extra">
             {/* Task Details */}
             <div className="extra-col">
-              <h4>📋 Task Details</h4>
-              <p>{taskDetails || 'No details provided'}</p>
+              <div className="extra-head">
+                <h4>📋 Task Details</h4>
+                <button
+                  type="button"
+                  className="mini-action-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    copyToClipboard(displayTaskDetails);
+                  }}
+                  disabled={!displayTaskDetails}
+                >
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              <p>{displayTaskDetails || 'No details provided'}</p>
             </div>
 
             {/* Attachments */}
@@ -207,9 +269,20 @@ const OutboxTaskCard = ({
                 <ul className="attachment-list">
                   {attachments.map((att, idx) => (
                     <li key={idx}>
-                      <a href={att.url || '#'} target="_blank" rel="noopener noreferrer">
-                        {att.originalName || att.filename || `Attachment ${idx + 1}`}
-                      </a>
+                      <span>{att.originalName || att.filename || `Attachment ${idx + 1}`}</span>
+                      <span className="attachment-actions">
+                        <a href={buildFileActionUrl(att, 'open')} target="_blank" rel="noopener noreferrer">Open</a>
+                        <button
+                          type="button"
+                          className="mini-action-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            forceDownload(att, att.originalName || att.filename || `attachment-${idx + 1}`);
+                          }}
+                        >
+                          Download
+                        </button>
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -223,9 +296,24 @@ const OutboxTaskCard = ({
                 <ul className="link-list">
                   {links.map((link, idx) => (
                     <li key={idx}>
-                      <a href={link} target="_blank" rel="noopener noreferrer">
-                        {link.length > 40 ? link.substring(0, 40) + '...' : link}
-                      </a>
+                      <span>{link.length > 40 ? link.substring(0, 40) + '...' : link}</span>
+                      <span className="attachment-actions">
+                        <a
+                          href={link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          Open
+                        </a>
+                        <button
+                          type="button"
+                          className="mini-action-btn"
+                          onClick={(e) => copyLink(link, e)}
+                        >
+                          Copy Link
+                        </button>
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -234,106 +322,8 @@ const OutboxTaskCard = ({
           </div>
         )}
       </div>
+      {toastMessage && <div className="copy-toast">{toastMessage}</div>}
 
-      {/* Journey Modal */}
-      {showJourneyModal && (
-        <div className="journey-modal-overlay" onClick={closeModal}>
-          <div className="journey-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="journey-modal-header">
-              <h2>🛤️ Task Journey</h2>
-              <button className="close-modal" onClick={closeModal}>✕</button>
-            </div>
-            
-            <div className="journey-modal-info">
-              <div className="journey-info-item">
-                <span className="journey-info-label">Task:</span>
-                <span className="journey-info-value">{taskName}</span>
-              </div>
-              <div className="journey-info-item">
-                <span className="journey-info-label">Project:</span>
-                <span className="journey-info-value">{projectName}</span>
-              </div>
-              <div className="journey-info-item">
-                <span className="journey-info-label">Current Status:</span>
-                <span className={`journey-status ${getStatusClass(status)}`}>
-                  {status?.replace('_', ' ')}
-                </span>
-              </div>
-            </div>
-
-            <div className="journey-modal-body">
-              {loadingJourney ? (
-                <div className="journey-loading">
-                  <div className="spinner"></div>
-                  <p>Loading journey...</p>
-                </div>
-              ) : journey.length > 0 ? (
-                <div className="journey-timeline">
-                  {journey.map((entry, index) => (
-                    <div key={entry.id} className="journey-entry">
-                      <div className="journey-entry-icon">
-                        {getActionIcon(entry.action)}
-                      </div>
-                      <div className="journey-entry-content">
-                        <div className="journey-entry-header">
-                          <span className="journey-action">{entry.action}</span>
-                          <span className="journey-time">
-                            {formatDate(entry.timestamp)} at {formatTime(entry.timestamp)}
-                          </span>
-                        </div>
-                        <div className="journey-entry-details">
-                          <div className="journey-detail-row">
-                            <span className="journey-detail-icon">👤</span>
-                            <span><strong>{entry.userName}</strong></span>
-                            {entry.userPosition && (
-                              <span className="user-position">({entry.userPosition})</span>
-                            )}
-                          </div>
-                          {entry.userDepartment && (
-                            <div className="journey-detail-row">
-                              <span className="journey-detail-icon">🏢</span>
-                              <span>{entry.userDepartment}</span>
-                            </div>
-                          )}
-                          {(entry.fromDepartment || entry.toDepartment) && (
-                            <div className="journey-detail-row">
-                              <span className="journey-detail-icon">📍</span>
-                              <span>
-                                {entry.fromDepartment && `${entry.fromDepartment} → `}
-                                {entry.toDepartment}
-                              </span>
-                            </div>
-                          )}
-                          {entry.statusBefore && (
-                            <div className="journey-detail-row">
-                              <span className="journey-detail-icon">📊</span>
-                              <span>
-                                Status: <span className="status-change">
-                                  {entry.statusBefore} → {entry.statusAfter}
-                                </span>
-                              </span>
-                            </div>
-                          )}
-                          {entry.comments && (
-                            <div className="journey-comment">
-                              <span className="journey-detail-icon">💬</span>
-                              <span>{entry.comments}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="no-journey">
-                  <p>No journey entries yet</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 };
@@ -359,27 +349,14 @@ const getPriorityIcon = (priority) => {
   return icons[priority] || '⚪';
 };
 
-const getActionIcon = (action) => {
-  const icons = {
-    'created': '✨',
-    'sent': '📤',
-    'received': '✅',
-    'started': '🚀',
-    'paused': '⏸️',
-    'completed': '🎉',
-    'forwarded': '➡️',
-    'rejected': '❌',
-    'under_review': '👁️'
-  };
-  return icons[action] || '📌';
-};
-
 // PropTypes
 OutboxTaskCard.propTypes = {
   task: PropTypes.shape({
     id: PropTypes.number.isRequired,
     projectName: PropTypes.string.isRequired,
-    taskName: PropTypes.string.isRequired,
+    title: PropTypes.string,
+    taskName: PropTypes.string,
+    description: PropTypes.string,
     toDepartment: PropTypes.string,
     fromDepartment: PropTypes.string,
     status: PropTypes.string,
@@ -405,6 +382,8 @@ OutboxTaskCard.propTypes = {
   }).isRequired,
   isExpanded: PropTypes.bool.isRequired,
   onClick: PropTypes.func.isRequired,
+  onTaskAction: PropTypes.func,
+  onTrackClick: PropTypes.func,
   formatDate: PropTypes.func.isRequired,
   formatTime: PropTypes.func.isRequired,
   getStatusClass: PropTypes.func.isRequired,

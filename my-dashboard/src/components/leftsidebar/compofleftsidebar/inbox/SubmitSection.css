@@ -1,4 +1,8 @@
 /* components/Inbox/SubmitSection.css */
+:root {
+  --leftbar-popup-top-offset: 120px;
+}
+
 .submit-overlay {
   position: fixed;
   top: 0;
@@ -7,8 +11,9 @@
   bottom: 0;
   background: rgba(0, 0, 0, 0.8);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding-top: var(--leftbar-popup-top-offset);
   z-index: 3000;
 }
 
@@ -17,7 +22,7 @@
   border-radius: 16px;
   width: 600px;
   max-width: 90%;
-  max-height: 90vh;
+  max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   display: flex;
   flex-direction: column;
 }
@@ -40,6 +45,21 @@
 .submit-form {
   padding: 24px;
   overflow-y: auto;
+}
+
+/* Tracking Theme Override */
+.submit-modal {
+  background: #1f2937;
+  border: 1px solid #374151;
+}
+
+.submit-header {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.16) 0%, rgba(118, 75, 162, 0.16) 100%);
+  border-bottom: 1px solid #374151;
+}
+
+.submit-form {
+  background: #111b2b;
 }
 
 .form-group {

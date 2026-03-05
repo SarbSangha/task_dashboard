@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 from typing import Optional
 from sqlalchemy.orm import Session
 import secrets
-
+from fastapi import APIRouter, HTTPException, Depends, Response, Cookie
+from database_config import get_operational_db
+from models_new import User
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

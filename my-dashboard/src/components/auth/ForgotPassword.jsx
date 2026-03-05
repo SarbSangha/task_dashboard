@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 export function ForgotPassword() {
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
@@ -15,7 +17,7 @@ export function ForgotPassword() {
     setLoading(true);
 
     try {
-      const response = await axios.post('http://127.0.0.1:8000/api/auth/forgot-password', {
+      const response = await axios.post(`${API_BASE}/api/auth/forgot-password`, {
         email
       });
       setMessage(response.data.message);

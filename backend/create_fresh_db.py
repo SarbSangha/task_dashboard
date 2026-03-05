@@ -2,7 +2,14 @@
 import sys
 sys.path.append('.')
 
-from database_config import operational_engine, archive_engine, Base, ArchiveBase
+from database_config import (
+    operational_engine,
+    archive_engine,
+    Base,
+    ArchiveBase,
+    OPERATIONAL_DB_URL,
+    ARCHIVE_DB_URL,
+)
 from models_new import *
 
 def create_databases():
@@ -14,12 +21,12 @@ def create_databases():
     # Create operational database
     print("\n📊 Creating operational database...")
     Base.metadata.create_all(bind=operational_engine)
-    print("✅ Created: task_db.sqlite")
+    print(f"✅ Created/Verified: {OPERATIONAL_DB_URL}")
     
     # Create archive database
     print("\n📦 Creating archive database...")
     ArchiveBase.metadata.create_all(bind=archive_engine)
-    print("✅ Created: archive_db.sqlite")
+    print(f"✅ Created/Verified: {ARCHIVE_DB_URL}")
     
     print("\n" + "="*60)
     print("✅ FRESH DATABASES CREATED!")

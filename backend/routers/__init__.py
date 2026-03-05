@@ -8,6 +8,9 @@ from . import drafts_router
 from . import archive_router
 from . import approvals
 from . import upload
+from . import activity_router
+from . import admin_router
+from . import groups_router
 
 __all__ = [
     'auth_router',
@@ -15,5 +18,8 @@ __all__ = [
     'drafts_router',
     'archive_router',
     'approvals',
-    'upload'
+    'upload',
+    'activity_router',
+    'admin_router',
+    'groups_router'
 ]

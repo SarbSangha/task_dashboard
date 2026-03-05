@@ -1,15 +1,30 @@
-// AuthContext.jsx - COMPLETE FIXED VERSION
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import axios from 'axios';
+// src/context/AuthContext.jsx - ADD useAuth HOOK
 
-const AuthContext = createContext();
+import React, { createContext, useState, useEffect, useContext, useCallback } from 'react';
+import { activityAPI, authAPI } from '../services/api';
+import useActivityTracker from '../hooks/useActivityTracker';
 
-const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api/auth';
+export const AuthContext = createContext();
 
-export function AuthProvider({ children }) {
+// ✅ ADD THIS: Custom hook to use auth context
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};
+
+export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
+  const handleActivityAuthFailure = useCallback(() => {
+    setUser(null);
+  }, []);
+  const activity = useActivityTracker({
+    enabled: !!user,
+    onAuthFailure: handleActivityAuthFailure,
+  });
 
   // Check authentication on mount
   useEffect(() => {
@@ -17,141 +32,160 @@ export function AuthProvider({ children }) {
   }, []);
 
   const checkAuth = async () => {
+    console.log('🔍 Checking authentication...');
     try {
-      console.log('🔍 Checking authentication...');
-      
-      const response = await axios.get(`${API_URL}/me`, {
-        withCredentials: true
-      });
-
-      console.log('✅ Auth check response:', response.data);
-
-      if (response.data && response.data.id) {
-        setUser(response.data);
-        setIsAuthenticated(true);
-        console.log('✅ User authenticated:', response.data.email);
+      const response = await authAPI.getCurrentUser();
+      if (response.success && response.user) {
+        setUser(response.user);
+        console.log('✅ User authenticated:', response.user.email);
+      } else {
+        console.log('ℹ️ No active session');
+        setUser(null);
       }
     } catch (error) {
       console.log('ℹ️ No active session');
       setUser(null);
-      setIsAuthenticated(false);
     } finally {
       setLoading(false);
     }
   };
 
+  const normalizeApiError = (detail, fallbackMessage = 'Request failed') => {
+    if (Array.isArray(detail)) {
+      return {
+        message: detail.map((err) => err.msg).join(', '),
+        code: null,
+        reason: null,
+        nextAction: null,
+      };
+    }
+
+    if (typeof detail === 'string') {
+      return {
+        message: detail,
+        code: null,
+        reason: null,
+        nextAction: null,
+      };
+    }
+
+    if (detail && typeof detail === 'object') {
+      return {
+        message: detail.message || detail.msg || fallbackMessage,
+        code: detail.code || null,
+        reason: detail.reason || null,
+        nextAction: detail.nextAction || null,
+      };
+    }
+
+    return {
+      message: fallbackMessage,
+      code: null,
+      reason: null,
+      nextAction: null,
+    };
+  };
+
   const login = async (email, password, rememberMe = false) => {
+    console.log('🔐 Logging in:', email);
     try {
-      console.log('🔐 Logging in:', email);
+      const response = await authAPI.login(email, password, rememberMe);
       
-      const response = await axios.post(
-        `${API_URL}/login`,
-        {
-          email,
-          password,
-          remember_me: rememberMe
-        },
-        {
-          withCredentials: true,
-          headers: {
-            'Content-Type': 'application/json'
-          }
+      if (response.success && response.user) {
+        setUser(response.user);
+        try {
+          localStorage.removeItem('rmw_activity_auth_block_until_v1');
+        } catch {
+          // no-op
         }
-      );
-
-      console.log('✅ Login response:', response.data);
-
-      // Backend returns user object directly
-      if (response.data && response.data.id) {
-        setUser(response.data);
-        setIsAuthenticated(true);
-        console.log('✅ User logged in:', response.data.email);
-        
-        if (rememberMe) {
-          localStorage.setItem('isAuthenticated', 'true');
-        }
-        
-        return response.data;
+        console.log('✅ Login successful:', response.user.email);
+        return { success: true };
       } else {
-        throw new Error('Invalid response from server');
+        console.error('❌ Login failed: Invalid response format');
+        return { 
+          success: false, 
+          error: 'Invalid response from server' 
+        };
       }
     } catch (error) {
-      console.error('❌ Login error:', error.response?.data || error.message);
-      setUser(null);
-      setIsAuthenticated(false);
-      localStorage.removeItem('isAuthenticated');
-      throw error;
+      console.error('❌ Login error:', error);
+      const errorInfo = normalizeApiError(
+        error.response?.data?.detail,
+        error.message || 'Login failed'
+      );
+
+      return { 
+        success: false, 
+        error: errorInfo.message,
+        errorDetails: errorInfo,
+      };
     }
   };
 
-  const register = async (email, password, name, position) => {
+  const register = async (email, password, name, position, department) => {
+    console.log('📝 Registering:', email);
     try {
-      console.log('📝 Registering:', email);
+      const response = await authAPI.register(email, password, name, position, department);
       
-      const response = await axios.post(
-        `${API_URL}/register`,
-        {
-          email,
-          password,
-          name,
-          position
-        },
-        {
-          withCredentials: true,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      console.log('✅ Register response:', response.data);
-
-      if (response.data && response.data.id) {
-        setUser(response.data);
-        setIsAuthenticated(true);
-        console.log('✅ User registered:', response.data.email);
-        return response.data;
+      if (response.success) {
+        console.log('✅ Registration successful');
+        return { success: true, pendingApproval: true, message: response.message };
       } else {
-        throw new Error('Invalid response from server');
+        return { 
+          success: false, 
+          error: 'Registration failed' 
+        };
       }
     } catch (error) {
-      console.error('❌ Registration error:', error.response?.data || error.message);
-      setUser(null);
-      setIsAuthenticated(false);
-      throw error;
+      console.error('❌ Registration error:', error);
+      
+      let errorMessage = 'Registration failed';
+      
+      if (error.response?.data?.detail) {
+        const detail = error.response.data.detail;
+        
+        if (Array.isArray(detail)) {
+          errorMessage = detail.map(err => err.msg).join(', ');
+        } else if (typeof detail === 'string') {
+          errorMessage = detail;
+        } else if (typeof detail === 'object' && detail.msg) {
+          errorMessage = detail.msg;
+        }
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      return { 
+        success: false, 
+        error: errorMessage 
+      };
     }
   };
 
   const logout = async () => {
+    console.log('👋 Logging out...');
     try {
-      console.log('👋 Logging out...');
-      
-      await axios.post(`${API_URL}/logout`, {}, {
-        withCredentials: true
-      });
-
+      await activityAPI.endSession({
+        status: 'OFFLINE',
+        timestamp: new Date().toISOString(),
+      }).catch(() => {});
+      await authAPI.logout();
       setUser(null);
-      setIsAuthenticated(false);
-      localStorage.removeItem('isAuthenticated');
-      
-      console.log('✅ Logged out successfully');
+      console.log('✅ Logout successful');
     } catch (error) {
       console.error('❌ Logout error:', error);
-      // Still clear local state even if API call fails
       setUser(null);
-      setIsAuthenticated(false);
-      localStorage.removeItem('isAuthenticated');
     }
   };
 
   const value = {
     user,
-    isAuthenticated,
     loading,
     login,
-    register,
     logout,
-    checkAuth
+    register,
+    checkAuth,
+    activity
   };
 
   return (
@@ -159,12 +193,4 @@ export function AuthProvider({ children }) {
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within AuthProvider');
-  }
-  return context;
-}
+};

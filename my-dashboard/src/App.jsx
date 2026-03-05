@@ -1,83 +1,47 @@
-import React, { useRef } from 'react';
+// src/App.jsx - FIXED WITH ROUTES
+
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './App.css';
 
-import Topnavbar from './components/navbar/top/Topnavbar';
-import FunctionalMenu from './components/leftsidebar/Leftside';
-import AIAssistant from './components/aiAssistant/AIAssistant';
-import RMWHero from './components/hero/RMWHero';
+// Auth Components
+import Login from './components/auth/Login';
+import Register from './components/auth/Register';
 
-import { useAuth } from './context/AuthContext';
+// Protected Components
+import Dashboard from './pages/Dashboard';
+import ProtectedRoute from './components/ProtectedRoute';
+
+// Context
+import { AuthProvider } from './context/AuthContext';
 
 function App() {
-  const { user } = useAuth();
-
-  const trackingRef = useRef(null);
-
-  const handleStartTrack = () => {
-    if (trackingRef.current) {
-      trackingRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  };
-
-
   return (
-    <div className="App">
-
-      {/* Top Navbar */}
-      <Topnavbar />
-
-      {/* Optional: user info + logout (can move this into Topnavbar later) */}
-      <div
-        style={{
-          padding: '12px 20px',
-          background: '#f5f5f5',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
-        }}
-      >
-        <div>
-          <strong>Welcome, {user?.name}</strong>
-          <div style={{ fontSize: '13px', color: '#666' }}>
-            {user?.email}
-          </div>
-        </div>
-      </div>
-
-      {/* Left Sidebar */}
-      <FunctionalMenu />
-
-      {/* AI Assistant */}
-      <AIAssistant />
-
-      {/* Hero Section */}
-      <RMWHero onStartTrack={handleStartTrack} />
-
-      {/* Main Content Area */}
-      <main className="App-content" ref={trackingRef}>
-        <div className="content-container">
-          <h1>Global Tracking System</h1>
-          <p>Welcome to your dashboard. Select a menu item to get started.</p>
-
-          <div className="placeholder-content">
-            <div className="placeholder-card">
-              <h3>Quick Stats</h3>
-              <p>Your content will appear here</p>
-            </div>
-
-            <div className="placeholder-card">
-              <h3>Recent Activity</h3>
-              <p>Your content will appear here</p>
-            </div>
-
-            <div className="placeholder-card">
-              <h3>Notifications</h3>
-              <p>Your content will appear here</p>
-            </div>
-          </div>
-        </div>
-      </main>
-    </div>
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          {/* Public Routes */}
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          
+          {/* Protected Routes */}
+          <Route 
+            path="/dashboard" 
+            element={
+              <ProtectedRoute>
+                <Dashboard />
+              </ProtectedRoute>
+            } 
+          />
+          
+          {/* Default Route */}
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          
+          {/* 404 Route */}
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
   );
 }
 

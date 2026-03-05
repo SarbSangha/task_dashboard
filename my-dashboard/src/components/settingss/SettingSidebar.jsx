@@ -2,11 +2,14 @@ import React, { useState } from 'react';
 import './SettingSidebar.css';
 import LoginSecurityPanel from './settingsButtons/profilesetting/LoginSecurityPanel';
 import ProfileSettingsPanel from './settingsButtons/profilesetting/ProfileSettingPanel';
+import AdminApprovalsPanel from './settingsButtons/admin/AdminApprovalsPanel';
 import { useAuth } from '../../context/AuthContext';
 const SettingsSidebar = ({ isOpen, onClose }) => {
   const [showLoginSecurity, setShowLoginSecurity] = useState(false);
   const [showProfileSettings, setShowProfileSettings] = useState(false);
-  const {logout } = useAuth();
+  const [showAdminApprovals, setShowAdminApprovals] = useState(false);
+  const { user, logout } = useAuth();
+  const isAdmin = user?.isAdmin || (user?.position || '').toLowerCase() === 'admin' || (user?.roles || []).includes('admin');
   const handleLogout = async () => {
     await logout();
   };
@@ -25,6 +28,10 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
       <ProfileSettingsPanel
         isOpen={showProfileSettings}
         onClose={() => setShowProfileSettings(false)}
+      />
+      <AdminApprovalsPanel
+        isOpen={showAdminApprovals}
+        onClose={() => setShowAdminApprovals(false)}
       />
 
       {/* Main Settings Sidebar */}
@@ -64,6 +71,21 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
               <path d="M9.29 6.71a.996.996 0 000 1.41L13.17 12l-3.88 3.88a.996.996 0 101.41 1.41l4.59-4.59a.996.996 0 000-1.41L10.7 6.7c-.38-.39-1.02-.39-1.41-.01z"/>
             </svg>
           </button>
+
+          {isAdmin && (
+            <button
+              className="settings-menu-item"
+              onClick={() => setShowAdminApprovals(true)}
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 14l-4-4 1.41-1.41L11 12.17l4.59-4.58L17 9l-6 6z"/>
+              </svg>
+              <span>Admin Approvals</span>
+              <svg className="chevron-right" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9.29 6.71a.996.996 0 000 1.41L13.17 12l-3.88 3.88a.996.996 0 101.41 1.41l4.59-4.59a.996.996 0 000-1.41L10.7 6.7c-.38-.39-1.02-.39-1.41-.01z"/>
+              </svg>
+            </button>
+          )}
 
           {/* Dark Mode */}
           <button className="settings-menu-item">

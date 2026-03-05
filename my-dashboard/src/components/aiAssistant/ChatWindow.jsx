@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './ChatWindow.css';
+import { formatTimeIndia } from '../../utils/dateTime';
 
 const ChatWindow = ({ onClose, avatarPosition }) => {
   const [messages, setMessages] = useState([
@@ -111,7 +112,7 @@ const ChatWindow = ({ onClose, avatarPosition }) => {
               <div className="message-content">
                 <p>{message.text}</p>
                 <span className="message-time">
-                  {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {formatTimeIndia(message.timestamp)}
                 </span>
               </div>
             </div>

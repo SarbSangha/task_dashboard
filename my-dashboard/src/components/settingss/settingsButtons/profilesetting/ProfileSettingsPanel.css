@@ -395,3 +395,61 @@ Overlay
     top: 100px !important;
   }
 }
+
+.profile-status-message {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #d1fae5;
+}
+
+.admin-queue-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-queue-card {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.admin-queue-card h5 {
+  margin: 0 0 10px;
+  color: #fff;
+  font-size: 13px;
+}
+
+.admin-request-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.admin-request-item p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.admin-request-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.admin-request-actions button {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 11px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.admin-request-actions button.reject {
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fecaca;
+}

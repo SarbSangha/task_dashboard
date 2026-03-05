@@ -2,6 +2,8 @@
 import React, { useState } from 'react';
 import './SubmitSection.css';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
   const [formData, setFormData] = useState({
     comments: '',
@@ -21,17 +23,17 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
       
       for (const file of files) {
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('files', file);
 
-        const response = await fetch('http://localhost:8000/api/upload', {
+        const response = await fetch(`${API_BASE}/upload`, {
           method: 'POST',
           credentials: 'include',
           body: formData
         });
 
         const data = await response.json();
-        if (data.success) {
-          uploadedUrls.push(data.file_url);
+        if (data.success && data.data?.length > 0) {
+          uploadedUrls.push(data.data[0].url);
         }
       }
 
@@ -59,7 +61,7 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/tasks/${taskId}/submit`, {
+      const response = await fetch(`${API_BASE}/api/tasks/${taskId}/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

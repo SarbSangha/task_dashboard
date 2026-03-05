@@ -2,6 +2,9 @@
 import React, { useState, useEffect } from 'react';
 import SubmitSection from './SubmitSection';
 import './TaskDetailModal.css';
+import { formatDateIndia, formatDateTimeIndia } from '../../../../utils/dateTime';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const [taskDetails, setTaskDetails] = useState(null);
@@ -16,7 +19,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const fetchTaskDetails = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/tasks/inbox/${task.id}`, {
+      const response = await fetch(`${API_BASE}/api/tasks/inbox/${task.id}`, {
         credentials: 'include'
       });
       const data = await response.json();
@@ -35,7 +38,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
     
     setActionLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/tasks/${task.id}/start-work`, {
+      const response = await fetch(`${API_BASE}/api/tasks/${task.id}/start-work`, {
         method: 'POST',
         credentials: 'include'
       });
@@ -64,7 +67,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
     
     setActionLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/tasks/${task.id}/approve`, {
+      const response = await fetch(`${API_BASE}/api/tasks/${task.id}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -96,7 +99,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
     
     setActionLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/tasks/${task.id}/reject`, {
+      const response = await fetch(`${API_BASE}/api/tasks/${task.id}/reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -171,7 +174,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
 
             <div className="info-item">
               <label>Deadline:</label>
-              <span>{taskDetails.deadline ? new Date(taskDetails.deadline).toLocaleDateString() : 'No deadline'}</span>
+              <span>{taskDetails.deadline ? formatDateIndia(taskDetails.deadline) : 'No deadline'}</span>
             </div>
 
             <div className="info-item">
@@ -219,7 +222,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
                       <div className="journey-header">
                         <strong>{entry.action}</strong>
                         <span className="journey-time">
-                          {new Date(entry.timestamp).toLocaleString()}
+                          {formatDateTimeIndia(entry.timestamp)}
                         </span>
                       </div>
                       <p>{entry.comments}</p>

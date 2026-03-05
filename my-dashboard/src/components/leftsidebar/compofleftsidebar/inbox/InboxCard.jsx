@@ -1,115 +1,262 @@
-// components/Inbox/InboxCard.jsx
-import React from 'react';
+import React, { useState } from 'react';
 import './InboxCard.css';
+import { formatDateTimeIndia } from '../../../../utils/dateTime';
 
-const InboxCard = ({ task, onClick, onRefresh }) => {
-  const getStatusBadge = (status) => {
-    const badges = {
-      'pending': { color: '#fbbf24', icon: '⏳', text: 'Pending' },
-      'working': { color: '#3b82f6', icon: '⚙️', text: 'Working' },
-      'submitted': { color: '#8b5cf6', icon: '📤', text: 'Submitted' },
-      'approved': { color: '#22c55e', icon: '✓', text: 'Approved' },
-      'revision_required': { color: '#ef4444', icon: '↩️', text: 'Revision' },
-      'completed': { color: '#10b981', icon: '✓✓', text: 'Completed' }
-    };
-    return badges[status] || badges['pending'];
+const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
+  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [copiedKey, setCopiedKey] = useState('');
+  const [toastMessage, setToastMessage] = useState('');
+
+  const baseActions = (task.availableActions || []).filter((action) => {
+    if (action !== 'edit_task') return true;
+    return task.status === 'need_improvement';
+  });
+  const canShowStartTask =
+    task.myRole === 'assignee' &&
+    !['completed', 'cancelled', 'rejected'].includes(task.status);
+  const canShowSubmitTask =
+    task.myRole === 'assignee' &&
+    !['completed', 'cancelled', 'rejected', 'submitted'].includes(task.status);
+  const withStart = canShowStartTask && !baseActions.includes('start')
+    ? ['start', ...baseActions]
+    : baseActions;
+  const actions = canShowSubmitTask && !withStart.includes('submit')
+    ? [...withStart, 'submit']
+    : withStart;
+  const assignedNames = (task.assignedTo || []).map((x) => x.name).join(', ') || 'Unassigned';
+  const description = task.description || '';
+  const shortDescription = description.length > 120 ? `${description.slice(0, 120)}...` : description;
+  const requestTypeLabel = (() => {
+    const type = (task.taskType || 'task').toLowerCase();
+    if (type === 'task_approval') return 'Task Approval';
+    if (type === 'submission_result') return 'Submission Result';
+    return 'Task';
+  })();
+  const actionLabel = (action) => {
+    if (action === 'start') return 'Start Task';
+    if (action === 'submit') return 'Submit Task';
+    if (action === 'forward') return 'Forward To';
+    return action.replace(/_/g, ' ');
   };
-
-  const getPriorityColor = (priority) => {
-    const colors = {
-      'High': '#ef4444',
-      'Medium': '#f59e0b',
-      'Low': '#22c55e'
-    };
-    return colors[priority] || colors['Medium'];
+  const buildFileActionUrl = (file, action, fallbackName) => {
+    const params = new URLSearchParams();
+    if (file?.url) params.set('url', file.url);
+    if (file?.path) params.set('path', file.path);
+    if (action === 'download') {
+      params.set('filename', fallbackName || file?.originalName || file?.filename || 'download');
+    }
+    return `${apiBase}/api/files/${action}?${params.toString()}`;
   };
-
-  const formatDate = (dateString) => {
-    if (!dateString) return '';
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
+  const forceDownload = (file, filename) => {
+    const downloadUrl = buildFileActionUrl(file, 'download', filename);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
-
-  const statusBadge = getStatusBadge(task.status);
+  const copyToClipboard = async (text, key) => {
+    const value = `${text || ''}`.trim();
+    if (!value) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const temp = document.createElement('textarea');
+        temp.value = value;
+        document.body.appendChild(temp);
+        temp.select();
+        document.execCommand('copy');
+        document.body.removeChild(temp);
+      }
+      setCopiedKey(key);
+      setToastMessage('Copied to clipboard');
+      window.setTimeout(() => setCopiedKey(''), 1200);
+      window.setTimeout(() => setToastMessage(''), 1400);
+    } catch (error) {
+      console.warn('Copy failed:', error);
+    }
+  };
 
   return (
-    <div 
-      className={`inbox-card ${!task.isRead ? 'unread' : ''}`}
-      onClick={onClick}
-    >
-      {/* Card Header */}
+    <div className="inbox-card">
       <div className="card-header">
-        <div className="card-title-row">
-          <h3 className="card-title">{task.taskName}</h3>
-          {!task.isRead && <span className="unread-dot"></span>}
+        <div>
+          <h3 className="card-title">{task.title}</h3>
+          <p className="card-subtitle">{shortDescription}</p>
         </div>
-        <span 
-          className="status-badge" 
-          style={{ background: statusBadge.color }}
-        >
-          {statusBadge.icon} {statusBadge.text}
-        </span>
+        <div className="card-menu-wrap">
+          <button className="card-menu-btn" onClick={() => setMenuOpen((s) => !s)}>⋮</button>
+          {menuOpen && (
+            <div className="card-menu">
+              {actions.map((action) => (
+                <button
+                  key={action}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    if (action === 'chat') onOpenChat(task);
+                    else onTaskAction(task, action);
+                  }}
+                >
+                  {actionLabel(action)}
+                </button>
+              ))}
+              {actions.length === 0 && <span className="card-menu-empty">No actions</span>}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Card Content */}
-      <div className="card-content">
-        <div className="card-row">
-          <span className="label">Project:</span>
-          <span className="value">{task.projectName}</span>
-        </div>
-        
-        <div className="card-row">
-          <span className="label">From:</span>
-          <span className="value">
-            {task.senderName || 'Unknown'} 
-            {task.senderDepartment && ` (${task.senderDepartment})`}
-          </span>
-        </div>
+      <div className="card-grid">
+        <span><strong>Task ID:</strong> {task.taskNumber || '-'}</span>
+        <span><strong>Project ID:</strong> {task.projectId || '-'}</span>
+        <span><strong>Creator:</strong> {task.creator?.name || 'Unknown'} ({task.creator?.department || 'N/A'})</span>
+        <span><strong>Status:</strong> {(task.status || '').replace(/_/g, ' ')}</span>
+        <span><strong>Assigned To:</strong> {assignedNames}</span>
+        <span><strong>Request Type:</strong> {requestTypeLabel}</span>
+        <span><strong>Chat:</strong> {task.chatCount || 0}</span>
+        <span><strong>Created:</strong> {task.createdAt ? formatDateTimeIndia(task.createdAt) : '-'}</span>
+        <span><strong>Updated:</strong> {task.updatedAt ? formatDateTimeIndia(task.updatedAt) : '-'}</span>
+      </div>
 
-        <div className="card-row">
-          <span className="label">Priority:</span>
-          <span 
-            className="priority-badge" 
-            style={{ color: getPriorityColor(task.priority) }}
-          >
-            {task.priority}
-          </span>
-        </div>
-
-        {task.deadline && (
-          <div className="card-row">
-            <span className="label">Deadline:</span>
-            <span className="value deadline">
-              {new Date(task.deadline).toLocaleDateString()}
-            </span>
+      {expanded && (
+        <div className="card-details">
+          <div><strong>Project Name:</strong> {task.projectName || '-'}</div>
+          <div><strong>Customer Name:</strong> {task.customerName || '-'}</div>
+          <div className="full-span"><strong>Reference:</strong> {task.reference || '-'}</div>
+          <div className="full-span">
+            <div className="detail-head">
+              <strong>Task Details:</strong>
+              <button
+                type="button"
+                className="mini-action-btn"
+                onClick={() => copyToClipboard(task.description, 'task-details')}
+                disabled={!task.description}
+              >
+                {copiedKey === 'task-details' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <div className="forward-item">{task.description || '-'}</div>
           </div>
-        )}
+          <div><strong>Deadline:</strong> {task.deadline ? formatDateTimeIndia(task.deadline) : 'Not set'}</div>
+          <div><strong>Priority:</strong> {task.priority || '-'}</div>
+          <div><strong>Request Type:</strong> {requestTypeLabel}</div>
+          <div><strong>Tag:</strong> {task.taskTag || '-'}</div>
+          <div><strong>From Department:</strong> {task.fromDepartment || '-'}</div>
+          <div><strong>To Department:</strong> {task.toDepartment || '-'}</div>
+          <div><strong>Workflow Stage:</strong> {task.workflowStage || '-'}</div>
+          <div><strong>Created By:</strong> {task.creator?.name || '-'}</div>
+          <div><strong>Last Forwarded By:</strong> {task.lastForwardedBy || '-'}</div>
+          <div className="forward-history">
+            <strong>Task Links:</strong>
+            {(task.links || []).length === 0 && <div className="forward-item">-</div>}
+            {(task.links || []).map((link, idx) => (
+              <div key={`${link}-${idx}`} className="forward-item">
+                <span>{link}</span>
+                <span className="attachment-actions">
+                  <a href={link} target="_blank" rel="noreferrer">Open</a>
+                  <button
+                    type="button"
+                    className="mini-action-btn"
+                    onClick={() => copyToClipboard(link, `task-link-${idx}`)}
+                  >
+                    {copiedKey === `task-link-${idx}` ? 'Copied' : 'Copy Link'}
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="forward-history">
+            <strong>Task Attachments:</strong>
+            {(task.attachments || []).length === 0 && <div className="forward-item">No attachments</div>}
+            {(task.attachments || []).map((file, idx) => (
+              <div key={`${file?.url || file?.filename || idx}-${idx}`} className="forward-item">
+                <span>{file?.originalName || file?.filename || `Attachment ${idx + 1}`}</span>
+                <span className="attachment-actions">
+                  <a href={buildFileActionUrl(file, 'open')} target="_blank" rel="noreferrer">Open</a>
+                  <button
+                    type="button"
+                    className="mini-action-btn"
+                    onClick={() => forceDownload(file, file?.originalName || file?.filename || `attachment-${idx + 1}`)}
+                  >
+                    Download
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+          {(task.forwardHistory || []).length > 0 && (
+            <div className="forward-history">
+              <strong>Forward History:</strong>
+              {(task.forwardHistory || []).map((f) => (
+                <div key={f.id} className="forward-item">
+                  {f.fromUser} ({f.fromDepartment || '-'}) → {f.toUser || f.toDepartment || '-'} {f.createdAt ? `| ${formatDateTimeIndia(f.createdAt)}` : ''}
+                </div>
+              ))}
+            </div>
+          )}
+          {(task.resultText || (task.resultLinks || []).length > 0 || (task.resultAttachments || []).length > 0) && (
+            <div className="forward-history">
+              <div className="detail-head">
+                <strong>Submitted Result:</strong>
+                <button
+                  type="button"
+                  className="mini-action-btn"
+                  onClick={() => copyToClipboard(task.resultText, 'result-text')}
+                  disabled={!task.resultText}
+                >
+                  {copiedKey === 'result-text' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              {task.resultText && <div className="forward-item">{task.resultText}</div>}
+              {(task.resultLinks || []).map((link, idx) => (
+                <div key={`${link}-${idx}`} className="forward-item">
+                  <span>{link}</span>
+                  <span className="attachment-actions">
+                    <a href={link} target="_blank" rel="noreferrer">Open</a>
+                    <button
+                      type="button"
+                      className="mini-action-btn"
+                      onClick={() => copyToClipboard(link, `result-link-${idx}`)}
+                    >
+                      {copiedKey === `result-link-${idx}` ? 'Copied' : 'Copy Link'}
+                    </button>
+                  </span>
+                </div>
+              ))}
+              {(task.resultAttachments || []).map((file, idx) => (
+                <div key={`${file?.url || file?.filename || idx}-${idx}`} className="forward-item">
+                  <span>{file?.originalName || file?.filename || `Attachment ${idx + 1}`}</span>
+                  <span className="attachment-actions">
+                    <a href={buildFileActionUrl(file, 'open')} target="_blank" rel="noreferrer">Open</a>
+                    <button
+                      type="button"
+                      className="mini-action-btn"
+                      onClick={() => forceDownload(file, file?.originalName || file?.filename || `result-attachment-${idx + 1}`)}
+                    >
+                      Download
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
-        {task.taskDetails && (
-          <p className="task-description">
-            {task.taskDetails.substring(0, 100)}
-            {task.taskDetails.length > 100 && '...'}
-          </p>
-        )}
-      </div>
-
-      {/* Card Footer */}
       <div className="card-footer">
-        <span className="received-time">
-          📅 {formatDate(task.receivedAt)}
-        </span>
-        <span className="view-details">View Details →</span>
+        <span className="seenby">Seen by: {(task.seenBy || []).map((s) => s.name).join(', ') || 'None'}</span>
+        <div className="card-footer-actions">
+          <button className="track-btn" onClick={() => setExpanded((s) => !s)}>
+            {expanded ? 'Hide Details' : 'Show Details'}
+          </button>
+          <button className="track-btn" onClick={() => onTrackClick(task)}>Track</button>
+        </div>
       </div>
+      {toastMessage && <div className="copy-toast">{toastMessage}</div>}
     </div>
   );
 };

@@ -1,9 +1,12 @@
 // src/components/leftsidebar/compofleftsidebar/outbox/OutboxModal.jsx
 import './Outbox.css';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import OutboxTaskCard from './OutboxTaskCard';
+import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
+import { taskAPI, draftAPI } from '../../../../services/api';
+import { formatDateIndia, formatTimeIndia } from '../../../../utils/dateTime';
 
-const OutboxModal = ({ isOpen, onClose }) => {
+const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
   const [tasks, setTasks] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -12,26 +15,40 @@ const OutboxModal = ({ isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState('all-dispatched');
   const [filterStatus, setFilterStatus] = useState('all');
   const [currentUser, setCurrentUser] = useState(null); // NEW: Track current user
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
+  const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
+  const [workflowOpen, setWorkflowOpen] = useState(false);
+  const fetchInFlightRef = useRef(false);
 
   // Fetch data when modal opens
   useEffect(() => {
+    if (!isOpen) return undefined;
+
+    fetchData(false, { includeDrafts: activeTab === 'drafts' });
+    // Auto-refresh every 30 seconds while modal is open (reduced API load)
+    const interval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      fetchData(true, { includeDrafts: activeTab === 'drafts' });
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [isOpen, activeTab]);
+
+  useEffect(() => {
     if (isOpen) {
-      fetchData();
-      // Auto-refresh every 5 seconds while modal is open
-      const interval = setInterval(() => fetchData(true), 5000);
-      return () => clearInterval(interval);
+      setIsMinimized(false);
+      setIsMaximized(false);
     }
   }, [isOpen]);
 
-  const fetchData = async (silent = false) => {
+  const fetchData = async (silent = false, { includeDrafts = false } = {}) => {
+    if (fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
     try {
       if (!silent) setLoading(true);
       
-      // UPDATED: Fetch only current user's tasks from /outbox endpoint
-      const tasksResponse = await fetch('http://localhost:8000/api/tasks/outbox', {
-        credentials: 'include' // Important: Include credentials for session
-      });
-      const tasksData = await tasksResponse.json();
+      const tasksData = await taskAPI.getOutbox();
       
       if (tasksData.success) {
         setTasks(tasksData.data || []);
@@ -41,26 +58,20 @@ const OutboxModal = ({ isOpen, onClose }) => {
         }
         console.log(`✅ Loaded ${tasksData.count} tasks for user: ${tasksData.user?.email}`);
       } else {
-        // Handle authentication errors
-        if (tasksResponse.status === 401) {
-          setError('Please log in to view your outbox');
-        } else {
-          setError('Failed to load tasks');
-        }
+        setError('Failed to load tasks');
       }
 
-      // Fetch drafts (keep existing logic)
-      try {
-        const draftsResponse = await fetch('http://localhost:8000/api/drafts', {
-          credentials: 'include'
-        });
-        const draftsData = await draftsResponse.json();
-        if (draftsData.success) {
-          setDrafts(draftsData.data || []);
+      // Fetch drafts only when drafts tab is active or when explicitly requested
+      if (includeDrafts) {
+        try {
+          const draftsData = await draftAPI.getDrafts();
+          if (draftsData.success) {
+            setDrafts(draftsData.data || []);
+          }
+        } catch (err) {
+          console.warn('Drafts not available:', err);
+          setDrafts([]);
         }
-      } catch (err) {
-        console.warn('Drafts not available:', err);
-        setDrafts([]);
       }
       
       setError(null);
@@ -69,13 +80,25 @@ const OutboxModal = ({ isOpen, onClose }) => {
       if (!silent) setError('Failed to load tasks. Please check your connection.');
     } finally {
       if (!silent) setLoading(false);
+      fetchInFlightRef.current = false;
     }
   };
 
-  const handleRefresh = () => fetchData();
+  const handleRefresh = () => fetchData(false, { includeDrafts: activeTab === 'drafts' });
 
   const handleCardClick = (taskId) => {
     setExpandedTaskId(expandedTaskId === taskId ? null : taskId);
+  };
+
+  const handleTaskAction = (task, action) => {
+    if (action === 'edit_task' && onEditTask) {
+      onEditTask(task);
+    }
+  };
+
+  const handleTrackWorkflow = (task) => {
+    setSelectedTaskForWorkflow(task);
+    setWorkflowOpen(true);
   };
 
   const getFilteredData = () => {
@@ -83,19 +106,22 @@ const OutboxModal = ({ isOpen, onClose }) => {
     
     switch (activeTab) {
       case 'all-dispatched':
-        data = tasks;
+        data = tasks.filter((t) => t.status !== 'draft');
         break;
       case 'awaiting':
-        data = tasks.filter(t => t.status === 'pending');
+        data = tasks.filter(t => ['pending', 'forwarded', 'assigned'].includes(t.status));
         break;
       case 'needs-reimprovement':
-        data = tasks.filter(t => t.status === 'cancelled' || t.status === 'needs_improvement');
+        data = tasks.filter(t => t.status === 'need_improvement');
         break;
       case 'drafts':
-        data = drafts;
+        data = [
+          ...tasks.filter((t) => t.status === 'draft'),
+          ...drafts
+        ];
         break;
       default:
-        data = tasks;
+        data = tasks.filter((t) => t.status !== 'draft');
     }
 
     if (filterStatus !== 'all') {
@@ -107,26 +133,24 @@ const OutboxModal = ({ isOpen, onClose }) => {
 
   const filteredData = getFilteredData();
   const allCount = tasks.length;
-  const pendingCount = tasks.filter(t => t.status === 'pending').length;
+  const pendingCount = tasks.filter(t => ['pending', 'forwarded', 'assigned'].includes(t.status)).length;
   const inProgressCount = tasks.filter(t => t.status === 'in_progress').length;
+  const submittedCount = tasks.filter(t => t.status === 'submitted').length;
   const completedCount = tasks.filter(t => t.status === 'completed').length;
 
   const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    return formatDateIndia(dateString);
   };
 
   const formatTime = (dateString) => {
-    if (!dateString) return 'N/A';
-    const date = new Date(dateString);
-    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    return formatTimeIndia(dateString);
   };
 
   const getStatusClass = (status) => {
     switch (status?.toLowerCase()) {
       case 'pending': return 'status-pending';
       case 'in_progress': return 'status-in-progress';
+      case 'submitted': return 'status-in-progress';
       case 'completed': return 'status-completed';
       case 'cancelled': return 'status-cancelled';
       case 'draft': return 'status-draft';
@@ -136,15 +160,35 @@ const OutboxModal = ({ isOpen, onClose }) => {
 
   if (!isOpen) return null;
 
+  const handleToggleMinimize = () => {
+    if (isMinimized) {
+      setIsMinimized(false);
+      return;
+    }
+
+    setIsMaximized(false);
+    setIsMinimized(true);
+  };
+
+  const handleToggleMaximize = () => {
+    if (isMinimized) {
+      setIsMinimized(false);
+      setIsMaximized(true);
+      return;
+    }
+
+    setIsMaximized((prev) => !prev);
+  };
+
   return (
     <>
       {/* Backdrop */}
-      <div className="outbox-modal-backdrop" onClick={onClose}></div>
+      <div className={`outbox-modal-backdrop ${isMinimized ? 'disabled' : ''}`} onClick={!isMinimized ? onClose : undefined}></div>
 
       {/* Modal Content */}
-      <div className="outbox-modal">
+      <div className={`outbox-modal ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}>
         {/* Main Header with Close Button */}
-        <div className="outbox-main-header">
+        <div className="outbox-main-header" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
           <div className="header-title-section">
             <h1 className="outbox-main-title">MY OUTBOX</h1>
             {/* NEW: Display current user info */}
@@ -154,12 +198,21 @@ const OutboxModal = ({ isOpen, onClose }) => {
               </span>
             )}
           </div>
-          <button className="outbox-close-btn" onClick={onClose}>
-            ✕
-          </button>
+          <div className="outbox-window-controls">
+            <button className="outbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title={isMinimized ? 'Restore' : 'Minimize'}>
+              {isMinimized ? '▢' : '─'}
+            </button>
+            <button className="outbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMaximize(); }} title={isMaximized ? 'Restore Window' : 'Maximize'}>
+              {isMaximized ? '❐' : '□'}
+            </button>
+            <button className="outbox-close-btn" onClick={(e) => { e.stopPropagation(); onClose(); }}>
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* Top Tab Navigation */}
+        {!isMinimized && (
         <div className="outbox-top-tabs">
           <button
             className={`top-tab-btn ${activeTab === 'all-dispatched' ? 'active' : ''}`}
@@ -186,8 +239,10 @@ const OutboxModal = ({ isOpen, onClose }) => {
             Drafts
           </button>
         </div>
+        )}
 
         {/* Secondary Filters */}
+        {!isMinimized && (
         <div className="outbox-secondary-filters">
           <div className="filter-buttons-group">
             <button 
@@ -209,6 +264,12 @@ const OutboxModal = ({ isOpen, onClose }) => {
               In Progress ({inProgressCount})
             </button>
             <button 
+              className={`secondary-filter-btn ${filterStatus === 'submitted' ? 'active' : ''}`}
+              onClick={() => setFilterStatus('submitted')}
+            >
+              Submitted ({submittedCount})
+            </button>
+            <button 
               className={`secondary-filter-btn ${filterStatus === 'completed' ? 'active' : ''}`}
               onClick={() => setFilterStatus('completed')}
             >
@@ -220,8 +281,10 @@ const OutboxModal = ({ isOpen, onClose }) => {
             🔄 Refresh
           </button>
         </div>
-
+        )}
+        
         {/* Content */}
+        {!isMinimized && (
         <div className="outbox-content">
           {loading && tasks.length === 0 ? (
             <div className="outbox-loading">
@@ -250,6 +313,8 @@ const OutboxModal = ({ isOpen, onClose }) => {
                   task={task}
                   isExpanded={expandedTaskId === task.id}
                   onClick={handleCardClick}
+                  onTaskAction={handleTaskAction}
+                  onTrackClick={handleTrackWorkflow}
                   formatDate={formatDate}
                   formatTime={formatTime}
                   getStatusClass={getStatusClass}
@@ -258,7 +323,17 @@ const OutboxModal = ({ isOpen, onClose }) => {
             </div>
           )}
         </div>
+        )}
       </div>
+
+      <TaskWorkflow
+        task={selectedTaskForWorkflow}
+        isOpen={workflowOpen}
+        onClose={() => {
+          setWorkflowOpen(false);
+          setSelectedTaskForWorkflow(null);
+        }}
+      />
     </>
   );
 };

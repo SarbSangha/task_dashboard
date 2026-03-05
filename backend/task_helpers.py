@@ -1,6 +1,7 @@
 # task_helpers.py - Helper functions for task operations
 from sqlalchemy.orm import Session
-from models_new import Task, TaskParticipant, User, ParticipantRole, TaskStatus
+from sqlalchemy import func
+from models_new import Task, TaskParticipant, User, ParticipantRole, TaskStatus, IdSequence
 from typing import List, Optional
 from datetime import datetime
 
@@ -28,7 +29,7 @@ class TaskHelpers:
         
         tasks = query.order_by(Task.created_at.desc()).all()
         
-        print(f"📤 Found {len(tasks)} sent tasks for user {user_id}")
+        print(f"Found {len(tasks)} sent tasks for user {user_id}")
         return tasks
     
     
@@ -49,6 +50,7 @@ class TaskHelpers:
             TaskParticipant.user_id == user_id,
             TaskParticipant.role.in_([ParticipantRole.ASSIGNEE, ParticipantRole.REVIEWER]),
             TaskParticipant.is_active == True,
+            Task.creator_id != user_id,
             Task.is_deleted == False
         )
         
@@ -57,19 +59,21 @@ class TaskHelpers:
         
         tasks = query.order_by(Task.created_at.desc()).all()
         
-        print(f"📥 Found {len(tasks)} received tasks for user {user_id}")
+        print(f"Found {len(tasks)} received tasks for user {user_id}")
         return tasks
     
     
     @staticmethod
     def get_unread_count(user_id: int, db: Session) -> int:
         """Get count of unread tasks for a user"""
-        count = db.query(TaskParticipant).join(Task).filter(
+        count = db.query(func.count(func.distinct(TaskParticipant.task_id))).join(Task).filter(
             TaskParticipant.user_id == user_id,
             TaskParticipant.is_read == False,
             TaskParticipant.is_active == True,
+            TaskParticipant.role != ParticipantRole.CREATOR,
+            Task.creator_id != user_id,
             Task.is_deleted == False
-        ).count()
+        ).scalar() or 0
         
         return count
     
@@ -87,14 +91,14 @@ class TaskHelpers:
                 participant.is_read = True
                 participant.read_at = datetime.utcnow()
                 db.commit()
-                print(f"✅ Task {task_id} marked as read by user {user_id}")
+                print(f"Task {task_id} marked as read by user {user_id}")
                 return True
             
             return False
             
         except Exception as e:
             db.rollback()
-            print(f"❌ Error marking task as read: {str(e)}")
+            print(f"Error marking task as read: {str(e)}")
             return False
     
     
@@ -115,7 +119,7 @@ class TaskHelpers:
             ).first()
             
             if existing:
-                print(f"⚠️ Participant already exists")
+                print("Participant already exists")
                 return False
             
             participant = TaskParticipant(
@@ -130,12 +134,12 @@ class TaskHelpers:
             db.add(participant)
             db.commit()
             
-            print(f"✅ Added participant: User {user_id} as {role.value} to task {task_id}")
+            print(f"Added participant: User {user_id} as {role.value} to task {task_id}")
             return True
             
         except Exception as e:
             db.rollback()
-            print(f"❌ Error adding participant: {str(e)}")
+            print(f"Error adding participant: {str(e)}")
             return False
     
     
@@ -166,16 +170,21 @@ class TaskHelpers:
     @staticmethod
     def generate_task_number(db: Session) -> str:
         """Generate unique task number: TASK-YYYY-XXXX"""
-        year = datetime.now().year
-        
-        # Get count of tasks this year
-        count = db.query(Task).filter(
-            Task.task_number.like(f"TASK-{year}-%")
-        ).count()
-        
-        next_number = count + 1
-        task_number = f"TASK-{year}-{next_number:04d}"
-        
+        year = datetime.utcnow().year
+        key = f"task_number:{year}"
+        seq = db.query(IdSequence).filter(IdSequence.sequence_key == key).first()
+        if not seq:
+            seq = IdSequence(
+                sequence_key=key,
+                prefix="TASK",
+                year=year,
+                next_value=1,
+            )
+            db.add(seq)
+            db.flush()
+
+        task_number = f"{seq.prefix}-{year}-{seq.next_value:05d}"
+        seq.next_value += 1
         return task_number
     
     
@@ -211,33 +220,41 @@ class TaskHelpers:
         ).count()
         
         # Received tasks
-        received_total = db.query(TaskParticipant).join(Task).filter(
+        received_total = db.query(func.count(func.distinct(TaskParticipant.task_id))).join(Task).filter(
             TaskParticipant.user_id == user_id,
             TaskParticipant.is_active == True,
+            TaskParticipant.role != ParticipantRole.CREATOR,
+            Task.creator_id != user_id,
             Task.is_deleted == False
-        ).count()
+        ).scalar() or 0
         
         # Unread
         unread = TaskHelpers.get_unread_count(user_id, db)
         
         # By status (received tasks)
-        pending = db.query(Task).join(TaskParticipant).filter(
+        pending = db.query(func.count(func.distinct(Task.id))).join(TaskParticipant).filter(
             TaskParticipant.user_id == user_id,
+            TaskParticipant.role != ParticipantRole.CREATOR,
+            Task.creator_id != user_id,
             Task.status == TaskStatus.PENDING,
             Task.is_deleted == False
-        ).count()
+        ).scalar() or 0
         
-        in_progress = db.query(Task).join(TaskParticipant).filter(
+        in_progress = db.query(func.count(func.distinct(Task.id))).join(TaskParticipant).filter(
             TaskParticipant.user_id == user_id,
+            TaskParticipant.role != ParticipantRole.CREATOR,
+            Task.creator_id != user_id,
             Task.status == TaskStatus.IN_PROGRESS,
             Task.is_deleted == False
-        ).count()
+        ).scalar() or 0
         
-        completed = db.query(Task).join(TaskParticipant).filter(
+        completed = db.query(func.count(func.distinct(Task.id))).join(TaskParticipant).filter(
             TaskParticipant.user_id == user_id,
+            TaskParticipant.role != ParticipantRole.CREATOR,
+            Task.creator_id != user_id,
             Task.status == TaskStatus.COMPLETED,
             Task.is_deleted == False
-        ).count()
+        ).scalar() or 0
         
         return {
             "sent": {
