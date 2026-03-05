@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: task-dashboard-api
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
+    autoDeploy: true
+
+staticSites:
+  - name: task-dashboard-web
+    rootDir: my-dashboard
+    buildCommand: npm install && npm run build
+    publishPath: dist
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_URL
+        sync: false
