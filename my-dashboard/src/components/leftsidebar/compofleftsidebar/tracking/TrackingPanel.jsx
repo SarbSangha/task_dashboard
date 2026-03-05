@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import TaskWorkflow from '../../taskWorkflow/TaskWorkflow';
-import { taskAPI } from '../../../services/api';
-import TaskChatPanel from './TaskChatPanel';
+import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
+import { taskAPI } from '../../../../services/api';
+import TaskChatPanel from '../messagesystem/TaskChatPanel';
 import './TrackingPanel.css';
 
 const TrackingPanel = ({ isOpen, onClose }) => {

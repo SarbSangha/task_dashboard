@@ -1,5 +1,5 @@
 import React from 'react';
-import './MenuButton.css';
+import '../MenuButton.css';
 
 const MessageSystemButton = ({ isActive, onClick }) => {
   return (

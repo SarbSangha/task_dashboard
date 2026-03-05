@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import InboxCard from './InboxCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
-import TaskChatPanel from '../TaskChatPanel';
+import TaskChatPanel from '../messagesystem/TaskChatPanel';
 import { fileAPI, taskAPI } from '../../../../services/api';
 import { useAuth } from '../../../../context/AuthContext';
 import './InboxPanel.css';
@@ -331,105 +331,104 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
 
   return (
     <>
-      <div className={`inbox-panel-overlay ${isMinimized ? 'disabled' : ''}`} onClick={!isMinimized ? onClose : undefined}>
-        <div className={`inbox-panel-container ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`} onClick={(e) => e.stopPropagation()}>
-          {/* Header */}
-          <div className="inbox-panel-header" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
-            <h2>📥 Inbox</h2>
-            <div className="inbox-window-controls">
-              <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title={isMinimized ? 'Restore' : 'Minimize'}>
-                {isMinimized ? '▢' : '─'}
-              </button>
-              <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMaximize(); }} title={isMaximized ? 'Restore Window' : 'Maximize'}>
-                {isMaximized ? '❐' : '□'}
-              </button>
-              <button className="inbox-close-btn" onClick={(e) => { e.stopPropagation(); onClose(); }}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+      <div className={`inbox-panel-overlay ${isMinimized ? 'disabled' : ''}`} onClick={!isMinimized ? onClose : undefined} />
+      <div className={`inbox-panel-container ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`} onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="inbox-panel-header" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
+          <h2>📥 Inbox</h2>
+          <div className="inbox-window-controls">
+            <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title={isMinimized ? 'Restore' : 'Minimize'}>
+              {isMinimized ? '▢' : '─'}
+            </button>
+            <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMaximize(); }} title={isMaximized ? 'Restore Window' : 'Maximize'}>
+              {isMaximized ? '❐' : '□'}
+            </button>
+            <button className="inbox-close-btn" onClick={(e) => { e.stopPropagation(); onClose(); }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Filters */}
+        {!isMinimized && (
+        <div className="inbox-filters">
+          <button 
+            className={`filter-btn ${filter === 'all' ? 'active' : ''}`}
+            onClick={() => setFilter('all')}
+          >
+            All ({tasks.length})
+          </button>
+          <button 
+            className={`filter-btn ${filter === 'unread' ? 'active' : ''}`}
+            onClick={() => setFilter('unread')}
+          >
+            Unread ({tasks.filter(t => !t.isRead).length})
+          </button>
+          <button 
+            className={`filter-btn ${filter === 'working' ? 'active' : ''}`}
+            onClick={() => setFilter('working')}
+          >
+            Working ({tasks.filter(t => ['assigned', 'in_progress', 'need_improvement'].includes(t.status)).length})
+          </button>
+          <button 
+            className={`filter-btn ${filter === 'submitted' ? 'active' : ''}`}
+            onClick={() => setFilter('submitted')}
+          >
+            Submitted ({tasks.filter(t => t.status === 'submitted' && t.submittedBy === user?.id).length})
+          </button>
+          <button 
+            className={`filter-btn ${filter === 'result' ? 'active' : ''}`}
+            onClick={() => setFilter('result')}
+          >
+            Result ({tasks.filter(t => t.status === 'submitted' && t.creator?.id === user?.id).length})
+          </button>
+          <button 
+            className={`filter-btn ${filter === 'need_improvement' ? 'active' : ''}`}
+            onClick={() => setFilter('need_improvement')}
+          >
+            Need Improvement ({tasks.filter(t => t.status === 'need_improvement').length})
+          </button>
+          <button 
+            className={`filter-btn ${filter === 'final_result' ? 'active' : ''}`}
+            onClick={() => setFilter('final_result')}
+          >
+            Final Result ({tasks.filter(t => ['approved', 'completed'].includes(t.status) && t.creator?.id === user?.id).length})
+          </button>
+        </div>
+        )}
+
+        {/* Task List */}
+        {!isMinimized && (
+        <div className="inbox-panel-content">
+          {loading ? (
+            <div className="inbox-loading">
+              <div className="spinner"></div>
+              <p>Loading tasks...</p>
             </div>
-          </div>
-
-          {/* Filters */}
-          {!isMinimized && (
-          <div className="inbox-filters">
-            <button 
-              className={`filter-btn ${filter === 'all' ? 'active' : ''}`}
-              onClick={() => setFilter('all')}
-            >
-              All ({tasks.length})
-            </button>
-            <button 
-              className={`filter-btn ${filter === 'unread' ? 'active' : ''}`}
-              onClick={() => setFilter('unread')}
-            >
-              Unread ({tasks.filter(t => !t.isRead).length})
-            </button>
-            <button 
-              className={`filter-btn ${filter === 'working' ? 'active' : ''}`}
-              onClick={() => setFilter('working')}
-            >
-              Working ({tasks.filter(t => ['assigned', 'in_progress', 'need_improvement'].includes(t.status)).length})
-            </button>
-            <button 
-              className={`filter-btn ${filter === 'submitted' ? 'active' : ''}`}
-              onClick={() => setFilter('submitted')}
-            >
-              Submitted ({tasks.filter(t => t.status === 'submitted' && t.submittedBy === user?.id).length})
-            </button>
-            <button 
-              className={`filter-btn ${filter === 'result' ? 'active' : ''}`}
-              onClick={() => setFilter('result')}
-            >
-              Result ({tasks.filter(t => t.status === 'submitted' && t.creator?.id === user?.id).length})
-            </button>
-            <button 
-              className={`filter-btn ${filter === 'need_improvement' ? 'active' : ''}`}
-              onClick={() => setFilter('need_improvement')}
-            >
-              Need Improvement ({tasks.filter(t => t.status === 'need_improvement').length})
-            </button>
-            <button 
-              className={`filter-btn ${filter === 'final_result' ? 'active' : ''}`}
-              onClick={() => setFilter('final_result')}
-            >
-              Final Result ({tasks.filter(t => ['approved', 'completed'].includes(t.status) && t.creator?.id === user?.id).length})
-            </button>
-          </div>
-          )}
-
-          {/* Task List */}
-          {!isMinimized && (
-          <div className="inbox-panel-content">
-            {loading ? (
-              <div className="inbox-loading">
-                <div className="spinner"></div>
-                <p>Loading tasks...</p>
-              </div>
-            ) : filteredTasks.length === 0 ? (
-              <div className="inbox-empty">
-                <div className="empty-icon">📭</div>
-                <h3>No tasks found</h3>
-                <p>You're all caught up!</p>
-              </div>
-            ) : (
-              <div className="inbox-task-list">
-                {filteredTasks.map(task => (
-                  <InboxCard
-                    key={task.id}
-                    task={task}
-                    onTrackClick={handleTrackClick}
-                    onTaskAction={runTaskAction}
-                    onOpenChat={(t) => setChatTask(t)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+          ) : filteredTasks.length === 0 ? (
+            <div className="inbox-empty">
+              <div className="empty-icon">📭</div>
+              <h3>No tasks found</h3>
+              <p>You're all caught up!</p>
+            </div>
+          ) : (
+            <div className="inbox-task-list">
+              {filteredTasks.map(task => (
+                <InboxCard
+                  key={task.id}
+                  task={task}
+                  onTrackClick={handleTrackClick}
+                  onTaskAction={runTaskAction}
+                  onOpenChat={(t) => setChatTask(t)}
+                />
+              ))}
+            </div>
           )}
         </div>
+        )}
       </div>
 
       {/* Task Workflow Visualization */}

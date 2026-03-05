@@ -1,16 +1,23 @@
+:root {
+  --leftbar-popup-top-offset: 120px;
+}
+
 .task-chat-overlay {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.5);
   z-index: 2147483000;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding-top: var(--leftbar-popup-top-offset);
 }
 
 .task-chat-panel {
-  width: min(900px, 95vw);
-  max-height: 85vh;
+  width: 95%;
+  max-width: 1400px;
+  height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
+  max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   overflow: hidden;
   display: flex;
   flex-direction: column;

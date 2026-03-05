@@ -1,3 +1,7 @@
+:root {
+  --leftbar-popup-top-offset: 120px;
+}
+
 .admin-queue-overlay {
   position: fixed;
   inset: 0;
@@ -7,11 +11,13 @@
 
 .admin-queue-panel {
   position: fixed;
-  top: 120px;
+  top: var(--leftbar-popup-top-offset);
   left: 50%;
   transform: translateX(-50%);
-  width: min(1200px, 95vw);
-  height: min(80vh, 780px);
+  width: 95%;
+  max-width: 1400px;
+  height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
+  max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   background: #1f2d45;
   border: 1px solid #334766;
   border-radius: 14px;
@@ -66,6 +72,12 @@
   display: grid;
   grid-template-columns: 1.2fr 1fr;
   gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .admin-queue-content {
+    grid-template-columns: 1fr;
+  }
 }
 
 .admin-queue-item {

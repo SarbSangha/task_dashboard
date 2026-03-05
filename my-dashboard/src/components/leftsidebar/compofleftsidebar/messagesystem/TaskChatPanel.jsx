@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { taskAPI } from '../../../services/api';
+import { taskAPI } from '../../../../services/api';
 import './TaskChatPanel.css';
-import { formatDateTimeIndia } from '../../../utils/dateTime';
+import { formatDateTimeIndia } from '../../../../utils/dateTime';
 
 const COMMENT_TYPES = ['general', 'suggestion', 'need_improvement', 'approved'];
 

@@ -10,11 +10,17 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
 
   useEffect(() => {
     if (isOpen) {
-      setIsMinimized(false);
-      setIsMaximized(false);
       setActiveTab(initialTab || 'overview');
     }
   }, [isOpen, initialTab]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      // Reset layout state while closed so next open always starts centered.
+      setIsMinimized(false);
+      setIsMaximized(false);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

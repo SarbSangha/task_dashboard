@@ -11,16 +11,13 @@
   bottom: 0;
   background: rgba(0, 0, 0, 0.5);
   z-index: 1000;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  padding-top: var(--leftbar-popup-top-offset);
   animation: fadeIn 0.34s cubic-bezier(0.22, 1, 0.36, 1);
   transition: opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .inbox-panel-overlay.disabled {
   background: transparent;
+  pointer-events: none;
 }
 
 @keyframes fadeIn {
@@ -29,8 +26,12 @@
 }
 
 .inbox-panel-container {
-  width: 900px;
-  max-width: 95vw;
+  position: fixed;
+  top: var(--leftbar-popup-top-offset);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 95%;
+  max-width: 1400px;
   height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   background: #ffffff;
@@ -38,9 +39,10 @@
   border-radius: 16px;
   display: flex;
   flex-direction: column;
-  animation: slideDown 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: slideDown 0.42s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
   border: 1px solid #e5e5e5;
+  z-index: 1001;
   will-change: width, height, top, left, transform;
   transition: width 0.34s cubic-bezier(0.22, 1, 0.36, 1), height 0.34s cubic-bezier(0.22, 1, 0.36, 1),
     max-height 0.34s cubic-bezier(0.22, 1, 0.36, 1), top 0.34s cubic-bezier(0.22, 1, 0.36, 1),
@@ -51,12 +53,14 @@
 
 @keyframes slideDown {
   from {
-    transform: translateY(-14px) scale(0.985);
+    transform: translateX(-50%) translateY(-18px) scale(0.975);
     opacity: 0;
+    filter: blur(1px);
   }
   to {
-    transform: translateY(0) scale(1);
+    transform: translateX(-50%) translateY(0) scale(1);
     opacity: 1;
+    filter: blur(0);
   }
 }
 

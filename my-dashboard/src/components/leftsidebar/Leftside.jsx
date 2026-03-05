@@ -1,19 +1,21 @@
 // src/components/leftsidebar/Leftside.jsx (FunctionalMenu)
 import { useState } from 'react';
 import './Leftside.css';
-import TrackingButton from './compofleftsidebar/TrackingButton';
+import TrackingButton from './compofleftsidebar/tracking/TrackingButton';
 import AssignTaskButton from './compofleftsidebar/AssignTaskButton';
 import InboxButton from './compofleftsidebar/InboxButton';
 import OutboxButton from './compofleftsidebar/OutboxButton';
-import MessageSystemButton from './compofleftsidebar/MessageSystemButton';
+import MessageSystemButton from './compofleftsidebar/messagesystem/MessageSystemButton';
 import WorkSpaceButton from './compofleftsidebar/WorkSpaceButton';
-import AdminQueueButton from './compofleftsidebar/AdminQueueButton';
+import AdminQueueButton from './compofleftsidebar/adminqueue/AdminQueueButton';
+import TrendingsButton from './compofleftsidebar/trending/TrendingsButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
 import OutboxModal from './compofleftsidebar/outbox/OutboxModal';
 import WorkSpaceModal from './compofleftsidebar/workspace/WorkSpaceModal';
 import InboxPanel from './compofleftsidebar/inbox/InboxPanel';
-import TrackingPanel from './compofleftsidebar/TrackingPanel';
-import AdminRequestPanel from './compofleftsidebar/admin/AdminRequestPanel';
+import TrackingPanel from './compofleftsidebar/tracking/TrackingPanel';
+import AdminRequestPanel from './compofleftsidebar/adminqueue/AdminRequestPanel';
+import TrendingsPanel from './compofleftsidebar/trending/TrendingsPanel';
 import { useAuth } from '../../context/AuthContext';
 
 const FunctionalMenu = () => {
@@ -29,6 +31,7 @@ const FunctionalMenu = () => {
   const [workspaceInitialTab, setWorkspaceInitialTab] = useState('overview');
   const [editingTask, setEditingTask] = useState(null);
   const [isAdminQueueOpen, setIsAdminQueueOpen] = useState(false);
+  const [isTrendingsOpen, setIsTrendingsOpen] = useState(false);
 
   const handleItemClick = (itemId) => {
     setActiveItem(itemId);
@@ -92,6 +95,11 @@ const FunctionalMenu = () => {
   };
 
   const closeTrackingPanel = () => setIsTrackingPanelOpen(false);
+  const openTrendingsPanel = () => {
+    setActiveItem('trendings');
+    setIsTrendingsOpen(true);
+  };
+  const closeTrendingsPanel = () => setIsTrendingsOpen(false);
   const openAdminQueue = () => {
     setActiveItem('admin-queue');
     setIsAdminQueueOpen(true);
@@ -145,6 +153,11 @@ const FunctionalMenu = () => {
             onClick={openWorkSpace}
           />
 
+          <TrendingsButton
+            isActive={activeItem === 'trendings'}
+            onClick={openTrendingsPanel}
+          />
+
           {isAdmin && (
             <AdminQueueButton
               isActive={activeItem === 'admin-queue'}
@@ -170,6 +183,7 @@ const FunctionalMenu = () => {
 
       {/* Tracking Panel */}
       <TrackingPanel isOpen={isTrackingPanelOpen} onClose={closeTrackingPanel} />
+      <TrendingsPanel isOpen={isTrendingsOpen} onClose={closeTrendingsPanel} />
 
       {/* Outbox Modal */}
       <OutboxModal

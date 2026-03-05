@@ -1,5 +1,5 @@
 import React from 'react';
-import './MenuButton.css';
+import '../MenuButton.css';
 
 const AdminQueueButton = ({ isActive, onClick }) => {
   return (

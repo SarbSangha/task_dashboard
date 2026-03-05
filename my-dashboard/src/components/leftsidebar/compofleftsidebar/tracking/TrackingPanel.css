@@ -1,6 +1,6 @@
 /* TrackingPanel.css - Task tracking and workflow visualization panel */
 :root {
-  --tracking-panel-top-offset: 120px;
+  --leftbar-popup-top-offset: 120px;
 }
 
 /* Overlay */
@@ -17,13 +17,13 @@
 /* Main Panel */
 .tracking-panel {
   position: fixed;
-  top: var(--tracking-panel-top-offset);
-  /* top: 120px; */
+  top: var(--leftbar-popup-top-offset);
   left: 50%;
   transform: translateX(-50%);
-  width: 700px;
-  max-width: 95vw;
-  max-height: calc(100vh - var(--tracking-panel-top-offset) - 24px);
+  width: 95%;
+  max-width: 1400px;
+  height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
+  max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   background: #1f2937;
   border: 1px solid #374151;
   border-radius: 12px;
@@ -468,10 +468,11 @@
 @keyframes expandFullscreen {
   from {
     opacity: 0;
-    width: 700px;
-    height: calc(100vh - var(--tracking-panel-top-offset) - 24px);
+    width: 95%;
+    max-width: 1400px;
+    height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
     transform: translateX(-50%);
-    top: var(--tracking-panel-top-offset);
+    top: var(--leftbar-popup-top-offset);
     left: 50%;
   }
   to {
@@ -513,8 +514,9 @@
   .tracking-panel {
     width: 95vw;
     max-width: 95vw;
-    max-height: calc(100vh - var(--tracking-panel-top-offset) - 16px);
-    top: var(--tracking-panel-top-offset);
+    height: calc(100vh - var(--leftbar-popup-top-offset) - 16px);
+    max-height: calc(100vh - var(--leftbar-popup-top-offset) - 16px);
+    top: var(--leftbar-popup-top-offset);
   }
 
   .tracking-panel.minimized {
