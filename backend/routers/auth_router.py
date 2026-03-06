@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field, validator
 import traceback
+import os
 from database_config import get_operational_db
 from models_new import User, UserApprovalRequest
 from schemas import (
@@ -251,14 +252,23 @@ async def login(
         
         # Create session
         session_id = create_session_token(user.id)
+
+        is_production = (os.getenv("ENVIRONMENT", "").strip().lower() == "production")
+        cookie_secure = (os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"}) or is_production
+        cookie_samesite = (os.getenv("COOKIE_SAMESITE", "").strip().lower() or ("none" if cookie_secure else "lax"))
+        if cookie_samesite not in {"lax", "strict", "none"}:
+            cookie_samesite = "none" if cookie_secure else "lax"
+        # Browsers reject SameSite=None cookies when Secure is false.
+        if cookie_samesite == "none" and not cookie_secure:
+            cookie_secure = True
         
         # Set cookie
         response.set_cookie(
             key="session_id",
             value=session_id,
             httponly=True,
-            secure=False,
-            samesite="lax",
+            secure=cookie_secure,
+            samesite=cookie_samesite,
             max_age=30 * 24 * 60 * 60,
             path="/"
         )
@@ -295,7 +305,7 @@ async def login(
 
 @router.get("/me")
 async def get_current_user_profile(
-    session_id: str = Cookie(None),
+    session_id: Optional[str] = Cookie(None, alias="session_id"),
     db: Session = Depends(get_operational_db)
 ):
     """Get current authenticated user"""
@@ -574,7 +584,18 @@ def logout(
     if session_id:
         invalidate_session(session_id)
     
-    response.delete_cookie(key="session_id", path="/")
+    is_production = (os.getenv("ENVIRONMENT", "").strip().lower() == "production")
+    cookie_secure = (os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"}) or is_production
+    cookie_samesite = (os.getenv("COOKIE_SAMESITE", "").strip().lower() or ("none" if cookie_secure else "lax"))
+    if cookie_samesite == "none" and not cookie_secure:
+        cookie_secure = True
+
+    response.delete_cookie(
+        key="session_id",
+        path="/",
+        secure=cookie_secure,
+        samesite=cookie_samesite,
+    )
     return {"message": "Logged out successfully"}
 
 

@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 from typing import Optional
 from sqlalchemy.orm import Session
 import secrets
+import os
 from fastapi import APIRouter, HTTPException, Depends, Response, Cookie
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from database_config import get_operational_db
 from models_new import User
 # Password hashing context
@@ -13,6 +15,18 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # In-memory storage
 SESSION_STORE = {}
 RESET_TOKEN_STORE = {}
+REVOKED_SESSION_STORE = {}
+
+SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+_SESSION_SALT = "rmw-session-v1"
+
+
+def _get_session_serializer() -> URLSafeTimedSerializer:
+    secret_key = (os.getenv("SECRET_KEY") or "").strip()
+    if not secret_key:
+        # Fallback keeps local/dev usable, but production should always set SECRET_KEY.
+        secret_key = "rmw-dev-secret-key-change-me"
+    return URLSafeTimedSerializer(secret_key=secret_key, salt=_SESSION_SALT)
 
 
 # ==================== PASSWORD FUNCTIONS ====================
@@ -60,7 +74,13 @@ def authenticate_user(db: Session, email: str, password: str):
 # ==================== SESSION TOKENS ====================
 def create_session_token(user_id: int) -> str:
     """Create new session token"""
-    token = secrets.token_urlsafe(32)
+    serializer = _get_session_serializer()
+    token = serializer.dumps(
+        {
+            "user_id": int(user_id),
+            "nonce": secrets.token_urlsafe(12),
+        }
+    )
     SESSION_STORE[token] = {
         "user_id": user_id,
         "created_at": datetime.utcnow(),
@@ -72,23 +92,40 @@ def create_session_token(user_id: int) -> str:
 def verify_session_token(token: str) -> int:
     """Verify session token and return user_id"""
     from fastapi import HTTPException
+
+    revoked = REVOKED_SESSION_STORE.get(token)
+    if revoked and datetime.utcnow() <= revoked["expires_at"]:
+        raise HTTPException(status_code=401, detail="Session revoked")
+    if revoked:
+        del REVOKED_SESSION_STORE[token]
     
-    if token not in SESSION_STORE:
-        raise HTTPException(status_code=401, detail="Invalid session")
-    
-    session = SESSION_STORE[token]
-    
-    if datetime.utcnow() > session["expires_at"]:
-        del SESSION_STORE[token]
+    # Fast path for local in-process sessions
+    session = SESSION_STORE.get(token)
+    if session:
+        if datetime.utcnow() > session["expires_at"]:
+            del SESSION_STORE[token]
+            raise HTTPException(status_code=401, detail="Session expired")
+        return session["user_id"]
+
+    # Cross-process fallback for production (stateless signed token)
+    serializer = _get_session_serializer()
+    try:
+        payload = serializer.loads(token, max_age=SESSION_MAX_AGE_SECONDS)
+        user_id = int(payload.get("user_id"))
+        return user_id
+    except SignatureExpired:
         raise HTTPException(status_code=401, detail="Session expired")
-    
-    return session["user_id"]
+    except (BadSignature, TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid session")
 
 
 def invalidate_session(token: str):
     """Remove session token"""
     if token in SESSION_STORE:
         del SESSION_STORE[token]
+    REVOKED_SESSION_STORE[token] = {
+        "expires_at": datetime.utcnow() + timedelta(seconds=SESSION_MAX_AGE_SECONDS)
+    }
 
 
 # ==================== RESET TOKENS ====================
@@ -133,6 +170,12 @@ def cleanup_expired_sessions():
                if now > data["expires_at"]]
     for token in expired:
         del SESSION_STORE[token]
+
+    expired_revoked = [token for token, data in REVOKED_SESSION_STORE.items()
+                       if now > data["expires_at"]]
+    for token in expired_revoked:
+        del REVOKED_SESSION_STORE[token]
+
     return len(expired)
 
 

@@ -17,13 +17,20 @@ api.interceptors.response.use(
   response => response,
   error => {
     if (error.response?.status === 401) {
+      const requestUrl = `${error.config?.url || ''}`;
+      const isActivityCall = requestUrl.includes('/api/activity/');
+      if (isActivityCall) {
+        console.warn(`⚠️ 401 on activity endpoint (${requestUrl}) - skipping global auth redirect`);
+        return Promise.reject(error);
+      }
+
       // With HashRouter, route lives in location.hash (e.g. "#/login").
       const routePath = (window.location.hash || window.location.pathname || '')
         .replace(/^#/, '')
         .split('?')[0];
       const publicPaths = ['/login', '/register', '/forgot-password', '/reset-password'];
       if (!publicPaths.includes(routePath)) {
-        console.log('❌ 401 Unauthorized - redirecting to login');
+        console.log(`❌ 401 Unauthorized (${requestUrl}) - redirecting to login`);
         window.location.href = '/#/login';
       }
     }
