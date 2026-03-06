@@ -17,11 +17,14 @@ api.interceptors.response.use(
   response => response,
   error => {
     if (error.response?.status === 401) {
-      // Only redirect if not on public pages
+      // With HashRouter, route lives in location.hash (e.g. "#/login").
+      const routePath = (window.location.hash || window.location.pathname || '')
+        .replace(/^#/, '')
+        .split('?')[0];
       const publicPaths = ['/login', '/register', '/forgot-password', '/reset-password'];
-      if (!publicPaths.includes(window.location.pathname)) {
+      if (!publicPaths.includes(routePath)) {
         console.log('❌ 401 Unauthorized - redirecting to login');
-        window.location.href = '/login';
+        window.location.href = '/#/login';
       }
     }
     return Promise.reject(error);
