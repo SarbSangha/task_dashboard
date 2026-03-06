@@ -59,6 +59,9 @@ def _create_engine(url: str):
     kwargs = {
         "echo": False,
         "pool_pre_ping": True,
+        # Supabase pooler (PgBouncer) can conflict with psycopg prepared statements.
+        # Disable automatic prepare to avoid DuplicatePreparedStatement on startup.
+        "connect_args": {"prepare_threshold": None},
     }
     return create_engine(normalized, **kwargs)
 
