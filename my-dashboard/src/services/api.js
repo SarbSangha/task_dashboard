@@ -158,6 +158,16 @@ export const authAPI = {
   activateUserAccess: async (userId) => {
     const response = await api.post(`/api/admin/activate-user/${userId}`);
     return response.data;
+  },
+
+  deleteUserAccount: async (userId, reason = '') => {
+    const response = await api.post(`/api/admin/delete-user/${userId}`, { reason });
+    return response.data;
+  },
+
+  getDeletedUsers: async () => {
+    const response = await api.get('/api/admin/deleted-users');
+    return response.data;
   }
 };
 
@@ -411,6 +421,11 @@ export const taskAPI = {
     const response = await api.post(`/api/tasks/notifications/${notificationId}/read`);
     return response.data;
   },
+
+  deleteNotification: async (notificationId) => {
+    const response = await api.delete(`/api/tasks/notifications/${notificationId}`);
+    return response.data;
+  },
 };
 
 export const groupAPI = {
@@ -460,32 +475,143 @@ export const groupAPI = {
   },
 };
 
-export const createNotificationsSocket = ({ onMessage, onOpen, onClose, onError } = {}) => {
-  const base = API_URL.replace(/^http/i, 'ws');
-  const socket = new WebSocket(`${base}/api/tasks/ws/notifications`);
+const realtimeSubscribers = new Map();
+let realtimeSubscriberSeq = 0;
+let realtimeSocket = null;
+let realtimeReconnectTimer = null;
+let realtimeIdleCloseTimer = null;
+let realtimeHeartbeatTimer = null;
+let realtimeBackoffMs = 1000;
+const REALTIME_MAX_BACKOFF_MS = 30000;
+const REALTIME_HEARTBEAT_MS = 25000;
+
+const buildRealtimeWsUrl = () => `${API_URL.replace(/^http/i, 'ws')}/api/tasks/ws/notifications`;
+
+const broadcastRealtime = (kind, payload) => {
+  realtimeSubscribers.forEach((handlers) => {
+    try {
+      if (kind === 'message' && typeof handlers.onMessage === 'function') handlers.onMessage(payload);
+      if (kind === 'open' && typeof handlers.onOpen === 'function') handlers.onOpen();
+      if (kind === 'close' && typeof handlers.onClose === 'function') handlers.onClose(payload);
+      if (kind === 'error' && typeof handlers.onError === 'function') handlers.onError(payload);
+    } catch (err) {
+      console.warn('Realtime subscriber callback failed:', err);
+    }
+  });
+};
+
+const clearRealtimeTimers = () => {
+  if (realtimeReconnectTimer) {
+    window.clearTimeout(realtimeReconnectTimer);
+    realtimeReconnectTimer = null;
+  }
+  if (realtimeIdleCloseTimer) {
+    window.clearTimeout(realtimeIdleCloseTimer);
+    realtimeIdleCloseTimer = null;
+  }
+  if (realtimeHeartbeatTimer) {
+    window.clearInterval(realtimeHeartbeatTimer);
+    realtimeHeartbeatTimer = null;
+  }
+};
+
+const scheduleRealtimeReconnect = () => {
+  if (realtimeReconnectTimer || realtimeSubscribers.size === 0) return;
+  const delay = realtimeBackoffMs;
+  realtimeReconnectTimer = window.setTimeout(() => {
+    realtimeReconnectTimer = null;
+    ensureRealtimeSocket();
+  }, delay);
+  realtimeBackoffMs = Math.min(realtimeBackoffMs * 2, REALTIME_MAX_BACKOFF_MS);
+};
+
+const ensureRealtimeHeartbeat = () => {
+  if (realtimeHeartbeatTimer) return;
+  realtimeHeartbeatTimer = window.setInterval(() => {
+    if (!realtimeSocket || realtimeSocket.readyState !== WebSocket.OPEN) return;
+    try {
+      realtimeSocket.send('ping');
+    } catch {
+      // no-op
+    }
+  }, REALTIME_HEARTBEAT_MS);
+};
+
+const ensureRealtimeSocket = () => {
+  if (typeof window === 'undefined') return;
+  if (realtimeSubscribers.size === 0) return;
+  if (realtimeSocket && (realtimeSocket.readyState === WebSocket.OPEN || realtimeSocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  clearRealtimeTimers();
+  const socket = new WebSocket(buildRealtimeWsUrl());
+  realtimeSocket = socket;
 
   socket.onopen = () => {
-    if (typeof onOpen === 'function') onOpen();
+    realtimeBackoffMs = 1000;
+    ensureRealtimeHeartbeat();
+    broadcastRealtime('open');
   };
 
   socket.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data);
-      if (typeof onMessage === 'function') onMessage(payload);
+      broadcastRealtime('message', payload);
     } catch (error) {
       console.warn('Invalid websocket payload:', error);
     }
   };
 
   socket.onerror = (event) => {
-    if (typeof onError === 'function') onError(event);
+    broadcastRealtime('error', event);
   };
 
-  socket.onclose = () => {
-    if (typeof onClose === 'function') onClose();
+  socket.onclose = (event) => {
+    if (realtimeSocket === socket) {
+      realtimeSocket = null;
+    }
+    if (realtimeHeartbeatTimer) {
+      window.clearInterval(realtimeHeartbeatTimer);
+      realtimeHeartbeatTimer = null;
+    }
+    broadcastRealtime('close', event);
+    scheduleRealtimeReconnect();
   };
+};
 
-  return socket;
+export const subscribeRealtimeNotifications = ({ onMessage, onOpen, onClose, onError } = {}) => {
+  const subscriberId = ++realtimeSubscriberSeq;
+  realtimeSubscribers.set(subscriberId, { onMessage, onOpen, onClose, onError });
+  if (realtimeIdleCloseTimer) {
+    window.clearTimeout(realtimeIdleCloseTimer);
+    realtimeIdleCloseTimer = null;
+  }
+  ensureRealtimeSocket();
+
+  return () => {
+    realtimeSubscribers.delete(subscriberId);
+    if (realtimeSubscribers.size > 0) return;
+
+    clearRealtimeTimers();
+    realtimeIdleCloseTimer = window.setTimeout(() => {
+      if (realtimeSubscribers.size > 0) return;
+      if (realtimeSocket && realtimeSocket.readyState <= WebSocket.OPEN) {
+        realtimeSocket.close();
+      }
+      realtimeSocket = null;
+    }, 3000);
+  };
+};
+
+export const createNotificationsSocket = ({ onMessage, onOpen, onClose, onError } = {}) => {
+  const unsubscribe = subscribeRealtimeNotifications({ onMessage, onOpen, onClose, onError });
+  return {
+    close: () => unsubscribe(),
+    get readyState() {
+      return realtimeSocket ? realtimeSocket.readyState : WebSocket.CLOSED;
+    },
+  };
 };
 
 // ==================== DRAFT API ====================

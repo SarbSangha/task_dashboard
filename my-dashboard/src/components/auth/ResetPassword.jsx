@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import axios from 'axios';
+import { useCustomDialogs } from '../common/CustomDialogs';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export function ResetPassword() {
+  const { showAlert } = useCustomDialogs();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token');
   const [password, setPassword] = useState('');
@@ -34,7 +36,7 @@ export function ResetPassword() {
         token,
         new_password: password
       });
-      alert('Password reset successfully! Please login.');
+      await showAlert('Password reset successfully! Please login.', { title: 'Success' });
       navigate('/login');
     } catch (err) {
       setError(err.response?.data?.detail || 'Invalid or expired token');

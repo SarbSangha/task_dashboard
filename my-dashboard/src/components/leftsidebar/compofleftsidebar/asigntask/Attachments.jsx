@@ -1,9 +1,11 @@
 import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
+import { useCustomDialogs } from "../../../common/CustomDialogs";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export default function AttachmentBox({ attachments = [], onChange }) {
+  const { showAlert } = useCustomDialogs();
   const [files, setFiles] = useState(attachments);
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -62,14 +64,14 @@ export default function AttachmentBox({ attachments = [], onChange }) {
         },
       });
 
-      alert("All files uploaded 🚀");
+      await showAlert("All files uploaded.", { title: "Upload Complete" });
       
       // Keep files in state but mark as uploaded
       // Don't clear - parent component will handle this
       // setFiles([]);
     } catch (err) {
       console.error("Upload error:", err);
-      alert("Upload failed ❌");
+      await showAlert("Upload failed.", { title: "Upload Failed" });
     } finally {
       setUploading(false);
       setProgress(0);

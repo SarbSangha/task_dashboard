@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import './WorkSpaceModal.css';
 import Tools from './Tools';
-import { activityAPI, authAPI, groupAPI, taskAPI, createNotificationsSocket } from '../../../../services/api';
+import { activityAPI, authAPI, groupAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
+import { useCustomDialogs } from '../../../common/CustomDialogs';
 
 export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview' }) {
   const [activeTab, setActiveTab] = useState('overview');
@@ -442,6 +443,7 @@ function TasksContent() {
 
 // Team Tab Content
 function TeamContent() {
+  const { showAlert } = useCustomDialogs();
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openMenuId, setOpenMenuId] = useState(null);
@@ -550,7 +552,7 @@ function TeamContent() {
                   <button
                     onClick={() => {
                       setOpenMenuId(null);
-                      alert(`Chat with ${member.name} will open here.`);
+                      void showAlert(`Chat with ${member.name} will open here.`, { title: 'Team Chat' });
                     }}
                   >
                     Chat
@@ -612,6 +614,7 @@ function TeamContent() {
 }
 
 function CompanyContent() {
+  const { showAlert } = useCustomDialogs();
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [departments, setDepartments] = useState([]);
@@ -761,7 +764,7 @@ function CompanyContent() {
                   <button
                     onClick={() => {
                       setOpenMenuId(null);
-                      alert(`Chat with ${member.name} will open here.`);
+                      void showAlert(`Chat with ${member.name} will open here.`, { title: 'Team Chat' });
                     }}
                   >
                     Chat
@@ -836,8 +839,6 @@ function GroupsContent() {
   const [feedback, setFeedback] = useState('');
   const messagesEndRef = useRef(null);
   const selectedGroupIdRef = useRef(null);
-  const wsRef = useRef(null);
-  const reconnectTimerRef = useRef(null);
 
   const selectedGroup = useMemo(
     () => groups.find((g) => g.id === selectedGroupId) || null,
@@ -914,40 +915,27 @@ function GroupsContent() {
   }, [selectedGroupId]);
 
   useEffect(() => {
-    let disposed = false;
+    const unsubscribe = subscribeRealtimeNotifications({
+      onMessage: (payload) => {
+        if (!payload || payload.eventType !== 'group_message') return;
+        const groupId = payload?.metadata?.groupId;
+        if (!groupId) return;
 
-    const connectWs = () => {
-      if (disposed) return;
-      const socket = createNotificationsSocket({
-        onMessage: (payload) => {
-          if (!payload || payload.eventType !== 'group_message') return;
-          const groupId = payload?.metadata?.groupId;
-          if (!groupId) return;
-
-          syncGroups().catch(() => {});
-          if (selectedGroupIdRef.current === groupId) {
-            loadMessages(groupId).catch(() => {});
-          }
-        },
-        onClose: () => {
-          if (disposed) return;
-          reconnectTimerRef.current = window.setTimeout(connectWs, 3000);
-        },
-      });
-      wsRef.current = socket;
-    };
-
-    connectWs();
+        syncGroups().catch(() => {});
+        if (selectedGroupIdRef.current === groupId) {
+          loadMessages(groupId).catch(() => {});
+        }
+      },
+      onOpen: () => {
+        syncGroups().catch(() => {});
+        if (selectedGroupIdRef.current) {
+          loadMessages(selectedGroupIdRef.current).catch(() => {});
+        }
+      },
+    });
 
     return () => {
-      disposed = true;
-      if (reconnectTimerRef.current) {
-        window.clearTimeout(reconnectTimerRef.current);
-      }
-      if (wsRef.current && wsRef.current.readyState <= 1) {
-        wsRef.current.close();
-      }
-      wsRef.current = null;
+      unsubscribe();
     };
   }, []);
 

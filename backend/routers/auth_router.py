@@ -7,8 +7,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field, validator
 import traceback
 import os
+import asyncio
 from database_config import get_operational_db
 from models_new import User, UserApprovalRequest
+from routers.tasks_router import notification_hub
 from schemas import (
     UserCreate, 
     UserLoginExtended,
@@ -105,6 +107,8 @@ def get_current_user(
     
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if user.is_deleted:
+        raise HTTPException(status_code=401, detail="Account has been deleted")
     
     return user
 
@@ -119,6 +123,29 @@ def generate_employee_id(db: Session) -> str:
     prefix = f"EMP-{year}-"
     count = db.query(User).filter(User.employee_id.like(f"{prefix}%")).count()
     return f"{prefix}{count + 1:04d}"
+
+
+def _admin_user_ids(db: Session) -> list[int]:
+    rows = db.query(User.id).filter(
+        User.is_active == True,
+        User.is_deleted == False,
+        ((User.is_admin == True) | (User.position.ilike("%admin%"))),
+    ).all()
+    return [row[0] for row in rows]
+
+
+def _push_admin_realtime_event(db: Session, event_type: str, title: str, message: str, metadata: Optional[dict] = None):
+    payload = {
+        "eventType": event_type,
+        "title": title,
+        "message": message,
+        "metadata": metadata or {},
+    }
+    for admin_id in _admin_user_ids(db):
+        try:
+            asyncio.create_task(notification_hub.push(admin_id, payload))
+        except RuntimeError:
+            pass
 
 
 # ==================== AUTH ENDPOINTS ====================
@@ -190,6 +217,23 @@ async def register(
         
         db.commit()
         db.refresh(new_user)
+        created_request = db.query(UserApprovalRequest).filter(
+            UserApprovalRequest.user_id == new_user.id,
+            UserApprovalRequest.request_type == "signup",
+        ).order_by(UserApprovalRequest.created_at.desc()).first()
+        _push_admin_realtime_event(
+            db,
+            "admin_request_created",
+            "New Login Request",
+            f"{new_user.name} requested signup approval.",
+            {
+                "requestType": "signup",
+                "requestId": created_request.id if created_request else None,
+                "userId": new_user.id,
+                "userEmail": new_user.email,
+                "userName": new_user.name,
+            },
+        )
         
         print(f"✅ Registration successful: {new_user.email}")
         
@@ -238,6 +282,16 @@ async def login(
             raise HTTPException(
                 status_code=401, 
                 detail="Invalid email or password"
+            )
+        if user.is_deleted:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "ACCOUNT_DELETED",
+                    "message": "This account has been deleted by admin.",
+                    "reason": user.deleted_reason,
+                    "nextAction": "Contact your admin if this is unexpected.",
+                },
             )
 
         if not _is_allowed_company_email(user.email):
@@ -367,6 +421,8 @@ async def get_current_user_profile(
         
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        if user.is_deleted:
+            raise HTTPException(status_code=401, detail="Account has been deleted")
         
         return {
             "success": True,
@@ -400,7 +456,8 @@ async def get_users_by_department(
     try:
         users_query = db.query(User).filter(
             User.department == department_name,
-            User.is_active == True
+            User.is_active == True,
+            User.is_deleted == False
         )
         if role:
             role_lower = role.lower()
@@ -443,6 +500,7 @@ async def get_all_departments(
     try:
         departments = db.query(User.department).distinct().filter(
             User.is_active == True,
+            User.is_deleted == False,
             User.department != None
         ).all()
         
@@ -507,6 +565,24 @@ async def request_profile_change(
         )
     )
     db.commit()
+    created_request = db.query(UserApprovalRequest).filter(
+        UserApprovalRequest.user_id == current_user.id,
+        UserApprovalRequest.request_type == "profile_update",
+        UserApprovalRequest.status == "pending",
+    ).order_by(UserApprovalRequest.created_at.desc()).first()
+    _push_admin_realtime_event(
+        db,
+        "admin_request_created",
+        "New Profile Change Request",
+        f"{current_user.name} requested a profile update.",
+        {
+            "requestType": "profile_update",
+            "requestId": created_request.id if created_request else None,
+            "userId": current_user.id,
+            "userEmail": current_user.email,
+            "userName": current_user.name,
+        },
+    )
     return {"success": True, "message": "Profile change request submitted for admin approval"}
 
 
@@ -621,6 +697,20 @@ async def admin_review_request(
             user.department = payload.get("department", user.department)
 
     db.commit()
+    _push_admin_realtime_event(
+        db,
+        "admin_request_reviewed",
+        "Request Reviewed",
+        f"{req.request_type} request was {req.status}.",
+        {
+            "requestType": req.request_type,
+            "requestId": req.id,
+            "status": req.status,
+            "userId": user.id,
+            "userEmail": user.email,
+            "reviewedBy": current_user.id,
+        },
+    )
     return {"success": True, "message": f"Request {req.status}"}
 
 

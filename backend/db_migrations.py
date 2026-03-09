@@ -45,6 +45,29 @@ def _pg_columns_using_type(conn, udt_name: str) -> list[tuple[str, str]]:
     return [(row[0], row[1]) for row in rows]
 
 
+def _pg_column_exists(conn, table_name: str, column_name: str) -> bool:
+    row = conn.execute(
+        text(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = :table_name
+              AND column_name = :column_name
+            LIMIT 1
+            """
+        ),
+        {"table_name": table_name, "column_name": column_name},
+    ).fetchone()
+    return row is not None
+
+
+def _pg_add_column_if_missing(conn, table_name: str, column_name: str, sql_type: str) -> None:
+    if _pg_column_exists(conn, table_name, column_name):
+        return
+    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"))
+
+
 def _quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
@@ -75,6 +98,11 @@ def _ensure_postgres_schema(conn) -> None:
     # Convert legacy enum type names to canonical type names used by models_new.py
     _migrate_enum_type(conn, "participantrole", "participant_role")
     _migrate_enum_type(conn, "taskstatus", "task_status")
+    _pg_add_column_if_missing(conn, "users", "is_deleted", "BOOLEAN DEFAULT FALSE")
+    _pg_add_column_if_missing(conn, "users", "deleted_reason", "TEXT")
+    _pg_add_column_if_missing(conn, "users", "deleted_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "users", "deleted_by", "INTEGER")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
 
 
 def ensure_operational_schema(engine) -> None:
@@ -96,13 +124,22 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN roles_json JSON"))
             if "is_admin" not in user_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
+            if "is_deleted" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
             if "approved_by" not in user_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN approved_by INTEGER"))
             if "approved_at" not in user_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN approved_at DATETIME"))
             if "rejection_reason" not in user_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN rejection_reason TEXT"))
+            if "deleted_reason" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN deleted_reason TEXT"))
+            if "deleted_at" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN deleted_at DATETIME"))
+            if "deleted_by" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN deleted_by INTEGER"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_employee_id ON users(employee_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
 
         if _table_exists(conn, "tasks"):
             task_cols = _table_columns(conn, "tasks")

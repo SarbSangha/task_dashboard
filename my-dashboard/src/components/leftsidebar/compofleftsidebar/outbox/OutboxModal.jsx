@@ -5,8 +5,10 @@ import OutboxTaskCard from './OutboxTaskCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import { taskAPI, draftAPI } from '../../../../services/api';
 import { formatDateIndia, formatTimeIndia } from '../../../../utils/dateTime';
+import { useCustomDialogs } from '../../../common/CustomDialogs';
 
 const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
+  const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
   const [tasks, setTasks] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -97,14 +99,20 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
     }
 
     if (action === 'revoke_task') {
-      const confirmed = window.confirm('Revoke this task? This will mark it as revoked (regularised) for receivers.');
+      const confirmed = await showConfirm(
+        'Revoke this task? This will mark it as revoked (regularised) for receivers.',
+        { title: 'Revoke Task' }
+      );
       if (!confirmed) return;
-      const comments = window.prompt('Optional reason for revoking this task:', '') ?? '';
+      const comments = (await showPrompt('Optional reason for revoking this task:', {
+        title: 'Revoke Reason',
+        defaultValue: '',
+      })) ?? '';
       try {
         await taskAPI.revokeTask(task.id, comments.trim());
         await fetchData(true, { includeDrafts: activeTab === 'drafts' });
       } catch (error) {
-        alert(error?.response?.data?.detail || 'Failed to revoke task');
+        await showAlert(error?.response?.data?.detail || 'Failed to revoke task', { title: 'Revoke Failed' });
       }
     }
   };

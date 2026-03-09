@@ -3,11 +3,13 @@ import './SettingSidebar.css';
 import LoginSecurityPanel from './settingsButtons/profilesetting/LoginSecurityPanel';
 import ProfileSettingsPanel from './settingsButtons/profilesetting/ProfileSettingPanel';
 import AdminApprovalsPanel from './settingsButtons/admin/AdminApprovalsPanel';
+import NotificationsPanel from './settingsButtons/NotificationsPanel';
 import { useAuth } from '../../context/AuthContext';
 const SettingsSidebar = ({ isOpen, onClose }) => {
   const [showLoginSecurity, setShowLoginSecurity] = useState(false);
   const [showProfileSettings, setShowProfileSettings] = useState(false);
   const [showAdminApprovals, setShowAdminApprovals] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
   const { user, logout } = useAuth();
   const isAdmin = user?.isAdmin || (user?.position || '').toLowerCase() === 'admin' || (user?.roles || []).includes('admin');
   const handleLogout = async () => {
@@ -32,6 +34,10 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
       <AdminApprovalsPanel
         isOpen={showAdminApprovals}
         onClose={() => setShowAdminApprovals(false)}
+      />
+      <NotificationsPanel
+        isOpen={showNotifications}
+        onClose={() => setShowNotifications(false)}
       />
 
       {/* Main Settings Sidebar */}
@@ -96,7 +102,10 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
           </button>
 
           {/* Notifications */}
-          <button className="settings-menu-item">
+          <button
+            className="settings-menu-item"
+            onClick={() => setShowNotifications(true)}
+          >
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2zm-2 1H8v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z"/>
             </svg>

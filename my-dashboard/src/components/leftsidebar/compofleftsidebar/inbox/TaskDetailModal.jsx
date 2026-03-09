@@ -3,10 +3,12 @@ import React, { useState, useEffect } from 'react';
 import SubmitSection from './SubmitSection';
 import './TaskDetailModal.css';
 import { formatDateIndia, formatDateTimeIndia } from '../../../../utils/dateTime';
+import { useCustomDialogs } from '../../../common/CustomDialogs';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const TaskDetailModal = ({ task, onClose, onRefresh }) => {
+  const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
   const [taskDetails, setTaskDetails] = useState(null);
   const [loading, setLoading] = useState(false);
   const [showSubmitSection, setShowSubmitSection] = useState(false);
@@ -34,7 +36,8 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   };
 
   const handleStartWork = async () => {
-    if (!confirm('Start working on this task?')) return;
+    const confirmed = await showConfirm('Start working on this task?', { title: 'Start Work' });
+    if (!confirmed) return;
     
     setActionLoading(true);
     try {
@@ -45,24 +48,27 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
       const data = await response.json();
       
       if (data.success) {
-        alert('✅ Work started! You can now access the workspace tools.');
+        await showAlert('Work started! You can now access the workspace tools.', { title: 'Success' });
         fetchTaskDetails();
         onRefresh();
         // Optionally redirect to workspace
         // window.location.href = '/workspace';
       } else {
-        alert('❌ ' + data.detail);
+        await showAlert(data.detail || 'Failed to start work.', { title: 'Start Work Failed' });
       }
     } catch (error) {
       console.error('Error starting work:', error);
-      alert('❌ Failed to start work');
+      await showAlert('Failed to start work.', { title: 'Start Work Failed' });
     } finally {
       setActionLoading(false);
     }
   };
 
   const handleApprove = async () => {
-    const comments = prompt('Add approval comments (optional):');
+    const comments = await showPrompt('Add approval comments (optional):', {
+      title: 'Approve Task',
+      defaultValue: '',
+    });
     if (comments === null) return; // Cancelled
     
     setActionLoading(true);
@@ -76,24 +82,27 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
       const data = await response.json();
       
       if (data.success) {
-        alert('✅ Task approved and forwarded!');
+        await showAlert('Task approved and forwarded!', { title: 'Approved' });
         onClose();
         onRefresh();
       } else {
-        alert('❌ ' + data.detail);
+        await showAlert(data.detail || 'Failed to approve task.', { title: 'Approval Failed' });
       }
     } catch (error) {
       console.error('Error approving task:', error);
-      alert('❌ Failed to approve task');
+      await showAlert('Failed to approve task.', { title: 'Approval Failed' });
     } finally {
       setActionLoading(false);
     }
   };
 
   const handleReject = async () => {
-    const reason = prompt('Enter rejection reason:');
+    const reason = await showPrompt('Enter rejection reason:', {
+      title: 'Reject Task',
+      defaultValue: '',
+    });
     if (!reason) {
-      alert('Rejection reason is required');
+      await showAlert('Rejection reason is required.', { title: 'Reason Required' });
       return;
     }
     
@@ -108,15 +117,15 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
       const data = await response.json();
       
       if (data.success) {
-        alert('⚠️ Task rejected and sent back for revisions');
+        await showAlert('Task rejected and sent back for revisions.', { title: 'Task Rejected' });
         onClose();
         onRefresh();
       } else {
-        alert('❌ ' + data.detail);
+        await showAlert(data.detail || 'Failed to reject task.', { title: 'Rejection Failed' });
       }
     } catch (error) {
       console.error('Error rejecting task:', error);
-      alert('❌ Failed to reject task');
+      await showAlert('Failed to reject task.', { title: 'Rejection Failed' });
     } finally {
       setActionLoading(false);
     }

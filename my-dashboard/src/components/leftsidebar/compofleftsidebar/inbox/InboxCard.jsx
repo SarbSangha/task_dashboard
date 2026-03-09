@@ -45,6 +45,8 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
     if (action === 'forward') return 'Forward To';
     return action.replace(/_/g, ' ');
   };
+  const editCount = Number(task.editCount ?? ((task.taskVersion || 1) - 1));
+  const showEditBadge = task.myRole !== 'creator' && editCount > 0;
   const buildFileActionUrl = (file, action, fallbackName) => {
     const params = new URLSearchParams();
     if (file?.url) params.set('url', file.url);
@@ -90,7 +92,12 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
     <div className={`inbox-card ${isRevoked ? 'revoked-card' : ''}`}>
       <div className="card-header">
         <div>
-          <h3 className="card-title">{task.title}</h3>
+          <div className="card-title-row">
+            <h3 className="card-title">{task.title}</h3>
+            {showEditBadge && (
+              <span className="task-edit-badge">Edit #{editCount}</span>
+            )}
+          </div>
           <p className="card-subtitle">{shortDescription}</p>
         </div>
         <div className="card-menu-wrap">

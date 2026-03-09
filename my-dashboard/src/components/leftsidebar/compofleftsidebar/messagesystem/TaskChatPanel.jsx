@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { taskAPI } from '../../../../services/api';
+import { taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
+import { useCustomDialogs } from '../../../common/CustomDialogs';
 import './TaskChatPanel.css';
 import { formatDateTimeIndia } from '../../../../utils/dateTime';
 
 const COMMENT_TYPES = ['general', 'suggestion', 'need_improvement', 'approved'];
 
 const TaskChatPanel = ({ task, isOpen, onClose }) => {
+  const { showAlert } = useCustomDialogs();
   const [activeTab, setActiveTab] = useState('chat');
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
@@ -13,11 +15,55 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
   const [commentType, setCommentType] = useState('general');
   const [commentText, setCommentText] = useState('');
   const [loading, setLoading] = useState(false);
+  const refreshTimerRef = React.useRef(null);
 
   useEffect(() => {
     if (isOpen && task?.id) {
       loadChat();
     }
+  }, [isOpen, task?.id]);
+
+  useEffect(() => {
+    if (!isOpen || !task?.id) return undefined;
+
+    const scheduleReload = () => {
+      if (refreshTimerRef.current) return;
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        loadChat();
+      }, 180);
+    };
+
+    const unsubscribe = subscribeRealtimeNotifications({
+      onMessage: (payload) => {
+        if (!payload) return;
+        const relatedTaskId = payload.taskId || payload?.metadata?.taskId;
+        if (Number(relatedTaskId) !== Number(task.id)) return;
+        if (payload.eventType === 'task_comment' || payload.eventType === 'commented') {
+          scheduleReload();
+          return;
+        }
+        // Keep history/state panel up-to-date on task state changes.
+        scheduleReload();
+      },
+      onOpen: () => {
+        scheduleReload();
+      },
+    });
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      loadChat();
+    }, 180000);
+
+    return () => {
+      unsubscribe();
+      window.clearInterval(interval);
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
   }, [isOpen, task?.id]);
 
   const loadChat = async () => {
@@ -41,7 +87,7 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
       setCommentText('');
       await loadChat();
     } catch (error) {
-      alert(error?.response?.data?.detail || 'Failed to send comment');
+      await showAlert(error?.response?.data?.detail || 'Failed to send comment', { title: 'Error' });
     }
   };
 

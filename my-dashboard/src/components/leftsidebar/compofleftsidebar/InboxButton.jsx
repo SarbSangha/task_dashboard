@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './MenuButton.css';
 import { useAuth } from '../../../context/AuthContext';
+import { subscribeRealtimeNotifications } from '../../../services/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -9,6 +10,7 @@ const InboxButton = ({ isActive, onClick }) => {
   const { user } = useAuth();
   const [unreadCount, setUnreadCount] = useState(0);
   const inFlightRef = useRef(false);
+  const refreshTimerRef = useRef(null);
 
   useEffect(() => {
     if (!user) {
@@ -16,13 +18,42 @@ const InboxButton = ({ isActive, onClick }) => {
       return undefined;
     }
 
+    const scheduleUnreadRefresh = () => {
+      if (refreshTimerRef.current) return;
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        fetchUnreadCount();
+      }, 250);
+    };
+
     fetchUnreadCount();
-    // Poll for new messages every 30 seconds
+    // Fallback polling every 3 minutes (WebSocket drives real-time updates).
     const interval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       fetchUnreadCount();
-    }, 30000);
-    return () => clearInterval(interval);
+    }, 180000);
+    const unsubscribe = subscribeRealtimeNotifications({
+      onMessage: (payload) => {
+        if (!payload || payload.eventType === 'group_message') return;
+        scheduleUnreadRefresh();
+      },
+      onOpen: () => {
+        scheduleUnreadRefresh();
+      },
+    });
+
+    const onFocus = () => scheduleUnreadRefresh();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      unsubscribe();
+      window.removeEventListener('focus', onFocus);
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
   }, [user]);
 
   const fetchUnreadCount = async () => {

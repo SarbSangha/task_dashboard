@@ -1,14 +1,10 @@
-// src/pages/Dashboard.jsx
-
 import React, { useRef } from 'react';
-import { useAuth } from '../context/AuthContext';
 import Topnavbar from '../components/navbar/top/Topnavbar';
 import FunctionalMenu from '../components/leftsidebar/Leftside';
 import AIAssistant from '../components/aiAssistant/AIAssistant';
 import RMWHero from '../components/hero/RMWHero';
 
 const Dashboard = () => {
-  const { user, logout } = useAuth();
   const trackingRef = useRef(null);
 
   const handleStartTrack = () => {
@@ -19,50 +15,11 @@ const Dashboard = () => {
 
   return (
     <div className="App">
-      {/* Top Navbar */}
       <Topnavbar />
 
-      {/* User Info Bar */}
-      <div
-        style={{
-          padding: '12px 20px',
-          background: '#f5f5f5',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
-        }}
-      >
-        <div>
-          <strong>Welcome, {user?.name || 'User'}</strong>
-          <div style={{ fontSize: '13px', color: '#666' }}>
-            {user?.email}
-          </div>
-        </div>
-        <button
-          onClick={logout}
-          style={{
-            padding: '8px 16px',
-            background: '#dc3545',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer'
-          }}
-        >
-          Logout
-        </button>
-      </div>
-
-      {/* Left Sidebar */}
       <FunctionalMenu />
-
-      {/* AI Assistant */}
       <AIAssistant />
-
-      {/* Hero Section */}
       <RMWHero onStartTrack={handleStartTrack} />
-
-      {/* Main Content Area */}
       <main className="App-content" ref={trackingRef}>
         <div className="content-container">
           <h1>Global Tracking System</h1>

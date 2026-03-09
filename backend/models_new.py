@@ -67,9 +67,13 @@ class User(Base):
     avatar = Column(Text)  # Base64 encoded or URL
     roles_json = Column(JSON)  # Optional explicit role list for multi-role users
     is_active = Column(Boolean, default=True)
+    is_deleted = Column(Boolean, default=False, index=True)
     mfa_enabled = Column(Boolean, default=False)  # ← ADD THIS
     is_admin = Column(Boolean, default=False, index=True)
     rejection_reason = Column(Text)
+    deleted_reason = Column(Text)
+    deleted_at = Column(DateTime)
+    deleted_by = Column(Integer, ForeignKey("users.id"))
     approved_by = Column(Integer, ForeignKey("users.id"))
     approved_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)

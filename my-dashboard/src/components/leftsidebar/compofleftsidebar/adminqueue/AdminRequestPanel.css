@@ -150,6 +150,117 @@
   cursor: pointer;
 }
 
+.admin-user-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-user-menu-wrap {
+  position: relative;
+}
+
+.admin-user-menu-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  cursor: pointer;
+}
+
+.admin-user-menu {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  min-width: 150px;
+  border: 1px solid #334766;
+  background: #0f1a2d;
+  border-radius: 10px;
+  padding: 6px;
+  z-index: 15;
+  display: grid;
+  gap: 4px;
+}
+
+.admin-user-menu button {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: #e5e7eb;
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+
+.admin-user-menu button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.admin-user-menu button.danger {
+  color: #fecaca;
+}
+
+.deleted-user-row {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(56, 22, 22, 0.35);
+}
+
+.deleted-account-meta {
+  color: #fda4af;
+}
+
+.admin-info-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.admin-info-modal {
+  width: min(780px, 100%);
+  max-height: 80vh;
+  overflow: auto;
+  border: 1px solid #334766;
+  border-radius: 12px;
+  background: #1b2940;
+  color: #e5e7eb;
+}
+
+.admin-info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid #334766;
+}
+
+.admin-info-header button {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+}
+
+.admin-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  padding: 14px;
+}
+
+.admin-info-grid p {
+  margin: 0;
+}
+
 .admin-queue-msg {
   color: #fda4af;
 }

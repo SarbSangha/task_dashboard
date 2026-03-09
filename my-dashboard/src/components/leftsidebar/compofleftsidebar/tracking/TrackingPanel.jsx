@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import { taskAPI } from '../../../../services/api';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
+import { useCustomDialogs } from '../../../common/CustomDialogs';
 import './TrackingPanel.css';
 
 const TrackingPanel = ({ isOpen, onClose }) => {
+  const { showAlert, showPrompt } = useCustomDialogs();
   const [tasks, setTasks] = useState([]);
   const [selectedTask, setSelectedTask] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
@@ -14,6 +16,19 @@ const TrackingPanel = ({ isOpen, onClose }) => {
   const [isMaximized, setIsMaximized] = useState(false);
   const [openActionMenuId, setOpenActionMenuId] = useState(null);
   const [chatTask, setChatTask] = useState(null);
+  const [selectionModal, setSelectionModal] = useState({
+    open: false,
+    mode: 'forward',
+    task: null,
+    targets: [],
+    departments: [],
+    selectedDepartment: '',
+    selectedUserIds: [],
+    comments: '',
+    loading: false,
+    submitting: false,
+    error: '',
+  });
 
   useEffect(() => {
     if (isOpen) {
@@ -89,6 +104,102 @@ const TrackingPanel = ({ isOpen, onClose }) => {
     setWorkflowOpen(true);
   };
 
+  const openSelectionModal = async (task, mode) => {
+    setSelectionModal({
+      open: true,
+      mode,
+      task,
+      targets: [],
+      departments: [],
+      selectedDepartment: '',
+      selectedUserIds: [],
+      comments: '',
+      loading: true,
+      submitting: false,
+      error: '',
+    });
+    try {
+      const response = await taskAPI.getForwardTargets(task.id);
+      const targets = response?.users || [];
+      const departments = Array.from(
+        new Set(targets.map((user) => (user.department || '').trim()).filter(Boolean))
+      ).sort((a, b) => a.localeCompare(b));
+      setSelectionModal((prev) => ({
+        ...prev,
+        targets,
+        departments,
+        selectedDepartment: departments[0] || '',
+        loading: false,
+      }));
+    } catch (error) {
+      setSelectionModal((prev) => ({
+        ...prev,
+        loading: false,
+        error: error?.response?.data?.detail || 'Failed to load departments/users',
+      }));
+    }
+  };
+
+  const closeSelectionModal = () => {
+    setSelectionModal({
+      open: false,
+      mode: 'forward',
+      task: null,
+      targets: [],
+      departments: [],
+      selectedDepartment: '',
+      selectedUserIds: [],
+      comments: '',
+      loading: false,
+      submitting: false,
+      error: '',
+    });
+  };
+
+  const toggleSelectionUser = (userId) => {
+    setSelectionModal((prev) => ({
+      ...prev,
+      selectedUserIds: prev.selectedUserIds.includes(userId)
+        ? prev.selectedUserIds.filter((id) => id !== userId)
+        : [...prev.selectedUserIds, userId],
+    }));
+  };
+
+  const submitSelectionModal = async () => {
+    if (!selectionModal.task) return;
+    if (selectionModal.selectedUserIds.length === 0) {
+      setSelectionModal((prev) => ({ ...prev, error: 'Select at least one member.' }));
+      return;
+    }
+
+    setSelectionModal((prev) => ({ ...prev, submitting: true, error: '' }));
+    try {
+      const comments = (selectionModal.comments || '').trim();
+      if (selectionModal.mode === 'forward') {
+        await taskAPI.forwardTask(selectionModal.task.id, {
+          to_department: selectionModal.selectedDepartment || undefined,
+          to_user_ids: selectionModal.selectedUserIds,
+          comments,
+        });
+      } else {
+        await taskAPI.assignTaskMembers(
+          selectionModal.task.id,
+          selectionModal.selectedUserIds,
+          comments || 'Assigned from tracking panel'
+        );
+      }
+
+      closeSelectionModal();
+      await loadTasks();
+    } catch (error) {
+      setSelectionModal((prev) => ({
+        ...prev,
+        submitting: false,
+        error: error?.response?.data?.detail || 'Action failed',
+      }));
+    }
+  };
+
   const runTaskAction = async (task, action) => {
     try {
       if (action === 'chat') {
@@ -97,38 +208,52 @@ const TrackingPanel = ({ isOpen, onClose }) => {
         return;
       }
       if (action === 'approve') {
-        const comments = window.prompt('Approval comment (optional):', '') ?? '';
+        const comments = (await showPrompt('Approval comment (optional):', {
+          title: 'Approve Task',
+          defaultValue: '',
+        })) ?? '';
         await taskAPI.approveTask(task.id, comments);
       } else if (action === 'need_improvement') {
-        const comments = window.prompt('Need Improvement note:', '') ?? '';
+        const comments = (await showPrompt('Need Improvement note:', {
+          title: 'Need Improvement',
+          defaultValue: '',
+          multiline: true,
+          rows: 6,
+          placeholder: 'Describe what needs to be improved...',
+        })) ?? '';
         if (!comments) return;
         await taskAPI.needImprovement(task.id, comments);
       } else if (action === 'submit') {
-        const resultText = window.prompt('Submit result details:', '') ?? '';
+        const resultText = (await showPrompt('Submit result details:', {
+          title: 'Submit Result',
+          defaultValue: '',
+        })) ?? '';
         await taskAPI.submitTask(task.id, resultText);
       } else if (action === 'assign') {
-        const idsRaw = window.prompt('Enter assignee user IDs (comma-separated):', '') ?? '';
-        if (!idsRaw.trim()) return;
-        const ids = idsRaw.split(',').map((x) => Number(x.trim())).filter(Boolean);
-        await taskAPI.assignTaskMembers(task.id, ids, 'Assigned from tracking panel');
+        await openSelectionModal(task, 'assign');
+        return;
       } else if (action === 'forward') {
-        const toDepartment = window.prompt('Forward to department name:', '') ?? '';
-        if (!toDepartment) return;
-        const comments = window.prompt('Forward note (optional):', '') ?? '';
-        await taskAPI.forwardTask(task.id, { to_department: toDepartment, comments });
+        await openSelectionModal(task, 'forward');
+        return;
       } else if (action === 'edit_task') {
-        const description = window.prompt('Update task description:', task.description || '') ?? '';
+        const description = (await showPrompt('Update task description:', {
+          title: 'Edit Task',
+          defaultValue: task.description || '',
+        })) ?? '';
         if (!description) return;
         await taskAPI.editTask(task.id, { description });
       } else if (action === 'edit_result') {
-        const result = window.prompt('Update result text:', task.resultText || '') ?? '';
+        const result = (await showPrompt('Update result text:', {
+          title: 'Edit Result',
+          defaultValue: task.resultText || '',
+        })) ?? '';
         if (!result) return;
         await taskAPI.editResult(task.id, result);
       }
       await loadTasks();
     } catch (error) {
       console.error('Action failed', error);
-      alert(error?.response?.data?.detail || 'Action failed');
+      await showAlert(error?.response?.data?.detail || 'Action failed', { title: 'Action Failed' });
     } finally {
       setOpenActionMenuId(null);
     }
@@ -322,6 +447,95 @@ const TrackingPanel = ({ isOpen, onClose }) => {
         isOpen={!!chatTask}
         onClose={() => setChatTask(null)}
       />
+
+      {selectionModal.open && (
+        <div className="tracking-selection-overlay" onClick={closeSelectionModal}>
+          <div className="tracking-selection-modal" onClick={(event) => event.stopPropagation()}>
+            <h3>{selectionModal.mode === 'forward' ? 'Forward Task' : 'Assign Members'}</h3>
+            <p className="tracking-selection-subtitle">
+              {selectionModal.task?.title || 'Select recipients'}
+            </p>
+
+            {selectionModal.loading ? (
+              <p className="tracking-selection-loading">Loading departments and members...</p>
+            ) : (
+              <>
+                <label htmlFor="tracking-selection-department">Department</label>
+                <select
+                  id="tracking-selection-department"
+                  value={selectionModal.selectedDepartment}
+                  onChange={(event) =>
+                    setSelectionModal((prev) => ({
+                      ...prev,
+                      selectedDepartment: event.target.value,
+                      selectedUserIds: [],
+                    }))
+                  }
+                >
+                  <option value="">Choose department...</option>
+                  {selectionModal.departments.map((dept) => (
+                    <option key={dept} value={dept}>{dept}</option>
+                  ))}
+                </select>
+
+                <label>Members (single or multiple)</label>
+                <div className="tracking-selection-user-list">
+                  {selectionModal.targets
+                    .filter((target) => {
+                      if (!selectionModal.selectedDepartment) return false;
+                      return (target.department || '') === selectionModal.selectedDepartment;
+                    })
+                    .map((target) => (
+                      <label key={target.id} className="tracking-selection-user-item">
+                        <input
+                          type="checkbox"
+                          checked={selectionModal.selectedUserIds.includes(target.id)}
+                          onChange={() => toggleSelectionUser(target.id)}
+                        />
+                        <span>
+                          {target.name} ({target.position || 'User'})
+                        </span>
+                      </label>
+                    ))}
+                  {selectionModal.selectedDepartment &&
+                    selectionModal.targets.filter((target) => (target.department || '') === selectionModal.selectedDepartment).length === 0 && (
+                      <p className="tracking-selection-loading">No members found in selected department.</p>
+                    )}
+                </div>
+
+                <label htmlFor="tracking-selection-comments">Note (optional)</label>
+                <textarea
+                  id="tracking-selection-comments"
+                  rows={3}
+                  value={selectionModal.comments}
+                  onChange={(event) =>
+                    setSelectionModal((prev) => ({ ...prev, comments: event.target.value }))
+                  }
+                  placeholder="Add note..."
+                />
+
+                {selectionModal.error && (
+                  <p className="tracking-selection-error">{selectionModal.error}</p>
+                )}
+
+                <div className="tracking-selection-actions">
+                  <button type="button" onClick={closeSelectionModal}>Cancel</button>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={selectionModal.submitting}
+                    onClick={submitSelectionModal}
+                  >
+                    {selectionModal.submitting
+                      ? (selectionModal.mode === 'forward' ? 'Forwarding...' : 'Assigning...')
+                      : (selectionModal.mode === 'forward' ? 'Forward' : 'Assign')}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 };

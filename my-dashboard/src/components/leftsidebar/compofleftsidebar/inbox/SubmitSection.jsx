@@ -1,10 +1,12 @@
 // components/Inbox/SubmitSection.jsx
 import React, { useState } from 'react';
 import './SubmitSection.css';
+import { useCustomDialogs } from '../../../common/CustomDialogs';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
+  const { showAlert } = useCustomDialogs();
   const [formData, setFormData] = useState({
     comments: '',
     resultDetails: '',
@@ -42,10 +44,10 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
         attachments: [...prev.attachments, ...uploadedUrls]
       }));
 
-      alert(`✅ ${files.length} file(s) uploaded successfully!`);
+      await showAlert(`${files.length} file(s) uploaded successfully!`, { title: 'Upload Complete' });
     } catch (error) {
       console.error('Upload error:', error);
-      alert('❌ Failed to upload files');
+      await showAlert('Failed to upload files.', { title: 'Upload Failed' });
     } finally {
       setUploading(false);
     }
@@ -55,7 +57,7 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
     e.preventDefault();
     
     if (!formData.resultDetails.trim()) {
-      alert('Please provide result details');
+      await showAlert('Please provide result details.', { title: 'Missing Details' });
       return;
     }
 
@@ -71,14 +73,14 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
       const data = await response.json();
 
       if (data.success) {
-        alert('✅ Task submitted successfully!');
+        await showAlert('Task submitted successfully!', { title: 'Success' });
         onSubmitComplete();
       } else {
-        alert('❌ ' + data.detail);
+        await showAlert(data.detail || 'Task submission failed.', { title: 'Submission Failed' });
       }
     } catch (error) {
       console.error('Submit error:', error);
-      alert('❌ Failed to submit task');
+      await showAlert('Failed to submit task.', { title: 'Submission Failed' });
     } finally {
       setSubmitting(false);
     }

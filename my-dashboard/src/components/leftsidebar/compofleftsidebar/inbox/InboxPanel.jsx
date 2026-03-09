@@ -3,11 +3,13 @@ import React, { useState, useEffect } from 'react';
 import InboxCard from './InboxCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
-import { fileAPI, taskAPI } from '../../../../services/api';
+import { fileAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import { useAuth } from '../../../../context/AuthContext';
+import { useCustomDialogs } from '../../../common/CustomDialogs';
 import './InboxPanel.css';
 
 const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
+  const { showAlert, showPrompt } = useCustomDialogs();
   const { user } = useAuth();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -39,11 +41,52 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
     submitting: false,
     error: '',
   });
+  const refreshTimerRef = React.useRef(null);
 
   useEffect(() => {
     if (isOpen) {
       fetchInboxTasks();
     }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+
+    const scheduleRefresh = () => {
+      if (refreshTimerRef.current) return;
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        fetchInboxTasks();
+      }, 250);
+    };
+
+    const unsubscribe = subscribeRealtimeNotifications({
+      onMessage: (payload) => {
+        if (!payload || payload.eventType === 'group_message') return;
+        scheduleRefresh();
+      },
+      onOpen: () => {
+        scheduleRefresh();
+      },
+    });
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      fetchInboxTasks();
+    }, 180000);
+
+    const onFocus = () => scheduleRefresh();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      unsubscribe();
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
   }, [isOpen]);
 
   useEffect(() => {
@@ -251,7 +294,10 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
   const runTaskAction = async (task, action) => {
     try {
       if (action === 'approve') {
-        const comments = window.prompt('Approval comment (optional):', '') ?? '';
+        const comments = (await showPrompt('Approval comment (optional):', {
+          title: 'Approve Task',
+          defaultValue: '',
+        })) ?? '';
         await taskAPI.approveTask(task.id, comments);
       } else if (action === 'start') {
         try {
@@ -266,14 +312,23 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         // Move to Tools immediately after trying to persist status change.
         return;
       } else if (action === 'need_improvement') {
-        const comments = window.prompt('Need Improvement note:', '') ?? '';
+        const comments = (await showPrompt('Need Improvement note:', {
+          title: 'Need Improvement',
+          defaultValue: '',
+          multiline: true,
+          rows: 6,
+          placeholder: 'Describe what needs to be improved...',
+        })) ?? '';
         if (!comments) return;
         await taskAPI.needImprovement(task.id, comments);
       } else if (action === 'submit') {
         openSubmitModal(task);
         return;
       } else if (action === 'assign') {
-        const idsRaw = window.prompt('Enter assignee user IDs (comma-separated):', '') ?? '';
+        const idsRaw = (await showPrompt('Enter assignee user IDs (comma-separated):', {
+          title: 'Assign Members',
+          defaultValue: '',
+        })) ?? '';
         if (!idsRaw.trim()) return;
         const ids = idsRaw.split(',').map((x) => Number(x.trim())).filter(Boolean);
         await taskAPI.assignTaskMembers(task.id, ids, 'Assigned from inbox');
@@ -281,17 +336,23 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         await openForwardModal(task);
         return;
       } else if (action === 'edit_task') {
-        const description = window.prompt('Update task description:', task.description || '') ?? '';
+        const description = (await showPrompt('Update task description:', {
+          title: 'Edit Task',
+          defaultValue: task.description || '',
+        })) ?? '';
         if (!description) return;
         await taskAPI.editTask(task.id, { description });
       } else if (action === 'edit_result') {
-        const result = window.prompt('Update result text:', task.resultText || '') ?? '';
+        const result = (await showPrompt('Update result text:', {
+          title: 'Edit Result',
+          defaultValue: task.resultText || '',
+        })) ?? '';
         if (!result) return;
         await taskAPI.editResult(task.id, result);
       }
       await fetchInboxTasks();
     } catch (error) {
-      alert(error?.response?.data?.detail || 'Action failed');
+      await showAlert(error?.response?.data?.detail || 'Action failed', { title: 'Action Failed' });
     }
   };
 

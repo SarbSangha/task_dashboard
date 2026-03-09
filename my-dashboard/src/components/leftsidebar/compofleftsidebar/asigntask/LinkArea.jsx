@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
+import { useCustomDialogs } from "../../../common/CustomDialogs";
 
 export default function TaskForm({ links = [], onChange }) {
+  const { showAlert } = useCustomDialogs();
   const [linkInput, setLinkInput] = useState("");
   const [localLinks, setLocalLinks] = useState(links);
 
@@ -18,7 +20,7 @@ export default function TaskForm({ links = [], onChange }) {
 
   const addLink = () => {
     if (linkInput.trim() === "") {
-      alert("Please enter a valid link");
+      void showAlert("Please enter a valid link.", { title: "Invalid Link" });
       return;
     }
 
@@ -28,7 +30,7 @@ export default function TaskForm({ links = [], onChange }) {
     } catch {
       // If not a full URL, add https://
       if (!linkInput.startsWith('http')) {
-        alert("Please enter a valid URL starting with http:// or https://");
+        void showAlert("Please enter a valid URL starting with http:// or https://.", { title: "Invalid URL" });
         return;
       }
     }

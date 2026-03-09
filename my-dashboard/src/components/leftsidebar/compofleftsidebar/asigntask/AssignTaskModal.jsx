@@ -4,8 +4,10 @@ import './AssignTaskModal.css';
 import AttachmentBox from './Attachments';
 import TaskForm from './LinkArea';
 import { taskAPI, draftAPI, authAPI, fileAPI } from '../../../../services/api';
+import { useCustomDialogs } from '../../../common/CustomDialogs';
 
 const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
+  const { showConfirm } = useCustomDialogs();
   // Form state
   const [formData, setFormData] = useState({
     projectName: '',
@@ -309,9 +311,11 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   };
 
   // Clear form
-  const handleClear = () => {
+  const handleClear = async () => {
     if (hasFormData()) {
-      const confirmClear = window.confirm('Are you sure you want to clear all form data?');
+      const confirmClear = await showConfirm('Are you sure you want to clear all form data?', {
+        title: 'Clear Form',
+      });
       if (!confirmClear) return;
     }
 
@@ -484,7 +488,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       }
 
       // Clear form
-      handleClear();
+      await handleClear();
       
       // Close modal after 1.5 seconds
       setTimeout(() => {
@@ -515,14 +519,15 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   };
 
   // Handle modal close
-  const handleClose = () => {
+  const handleClose = async () => {
     if (hasFormData()) {
-      const confirmClose = window.confirm(
-        'You have unsaved changes. Do you want to save as draft before closing?'
+      const confirmClose = await showConfirm(
+        'You have unsaved changes. Do you want to save as draft before closing?',
+        { title: 'Unsaved Changes', confirmText: 'Save Draft', cancelText: 'Discard' }
       );
       if (confirmClose) {
-        saveDraft();
-        setTimeout(onClose, 500);
+        await saveDraft();
+        onClose();
       } else {
         onClose();
       }

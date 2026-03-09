@@ -3,9 +3,11 @@ import '../../SettingSidebar.css';
 import { useAuth } from '../../../../context/AuthContext';
 import { AvatarUpload } from '../../../profile/AvatarUpload';
 import { authAPI } from '../../../../services/api';
+import { useCustomDialogs } from '../../../common/CustomDialogs';
 import './ProfileSettingsPanel.css';
 
 const ProfileSettingsPanel = ({ isOpen, onClose }) => {
+  const { showAlert } = useCustomDialogs();
   const { user } = useAuth();
   
   const [profileData, setProfileData] = useState({
@@ -65,9 +67,9 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
     setProfileData(prev => ({ ...prev, avatar: newAvatar }));
   };
 
-  const handleSubmitFlagRequest = () => {
+  const handleSubmitFlagRequest = async () => {
     if (requestChangeFlag.trim()) {
-      alert(`Flag change request submitted: ${requestChangeFlag}`);
+      await showAlert(`Flag change request submitted: ${requestChangeFlag}`, { title: 'Request Submitted' });
       setRequestChangeFlag('');
     }
   };

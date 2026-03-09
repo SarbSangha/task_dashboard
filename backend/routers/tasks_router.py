@@ -98,6 +98,7 @@ class TaskAssignPayload(BaseModel):
 class TaskForwardPayload(BaseModel):
     to_department: Optional[str] = None
     to_user_id: Optional[int] = None
+    to_user_ids: List[int] = Field(default_factory=list)
     comments: Optional[str] = None
 
 
@@ -447,6 +448,7 @@ def serialize_task(task: Task, db: Session, current_user: Optional[User] = None)
     task_dict["chatCount"] = comments_count
     task_dict["forwardHistory"] = forward_history
     task_dict["lastForwardedBy"] = forward_history[-1]["fromUser"] if forward_history else None
+    task_dict["editCount"] = max(0, (task.task_version or 1) - 1)
     task_dict["seenBy"] = [
         {
             "id": user.id,
@@ -1353,15 +1355,22 @@ async def forward_task(
     if not ("super_admin" in roles or "hod" in roles or "spoc" in roles or (is_assignee and task.status == TaskStatus.APPROVED)):
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    if not payload.to_department and not payload.to_user_id:
-        raise HTTPException(status_code=400, detail="to_department or to_user_id required")
+    normalized_user_ids = sorted({uid for uid in (payload.to_user_ids or []) if uid})
+    if payload.to_user_id and payload.to_user_id not in normalized_user_ids:
+        normalized_user_ids.append(payload.to_user_id)
+
+    if not payload.to_department and not normalized_user_ids:
+        raise HTTPException(status_code=400, detail="to_department or to_user_id(s) required")
 
     target_users: List[User] = []
-    if payload.to_user_id:
-        user = db.query(User).filter(User.id == payload.to_user_id, User.is_active == True).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="Target user not found")
-        target_users = [user]
+    if normalized_user_ids:
+        users = db.query(User).filter(User.id.in_(normalized_user_ids), User.is_active == True).all()
+        existing_ids = {u.id for u in users}
+        missing_ids = [uid for uid in normalized_user_ids if uid not in existing_ids]
+        if missing_ids:
+            raise HTTPException(status_code=404, detail=f"Target user(s) not found: {missing_ids}")
+        user_map = {u.id: u for u in users}
+        target_users = [user_map[uid] for uid in normalized_user_ids if uid in user_map]
     elif payload.to_department:
         query = db.query(User).filter(User.department == payload.to_department, User.is_active == True)
         if "hod" in roles:
@@ -1369,6 +1378,9 @@ async def forward_task(
         else:
             query = query.filter(or_(User.position.ilike("%hod%"), User.position.ilike("%spoc%")))
         target_users = query.all()
+
+    if not target_users:
+        raise HTTPException(status_code=404, detail="No eligible target users found")
 
     for target in target_users:
         role = ParticipantRole.APPROVER
@@ -1402,6 +1414,8 @@ async def forward_task(
 
     if payload.to_department:
         task.to_department = payload.to_department
+    elif target_users:
+        task.to_department = target_users[0].department
     task.status = TaskStatus.FORWARDED
     task.workflow_stage = "forwarded"
     task.updated_at = datetime.utcnow()
@@ -1413,7 +1427,11 @@ async def forward_task(
         "forwarded",
         TaskStatus.FORWARDED.value,
         payload.comments,
-        {"toDepartment": payload.to_department, "toUserId": payload.to_user_id},
+        {
+            "toDepartment": payload.to_department,
+            "toUserId": payload.to_user_id,
+            "toUserIds": normalized_user_ids,
+        },
     )
 
     db.commit()
@@ -1565,6 +1583,31 @@ async def edit_task_details(
     )
     add_history(db, task, current_user.id, "task_edited", task.status.value, "Task details edited")
 
+    participants = db.query(TaskParticipant).filter(
+        TaskParticipant.task_id == task.id,
+        TaskParticipant.is_active == True,
+    ).all()
+    recipients = {task.creator_id}
+    recipients.update({p.user_id for p in participants})
+    recipients.discard(current_user.id)
+    edit_no = max(1, (task.task_version or 1) - 1)
+    for participant in participants:
+        if participant.user_id == current_user.id:
+            continue
+        participant.is_read = False
+        participant.read_at = None
+    for user_id in recipients:
+        create_notification(
+            db,
+            task,
+            user_id,
+            "task_edited",
+            f"Task Updated (Edit #{edit_no}): {task.title}",
+            f"Task details were updated. Edit #{edit_no}.",
+            actor=current_user,
+            metadata_json={"editCount": edit_no, "taskVersion": task.task_version},
+        )
+
     db.commit()
     return {"success": True, "message": "Task updated", "data": serialize_task(task, db, current_user)}
 
@@ -1604,6 +1647,30 @@ async def edit_task_result(
     )
     add_history(db, task, current_user.id, "result_edited", task.status.value, "Result edited")
 
+    participants = db.query(TaskParticipant).filter(
+        TaskParticipant.task_id == task.id,
+        TaskParticipant.is_active == True,
+    ).all()
+    recipients = {task.creator_id}
+    recipients.update({p.user_id for p in participants})
+    recipients.discard(current_user.id)
+    for participant in participants:
+        if participant.user_id == current_user.id:
+            continue
+        participant.is_read = False
+        participant.read_at = None
+    for user_id in recipients:
+        create_notification(
+            db,
+            task,
+            user_id,
+            "result_edited",
+            f"Result Updated: {task.title}",
+            "Task result has been edited.",
+            actor=current_user,
+            metadata_json={"resultVersion": task.result_version},
+        )
+
     db.commit()
     return {"success": True, "message": "Result updated"}
 
@@ -1642,6 +1709,36 @@ async def add_comment(
     add_history(db, task, current_user.id, "commented", task.status.value, payload.comment)
     db.commit()
     db.refresh(new_comment)
+
+    participants = db.query(TaskParticipant).filter(
+        TaskParticipant.task_id == task.id,
+        TaskParticipant.is_active == True,
+    ).all()
+    recipients = {task.creator_id}
+    recipients.update({p.user_id for p in participants})
+    recipients.discard(current_user.id)
+    comment_meta = {
+        "taskId": task.id,
+        "taskNumber": task.task_number,
+        "projectId": task.project_id,
+        "commentId": new_comment.id,
+        "senderId": current_user.id,
+        "senderName": current_user.name,
+        "createdAt": new_comment.created_at.isoformat() if new_comment.created_at else None,
+        "commentType": new_comment.comment_type,
+    }
+    for user_id in recipients:
+        create_notification(
+            db,
+            task,
+            user_id,
+            "task_comment",
+            f"New comment on {task.title}",
+            payload.comment[:180],
+            actor=current_user,
+            metadata_json=comment_meta,
+        )
+    db.commit()
 
     return {
         "success": True,
@@ -1827,6 +1924,27 @@ async def mark_notification_read(
     n.read_at = datetime.utcnow()
     db.commit()
     return {"success": True, "message": "Notification marked as read"}
+
+
+@router.delete("/notifications/{notification_id}")
+async def delete_notification(
+    notification_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    n = db.query(TaskNotification).filter(
+        TaskNotification.id == notification_id,
+        TaskNotification.user_id == current_user.id,
+    ).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    db.delete(n)
+    db.commit()
+    return {"success": True, "message": "Notification removed"}
 
 
 @router.get("/debug/current-user")
