@@ -34,6 +34,35 @@ from auth import (
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
+DEFAULT_ALLOWED_COMPANY_DOMAINS = (
+    "@ritzmediaworld.com",
+    "@ctm.co.in",
+    "@rmwcreative.in",
+    "@contenaissance.com",
+)
+
+
+def _allowed_company_domains() -> tuple[str, ...]:
+    raw = (os.getenv("ALLOWED_COMPANY_EMAIL_DOMAINS") or "").strip()
+    if not raw:
+        return DEFAULT_ALLOWED_COMPANY_DOMAINS
+    domains = []
+    for part in raw.split(","):
+        value = part.strip().lower()
+        if not value:
+            continue
+        if not value.startswith("@"):
+            value = f"@{value}"
+        domains.append(value)
+    return tuple(domains) if domains else DEFAULT_ALLOWED_COMPANY_DOMAINS
+
+
+def _is_allowed_company_email(email: Optional[str]) -> bool:
+    value = (email or "").strip().lower()
+    if "@" not in value:
+        return False
+    return any(value.endswith(domain) for domain in _allowed_company_domains())
+
 # ==================== SCHEMAS ====================
 class UserLogin(BaseModel):
     email: str
@@ -102,6 +131,16 @@ async def register(
     """Register a new user"""
     try:
         print(f"\n📝 REGISTRATION ATTEMPT: {user_data.email}")
+
+        if not _is_allowed_company_email(user_data.email):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Only company email addresses are allowed. "
+                    "Use one of: @ritzmediaworld.com, @ctm.co.in, "
+                    "@rmwcreative.in, @contenaissance.com"
+                ),
+            )
         
         # Check if user exists
         existing_user = db.query(User).filter(
@@ -199,6 +238,16 @@ async def login(
             raise HTTPException(
                 status_code=401, 
                 detail="Invalid email or password"
+            )
+
+        if not _is_allowed_company_email(user.email):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Only company email addresses are authorized to login. "
+                    "Allowed: @ritzmediaworld.com, @ctm.co.in, "
+                    "@rmwcreative.in, @contenaissance.com"
+                ),
             )
         
         # Verify password

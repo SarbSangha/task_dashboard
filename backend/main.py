@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import os
 from sqlalchemy import text
+from sqlalchemy import or_
 
 # FIXED: Use relative imports or backend prefix
 from database_config import (
@@ -97,10 +98,16 @@ async def lifespan(app: FastAPI):
     # Ensure default admin account exists
     op_db = OperationalSessionLocal()
     try:
-        admin = op_db.query(User).filter(User.email == "admin").first()
+        admin_email = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@ritzmediaworld.com").strip() or "admin@ritzmediaworld.com"
+        admin = op_db.query(User).filter(
+            or_(
+                User.email == admin_email,
+                User.email == "admin",  # legacy bootstrap account
+            )
+        ).first()
         if not admin:
             admin = User(
-                email="admin",
+                email=admin_email,
                 name="Administrator",
                 hashed_password=get_password_hash("admin1234"),
                 position="admin",
@@ -111,6 +118,13 @@ async def lifespan(app: FastAPI):
             )
             op_db.add(admin)
         else:
+            if admin.email != admin_email:
+                email_in_use = op_db.query(User).filter(
+                    User.email == admin_email,
+                    User.id != admin.id,
+                ).first()
+                if not email_in_use:
+                    admin.email = admin_email
             admin.is_admin = True
             admin.is_active = True
             admin.hashed_password = get_password_hash("admin1234")

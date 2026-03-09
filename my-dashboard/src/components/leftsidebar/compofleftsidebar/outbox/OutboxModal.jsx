@@ -90,9 +90,22 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
     setExpandedTaskId(expandedTaskId === taskId ? null : taskId);
   };
 
-  const handleTaskAction = (task, action) => {
+  const handleTaskAction = async (task, action) => {
     if (action === 'edit_task' && onEditTask) {
       onEditTask(task);
+      return;
+    }
+
+    if (action === 'revoke_task') {
+      const confirmed = window.confirm('Revoke this task? This will mark it as revoked (regularised) for receivers.');
+      if (!confirmed) return;
+      const comments = window.prompt('Optional reason for revoking this task:', '') ?? '';
+      try {
+        await taskAPI.revokeTask(task.id, comments.trim());
+        await fetchData(true, { includeDrafts: activeTab === 'drafts' });
+      } catch (error) {
+        alert(error?.response?.data?.detail || 'Failed to revoke task');
+      }
     }
   };
 

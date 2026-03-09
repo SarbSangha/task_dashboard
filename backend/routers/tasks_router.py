@@ -338,6 +338,9 @@ def ensure_participant(db: Session, task_id: int, user_id: int, role: Participan
 
 
 def compute_available_actions(task: Task, user: User, db: Session) -> List[str]:
+    if task.status == TaskStatus.CANCELLED:
+        return []
+
     roles = role_set(user)
     actions = ["chat"]
     is_creator = user.id == task.creator_id
@@ -362,6 +365,8 @@ def compute_available_actions(task: Task, user: User, db: Session) -> List[str]:
             actions.append("edit_result")
 
     if is_creator:
+        if task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.REJECTED}:
+            actions.append("revoke_task")
         if task.status in {TaskStatus.PENDING, TaskStatus.NEED_IMPROVEMENT, TaskStatus.FORWARDED}:
             actions.append("edit_task")
         if task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED}:
@@ -384,6 +389,7 @@ def serialize_task(task: Task, db: Session, current_user: Optional[User] = None)
     task_dict["resultText"] = task.result_text
     task_dict["resultLinks"] = meta.get("resultLinks", [])
     task_dict["resultAttachments"] = meta.get("resultAttachments", [])
+    task_dict["revocation"] = meta.get("revocation")
     creator = db.query(User).filter(User.id == task.creator_id).first()
     task_dict["creator"] = {
         "id": creator.id if creator else None,
@@ -845,10 +851,9 @@ async def get_all_user_tasks(
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    query = db.query(Task).filter(
-        Task.is_deleted == False,
-        or_(Task.creator_id == current_user.id, Task.participants.any(TaskParticipant.user_id == current_user.id)),
-    )
+    # Global visibility: return all tasks for any authenticated user.
+    # Trendings/Databank needs cross-user media visibility.
+    query = db.query(Task).filter(Task.is_deleted == False)
 
     if status:
         query = query.filter(Task.status == status)
@@ -1413,6 +1418,95 @@ async def forward_task(
 
     db.commit()
     return {"success": True, "message": "Task forwarded", "recipientCount": len(target_users)}
+
+
+@router.post("/{task_id}/actions/revoke")
+async def revoke_task(
+    task_id: int,
+    payload: TaskActionPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if current_user.id != task.creator_id:
+        raise HTTPException(status_code=403, detail="Only task creator can revoke this task")
+
+    if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.REJECTED}:
+        raise HTTPException(status_code=400, detail="Task cannot be revoked in current state")
+
+    revoke_note = (payload.comments or "").strip()
+    now = datetime.utcnow()
+    meta = dict(task.metadata_json or {})
+    revocation = {
+        "regularised": True,
+        "revokedById": current_user.id,
+        "revokedBy": current_user.name,
+        "revokedAt": now.isoformat(),
+        "reason": revoke_note or None,
+    }
+    meta["revocation"] = revocation
+    task.metadata_json = meta
+
+    task.status = TaskStatus.CANCELLED
+    task.workflow_stage = "revoked_regularised"
+    task.task_edit_locked = True
+    task.result_edit_locked = True
+    task.updated_at = now
+
+    history_comment = revoke_note or "Task revoked (regularised) by creator"
+    add_history(
+        db,
+        task,
+        current_user.id,
+        "revoked",
+        TaskStatus.CANCELLED.value,
+        history_comment,
+        {"revocation": revocation},
+    )
+    post_system_comment(db, task, current_user.id, history_comment, "revoked")
+
+    participants = db.query(TaskParticipant).filter(
+        TaskParticipant.task_id == task.id,
+        TaskParticipant.is_active == True,
+    ).all()
+
+    notify_message = "This task has been revoked (regularised) by the creator."
+    if revoke_note:
+        notify_message = f"{notify_message} Reason: {revoke_note}"
+
+    notified_users = set()
+    for participant in participants:
+        if participant.user_id == current_user.id:
+            continue
+        participant.is_read = False
+        participant.read_at = None
+        notified_users.add(participant.user_id)
+
+    for user_id in notified_users:
+        create_notification(
+            db,
+            task,
+            user_id,
+            "revoked",
+            f"Task Revoked: {task.title}",
+            notify_message,
+            actor=current_user,
+            metadata_json={"revocation": revocation},
+        )
+
+    db.commit()
+    return {
+        "success": True,
+        "message": "Task revoked successfully",
+        "status": task.status.value,
+        "revocation": revocation,
+    }
 
 
 @router.put("/{task_id}/edit-task")

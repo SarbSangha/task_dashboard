@@ -8,6 +8,10 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
   const [expanded, setExpanded] = useState(false);
   const [copiedKey, setCopiedKey] = useState('');
   const [toastMessage, setToastMessage] = useState('');
+  const isRevoked = task.status === 'cancelled' && !!(task.revocation || `${task.workflowStage || ''}`.includes('revoked'));
+  const revokedBy = task.revocation?.revokedBy || task.creator?.name || 'Creator';
+  const revokedAt = task.revocation?.revokedAt ? formatDateTimeIndia(task.revocation.revokedAt) : '';
+  const revokedReason = task.revocation?.reason || '';
 
   const baseActions = (task.availableActions || []).filter((action) => {
     if (action !== 'edit_task') return true;
@@ -22,9 +26,10 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
   const withStart = canShowStartTask && !baseActions.includes('start')
     ? ['start', ...baseActions]
     : baseActions;
-  const actions = canShowSubmitTask && !withStart.includes('submit')
+  const computedActions = canShowSubmitTask && !withStart.includes('submit')
     ? [...withStart, 'submit']
     : withStart;
+  const actions = isRevoked ? [] : computedActions;
   const assignedNames = (task.assignedTo || []).map((x) => x.name).join(', ') || 'Unassigned';
   const description = task.description || '';
   const shortDescription = description.length > 120 ? `${description.slice(0, 120)}...` : description;
@@ -82,7 +87,7 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
   };
 
   return (
-    <div className="inbox-card">
+    <div className={`inbox-card ${isRevoked ? 'revoked-card' : ''}`}>
       <div className="card-header">
         <div>
           <h3 className="card-title">{task.title}</h3>
@@ -109,6 +114,14 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
           )}
         </div>
       </div>
+      {isRevoked && (
+        <div className="revoked-banner">
+          <strong>This task has been revoked (regularised).</strong>
+          <span>
+            {` By ${revokedBy}${revokedAt ? ` on ${revokedAt}` : ''}${revokedReason ? `. Reason: ${revokedReason}` : ''}`}
+          </span>
+        </div>
+      )}
 
       <div className="card-grid">
         <span><strong>Task ID:</strong> {task.taskNumber || '-'}</span>

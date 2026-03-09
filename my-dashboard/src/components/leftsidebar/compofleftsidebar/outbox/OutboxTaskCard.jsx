@@ -52,7 +52,7 @@ const OutboxTaskCard = ({
 
   const menuActions = [
     'track',
-    ...(task.availableActions || []).filter((action) => action === 'edit_task')
+    ...(task.availableActions || []).filter((action) => action === 'edit_task' || action === 'revoke_task')
   ];
   const requestTypeLabel = (() => {
     const type = (taskType || 'task').toLowerCase();
@@ -148,7 +148,7 @@ const OutboxTaskCard = ({
                         onTaskAction?.(task, action);
                       }}
                     >
-                      {action === 'track' ? 'Track' : 'Edit Task'}
+                      {action === 'track' ? 'Track' : action === 'edit_task' ? 'Edit Task' : 'Revoke Task'}
                     </button>
                   ))}
                 </div>

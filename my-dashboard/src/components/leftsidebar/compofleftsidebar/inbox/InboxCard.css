@@ -7,6 +7,31 @@
   position: relative;
 }
 
+.inbox-card.revoked-card {
+  opacity: 0.9;
+  border-color: rgba(244, 114, 182, 0.45);
+  background: linear-gradient(180deg, rgba(48, 26, 55, 0.6), rgba(30, 37, 57, 0.92));
+}
+
+.revoked-banner {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(244, 114, 182, 0.45);
+  border-radius: 10px;
+  background: rgba(76, 29, 67, 0.45);
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.revoked-banner strong {
+  color: #fbcfe8;
+}
+
+.revoked-banner span {
+  color: #f5d0fe;
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;

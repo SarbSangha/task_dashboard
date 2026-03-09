@@ -3,6 +3,7 @@ import { taskAPI } from '../../../../services/api';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
+const ALL_DEPARTMENTS = 'all_departments';
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const EXTENSION_MAP = {
@@ -62,6 +63,8 @@ const normalizeAssetsFromTask = (task) => {
       projectName: task.projectName || '',
       createdByName: task.creator?.name || task.createdByName || task.createdBy || null,
       createdByDepartment: task.creator?.department || null,
+      fromDepartment: task.fromDepartment || task.from_department || null,
+      toDepartment: task.toDepartment || task.to_department || null,
       submittedByName:
         task.submittedByName ||
         task.submitter?.name ||
@@ -94,6 +97,7 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
+  const [departmentFilter, setDepartmentFilter] = useState(ALL_DEPARTMENTS);
   const [sortBy, setSortBy] = useState('latest');
   const [previewAsset, setPreviewAsset] = useState(null);
   const [infoAsset, setInfoAsset] = useState(null);
@@ -158,9 +162,30 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
     };
   }, [assets]);
 
+  const departmentOptions = useMemo(() => {
+    const unique = new Set();
+    assets.forEach((item) => {
+      [item.createdByDepartment, item.fromDepartment, item.toDepartment].forEach((dep) => {
+        const value = `${dep || ''}`.trim();
+        if (value) unique.add(value);
+      });
+    });
+    return [ALL_DEPARTMENTS, ...Array.from(unique).sort((a, b) => a.localeCompare(b))];
+  }, [assets]);
+
   const filteredAssets = useMemo(() => {
     const q = search.trim().toLowerCase();
     let rows = assets.filter((item) => (filter === 'all' ? true : item.mediaType === filter));
+
+    if (departmentFilter !== ALL_DEPARTMENTS) {
+      const target = departmentFilter.toLowerCase();
+      rows = rows.filter((item) =>
+        [item.createdByDepartment, item.fromDepartment, item.toDepartment].some(
+          (dep) => `${dep || ''}`.trim().toLowerCase() === target
+        )
+      );
+    }
+
     if (q) {
       rows = rows.filter(
         (item) =>
@@ -184,7 +209,7 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
       );
     }
     return rows;
-  }, [assets, filter, search, sortBy]);
+  }, [assets, filter, departmentFilter, search, sortBy]);
 
   const renderPreviewContent = (asset) => {
     if (!asset) return null;
@@ -332,6 +357,18 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
                     onClick={() => setFilter(item)}
                   >
                     {item.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              <div className="trendings-filter-group">
+                {departmentOptions.map((department) => (
+                  <button
+                    key={department}
+                    className={`trendings-chip ${departmentFilter === department ? 'active' : ''}`}
+                    onClick={() => setDepartmentFilter(department)}
+                    title={department === ALL_DEPARTMENTS ? 'All departments' : department}
+                  >
+                    {department === ALL_DEPARTMENTS ? 'ALL DEPTS' : department}
                   </button>
                 ))}
               </div>

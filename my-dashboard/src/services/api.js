@@ -366,6 +366,11 @@ export const taskAPI = {
     return response.data;
   },
 
+  revokeTask: async (taskId, comments = '') => {
+    const response = await api.post(`/api/tasks/${taskId}/actions/revoke`, { comments });
+    return response.data;
+  },
+
   editTask: async (taskId, payload = {}) => {
     const response = await api.put(`/api/tasks/${taskId}/edit-task`, payload);
     return response.data;
