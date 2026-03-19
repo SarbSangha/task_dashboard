@@ -1,12 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Cookie
+from fastapi import APIRouter, Depends, HTTPException, Cookie, Header
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from auth import verify_session_token
+from auth import verify_session_token, get_request_session_token
 from database_config import get_operational_db
 from models_new import ActivityStatus, Task, TaskStatus, User, UserActivity
 
@@ -41,12 +41,14 @@ def normalize_to_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
 
 def get_current_user_from_session(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     db: Session = Depends(get_operational_db),
 ):
-    if not session_id:
+    resolved_session_id = get_request_session_token(session_id, x_session_id)
+    if not resolved_session_id:
         return None
     try:
-        user_id = verify_session_token(session_id, db)
+        user_id = verify_session_token(resolved_session_id, db)
         return db.query(User).filter(User.id == user_id).first()
     except Exception:
         return None

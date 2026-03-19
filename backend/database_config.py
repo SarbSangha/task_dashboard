@@ -7,11 +7,31 @@ from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 
 
-def _load_env_file_if_needed(env_path: str = ".env") -> None:
+def _is_truthy(value: str) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _should_load_env_file() -> bool:
+    explicit = (os.getenv("LOAD_DOTENV") or "").strip().lower()
+    if explicit in {"1", "true", "yes", "on"}:
+        return True
+    if explicit in {"0", "false", "no", "off"}:
+        return False
+
+    environment = (os.getenv("ENVIRONMENT") or "").strip().lower()
+    if environment == "production" or _is_truthy(os.getenv("RENDER")):
+        return False
+    return True
+
+
+def _load_env_file_if_needed(env_path: str | None = None) -> None:
     """
     Lightweight .env loader (no external dependency).
     Only sets keys that are not already in process env.
     """
+    if not _should_load_env_file():
+        return
+    env_path = env_path or os.path.join(os.path.dirname(__file__), ".env")
     if not os.path.exists(env_path):
         return
     try:

@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 import secrets
 import os
-from fastapi import APIRouter, HTTPException, Depends, Response, Cookie
+from fastapi import APIRouter, HTTPException, Depends, Response, Cookie, Header
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from database_config import get_operational_db
 from models_new import User
@@ -143,6 +143,17 @@ def verify_session_token(token: str, db: Optional[Session] = None) -> int:
         raise HTTPException(status_code=401, detail="Session expired")
     except (BadSignature, TypeError, ValueError):
         raise HTTPException(status_code=401, detail="Invalid session")
+
+
+def get_request_session_token(
+    session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
+) -> Optional[str]:
+    token = (session_id or "").strip()
+    if token:
+        return token
+    token = (x_session_id or "").strip()
+    return token or None
 
 
 def invalidate_session(token: str):

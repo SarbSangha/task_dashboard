@@ -2,6 +2,40 @@
 import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const SESSION_TOKEN_STORAGE_KEY = 'rmw_session_token_v1';
+const SESSION_TOKEN_REMEMBER_KEY = 'rmw_session_token_remember_v1';
+
+const canUseBrowserStorage = () => typeof window !== 'undefined';
+
+const getStoredSessionToken = () => {
+  if (!canUseBrowserStorage()) return '';
+  return (
+    window.localStorage.getItem(SESSION_TOKEN_STORAGE_KEY)
+    || window.sessionStorage.getItem(SESSION_TOKEN_STORAGE_KEY)
+    || ''
+  );
+};
+
+const storeSessionToken = (token, rememberMe = false) => {
+  if (!canUseBrowserStorage()) return;
+  const normalized = `${token || ''}`.trim();
+  window.localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+  window.sessionStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+  window.localStorage.removeItem(SESSION_TOKEN_REMEMBER_KEY);
+
+  if (!normalized) return;
+
+  const targetStorage = rememberMe ? window.localStorage : window.sessionStorage;
+  targetStorage.setItem(SESSION_TOKEN_STORAGE_KEY, normalized);
+  window.localStorage.setItem(SESSION_TOKEN_REMEMBER_KEY, rememberMe ? '1' : '0');
+};
+
+const clearStoredSessionToken = () => {
+  if (!canUseBrowserStorage()) return;
+  window.localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+  window.sessionStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+  window.localStorage.removeItem(SESSION_TOKEN_REMEMBER_KEY);
+};
 
 // ==================== SINGLE AXIOS INSTANCE ====================
 const api = axios.create({
@@ -10,6 +44,17 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json'
   }
+});
+
+api.interceptors.request.use((config) => {
+  const sessionToken = getStoredSessionToken();
+  if (sessionToken) {
+    config.headers = config.headers || {};
+    if (!config.headers['X-Session-Id']) {
+      config.headers['X-Session-Id'] = sessionToken;
+    }
+  }
+  return config;
 });
 
 // ==================== RESPONSE INTERCEPTOR ====================
@@ -30,6 +75,7 @@ api.interceptors.response.use(
         .split('?')[0];
       const publicPaths = ['/login', '/register', '/forgot-password', '/reset-password'];
       if (!publicPaths.includes(routePath)) {
+        clearStoredSessionToken();
         console.log(`❌ 401 Unauthorized (${requestUrl}) - redirecting to login`);
         window.location.href = '/#/login';
       }
@@ -57,12 +103,19 @@ export const authAPI = {
       password,
       remember_me: rememberMe
     });
+    if (response.data?.sessionToken) {
+      storeSessionToken(response.data.sessionToken, rememberMe);
+    }
     return response.data;
   },
 
   logout: async () => {
-    const response = await api.post('/api/auth/logout');
-    return response.data;
+    try {
+      const response = await api.post('/api/auth/logout');
+      return response.data;
+    } finally {
+      clearStoredSessionToken();
+    }
   },
 
   getCurrentUser: async () => {
@@ -503,7 +556,13 @@ let realtimeBackoffMs = 1000;
 const REALTIME_MAX_BACKOFF_MS = 30000;
 const REALTIME_HEARTBEAT_MS = 25000;
 
-const buildRealtimeWsUrl = () => `${API_URL.replace(/^http/i, 'ws')}/api/tasks/ws/notifications`;
+const buildRealtimeWsUrl = () => {
+  const baseUrl = `${API_URL.replace(/^http/i, 'ws')}/api/tasks/ws/notifications`;
+  const sessionToken = getStoredSessionToken();
+  if (!sessionToken) return baseUrl;
+  const separator = baseUrl.includes('?') ? '&' : '?';
+  return `${baseUrl}${separator}session_token=${encodeURIComponent(sessionToken)}`;
+};
 
 const broadcastRealtime = (kind, payload) => {
   realtimeSubscribers.forEach((handlers) => {

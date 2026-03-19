@@ -1,5 +1,5 @@
 # routers/approvals.py
-from fastapi import APIRouter, HTTPException, Depends, Cookie
+from fastapi import APIRouter, HTTPException, Depends, Cookie, Header
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
@@ -7,7 +7,7 @@ from datetime import datetime
 # ✅ UPDATED IMPORTS
 from database_config import get_operational_db as get_db
 from models_new import Task, User
-from auth import verify_session_token
+from auth import verify_session_token, get_request_session_token
 
 router = APIRouter(prefix="/api/approvals", tags=["Approvals"])
 
@@ -15,13 +15,15 @@ router = APIRouter(prefix="/api/approvals", tags=["Approvals"])
 # ==================== HELPER FUNCTIONS ====================
 def get_current_user_from_session(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     db: Session = Depends(get_db)
 ):
     """Get current user from session"""
-    if not session_id:
+    resolved_session_id = get_request_session_token(session_id, x_session_id)
+    if not resolved_session_id:
         return None
     try:
-        user_id = verify_session_token(session_id, db)
+        user_id = verify_session_token(resolved_session_id, db)
         user = db.query(User).filter(User.id == user_id).first()
         return user
     except:

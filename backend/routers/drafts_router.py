@@ -1,5 +1,5 @@
 # routers/drafts_router.py - Updated with new schema
-from fastapi import APIRouter, HTTPException, Depends, Cookie
+from fastapi import APIRouter, HTTPException, Depends, Cookie, Header
 from sqlalchemy.orm import Session
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -7,7 +7,7 @@ from datetime import datetime
 
 from database_config import get_operational_db
 from models_new import Task, User, TaskStatus, Priority, ParticipantRole, TaskParticipant
-from auth import verify_session_token
+from auth import verify_session_token, get_request_session_token
 from task_helpers import TaskHelpers
 
 router = APIRouter(prefix="/api/drafts", tags=["Drafts"])
@@ -40,12 +40,14 @@ def parse_deadline(deadline_str: Optional[str]) -> Optional[datetime]:
 
 def get_current_user_from_session(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     db: Session = Depends(get_operational_db)
 ):
-    if not session_id:
+    resolved_session_id = get_request_session_token(session_id, x_session_id)
+    if not resolved_session_id:
         return None
     try:
-        user_id = verify_session_token(session_id, db)
+        user_id = verify_session_token(resolved_session_id, db)
         user = db.query(User).filter(User.id == user_id).first()
         return user
     except:

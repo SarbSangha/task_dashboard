@@ -1,12 +1,12 @@
 # routers/archive_router.py - View archived tasks and activity logs
-from fastapi import APIRouter, HTTPException, Depends, Query, Cookie
+from fastapi import APIRouter, HTTPException, Depends, Query, Cookie, Header
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime, timedelta
 
 from database_config import get_operational_db, get_archive_db, get_dual_db
 from models_new import User, Task, ArchivedTask, ActivityLog
-from auth import verify_session_token
+from auth import verify_session_token, get_request_session_token
 from archive_service import ArchiveService
 from task_helpers import TaskHelpers
 
@@ -16,12 +16,14 @@ router = APIRouter(prefix="/api/archive", tags=["Archive"])
 # ==================== HELPER FUNCTIONS ====================
 def get_current_user_from_session(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     db: Session = Depends(get_operational_db)
 ):
-    if not session_id:
+    resolved_session_id = get_request_session_token(session_id, x_session_id)
+    if not resolved_session_id:
         return None
     try:
-        user_id = verify_session_token(session_id, db)
+        user_id = verify_session_token(resolved_session_id, db)
         user = db.query(User).filter(User.id == user_id).first()
         return user
     except:

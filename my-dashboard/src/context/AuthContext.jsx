@@ -99,7 +99,7 @@ export const AuthProvider = ({ children }) => {
         if (!authenticatedUser) {
           return {
             success: false,
-            error: 'Login succeeded but the session cookie was not saved. Please try again or contact admin.'
+            error: 'Login succeeded but the session could not be restored. Please try again or contact admin.'
           };
         }
         setUser(authenticatedUser);

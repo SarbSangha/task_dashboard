@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Query, Cookie, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Depends, Query, Cookie, Header, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from sqlalchemy.exc import SQLAlchemyError
@@ -24,7 +24,7 @@ from models_new import (
     Priority,
     ParticipantRole,
 )
-from auth import verify_session_token
+from auth import verify_session_token, get_request_session_token
 from task_helpers import TaskHelpers
 
 router = APIRouter(prefix="/api/tasks", tags=["Tasks"])
@@ -196,12 +196,14 @@ def can_assign(user: User, task: Task) -> bool:
 
 def get_current_user_from_session(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     db: Session = Depends(get_operational_db),
 ):
-    if not session_id:
+    resolved_session_id = get_request_session_token(session_id, x_session_id)
+    if not resolved_session_id:
         return None
     try:
-        user_id = verify_session_token(session_id, db)
+        user_id = verify_session_token(resolved_session_id, db)
         return db.query(User).filter(User.id == user_id).first()
     except Exception:
         return None
@@ -944,7 +946,11 @@ async def get_forward_targets(
 
 @router.websocket("/ws/notifications")
 async def notifications_ws(websocket: WebSocket):
-    session_id = websocket.cookies.get("session_id")
+    session_id = (
+        websocket.cookies.get("session_id")
+        or websocket.query_params.get("session_token")
+        or websocket.query_params.get("session_id")
+    )
     if not session_id:
         await websocket.close(code=1008)
         return

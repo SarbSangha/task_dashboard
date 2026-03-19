@@ -1,5 +1,5 @@
 # routers/auth_router.py - Authentication endpoints
-from fastapi import APIRouter, Depends, HTTPException, Response, Cookie, Request
+from fastapi import APIRouter, Depends, HTTPException, Response, Cookie, Request, Header
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime
@@ -33,7 +33,8 @@ from auth import (
     verify_password,
     create_reset_token,
     verify_reset_token,
-    invalidate_reset_token
+    invalidate_reset_token,
+    get_request_session_token,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -175,14 +176,16 @@ class PasswordChangeRequestPayload(BaseModel):
 # ==================== HELPER FUNCTIONS ====================
 def get_current_user(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     # response: Response,
     db: Session = Depends(get_operational_db)
 ):
     """Validate session and return current user"""
-    if not session_id:
+    resolved_session_id = get_request_session_token(session_id, x_session_id)
+    if not resolved_session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    user_id = verify_session_token(session_id, db)
+    user_id = verify_session_token(resolved_session_id, db)
     user = db.query(User).filter(User.id == user_id).first()
     
     if not user:
@@ -520,7 +523,8 @@ async def login(
         return {
             "success": True,
             "message": "Login successful",
-            "user": _serialize_user(user)
+            "user": _serialize_user(user),
+            "sessionToken": session_id,
         }
         
     except HTTPException:
@@ -537,14 +541,16 @@ async def login(
 @router.get("/me")
 async def get_current_user_profile(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     db: Session = Depends(get_operational_db)
 ):
     """Get current authenticated user"""
-    if not session_id:
+    resolved_session_id = get_request_session_token(session_id, x_session_id)
+    if not resolved_session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        user_id = verify_session_token(session_id, db)
+        user_id = verify_session_token(resolved_session_id, db)
         user = db.query(User).filter(User.id == user_id).first()
         
         if not user:
@@ -979,11 +985,13 @@ async def admin_review_request(
 def logout(
     request: Request,
     response: Response, 
-    session_id: Optional[str] = Cookie(None, alias="session_id")
+    session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
 ):
     """Logout user"""
-    if session_id:
-        invalidate_session(session_id)
+    resolved_session_id = get_request_session_token(session_id, x_session_id)
+    if resolved_session_id:
+        invalidate_session(resolved_session_id)
     
     cookie_secure, cookie_samesite = _resolve_cookie_policy(request)
 

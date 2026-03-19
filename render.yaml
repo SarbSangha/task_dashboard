@@ -5,8 +5,39 @@ services:
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /docs
+    healthCheckPath: /api/health
     autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: COOKIE_SAMESITE
+        value: none
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ARCHIVE_DATABASE_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: ALLOWED_COMPANY_EMAIL_DOMAINS
+        value: "@ritzmediaworld.com,@ctm.co.in,@rmwcreative.in,@contenaissance.com"
+      - key: R2_ENDPOINT
+        sync: false
+      - key: R2_ACCESS_KEY
+        sync: false
+      - key: R2_SECRET_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_REGION
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
 
 staticSites:
   - name: task-dashboard-web
