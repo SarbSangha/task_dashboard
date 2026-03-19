@@ -92,6 +92,95 @@ const normalizeAssetsFromTask = (task) => {
   return list;
 };
 
+const getAssetActivityTime = (asset) => asset?.updatedAt || asset?.createdAt || null;
+
+const getDateFolderKey = (asset) => {
+  const source = getAssetActivityTime(asset);
+  if (!source) return 'unknown-date';
+  const parsed = new Date(source);
+  if (Number.isNaN(parsed.getTime())) return 'unknown-date';
+  return parsed.toISOString().slice(0, 10);
+};
+
+const formatDateFolderLabel = (key) => {
+  if (!key || key === 'unknown-date') return 'Unknown Date';
+  const parsed = new Date(`${key}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return key;
+  return parsed.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+};
+
+const buildDirectoryTree = (rows = []) => {
+  const uploaderMap = new Map();
+
+  rows.forEach((asset) => {
+    const uploaderName = (asset.createdByName || asset.submittedByName || 'Unknown uploader').trim() || 'Unknown uploader';
+    const uploaderKey = uploaderName.toLowerCase();
+    const dateKey = getDateFolderKey(asset);
+    const projectName = (asset.projectName || 'Unassigned Project').trim() || 'Unassigned Project';
+    const projectKey = projectName.toLowerCase();
+
+    let uploaderNode = uploaderMap.get(uploaderKey);
+    if (!uploaderNode) {
+      uploaderNode = {
+        key: uploaderKey,
+        name: uploaderName,
+        assetCount: 0,
+        dates: new Map(),
+      };
+      uploaderMap.set(uploaderKey, uploaderNode);
+    }
+    uploaderNode.assetCount += 1;
+
+    let dateNode = uploaderNode.dates.get(dateKey);
+    if (!dateNode) {
+      dateNode = {
+        key: dateKey,
+        label: formatDateFolderLabel(dateKey),
+        assetCount: 0,
+        projects: new Map(),
+      };
+      uploaderNode.dates.set(dateKey, dateNode);
+    }
+    dateNode.assetCount += 1;
+
+    let projectNode = dateNode.projects.get(projectKey);
+    if (!projectNode) {
+      projectNode = {
+        key: projectKey,
+        name: projectName,
+        assetCount: 0,
+        assets: [],
+      };
+      dateNode.projects.set(projectKey, projectNode);
+    }
+    projectNode.assetCount += 1;
+    projectNode.assets.push(asset);
+  });
+
+  return Array.from(uploaderMap.values())
+    .map((uploader) => ({
+      ...uploader,
+      dates: Array.from(uploader.dates.values())
+        .map((dateNode) => ({
+          ...dateNode,
+          projects: Array.from(dateNode.projects.values())
+            .map((projectNode) => ({
+              ...projectNode,
+              assets: [...projectNode.assets].sort(
+                (a, b) => new Date(getAssetActivityTime(b) || 0) - new Date(getAssetActivityTime(a) || 0)
+              ),
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        }))
+        .sort((a, b) => b.key.localeCompare(a.key)),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+};
+
 const TrendingsPanel = ({ isOpen, onClose }) => {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -104,6 +193,10 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
   const [openMenuAssetId, setOpenMenuAssetId] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const [showDirectoryWindow, setShowDirectoryWindow] = useState(false);
+  const [selectedUploaderKey, setSelectedUploaderKey] = useState('');
+  const [selectedDateKey, setSelectedDateKey] = useState('');
+  const [selectedProjectKey, setSelectedProjectKey] = useState('');
 
   const buildOpenUrl = (asset) => {
     if (asset?.path) {
@@ -113,6 +206,35 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
       return `${API_BASE}/api/files/open?url=${encodeURIComponent(asset.url)}`;
     }
     return null;
+  };
+
+  const buildDownloadUrl = (asset) => {
+    if (!asset?.path && !asset?.url) return null;
+    const params = new URLSearchParams();
+    if (asset?.url) params.set('url', asset.url);
+    if (asset?.path) params.set('path', asset.path);
+    params.set('filename', asset.filename || 'download');
+    return `${API_BASE}/api/files/download?${params.toString()}`;
+  };
+
+  const openAssetInNewTab = (asset) => {
+    const openUrl = buildOpenUrl(asset);
+    if (!openUrl) {
+      setPreviewAsset(asset);
+      return;
+    }
+    window.open(openUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const downloadAsset = (asset) => {
+    const downloadUrl = buildDownloadUrl(asset);
+    if (!downloadUrl) return;
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   useEffect(() => {
@@ -210,6 +332,67 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
     }
     return rows;
   }, [assets, filter, departmentFilter, search, sortBy]);
+
+  const directoryTree = useMemo(() => buildDirectoryTree(filteredAssets), [filteredAssets]);
+
+  useEffect(() => {
+    const firstUploader = directoryTree[0] || null;
+    const chosenUploader =
+      directoryTree.find((item) => item.key === selectedUploaderKey) || firstUploader || null;
+
+    if (!chosenUploader) {
+      setSelectedUploaderKey('');
+      setSelectedDateKey('');
+      setSelectedProjectKey('');
+      return;
+    }
+
+    if (chosenUploader.key !== selectedUploaderKey) {
+      setSelectedUploaderKey(chosenUploader.key);
+    }
+
+    const firstDate = chosenUploader.dates[0] || null;
+    const chosenDate =
+      chosenUploader.dates.find((item) => item.key === selectedDateKey) || firstDate || null;
+
+    if (!chosenDate) {
+      setSelectedDateKey('');
+      setSelectedProjectKey('');
+      return;
+    }
+
+    if (chosenDate.key !== selectedDateKey) {
+      setSelectedDateKey(chosenDate.key);
+    }
+
+    const firstProject = chosenDate.projects[0] || null;
+    const chosenProject =
+      chosenDate.projects.find((item) => item.key === selectedProjectKey) || firstProject || null;
+
+    if (!chosenProject) {
+      setSelectedProjectKey('');
+      return;
+    }
+
+    if (chosenProject.key !== selectedProjectKey) {
+      setSelectedProjectKey(chosenProject.key);
+    }
+  }, [directoryTree, selectedUploaderKey, selectedDateKey, selectedProjectKey]);
+
+  const selectedUploader = useMemo(
+    () => directoryTree.find((item) => item.key === selectedUploaderKey) || null,
+    [directoryTree, selectedUploaderKey]
+  );
+
+  const selectedDateFolder = useMemo(
+    () => selectedUploader?.dates.find((item) => item.key === selectedDateKey) || null,
+    [selectedUploader, selectedDateKey]
+  );
+
+  const selectedProjectFolder = useMemo(
+    () => selectedDateFolder?.projects.find((item) => item.key === selectedProjectKey) || null,
+    [selectedDateFolder, selectedProjectKey]
+  );
 
   const renderPreviewContent = (asset) => {
     if (!asset) return null;
@@ -385,10 +568,209 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
                 >
                   Best Format
                 </button>
+                <button
+                  className={`trendings-sort-btn ${showDirectoryWindow ? 'active' : ''}`}
+                  onClick={() => setShowDirectoryWindow((prev) => !prev)}
+                >
+                  Directory View
+                </button>
               </div>
             </div>
 
             <div className="trendings-content">
+              {showDirectoryWindow && (
+                <div className="trendings-directory-window">
+                  <div className="trendings-directory-header">
+                    <div>
+                      <h3>Databank Directory</h3>
+                      <p>Uploader folder → date folder → project folder → files</p>
+                    </div>
+                    <button
+                      className="trendings-directory-close"
+                      onClick={() => setShowDirectoryWindow(false)}
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  {directoryTree.length === 0 ? (
+                    <div className="trendings-directory-empty">
+                      No databank folders match the current search and filters.
+                    </div>
+                  ) : (
+                    <div className="trendings-directory-grid">
+                      <div className="trendings-directory-column">
+                        <div className="trendings-directory-column-title">Uploader</div>
+                        <div className="trendings-directory-list">
+                          {directoryTree.map((uploader) => (
+                            <button
+                              key={uploader.key}
+                              className={`trendings-directory-item ${selectedUploaderKey === uploader.key ? 'active' : ''}`}
+                              onClick={() => {
+                                setSelectedUploaderKey(uploader.key);
+                                setSelectedDateKey('');
+                                setSelectedProjectKey('');
+                              }}
+                            >
+                              <span className="trendings-directory-icon">👤</span>
+                              <span className="trendings-directory-name">{uploader.name}</span>
+                              <span className="trendings-directory-count">{uploader.assetCount}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="trendings-directory-column">
+                        <div className="trendings-directory-column-title">Date</div>
+                        <div className="trendings-directory-list">
+                          {(selectedUploader?.dates || []).map((dateNode) => (
+                            <button
+                              key={dateNode.key}
+                              className={`trendings-directory-item ${selectedDateKey === dateNode.key ? 'active' : ''}`}
+                              onClick={() => {
+                                setSelectedDateKey(dateNode.key);
+                                setSelectedProjectKey('');
+                              }}
+                            >
+                              <span className="trendings-directory-icon">📅</span>
+                              <span className="trendings-directory-name">{dateNode.label}</span>
+                              <span className="trendings-directory-count">{dateNode.assetCount}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="trendings-directory-column">
+                        <div className="trendings-directory-column-title">Project</div>
+                        <div className="trendings-directory-list">
+                          {(selectedDateFolder?.projects || []).map((projectNode) => (
+                            <button
+                              key={projectNode.key}
+                              className={`trendings-directory-item ${selectedProjectKey === projectNode.key ? 'active' : ''}`}
+                              onClick={() => setSelectedProjectKey(projectNode.key)}
+                            >
+                              <span className="trendings-directory-icon">📁</span>
+                              <span className="trendings-directory-name">{projectNode.name}</span>
+                              <span className="trendings-directory-count">{projectNode.assetCount}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="trendings-directory-column trendings-directory-files">
+                        <div className="trendings-directory-column-title">Files Of That Day</div>
+                        <div className="trendings-directory-path">
+                          <button
+                            type="button"
+                            className="trendings-directory-breadcrumb"
+                            onClick={() => {
+                              setSelectedUploaderKey('');
+                              setSelectedDateKey('');
+                              setSelectedProjectKey('');
+                            }}
+                          >
+                            Databank
+                          </button>
+                          <span>/</span>
+                          <button
+                            type="button"
+                            className="trendings-directory-breadcrumb"
+                            onClick={() => {
+                              if (!selectedUploader) return;
+                              setSelectedUploaderKey(selectedUploader.key);
+                              setSelectedDateKey('');
+                              setSelectedProjectKey('');
+                            }}
+                          >
+                            {selectedUploader?.name || 'Uploader'}
+                          </button>
+                          <span>/</span>
+                          <button
+                            type="button"
+                            className="trendings-directory-breadcrumb"
+                            onClick={() => {
+                              if (!selectedDateFolder) return;
+                              setSelectedDateKey(selectedDateFolder.key);
+                              setSelectedProjectKey('');
+                            }}
+                          >
+                            {selectedDateFolder?.label || 'Date'}
+                          </button>
+                          <span>/</span>
+                          <button
+                            type="button"
+                            className="trendings-directory-breadcrumb active"
+                            onClick={() => {
+                              if (!selectedProjectFolder) return;
+                              setSelectedProjectKey(selectedProjectFolder.key);
+                            }}
+                          >
+                            {selectedProjectFolder?.name || 'Project'}
+                          </button>
+                        </div>
+                        <div className="trendings-directory-file-list">
+                          {(selectedProjectFolder?.assets || []).map((asset) => (
+                            <div key={asset.id} className="trendings-directory-file-card">
+                              <div className="trendings-directory-file-top">
+                                <div className="trendings-directory-file-badges">
+                                  <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
+                                  <span className="stage-badge">{asset.stage}</span>
+                                </div>
+                                <span className="trendings-directory-file-time">
+                                  {getAssetActivityTime(asset) ? new Date(getAssetActivityTime(asset)).toLocaleString() : '-'}
+                                </span>
+                              </div>
+                              <div className="trendings-directory-file-name">{asset.filename}</div>
+                              <div className="trendings-directory-file-meta">
+                                <span>{asset.taskTitle}</span>
+                                <span>{asset.taskNumber}</span>
+                              </div>
+                              <div className="trendings-directory-file-actions">
+                                {(buildOpenUrl(asset) || asset.stage.includes('text')) && (
+                                  <button
+                                    className="trendings-open-link-btn"
+                                    onClick={() => setPreviewAsset(asset)}
+                                  >
+                                    Preview
+                                  </button>
+                                )}
+                                {buildOpenUrl(asset) && (
+                                  <button
+                                    className="trendings-open-link-btn"
+                                    onClick={() => openAssetInNewTab(asset)}
+                                  >
+                                    Open
+                                  </button>
+                                )}
+                                {buildDownloadUrl(asset) && (
+                                  <button
+                                    className="trendings-open-link-btn"
+                                    onClick={() => downloadAsset(asset)}
+                                  >
+                                    Download
+                                  </button>
+                                )}
+                                <button
+                                  className="trendings-open-link-btn"
+                                  onClick={() => setInfoAsset(asset)}
+                                >
+                                  Info
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                          {(!selectedProjectFolder || (selectedProjectFolder.assets || []).length === 0) && (
+                            <div className="trendings-directory-empty">
+                              Select a project folder to see the files inside it.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {loading ? (
                 <div className="trendings-state">Loading references...</div>
               ) : filteredAssets.length === 0 ? (

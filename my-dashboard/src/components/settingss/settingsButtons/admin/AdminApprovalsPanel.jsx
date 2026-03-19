@@ -5,6 +5,7 @@ import './AdminApprovalsPanel.css';
 const AdminApprovalsPanel = ({ isOpen, onClose }) => {
   const [pendingSignups, setPendingSignups] = useState([]);
   const [pendingProfileChanges, setPendingProfileChanges] = useState([]);
+  const [pendingPasswordChanges, setPendingPasswordChanges] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -17,12 +18,14 @@ const AdminApprovalsPanel = ({ isOpen, onClose }) => {
   const loadQueues = async () => {
     setLoading(true);
     try {
-      const [signups, profileChanges] = await Promise.all([
+      const [signups, profileChanges, passwordChanges] = await Promise.all([
         authAPI.getPendingSignups(),
-        authAPI.getPendingProfileChanges()
+        authAPI.getPendingProfileChanges(),
+        authAPI.getPendingPasswordChanges()
       ]);
       setPendingSignups(signups.requests || []);
       setPendingProfileChanges(profileChanges.requests || []);
+      setPendingPasswordChanges(passwordChanges.requests || []);
       setMessage('');
     } catch (error) {
       setMessage(error?.response?.data?.detail || 'Failed to load approval queues');
@@ -79,6 +82,22 @@ const AdminApprovalsPanel = ({ isOpen, onClose }) => {
                 <div>
                   <strong>User #{req.userId}</strong>
                   <p>{req.payload?.name} | {req.payload?.email} | {req.payload?.position} | {req.payload?.department}</p>
+                </div>
+                <div className="admin-actions">
+                  <button onClick={() => reviewRequest(req.id, true)}>Approve</button>
+                  <button className="reject" onClick={() => reviewRequest(req.id, false)}>Reject</button>
+                </div>
+              </div>
+            ))}
+          </section>
+
+          <section className="admin-queue-block">
+            <h4>Pending Password Changes ({pendingPasswordChanges.length})</h4>
+            {pendingPasswordChanges.map((req) => (
+              <div key={req.id} className="admin-request-row">
+                <div>
+                  <strong>User #{req.userId}</strong>
+                  <p>{req.payload?.summary || 'Secure password change request'}</p>
                 </div>
                 <div className="admin-actions">
                   <button onClick={() => reviewRequest(req.id, true)}>Approve</button>

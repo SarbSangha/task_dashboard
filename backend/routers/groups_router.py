@@ -26,7 +26,8 @@ class GroupMembersPayload(BaseModel):
 
 
 class GroupMessagePayload(BaseModel):
-    message: str = Field(min_length=1, max_length=5000)
+    message: str = Field(default="", max_length=5000)
+    attachments: list[dict] = Field(default_factory=list)
 
 
 class GroupRolePayload(BaseModel):
@@ -67,6 +68,25 @@ def _is_group_admin(group: GroupChat, member_row: GroupChatMember, user_id: int)
     return group.created_by == user_id or (member_row.role or "member") == "admin"
 
 
+def _normalize_group_message_attachments(items: list[dict]) -> list[dict]:
+    normalized = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        normalized_item = {
+            "filename": item.get("filename") or item.get("name") or None,
+            "originalName": item.get("originalName") or item.get("filename") or item.get("name") or None,
+            "path": item.get("path") or None,
+            "url": item.get("url") or None,
+            "mimetype": item.get("mimetype") or item.get("type") or None,
+            "size": item.get("size") or None,
+            "storage": item.get("storage") or None,
+        }
+        if normalized_item["url"] or normalized_item["path"] or normalized_item["filename"]:
+            normalized.append(normalized_item)
+    return normalized
+
+
 def _serialize_group(
     db: Session,
     group: GroupChat,
@@ -79,6 +99,7 @@ def _serialize_group(
             GroupChatMember.group_id == group.id,
             GroupChatMember.is_active == True,
             User.is_active == True,
+            User.is_deleted == False,
         )
         .all()
     )
@@ -117,7 +138,7 @@ async def list_group_users(
 ):
     users = (
         db.query(User)
-        .filter(User.is_active == True)
+        .filter(User.is_active == True, User.is_deleted == False)
         .order_by(User.name.asc())
         .all()
     )
@@ -177,7 +198,7 @@ async def create_group(
 
     valid_users = (
         db.query(User.id)
-        .filter(User.id.in_(member_ids), User.is_active == True)
+        .filter(User.id.in_(member_ids), User.is_active == True, User.is_deleted == False)
         .all()
     )
     valid_user_ids = {u.id for u in valid_users}
@@ -227,7 +248,11 @@ async def add_group_members(
     if not member_ids:
         raise HTTPException(status_code=400, detail="No members provided")
 
-    users = db.query(User).filter(User.id.in_(member_ids), User.is_active == True).all()
+    users = (
+        db.query(User)
+        .filter(User.id.in_(member_ids), User.is_active == True, User.is_deleted == False)
+        .all()
+    )
     now = _utcnow()
     for u in users:
         existing = (
@@ -328,6 +353,7 @@ async def list_group_messages(
                 "senderId": msg.sender_id,
                 "senderName": sender.name,
                 "message": msg.message,
+                "attachments": msg.attachments_json or [],
                 "createdAt": msg.created_at.isoformat() if msg.created_at else None,
                 "editedAt": msg.edited_at.isoformat() if msg.edited_at else None,
             }
@@ -345,14 +371,16 @@ async def send_group_message(
 ):
     group, _ = _ensure_group_access(db, group_id, current_user.id)
     text = payload.message.strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="Message is required")
+    attachments = _normalize_group_message_attachments(payload.attachments)
+    if not text and not attachments:
+        raise HTTPException(status_code=400, detail="Message or attachment is required")
 
     now = _utcnow()
     msg = GroupChatMessage(
         group_id=group.id,
         sender_id=current_user.id,
         message=text,
+        attachments_json=attachments,
         created_at=now,
     )
     group.last_message_at = now
@@ -372,13 +400,14 @@ async def send_group_message(
     ws_payload = {
         "eventType": "group_message",
         "title": f"New message in {group.name}",
-        "message": text[:180],
+        "message": (text or f"{len(attachments)} attachment{'s' if len(attachments) != 1 else ''}")[:180],
         "metadata": {
             "groupId": group.id,
             "groupName": group.name,
             "messageId": msg.id,
             "senderId": current_user.id,
             "senderName": current_user.name,
+            "attachmentCount": len(attachments),
             "createdAt": msg.created_at.isoformat() if msg.created_at else None,
         },
     }
@@ -399,6 +428,7 @@ async def send_group_message(
             "senderId": msg.sender_id,
             "senderName": current_user.name,
             "message": msg.message,
+            "attachments": msg.attachments_json or [],
             "createdAt": msg.created_at.isoformat() if msg.created_at else None,
             "editedAt": msg.edited_at.isoformat() if msg.edited_at else None,
         },

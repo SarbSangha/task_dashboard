@@ -1,3 +1,11 @@
+/* Shared settings layer stack */
+:root {
+  --settings-backdrop-z: 999;
+  --settings-sidebar-z: 1000;
+  --settings-panel-overlay-z: 2000;
+  --settings-panel-z: 2001;
+}
+
 /* Settings Sidebar - Right Side Popup */
 .settings-sidebar {
   position: fixed !important;
@@ -7,7 +15,7 @@
   max-height: calc(100vh - 140px) !important;
   background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%)!important;
   box-shadow: -4px 4px 20px rgba(0, 0, 0, 0.25) !important;
-  z-index: 1000 !important;
+  z-index: var(--settings-sidebar-z) !important;
   display: flex !important;
   flex-direction: column !important;
   transition: right 0.3s ease-out !important;
@@ -179,13 +187,29 @@
   right: 0 !important;
   bottom: 0 !important;
   background: rgba(0, 0, 0, 0.5) !important;
-  z-index: 999 !important;
+  z-index: var(--settings-backdrop-z) !important;
   animation: fadeIn 0.3s ease-out;
 }
 
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+@keyframes settingsPanelFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes settingsPanelSlideInRight {
+  from {
+    transform: translateX(50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 
 /* Responsive */

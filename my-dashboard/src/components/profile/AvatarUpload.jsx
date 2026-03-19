@@ -1,11 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { authAPI } from '../../services/api';
+import { normalizeAvatarSrc } from '../../utils/avatar';
 import './AvatarUpload.css';
 
 export function AvatarUpload({ currentAvatar, onAvatarUpdate }) {
   const [uploading, setUploading] = useState(false);
-  const [preview, setPreview] = useState(currentAvatar);
+  const [preview, setPreview] = useState(normalizeAvatarSrc(currentAvatar));
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    setPreview(normalizeAvatarSrc(currentAvatar));
+  }, [currentAvatar]);
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
@@ -31,17 +36,20 @@ export function AvatarUpload({ currentAvatar, onAvatarUpdate }) {
     const reader = new FileReader();
     reader.onloadend = async () => {
       const base64String = reader.result;
+      const previousPreview = preview;
       setPreview(base64String);
 
       try {
         const response = await authAPI.uploadAvatar(base64String);
-        console.log('✅ Avatar uploaded:', response.data);
+        const savedAvatar = normalizeAvatarSrc(response?.avatar) || base64String;
+        setPreview(savedAvatar);
         
         if (onAvatarUpdate) {
-          onAvatarUpdate(response.data.avatar);
+          onAvatarUpdate(savedAvatar);
         }
       } catch (error) {
         console.error('❌ Upload failed:', error);
+        setPreview(previousPreview);
         setError('Failed to upload avatar');
       } finally {
         setUploading(false);

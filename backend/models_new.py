@@ -78,6 +78,7 @@ class User(Base):
     approved_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime)
+    session_revoked_at = Column(DateTime, index=True)
     
     # Relationships
     created_tasks = relationship("Task", foreign_keys="Task.creator_id", back_populates="creator")
@@ -389,7 +390,7 @@ class UserApprovalRequest(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    request_type = Column(String, nullable=False, default="signup")  # signup/profile_update
+    request_type = Column(String, nullable=False, default="signup")  # signup/profile_update/password_change
     status = Column(String, nullable=False, default="pending", index=True)  # pending/approved/rejected
     payload_json = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
@@ -458,6 +459,7 @@ class GroupChatMessage(Base):
     group_id = Column(Integer, ForeignKey("group_chats.id"), nullable=False, index=True)
     sender_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     message = Column(Text, nullable=False)
+    attachments_json = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     edited_at = Column(DateTime)
 

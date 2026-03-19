@@ -46,7 +46,7 @@ def get_current_user_from_session(
     if not session_id:
         return None
     try:
-        user_id = verify_session_token(session_id)
+        user_id = verify_session_token(session_id, db)
         return db.query(User).filter(User.id == user_id).first()
     except Exception:
         return None

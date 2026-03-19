@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import './WorkSpaceModal.css';
 import Tools from './Tools';
-import { activityAPI, authAPI, groupAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
+import { activityAPI, authAPI, fileAPI, groupAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
+
+const FILES_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview' }) {
   const [activeTab, setActiveTab] = useState('overview');
@@ -354,52 +356,298 @@ function OverviewContent() {
 }
 
 // Projects Tab Content
+const ACTIVE_PROJECT_STATUSES = new Set([
+  'pending',
+  'forwarded',
+  'assigned',
+  'in_progress',
+  'submitted',
+  'under_review',
+  'need_improvement',
+  'approved',
+]);
+
+function formatProjectDate(value) {
+  if (!value) return 'No recent activity';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'No recent activity';
+  return date.toLocaleString();
+}
+
+function buildProjectSummaries(tasks = []) {
+  const groups = new Map();
+
+  tasks.forEach((task) => {
+    const projectId = (task.projectId || '').trim();
+    const projectName = (task.projectName || '').trim();
+    if (!projectId && !projectName) return;
+
+    const key = projectId ? `id:${projectId.toLowerCase()}` : `name:${projectName.toLowerCase()}`;
+    const existing = groups.get(key) || {
+      key,
+      name: projectName || projectId,
+      projectId,
+      customerName: '',
+      latestActivityAt: '',
+      tasks: [],
+      departments: new Set(),
+      assignees: new Set(),
+    };
+
+    existing.name = existing.name || projectName || projectId;
+    existing.projectId = existing.projectId || projectId;
+    existing.customerName = existing.customerName || (task.customerName || '').trim();
+
+    if (task.fromDepartment) existing.departments.add(task.fromDepartment);
+    if (task.toDepartment) existing.departments.add(task.toDepartment);
+    (task.assignedTo || []).forEach((member) => {
+      existing.assignees.add(member.id || member.name || `${task.id}-assignee`);
+    });
+
+    const activityAt = task.updatedAt || task.createdAt || '';
+    if (!existing.latestActivityAt || new Date(activityAt).getTime() > new Date(existing.latestActivityAt).getTime()) {
+      existing.latestActivityAt = activityAt;
+    }
+
+    existing.tasks.push(task);
+    groups.set(key, existing);
+  });
+
+  return Array.from(groups.values())
+    .map((project) => {
+      const projectTasks = [...project.tasks].sort(
+        (a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime()
+      );
+      const totalTasks = projectTasks.length;
+      const completedTasks = projectTasks.filter((task) => (task.status || '').toLowerCase() === 'completed').length;
+      const activeTasks = projectTasks.filter((task) => ACTIVE_PROJECT_STATUSES.has((task.status || '').toLowerCase())).length;
+      const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+      return {
+        ...project,
+        tasks: projectTasks,
+        totalTasks,
+        completedTasks,
+        activeTasks,
+        progress,
+        statusClass: totalTasks > 0 && completedTasks === totalTasks ? 'completed' : 'active',
+        statusLabel: totalTasks > 0 && completedTasks === totalTasks ? 'Completed' : 'Active',
+        description:
+          project.customerName ||
+          `${totalTasks} task${totalTasks === 1 ? '' : 's'} across ${Math.max(project.departments.size, 1)} department${project.departments.size === 1 ? '' : 's'}`,
+        departments: Array.from(project.departments).sort(),
+        assigneeCount: project.assignees.size,
+      };
+    })
+    .sort((a, b) => new Date(b.latestActivityAt || 0).getTime() - new Date(a.latestActivityAt || 0).getTime());
+}
+
 function ProjectsContent() {
+  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState([]);
+  const [selectedProjectKey, setSelectedProjectKey] = useState('');
+  const [search, setSearch] = useState('');
+  const [error, setError] = useState('');
+
+  const loadProjects = async ({ preserveSelection = true } = {}) => {
+    setLoading(true);
+    setError('');
+    try {
+      const [inboxResponse, outboxResponse] = await Promise.all([
+        taskAPI.getInbox(),
+        taskAPI.getOutbox(),
+      ]);
+      const mergedTasks = [...(inboxResponse?.data || []), ...(outboxResponse?.data || [])];
+      const uniqueTasks = Array.from(
+        new Map(mergedTasks.map((task) => [task.id, task])).values()
+      );
+      const groupedProjects = buildProjectSummaries(uniqueTasks);
+      setProjects(groupedProjects);
+      setSelectedProjectKey((prev) => {
+        if (preserveSelection && prev && groupedProjects.some((project) => project.key === prev)) {
+          return prev;
+        }
+        return groupedProjects[0]?.key || '';
+      });
+    } catch (loadError) {
+      console.error('Failed to load live projects:', loadError);
+      setProjects([]);
+      setSelectedProjectKey('');
+      setError('Could not load live projects right now.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadProjects({ preserveSelection: false });
+  }, []);
+
+  const filteredProjects = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return projects;
+    return projects.filter((project) => {
+      const departmentText = project.departments.join(' ').toLowerCase();
+      return (
+        project.name.toLowerCase().includes(query) ||
+        (project.projectId || '').toLowerCase().includes(query) ||
+        (project.customerName || '').toLowerCase().includes(query) ||
+        departmentText.includes(query)
+      );
+    });
+  }, [projects, search]);
+
+  const selectedProject = useMemo(() => {
+    if (!selectedProjectKey) return filteredProjects[0] || null;
+    return filteredProjects.find((project) => project.key === selectedProjectKey)
+      || projects.find((project) => project.key === selectedProjectKey)
+      || null;
+  }, [filteredProjects, projects, selectedProjectKey]);
+
   return (
     <div className="tab-content">
       <div className="content-header">
         <h3>Projects</h3>
-        <button className="add-btn">+ New Project</button>
+        <button className="add-btn" onClick={() => void loadProjects()}>
+          Refresh
+        </button>
       </div>
-      <div className="projects-grid">
-        <div className="project-card">
-          <div className="project-header">
-            <h4>Website Redesign</h4>
-            <span className="project-status active">Active</span>
-          </div>
-          <p className="project-description">Complete overhaul of company website</p>
-          <div className="project-progress">
-            <div className="progress-bar">
-              <div className="progress-fill" style={{ width: '65%' }}></div>
-            </div>
-            <span className="progress-text">65% Complete</span>
-          </div>
+
+      <div className="projects-toolbar">
+        <input
+          className="projects-search"
+          type="text"
+          placeholder="Search project folder..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <div className="projects-helper-text">
+          Create tasks with the same project name to keep them inside one project folder.
         </div>
-        <div className="project-card">
-          <div className="project-header">
-            <h4>Mobile App</h4>
-            <span className="project-status active">Active</span>
-          </div>
-          <p className="project-description">iOS and Android app development</p>
-          <div className="project-progress">
-            <div className="progress-bar">
-              <div className="progress-fill" style={{ width: '40%' }}></div>
+      </div>
+
+      {error && <div className="team-member-card">{error}</div>}
+
+      <div className="projects-live-layout">
+        <div className="projects-grid">
+          {loading && (
+            <div className="project-card">
+              <div className="project-header">
+                <h4>Loading live projects...</h4>
+              </div>
+              <p className="project-description">Reading project folders from your real tasks.</p>
             </div>
-            <span className="progress-text">40% Complete</span>
-          </div>
+          )}
+
+          {!loading && filteredProjects.length === 0 && (
+            <div className="project-card">
+              <div className="project-header">
+                <h4>No project folders yet</h4>
+              </div>
+              <p className="project-description">
+                Create a task with a project name and it will show up here automatically.
+              </p>
+            </div>
+          )}
+
+          {!loading && filteredProjects.map((project) => (
+            <button
+              key={project.key}
+              type="button"
+              className={`project-card live-project-card ${selectedProjectKey === project.key ? 'selected' : ''}`}
+              onClick={() => setSelectedProjectKey(project.key)}
+            >
+              <div className="project-header">
+                <h4>{project.name}</h4>
+                <span className={`project-status ${project.statusClass}`}>{project.statusLabel}</span>
+              </div>
+              <div className="project-folder-meta">
+                <span className="project-folder-icon">📁</span>
+                <span>{project.projectId || 'No Project ID'}</span>
+              </div>
+              <p className="project-description">{project.description}</p>
+              <div className="project-stats-row">
+                <span>{project.totalTasks} task{project.totalTasks === 1 ? '' : 's'}</span>
+                <span>{project.assigneeCount} assignee{project.assigneeCount === 1 ? '' : 's'}</span>
+                <span>{project.departments.length || 1} dept</span>
+              </div>
+              <div className="project-progress">
+                <div className="progress-bar">
+                  <div className="progress-fill" style={{ width: `${project.progress}%` }}></div>
+                </div>
+                <span className="progress-text">
+                  {project.progress}% Complete • {project.completedTasks}/{project.totalTasks} finished
+                </span>
+              </div>
+            </button>
+          ))}
         </div>
-        <div className="project-card">
-          <div className="project-header">
-            <h4>Marketing Campaign</h4>
-            <span className="project-status completed">Completed</span>
-          </div>
-          <p className="project-description">Q4 marketing strategy execution</p>
-          <div className="project-progress">
-            <div className="progress-bar">
-              <div className="progress-fill" style={{ width: '100%' }}></div>
+
+        <div className="project-folder-panel">
+          {!selectedProject && (
+            <div className="project-folder-empty">
+              Select a project folder to see the tasks inside it.
             </div>
-            <span className="progress-text">100% Complete</span>
-          </div>
+          )}
+
+          {selectedProject && (
+            <>
+              <div className="project-folder-panel-header">
+                <div>
+                  <div className="project-folder-badge">Project Folder</div>
+                  <h4>{selectedProject.name}</h4>
+                  <p>
+                    {selectedProject.projectId || 'No Project ID'} • Last activity {formatProjectDate(selectedProject.latestActivityAt)}
+                  </p>
+                </div>
+                <span className={`project-status ${selectedProject.statusClass}`}>{selectedProject.statusLabel}</span>
+              </div>
+
+              <div className="project-folder-summary">
+                <div className="overview-card compact">
+                  <div className="card-info">
+                    <div className="card-value">{selectedProject.totalTasks}</div>
+                    <div className="card-label">Tasks</div>
+                  </div>
+                </div>
+                <div className="overview-card compact">
+                  <div className="card-info">
+                    <div className="card-value">{selectedProject.activeTasks}</div>
+                    <div className="card-label">Active</div>
+                  </div>
+                </div>
+                <div className="overview-card compact">
+                  <div className="card-info">
+                    <div className="card-value">{selectedProject.completedTasks}</div>
+                    <div className="card-label">Completed</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="project-task-list">
+                {selectedProject.tasks.map((task) => (
+                  <div className="project-task-item" key={task.id}>
+                    <div className="project-task-main">
+                      <div className="project-task-title">{task.title || task.taskNumber || `Task ${task.id}`}</div>
+                      <div className="project-task-meta">
+                        <span>{task.taskNumber || 'No Task ID'}</span>
+                        <span>{task.toDepartment || task.fromDepartment || 'No department'}</span>
+                        <span>{task.assignedTo?.length || 0} assignee{(task.assignedTo?.length || 0) === 1 ? '' : 's'}</span>
+                      </div>
+                    </div>
+                    <div className="project-task-side">
+                      <span className={`project-status ${((task.status || '').toLowerCase() === 'completed') ? 'completed' : 'active'}`}>
+                        {(task.status || 'pending').replaceAll('_', ' ')}
+                      </span>
+                      <span className="project-task-date">
+                        {task.deadline ? `Due ${formatProjectDate(task.deadline)}` : formatProjectDate(task.updatedAt || task.createdAt)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -834,17 +1082,99 @@ function GroupsContent() {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState([]);
   const [showAddMemberPanel, setShowAddMemberPanel] = useState(false);
+  const [showGroupMenu, setShowGroupMenu] = useState(false);
   const [addMemberSelection, setAddMemberSelection] = useState([]);
   const [feedback, setFeedback] = useState('');
   const messagesEndRef = useRef(null);
   const selectedGroupIdRef = useRef(null);
+  const groupMenuRef = useRef(null);
+  const attachmentInputRef = useRef(null);
 
   const selectedGroup = useMemo(
     () => groups.find((g) => g.id === selectedGroupId) || null,
     [groups, selectedGroupId]
   );
   const isSelectedGroupAdmin = !!selectedGroup && selectedGroup.myRole === 'admin';
+  const selectedGroupPreviewNames = (selectedGroup?.members || []).slice(0, 3).map((member) => member.name).join(', ');
+
+  const buildDayLabel = (value) => {
+    if (!value) return 'Recent';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Recent';
+    const today = new Date();
+    const messageDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const diffDays = Math.round((todayDay.getTime() - messageDay.getTime()) / 86400000);
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    return date.toLocaleDateString(undefined, {
+      day: 'numeric',
+      month: 'short',
+      year: messageDay.getFullYear() === todayDay.getFullYear() ? undefined : 'numeric',
+    });
+  };
+
+  const formatMessageTime = (value) => {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  };
+
+  const buildInitials = (value) =>
+    (value || '')
+      .split(' ')
+      .map((part) => part[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase() || 'G';
+
+  const buildAvatarHue = (value) =>
+    Array.from(value || 'group').reduce((total, char) => total + char.charCodeAt(0), 0) % 360;
+
+  const buildAttachmentOpenUrl = (attachment) => {
+    const params = new URLSearchParams();
+    if (attachment?.path) params.set('path', attachment.path);
+    else if (attachment?.url) params.set('url', attachment.url);
+    return `${FILES_API_BASE}/api/files/open?${params.toString()}`;
+  };
+
+  const buildAttachmentPreviewUrl = (attachment) => buildAttachmentOpenUrl(attachment);
+
+  const buildAttachmentDownloadUrl = (attachment) => {
+    const params = new URLSearchParams();
+    if (attachment?.path) params.set('path', attachment.path);
+    else if (attachment?.url) params.set('url', attachment.url);
+    if (attachment?.originalName || attachment?.filename) {
+      params.set('filename', attachment.originalName || attachment.filename);
+    }
+    return `${FILES_API_BASE}/api/files/download?${params.toString()}`;
+  };
+
+  const getAttachmentLabel = (attachment) =>
+    attachment?.originalName || attachment?.filename || 'Attachment';
+
+  const isImageAttachment = (attachment) => `${attachment?.mimetype || ''}`.startsWith('image/');
+  const isVideoAttachment = (attachment) => `${attachment?.mimetype || ''}`.startsWith('video/');
+
+  const messageItems = useMemo(() => {
+    const items = [];
+    let lastLabel = null;
+
+    messages.forEach((msg) => {
+      const label = buildDayLabel(msg.createdAt);
+      if (label !== lastLabel) {
+        items.push({ type: 'separator', id: `sep-${label}-${msg.id}`, label });
+        lastLabel = label;
+      }
+      items.push({ type: 'message', id: msg.id, message: msg });
+    });
+
+    return items;
+  }, [messages]);
 
   const syncGroups = async ({ keepSelected = true } = {}) => {
     const res = await groupAPI.listGroups();
@@ -902,6 +1232,27 @@ function GroupsContent() {
   useEffect(() => {
     selectedGroupIdRef.current = selectedGroupId;
   }, [selectedGroupId]);
+
+  useEffect(() => {
+    setShowAddMemberPanel(false);
+    setShowGroupMenu(false);
+    setAddMemberSelection([]);
+    setPendingAttachments([]);
+    setNewMessage('');
+  }, [selectedGroupId]);
+
+  useEffect(() => {
+    if (!showGroupMenu) return undefined;
+
+    const handlePointerDown = (event) => {
+      if (groupMenuRef.current && !groupMenuRef.current.contains(event.target)) {
+        setShowGroupMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [showGroupMenu]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -982,18 +1333,42 @@ function GroupsContent() {
   };
 
   const sendMessage = async () => {
-    if (!selectedGroupId || !newMessage.trim() || sendingMessage) return;
+    if (!selectedGroupId || sendingMessage || uploadingAttachment) return;
+    const trimmedMessage = newMessage.trim();
+    if (!trimmedMessage && pendingAttachments.length === 0) return;
     setSendingMessage(true);
     try {
-      const res = await groupAPI.sendMessage(selectedGroupId, newMessage.trim());
+      const res = await groupAPI.sendMessage(selectedGroupId, {
+        message: trimmedMessage,
+        attachments: pendingAttachments,
+      });
       const sent = res?.data;
       setMessages((prev) => (sent ? [...prev, sent] : prev));
       setNewMessage('');
+      setPendingAttachments([]);
       await syncGroups();
     } catch (error) {
       setFeedback(error?.response?.data?.detail || 'Failed to send message.');
     } finally {
       setSendingMessage(false);
+    }
+  };
+
+  const handleAttachmentSelect = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    setUploadingAttachment(true);
+    try {
+      const response = await fileAPI.uploadFiles(files);
+      setPendingAttachments((prev) => [...prev, ...(response?.data || [])]);
+      setFeedback('');
+    } catch (error) {
+      setFeedback(error?.response?.data?.detail || 'Failed to upload attachment.');
+    } finally {
+      setUploadingAttachment(false);
+      if (attachmentInputRef.current) {
+        attachmentInputRef.current.value = '';
+      }
     }
   };
 
@@ -1032,19 +1407,21 @@ function GroupsContent() {
 
       {feedback && <div className="team-member-card" style={{ marginBottom: '10px' }}>{feedback}</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 360px) 1fr', gap: '12px' }}>
-        <div style={{ display: 'grid', gap: '10px', alignContent: 'start' }}>
-          <div style={{ display: 'grid', gap: '8px', border: '1px solid #2b3b59', borderRadius: '8px', padding: '10px' }}>
+      <div className="groups-shell">
+        <div className="groups-sidebar">
+          <div className="groups-create-card">
+            <div className="groups-create-title">Create Group</div>
             <input
+              className="groups-input"
               type="text"
               placeholder="Group name..."
               value={groupName}
               onChange={(e) => setGroupName(e.target.value)}
             />
-            <div style={{ maxHeight: '140px', overflowY: 'auto', border: '1px solid #2b3b59', borderRadius: '8px', padding: '8px' }}>
+            <div className="groups-user-picker">
               {loading && <div>Loading employees...</div>}
               {!loading && allUsers.map((user) => (
-                <label key={user.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <label key={user.id} className="groups-user-option">
                   <input
                     type="checkbox"
                     checked={selectedIds.includes(user.id)}
@@ -1059,107 +1436,280 @@ function GroupsContent() {
             </button>
           </div>
 
-          <div className="team-grid" style={{ marginTop: 0 }}>
+          <div className="groups-list">
             {groups.length === 0 && <div className="team-member-card">No groups created yet.</div>}
             {groups.map((group) => (
-              <div
-                className="team-member-card"
+              <button
+                type="button"
+                className={`group-thread-card ${selectedGroupId === group.id ? 'active' : ''}`}
                 key={group.id}
-                style={{
-                  border: selectedGroupId === group.id ? '1px solid #7f8cff' : undefined,
-                  cursor: 'pointer',
-                }}
                 onClick={() => setSelectedGroupId(group.id)}
               >
-                <div className="member-info" style={{ width: '100%' }}>
-                  <div className="member-name">{group.name}</div>
-                  <div className="member-role">{group.memberCount} members</div>
-                  <div className="member-role">Role: {group.myRole}</div>
+                <div
+                  className="group-thread-avatar"
+                  style={{ '--group-avatar-hue': `${buildAvatarHue(group.name)}deg` }}
+                >
+                  {buildInitials(group.name)}
                 </div>
-              </div>
+                <div className="group-thread-copy">
+                  <div className="group-thread-topline">
+                    <div className="group-thread-name">{group.name}</div>
+                    <div className="group-thread-meta">{group.memberCount} members</div>
+                  </div>
+                  <div className="group-thread-subline">
+                    <span>Your role: {group.myRole}</span>
+                    <span>{group.members?.slice(0, 2).map((member) => member.name).join(', ')}</span>
+                  </div>
+                </div>
+              </button>
             ))}
           </div>
         </div>
 
-        <div style={{ border: '1px solid #2b3b59', borderRadius: '8px', minHeight: '460px', display: 'grid', gridTemplateRows: 'auto 1fr auto' }}>
+        <div className="groups-chat-window">
           {!selectedGroup && (
-            <div style={{ padding: '16px' }}>Select a group to start chatting.</div>
+            <div className="group-chat-empty">
+              <div className="group-chat-empty-icon">#</div>
+              <h4>Select a group to start chatting</h4>
+              <p>Your group conversations will appear here in a WhatsApp-style layout.</p>
+            </div>
           )}
 
           {selectedGroup && (
             <>
-              <div style={{ padding: '10px 12px', borderBottom: '1px solid #2b3b59', display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
-                <div>
-                  <div className="member-name">{selectedGroup.name}</div>
-                  <div className="member-role">{selectedGroup.memberCount} members</div>
-                </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  {isSelectedGroupAdmin && (
-                    <button className="add-btn" onClick={() => setShowAddMemberPanel((p) => !p)}>
-                      {showAddMemberPanel ? 'Close Add Members' : '+ Add Members'}
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {showAddMemberPanel && isSelectedGroupAdmin && (
-                <div style={{ padding: '10px 12px', borderBottom: '1px solid #2b3b59' }}>
-                  <div style={{ maxHeight: '130px', overflowY: 'auto', border: '1px solid #2b3b59', borderRadius: '8px', padding: '8px' }}>
-                    {allUsers
-                      .filter((u) => !selectedGroup.members.some((m) => m.id === u.id))
-                      .map((user) => (
-                        <label key={user.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                          <input
-                            type="checkbox"
-                            checked={addMemberSelection.includes(user.id)}
-                            onChange={() =>
-                              setAddMemberSelection((prev) =>
-                                prev.includes(user.id) ? prev.filter((x) => x !== user.id) : [...prev, user.id]
-                              )
-                            }
-                          />
-                          <span>{user.name} ({user.department || 'N/A'})</span>
-                        </label>
-                      ))}
+              <div className="group-chat-header">
+                <div className="group-chat-summary">
+                  <div
+                    className="group-chat-header-avatar"
+                    style={{ '--group-avatar-hue': `${buildAvatarHue(selectedGroup.name)}deg` }}
+                  >
+                    {buildInitials(selectedGroup.name)}
                   </div>
-                  <button className="add-btn" style={{ marginTop: '8px' }} onClick={() => saveAddMembers(selectedGroup.id)}>
-                    Save Members
-                  </button>
-                </div>
-              )}
-
-              <div style={{ overflowY: 'auto', padding: '12px', display: 'grid', gap: '8px' }}>
-                {messages.length === 0 && <div className="member-role">No messages yet.</div>}
-                {messages.map((msg) => {
-                  const mine = msg.senderId === currentUserId;
-                  return (
-                    <div
-                      key={msg.id}
-                      style={{
-                        justifySelf: mine ? 'end' : 'start',
-                        maxWidth: '80%',
-                        background: mine ? '#2d5eff' : '#223047',
-                        color: '#fff',
-                        borderRadius: '10px',
-                        padding: '8px 10px',
-                      }}
-                    >
-                      {!mine && <div style={{ fontSize: '11px', opacity: 0.8 }}>{msg.senderName}</div>}
-                      <div>{msg.message}</div>
-                      <div style={{ fontSize: '11px', opacity: 0.75, marginTop: '4px' }}>
-                        {msg.createdAt ? new Date(msg.createdAt).toLocaleString() : ''}
-                      </div>
+                  <div>
+                    <div className="group-chat-title">{selectedGroup.name}</div>
+                    <div className="group-chat-subtitle">
+                      {selectedGroup.memberCount} members{selectedGroupPreviewNames ? `, ${selectedGroupPreviewNames}` : ''}
                     </div>
-                  );
-                })}
-                <div ref={messagesEndRef} />
+                  </div>
+                </div>
+                <div className="group-chat-actions">
+                  <span className="group-chat-badge">{selectedGroup.myRole}</span>
+                  <div className="group-chat-menu-wrap" ref={groupMenuRef}>
+                    <button
+                      type="button"
+                      className="group-chat-menu-trigger"
+                      onClick={() => setShowGroupMenu((prev) => !prev)}
+                    >
+                      ...
+                    </button>
+
+                    {showGroupMenu && (
+                      <div className="group-chat-menu">
+                        {isSelectedGroupAdmin && (
+                          <button
+                            type="button"
+                            className="group-chat-menu-action"
+                            onClick={() => setShowAddMemberPanel((prev) => !prev)}
+                          >
+                            {showAddMemberPanel ? 'Close Add Members' : '+ Add Members'}
+                          </button>
+                        )}
+
+                        {showAddMemberPanel && isSelectedGroupAdmin && (
+                          <div className="group-add-members-panel group-add-members-panel-menu">
+                            <div className="group-chat-menu-title">Add Members</div>
+                            <div className="group-add-members-list">
+                              {allUsers
+                                .filter((u) => !selectedGroup.members.some((m) => m.id === u.id))
+                                .map((user) => (
+                                  <label key={user.id} className="groups-user-option">
+                                    <input
+                                      type="checkbox"
+                                      checked={addMemberSelection.includes(user.id)}
+                                      onChange={() =>
+                                        setAddMemberSelection((prev) =>
+                                          prev.includes(user.id) ? prev.filter((x) => x !== user.id) : [...prev, user.id]
+                                        )
+                                      }
+                                    />
+                                    <span>{user.name} ({user.department || 'N/A'})</span>
+                                  </label>
+                                ))}
+                            </div>
+                            <button className="add-btn" style={{ marginTop: '8px' }} onClick={() => saveAddMembers(selectedGroup.id)}>
+                              Save Members
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="group-chat-menu-section">
+                          <div className="group-chat-menu-title">Members</div>
+                          <div className="group-chat-menu-members">
+                            {selectedGroup.members.map((member) => (
+                              <div key={member.id} className="group-member-row group-member-row-menu">
+                                <div className="group-member-main">
+                                  <div
+                                    className="group-member-avatar"
+                                    style={{ '--group-avatar-hue': `${buildAvatarHue(member.name)}deg` }}
+                                  >
+                                    {buildInitials(member.name)}
+                                  </div>
+                                  <div>
+                                    <div className="group-member-name">{member.name}</div>
+                                    <div className="group-member-role-line">{member.role}</div>
+                                  </div>
+                                </div>
+                                <div className="group-member-actions">
+                                  {isSelectedGroupAdmin && member.id !== currentUserId && selectedGroup.createdBy !== member.id && (
+                                    <>
+                                      <button
+                                        className="add-btn"
+                                        onClick={() => updateMemberRole(member.id, member.role === 'admin' ? 'member' : 'admin')}
+                                      >
+                                        {member.role === 'admin' ? 'Demote' : 'Make Admin'}
+                                      </button>
+                                      <button className="add-btn" onClick={() => removeMember(member.id)}>Remove</button>
+                                    </>
+                                  )}
+                                  {member.id === currentUserId && selectedGroup.createdBy !== currentUserId && (
+                                    <button className="add-btn" onClick={() => removeMember(member.id)}>Leave</button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              <div style={{ borderTop: '1px solid #2b3b59', padding: '10px 12px' }}>
-                <div style={{ display: 'flex', gap: '8px' }}>
+              <div className="group-chat-body">
+                <div className="group-chat-thread">
+                  {messages.length === 0 && <div className="group-chat-empty-thread">No messages yet. Say hello to the group.</div>}
+                  {messageItems.map((item) => {
+                    if (item.type === 'separator') {
+                      return (
+                        <div key={item.id} className="group-chat-day-separator">
+                          <span>{item.label}</span>
+                        </div>
+                      );
+                    }
+
+                    const msg = item.message;
+                    const mine = msg.senderId === currentUserId;
+                    return (
+                      <div key={item.id} className={`group-chat-row ${mine ? 'mine' : 'theirs'}`}>
+                        {!mine && (
+                          <div
+                            className="group-message-avatar"
+                            style={{ '--group-avatar-hue': `${buildAvatarHue(msg.senderName)}deg` }}
+                          >
+                            {buildInitials(msg.senderName)}
+                          </div>
+                        )}
+                        <div className={`group-message-bubble ${mine ? 'mine' : 'theirs'}`}>
+                          {!mine && <div className="group-message-sender">{msg.senderName}</div>}
+                          {msg.message && <div className="group-message-text">{msg.message}</div>}
+                          {!!msg.attachments?.length && (
+                            <div className="group-message-attachments">
+                              {msg.attachments.map((attachment, index) => (
+                                <a
+                                  key={`${msg.id}-attachment-${index}`}
+                                  className="group-message-attachment-card"
+                                  href={buildAttachmentOpenUrl(attachment)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {isImageAttachment(attachment) ? (
+                                    <img
+                                      className="group-message-attachment-preview group-message-attachment-preview-media"
+                                      src={buildAttachmentPreviewUrl(attachment)}
+                                      alt={getAttachmentLabel(attachment)}
+                                    />
+                                  ) : isVideoAttachment(attachment) ? (
+                                    <video
+                                      className="group-message-attachment-preview group-message-attachment-preview-media"
+                                      src={buildAttachmentPreviewUrl(attachment)}
+                                      controls
+                                      preload="metadata"
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                      }}
+                                    />
+                                  ) : (
+                                    <div className="group-message-attachment-icon">+</div>
+                                  )}
+                                  <div className="group-message-attachment-copy">
+                                    <span>{getAttachmentLabel(attachment)}</span>
+                                    <small>{attachment.mimetype || 'Attachment'}</small>
+                                  </div>
+                                  <span
+                                    className="group-message-attachment-download"
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      window.open(buildAttachmentDownloadUrl(attachment), '_blank', 'noopener,noreferrer');
+                                    }}
+                                  >
+                                    Open
+                                  </span>
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                          <div className="group-message-meta">
+                            <span>{formatMessageTime(msg.createdAt)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div ref={messagesEndRef} />
+                </div>
+              </div>
+
+              <div className="group-chat-composer">
+                {!!pendingAttachments.length && (
+                  <div className="group-chat-attachment-strip">
+                    {pendingAttachments.map((attachment, index) => (
+                      <div key={`${attachment.path || attachment.url || attachment.filename}-${index}`} className="group-chat-attachment-pill">
+                        <span>{getAttachmentLabel(attachment)}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPendingAttachments((prev) => prev.filter((_, attachmentIndex) => attachmentIndex !== index))
+                          }
+                        >
+                          x
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="group-chat-composer-shell">
+                  <button
+                    type="button"
+                    className="group-chat-tool-btn"
+                    onClick={() => attachmentInputRef.current?.click()}
+                    title="Attach files"
+                    disabled={uploadingAttachment}
+                  >
+                    +
+                  </button>
                   <input
+                    ref={attachmentInputRef}
+                    type="file"
+                    multiple
+                    onChange={handleAttachmentSelect}
+                    style={{ display: 'none' }}
+                  />
+                  <input
+                    className="groups-input group-chat-input"
                     type="text"
-                    placeholder="Type a message..."
+                    placeholder={uploadingAttachment ? 'Uploading attachment...' : 'Type a message'}
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
                     onKeyDown={(e) => {
@@ -1169,35 +1719,13 @@ function GroupsContent() {
                       }
                     }}
                   />
-                  <button className="add-btn" onClick={sendMessage} disabled={sendingMessage || !newMessage.trim()}>
-                    Send
+                  <button
+                    className="group-chat-send-btn"
+                    onClick={sendMessage}
+                    disabled={sendingMessage || uploadingAttachment || (!newMessage.trim() && pendingAttachments.length === 0)}
+                  >
+                    <span className={`group-chat-send-icon ${sendingMessage ? 'sending' : ''}`} />
                   </button>
-                </div>
-                <div style={{ marginTop: '10px', display: 'grid', gap: '6px' }}>
-                  <div className="member-role">Members</div>
-                  <div style={{ maxHeight: '130px', overflowY: 'auto', border: '1px solid #2b3b59', borderRadius: '8px', padding: '8px' }}>
-                    {selectedGroup.members.map((member) => (
-                      <div key={member.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '6px' }}>
-                        <span>{member.name} ({member.role})</span>
-                        <div style={{ display: 'flex', gap: '6px' }}>
-                          {isSelectedGroupAdmin && member.id !== currentUserId && selectedGroup.createdBy !== member.id && (
-                            <>
-                              <button
-                                className="add-btn"
-                                onClick={() => updateMemberRole(member.id, member.role === 'admin' ? 'member' : 'admin')}
-                              >
-                                {member.role === 'admin' ? 'Demote' : 'Make Admin'}
-                              </button>
-                              <button className="add-btn" onClick={() => removeMember(member.id)}>Remove</button>
-                            </>
-                          )}
-                          {member.id === currentUserId && selectedGroup.createdBy !== currentUserId && (
-                            <button className="add-btn" onClick={() => removeMember(member.id)}>Leave</button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
                 </div>
               </div>
             </>

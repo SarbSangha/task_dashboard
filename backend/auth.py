@@ -1,6 +1,6 @@
 # auth.py - Authentication Utilities ONLY (NO ROUTES)
 from passlib.context import CryptContext
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 import secrets
@@ -18,7 +18,7 @@ RESET_TOKEN_STORE = {}
 REVOKED_SESSION_STORE = {}
 
 SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
-_SESSION_SALT = "rmw-session-v1"
+_SESSION_SALT = "rmw-session-v1"  
 
 
 def _get_session_serializer() -> URLSafeTimedSerializer:
@@ -27,6 +27,25 @@ def _get_session_serializer() -> URLSafeTimedSerializer:
         # Fallback keeps local/dev usable, but production should always set SECRET_KEY.
         secret_key = "rmw-dev-secret-key-change-me"
     return URLSafeTimedSerializer(secret_key=secret_key, salt=_SESSION_SALT)
+
+
+def _normalize_to_utc_naive(value: Optional[datetime]) -> Optional[datetime]:
+    if not value:
+        return None
+    if value.tzinfo is not None and value.tzinfo.utcoffset(value) is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _ensure_user_session_not_revoked(db: Optional[Session], user_id: int, issued_at: Optional[datetime]) -> None:
+    if db is None or issued_at is None:
+        return
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return
+    revoked_at = _normalize_to_utc_naive(user.session_revoked_at)
+    if revoked_at and issued_at <= revoked_at:
+        raise HTTPException(status_code=401, detail="Session revoked")
 
 
 # ==================== PASSWORD FUNCTIONS ====================
@@ -75,6 +94,7 @@ def authenticate_user(db: Session, email: str, password: str):
 def create_session_token(user_id: int) -> str:
     """Create new session token"""
     serializer = _get_session_serializer()
+    created_at = datetime.utcnow()
     token = serializer.dumps(
         {
             "user_id": int(user_id),
@@ -83,13 +103,13 @@ def create_session_token(user_id: int) -> str:
     )
     SESSION_STORE[token] = {
         "user_id": user_id,
-        "created_at": datetime.utcnow(),
-        "expires_at": datetime.utcnow() + timedelta(days=30)
+        "created_at": created_at,
+        "expires_at": created_at + timedelta(days=30)
     }
     return token
 
 
-def verify_session_token(token: str) -> int:
+def verify_session_token(token: str, db: Optional[Session] = None) -> int:
     """Verify session token and return user_id"""
     from fastapi import HTTPException
 
@@ -105,13 +125,19 @@ def verify_session_token(token: str) -> int:
         if datetime.utcnow() > session["expires_at"]:
             del SESSION_STORE[token]
             raise HTTPException(status_code=401, detail="Session expired")
+        _ensure_user_session_not_revoked(db, int(session["user_id"]), session.get("created_at"))
         return session["user_id"]
 
     # Cross-process fallback for production (stateless signed token)
     serializer = _get_session_serializer()
     try:
-        payload = serializer.loads(token, max_age=SESSION_MAX_AGE_SECONDS)
+        payload, issued_at = serializer.loads(
+            token,
+            max_age=SESSION_MAX_AGE_SECONDS,
+            return_timestamp=True,
+        )
         user_id = int(payload.get("user_id"))
+        _ensure_user_session_not_revoked(db, user_id, _normalize_to_utc_naive(issued_at))
         return user_id
     except SignatureExpired:
         raise HTTPException(status_code=401, detail="Session expired")
@@ -126,6 +152,26 @@ def invalidate_session(token: str):
     REVOKED_SESSION_STORE[token] = {
         "expires_at": datetime.utcnow() + timedelta(seconds=SESSION_MAX_AGE_SECONDS)
     }
+
+
+def revoke_user_sessions(db: Session, user_id: int, revoked_at: Optional[datetime] = None) -> datetime:
+    """Persistently revoke all sessions for a user."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    effective_revoked_at = revoked_at or datetime.utcnow()
+    user.session_revoked_at = effective_revoked_at
+
+    for token, data in list(SESSION_STORE.items()):
+        if int(data.get("user_id") or 0) != int(user_id):
+            continue
+        del SESSION_STORE[token]
+        REVOKED_SESSION_STORE[token] = {
+            "expires_at": effective_revoked_at + timedelta(seconds=SESSION_MAX_AGE_SECONDS)
+        }
+
+    return effective_revoked_at
 
 
 # ==================== RESET TOKENS ====================

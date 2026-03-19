@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { getAvatarInitials, normalizeAvatarSrc } from '../../utils/avatar';
 
 export function UserAvatar({ avatar, name, size = 40 }) {
-  const initials = name
-    ?.split(' ')
-    .map(n => n[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2) || '?';
+  const [imageFailed, setImageFailed] = useState(false);
+  const avatarSrc = imageFailed ? null : normalizeAvatarSrc(avatar);
+  const initials = getAvatarInitials(name);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [avatar]);
 
   return (
     <div
@@ -18,17 +20,18 @@ export function UserAvatar({ avatar, name, size = 40 }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: avatar ? 'transparent' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+        background: avatarSrc ? 'transparent' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
         color: 'white',
         fontWeight: '600',
         fontSize: `${size / 2.5}px`
       }}
     >
-      {avatar ? (
+      {avatarSrc ? (
         <img
-          src={avatar}
+          src={avatarSrc}
           alt={name}
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          onError={() => setImageFailed(true)}
         />
       ) : (
         <span>{initials}</span>

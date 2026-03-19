@@ -6,7 +6,8 @@ Overlay
   right: 0 !important;
   bottom: 0 !important;
   background: rgba(0, 0, 0, 0.5) !important;
-  z-index: 2000 !important;
+  z-index: var(--settings-panel-overlay-z, 2000) !important;
+  animation: settingsPanelFadeIn 0.3s ease-out;
 }
 
 .flag-option{
@@ -24,24 +25,13 @@ Overlay
   height: calc(100vh - 140px) !important;
   background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%) !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15) !important;
-  z-index: 2001 !important;
+  z-index: var(--settings-panel-z, 2001) !important;
   display: flex !important;
   flex-direction: column !important;
-  animation: slideInRight 0.3s ease-out;
+  animation: settingsPanelSlideInRight 0.3s ease-out;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif !important;
   border-radius: 12px !important;
   overflow: hidden !important;
-}
-
-@keyframes slideInRight {
-  from { 
-    transform: translateX(50px);
-    opacity: 0;
-  }
-  to { 
-    transform: translateX(0);
-    opacity: 1;
-  }
 }
 
 /* Header - Matching Sidebar Header */

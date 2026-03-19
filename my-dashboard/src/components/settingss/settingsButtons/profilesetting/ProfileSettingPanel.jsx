@@ -8,16 +8,16 @@ import './ProfileSettingsPanel.css';
 
 const ProfileSettingsPanel = ({ isOpen, onClose }) => {
   const { showAlert } = useCustomDialogs();
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   
   const [profileData, setProfileData] = useState({
-    name: user?.name || '',
-    email: user?.email || '',
-    position: user?.position || '',
-    department: user?.department || '',
-    employeeId: user?.employeeId || '',
-    flag: user?.department || '',
-    avatar: user?.avatar || null
+    name: '',
+    email: '',
+    position: '',
+    department: '',
+    employeeId: '',
+    flag: '',
+    avatar: null
   });
 
   const [requestChangeFlag, setRequestChangeFlag] = useState('');
@@ -26,6 +26,19 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
   const [employeeIdOptions, setEmployeeIdOptions] = useState([]);
 
   const POSITION_OPTIONS = ['NORMAL', 'FACULTY', 'HOD', 'SPOC', 'ADMIN'];
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setProfileData({
+      name: user?.name || '',
+      email: user?.email || '',
+      position: user?.position || '',
+      department: user?.department || '',
+      employeeId: user?.employeeId || '',
+      flag: user?.department || '',
+      avatar: user?.avatar || null
+    });
+  }, [isOpen, user]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -65,6 +78,7 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
 
   const handleAvatarUpdate = (newAvatar) => {
     setProfileData(prev => ({ ...prev, avatar: newAvatar }));
+    updateUser({ avatar: newAvatar });
   };
 
   const handleSubmitFlagRequest = async () => {

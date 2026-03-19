@@ -8,7 +8,7 @@ import asyncio
 
 from database_config import get_operational_db
 from models_new import User, UserApprovalRequest
-from auth import SESSION_STORE, invalidate_session
+from auth import SESSION_STORE, invalidate_session, revoke_user_sessions
 from routers.tasks_router import notification_hub
 from routers.auth_router import get_current_user, ensure_admin
 
@@ -94,6 +94,16 @@ def _push_admin_realtime_event(db: Session, event_type: str, title: str, message
             pass
 
 
+def _sanitize_request_payload(request_type: str, payload: Optional[dict]) -> dict:
+    data = dict(payload or {})
+    if request_type == "password_change":
+        return {
+            "summary": "Secure password change request",
+            "hasPasswordUpdate": bool(data.get("password_hash")),
+        }
+    return data
+
+
 @router.get("/pending-signups")
 async def pending_signups(
     current_user: User = Depends(get_current_user),
@@ -145,7 +155,7 @@ async def pending_requests(
                 "requestId": req.id,
                 "requestType": req.request_type,
                 "status": req.status,
-                "payload": req.payload_json or {},
+                "payload": _sanitize_request_payload(req.request_type, req.payload_json),
                 "createdAt": req.created_at.isoformat() if req.created_at else None,
                 "user": _serialize_user(user, req.status),
             }
@@ -250,6 +260,13 @@ async def review_request(
             user.employee_id = data.get("employee_id", user.employee_id)
             user.position = data.get("position", user.position)
             user.department = data.get("department", user.department)
+        elif req.request_type == "password_change":
+            data = req.payload_json or {}
+            password_hash = data.get("password_hash")
+            if not password_hash:
+                raise HTTPException(status_code=400, detail="Password change request is missing password data")
+            user.hashed_password = password_hash
+            revoke_user_sessions(db, user.id)
     else:
         if req.request_type == "signup":
             user.is_active = False

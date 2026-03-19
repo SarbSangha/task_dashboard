@@ -12,6 +12,8 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
   const [message, setMessage] = useState('');
   const [menuUserId, setMenuUserId] = useState(null);
   const [infoUser, setInfoUser] = useState(null);
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
   const refreshTimerRef = React.useRef(null);
 
   const formatDateTime = (value) => {
@@ -40,6 +42,8 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
 
   useEffect(() => {
     if (isOpen) {
+      setIsMinimized(false);
+      setIsMaximized(false);
       loadData();
     }
   }, [isOpen]);
@@ -86,6 +90,24 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const handleToggleMinimize = () => {
+    if (isMinimized) {
+      setIsMinimized(false);
+      return;
+    }
+    setIsMaximized(false);
+    setIsMinimized(true);
+  };
+
+  const handleToggleMaximize = () => {
+    if (isMinimized) {
+      setIsMinimized(false);
+      setIsMaximized(true);
+      return;
+    }
+    setIsMaximized((prev) => !prev);
+  };
 
   const filteredRequests = requests.filter((req) => {
     if (activeType === 'deleted') return false;
@@ -156,20 +178,60 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
 
   return (
     <>
-      <div className="admin-queue-overlay" onClick={() => { setMenuUserId(null); onClose(); }} />
-      <div className="admin-queue-panel">
-        <div className="admin-queue-header">
+      <div
+        className={`admin-queue-overlay ${isMinimized ? 'disabled' : ''}`}
+        onClick={!isMinimized ? () => { setMenuUserId(null); onClose(); } : undefined}
+      />
+      <div className={`admin-queue-panel ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}>
+        <div
+          className="admin-queue-header"
+          onClick={isMinimized ? () => setIsMinimized(false) : undefined}
+        >
           <h3>Admin Request Queue</h3>
-          <button onClick={onClose}>✕</button>
+          <div className="admin-queue-controls">
+            <button
+              className="admin-queue-window-btn"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleToggleMinimize();
+              }}
+              title={isMinimized ? 'Restore' : 'Minimize'}
+            >
+              {isMinimized ? '▢' : '─'}
+            </button>
+            <button
+              className="admin-queue-window-btn"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleToggleMaximize();
+              }}
+              title={isMaximized ? 'Restore Window' : 'Maximize'}
+            >
+              {isMaximized ? '❐' : '□'}
+            </button>
+            <button
+              className="admin-queue-close-btn"
+              onClick={(event) => {
+                event.stopPropagation();
+                onClose();
+              }}
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
+        {!isMinimized && (
         <div className="admin-queue-tabs">
           <button className={activeType === 'all' ? 'active' : ''} onClick={() => setActiveType('all')}>All</button>
           <button className={activeType === 'signup' ? 'active' : ''} onClick={() => setActiveType('signup')}>Login Requests</button>
           <button className={activeType === 'profile_update' ? 'active' : ''} onClick={() => setActiveType('profile_update')}>Profile Requests</button>
+          <button className={activeType === 'password_change' ? 'active' : ''} onClick={() => setActiveType('password_change')}>Password Requests</button>
           <button className={activeType === 'deleted' ? 'active' : ''} onClick={() => setActiveType('deleted')}>Deleted</button>
         </div>
+        )}
 
+        {!isMinimized && (
         <div className="admin-queue-content">
           {loading && <p>Loading...</p>}
           {message && <p className="admin-queue-msg">{message}</p>}
@@ -243,6 +305,7 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
             </div>
           </section>
         </div>
+        )}
       </div>
 
       {infoUser && (
@@ -250,7 +313,7 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
           <div className="admin-info-modal" onClick={(e) => e.stopPropagation()}>
             <div className="admin-info-header">
               <h4>User Info</h4>
-              <button onClick={() => setInfoUser(null)}>✕</button>
+              <button className="admin-queue-close-btn" onClick={() => setInfoUser(null)}>✕</button>
             </div>
             <div className="admin-info-grid">
               <p><strong>Name:</strong> {infoUser.name || 'N/A'}</p>

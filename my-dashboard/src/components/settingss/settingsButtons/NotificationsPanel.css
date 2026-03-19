@@ -3,6 +3,7 @@
   inset: 0;
   background: rgba(3, 10, 24, 0.48);
   z-index: 2147483300;
+  animation: settingsPanelFadeIn 0.3s ease-out;
 }
 
 .notifications-panel {
@@ -20,6 +21,7 @@
   flex-direction: column;
   overflow: hidden;
   color: #e2e8f0;
+  animation: settingsPanelSlideInRight 0.3s ease-out;
 }
 
 @media (max-width: 768px) {

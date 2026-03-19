@@ -178,6 +178,24 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const updateUser = useCallback((patch) => {
+    setUser((currentUser) => {
+      if (!currentUser) {
+        return currentUser;
+      }
+
+      const nextPatch = typeof patch === 'function' ? patch(currentUser) : patch;
+      if (!nextPatch || typeof nextPatch !== 'object') {
+        return currentUser;
+      }
+
+      return {
+        ...currentUser,
+        ...nextPatch,
+      };
+    });
+  }, []);
+
   const value = {
     user,
     loading,
@@ -185,6 +203,7 @@ export const AuthProvider = ({ children }) => {
     logout,
     register,
     checkAuth,
+    updateUser,
     activity
   };
 

@@ -6,12 +6,18 @@ import AdminApprovalsPanel from './settingsButtons/admin/AdminApprovalsPanel';
 import NotificationsPanel from './settingsButtons/NotificationsPanel';
 import { useAuth } from '../../context/AuthContext';
 const SettingsSidebar = ({ isOpen, onClose }) => {
-  const [showLoginSecurity, setShowLoginSecurity] = useState(false);
-  const [showProfileSettings, setShowProfileSettings] = useState(false);
-  const [showAdminApprovals, setShowAdminApprovals] = useState(false);
-  const [showNotifications, setShowNotifications] = useState(false);
+  const [activePanel, setActivePanel] = useState(null);
   const { user, logout } = useAuth();
   const isAdmin = user?.isAdmin || (user?.position || '').toLowerCase() === 'admin' || (user?.roles || []).includes('admin');
+
+  const openPanel = (panelName) => {
+    setActivePanel(panelName);
+  };
+
+  const closePanel = () => {
+    setActivePanel(null);
+  };
+
   const handleLogout = async () => {
     await logout();
   };
@@ -22,22 +28,22 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
     <>
       {/* Login & Security Panel */}
       <LoginSecurityPanel
-        isOpen={showLoginSecurity}
-        onClose={() => setShowLoginSecurity(false)}
+        isOpen={activePanel === 'login-security'}
+        onClose={closePanel}
       />
 
       {/* Profile Settings Panel */}
       <ProfileSettingsPanel
-        isOpen={showProfileSettings}
-        onClose={() => setShowProfileSettings(false)}
+        isOpen={activePanel === 'profile-settings'}
+        onClose={closePanel}
       />
       <AdminApprovalsPanel
-        isOpen={showAdminApprovals}
-        onClose={() => setShowAdminApprovals(false)}
+        isOpen={activePanel === 'admin-approvals'}
+        onClose={closePanel}
       />
       <NotificationsPanel
-        isOpen={showNotifications}
-        onClose={() => setShowNotifications(false)}
+        isOpen={activePanel === 'notifications'}
+        onClose={closePanel}
       />
 
       {/* Main Settings Sidebar */}
@@ -53,7 +59,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
           {/* Login & Security Button */}
           <button
             className="settings-menu-item"
-            onClick={() => setShowLoginSecurity(true)}
+            onClick={() => openPanel('login-security')}
           >
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/>
@@ -67,7 +73,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
           {/* Profile Settings Button */}
           <button
             className="settings-menu-item"
-            onClick={() => setShowProfileSettings(true)}
+            onClick={() => openPanel('profile-settings')}
           >
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
@@ -81,7 +87,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
           {isAdmin && (
             <button
               className="settings-menu-item"
-              onClick={() => setShowAdminApprovals(true)}
+              onClick={() => openPanel('admin-approvals')}
             >
               <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 14l-4-4 1.41-1.41L11 12.17l4.59-4.58L17 9l-6 6z"/>
@@ -104,7 +110,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
           {/* Notifications */}
           <button
             className="settings-menu-item"
-            onClick={() => setShowNotifications(true)}
+            onClick={() => openPanel('notifications')}
           >
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2zm-2 1H8v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z"/>

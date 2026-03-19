@@ -88,12 +88,13 @@
 }
 
 .outbox-close-btn {
-  width: 36px;
-  height: 36px;
-  background: transparent;
-  border: none;
-  font-size: 24px;
-  color: #6c757d;
+  width: 34px;
+  height: 34px;
+  background: #f8f9fa;
+  border: 1px solid #e2e8f0;
+  font-size: 15px;
+  line-height: 1;
+  color: #334155;
   cursor: pointer;
   border-radius: 8px;
   transition: all 0.3s ease;
@@ -160,9 +161,9 @@
 }
 
 .outbox-close-btn:hover {
-  background: #f8f9fa;
-  color: #1a1a1a;
-  transform: rotate(90deg);
+  background: #fee2e2;
+  border-color: #fecaca;
+  color: #b91c1c;
 }
 
 /* Top Tab Navigation */

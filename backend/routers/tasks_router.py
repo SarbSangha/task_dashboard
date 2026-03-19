@@ -9,7 +9,7 @@ import asyncio
 import hashlib
 import re
 
-from database_config import get_operational_db
+from database_config import get_operational_db, OperationalSessionLocal
 from models_new import (
     Task,
     TaskParticipant,
@@ -201,7 +201,7 @@ def get_current_user_from_session(
     if not session_id:
         return None
     try:
-        user_id = verify_session_token(session_id)
+        user_id = verify_session_token(session_id, db)
         return db.query(User).filter(User.id == user_id).first()
     except Exception:
         return None
@@ -948,11 +948,14 @@ async def notifications_ws(websocket: WebSocket):
     if not session_id:
         await websocket.close(code=1008)
         return
+    db = OperationalSessionLocal()
     try:
-        user_id = verify_session_token(session_id)
+        user_id = verify_session_token(session_id, db)
     except Exception:
         await websocket.close(code=1008)
         return
+    finally:
+        db.close()
 
     await notification_hub.connect(user_id, websocket)
     try:

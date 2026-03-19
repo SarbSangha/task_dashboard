@@ -175,6 +175,12 @@
   transform: translateY(0);
 }
 
+.workflow-control-btn svg,
+.workflow-close-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* Minimize Button */
 .minimize-btn {
   transition: all 0.2s ease;

@@ -39,6 +39,8 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   const [taskIdState, setTaskIdState] = useState({ status: 'idle', message: '' });
   const [taskIdSuggestions, setTaskIdSuggestions] = useState([]);
   const [projectIdSuggestions, setProjectIdSuggestions] = useState([]);
+  const [projectNameSuggestions, setProjectNameSuggestions] = useState([]);
+  const [knownProjects, setKnownProjects] = useState({});
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
@@ -65,6 +67,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
     try {
       const response = await taskAPI.getAllTasks();
       const rows = response?.tasks || [];
+      const projectMap = {};
       const uniqueTaskIds = Array.from(
         new Set(
           rows
@@ -79,13 +82,43 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
             .filter(Boolean)
         )
       ).slice(0, 300);
+      rows.forEach((row) => {
+        const projectName = (row.projectName || '').trim();
+        if (!projectName) return;
+        const key = projectName.toLowerCase();
+        if (!projectMap[key]) {
+          projectMap[key] = {
+            projectName,
+            projectId: (row.projectId || '').trim(),
+            projectIdRaw: row.projectIdRaw || '',
+            projectIdHex: row.projectIdHex || '',
+          };
+          return;
+        }
+        if (!projectMap[key].projectId && row.projectId) {
+          projectMap[key] = {
+            ...projectMap[key],
+            projectId: (row.projectId || '').trim(),
+            projectIdRaw: row.projectIdRaw || '',
+            projectIdHex: row.projectIdHex || '',
+          };
+        }
+      });
+      const uniqueProjectNames = Object.values(projectMap)
+        .map((project) => project.projectName)
+        .sort((a, b) => a.localeCompare(b))
+        .slice(0, 300);
 
       setTaskIdSuggestions(uniqueTaskIds);
       setProjectIdSuggestions(uniqueProjectIds);
+      setProjectNameSuggestions(uniqueProjectNames);
+      setKnownProjects(projectMap);
     } catch (error) {
       console.warn('Unable to load ID suggestions:', error);
       setTaskIdSuggestions([]);
       setProjectIdSuggestions([]);
+      setProjectNameSuggestions([]);
+      setKnownProjects({});
     }
   };
 
@@ -262,16 +295,39 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
 
   // Handle input changes
   const handleChange = (field, value) => {
-    setFormData(prev => ({
-      ...prev,
-      [field]: value
-    }));
+    const knownProject = field === 'projectName'
+      ? knownProjects[(value || '').trim().toLowerCase()]
+      : null;
+
+    setFormData(prev => {
+      const next = {
+        ...prev,
+        [field]: value
+      };
+
+      if (field === 'projectName' && knownProject) {
+        if (!next.projectId && knownProject.projectId) {
+          next.projectId = knownProject.projectId;
+        }
+        if (!next.projectIdRaw && knownProject.projectIdRaw) {
+          next.projectIdRaw = knownProject.projectIdRaw;
+        }
+        if (!next.projectIdHex && knownProject.projectIdHex) {
+          next.projectIdHex = knownProject.projectIdHex;
+        }
+      }
+
+      return next;
+    });
 
     if (field === 'projectId' || field === 'projectName' || field === 'customerName') {
       setProjectIdState({ status: 'idle', message: '' });
     }
     if (field === 'taskId' || field === 'projectName' || field === 'customerName') {
       setTaskIdState({ status: 'idle', message: '' });
+    }
+    if (field === 'projectName' && knownProject?.projectId) {
+      setProjectIdState({ status: 'success', message: 'Existing project linked by name.' });
     }
 
     // NEW: Load users when department changes
@@ -692,7 +748,13 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
                 placeholder="Project Alpha" 
                 value={formData.projectName}
                 onChange={(e) => handleChange('projectName', e.target.value)}
+                list="project-name-suggestions"
               />
+              <datalist id="project-name-suggestions">
+                {projectNameSuggestions.map((projectName) => (
+                  <option key={projectName} value={projectName} />
+                ))}
+              </datalist>
             </div>
             <div className="assign-field">
               <label>Customer Name</label>

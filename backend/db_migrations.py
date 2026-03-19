@@ -102,7 +102,10 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "users", "deleted_reason", "TEXT")
     _pg_add_column_if_missing(conn, "users", "deleted_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "users", "deleted_by", "INTEGER")
+    _pg_add_column_if_missing(conn, "users", "session_revoked_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
 
 
 def ensure_operational_schema(engine) -> None:
@@ -138,8 +141,11 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN deleted_at DATETIME"))
             if "deleted_by" not in user_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN deleted_by INTEGER"))
+            if "session_revoked_at" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN session_revoked_at DATETIME"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_employee_id ON users(employee_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
 
         if _table_exists(conn, "tasks"):
             task_cols = _table_columns(conn, "tasks")
@@ -334,3 +340,7 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_group_chat_messages_group_id ON group_chat_messages(group_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_group_chat_messages_sender_id ON group_chat_messages(sender_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_group_chat_messages_created_at ON group_chat_messages(created_at)"))
+        if _table_exists(conn, "group_chat_messages"):
+            cols = _table_columns(conn, "group_chat_messages")
+            if "attachments_json" not in cols:
+                conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN attachments_json JSON"))

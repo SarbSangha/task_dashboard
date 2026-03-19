@@ -28,6 +28,7 @@ from auth import (
     create_session_token,
     verify_session_token,
     invalidate_session,
+    revoke_user_sessions,
     verify_password,
     create_reset_token,
     verify_reset_token,
@@ -65,6 +66,32 @@ def _is_allowed_company_email(email: Optional[str]) -> bool:
         return False
     return any(value.endswith(domain) for domain in _allowed_company_domains())
 
+
+def _serialize_user(user: User) -> dict:
+    return {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "employeeId": user.employee_id,
+        "position": user.position,
+        "department": user.department,
+        "avatar": user.avatar,
+        "roles": user.roles_json or [],
+        "isAdmin": user.is_admin,
+        "lastLogin": user.last_login.isoformat() if user.last_login else None,
+    }
+
+
+def _normalize_avatar(avatar: Optional[str]) -> Optional[str]:
+    value = (avatar or "").strip()
+    if not value:
+        return None
+    if value.startswith("data:image/"):
+        return value
+    if value.startswith("http://") or value.startswith("https://") or value.startswith("/"):
+        return value
+    return None
+
 # ==================== SCHEMAS ====================
 class UserLogin(BaseModel):
     email: str
@@ -92,6 +119,17 @@ class ProfileChangeRequestPayload(BaseModel):
     position: Optional[str] = None
     department: Optional[str] = None
 
+
+class PasswordChangeRequestPayload(BaseModel):
+    new_password: str = Field(..., min_length=8)
+    confirm_password: str = Field(..., min_length=8)
+
+    @validator("confirm_password")
+    def passwords_must_match(cls, value: str, values: dict) -> str:
+        if value != values.get("new_password"):
+            raise ValueError("Passwords do not match")
+        return value
+
 # ==================== HELPER FUNCTIONS ====================
 def get_current_user(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
@@ -102,7 +140,7 @@ def get_current_user(
     if not session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    user_id = verify_session_token(session_id)
+    user_id = verify_session_token(session_id, db)
     user = db.query(User).filter(User.id == user_id).first()
     
     if not user:
@@ -146,6 +184,70 @@ def _push_admin_realtime_event(db: Session, event_type: str, title: str, message
             asyncio.create_task(notification_hub.push(admin_id, payload))
         except RuntimeError:
             pass
+
+
+def _sanitize_request_payload(request_type: str, payload: Optional[dict]) -> dict:
+    data = dict(payload or {})
+    if request_type == "password_change":
+        return {
+            "summary": "Secure password change request",
+            "hasPasswordUpdate": bool(data.get("password_hash")),
+        }
+    return data
+
+
+def _latest_user_request_by_type(db: Session, user_id: int, request_type: str) -> Optional[UserApprovalRequest]:
+    return (
+        db.query(UserApprovalRequest)
+        .filter(
+            UserApprovalRequest.user_id == user_id,
+            UserApprovalRequest.request_type == request_type,
+        )
+        .order_by(UserApprovalRequest.created_at.desc())
+        .first()
+    )
+
+
+def _create_password_change_request(db: Session, current_user: User, new_password: str) -> UserApprovalRequest:
+    existing_pending = db.query(UserApprovalRequest).filter(
+        UserApprovalRequest.user_id == current_user.id,
+        UserApprovalRequest.request_type == "password_change",
+        UserApprovalRequest.status == "pending",
+    ).first()
+    if existing_pending:
+        raise HTTPException(status_code=400, detail="A password change request is already pending approval")
+
+    if verify_password(new_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="New password must be different from your current password")
+
+    password_hash = get_password_hash(new_password)
+    request_row = UserApprovalRequest(
+        user_id=current_user.id,
+        request_type="password_change",
+        status="pending",
+        payload_json={
+            "password_hash": password_hash,
+        },
+        created_at=datetime.utcnow(),
+    )
+    db.add(request_row)
+    db.commit()
+    db.refresh(request_row)
+
+    _push_admin_realtime_event(
+        db,
+        "admin_request_created",
+        "New Password Change Request",
+        f"{current_user.name} requested a password change.",
+        {
+            "requestType": "password_change",
+            "requestId": request_row.id,
+            "userId": current_user.id,
+            "userEmail": current_user.email,
+            "userName": current_user.name,
+        },
+    )
+    return request_row
 
 
 # ==================== AUTH ENDPOINTS ====================
@@ -382,17 +484,7 @@ async def login(
         return {
             "success": True,
             "message": "Login successful",
-            "user": {
-                "id": user.id,
-                "name": user.name,
-                "email": user.email,
-                "employeeId": user.employee_id,
-                "position": user.position,
-                "department": user.department,
-                "avatar": user.avatar,
-                "roles": user.roles_json or [],
-                "isAdmin": user.is_admin
-            }
+            "user": _serialize_user(user)
         }
         
     except HTTPException:
@@ -416,7 +508,7 @@ async def get_current_user_profile(
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        user_id = verify_session_token(session_id)
+        user_id = verify_session_token(session_id, db)
         user = db.query(User).filter(User.id == user_id).first()
         
         if not user:
@@ -426,24 +518,97 @@ async def get_current_user_profile(
         
         return {
             "success": True,
-            "user": {
-                "id": user.id,
-                "name": user.name,
-                "email": user.email,
-                "employeeId": user.employee_id,
-                "position": user.position,
-                "department": user.department,
-                "avatar": user.avatar,
-                "roles": user.roles_json or [],
-                "isAdmin": user.is_admin,
-                "lastLogin": user.last_login.isoformat() if user.last_login else None
-            }
+            "user": _serialize_user(user)
         }
     except HTTPException:
         raise
     except Exception as e:
         print(f"❌ Error getting current user: {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid session")
+
+
+@router.get("/profile")
+async def get_profile(
+    current_user: User = Depends(get_current_user),
+):
+    return {
+        "success": True,
+        "user": _serialize_user(current_user),
+    }
+
+
+@router.post("/avatar")
+async def upload_avatar(
+    payload: AvatarUpload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db)
+):
+    avatar = _normalize_avatar(payload.avatar)
+    if not avatar:
+        raise HTTPException(status_code=400, detail="A valid image is required")
+    if len(avatar) > 3_000_000:
+        raise HTTPException(status_code=400, detail="Avatar image is too large")
+
+    current_user.avatar = avatar
+    db.commit()
+    db.refresh(current_user)
+
+    return {
+        "success": True,
+        "message": "Avatar updated successfully",
+        "avatar": current_user.avatar,
+        "user": _serialize_user(current_user),
+    }
+
+
+@router.delete("/avatar")
+async def delete_avatar(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db)
+):
+    current_user.avatar = None
+    db.commit()
+    db.refresh(current_user)
+
+    return {
+        "success": True,
+        "message": "Avatar removed successfully",
+        "avatar": None,
+        "user": _serialize_user(current_user),
+    }
+
+
+@router.put("/profile")
+async def update_profile(
+    payload: ProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db)
+):
+    updated = False
+
+    if payload.avatar is not None:
+        normalized_avatar = _normalize_avatar(payload.avatar)
+        if payload.avatar and not normalized_avatar:
+            raise HTTPException(status_code=400, detail="A valid avatar image is required")
+        current_user.avatar = normalized_avatar
+        updated = True
+
+    if payload.name is not None:
+        next_name = payload.name.strip()
+        if len(next_name) < 2:
+            raise HTTPException(status_code=400, detail="Name must be at least 2 characters long")
+        current_user.name = next_name
+        updated = True
+
+    if updated:
+        db.commit()
+        db.refresh(current_user)
+
+    return {
+        "success": True,
+        "message": "Profile updated successfully",
+        "user": _serialize_user(current_user),
+    }
 
 
 @router.get("/department/{department_name}/users")
@@ -591,10 +756,7 @@ async def latest_profile_change_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db)
 ):
-    req = db.query(UserApprovalRequest).filter(
-        UserApprovalRequest.user_id == current_user.id,
-        UserApprovalRequest.request_type == "profile_update"
-    ).order_by(UserApprovalRequest.created_at.desc()).first()
+    req = _latest_user_request_by_type(db, current_user.id, "profile_update")
     if not req:
         return {"success": True, "request": None}
     return {
@@ -602,11 +764,42 @@ async def latest_profile_change_status(
         "request": {
             "id": req.id,
             "status": req.status,
-            "payload": req.payload_json or {},
+            "payload": _sanitize_request_payload(req.request_type, req.payload_json),
             "createdAt": req.created_at.isoformat() if req.created_at else None,
             "reviewedAt": req.reviewed_at.isoformat() if req.reviewed_at else None,
             "reviewNotes": req.review_notes
         }
+    }
+
+
+@router.post("/password-change/request")
+async def request_password_change(
+    payload: PasswordChangeRequestPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db)
+):
+    _create_password_change_request(db, current_user, payload.new_password)
+    return {"success": True, "message": "Password change request submitted for admin approval"}
+
+
+@router.get("/password-change/latest")
+async def latest_password_change_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db)
+):
+    req = _latest_user_request_by_type(db, current_user.id, "password_change")
+    if not req:
+        return {"success": True, "request": None}
+    return {
+        "success": True,
+        "request": {
+            "id": req.id,
+            "status": req.status,
+            "payload": _sanitize_request_payload(req.request_type, req.payload_json),
+            "createdAt": req.created_at.isoformat() if req.created_at else None,
+            "reviewedAt": req.reviewed_at.isoformat() if req.reviewed_at else None,
+            "reviewNotes": req.review_notes,
+        },
     }
 
 
@@ -660,6 +853,31 @@ async def admin_pending_profile_changes(
     }
 
 
+@router.get("/admin/pending-password-changes")
+async def admin_pending_password_changes(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db)
+):
+    ensure_admin(current_user)
+    items = db.query(UserApprovalRequest).filter(
+        UserApprovalRequest.request_type == "password_change",
+        UserApprovalRequest.status == "pending"
+    ).order_by(UserApprovalRequest.created_at.asc()).all()
+    return {
+        "success": True,
+        "count": len(items),
+        "requests": [
+            {
+                "id": item.id,
+                "userId": item.user_id,
+                "payload": _sanitize_request_payload(item.request_type, item.payload_json),
+                "createdAt": item.created_at.isoformat() if item.created_at else None
+            }
+            for item in items
+        ]
+    }
+
+
 @router.post("/admin/requests/{request_id}/review")
 async def admin_review_request(
     request_id: int,
@@ -695,6 +913,13 @@ async def admin_review_request(
             user.employee_id = payload.get("employee_id", user.employee_id)
             user.position = payload.get("position", user.position)
             user.department = payload.get("department", user.department)
+        elif req.request_type == "password_change":
+            payload = req.payload_json or {}
+            password_hash = payload.get("password_hash")
+            if not password_hash:
+                raise HTTPException(status_code=400, detail="Password change request is missing password data")
+            user.hashed_password = password_hash
+            revoke_user_sessions(db, user.id)
 
     db.commit()
     _push_admin_realtime_event(
@@ -741,17 +966,17 @@ def logout(
 @router.put("/password", response_model=MessageResponse)
 def update_password(
     password_data: PasswordUpdate,
+    response: Response,
+    session_id: Optional[str] = Cookie(None, alias="session_id"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db)
 ):
-    """Update user password"""
+    """Submit a password change request for admin approval"""
     if not verify_password(password_data.current_password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    
-    current_user.hashed_password = get_password_hash(password_data.new_password)
-    db.commit()
-    
-    return {"message": "Password updated successfully"}
+
+    _create_password_change_request(db, current_user, password_data.new_password)
+    return {"message": "Password change request submitted for admin approval."}
 
 
 @router.post("/forgot-password", response_model=MessageResponse)
@@ -783,6 +1008,7 @@ def reset_password(
         raise HTTPException(status_code=404, detail="User not found")
     
     user.hashed_password = get_password_hash(request.new_password)
+    revoke_user_sessions(db, user.id)
     db.commit()
     
     invalidate_reset_token(request.token)

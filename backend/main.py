@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import os
 from sqlalchemy import text
-from sqlalchemy import or_
 
 # FIXED: Use relative imports or backend prefix
 from database_config import (
@@ -37,7 +36,6 @@ from routers import groups_router
 # Import auth utilities for system status
 from auth import SESSION_STORE
 from auth import get_password_hash
-
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
@@ -95,45 +93,61 @@ async def lifespan(app: FastAPI):
     ArchiveBase.metadata.create_all(bind=archive_engine)
     print(f"Archive database ready: {archive_engine.dialect.name}")
 
-    # Ensure default admin account exists
+    # Optional default-admin bootstrap, driven by environment variables instead of hardcoded account details.
     op_db = OperationalSessionLocal()
     try:
-        admin_email = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@ritzmediaworld.com").strip() or "admin@ritzmediaworld.com"
-        admin = op_db.query(User).filter(
-            or_(
-                User.email == admin_email,
-                User.email == "admin",  # legacy bootstrap account
+        admin_email = (os.getenv("DEFAULT_ADMIN_EMAIL") or "").strip()
+        bootstrap_password = (os.getenv("DEFAULT_ADMIN_BOOTSTRAP_PASSWORD") or "").strip()
+        configured_roles = [
+            role.lower()
+            for role in _split_csv(os.getenv("DEFAULT_ADMIN_ROLES", ""))
+            if role.strip()
+        ]
+
+        if admin_email:
+            admin = (
+                op_db.query(User)
+                .filter(User.email == admin_email)
+                .order_by(User.id.asc())
+                .first()
             )
-        ).first()
-        if not admin:
-            admin = User(
-                email=admin_email,
-                name="Administrator",
-                hashed_password=get_password_hash("admin1234"),
-                position="admin",
-                department="ADMIN",
-                roles_json=["admin"],
-                is_admin=True,
-                is_active=True,
-            )
-            op_db.add(admin)
-        else:
-            if admin.email != admin_email:
-                email_in_use = op_db.query(User).filter(
-                    User.email == admin_email,
-                    User.id != admin.id,
-                ).first()
-                if not email_in_use:
-                    admin.email = admin_email
-            admin.is_admin = True
-            admin.is_active = True
-            admin.hashed_password = get_password_hash("admin1234")
-            if not admin.roles_json:
-                admin.roles_json = ["admin"]
-            if (admin.position or "").lower() != "admin":
-                admin.position = "admin"
-            if not admin.department:
+
+            if not admin:
+                if not bootstrap_password:
+                    raise RuntimeError(
+                        "Configured default admin account is missing. Create it manually or set "
+                        "DEFAULT_ADMIN_BOOTSTRAP_PASSWORD for a one-time bootstrap."
+                    )
+                admin = User(
+                    email=admin_email,
+                    name="Administrator",
+                    hashed_password=get_password_hash(bootstrap_password),
+                    position="admin",
+                    department="ADMIN",
+                    roles_json=configured_roles,
+                    is_admin=True,
+                    is_active=True,
+                )
+                op_db.add(admin)
+            else:
+                admin.is_admin = True
+                admin.is_active = True
+                admin.is_deleted = False
+                if configured_roles:
+                    roles = []
+                    if isinstance(admin.roles_json, list):
+                        roles = [str(role).strip().lower() for role in admin.roles_json if str(role).strip()]
+                    for role in configured_roles:
+                        if role not in roles:
+                            roles.append(role)
+                    admin.roles_json = roles
+                if (admin.position or "").lower() != "admin":
+                    admin.position = "admin"
                 admin.department = "ADMIN"
+                if not admin.name:
+                    admin.name = "Administrator"
+        else:
+            print("Default admin bootstrap disabled: DEFAULT_ADMIN_EMAIL is not set.")
         op_db.commit()
     finally:
         op_db.close()

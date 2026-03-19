@@ -6,13 +6,8 @@
   right: 0 !important;
   bottom: 0 !important;
   background: rgba(0, 0, 0, 0.5) !important;
-  z-index: 2000 !important;
-  animation: fadeIn 0.3s ease-out;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  z-index: var(--settings-panel-overlay-z, 2000) !important;
+  animation: settingsPanelFadeIn 0.3s ease-out;
 }
 
 /* Main Panel - Matching Settings Sidebar Style */
@@ -24,24 +19,13 @@
   height: calc(100vh - 140px) !important;
   background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%) !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15) !important;
-  z-index: 2001 !important;
+  z-index: var(--settings-panel-z, 2001) !important;
   display: flex !important;
   flex-direction: column !important;
-  animation: slideIn 0.3s ease-out;
+  animation: settingsPanelSlideInRight 0.3s ease-out;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif !important;
   border-radius: 12px !important;
   overflow: hidden !important;
-}
-
-@keyframes slideIn {
-  from { 
-    transform: translateX(50px);
-    opacity: 0;
-  }
-  to { 
-    transform: translateX(0);
-    opacity: 1;
-  }
 }
 
 /* Header - Matching Sidebar Header */
@@ -151,6 +135,10 @@
   border-color: rgba(255, 255, 255, 0.2) !important;
 }
 
+.security-card-stacked {
+  align-items: flex-start !important;
+}
+
 /* Card Icons */
 .card-icon {
   flex-shrink: 0 !important;
@@ -194,6 +182,12 @@
   flex: 1 !important;
 }
 
+.card-content-stacked {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+}
+
 .card-title {
   margin: 0 0 6px 0 !important;
   font-size: 15px !important;
@@ -212,6 +206,82 @@
 
 .card-status {
   margin-top: 8px !important;
+}
+
+.security-inline-btn,
+.security-submit-btn {
+  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: white !important;
+  border-radius: 8px !important;
+  padding: 9px 12px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  transition: all 0.2s !important;
+}
+
+.security-inline-btn:hover,
+.security-submit-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2) !important;
+}
+
+.security-submit-btn:disabled {
+  opacity: 0.6 !important;
+  cursor: not-allowed !important;
+}
+
+.security-password-form {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+  width: 100% !important;
+}
+
+.security-field {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 6px !important;
+  width: 100% !important;
+}
+
+.security-field span {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.6px !important;
+  text-transform: uppercase !important;
+  color: rgba(255, 255, 255, 0.82) !important;
+}
+
+.security-field input {
+  width: 100% !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: white !important;
+  padding: 10px 12px !important;
+  box-sizing: border-box !important;
+  font-size: 13px !important;
+}
+
+.security-field input:focus {
+  outline: none !important;
+  border-color: rgba(255, 255, 255, 0.38) !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+
+.security-field input::placeholder {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.security-request-status {
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  background: rgba(0, 0, 0, 0.14) !important;
+  color: #dbeafe !important;
+  border-radius: 8px !important;
+  padding: 10px 12px !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
 }
 
 .status-badge {

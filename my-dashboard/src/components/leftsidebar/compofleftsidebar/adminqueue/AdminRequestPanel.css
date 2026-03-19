@@ -9,6 +9,11 @@
   z-index: 1200;
 }
 
+.admin-queue-overlay.disabled {
+  background: transparent;
+  pointer-events: none;
+}
+
 .admin-queue-panel {
   position: fixed;
   top: var(--leftbar-popup-top-offset);
@@ -25,6 +30,8 @@
   display: flex;
   flex-direction: column;
   color: #e5e7eb;
+  transition: width 0.28s ease, height 0.28s ease, max-height 0.28s ease, top 0.28s ease,
+    left 0.28s ease, right 0.28s ease, bottom 0.28s ease, transform 0.28s ease, border-radius 0.28s ease;
 }
 
 .admin-queue-header {
@@ -33,16 +40,80 @@
   align-items: center;
   padding: 14px 16px;
   border-bottom: 1px solid #334766;
+  cursor: default;
 }
 
-.admin-queue-header button {
+.admin-queue-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-queue-window-btn {
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: #fff;
   border-radius: 8px;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 16px;
+}
+
+.admin-queue-window-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.admin-queue-close-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 16px;
+}
+
+.admin-queue-close-btn:hover {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.admin-queue-panel.minimized {
+  width: 360px;
+  height: 64px;
+  max-height: 64px;
+  top: auto;
+  left: auto;
+  right: 20px;
+  bottom: 20px;
+  transform: none;
+  border-radius: 12px;
+}
+
+.admin-queue-panel.minimized .admin-queue-header {
+  border-bottom: none;
+  cursor: pointer;
+}
+
+.admin-queue-panel.maximized {
+  width: 100vw;
+  max-width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  top: 0;
+  left: 0;
+  transform: none;
+  border-radius: 0;
 }
 
 .admin-queue-tabs {
@@ -240,16 +311,6 @@
   border-bottom: 1px solid #334766;
 }
 
-.admin-info-header button {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  cursor: pointer;
-}
-
 .admin-info-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -267,4 +328,18 @@
 
 .reject-reason {
   color: #fda4af;
+}
+
+@media (max-width: 768px) {
+  .admin-queue-panel {
+    width: 95vw;
+    height: calc(100vh - var(--leftbar-popup-top-offset) - 16px);
+    max-height: calc(100vh - var(--leftbar-popup-top-offset) - 16px);
+  }
+
+  .admin-queue-panel.minimized {
+    width: calc(100vw - 20px);
+    right: 10px;
+    bottom: 10px;
+  }
 }

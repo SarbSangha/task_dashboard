@@ -71,22 +71,22 @@ export const authAPI = {
   },
 
   uploadAvatar: async (base64Image) => {
-    const response = await api.post('/api/user/avatar', { avatar: base64Image });
+    const response = await api.post('/api/auth/avatar', { avatar: base64Image });
     return response.data;
   },
 
   updateProfile: async (name, avatar) => {
-    const response = await api.put('/api/user/profile', { name, avatar });
+    const response = await api.put('/api/auth/profile', { name, avatar });
     return response.data;
   },
 
   deleteAvatar: async () => {
-    const response = await api.delete('/api/user/avatar');
+    const response = await api.delete('/api/auth/avatar');
     return response.data;
   },
 
   getProfile: async () => {
-    const response = await api.get('/api/user/profile');
+    const response = await api.get('/api/auth/profile');
     return response.data;
   },
 
@@ -105,6 +105,16 @@ export const authAPI = {
     return response.data;
   },
 
+  requestPasswordChange: async (payload) => {
+    const response = await api.post('/api/auth/password-change/request', payload);
+    return response.data;
+  },
+
+  getLatestPasswordChange: async () => {
+    const response = await api.get('/api/auth/password-change/latest');
+    return response.data;
+  },
+
   getPendingSignups: async () => {
     const response = await api.get('/api/auth/admin/pending-signups');
     return response.data;
@@ -112,6 +122,11 @@ export const authAPI = {
 
   getPendingProfileChanges: async () => {
     const response = await api.get('/api/auth/admin/pending-profile-changes');
+    return response.data;
+  },
+
+  getPendingPasswordChanges: async () => {
+    const response = await api.get('/api/auth/admin/pending-password-changes');
     return response.data;
   },
 
@@ -469,8 +484,11 @@ export const groupAPI = {
     return response.data;
   },
 
-  sendMessage: async (groupId, message) => {
-    const response = await api.post(`/api/groups/${groupId}/messages`, { message });
+  sendMessage: async (groupId, messageOrPayload) => {
+    const payload = typeof messageOrPayload === 'object' && messageOrPayload !== null
+      ? messageOrPayload
+      : { message: messageOrPayload };
+    const response = await api.post(`/api/groups/${groupId}/messages`, payload);
     return response.data;
   },
 };
