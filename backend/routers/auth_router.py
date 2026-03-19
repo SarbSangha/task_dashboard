@@ -1,5 +1,5 @@
 # routers/auth_router.py - Authentication endpoints
-from fastapi import APIRouter, Depends, HTTPException, Response, Cookie
+from fastapi import APIRouter, Depends, HTTPException, Response, Cookie, Request
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime
@@ -8,6 +8,7 @@ from pydantic import BaseModel, EmailStr, Field, validator
 import traceback
 import os
 import asyncio
+from urllib.parse import urlparse
 from database_config import get_operational_db
 from models_new import User, UserApprovalRequest
 from routers.tasks_router import notification_hub
@@ -91,6 +92,47 @@ def _normalize_avatar(avatar: Optional[str]) -> Optional[str]:
     if value.startswith("http://") or value.startswith("https://") or value.startswith("/"):
         return value
     return None
+
+
+def _is_truthy(value: Optional[str]) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_cookie_policy(request: Optional[Request] = None) -> tuple[bool, str]:
+    is_production = (os.getenv("ENVIRONMENT", "").strip().lower() == "production")
+    configured_samesite = (os.getenv("COOKIE_SAMESITE", "").strip().lower() or None)
+    cookie_secure = _is_truthy(os.getenv("COOKIE_SECURE")) or is_production
+
+    request_scheme = ""
+    request_host = ""
+    origin_host = ""
+    origin_scheme = ""
+
+    if request is not None:
+        request_scheme = (
+            request.headers.get("x-forwarded-proto")
+            or request.headers.get("x-forwarded-protocol")
+            or request.url.scheme
+            or ""
+        ).split(",")[0].strip().lower()
+        request_host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").strip().lower()
+        origin = (request.headers.get("origin") or "").strip()
+        if origin:
+            parsed_origin = urlparse(origin)
+            origin_host = (parsed_origin.netloc or "").strip().lower()
+            origin_scheme = (parsed_origin.scheme or "").strip().lower()
+
+    is_cross_site = bool(origin_host and request_host and origin_host != request_host)
+    if request_scheme == "https" or origin_scheme == "https":
+        cookie_secure = True
+
+    cookie_samesite = configured_samesite or ("none" if (cookie_secure and is_cross_site) else "lax")
+    if cookie_samesite not in {"lax", "strict", "none"}:
+        cookie_samesite = "none" if (cookie_secure and is_cross_site) else "lax"
+    if cookie_samesite == "none" and not cookie_secure:
+        cookie_secure = True
+
+    return cookie_secure, cookie_samesite
 
 # ==================== SCHEMAS ====================
 class UserLogin(BaseModel):
@@ -369,6 +411,7 @@ async def register(
 @router.post("/login")
 async def login(
     credentials: UserLogin,
+    request: Request,
     response: Response,
     db: Session = Depends(get_operational_db)
 ):
@@ -458,14 +501,7 @@ async def login(
         # Create session
         session_id = create_session_token(user.id)
 
-        is_production = (os.getenv("ENVIRONMENT", "").strip().lower() == "production")
-        cookie_secure = (os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"}) or is_production
-        cookie_samesite = (os.getenv("COOKIE_SAMESITE", "").strip().lower() or ("none" if cookie_secure else "lax"))
-        if cookie_samesite not in {"lax", "strict", "none"}:
-            cookie_samesite = "none" if cookie_secure else "lax"
-        # Browsers reject SameSite=None cookies when Secure is false.
-        if cookie_samesite == "none" and not cookie_secure:
-            cookie_secure = True
+        cookie_secure, cookie_samesite = _resolve_cookie_policy(request)
         
         # Set cookie
         response.set_cookie(
@@ -941,6 +977,7 @@ async def admin_review_request(
 
 @router.post("/logout", response_model=MessageResponse)
 def logout(
+    request: Request,
     response: Response, 
     session_id: Optional[str] = Cookie(None, alias="session_id")
 ):
@@ -948,11 +985,7 @@ def logout(
     if session_id:
         invalidate_session(session_id)
     
-    is_production = (os.getenv("ENVIRONMENT", "").strip().lower() == "production")
-    cookie_secure = (os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"}) or is_production
-    cookie_samesite = (os.getenv("COOKIE_SAMESITE", "").strip().lower() or ("none" if cookie_secure else "lax"))
-    if cookie_samesite == "none" and not cookie_secure:
-        cookie_secure = True
+    cookie_secure, cookie_samesite = _resolve_cookie_policy(request)
 
     response.delete_cookie(
         key="session_id",

@@ -92,13 +92,23 @@ export const AuthProvider = ({ children }) => {
       const response = await authAPI.login(email, password, rememberMe);
       
       if (response.success && response.user) {
-        setUser(response.user);
+        const sessionCheck = await authAPI.getCurrentUser().catch(() => null);
+        const authenticatedUser = sessionCheck?.success && sessionCheck?.user
+          ? sessionCheck.user
+          : null;
+        if (!authenticatedUser) {
+          return {
+            success: false,
+            error: 'Login succeeded but the session cookie was not saved. Please try again or contact admin.'
+          };
+        }
+        setUser(authenticatedUser);
         try {
           localStorage.removeItem('rmw_activity_auth_block_until_v1');
         } catch {
           // no-op
         }
-        console.log('✅ Login successful:', response.user.email);
+        console.log('✅ Login successful:', authenticatedUser.email);
         return { success: true };
       } else {
         console.error('❌ Login failed: Invalid response format');
