@@ -200,11 +200,16 @@ function OverviewContent() {
     const loadOverview = async () => {
       setLoading(true);
       try {
-        const [tasksRes, meRes] = await Promise.all([
-          taskAPI.getAllTasks().catch(() => ({ tasks: [] })),
+        const [inboxRes, outboxRes, meRes] = await Promise.all([
+          taskAPI.getInbox().catch(() => ({ data: [] })),
+          taskAPI.getOutbox().catch(() => ({ data: [] })),
           authAPI.getCurrentUser().catch(() => ({ user: null })),
         ]);
-        const tasks = tasksRes?.tasks || [];
+        const tasks = Array.from(
+          new Map(
+            [...(inboxRes?.data || []), ...(outboxRes?.data || [])].map((task) => [task.id, task])
+          ).values()
+        );
         const me = meRes?.user || null;
         const myDept = me?.department || '';
 
@@ -1736,26 +1741,287 @@ function GroupsContent() {
   );
 }
 
-// Analytics Tab Content
+const ANALYTICS_FILTERS = [
+  { key: 'today', label: 'Today', days: 1 },
+  { key: 'yesterday', label: 'Yesterday', days: 1 },
+  { key: 'weekly', label: 'Weekly', days: 7 },
+  { key: 'monthly', label: 'Monthly', days: 30 },
+];
+
+function startOfDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function getAnalyticsRange(filterKey) {
+  const todayStart = startOfDay(new Date());
+  const config = ANALYTICS_FILTERS.find((item) => item.key === filterKey) || ANALYTICS_FILTERS[0];
+
+  if (filterKey === 'yesterday') {
+    const start = addDays(todayStart, -1);
+    const end = todayStart;
+    return {
+      start,
+      end,
+      previousStart: addDays(start, -1),
+      previousEnd: start,
+      label: 'Yesterday',
+    };
+  }
+
+  const start = filterKey === 'today' ? todayStart : addDays(todayStart, -(config.days - 1));
+  const end = addDays(todayStart, 1);
+  const previousStart = addDays(start, -config.days);
+  const previousEnd = start;
+
+  return {
+    start,
+    end,
+    previousStart,
+    previousEnd,
+    label: config.label,
+  };
+}
+
+function parseTaskDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getTaskRangeAnchor(task) {
+  return parseTaskDate(task.completedAt || task.updatedAt || task.createdAt);
+}
+
+function getTasksForRange(tasks, start, end) {
+  return tasks.filter((task) => {
+    const anchor = getTaskRangeAnchor(task);
+    return anchor && anchor >= start && anchor < end;
+  });
+}
+
+function computeCompletionRate(tasks) {
+  if (!tasks.length) return 0;
+  const completed = tasks.filter((task) => (task.status || '').toLowerCase() === 'completed').length;
+  return Math.round((completed / tasks.length) * 100);
+}
+
+function computeAverageDurationDays(tasks) {
+  const durations = tasks
+    .map((task) => {
+      const start = parseTaskDate(task.createdAt);
+      const end = parseTaskDate(task.completedAt || task.updatedAt || task.createdAt);
+      if (!start || !end || end < start) return null;
+      return (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+    })
+    .filter((value) => value !== null);
+
+  if (!durations.length) return 0;
+  const total = durations.reduce((sum, value) => sum + value, 0);
+  return Number((total / durations.length).toFixed(1));
+}
+
+function computeProductivityScore(tasks, activityRow, filterKey) {
+  if (filterKey === 'today' && activityRow?.totalSessionDuration) {
+    const activeTime = Number(activityRow.activeTime || 0);
+    const totalTime = Number(activityRow.totalSessionDuration || 0);
+    if (totalTime > 0) {
+      return Math.round((activeTime / totalTime) * 100);
+    }
+  }
+
+  if (!tasks.length) return 0;
+
+  const weightedScore = tasks.reduce((sum, task) => {
+    const status = (task.status || '').toLowerCase();
+    if (status === 'completed') return sum + 1;
+    if (['approved', 'submitted', 'under_review'].includes(status)) return sum + 0.8;
+    if (['in_progress', 'need_improvement'].includes(status)) return sum + 0.55;
+    if (['assigned', 'forwarded', 'pending'].includes(status)) return sum + 0.3;
+    return sum + 0.15;
+  }, 0);
+
+  return Math.round((weightedScore / tasks.length) * 100);
+}
+
+function buildTrend(currentValue, previousValue, invert = false) {
+  const delta = Number((currentValue - previousValue).toFixed(1));
+  const effectiveDelta = invert ? -delta : delta;
+  const direction = effectiveDelta >= 0 ? 'positive' : 'negative';
+  return {
+    delta,
+    direction,
+  };
+}
+
 function AnalyticsContent() {
+  const [loading, setLoading] = useState(true);
+  const [filterKey, setFilterKey] = useState('today');
+  const [analyticsData, setAnalyticsData] = useState({
+    completionRate: 0,
+    averageTaskDuration: 0,
+    productivityScore: 0,
+    totalTasks: 0,
+    completedTasks: 0,
+    activeTasks: 0,
+    comparisonLabel: 'previous period',
+    completionTrend: { delta: 0, direction: 'positive' },
+    durationTrend: { delta: 0, direction: 'positive' },
+    productivityTrend: { delta: 0, direction: 'positive' },
+  });
+  const [error, setError] = useState('');
+
+  const comparisonLabelMap = {
+    today: 'yesterday',
+    yesterday: 'the previous day',
+    weekly: 'the previous week',
+    monthly: 'the previous month',
+  };
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadAnalytics = async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const [inboxRes, outboxRes, activityRes] = await Promise.all([
+          taskAPI.getInbox().catch(() => ({ data: [] })),
+          taskAPI.getOutbox().catch(() => ({ data: [] })),
+          activityAPI.myActivity().catch(() => ({ data: null })),
+        ]);
+
+        const mergedTasks = [...(inboxRes?.data || []), ...(outboxRes?.data || [])];
+        const uniqueTasks = Array.from(new Map(mergedTasks.map((task) => [task.id, task])).values());
+        const range = getAnalyticsRange(filterKey);
+        const currentTasks = getTasksForRange(uniqueTasks, range.start, range.end);
+        const previousTasks = getTasksForRange(uniqueTasks, range.previousStart, range.previousEnd);
+
+        const completionRate = computeCompletionRate(currentTasks);
+        const previousCompletionRate = computeCompletionRate(previousTasks);
+        const averageTaskDuration = computeAverageDurationDays(currentTasks);
+        const previousAverageDuration = computeAverageDurationDays(previousTasks);
+        const productivityScore = computeProductivityScore(currentTasks, activityRes?.data, filterKey);
+        const previousProductivityScore = computeProductivityScore(previousTasks, null, filterKey);
+
+        const completedTasks = currentTasks.filter((task) => (task.status || '').toLowerCase() === 'completed').length;
+        const activeTasks = currentTasks.filter((task) =>
+          ACTIVE_PROJECT_STATUSES.has((task.status || '').toLowerCase())
+        ).length;
+
+        if (!mounted) return;
+
+        setAnalyticsData({
+          completionRate,
+          averageTaskDuration,
+          productivityScore,
+          totalTasks: currentTasks.length,
+          completedTasks,
+          activeTasks,
+          comparisonLabel: comparisonLabelMap[filterKey] || 'the previous period',
+          completionTrend: buildTrend(completionRate, previousCompletionRate),
+          durationTrend: buildTrend(averageTaskDuration, previousAverageDuration, true),
+          productivityTrend: buildTrend(productivityScore, previousProductivityScore),
+        });
+      } catch (loadError) {
+        console.error('Failed to load analytics:', loadError);
+        if (mounted) {
+          setError('Could not load analytics right now.');
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadAnalytics();
+    return () => {
+      mounted = false;
+    };
+  }, [filterKey]);
+
+  const formatTrendText = (trend, suffix, comparisonLabel) => {
+    const absDelta = Math.abs(trend.delta);
+    const arrow = trend.direction === 'positive' ? '↑' : '↓';
+    return `${arrow} ${absDelta}${suffix} from ${comparisonLabel}`;
+  };
+
+  const activeFilter = ANALYTICS_FILTERS.find((filter) => filter.key === filterKey) || ANALYTICS_FILTERS[0];
+
   return (
     <div className="tab-content">
-      <h3>Analytics Dashboard</h3>
+      <div className="content-header analytics-header">
+        <div className="analytics-header-copy">
+          <h3>Analytics Dashboard</h3>
+          <p className="analytics-subtitle">
+            Live performance for the logged-in user, filtered by {activeFilter.label.toLowerCase()} activity.
+          </p>
+        </div>
+        <div className="analytics-filter-group">
+          {ANALYTICS_FILTERS.map((filter) => (
+            <button
+              key={filter.key}
+              type="button"
+              className={`analytics-filter-btn ${filterKey === filter.key ? 'active' : ''}`}
+              onClick={() => setFilterKey(filter.key)}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && <div className="team-member-card">{error}</div>}
+
       <div className="analytics-grid">
         <div className="analytics-card">
           <h4>Task Completion Rate</h4>
-          <div className="analytics-value">87%</div>
-          <div className="analytics-trend positive">↑ 12% from last month</div>
+          <div className="analytics-value">{loading ? '--' : `${analyticsData.completionRate}%`}</div>
+          <div className={`analytics-trend ${analyticsData.completionTrend.direction}`}>
+            {loading ? 'Loading user analytics...' : formatTrendText(analyticsData.completionTrend, '%', analyticsData.comparisonLabel)}
+          </div>
         </div>
         <div className="analytics-card">
           <h4>Average Task Duration</h4>
-          <div className="analytics-value">2.5 days</div>
-          <div className="analytics-trend negative">↓ 0.3 days from last month</div>
+          <div className="analytics-value">{loading ? '--' : `${analyticsData.averageTaskDuration} days`}</div>
+          <div className={`analytics-trend ${analyticsData.durationTrend.direction}`}>
+            {loading ? 'Loading user analytics...' : formatTrendText(analyticsData.durationTrend, ' days', analyticsData.comparisonLabel)}
+          </div>
         </div>
         <div className="analytics-card">
-          <h4>Team Productivity</h4>
-          <div className="analytics-value">94%</div>
-          <div className="analytics-trend positive">↑ 8% from last month</div>
+          <h4>User Productivity</h4>
+          <div className="analytics-value">{loading ? '--' : `${analyticsData.productivityScore}%`}</div>
+          <div className={`analytics-trend ${analyticsData.productivityTrend.direction}`}>
+            {loading ? 'Loading user analytics...' : formatTrendText(analyticsData.productivityTrend, '%', analyticsData.comparisonLabel)}
+          </div>
+        </div>
+        <div className="analytics-card analytics-card-wide">
+          <h4>{activeFilter.label} Snapshot</h4>
+          <div className="analytics-mini-grid">
+            <div className="analytics-mini-stat">
+              <span>Total Tasks</span>
+              <strong>{loading ? '--' : analyticsData.totalTasks}</strong>
+            </div>
+            <div className="analytics-mini-stat">
+              <span>Completed</span>
+              <strong>{loading ? '--' : analyticsData.completedTasks}</strong>
+            </div>
+            <div className="analytics-mini-stat">
+              <span>Active</span>
+              <strong>{loading ? '--' : analyticsData.activeTasks}</strong>
+            </div>
+          </div>
+          {!loading && !analyticsData.totalTasks && (
+            <p className="analytics-empty-state">
+              No user tasks were updated in this time range yet. Switch the filter to see another period.
+            </p>
+          )}
         </div>
       </div>
     </div>
