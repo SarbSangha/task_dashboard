@@ -204,8 +204,27 @@ def ensure_admin(current_user: User):
 def generate_employee_id(db: Session) -> str:
     year = datetime.utcnow().year
     prefix = f"EMP-{year}-"
-    count = db.query(User).filter(User.employee_id.like(f"{prefix}%")).count()
-    return f"{prefix}{count + 1:04d}"
+    existing_ids = [
+        row[0]
+        for row in db.query(User.employee_id)
+        .filter(User.employee_id.like(f"{prefix}%"))
+        .all()
+        if row[0]
+    ]
+
+    next_sequence = 1
+    for employee_id in existing_ids:
+        suffix = employee_id.removeprefix(prefix)
+        if not suffix.isdigit():
+            continue
+        next_sequence = max(next_sequence, int(suffix) + 1)
+
+    while True:
+        candidate = f"{prefix}{next_sequence:04d}"
+        exists = db.query(User.id).filter(User.employee_id == candidate).first()
+        if not exists:
+            return candidate
+        next_sequence += 1
 
 
 def _archive_deleted_user_identity(existing_user: User) -> None:

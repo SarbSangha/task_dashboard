@@ -104,6 +104,14 @@ def _sanitize_request_payload(request_type: str, payload: Optional[dict]) -> dic
     return data
 
 
+def _archive_deleted_user_identity(user: User) -> None:
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    if user.email and "@archived.local" not in user.email:
+        user.email = f"deleted+{user.id}.{timestamp}@archived.local"
+    if user.employee_id and "-DEL-" not in user.employee_id:
+        user.employee_id = f"{user.employee_id}-DEL-{user.id}-{timestamp}"
+
+
 @router.get("/pending-signups")
 async def pending_signups(
     current_user: User = Depends(get_current_user),
@@ -379,6 +387,7 @@ async def delete_user_account(
     user.deleted_by = current_user.id
     user.deleted_reason = (payload.reason.strip() if payload and payload.reason else None) or "Deleted by admin"
     user.rejection_reason = user.deleted_reason
+    _archive_deleted_user_identity(user)
 
     pending_rows = db.query(UserApprovalRequest).filter(
         UserApprovalRequest.user_id == user.id,
