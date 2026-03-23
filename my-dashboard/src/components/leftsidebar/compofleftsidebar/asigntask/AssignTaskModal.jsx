@@ -9,6 +9,7 @@ import { useAuth } from '../../../../context/AuthContext';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
 import {
   buildTaskPanelCacheKey,
+  getTaskPanelCache,
   getTaskPanelCacheEntry,
   invalidateTaskPanelCache,
   setTaskPanelCache,
@@ -68,6 +69,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   const [projectIdSuggestions, setProjectIdSuggestions] = useState([]);
   const [projectNameSuggestions, setProjectNameSuggestions] = useState([]);
   const [knownProjects, setKnownProjects] = useState({});
+  const [currentUserDepartment, setCurrentUserDepartment] = useState('');
   const [isReferenceRefreshing, setIsReferenceRefreshing] = useState(false);
   const [cacheStatus, setCacheStatus] = useState({
     showingCached: false,
@@ -94,6 +96,15 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   const showMessage = (message, type) => {
     setSaveMessage({ text: message, type });
     setTimeout(() => setSaveMessage(''), 3000);
+  };
+
+  const normalizeDepartmentName = (departmentName, departmentOptions = departments) => {
+    const value = `${departmentName || ''}`.trim();
+    if (!value) return '';
+    const match = (departmentOptions || []).find(
+      (department) => `${department || ''}`.trim().toLowerCase() === value.toLowerCase()
+    );
+    return match || value;
   };
 
   // NEW: Load current user and departments on mount
@@ -184,34 +195,58 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       setIsReferenceRefreshing(true);
     }
     try {
-      const [meResponse, departmentsResponse, suggestions] = await Promise.all([
+      const [meResponse, departmentsResponse] = await Promise.all([
         authAPI.getCurrentUser().catch(() => ({ user: user || null })),
         authAPI.getDepartments().catch(() => ({ departments: [] })),
-        fetchIdSuggestions(),
       ]);
 
       const myDepartment = meResponse?.user?.department || '';
-      if (!editingTask && myDepartment) {
+      const nextDepartments = departmentsResponse?.departments || [];
+      setCurrentUserDepartment(myDepartment);
+      if ((!editingTask || !formData.myDepartment) && myDepartment) {
         setFormData((prev) => ({
           ...prev,
-          myDepartment,
+          myDepartment: prev.myDepartment || myDepartment,
         }));
       }
-      setDepartments(departmentsResponse?.departments || []);
-      setTaskIdSuggestions(suggestions.taskIdSuggestions || []);
-      setProjectIdSuggestions(suggestions.projectIdSuggestions || []);
-      setProjectNameSuggestions(suggestions.projectNameSuggestions || []);
-      setKnownProjects(suggestions.knownProjects || {});
+      setDepartments(nextDepartments);
+      setFormData((prev) => ({
+        ...prev,
+        myDepartment: prev.myDepartment
+          ? normalizeDepartmentName(prev.myDepartment, nextDepartments)
+          : (myDepartment ? normalizeDepartmentName(myDepartment, nextDepartments) : ''),
+        toDepartment: prev.toDepartment
+          ? normalizeDepartmentName(prev.toDepartment, nextDepartments)
+          : prev.toDepartment,
+      }));
       setTaskPanelCache(cacheKeys.bootstrap, {
         myDepartment,
-        departments: departmentsResponse?.departments || [],
-        ...suggestions,
+        departments: nextDepartments,
+        taskIdSuggestions: [],
+        projectIdSuggestions: [],
+        projectNameSuggestions: [],
+        knownProjects: {},
       });
       setCacheStatus((prev) => ({
         showingCached: false,
         cachedAt: prev.cachedAt,
         liveUpdatedAt: Date.now(),
       }));
+
+      try {
+        const suggestions = await fetchIdSuggestions();
+        setTaskIdSuggestions(suggestions.taskIdSuggestions || []);
+        setProjectIdSuggestions(suggestions.projectIdSuggestions || []);
+        setProjectNameSuggestions(suggestions.projectNameSuggestions || []);
+        setKnownProjects(suggestions.knownProjects || {});
+        setTaskPanelCache(cacheKeys.bootstrap, {
+          myDepartment,
+          departments: nextDepartments,
+          ...suggestions,
+        });
+      } catch (suggestionError) {
+        console.warn('Unable to load Assign Task suggestions:', suggestionError);
+      }
     } catch (error) {
       console.warn('Unable to load Assign Task bootstrap data:', error);
       if (!silent) {
@@ -229,12 +264,13 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
 
   // NEW: Load users when department changes
   const loadDepartmentUsers = async (departmentName) => {
-    if (!departmentName) {
+    const normalizedDepartment = normalizeDepartmentName(departmentName);
+    if (!normalizedDepartment) {
       setDepartmentUsers([]);
       return;
     }
 
-    const cacheKey = cacheKeys?.departmentUsers(departmentName);
+    const cacheKey = cacheKeys?.departmentUsers(normalizedDepartment);
     const cachedUsers = cacheKey
       ? getTaskPanelCache(cacheKey, ASSIGN_DEPARTMENT_USERS_CACHE_TTL_MS)
       : null;
@@ -246,7 +282,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       setLoadingUsers(true);
     }
     try {
-      const response = await authAPI.getUsersByDepartment(departmentName);
+      const response = await authAPI.getUsersByDepartment(normalizedDepartment);
       if (response.users) {
         setDepartmentUsers(response.users);
         if (cacheKey) {
@@ -279,9 +315,9 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
         customerName: editingTask.customerName || '',
         taskName: editingTask.title || '',
         reference: editingTask.reference || '',
-        myDepartment: editingTask.fromDepartment || '',
+        myDepartment: editingTask.fromDepartment || currentUserDepartment || '',
         selectedUserIds: (editingTask.assignedTo || []).map((u) => u.id),
-        toDepartment: editingTask.toDepartment || 'Gen Ai',
+        toDepartment: normalizeDepartmentName(editingTask.toDepartment || 'Gen Ai'),
         deadline: editingTask.deadline ? new Date(editingTask.deadline).toISOString().slice(0, 16) : '',
         priority: editingTask.priority
           ? editingTask.priority.charAt(0).toUpperCase() + editingTask.priority.slice(1).toLowerCase()
@@ -293,15 +329,12 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
         links: editingTask.links || []
       };
       setFormData(mappedEditData);
-      if (editingTask.toDepartment) {
-        loadDepartmentUsers(editingTask.toDepartment);
-      }
       setCurrentDraftId(null);
       return;
     }
 
     loadDraft();
-  }, [isOpen, editingTask]);
+  }, [currentUserDepartment, isOpen, editingTask]);
 
   useEffect(() => {
     if (isOpen) {
@@ -309,6 +342,33 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       setIsMaximized(false);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!formData.myDepartment && currentUserDepartment) {
+      setFormData((prev) => ({
+        ...prev,
+        myDepartment: currentUserDepartment,
+      }));
+    }
+  }, [currentUserDepartment, formData.myDepartment, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const normalizedToDepartment = normalizeDepartmentName(formData.toDepartment);
+    if (normalizedToDepartment && normalizedToDepartment !== formData.toDepartment) {
+      setFormData((prev) => ({
+        ...prev,
+        toDepartment: normalizedToDepartment,
+      }));
+      return;
+    }
+    if (normalizedToDepartment) {
+      void loadDepartmentUsers(normalizedToDepartment);
+    } else {
+      setDepartmentUsers([]);
+    }
+  }, [departments, formData.toDepartment, isOpen]);
 
   // Auto-save every 30 seconds
   useEffect(() => {
@@ -330,7 +390,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       
       if (result.data) {
         // ✅ Map backend fields back to form fields
-        const mappedData = {
+      const mappedData = {
           projectName: result.data.projectName || '',
           taskId: result.data.taskId || '',
           projectId: result.data.projectId || '',
@@ -339,9 +399,9 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
           customerName: result.data.customerName || '',
           taskName: result.data.title || '',
           reference: result.data.reference || '',
-          myDepartment: result.data.myDepartment || '',
+          myDepartment: normalizeDepartmentName(result.data.myDepartment || currentUserDepartment || ''),
           selectedUserIds: result.data.selectedUserIds || [],
-          toDepartment: result.data.toDepartment || 'Gen Ai',
+          toDepartment: normalizeDepartmentName(result.data.toDepartment || 'Gen Ai'),
           deadline: result.data.deadline || '',
           priority: result.data.priority ? 
             result.data.priority.charAt(0).toUpperCase() + result.data.priority.slice(1) : 'High',
@@ -353,12 +413,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
         };
         
         setFormData(mappedData);
-        
-        // Load users for toDepartment if available
-        if (result.data.toDepartment) {
-          loadDepartmentUsers(result.data.toDepartment);
-        }
-        
+
         if (result.data.id) {
           setCurrentDraftId(result.data.id);
         }
@@ -427,7 +482,6 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
 
     // NEW: Load users when department changes
     if (field === 'toDepartment') {
-      loadDepartmentUsers(value);
       setFormData(prev => ({
         ...prev,
         selectedUserIds: [] // Reset selected users
