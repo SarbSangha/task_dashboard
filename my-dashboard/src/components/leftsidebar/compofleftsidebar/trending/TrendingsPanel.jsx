@@ -1,95 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { taskAPI } from '../../../../services/api';
+import { authAPI, taskAPI } from '../../../../services/api';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
 const ALL_DEPARTMENTS = 'all_departments';
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
-const EXTENSION_MAP = {
-  image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'],
-  video: ['mp4', 'mov', 'avi', 'mkv', 'webm'],
-  music: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'],
-  text: ['txt', 'pdf', 'doc', 'docx', 'csv', 'md', 'json', 'xml'],
-};
-
-const detectType = (asset) => {
-  const mime = `${asset?.mimetype || ''}`.toLowerCase();
-  if (mime === 'text/link') return 'link';
-  if (mime === 'application/pdf') return 'pdf';
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'music';
-  if (mime.startsWith('text/')) return 'text';
-
-  const source = `${asset?.url || asset?.filename || asset?.originalName || ''}`.toLowerCase();
-  const ext = source.split('.').pop();
-  if (ext === 'pdf') return 'pdf';
-
-  if (EXTENSION_MAP.image.includes(ext)) return 'image';
-  if (EXTENSION_MAP.video.includes(ext)) return 'video';
-  if (EXTENSION_MAP.music.includes(ext)) return 'music';
-  return 'text';
-};
+const PAGE_SIZE = 60;
 
 const getSourceExtension = (asset) => {
   const source = `${asset?.url || asset?.filename || asset?.originalName || ''}`.toLowerCase();
   return source.split('.').pop();
-};
-
-const normalizeAssetsFromTask = (task) => {
-  const list = [];
-  const addAsset = (asset, stage) => {
-    if (!asset) return;
-    const item = typeof asset === 'string' ? { url: asset } : asset;
-    const mediaType = detectType(item);
-    list.push({
-      id: `${task.id}-${stage}-${item.path || item.url || item.filename || Math.random()}`,
-      taskId: task.id,
-      taskTitle: task.title || 'Untitled task',
-      taskNumber: task.taskNumber || 'N/A',
-      taskDescription: task.description || '',
-      taskResultText: task.resultText || '',
-      taskReference: task.reference || '',
-      customerName: task.customerName || '',
-      stage,
-      mediaType,
-      filename: item.filename || item.originalName || item.url || 'Untitled',
-      path: item.path || null,
-      url: item.url || null,
-      createdAt: task.createdAt || null,
-      updatedAt: task.updatedAt || null,
-      priority: task.priority || 'medium',
-      projectName: task.projectName || '',
-      createdByName: task.creator?.name || task.createdByName || task.createdBy || null,
-      createdByDepartment: task.creator?.department || null,
-      fromDepartment: task.fromDepartment || task.from_department || null,
-      toDepartment: task.toDepartment || task.to_department || null,
-      submittedByName:
-        task.submittedByName ||
-        task.submitter?.name ||
-        (typeof task.submittedBy === 'number' ? `User #${task.submittedBy}` : task.submittedBy || null),
-    });
-  };
-
-  const inputAttachments = Array.isArray(task.attachments) ? task.attachments : [];
-  const resultAttachments = Array.isArray(task.resultAttachments) ? task.resultAttachments : [];
-  const links = Array.isArray(task.links) ? task.links : [];
-  const resultLinks = Array.isArray(task.resultLinks) ? task.resultLinks : [];
-
-  inputAttachments.forEach((asset) => addAsset(asset, 'input'));
-  resultAttachments.forEach((asset) => addAsset(asset, 'result'));
-  links.forEach((url) => addAsset({ url, mimetype: 'text/link' }, 'input-link'));
-  resultLinks.forEach((url) => addAsset({ url, mimetype: 'text/link' }, 'result-link'));
-
-  if (task.description) {
-    addAsset({ filename: 'Task description', mimetype: 'text/plain' }, 'input-text');
-  }
-  if (task.resultText) {
-    addAsset({ filename: 'Result text', mimetype: 'text/plain' }, 'result-text');
-  }
-
-  return list;
 };
 
 const getAssetActivityTime = (asset) => asset?.updatedAt || asset?.createdAt || null;
@@ -184,10 +104,15 @@ const buildDirectoryTree = (rows = []) => {
 const TrendingsPanel = ({ isOpen, onClose }) => {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [departmentFilter, setDepartmentFilter] = useState(ALL_DEPARTMENTS);
+  const [departmentOptions, setDepartmentOptions] = useState([ALL_DEPARTMENTS]);
   const [sortBy, setSortBy] = useState('latest');
+  const [loadError, setLoadError] = useState('');
   const [previewAsset, setPreviewAsset] = useState(null);
   const [infoAsset, setInfoAsset] = useState(null);
   const [openMenuAssetId, setOpenMenuAssetId] = useState(null);
@@ -238,23 +163,88 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
   };
 
   useEffect(() => {
+    if (!isOpen) return undefined;
+    const timer = window.setTimeout(() => {
+      setSearch(searchInput.trim());
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, searchInput]);
+
+  useEffect(() => {
     if (!isOpen) return;
+    const loadDepartments = async () => {
+      try {
+        const response = await authAPI.getDepartments();
+        const departments = Array.isArray(response?.departments) ? response.departments : [];
+        setDepartmentOptions([ALL_DEPARTMENTS, ...departments]);
+      } catch (error) {
+        console.warn('Failed to load department options for trendings:', error);
+        setDepartmentOptions([ALL_DEPARTMENTS]);
+      }
+    };
+    loadDepartments();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+
     const load = async () => {
       setLoading(true);
+      setLoadError('');
       try {
-        const res = await taskAPI.getAllTasks();
-        const tasks = Array.isArray(res?.tasks) ? res.tasks : [];
-        const normalized = tasks.flatMap((task) => normalizeAssetsFromTask(task));
-        setAssets(normalized);
+        const res = await taskAPI.getTaskAssets({
+          offset: 0,
+          limit: PAGE_SIZE,
+          media_type: filter,
+          department: departmentFilter === ALL_DEPARTMENTS ? undefined : departmentFilter,
+          q: search || undefined,
+          sort: sortBy,
+        });
+        if (cancelled) return;
+        setAssets(Array.isArray(res?.data) ? res.data : []);
+        setHasMore(Boolean(res?.hasMore));
       } catch (error) {
         console.error('Failed to load trendings:', error);
+        if (cancelled) return;
         setAssets([]);
+        setHasMore(false);
+        setLoadError('Could not load databank assets right now.');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     load();
-  }, [isOpen]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, filter, departmentFilter, search, sortBy]);
+
+  const loadMoreAssets = async () => {
+    if (loadingMore || loading || !hasMore) return;
+    setLoadingMore(true);
+    setLoadError('');
+    try {
+      const res = await taskAPI.getTaskAssets({
+        offset: assets.length,
+        limit: PAGE_SIZE,
+        media_type: filter,
+        department: departmentFilter === ALL_DEPARTMENTS ? undefined : departmentFilter,
+        q: search || undefined,
+        sort: sortBy,
+      });
+      const nextRows = Array.isArray(res?.data) ? res.data : [];
+      setAssets((prev) =>
+        Array.from(new Map([...prev, ...nextRows].map((asset) => [asset.id, asset])).values())
+      );
+      setHasMore(Boolean(res?.hasMore));
+    } catch (error) {
+      console.error('Failed to load more trendings assets:', error);
+      setLoadError('Could not load more databank assets right now.');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const metrics = useMemo(() => {
     const now = new Date();
@@ -284,54 +274,7 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
     };
   }, [assets]);
 
-  const departmentOptions = useMemo(() => {
-    const unique = new Set();
-    assets.forEach((item) => {
-      [item.createdByDepartment, item.fromDepartment, item.toDepartment].forEach((dep) => {
-        const value = `${dep || ''}`.trim();
-        if (value) unique.add(value);
-      });
-    });
-    return [ALL_DEPARTMENTS, ...Array.from(unique).sort((a, b) => a.localeCompare(b))];
-  }, [assets]);
-
-  const filteredAssets = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    let rows = assets.filter((item) => (filter === 'all' ? true : item.mediaType === filter));
-
-    if (departmentFilter !== ALL_DEPARTMENTS) {
-      const target = departmentFilter.toLowerCase();
-      rows = rows.filter((item) =>
-        [item.createdByDepartment, item.fromDepartment, item.toDepartment].some(
-          (dep) => `${dep || ''}`.trim().toLowerCase() === target
-        )
-      );
-    }
-
-    if (q) {
-      rows = rows.filter(
-        (item) =>
-          item.filename.toLowerCase().includes(q) ||
-          item.taskTitle.toLowerCase().includes(q) ||
-          item.taskNumber.toLowerCase().includes(q) ||
-          item.projectName.toLowerCase().includes(q) ||
-          (item.taskDescription || '').toLowerCase().includes(q) ||
-          (item.taskResultText || '').toLowerCase().includes(q) ||
-          (item.taskReference || '').toLowerCase().includes(q) ||
-          (item.customerName || '').toLowerCase().includes(q) ||
-          (item.createdByName || '').toLowerCase().includes(q) ||
-          (item.submittedByName || '').toLowerCase().includes(q)
-      );
-    }
-    if (sortBy === 'top') {
-      rows = [...rows].sort((a, b) => (a.priority > b.priority ? -1 : 1));
-    } else {
-      rows = [...rows].sort(
-        (a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)
-      );
-    }
-    return rows;
-  }, [assets, filter, departmentFilter, search, sortBy]);
+  const filteredAssets = useMemo(() => assets, [assets]);
 
   const directoryTree = useMemo(() => buildDirectoryTree(filteredAssets), [filteredAssets]);
 
@@ -509,14 +452,14 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
               <input
                 className="trendings-search"
                 placeholder="Search across all formats..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
               />
             </div>
 
             <div className="trendings-metrics">
               <div className="metric-card">
-                <div className="metric-title">Total References</div>
+                <div className="metric-title">Loaded References</div>
                 <div className="metric-value">{metrics.totalReferences}</div>
               </div>
               <div className="metric-card">
@@ -529,6 +472,10 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
                   {metrics.weeklyGrowth >= 0 ? `+${metrics.weeklyGrowth}%` : `${metrics.weeklyGrowth}%`}
                 </div>
               </div>
+            </div>
+
+            <div className="trendings-footnote">
+              Fast databank mode is active. The latest matching assets load first, and you can load more without blocking the panel.
             </div>
 
             <div className="trendings-filter-row">
@@ -578,6 +525,7 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
             </div>
 
             <div className="trendings-content">
+              {loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
               {showDirectoryWindow && (
                 <div className="trendings-directory-window">
                   <div className="trendings-directory-header">
@@ -776,57 +724,71 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
               ) : filteredAssets.length === 0 ? (
                 <div className="trendings-state">No references found for this filter.</div>
               ) : (
-                <div className="trendings-grid">
-                  {filteredAssets.map((asset) => (
-                    <div key={asset.id} className="trendings-card">
-                      {(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') && (
-                        <div className="trendings-card-preview" onClick={() => setPreviewAsset(asset)}>
-                          {renderCardPreview(asset)}
+                <>
+                  <div className="trendings-grid">
+                    {filteredAssets.map((asset) => (
+                      <div key={asset.id} className="trendings-card">
+                        {(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') && (
+                          <div className="trendings-card-preview" onClick={() => setPreviewAsset(asset)}>
+                            {renderCardPreview(asset)}
+                          </div>
+                        )}
+                        <div className="trendings-card-top">
+                          <div className="trendings-card-top-left">
+                            <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
+                            <span className="stage-badge">{asset.stage}</span>
+                          </div>
+                          <div className="trendings-card-menu-wrap">
+                            <button
+                              className="trendings-card-menu-btn"
+                              onClick={() =>
+                                setOpenMenuAssetId((prev) => (prev === asset.id ? null : asset.id))
+                              }
+                              title="More"
+                            >
+                              ⋮
+                            </button>
+                            {openMenuAssetId === asset.id && (
+                              <div className="trendings-card-menu">
+                                <button
+                                  onClick={() => {
+                                    setInfoAsset(asset);
+                                    setOpenMenuAssetId(null);
+                                  }}
+                                >
+                                  Info
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      )}
-                      <div className="trendings-card-top">
-                        <div className="trendings-card-top-left">
-                          <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
-                          <span className="stage-badge">{asset.stage}</span>
-                        </div>
-                        <div className="trendings-card-menu-wrap">
-                          <button
-                            className="trendings-card-menu-btn"
-                            onClick={() =>
-                              setOpenMenuAssetId((prev) => (prev === asset.id ? null : asset.id))
-                            }
-                            title="More"
-                          >
-                            ⋮
-                          </button>
-                          {openMenuAssetId === asset.id && (
-                            <div className="trendings-card-menu">
-                              <button
-                                onClick={() => {
-                                  setInfoAsset(asset);
-                                  setOpenMenuAssetId(null);
-                                }}
-                              >
-                                Info
-                              </button>
-                            </div>
-                          )}
-                        </div>
+                        <h4 className="trendings-title">{asset.filename}</h4>
+                        <p className="trendings-meta">{asset.taskTitle} • {asset.taskNumber}</p>
+                        <p className="trendings-meta">{asset.projectName || 'No project name'}</p>
+                        {!(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') &&
+                          (buildOpenUrl(asset) ? (
+                            <button className="trendings-open-link-btn" onClick={() => setPreviewAsset(asset)}>
+                              Preview
+                            </button>
+                          ) : (
+                            <span className="trendings-no-link">In-app text reference</span>
+                          ))}
                       </div>
-                      <h4 className="trendings-title">{asset.filename}</h4>
-                      <p className="trendings-meta">{asset.taskTitle} • {asset.taskNumber}</p>
-                      <p className="trendings-meta">{asset.projectName || 'No project name'}</p>
-                      {!(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') &&
-                        (buildOpenUrl(asset) ? (
-                          <button className="trendings-open-link-btn" onClick={() => setPreviewAsset(asset)}>
-                            Preview
-                          </button>
-                        ) : (
-                          <span className="trendings-no-link">In-app text reference</span>
-                        ))}
+                    ))}
+                  </div>
+                  {hasMore && (
+                    <div className="trendings-load-more-wrap">
+                      <button
+                        type="button"
+                        className="trendings-load-more-btn"
+                        onClick={loadMoreAssets}
+                        disabled={loadingMore}
+                      >
+                        {loadingMore ? 'Loading more...' : 'Load More'}
+                      </button>
                     </div>
-                  ))}
-                </div>
+                  )}
+                </>
               )}
             </div>
           </>

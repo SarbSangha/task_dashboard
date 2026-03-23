@@ -400,6 +400,20 @@
   color: #b9cbec;
 }
 
+.trendings-state-error {
+  margin-bottom: 14px;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 12px;
+  background: rgba(127, 29, 29, 0.18);
+  color: #ffd5d5;
+}
+
+.trendings-footnote {
+  margin-top: 10px;
+  color: #9bb2d8;
+  font-size: 12px;
+}
+
 .trendings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -589,6 +603,32 @@
 
 .trendings-no-link {
   color: #8fa8cf;
+}
+
+.trendings-load-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 18px 0 8px;
+}
+
+.trendings-load-more-btn {
+  min-width: 160px;
+  border: 1px solid rgba(147, 176, 237, 0.3);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e6f0ff;
+  font-weight: 700;
+  padding: 12px 20px;
+  cursor: pointer;
+}
+
+.trendings-load-more-btn:hover {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.trendings-load-more-btn:disabled {
+  opacity: 0.65;
+  cursor: wait;
 }
 
 .trendings-preview-overlay {

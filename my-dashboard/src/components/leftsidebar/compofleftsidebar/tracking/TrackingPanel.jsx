@@ -5,6 +5,9 @@ import TaskChatPanel from '../messagesystem/TaskChatPanel';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import './TrackingPanel.css';
 
+const dedupeTasks = (rows = []) =>
+  Array.from(new Map(rows.map((task) => [task.id, task])).values());
+
 const TrackingPanel = ({ isOpen, onClose }) => {
   const { showAlert, showPrompt } = useCustomDialogs();
   const [tasks, setTasks] = useState([]);
@@ -39,38 +42,25 @@ const TrackingPanel = ({ isOpen, onClose }) => {
   const loadTasks = async () => {
     setLoading(true);
     try {
-      console.log('📊 Fetching tasks from API...');
-      // Fetch tasks from API
-      const response = await fetch(
-        `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/tasks/all`,
-        {
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' }
-        }
-      );
+      console.log('📊 Fetching tracking tasks from inbox and outbox...');
+      const [inboxData, outboxData] = await Promise.all([
+        taskAPI.getInbox().catch((error) => {
+          console.warn('Inbox tasks unavailable for tracking:', error);
+          return { data: [] };
+        }),
+        taskAPI.getOutbox().catch((error) => {
+          console.warn('Outbox tasks unavailable for tracking:', error);
+          return { data: [] };
+        }),
+      ]);
 
-      console.log('Response status:', response.status);
-      
-      if (response.ok) {
-        const data = await response.json();
-        console.log('✅ Tasks fetched successfully:', data);
-        
-        if (data.tasks && Array.isArray(data.tasks)) {
-          const nonDraftTasks = data.tasks.filter((task) => task.status !== 'draft');
-          setTasks(nonDraftTasks);
-          console.log(`📋 Loaded ${nonDraftTasks.length} non-draft tasks`);
-        } else if (data.success === false) {
-          console.error('API returned error:', data);
-          setTasks([]);
-        } else {
-          console.warn('Unexpected response format:', data);
-          setTasks([]);
-        }
-      } else {
-        const errorData = await response.json().catch(() => ({}));
-        console.error('Failed to load tasks. Status:', response.status, 'Error:', errorData);
-        setTasks([]);
-      }
+      const mergedTasks = dedupeTasks([
+        ...(Array.isArray(inboxData?.data) ? inboxData.data : []),
+        ...(Array.isArray(outboxData?.data) ? outboxData.data : []),
+      ]);
+      const nonDraftTasks = mergedTasks.filter((task) => task.status !== 'draft');
+      setTasks(nonDraftTasks);
+      console.log(`📋 Loaded ${nonDraftTasks.length} tracking tasks from user scope`);
     } catch (error) {
       console.error('❌ Error loading tasks:', error);
       setTasks([]);

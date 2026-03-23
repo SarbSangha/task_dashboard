@@ -1,6 +1,8 @@
+from collections import defaultdict
+
 from fastapi import APIRouter, HTTPException, Depends, Query, Cookie, Header, WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy.orm import Session, aliased
+from sqlalchemy import or_, func, case
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional, List, Set
 from pydantic import BaseModel, Field
@@ -340,14 +342,25 @@ def ensure_participant(db: Session, task_id: int, user_id: int, role: Participan
     )
 
 
-def compute_available_actions(task: Task, user: User, db: Session) -> List[str]:
+def compute_available_actions(
+    task: Task,
+    user: User,
+    db: Session,
+    my_participation: Optional[TaskParticipant] = None,
+) -> List[str]:
     if task.status == TaskStatus.CANCELLED:
         return []
 
     roles = role_set(user)
     actions = ["chat"]
     is_creator = user.id == task.creator_id
-    is_assignee = user_is_participant(task.id, user.id, ParticipantRole.ASSIGNEE, db)
+    if my_participation is not None:
+        is_assignee = (
+            my_participation.is_active == True
+            and my_participation.role == ParticipantRole.ASSIGNEE
+        )
+    else:
+        is_assignee = user_is_participant(task.id, user.id, ParticipantRole.ASSIGNEE, db)
 
     if has_any_role(user, {"hod", "super_admin"}):
         if task.status in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.NEED_IMPROVEMENT, TaskStatus.SUBMITTED}:
@@ -383,6 +396,122 @@ def compute_available_actions(task: Task, user: User, db: Session) -> List[str]:
 
 
 def serialize_task(task: Task, db: Session, current_user: Optional[User] = None) -> dict:
+    return serialize_task_with_context(task, db, current_user=current_user, context=None)
+
+
+def build_task_serialization_context(tasks: List[Task], db: Session, current_user: Optional[User] = None) -> dict:
+    task_ids = [task.id for task in tasks]
+    if not task_ids:
+        return {
+            "creators": {},
+            "participants_by_task": {},
+            "comment_counts": {},
+            "forwards_by_task": {},
+            "user_lookup": {},
+            "seen_by_by_task": {},
+            "my_participation_by_task": {},
+        }
+
+    creator_ids = {task.creator_id for task in tasks if task.creator_id}
+    creators = {}
+    if creator_ids:
+        creators = {
+            user.id: user
+            for user in db.query(User).filter(User.id.in_(creator_ids)).all()
+        }
+
+    participants_by_task = defaultdict(list)
+    user_lookup = dict(creators)
+    participant_rows = (
+        db.query(TaskParticipant, User)
+        .join(User, User.id == TaskParticipant.user_id)
+        .filter(
+            TaskParticipant.task_id.in_(task_ids),
+            TaskParticipant.is_active == True,
+        )
+        .all()
+    )
+    for participant, user in participant_rows:
+        participants_by_task[participant.task_id].append((participant, user))
+        user_lookup[user.id] = user
+
+    comment_counts = {
+        task_id: count
+        for task_id, count in (
+            db.query(TaskComment.task_id, func.count(TaskComment.id))
+            .filter(TaskComment.task_id.in_(task_ids))
+            .group_by(TaskComment.task_id)
+            .all()
+        )
+    }
+
+    forward_rows = (
+        db.query(TaskForward)
+        .filter(TaskForward.task_id.in_(task_ids))
+        .order_by(TaskForward.task_id.asc(), TaskForward.created_at.asc(), TaskForward.id.asc())
+        .all()
+    )
+    forwards_by_task = defaultdict(list)
+    forward_user_ids = set()
+    for forward in forward_rows:
+        forwards_by_task[forward.task_id].append(forward)
+        if forward.from_user_id:
+            forward_user_ids.add(forward.from_user_id)
+        if forward.to_user_id:
+            forward_user_ids.add(forward.to_user_id)
+
+    missing_user_ids = [user_id for user_id in forward_user_ids if user_id not in user_lookup]
+    if missing_user_ids:
+        for user in db.query(User).filter(User.id.in_(missing_user_ids)).all():
+            user_lookup[user.id] = user
+
+    try:
+        seen_by_rows = (
+            db.query(TaskView, User)
+            .join(User, User.id == TaskView.user_id)
+            .filter(TaskView.task_id.in_(task_ids))
+            .all()
+        )
+    except SQLAlchemyError:
+        seen_by_rows = []
+
+    seen_by_by_task = defaultdict(list)
+    for view, user in seen_by_rows:
+        seen_by_by_task[view.task_id].append((view, user))
+        user_lookup[user.id] = user
+
+    my_participation_by_task = {}
+    if current_user:
+        my_participation_by_task = {
+            participation.task_id: participation
+            for participation in (
+                db.query(TaskParticipant)
+                .filter(
+                    TaskParticipant.task_id.in_(task_ids),
+                    TaskParticipant.user_id == current_user.id,
+                    TaskParticipant.is_active == True,
+                )
+                .all()
+            )
+        }
+
+    return {
+        "creators": creators,
+        "participants_by_task": participants_by_task,
+        "comment_counts": comment_counts,
+        "forwards_by_task": forwards_by_task,
+        "user_lookup": user_lookup,
+        "seen_by_by_task": seen_by_by_task,
+        "my_participation_by_task": my_participation_by_task,
+    }
+
+
+def serialize_task_with_context(
+    task: Task,
+    db: Session,
+    current_user: Optional[User] = None,
+    context: Optional[dict] = None,
+) -> dict:
     task_dict = task.to_dict()
     meta = task.metadata_json or {}
     task_dict["customerName"] = meta.get("customerName")
@@ -393,39 +522,64 @@ def serialize_task(task: Task, db: Session, current_user: Optional[User] = None)
     task_dict["resultLinks"] = meta.get("resultLinks", [])
     task_dict["resultAttachments"] = meta.get("resultAttachments", [])
     task_dict["revocation"] = meta.get("revocation")
-    creator = db.query(User).filter(User.id == task.creator_id).first()
+    creators = (context or {}).get("creators") or {}
+    creator = creators.get(task.creator_id)
+    if creator is None:
+        creator = db.query(User).filter(User.id == task.creator_id).first()
     task_dict["creator"] = {
         "id": creator.id if creator else None,
         "name": creator.name if creator else "Unknown",
         "department": creator.department if creator else None,
     }
 
-    participants = db.query(TaskParticipant).join(User, User.id == TaskParticipant.user_id).filter(
-        TaskParticipant.task_id == task.id,
-        TaskParticipant.is_active == True,
-    ).all()
-    task_dict["assignedTo"] = [
-        {
-            "id": p.user.id,
-            "name": p.user.name,
-            "department": p.user.department,
-            "role": p.role.value,
-        }
-        for p in participants
-        if p.role == ParticipantRole.ASSIGNEE
-    ]
+    participants = (context or {}).get("participants_by_task", {}).get(task.id)
+    if participants is None:
+        participants = db.query(TaskParticipant).join(User, User.id == TaskParticipant.user_id).filter(
+            TaskParticipant.task_id == task.id,
+            TaskParticipant.is_active == True,
+        ).all()
+    assigned_to = []
+    for participant_row in participants:
+        participant = participant_row if isinstance(participant_row, TaskParticipant) else participant_row[0]
+        participant_user = None
+        if isinstance(participant_row, TaskParticipant):
+            participant_user = participant.user
+        else:
+            participant_user = participant_row[1]
+        if participant.role != ParticipantRole.ASSIGNEE or not participant_user:
+            continue
+        assigned_to.append(
+            {
+                "id": participant_user.id,
+                "name": participant_user.name,
+                "department": participant_user.department,
+                "role": participant.role.value,
+            }
+        )
+    task_dict["assignedTo"] = assigned_to
 
-    comments_count = db.query(TaskComment).filter(TaskComment.task_id == task.id).count()
-    forwards = (
-        db.query(TaskForward)
-        .filter(TaskForward.task_id == task.id)
-        .order_by(TaskForward.created_at.asc())
-        .all()
-    )
+    comment_counts = (context or {}).get("comment_counts") or {}
+    comments_count = comment_counts.get(task.id)
+    if comments_count is None:
+        comments_count = db.query(TaskComment).filter(TaskComment.task_id == task.id).count()
+
+    forwards = (context or {}).get("forwards_by_task", {}).get(task.id)
+    if forwards is None:
+        forwards = (
+            db.query(TaskForward)
+            .filter(TaskForward.task_id == task.id)
+            .order_by(TaskForward.created_at.asc())
+            .all()
+        )
     forward_history = []
+    user_lookup = (context or {}).get("user_lookup") or {}
     for fwd in forwards:
-        from_user = db.query(User).filter(User.id == fwd.from_user_id).first()
-        to_user = db.query(User).filter(User.id == fwd.to_user_id).first() if fwd.to_user_id else None
+        from_user = user_lookup.get(fwd.from_user_id)
+        to_user = user_lookup.get(fwd.to_user_id) if fwd.to_user_id else None
+        if from_user is None and fwd.from_user_id:
+            from_user = db.query(User).filter(User.id == fwd.from_user_id).first()
+        if to_user is None and fwd.to_user_id:
+            to_user = db.query(User).filter(User.id == fwd.to_user_id).first()
         forward_history.append(
             {
                 "id": fwd.id,
@@ -437,16 +591,18 @@ def serialize_task(task: Task, db: Session, current_user: Optional[User] = None)
                 "createdAt": fwd.created_at.isoformat() if fwd.created_at else None,
             }
         )
-    try:
-        seen_by_rows = (
-            db.query(TaskView, User)
-            .join(User, User.id == TaskView.user_id)
-            .filter(TaskView.task_id == task.id)
-            .all()
-        )
-    except SQLAlchemyError:
-        # Backward compatibility if migration has not run yet.
-        seen_by_rows = []
+    seen_by_rows = (context or {}).get("seen_by_by_task", {}).get(task.id)
+    if seen_by_rows is None:
+        try:
+            seen_by_rows = (
+                db.query(TaskView, User)
+                .join(User, User.id == TaskView.user_id)
+                .filter(TaskView.task_id == task.id)
+                .all()
+            )
+        except SQLAlchemyError:
+            # Backward compatibility if migration has not run yet.
+            seen_by_rows = []
     task_dict["chatCount"] = comments_count
     task_dict["forwardHistory"] = forward_history
     task_dict["lastForwardedBy"] = forward_history[-1]["fromUser"] if forward_history else None
@@ -462,17 +618,290 @@ def serialize_task(task: Task, db: Session, current_user: Optional[User] = None)
     ]
 
     if current_user:
-        my_participation = db.query(TaskParticipant).filter(
-            TaskParticipant.task_id == task.id,
-            TaskParticipant.user_id == current_user.id,
-            TaskParticipant.is_active == True,
-        ).first()
+        my_participation = (context or {}).get("my_participation_by_task", {}).get(task.id)
+        if my_participation is None:
+            my_participation = db.query(TaskParticipant).filter(
+                TaskParticipant.task_id == task.id,
+                TaskParticipant.user_id == current_user.id,
+                TaskParticipant.is_active == True,
+            ).first()
         task_dict["isRead"] = my_participation.is_read if my_participation else False
         task_dict["myRole"] = my_participation.role.value if my_participation else "creator"
-        task_dict["availableActions"] = compute_available_actions(task, current_user, db)
+        task_dict["availableActions"] = compute_available_actions(
+            task,
+            current_user,
+            db,
+            my_participation=my_participation,
+        )
         task_dict["mySystemRoles"] = sorted(list(role_set(current_user)))
 
     return task_dict
+
+
+def serialize_task_list(tasks: List[Task], db: Session, current_user: Optional[User] = None) -> List[dict]:
+    context = build_task_serialization_context(tasks, db, current_user=current_user)
+    return [
+        serialize_task_with_context(task, db, current_user=current_user, context=context)
+        for task in tasks
+    ]
+
+
+ASSET_MEDIA_TYPES = {"all", "text", "image", "video", "music", "link", "pdf"}
+ASSET_SORT_OPTIONS = {"latest", "top"}
+ASSET_PRIORITY_RANK = {
+    "urgent": 4,
+    "high": 3,
+    "medium": 2,
+    "low": 1,
+}
+ASSET_EXTENSION_MAP = {
+    "image": {"jpg", "jpeg", "png", "gif", "webp", "svg", "bmp"},
+    "video": {"mp4", "mov", "avi", "mkv", "webm"},
+    "music": {"mp3", "wav", "m4a", "aac", "ogg", "flac"},
+    "text": {"txt", "pdf", "doc", "docx", "csv", "md", "json", "xml"},
+}
+
+
+def _detect_asset_media_type(item: dict) -> str:
+    mime = f"{item.get('mimetype') or ''}".lower()
+    if mime == "text/link":
+        return "link"
+    if mime == "application/pdf":
+        return "pdf"
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("video/"):
+        return "video"
+    if mime.startswith("audio/"):
+        return "music"
+    if mime.startswith("text/"):
+        return "text"
+
+    source = f"{item.get('url') or item.get('filename') or item.get('originalName') or ''}".lower()
+    ext = source.split(".")[-1] if "." in source else ""
+    if ext == "pdf":
+        return "pdf"
+    if ext in ASSET_EXTENSION_MAP["image"]:
+        return "image"
+    if ext in ASSET_EXTENSION_MAP["video"]:
+        return "video"
+    if ext in ASSET_EXTENSION_MAP["music"]:
+        return "music"
+    return "text"
+
+
+def _build_task_assets(task: Task, creator: Optional[User], submitter: Optional[User]) -> List[dict]:
+    meta = task.metadata_json or {}
+    task_title = task.title or "Untitled task"
+    task_number = task.task_number or "N/A"
+    task_description = task.description or ""
+    task_result_text = task.result_text or ""
+    task_reference = meta.get("reference") or ""
+    customer_name = meta.get("customerName") or ""
+    project_name = task.project_name or ""
+    priority = task.priority.value if task.priority else "medium"
+    created_at = task.created_at.isoformat() if task.created_at else None
+    updated_at = task.updated_at.isoformat() if task.updated_at else None
+    created_by_name = creator.name if creator else None
+    created_by_department = creator.department if creator else None
+    submitted_by_name = submitter.name if submitter else None
+
+    assets = []
+
+    def append_asset(raw_asset: dict, stage: str):
+        item = raw_asset or {}
+        filename = item.get("filename") or item.get("originalName") or item.get("url") or "Untitled"
+        asset = {
+            "id": f"{task.id}-{stage}-{item.get('path') or item.get('url') or item.get('filename') or len(assets)}",
+            "taskId": task.id,
+            "taskTitle": task_title,
+            "taskNumber": task_number,
+            "taskDescription": task_description,
+            "taskResultText": task_result_text,
+            "taskReference": task_reference,
+            "customerName": customer_name,
+            "stage": stage,
+            "filename": filename,
+            "originalName": item.get("originalName") or item.get("filename") or filename,
+            "path": item.get("path"),
+            "url": item.get("url"),
+            "mimetype": item.get("mimetype"),
+            "size": item.get("size"),
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+            "priority": priority,
+            "projectName": project_name,
+            "createdByName": created_by_name,
+            "createdByDepartment": created_by_department,
+            "fromDepartment": task.from_department,
+            "toDepartment": task.to_department,
+            "submittedByName": submitted_by_name,
+        }
+        asset["mediaType"] = _detect_asset_media_type(asset)
+        assets.append(asset)
+
+    input_attachments = meta.get("attachments") if isinstance(meta.get("attachments"), list) else []
+    result_attachments = meta.get("resultAttachments") if isinstance(meta.get("resultAttachments"), list) else []
+    input_links = meta.get("links") if isinstance(meta.get("links"), list) else []
+    result_links = meta.get("resultLinks") if isinstance(meta.get("resultLinks"), list) else []
+
+    for attachment in input_attachments:
+        if isinstance(attachment, str):
+            append_asset({"url": attachment}, "input")
+        elif isinstance(attachment, dict):
+            append_asset(attachment, "input")
+
+    for attachment in result_attachments:
+        if isinstance(attachment, str):
+            append_asset({"url": attachment}, "result")
+        elif isinstance(attachment, dict):
+            append_asset(attachment, "result")
+
+    for url in input_links:
+        if url:
+            append_asset({"url": url, "mimetype": "text/link"}, "input-link")
+
+    for url in result_links:
+        if url:
+            append_asset({"url": url, "mimetype": "text/link"}, "result-link")
+
+    if task_description:
+        append_asset({"filename": "Task description", "mimetype": "text/plain"}, "input-text")
+    if task_result_text:
+        append_asset({"filename": "Result text", "mimetype": "text/plain"}, "result-text")
+
+    return assets
+
+
+def _asset_matches_filters(
+    asset: dict,
+    media_type: str,
+    department: Optional[str],
+    query: Optional[str],
+) -> bool:
+    if media_type != "all" and asset.get("mediaType") != media_type:
+        return False
+
+    if department:
+        target = department.strip().lower()
+        if target and not any(
+            f"{value or ''}".strip().lower() == target
+            for value in (
+                asset.get("createdByDepartment"),
+                asset.get("fromDepartment"),
+                asset.get("toDepartment"),
+            )
+        ):
+            return False
+
+    q = f"{query or ''}".strip().lower()
+    if not q:
+        return True
+
+    haystacks = [
+        asset.get("filename"),
+        asset.get("originalName"),
+        asset.get("taskTitle"),
+        asset.get("taskNumber"),
+        asset.get("projectName"),
+        asset.get("taskDescription"),
+        asset.get("taskResultText"),
+        asset.get("taskReference"),
+        asset.get("customerName"),
+        asset.get("createdByName"),
+        asset.get("submittedByName"),
+        asset.get("url"),
+    ]
+    return any(q in f"{value or ''}".lower() for value in haystacks)
+
+
+def _task_asset_order_clause(sort_by: str):
+    if sort_by == "top":
+        return (
+            case(
+                (Task.priority == Priority.URGENT, 4),
+                (Task.priority == Priority.HIGH, 3),
+                (Task.priority == Priority.MEDIUM, 2),
+                else_=1,
+            ).desc(),
+            Task.updated_at.desc(),
+            Task.id.desc(),
+        )
+    return (Task.updated_at.desc(), Task.id.desc())
+
+
+def _list_assets_from_tasks(
+    db: Session,
+    *,
+    offset: int,
+    limit: int,
+    media_type: str,
+    department: Optional[str],
+    query: Optional[str],
+    sort_by: str,
+) -> dict:
+    creator_alias = aliased(User)
+    submitter_alias = aliased(User)
+    base_query = (
+        db.query(Task, creator_alias, submitter_alias)
+        .join(creator_alias, creator_alias.id == Task.creator_id)
+        .outerjoin(submitter_alias, submitter_alias.id == Task.submitted_by)
+        .filter(Task.is_deleted == False)
+        .order_by(*_task_asset_order_clause(sort_by))
+    )
+
+    if department and department != "all_departments":
+        base_query = base_query.filter(
+            or_(
+                creator_alias.department == department,
+                Task.from_department == department,
+                Task.to_department == department,
+            )
+        )
+
+    page_assets = []
+    matched_assets = 0
+    task_offset = 0
+    chunk_size = max(limit, 40)
+    has_more = False
+
+    while True:
+        rows = base_query.offset(task_offset).limit(chunk_size).all()
+        if not rows:
+            break
+
+        task_offset += len(rows)
+        for task, creator, submitter in rows:
+            for asset in _build_task_assets(task, creator, submitter):
+                if not _asset_matches_filters(asset, media_type, department, query):
+                    continue
+
+                if matched_assets < offset:
+                    matched_assets += 1
+                    continue
+
+                if len(page_assets) < limit:
+                    page_assets.append(asset)
+                    matched_assets += 1
+                    continue
+
+                has_more = True
+                break
+
+            if has_more:
+                break
+
+        if has_more:
+            break
+
+    return {
+        "data": page_assets,
+        "count": len(page_assets),
+        "offset": offset,
+        "limit": limit,
+        "hasMore": has_more,
+        "nextOffset": offset + len(page_assets) if has_more else None,
+    }
 
 
 @router.get("/project-id/validate")
@@ -783,21 +1212,52 @@ async def get_inbox(
 
     task_rows = tasks.distinct().order_by(Task.updated_at.desc()).all()
 
-    result = []
-    for task in task_rows:
+    task_ids = [task.id for task in task_rows]
+    now = datetime.utcnow()
+
+    if task_ids:
         try:
-            mark_seen(db, task.id, current_user.id)
+            existing_seen_ids = {
+                task_id
+                for (task_id,) in (
+                    db.query(TaskView.task_id)
+                    .filter(
+                        TaskView.task_id.in_(task_ids),
+                        TaskView.user_id == current_user.id,
+                    )
+                    .all()
+                )
+            }
+            if existing_seen_ids:
+                (
+                    db.query(TaskView)
+                    .filter(
+                        TaskView.task_id.in_(existing_seen_ids),
+                        TaskView.user_id == current_user.id,
+                    )
+                    .update({TaskView.seen_at: now}, synchronize_session=False)
+                )
+            for task_id in task_ids:
+                if task_id not in existing_seen_ids:
+                    db.add(TaskView(task_id=task_id, user_id=current_user.id, seen_at=now))
         except SQLAlchemyError:
             pass
-        participation = db.query(TaskParticipant).filter(
-            TaskParticipant.task_id == task.id,
-            TaskParticipant.user_id == current_user.id,
-            TaskParticipant.is_active == True,
-        ).first()
-        if participation and not participation.is_read:
-            participation.is_read = True
-            participation.read_at = datetime.utcnow()
-        result.append(serialize_task(task, db, current_user))
+
+        participations = (
+            db.query(TaskParticipant)
+            .filter(
+                TaskParticipant.task_id.in_(task_ids),
+                TaskParticipant.user_id == current_user.id,
+                TaskParticipant.is_active == True,
+            )
+            .all()
+        )
+        for participation in participations:
+            if not participation.is_read:
+                participation.is_read = True
+                participation.read_at = now
+
+    result = serialize_task_list(task_rows, db, current_user)
 
     db.commit()
 
@@ -839,7 +1299,7 @@ async def get_outbox(
     return {
         "success": True,
         "count": len(tasks),
-        "data": [serialize_task(t, db, current_user) for t in tasks],
+        "data": serialize_task_list(tasks, db, current_user),
     }
 
 
@@ -885,8 +1345,44 @@ async def get_all_user_tasks(
     return {
         "success": True,
         "count": len(tasks),
-        "tasks": [serialize_task(t, db, current_user) for t in tasks],
+        "tasks": serialize_task_list(tasks, db, current_user),
     }
+
+
+@router.get("/assets")
+async def get_task_assets(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(60, ge=1, le=120),
+    media_type: str = Query("all"),
+    department: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    sort: str = Query("latest"),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    normalized_media_type = (media_type or "all").strip().lower()
+    if normalized_media_type not in ASSET_MEDIA_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid media type")
+
+    normalized_sort = (sort or "latest").strip().lower()
+    if normalized_sort not in ASSET_SORT_OPTIONS:
+        raise HTTPException(status_code=400, detail="Invalid sort option")
+
+    normalized_department = (department or "").strip() or None
+
+    asset_payload = _list_assets_from_tasks(
+        db,
+        offset=offset,
+        limit=limit,
+        media_type=normalized_media_type,
+        department=normalized_department,
+        query=q,
+        sort_by=normalized_sort,
+    )
+    return {"success": True, **asset_payload}
 
 
 @router.get("/inbox/unread-count")
@@ -1716,8 +2212,7 @@ async def add_comment(
     except SQLAlchemyError:
         pass
     add_history(db, task, current_user.id, "commented", task.status.value, payload.comment)
-    db.commit()
-    db.refresh(new_comment)
+    db.flush()
 
     participants = db.query(TaskParticipant).filter(
         TaskParticipant.task_id == task.id,
@@ -1748,6 +2243,7 @@ async def add_comment(
             metadata_json=comment_meta,
         )
     db.commit()
+    db.refresh(new_comment)
 
     return {
         "success": True,
@@ -1759,6 +2255,12 @@ async def add_comment(
             "commentType": new_comment.comment_type,
             "isInternal": new_comment.is_internal,
             "createdAt": new_comment.created_at.isoformat(),
+            "user": {
+                "id": current_user.id,
+                "name": current_user.name,
+                "role": ", ".join(sorted(role_set(current_user))),
+                "department": current_user.department,
+            },
         },
     }
 
@@ -1767,8 +2269,10 @@ async def add_comment(
 async def get_comments(
     task_id: int,
     page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
-    include_history: bool = Query(True),
+    page_size: int = Query(40, ge=1, le=100),
+    include_history: bool = Query(False),
+    include_seen_by: bool = Query(True),
+    include_total: bool = Query(False),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
@@ -1787,45 +2291,64 @@ async def get_comments(
     except SQLAlchemyError:
         pass
 
-    comments_query = db.query(TaskComment).filter(TaskComment.task_id == task_id).order_by(TaskComment.created_at.asc())
-    total_comments = comments_query.count()
-    comments = comments_query.offset((page - 1) * page_size).limit(page_size).all()
-
-    response = []
-    for c in comments:
-        user = db.query(User).filter(User.id == c.user_id).first()
-        response.append(
-            {
-                "id": c.id,
-                "taskId": c.task_id,
-                "comment": c.comment,
-                "commentType": c.comment_type or "general",
-                "isInternal": c.is_internal,
-                "createdAt": c.created_at.isoformat() if c.created_at else None,
-                "user": {
-                    "id": user.id if user else None,
-                    "name": user.name if user else "Unknown",
-                    "role": ", ".join(sorted(role_set(user))) if user else "unknown",
-                    "department": user.department if user else None,
-                },
-            }
+    comments_query = (
+        db.query(TaskComment, User)
+        .join(User, User.id == TaskComment.user_id)
+        .filter(TaskComment.task_id == task_id)
+        .order_by(TaskComment.created_at.asc(), TaskComment.id.asc())
+    )
+    total_comments = None
+    if include_total:
+        total_comments = (
+            db.query(func.count(TaskComment.id))
+            .filter(TaskComment.task_id == task_id)
+            .scalar()
+            or 0
         )
+    comment_rows = comments_query.offset((page - 1) * page_size).limit(page_size).all()
 
-    try:
-        seen_by_rows = (
-            db.query(TaskView, User)
-            .join(User, User.id == TaskView.user_id)
-            .filter(TaskView.task_id == task_id)
-            .all()
-        )
-    except SQLAlchemyError:
-        seen_by_rows = []
+    response = [
+        {
+            "id": comment.id,
+            "taskId": comment.task_id,
+            "comment": comment.comment,
+            "commentType": comment.comment_type or "general",
+            "isInternal": comment.is_internal,
+            "createdAt": comment.created_at.isoformat() if comment.created_at else None,
+            "user": {
+                "id": user.id if user else None,
+                "name": user.name if user else "Unknown",
+                "role": ", ".join(sorted(role_set(user))) if user else "unknown",
+                "department": user.department if user else None,
+            },
+        }
+        for comment, user in comment_rows
+    ]
+
+    seen_by_rows = []
+    if include_seen_by:
+        try:
+            seen_by_rows = (
+                db.query(TaskView, User)
+                .join(User, User.id == TaskView.user_id)
+                .filter(TaskView.task_id == task_id)
+                .all()
+            )
+        except SQLAlchemyError:
+            seen_by_rows = []
     history_rows = []
+    history_user_lookup = {}
     if include_history:
         try:
             history_rows = db.query(TaskEditLog).filter(TaskEditLog.task_id == task_id).order_by(TaskEditLog.created_at.desc()).limit(100).all()
         except SQLAlchemyError:
             history_rows = []
+        history_user_ids = list({row.user_id for row in history_rows if row.user_id})
+        if history_user_ids:
+            history_user_lookup = {
+                user.id: user
+                for user in db.query(User).filter(User.id.in_(history_user_ids)).all()
+            }
     db.commit()
 
     return {
@@ -1857,7 +2380,7 @@ async def get_comments(
                 },
             }
             for h in history_rows
-            for editor in [db.query(User).filter(User.id == h.user_id).first()]
+            for editor in [history_user_lookup.get(h.user_id)]
         ],
         "seenBy": [
             {

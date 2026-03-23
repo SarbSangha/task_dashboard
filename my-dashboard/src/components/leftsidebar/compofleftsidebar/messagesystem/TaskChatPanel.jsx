@@ -1,10 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import './TaskChatPanel.css';
 import { formatDateTimeIndia } from '../../../../utils/dateTime';
 
 const COMMENT_TYPES = ['general', 'suggestion', 'need_improvement', 'approved'];
+const taskChatCache = new Map();
+
+const getCacheKey = (taskId) => `task-${taskId}`;
 
 const TaskChatPanel = ({ task, isOpen, onClose }) => {
   const { showAlert } = useCustomDialogs();
@@ -14,46 +17,142 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
   const [seenBy, setSeenBy] = useState([]);
   const [commentType, setCommentType] = useState('general');
   const [commentText, setCommentText] = useState('');
-  const [loading, setLoading] = useState(false);
-  const refreshTimerRef = React.useRef(null);
+  const [loadingChat, setLoadingChat] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [chatLoaded, setChatLoaded] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const refreshTimerRef = useRef(null);
+  const commentsEndRef = useRef(null);
 
-  useEffect(() => {
-    if (isOpen && task?.id) {
-      loadChat();
+  const taskId = task?.id;
+
+  const applyCachedState = (cacheEntry) => {
+    if (!cacheEntry) return false;
+    setComments(cacheEntry.comments || []);
+    setHistory(cacheEntry.history || []);
+    setSeenBy(cacheEntry.seenBy || []);
+    setChatLoaded(Boolean(cacheEntry.chatLoaded));
+    setHistoryLoaded(Boolean(cacheEntry.historyLoaded));
+    return true;
+  };
+
+  const saveCache = (next) => {
+    if (!taskId) return;
+    taskChatCache.set(getCacheKey(taskId), {
+      comments: next.comments ?? comments,
+      history: next.history ?? history,
+      seenBy: next.seenBy ?? seenBy,
+      chatLoaded: next.chatLoaded ?? chatLoaded,
+      historyLoaded: next.historyLoaded ?? historyLoaded,
+    });
+  };
+
+  const loadChat = async ({ silent = false } = {}) => {
+    if (!taskId) return;
+    if (!silent) setLoadingChat(true);
+    try {
+      const response = await taskAPI.getComments(taskId, {
+        include_history: false,
+        include_seen_by: true,
+        page_size: 40,
+      });
+      const nextComments = response.comments || [];
+      const nextSeenBy = response.seenBy || [];
+      setComments(nextComments);
+      setSeenBy(nextSeenBy);
+      setChatLoaded(true);
+      saveCache({
+        comments: nextComments,
+        seenBy: nextSeenBy,
+        chatLoaded: true,
+      });
+    } catch (error) {
+      console.error('Failed to load task chat', error);
+    } finally {
+      if (!silent) setLoadingChat(false);
     }
-  }, [isOpen, task?.id]);
+  };
+
+  const loadHistory = async ({ silent = false } = {}) => {
+    if (!taskId) return;
+    if (!silent) setLoadingHistory(true);
+    try {
+      const response = await taskAPI.getComments(taskId, {
+        include_history: true,
+        include_seen_by: false,
+        page_size: 40,
+      });
+      const nextHistory = response.history || [];
+      setHistory(nextHistory);
+      setHistoryLoaded(true);
+      saveCache({
+        history: nextHistory,
+        historyLoaded: true,
+      });
+    } catch (error) {
+      console.error('Failed to load task history', error);
+    } finally {
+      if (!silent) setLoadingHistory(false);
+    }
+  };
 
   useEffect(() => {
-    if (!isOpen || !task?.id) return undefined;
+    if (!isOpen || !taskId) return;
+    setActiveTab('chat');
+    setCommentText('');
+    setCommentType('general');
 
-    const scheduleReload = () => {
+    const cacheEntry = taskChatCache.get(getCacheKey(taskId));
+    const hasCache = applyCachedState(cacheEntry);
+    if (!hasCache || !cacheEntry?.chatLoaded) {
+      void loadChat();
+    } else {
+      void loadChat({ silent: true });
+    }
+  }, [isOpen, taskId]);
+
+  useEffect(() => {
+    if (!isOpen || !taskId || activeTab !== 'history' || historyLoaded) return;
+    void loadHistory();
+  }, [activeTab, historyLoaded, isOpen, taskId]);
+
+  useEffect(() => {
+    if (!isOpen || !taskId) return undefined;
+
+    const scheduleRefresh = (kind = 'chat') => {
       if (refreshTimerRef.current) return;
       refreshTimerRef.current = window.setTimeout(() => {
         refreshTimerRef.current = null;
-        loadChat();
-      }, 180);
+        void loadChat({ silent: true });
+        if (kind === 'history' || activeTab === 'history') {
+          void loadHistory({ silent: true });
+        }
+      }, 120);
     };
 
     const unsubscribe = subscribeRealtimeNotifications({
       onMessage: (payload) => {
         if (!payload) return;
         const relatedTaskId = payload.taskId || payload?.metadata?.taskId;
-        if (Number(relatedTaskId) !== Number(task.id)) return;
+        if (Number(relatedTaskId) !== Number(taskId)) return;
         if (payload.eventType === 'task_comment' || payload.eventType === 'commented') {
-          scheduleReload();
+          scheduleRefresh('chat');
           return;
         }
-        // Keep history/state panel up-to-date on task state changes.
-        scheduleReload();
+        scheduleRefresh('history');
       },
       onOpen: () => {
-        scheduleReload();
+        scheduleRefresh(activeTab === 'history' ? 'history' : 'chat');
       },
     });
 
     const interval = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      loadChat();
+      void loadChat({ silent: true });
+      if (activeTab === 'history') {
+        void loadHistory({ silent: true });
+      }
     }, 180000);
 
     return () => {
@@ -64,30 +163,52 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
         refreshTimerRef.current = null;
       }
     };
-  }, [isOpen, task?.id]);
+  }, [activeTab, isOpen, taskId]);
 
-  const loadChat = async () => {
-    setLoading(true);
-    try {
-      const response = await taskAPI.getComments(task.id);
-      setComments(response.comments || []);
-      setHistory(response.history || []);
-      setSeenBy(response.seenBy || []);
-    } catch (error) {
-      console.error('Failed to load chat', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'chat') return;
+    const id = window.requestAnimationFrame(() => {
+      commentsEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [comments, activeTab, isOpen]);
 
   const sendComment = async () => {
-    if (!commentText.trim()) return;
+    const value = commentText.trim();
+    if (!taskId || !value || sending) return;
+    setSending(true);
     try {
-      await taskAPI.addComment(task.id, commentText.trim(), false, commentType);
+      const response = await taskAPI.addComment(taskId, value, false, commentType);
+      const nextComment = response?.comment;
+      if (nextComment) {
+        const nextSeenBy = seenBy.some((entry) => entry.id === nextComment.user?.id)
+          ? seenBy
+          : [
+              ...seenBy,
+              {
+                id: nextComment.user?.id,
+                name: nextComment.user?.name,
+                role: nextComment.user?.role,
+                department: nextComment.user?.department,
+              },
+            ];
+        setComments((prev) => {
+          const merged = [...prev, nextComment];
+          saveCache({
+            comments: merged,
+            chatLoaded: true,
+            seenBy: nextSeenBy,
+          });
+          return merged;
+        });
+        setSeenBy(nextSeenBy);
+      }
       setCommentText('');
-      await loadChat();
+      void loadChat({ silent: true });
     } catch (error) {
       await showAlert(error?.response?.data?.detail || 'Failed to send comment', { title: 'Error' });
+    } finally {
+      setSending(false);
     }
   };
 
@@ -110,8 +231,18 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
         </div>
 
         <div className="task-chat-content">
-          {loading ? <p>Loading...</p> : null}
-          {!loading && activeTab === 'chat' && (
+          {activeTab === 'chat' && loadingChat ? <p className="task-chat-status">Loading chat...</p> : null}
+          {activeTab === 'history' && loadingHistory ? <p className="task-chat-status">Loading history...</p> : null}
+
+          {!loadingChat && activeTab === 'chat' && comments.length === 0 && (
+            <p className="task-chat-status">No comments yet. Start the conversation.</p>
+          )}
+
+          {!loadingHistory && activeTab === 'history' && history.length === 0 && (
+            <p className="task-chat-status">No history entries yet.</p>
+          )}
+
+          {!loadingChat && activeTab === 'chat' && (
             <>
               {comments.map((item) => (
                 <div className="chat-item" key={item.id}>
@@ -124,9 +255,11 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
                   <p>{item.comment}</p>
                 </div>
               ))}
+              <div ref={commentsEndRef} />
             </>
           )}
-          {!loading && activeTab === 'history' && (
+
+          {!loadingHistory && activeTab === 'history' && (
             <>
               {history.map((h) => (
                 <div className="chat-item" key={h.id}>
@@ -149,8 +282,20 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
                 <option key={ct} value={ct}>{ct}</option>
               ))}
             </select>
-            <input value={commentText} onChange={(e) => setCommentText(e.target.value)} placeholder="Write a comment..." />
-            <button onClick={sendComment}>Send</button>
+            <input
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              placeholder="Write a comment..."
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void sendComment();
+                }
+              }}
+            />
+            <button onClick={sendComment} disabled={sending || !commentText.trim()}>
+              {sending ? 'Sending...' : 'Send'}
+            </button>
           </div>
         )}
 

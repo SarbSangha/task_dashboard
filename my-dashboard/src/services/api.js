@@ -371,6 +371,11 @@ export const taskAPI = {
     return response.data;
   },
 
+  getTaskAssets: async (filters = {}) => {
+    const response = await api.get('/api/tasks/assets', { params: filters });
+    return response.data;
+  },
+
   validateProjectId: async (projectId) => {
     const response = await api.get('/api/tasks/project-id/validate', {
       params: { project_id: projectId }
@@ -473,8 +478,8 @@ export const taskAPI = {
     return response.data;
   },
 
-  getComments: async (taskId) => {
-    const response = await api.get(`/api/tasks/${taskId}/comments`);
+  getComments: async (taskId, params = {}) => {
+    const response = await api.get(`/api/tasks/${taskId}/comments`, { params });
     return response.data;
   },
 

@@ -6,6 +6,21 @@ import TaskForm from './LinkArea';
 import { taskAPI, draftAPI, authAPI, fileAPI } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 
+const TASK_TAG_OPTIONS = [
+  'Audio',
+  'Video',
+  'Image',
+  'Script',
+  'Content',
+  'Animation',
+  'Banner',
+  'Graphic Design',
+  'Motion Graphics',
+  'Thumbnail',
+  'Social Media',
+  'Others',
+];
+
 const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   const { showConfirm } = useCustomDialogs();
   // Form state
@@ -995,9 +1010,9 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
                 value={formData.taskTag}
                 onChange={(e) => handleChange('taskTag', e.target.value)}
               >
-                <option>Audio</option>
-                <option>Video</option>
-                <option>Content</option>
+                {TASK_TAG_OPTIONS.map((tag) => (
+                  <option key={tag} value={tag}>{tag}</option>
+                ))}
               </select>
             </div>
           </div>
