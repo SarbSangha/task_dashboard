@@ -1,10 +1,18 @@
 // src/components/leftsidebar/compofleftsidebar/AssignTaskModal.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import './AssignTaskModal.css';
 import AttachmentBox from './Attachments';
 import TaskForm from './LinkArea';
 import { taskAPI, draftAPI, authAPI, fileAPI } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
+import { useAuth } from '../../../../context/AuthContext';
+import CacheStatusBanner from '../../../common/CacheStatusBanner';
+import {
+  buildTaskPanelCacheKey,
+  getTaskPanelCacheEntry,
+  invalidateTaskPanelCache,
+  setTaskPanelCache,
+} from '../../../../utils/taskPanelCache';
 
 const TASK_TAG_OPTIONS = [
   'Audio',
@@ -21,7 +29,11 @@ const TASK_TAG_OPTIONS = [
   'Others',
 ];
 
+const ASSIGN_REFERENCE_CACHE_TTL_MS = 5 * 60 * 1000;
+const ASSIGN_DEPARTMENT_USERS_CACHE_TTL_MS = 3 * 60 * 1000;
+
 const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
+  const { user } = useAuth();
   const { showConfirm } = useCustomDialogs();
   // Form state
   const [formData, setFormData] = useState({
@@ -56,12 +68,27 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   const [projectIdSuggestions, setProjectIdSuggestions] = useState([]);
   const [projectNameSuggestions, setProjectNameSuggestions] = useState([]);
   const [knownProjects, setKnownProjects] = useState({});
+  const [isReferenceRefreshing, setIsReferenceRefreshing] = useState(false);
+  const [cacheStatus, setCacheStatus] = useState({
+    showingCached: false,
+    cachedAt: 0,
+    liveUpdatedAt: 0,
+  });
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
   const [currentDraftId, setCurrentDraftId] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+
+  const cacheKeys = useMemo(() => {
+    if (!user?.id) return null;
+    return {
+      bootstrap: buildTaskPanelCacheKey(user.id, 'assign_task_bootstrap'),
+      departmentUsers: (departmentName) =>
+        buildTaskPanelCacheKey(user.id, `assign_task_department_${String(departmentName || '').toLowerCase()}`),
+    };
+  }, [user?.id]);
 
   // ✅ ADDED: showMessage helper function
   const showMessage = (message, type) => {
@@ -71,96 +98,132 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
 
   // NEW: Load current user and departments on mount
   useEffect(() => {
-    if (isOpen) {
-      loadCurrentUserDepartment();
-      loadDepartments();
-      loadIdSuggestions();
-    }
-  }, [isOpen]);
+    if (!isOpen || !cacheKeys) return;
 
-  const loadIdSuggestions = async () => {
-    try {
-      const response = await taskAPI.getAllTasks();
-      const rows = response?.tasks || [];
-      const projectMap = {};
-      const uniqueTaskIds = Array.from(
-        new Set(
-          rows
-            .map((row) => (row.taskNumber || '').trim())
-            .filter(Boolean)
-        )
-      ).slice(0, 300);
-      const uniqueProjectIds = Array.from(
-        new Set(
-          rows
-            .map((row) => (row.projectId || '').trim())
-            .filter(Boolean)
-        )
-      ).slice(0, 300);
-      rows.forEach((row) => {
-        const projectName = (row.projectName || '').trim();
-        if (!projectName) return;
-        const key = projectName.toLowerCase();
-        if (!projectMap[key]) {
-          projectMap[key] = {
-            projectName,
-            projectId: (row.projectId || '').trim(),
-            projectIdRaw: row.projectIdRaw || '',
-            projectIdHex: row.projectIdHex || '',
-          };
-          return;
-        }
-        if (!projectMap[key].projectId && row.projectId) {
-          projectMap[key] = {
-            ...projectMap[key],
-            projectId: (row.projectId || '').trim(),
-            projectIdRaw: row.projectIdRaw || '',
-            projectIdHex: row.projectIdHex || '',
-          };
-        }
-      });
-      const uniqueProjectNames = Object.values(projectMap)
-        .map((project) => project.projectName)
-        .sort((a, b) => a.localeCompare(b))
-        .slice(0, 300);
-
-      setTaskIdSuggestions(uniqueTaskIds);
-      setProjectIdSuggestions(uniqueProjectIds);
-      setProjectNameSuggestions(uniqueProjectNames);
-      setKnownProjects(projectMap);
-    } catch (error) {
-      console.warn('Unable to load ID suggestions:', error);
-      setTaskIdSuggestions([]);
-      setProjectIdSuggestions([]);
-      setProjectNameSuggestions([]);
-      setKnownProjects({});
-    }
-  };
-
-  // NEW: Load current user's department
-  const loadCurrentUserDepartment = async () => {
-    try {
-      const response = await authAPI.getCurrentUser();
-      if (response.user?.department) {
-        setFormData(prev => ({
+    const cachedBootstrapEntry = getTaskPanelCacheEntry(cacheKeys.bootstrap, ASSIGN_REFERENCE_CACHE_TTL_MS);
+    const cachedBootstrap = cachedBootstrapEntry?.value || null;
+    if (cachedBootstrap) {
+      if (!editingTask && cachedBootstrap.myDepartment) {
+        setFormData((prev) => ({
           ...prev,
-          myDepartment: response.user.department
+          myDepartment: prev.myDepartment || cachedBootstrap.myDepartment,
         }));
       }
-    } catch (error) {
-      console.error('Error loading current user:', error);
+      setDepartments(cachedBootstrap.departments || []);
+      setTaskIdSuggestions(cachedBootstrap.taskIdSuggestions || []);
+      setProjectIdSuggestions(cachedBootstrap.projectIdSuggestions || []);
+      setProjectNameSuggestions(cachedBootstrap.projectNameSuggestions || []);
+      setKnownProjects(cachedBootstrap.knownProjects || {});
+      setCacheStatus({
+        showingCached: true,
+        cachedAt: cachedBootstrapEntry?.cachedAt || 0,
+        liveUpdatedAt: 0,
+      });
     }
+
+    void loadBootstrapData({ silent: !!cachedBootstrap });
+  }, [cacheKeys, editingTask, isOpen]);
+
+  const fetchIdSuggestions = async () => {
+    const response = await taskAPI.getAllTasks();
+    const rows = response?.tasks || [];
+    const projectMap = {};
+    const uniqueTaskIds = Array.from(
+      new Set(
+        rows
+          .map((row) => (row.taskNumber || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 300);
+    const uniqueProjectIds = Array.from(
+      new Set(
+        rows
+          .map((row) => (row.projectId || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 300);
+    rows.forEach((row) => {
+      const projectName = (row.projectName || '').trim();
+      if (!projectName) return;
+      const key = projectName.toLowerCase();
+      if (!projectMap[key]) {
+        projectMap[key] = {
+          projectName,
+          projectId: (row.projectId || '').trim(),
+          projectIdRaw: row.projectIdRaw || '',
+          projectIdHex: row.projectIdHex || '',
+        };
+        return;
+      }
+      if (!projectMap[key].projectId && row.projectId) {
+        projectMap[key] = {
+          ...projectMap[key],
+          projectId: (row.projectId || '').trim(),
+          projectIdRaw: row.projectIdRaw || '',
+          projectIdHex: row.projectIdHex || '',
+        };
+      }
+    });
+    const uniqueProjectNames = Object.values(projectMap)
+      .map((project) => project.projectName)
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, 300);
+
+    return {
+      taskIdSuggestions: uniqueTaskIds,
+      projectIdSuggestions: uniqueProjectIds,
+      projectNameSuggestions: uniqueProjectNames,
+      knownProjects: projectMap,
+    };
   };
 
-  // NEW: Load all departments
-  const loadDepartments = async () => {
+  const loadBootstrapData = async ({ silent = false } = {}) => {
+    if (!cacheKeys) return;
+
+    if (silent) {
+      setIsReferenceRefreshing(true);
+    }
     try {
-      const response = await authAPI.getDepartments();
-      if (response.departments) {
-        setDepartments(response.departments);
+      const [meResponse, departmentsResponse, suggestions] = await Promise.all([
+        authAPI.getCurrentUser().catch(() => ({ user: user || null })),
+        authAPI.getDepartments().catch(() => ({ departments: [] })),
+        fetchIdSuggestions(),
+      ]);
+
+      const myDepartment = meResponse?.user?.department || '';
+      if (!editingTask && myDepartment) {
+        setFormData((prev) => ({
+          ...prev,
+          myDepartment,
+        }));
       }
+      setDepartments(departmentsResponse?.departments || []);
+      setTaskIdSuggestions(suggestions.taskIdSuggestions || []);
+      setProjectIdSuggestions(suggestions.projectIdSuggestions || []);
+      setProjectNameSuggestions(suggestions.projectNameSuggestions || []);
+      setKnownProjects(suggestions.knownProjects || {});
+      setTaskPanelCache(cacheKeys.bootstrap, {
+        myDepartment,
+        departments: departmentsResponse?.departments || [],
+        ...suggestions,
+      });
+      setCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
     } catch (error) {
-      console.error('Error loading departments:', error);
+      console.warn('Unable to load Assign Task bootstrap data:', error);
+      if (!silent) {
+        setTaskIdSuggestions([]);
+        setProjectIdSuggestions([]);
+        setProjectNameSuggestions([]);
+        setKnownProjects({});
+      }
+    } finally {
+      if (silent) {
+        setIsReferenceRefreshing(false);
+      }
     }
   };
 
@@ -171,15 +234,32 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       return;
     }
 
-    setLoadingUsers(true);
+    const cacheKey = cacheKeys?.departmentUsers(departmentName);
+    const cachedUsers = cacheKey
+      ? getTaskPanelCache(cacheKey, ASSIGN_DEPARTMENT_USERS_CACHE_TTL_MS)
+      : null;
+
+    if (cachedUsers?.users) {
+      setDepartmentUsers(cachedUsers.users);
+      setLoadingUsers(false);
+    } else {
+      setLoadingUsers(true);
+    }
     try {
       const response = await authAPI.getUsersByDepartment(departmentName);
       if (response.users) {
         setDepartmentUsers(response.users);
+        if (cacheKey) {
+          setTaskPanelCache(cacheKey, {
+            users: response.users,
+          });
+        }
       }
     } catch (error) {
       console.error('Error loading department users:', error);
-      showMessage('Failed to load users', 'error');
+      if (!cachedUsers?.users) {
+        showMessage('Failed to load users', 'error');
+      }
     } finally {
       setLoadingUsers(false);
     }
@@ -547,6 +627,17 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
         console.log('✅ Task created:', response);
         showMessage('Task created successfully!', 'success');
       }
+
+      if (cacheKeys?.bootstrap) {
+        invalidateTaskPanelCache(cacheKeys.bootstrap);
+      }
+      if (user?.id) {
+        invalidateTaskPanelCache(buildTaskPanelCacheKey(user.id, 'outbox'));
+        invalidateTaskPanelCache(buildTaskPanelCacheKey(user.id, 'tracking'));
+        invalidateTaskPanelCache(buildTaskPanelCacheKey(user.id, 'inbox'));
+        invalidateTaskPanelCache(buildTaskPanelCacheKey(user.id, 'workspace_team_directory'));
+        invalidateTaskPanelCache(buildTaskPanelCacheKey(user.id, 'workspace_company_directory'));
+      }
       
       // Clear draft from localStorage and API
       localStorage.removeItem('taskDraft');
@@ -753,6 +844,16 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
         {!isMinimized && (
         <div className="assign-modal-body">
           <h2 className="assign-title">{editingTask ? 'EDIT TASK' : 'CREATE NEW TASK'}</h2>
+          <CacheStatusBanner
+            showingCached={cacheStatus.showingCached}
+            isRefreshing={isReferenceRefreshing}
+            cachedAt={cacheStatus.cachedAt}
+            liveUpdatedAt={cacheStatus.liveUpdatedAt}
+            refreshingLabel="Refreshing latest task references..."
+            liveLabel="Task references are up to date"
+            cachedLabel="Showing cached task references"
+            className="assign-cache-status"
+          />
 
           {/* Project & Task Name */}
           <div className="assign-row">

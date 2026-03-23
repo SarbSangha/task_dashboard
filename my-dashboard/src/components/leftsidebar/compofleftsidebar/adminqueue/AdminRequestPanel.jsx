@@ -1,11 +1,28 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { authAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
+import { useAuth } from '../../../../context/AuthContext';
+import CacheStatusBanner from '../../../common/CacheStatusBanner';
+import {
+  buildTaskPanelCacheKey,
+  getTaskPanelCacheEntry,
+  invalidateTaskPanelCache,
+  setTaskPanelCache,
+} from '../../../../utils/taskPanelCache';
 import './AdminRequestPanel.css';
 
+const ADMIN_QUEUE_CACHE_TTL_MS = 90 * 1000;
+
 const AdminRequestPanel = ({ isOpen, onClose }) => {
+  const { user } = useAuth();
   const { showConfirm, showPrompt } = useCustomDialogs();
   const [loading, setLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [cacheStatus, setCacheStatus] = useState({
+    showingCached: false,
+    cachedAt: 0,
+    liveUpdatedAt: 0,
+  });
   const [requests, setRequests] = useState([]);
   const [users, setUsers] = useState([]);
   const [activeType, setActiveType] = useState('all');
@@ -15,6 +32,10 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const refreshTimerRef = React.useRef(null);
+  const cacheKey = useMemo(
+    () => (user?.id ? buildTaskPanelCacheKey(user.id, 'admin_queue') : null),
+    [user?.id]
+  );
 
   const formatDateTime = (value) => {
     if (!value) return 'N/A';
@@ -23,30 +44,59 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
     return d.toLocaleString();
   };
 
-  const loadData = async () => {
-    setLoading(true);
+  const loadData = async ({ silent = false } = {}) => {
+    if (!cacheKey) return;
+    if (silent) setIsRefreshing(true);
+    else setLoading(true);
     try {
       const [reqRes, usersRes] = await Promise.all([
         authAPI.getAdminPendingRequests(),
         authAPI.getAdminAllUsers(),
       ]);
-      setRequests(reqRes?.requests || []);
-      setUsers(usersRes?.users || []);
+      const nextRequests = reqRes?.requests || [];
+      const nextUsers = usersRes?.users || [];
+      setRequests(nextRequests);
+      setUsers(nextUsers);
+      setTaskPanelCache(cacheKey, {
+        requests: nextRequests,
+        users: nextUsers,
+      });
+      setCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
       setMessage('');
     } catch (error) {
       setMessage(error?.response?.data?.detail || 'Failed to load admin data');
     } finally {
-      setLoading(false);
+      if (silent) setIsRefreshing(false);
+      else setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (isOpen) {
-      setIsMinimized(false);
-      setIsMaximized(false);
-      loadData();
+    if (!isOpen || !cacheKey) return;
+    setIsMinimized(false);
+    setIsMaximized(false);
+    const cachedEntry = getTaskPanelCacheEntry(cacheKey, ADMIN_QUEUE_CACHE_TTL_MS);
+    const cached = cachedEntry?.value || null;
+    const hasCachedData = Array.isArray(cached?.requests) || Array.isArray(cached?.users);
+    if (Array.isArray(cached?.requests)) {
+      setRequests(cached.requests);
     }
-  }, [isOpen]);
+    if (Array.isArray(cached?.users)) {
+      setUsers(cached.users);
+    }
+    if (hasCachedData) {
+      setCacheStatus({
+        showingCached: true,
+        cachedAt: cachedEntry?.cachedAt || 0,
+        liveUpdatedAt: 0,
+      });
+    }
+    void loadData({ silent: hasCachedData });
+  }, [cacheKey, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -55,7 +105,7 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
       if (refreshTimerRef.current) return;
       refreshTimerRef.current = window.setTimeout(() => {
         refreshTimerRef.current = null;
-        loadData();
+        loadData({ silent: true });
       }, 250);
     };
 
@@ -72,7 +122,7 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
 
     const interval = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      loadData();
+      loadData({ silent: true });
     }, 180000);
 
     const onFocus = () => scheduleRefresh();
@@ -87,7 +137,7 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
         refreshTimerRef.current = null;
       }
     };
-  }, [isOpen]);
+  }, [cacheKey, isOpen]);
 
   if (!isOpen) return null;
 
@@ -132,7 +182,10 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
     }
     try {
       await authAPI.reviewAdminRequest(requestId, approve, notes);
-      await loadData();
+      if (cacheKey) {
+        invalidateTaskPanelCache(cacheKey);
+      }
+      await loadData({ silent: true });
     } catch (error) {
       setMessage(error?.response?.data?.detail || 'Failed to review request');
     }
@@ -149,7 +202,10 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
       } else {
         await authAPI.activateUserAccess(userId);
       }
-      await loadData();
+      if (cacheKey) {
+        invalidateTaskPanelCache(cacheKey);
+      }
+      await loadData({ silent: true });
     } catch (error) {
       setMessage(error?.response?.data?.detail || 'Failed to update user access');
     }
@@ -170,7 +226,10 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
       await authAPI.deleteUserAccount(user.id, reason);
       setMenuUserId(null);
       setMessage(`Account deleted: ${user.name}`);
-      await loadData();
+      if (cacheKey) {
+        invalidateTaskPanelCache(cacheKey);
+      }
+      await loadData({ silent: true });
     } catch (error) {
       setMessage(error?.response?.data?.detail || 'Failed to delete account');
     }
@@ -233,6 +292,15 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
 
         {!isMinimized && (
         <div className="admin-queue-content">
+          <CacheStatusBanner
+            showingCached={cacheStatus.showingCached}
+            isRefreshing={isRefreshing}
+            cachedAt={cacheStatus.cachedAt}
+            liveUpdatedAt={cacheStatus.liveUpdatedAt}
+            refreshingLabel="Refreshing latest admin queue..."
+            liveLabel="Admin queue is up to date"
+            cachedLabel="Showing cached admin queue"
+          />
           {loading && <p>Loading...</p>}
           {message && <p className="admin-queue-msg">{message}</p>}
 

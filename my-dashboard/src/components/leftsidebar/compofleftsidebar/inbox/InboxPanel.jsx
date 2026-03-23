@@ -6,13 +6,31 @@ import TaskChatPanel from '../messagesystem/TaskChatPanel';
 import { fileAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import { useAuth } from '../../../../context/AuthContext';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
+import CacheStatusBanner from '../../../common/CacheStatusBanner';
+import {
+  buildTaskPanelCacheKey,
+  getTaskPanelCacheEntry,
+  invalidateTaskPanelCache,
+  setTaskPanelCache,
+} from '../../../../utils/taskPanelCache';
 import './InboxPanel.css';
+
+const INBOX_CACHE_TTL_MS = 90 * 1000;
+
+const getUnreadCountFromTasks = (rows = []) =>
+  rows.filter((task) => !(task?.isRead ?? task?.is_read ?? false)).length;
 
 const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
   const { showAlert, showPrompt } = useCustomDialogs();
   const { user } = useAuth();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [cacheStatus, setCacheStatus] = useState({
+    showingCached: false,
+    cachedAt: 0,
+    liveUpdatedAt: 0,
+  });
   const [filter, setFilter] = useState('all');
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
@@ -42,12 +60,25 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
     error: '',
   });
   const refreshTimerRef = React.useRef(null);
+  const cacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'inbox') : null;
+  const unreadCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'inbox_unread_count') : null;
 
   useEffect(() => {
-    if (isOpen) {
-      fetchInboxTasks();
+    if (isOpen && user?.id) {
+      const cachedInboxEntry = cacheKey ? getTaskPanelCacheEntry(cacheKey, INBOX_CACHE_TTL_MS) : null;
+      const cachedInbox = cachedInboxEntry?.value || null;
+      const hasCachedTasks = Array.isArray(cachedInbox?.tasks);
+      if (hasCachedTasks) {
+        setTasks(cachedInbox.tasks);
+        setCacheStatus({
+          showingCached: true,
+          cachedAt: cachedInboxEntry?.cachedAt || 0,
+          liveUpdatedAt: 0,
+        });
+      }
+      fetchInboxTasks({ silent: hasCachedTasks });
     }
-  }, [isOpen]);
+  }, [cacheKey, isOpen, user?.id]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -56,7 +87,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
       if (refreshTimerRef.current) return;
       refreshTimerRef.current = window.setTimeout(() => {
         refreshTimerRef.current = null;
-        fetchInboxTasks();
+        fetchInboxTasks({ silent: true });
       }, 250);
     };
 
@@ -87,7 +118,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         refreshTimerRef.current = null;
       }
     };
-  }, [isOpen]);
+  }, [isOpen, user?.id]);
 
   useEffect(() => {
     if (isOpen) {
@@ -96,15 +127,47 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
     }
   }, [isOpen]);
 
-  const fetchInboxTasks = async () => {
-    setLoading(true);
+  const invalidateInboxCache = () => {
+    if (cacheKey) {
+      invalidateTaskPanelCache(cacheKey);
+    }
+    if (unreadCacheKey) {
+      invalidateTaskPanelCache(unreadCacheKey);
+    }
+  };
+
+  const fetchInboxTasks = async ({ silent = false } = {}) => {
+    if (!user?.id || !cacheKey) return;
+    if (silent) {
+      setIsRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     try {
       const data = await taskAPI.getInbox();
-      if (data.success) setTasks(data.data || []);
+      if (data.success) {
+        const nextTasks = data.data || [];
+        setTasks(nextTasks);
+        setTaskPanelCache(cacheKey, { tasks: nextTasks });
+        if (unreadCacheKey) {
+          setTaskPanelCache(unreadCacheKey, {
+            unreadCount: getUnreadCountFromTasks(nextTasks),
+          });
+        }
+        setCacheStatus((prev) => ({
+          showingCached: false,
+          cachedAt: prev.cachedAt,
+          liveUpdatedAt: Date.now(),
+        }));
+      }
     } catch (error) {
       console.error('Error fetching inbox:', error);
     } finally {
-      setLoading(false);
+      if (silent) {
+        setIsRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   };
 
@@ -254,7 +317,8 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
       });
 
       closeSubmitModal();
-      await fetchInboxTasks();
+      invalidateInboxCache();
+      await fetchInboxTasks({ silent: true });
     } catch (error) {
       setSubmitModal((prev) => ({
         ...prev,
@@ -274,7 +338,8 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         comments: forwardModal.comments
       });
       closeForwardModal();
-      await fetchInboxTasks();
+      invalidateInboxCache();
+      await fetchInboxTasks({ silent: true });
     } catch (error) {
       setForwardModal((prev) => ({
         ...prev,
@@ -302,7 +367,8 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
       } else if (action === 'start') {
         try {
           await taskAPI.startTask(task.id);
-          await fetchInboxTasks();
+          invalidateInboxCache();
+          await fetchInboxTasks({ silent: true });
         } catch (error) {
           console.warn('Start task API failed:', error);
         }
@@ -350,7 +416,8 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         if (!result) return;
         await taskAPI.editResult(task.id, result);
       }
-      await fetchInboxTasks();
+      invalidateInboxCache();
+      await fetchInboxTasks({ silent: true });
     } catch (error) {
       await showAlert(error?.response?.data?.detail || 'Action failed', { title: 'Action Failed' });
     }
@@ -464,6 +531,15 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         {/* Task List */}
         {!isMinimized && (
         <div className="inbox-panel-content">
+          <CacheStatusBanner
+            showingCached={cacheStatus.showingCached}
+            isRefreshing={isRefreshing}
+            cachedAt={cacheStatus.cachedAt}
+            liveUpdatedAt={cacheStatus.liveUpdatedAt}
+            refreshingLabel="Refreshing latest inbox..."
+            liveLabel="Inbox is up to date"
+            cachedLabel="Showing cached inbox"
+          />
           {loading ? (
             <div className="inbox-loading">
               <div className="spinner"></div>

@@ -1,0 +1,60 @@
+.cache-status-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 10px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cache-status-banner.cached {
+  background: rgba(59, 130, 246, 0.08);
+  color: rgba(219, 234, 254, 0.96);
+}
+
+.cache-status-banner.live {
+  background: rgba(16, 185, 129, 0.08);
+  color: rgba(209, 250, 229, 0.96);
+}
+
+.cache-status-copy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cache-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.22);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.cache-status-text,
+.cache-status-side {
+  opacity: 0.96;
+}
+
+.cache-status-side {
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .cache-status-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .cache-status-side {
+    white-space: normal;
+  }
+}

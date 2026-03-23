@@ -6,12 +6,29 @@ import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import { taskAPI, draftAPI } from '../../../../services/api';
 import { formatDateIndia, formatTimeIndia } from '../../../../utils/dateTime';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
+import { useAuth } from '../../../../context/AuthContext';
+import CacheStatusBanner from '../../../common/CacheStatusBanner';
+import {
+  buildTaskPanelCacheKey,
+  getTaskPanelCacheEntry,
+  invalidateTaskPanelCache,
+  setTaskPanelCache,
+} from '../../../../utils/taskPanelCache';
+
+const OUTBOX_CACHE_TTL_MS = 90 * 1000;
 
 const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
+  const { user } = useAuth();
   const [tasks, setTasks] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [cacheStatus, setCacheStatus] = useState({
+    showingCached: false,
+    cachedAt: 0,
+    liveUpdatedAt: 0,
+  });
   const [error, setError] = useState(null);
   const [expandedTaskId, setExpandedTaskId] = useState(null);
   const [activeTab, setActiveTab] = useState('all-dispatched');
@@ -22,20 +39,36 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const fetchInFlightRef = useRef(false);
+  const cacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'outbox') : null;
 
   // Fetch data when modal opens
   useEffect(() => {
-    if (!isOpen) return undefined;
+    if (!isOpen || !user?.id) return undefined;
 
-    fetchData(false, { includeDrafts: activeTab === 'drafts' });
+    const cachedOutboxEntry = cacheKey ? getTaskPanelCacheEntry(cacheKey, OUTBOX_CACHE_TTL_MS) : null;
+    const cachedOutbox = cachedOutboxEntry?.value || null;
+    const hasCachedOutbox = Boolean(cachedOutbox);
+    if (cachedOutbox) {
+      setTasks(cachedOutbox.tasks || []);
+      setDrafts(cachedOutbox.drafts || []);
+      setCurrentUser(cachedOutbox.currentUser || null);
+      setError(null);
+      setCacheStatus({
+        showingCached: true,
+        cachedAt: cachedOutboxEntry?.cachedAt || 0,
+        liveUpdatedAt: 0,
+      });
+    }
+
+    fetchData({ silent: hasCachedOutbox, includeDrafts: activeTab === 'drafts' });
     // Auto-refresh every 30 seconds while modal is open (reduced API load)
     const interval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      fetchData(true, { includeDrafts: activeTab === 'drafts' });
+      fetchData({ silent: true, includeDrafts: activeTab === 'drafts' });
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [isOpen, activeTab]);
+  }, [activeTab, cacheKey, isOpen, user?.id]);
 
   useEffect(() => {
     if (isOpen) {
@@ -44,18 +77,33 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
     }
   }, [isOpen]);
 
-  const fetchData = async (silent = false, { includeDrafts = false } = {}) => {
+  const invalidateOutboxCache = () => {
+    if (cacheKey) {
+      invalidateTaskPanelCache(cacheKey);
+    }
+  };
+
+  const fetchData = async ({ silent = false, includeDrafts = false } = {}) => {
+    if (!user?.id || !cacheKey) return;
     if (fetchInFlightRef.current) return;
     fetchInFlightRef.current = true;
     try {
-      if (!silent) setLoading(true);
+      if (silent) {
+        setIsRefreshing(true);
+      } else {
+        setLoading(true);
+      }
       
       const tasksData = await taskAPI.getOutbox();
+      let nextTasks = tasks;
+      let nextCurrentUser = currentUser;
       
       if (tasksData.success) {
-        setTasks(tasksData.data || []);
+        nextTasks = tasksData.data || [];
+        setTasks(nextTasks);
         // Store current user info if available
         if (tasksData.user) {
+          nextCurrentUser = tasksData.user;
           setCurrentUser(tasksData.user);
         }
         console.log(`✅ Loaded ${tasksData.count} tasks for user: ${tasksData.user?.email}`);
@@ -64,29 +112,46 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
       }
 
       // Fetch drafts only when drafts tab is active or when explicitly requested
+      let nextDrafts = drafts;
       if (includeDrafts) {
         try {
           const draftsData = await draftAPI.getDrafts();
           if (draftsData.success) {
-            setDrafts(draftsData.data || []);
+            nextDrafts = draftsData.data || [];
+            setDrafts(nextDrafts);
           }
         } catch (err) {
           console.warn('Drafts not available:', err);
+          nextDrafts = [];
           setDrafts([]);
         }
       }
       
+      setTaskPanelCache(cacheKey, {
+        tasks: nextTasks,
+        drafts: nextDrafts,
+        currentUser: nextCurrentUser,
+      });
+      setCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
       setError(null);
     } catch (err) {
       console.error('Error fetching data:', err);
       if (!silent) setError('Failed to load tasks. Please check your connection.');
     } finally {
-      if (!silent) setLoading(false);
+      if (silent) {
+        setIsRefreshing(false);
+      } else {
+        setLoading(false);
+      }
       fetchInFlightRef.current = false;
     }
   };
 
-  const handleRefresh = () => fetchData(false, { includeDrafts: activeTab === 'drafts' });
+  const handleRefresh = () => fetchData({ silent: false, includeDrafts: activeTab === 'drafts' });
 
   const handleCardClick = (taskId) => {
     setExpandedTaskId(expandedTaskId === taskId ? null : taskId);
@@ -110,7 +175,8 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
       })) ?? '';
       try {
         await taskAPI.revokeTask(task.id, comments.trim());
-        await fetchData(true, { includeDrafts: activeTab === 'drafts' });
+        invalidateOutboxCache();
+        await fetchData({ silent: true, includeDrafts: activeTab === 'drafts' });
       } catch (error) {
         await showAlert(error?.response?.data?.detail || 'Failed to revoke task', { title: 'Revoke Failed' });
       }
@@ -307,6 +373,15 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
         {/* Content */}
         {!isMinimized && (
         <div className="outbox-content">
+          <CacheStatusBanner
+            showingCached={cacheStatus.showingCached}
+            isRefreshing={isRefreshing}
+            cachedAt={cacheStatus.cachedAt}
+            liveUpdatedAt={cacheStatus.liveUpdatedAt}
+            refreshingLabel="Refreshing latest outbox..."
+            liveLabel="Outbox is up to date"
+            cachedLabel="Showing cached outbox"
+          />
           {loading && tasks.length === 0 ? (
             <div className="outbox-loading">
               <div className="spinner"></div>

@@ -277,6 +277,14 @@
   background: #f8f9fa;
 }
 
+.outbox-refresh-indicator {
+  margin-bottom: 12px;
+  color: #9bb2d8;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 /* Custom Scrollbar */
 .outbox-content::-webkit-scrollbar {
   width: 10px;

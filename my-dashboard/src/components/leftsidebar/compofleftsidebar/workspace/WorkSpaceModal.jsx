@@ -3,8 +3,454 @@ import './WorkSpaceModal.css';
 import Tools from './Tools';
 import { activityAPI, authAPI, fileAPI, groupAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
+import { useAuth } from '../../../../context/AuthContext';
+import CacheStatusBanner from '../../../common/CacheStatusBanner';
+import {
+  buildTaskPanelCacheKey,
+  getTaskPanelCacheEntry,
+  getTaskPanelCache,
+  setTaskPanelCache,
+} from '../../../../utils/taskPanelCache';
 
 const FILES_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const WORKSPACE_TASK_CACHE_TTL_MS = 90 * 1000;
+const WORKSPACE_REFERENCE_CACHE_TTL_MS = 5 * 60 * 1000;
+const WORKSPACE_GROUPS_CACHE_TTL_MS = 2 * 60 * 1000;
+const WORKSPACE_GROUP_MESSAGES_CACHE_TTL_MS = 90 * 1000;
+
+function mergeWorkspaceTasks(inboxTasks = [], outboxTasks = []) {
+  return Array.from(
+    new Map([...(inboxTasks || []), ...(outboxTasks || [])].map((task) => [task.id, task])).values()
+  ).filter((task) => task.status !== 'draft');
+}
+
+function useWorkspaceTaskDataset() {
+  const { user } = useAuth();
+  const [tasks, setTasks] = useState([]);
+  const [currentUser, setCurrentUser] = useState(user || null);
+  const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState('');
+  const [cacheStatus, setCacheStatus] = useState({
+    showingCached: false,
+    cachedAt: 0,
+    liveUpdatedAt: 0,
+  });
+
+  const cacheKeys = useMemo(() => {
+    if (!user?.id) return null;
+    return {
+      inbox: buildTaskPanelCacheKey(user.id, 'inbox'),
+      outbox: buildTaskPanelCacheKey(user.id, 'outbox'),
+    };
+  }, [user?.id]);
+
+  const loadTasks = async ({ silent = false } = {}) => {
+    if (!cacheKeys) return;
+
+    if (silent) {
+      setIsRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    setError('');
+
+    try {
+      const [inboxRes, outboxRes, meRes] = await Promise.all([
+        taskAPI.getInbox().catch(() => ({ data: [] })),
+        taskAPI.getOutbox().catch(() => ({ data: [] })),
+        authAPI.getCurrentUser().catch(() => ({ user: user || null })),
+      ]);
+
+      const inboxTasks = Array.isArray(inboxRes?.data) ? inboxRes.data : [];
+      const outboxTasks = Array.isArray(outboxRes?.data) ? outboxRes.data : [];
+      const mergedTasks = mergeWorkspaceTasks(inboxTasks, outboxTasks);
+      const me = meRes?.user || user || null;
+
+      setTasks(mergedTasks);
+      setCurrentUser(me);
+      setTaskPanelCache(cacheKeys.inbox, { tasks: inboxTasks });
+      setTaskPanelCache(cacheKeys.outbox, { tasks: outboxTasks });
+      setCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
+    } catch (loadError) {
+      console.error('Failed to load workspace task dataset:', loadError);
+      setError('Could not refresh workspace data right now.');
+      if (!silent) {
+        setTasks([]);
+        setCurrentUser(user || null);
+      }
+    } finally {
+      if (silent) {
+        setIsRefreshing(false);
+      } else {
+        setLoading(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!cacheKeys) return;
+
+    const cachedInboxEntry = getTaskPanelCacheEntry(cacheKeys.inbox, WORKSPACE_TASK_CACHE_TTL_MS);
+    const cachedOutboxEntry = getTaskPanelCacheEntry(cacheKeys.outbox, WORKSPACE_TASK_CACHE_TTL_MS);
+    const cachedTasks = mergeWorkspaceTasks(cachedInboxEntry?.value?.tasks || [], cachedOutboxEntry?.value?.tasks || []);
+
+    if (cachedTasks.length > 0) {
+      setTasks(cachedTasks);
+      setCurrentUser(user || null);
+      setLoading(false);
+      setCacheStatus({
+        showingCached: true,
+        cachedAt: cachedInboxEntry?.cachedAt || cachedOutboxEntry?.cachedAt || 0,
+        liveUpdatedAt: 0,
+      });
+    }
+
+    void loadTasks({ silent: cachedTasks.length > 0 });
+  }, [cacheKeys]);
+
+  return {
+    tasks,
+    currentUser,
+    loading,
+    isRefreshing,
+    error,
+    cacheStatus,
+    refresh: ({ silent = true } = {}) => loadTasks({ silent }),
+  };
+}
+
+function useWorkspaceTeamDirectory() {
+  const { user } = useAuth();
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [myDepartment, setMyDepartment] = useState('');
+  const [isHodUser, setIsHodUser] = useState(false);
+  const [activityByUser, setActivityByUser] = useState({});
+  const [cacheStatus, setCacheStatus] = useState({
+    showingCached: false,
+    cachedAt: 0,
+    liveUpdatedAt: 0,
+  });
+
+  const cacheKey = useMemo(
+    () => (user?.id ? buildTaskPanelCacheKey(user.id, 'workspace_team_directory') : null),
+    [user?.id]
+  );
+
+  const loadTeamDirectory = async ({ silent = false } = {}) => {
+    if (!cacheKey) return;
+
+    if (silent) setIsRefreshing(true);
+    else setLoading(true);
+
+    try {
+      const me = await authAPI.getCurrentUser().catch(() => ({ user: user || null }));
+      const myDept = me?.user?.department || '';
+      const position = (me?.user?.position || '').toLowerCase();
+      const roles = (me?.user?.roles || []).map((r) => String(r).toLowerCase());
+      const hod = position.includes('hod') || roles.includes('hod');
+
+      let users = [];
+      if (myDept) {
+        const deptUsersResponse = await authAPI.getUsersByDepartment(myDept).catch(() => ({ users: [] }));
+        users = (deptUsersResponse?.users || []).map((u) => ({
+          id: u.id,
+          name: u.name || `User ${u.id}`,
+          department: u.department || myDept,
+          position: u.position || 'Member',
+        }));
+      }
+
+      let nextActivityByUser = {};
+      if (hod) {
+        try {
+          const activityResponse = await activityAPI.department();
+          const activityRows = activityResponse?.data || [];
+          activityRows.forEach((row) => {
+            nextActivityByUser[row.userId] = row;
+          });
+        } catch (activityError) {
+          console.warn('Activity data unavailable for team:', activityError);
+        }
+      }
+
+      setMembers(users);
+      setMyDepartment(myDept);
+      setIsHodUser(hod);
+      setActivityByUser(nextActivityByUser);
+      setTaskPanelCache(cacheKey, {
+        members: users,
+        myDepartment: myDept,
+        isHodUser: hod,
+        activityByUser: nextActivityByUser,
+      });
+      setCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
+    } catch (error) {
+      console.error('Failed to load team data:', error);
+      if (!silent) {
+        setMembers([]);
+        setMyDepartment('');
+        setIsHodUser(false);
+        setActivityByUser({});
+      }
+    } finally {
+      if (silent) setIsRefreshing(false);
+      else setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!cacheKey) return;
+
+    const cachedEntry = getTaskPanelCacheEntry(cacheKey, WORKSPACE_REFERENCE_CACHE_TTL_MS);
+    const cached = cachedEntry?.value || null;
+    if (cached) {
+      setMembers(cached.members || []);
+      setMyDepartment(cached.myDepartment || '');
+      setIsHodUser(!!cached.isHodUser);
+      setActivityByUser(cached.activityByUser || {});
+      setLoading(false);
+      setCacheStatus({
+        showingCached: true,
+        cachedAt: cachedEntry?.cachedAt || 0,
+        liveUpdatedAt: 0,
+      });
+    }
+
+    void loadTeamDirectory({ silent: !!cached });
+  }, [cacheKey]);
+
+  return {
+    members,
+    loading,
+    isRefreshing,
+    myDepartment,
+    isHodUser,
+    activityByUser,
+    cacheStatus,
+  };
+}
+
+function useWorkspaceCompanyDirectory() {
+  const { user } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [departments, setDepartments] = useState([]);
+  const [selectedDepartment, setSelectedDepartment] = useState('');
+  const [members, setMembers] = useState([]);
+  const [membersByDepartment, setMembersByDepartment] = useState({});
+  const [activityByUser, setActivityByUser] = useState({});
+  const [cacheStatus, setCacheStatus] = useState({
+    showingCached: false,
+    cachedAt: 0,
+    liveUpdatedAt: 0,
+  });
+
+  const cacheKey = useMemo(
+    () => (user?.id ? buildTaskPanelCacheKey(user.id, 'workspace_company_directory') : null),
+    [user?.id]
+  );
+
+  const persistCompanyCache = (nextState) => {
+    if (!cacheKey) return;
+    setTaskPanelCache(cacheKey, nextState);
+  };
+
+  const loadDepartmentMembers = async (departmentName, { cacheSnapshot = null } = {}) => {
+    if (!departmentName) {
+      setMembers([]);
+      return [];
+    }
+
+    if (cacheSnapshot?.membersByDepartment?.[departmentName]) {
+      setMembers(cacheSnapshot.membersByDepartment[departmentName]);
+    }
+
+    const response = await authAPI.getUsersByDepartment(departmentName).catch(() => ({ users: [] }));
+    const departmentMembers = response?.users || [];
+    setMembers(departmentMembers);
+    setMembersByDepartment((prev) => ({
+      ...prev,
+      [departmentName]: departmentMembers,
+    }));
+    return departmentMembers;
+  };
+
+  const loadCompanyDirectory = async ({ silent = false } = {}) => {
+    if (!cacheKey) return;
+
+    if (silent) setIsRefreshing(true);
+    else setLoading(true);
+
+    try {
+      const me = await authAPI.getCurrentUser().catch(() => ({ user: user || null }));
+      const meRoles = (me?.user?.roles || []).map((r) => String(r).toLowerCase());
+      const mePosition = (me?.user?.position || '').toLowerCase();
+      const adminAccess = me?.user?.isAdmin || meRoles.includes('admin') || mePosition === 'admin';
+      setIsAdmin(!!adminAccess);
+
+      if (!adminAccess) {
+        setDepartments([]);
+        setSelectedDepartment('');
+        setMembers([]);
+        setMembersByDepartment({});
+        setActivityByUser({});
+        persistCompanyCache({
+          isAdmin: false,
+          departments: [],
+          selectedDepartment: '',
+          members: [],
+          membersByDepartment: {},
+          activityByUser: {},
+        });
+        return;
+      }
+
+      const [deptRes, activityRes] = await Promise.all([
+        authAPI.getDepartments().catch(() => ({ departments: [] })),
+        activityAPI.allUsers().catch(() => ({ data: [] })),
+      ]);
+
+      const deptList = deptRes?.departments || [];
+      const activityMap = {};
+      (activityRes?.data || []).forEach((row) => {
+        activityMap[row.userId] = row;
+      });
+
+      setDepartments(deptList);
+      setActivityByUser(activityMap);
+
+      const nextSelectedDepartment = selectedDepartment && deptList.includes(selectedDepartment)
+        ? selectedDepartment
+        : (deptList[0] || '');
+
+      setSelectedDepartment(nextSelectedDepartment);
+      const cachedSnapshot = getTaskPanelCache(cacheKey, WORKSPACE_REFERENCE_CACHE_TTL_MS);
+      const departmentMembers = await loadDepartmentMembers(nextSelectedDepartment, { cacheSnapshot: cachedSnapshot });
+      const mergedMembersByDepartment = {
+        ...(cachedSnapshot?.membersByDepartment || {}),
+        ...(nextSelectedDepartment ? { [nextSelectedDepartment]: departmentMembers } : {}),
+      };
+
+      persistCompanyCache({
+        isAdmin: true,
+        departments: deptList,
+        selectedDepartment: nextSelectedDepartment,
+        members: departmentMembers,
+        membersByDepartment: mergedMembersByDepartment,
+        activityByUser: activityMap,
+      });
+      setCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
+    } catch (error) {
+      console.error('Failed to load company view data:', error);
+      if (!silent) {
+        setDepartments([]);
+        setSelectedDepartment('');
+        setMembers([]);
+        setMembersByDepartment({});
+        setActivityByUser({});
+      }
+    } finally {
+      if (silent) setIsRefreshing(false);
+      else setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!cacheKey) return;
+
+    const cachedEntry = getTaskPanelCacheEntry(cacheKey, WORKSPACE_REFERENCE_CACHE_TTL_MS);
+    const cached = cachedEntry?.value || null;
+    if (cached) {
+      setIsAdmin(!!cached.isAdmin);
+      setDepartments(cached.departments || []);
+      setSelectedDepartment(cached.selectedDepartment || '');
+      setMembers(cached.members || []);
+      setMembersByDepartment(cached.membersByDepartment || {});
+      setActivityByUser(cached.activityByUser || {});
+      setLoading(false);
+      setCacheStatus({
+        showingCached: true,
+        cachedAt: cachedEntry?.cachedAt || 0,
+        liveUpdatedAt: 0,
+      });
+    }
+
+    void loadCompanyDirectory({ silent: !!cached });
+  }, [cacheKey]);
+
+  const selectDepartment = async (departmentName) => {
+    setSelectedDepartment(departmentName);
+    const cachedSnapshot = getTaskPanelCache(cacheKey, WORKSPACE_REFERENCE_CACHE_TTL_MS);
+    if (cachedSnapshot?.membersByDepartment?.[departmentName]) {
+      setMembers(cachedSnapshot.membersByDepartment[departmentName]);
+      setIsRefreshing(true);
+      try {
+        const departmentMembers = await loadDepartmentMembers(departmentName, { cacheSnapshot: cachedSnapshot });
+        persistCompanyCache({
+          ...(cachedSnapshot || {}),
+          isAdmin,
+          departments,
+          selectedDepartment: departmentName,
+          members: departmentMembers,
+          membersByDepartment: {
+            ...(cachedSnapshot?.membersByDepartment || {}),
+            [departmentName]: departmentMembers,
+          },
+          activityByUser,
+        });
+      } finally {
+        setIsRefreshing(false);
+      }
+      return;
+    }
+    setLoading(true);
+    try {
+      const departmentMembers = await loadDepartmentMembers(departmentName, { cacheSnapshot: cachedSnapshot });
+      persistCompanyCache({
+        ...(cachedSnapshot || {}),
+        isAdmin,
+        departments,
+        selectedDepartment: departmentName,
+        members: departmentMembers,
+        membersByDepartment: {
+          ...(cachedSnapshot?.membersByDepartment || {}),
+          [departmentName]: departmentMembers,
+        },
+        activityByUser,
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return {
+    loading,
+    isRefreshing,
+    isAdmin,
+    departments,
+    selectedDepartment,
+    members,
+    activityByUser,
+    cacheStatus,
+    selectDepartment,
+  };
+}
 
 export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview' }) {
   const [activeTab, setActiveTab] = useState('overview');
@@ -173,14 +619,8 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
 
 // Overview Tab Content
 function OverviewContent() {
-  const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({
-    activeTasks: 0,
-    completedTasks: 0,
-    projects: 0,
-    teamMembers: 0,
-  });
-  const [recentActivity, setRecentActivity] = useState([]);
+  const { tasks, currentUser, loading, isRefreshing, error, cacheStatus } = useWorkspaceTaskDataset();
+  const [teamMembers, setTeamMembers] = useState(0);
 
   const formatRelativeTime = (value) => {
     if (!value) return 'just now';
@@ -197,108 +637,90 @@ function OverviewContent() {
 
   useEffect(() => {
     let mounted = true;
-    const loadOverview = async () => {
-      setLoading(true);
+    const loadTeamMembers = async () => {
+      const myDept = currentUser?.department || '';
+      if (!myDept) {
+        if (mounted) setTeamMembers(0);
+        return;
+      }
       try {
-        const [inboxRes, outboxRes, meRes] = await Promise.all([
-          taskAPI.getInbox().catch(() => ({ data: [] })),
-          taskAPI.getOutbox().catch(() => ({ data: [] })),
-          authAPI.getCurrentUser().catch(() => ({ user: null })),
-        ]);
-        const tasks = Array.from(
-          new Map(
-            [...(inboxRes?.data || []), ...(outboxRes?.data || [])].map((task) => [task.id, task])
-          ).values()
-        );
-        const me = meRes?.user || null;
-        const myDept = me?.department || '';
-
-        const activeStatuses = new Set([
-          'pending',
-          'forwarded',
-          'assigned',
-          'in_progress',
-          'submitted',
-          'under_review',
-          'need_improvement',
-          'approved',
-        ]);
-        const terminalStatuses = new Set(['completed', 'cancelled', 'rejected']);
-
-        const activeTasks = tasks.filter((t) => activeStatuses.has((t.status || '').toLowerCase())).length;
-        const completedTasks = tasks.filter((t) => (t.status || '').toLowerCase() === 'completed').length;
-        const projectKeys = new Set(
-          tasks
-            .map((t) => (t.projectId || t.projectName || '').trim())
-            .filter(Boolean)
-        );
-
-        let teamMembers = 0;
-        if (myDept) {
-          const deptRes = await authAPI.getUsersByDepartment(myDept).catch(() => ({ users: [] }));
-          teamMembers = (deptRes?.users || []).length;
+        const deptRes = await authAPI.getUsersByDepartment(myDept).catch(() => ({ users: [] }));
+        if (mounted) {
+          setTeamMembers((deptRes?.users || []).length);
         }
-
-        const activityRows = tasks
-          .map((t) => {
-            const status = (t.status || '').toLowerCase();
-            const title = t.title || t.taskName || t.taskNumber || 'Task';
-            const updatedAt = t.updatedAt || t.createdAt;
-            if (status === 'completed') {
-              return {
-                icon: '✓',
-                text: `Task completed: ${title}`,
-                time: updatedAt,
-              };
-            }
-            if (terminalStatuses.has(status)) {
-              return {
-                icon: '⚑',
-                text: `Task ${status.replace('_', ' ')}: ${title}`,
-                time: updatedAt,
-              };
-            }
-            return {
-              icon: '📝',
-              text: `Task updated: ${title}`,
-              time: updatedAt,
-            };
-          })
-          .sort((a, b) => new Date(b.time || 0).getTime() - new Date(a.time || 0).getTime())
-          .slice(0, 8);
-
-        if (!mounted) return;
-        setStats({
-          activeTasks,
-          completedTasks,
-          projects: projectKeys.size,
-          teamMembers,
-        });
-        setRecentActivity(activityRows);
-      } catch (error) {
-        console.error('Failed to load workspace overview:', error);
-        if (!mounted) return;
-        setStats({
-          activeTasks: 0,
-          completedTasks: 0,
-          projects: 0,
-          teamMembers: 0,
-        });
-        setRecentActivity([]);
-      } finally {
-        if (mounted) setLoading(false);
+      } catch (loadError) {
+        console.error('Failed to load workspace team count:', loadError);
+        if (mounted) setTeamMembers(0);
       }
     };
 
-    loadOverview();
+    loadTeamMembers();
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [currentUser?.department]);
+
+  const stats = useMemo(() => {
+    const activeTasks = tasks.filter((t) => ACTIVE_PROJECT_STATUSES.has((t.status || '').toLowerCase())).length;
+    const completedTasks = tasks.filter((t) => (t.status || '').toLowerCase() === 'completed').length;
+    const projectKeys = new Set(
+      tasks
+        .map((t) => (t.projectId || t.projectName || '').trim())
+        .filter(Boolean)
+    );
+
+    return {
+      activeTasks,
+      completedTasks,
+      projects: projectKeys.size,
+      teamMembers,
+    };
+  }, [tasks, teamMembers]);
+
+  const recentActivity = useMemo(() => {
+    const terminalStatuses = new Set(['completed', 'cancelled', 'rejected']);
+    return tasks
+      .map((t) => {
+        const status = (t.status || '').toLowerCase();
+        const title = t.title || t.taskName || t.taskNumber || 'Task';
+        const updatedAt = t.updatedAt || t.createdAt;
+        if (status === 'completed') {
+          return {
+            icon: '✓',
+            text: `Task completed: ${title}`,
+            time: updatedAt,
+          };
+        }
+        if (terminalStatuses.has(status)) {
+          return {
+            icon: '⚑',
+            text: `Task ${status.replace('_', ' ')}: ${title}`,
+            time: updatedAt,
+          };
+        }
+        return {
+          icon: '📝',
+          text: `Task updated: ${title}`,
+          time: updatedAt,
+        };
+      })
+      .sort((a, b) => new Date(b.time || 0).getTime() - new Date(a.time || 0).getTime())
+      .slice(0, 8);
+  }, [tasks]);
 
   return (
     <div className="tab-content">
       <h3>Workspace Overview</h3>
+      <CacheStatusBanner
+        showingCached={cacheStatus.showingCached}
+        isRefreshing={isRefreshing}
+        cachedAt={cacheStatus.cachedAt}
+        liveUpdatedAt={cacheStatus.liveUpdatedAt}
+        refreshingLabel="Refreshing latest workspace data..."
+        liveLabel="Workspace overview is up to date"
+        cachedLabel="Showing cached workspace overview"
+      />
+      {error && <div className="team-member-card">{error}</div>}
       <div className="overview-grid">
         <div className="overview-card">
           <div className="card-icon">📋</div>
@@ -448,45 +870,19 @@ function buildProjectSummaries(tasks = []) {
 }
 
 function ProjectsContent() {
-  const [loading, setLoading] = useState(true);
-  const [projects, setProjects] = useState([]);
+  const { tasks, loading, isRefreshing, error, refresh, cacheStatus } = useWorkspaceTaskDataset();
   const [selectedProjectKey, setSelectedProjectKey] = useState('');
   const [search, setSearch] = useState('');
-  const [error, setError] = useState('');
-
-  const loadProjects = async ({ preserveSelection = true } = {}) => {
-    setLoading(true);
-    setError('');
-    try {
-      const [inboxResponse, outboxResponse] = await Promise.all([
-        taskAPI.getInbox(),
-        taskAPI.getOutbox(),
-      ]);
-      const mergedTasks = [...(inboxResponse?.data || []), ...(outboxResponse?.data || [])];
-      const uniqueTasks = Array.from(
-        new Map(mergedTasks.map((task) => [task.id, task])).values()
-      );
-      const groupedProjects = buildProjectSummaries(uniqueTasks);
-      setProjects(groupedProjects);
-      setSelectedProjectKey((prev) => {
-        if (preserveSelection && prev && groupedProjects.some((project) => project.key === prev)) {
-          return prev;
-        }
-        return groupedProjects[0]?.key || '';
-      });
-    } catch (loadError) {
-      console.error('Failed to load live projects:', loadError);
-      setProjects([]);
-      setSelectedProjectKey('');
-      setError('Could not load live projects right now.');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const projects = useMemo(() => buildProjectSummaries(tasks), [tasks]);
 
   useEffect(() => {
-    void loadProjects({ preserveSelection: false });
-  }, []);
+    setSelectedProjectKey((prev) => {
+      if (prev && projects.some((project) => project.key === prev)) {
+        return prev;
+      }
+      return projects[0]?.key || '';
+    });
+  }, [projects]);
 
   const filteredProjects = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -513,10 +909,20 @@ function ProjectsContent() {
     <div className="tab-content">
       <div className="content-header">
         <h3>Projects</h3>
-        <button className="add-btn" onClick={() => void loadProjects()}>
+        <button className="add-btn" onClick={() => void refresh()}>
           Refresh
         </button>
       </div>
+
+      <CacheStatusBanner
+        showingCached={cacheStatus.showingCached}
+        isRefreshing={isRefreshing}
+        cachedAt={cacheStatus.cachedAt}
+        liveUpdatedAt={cacheStatus.liveUpdatedAt}
+        refreshingLabel="Refreshing latest workspace data..."
+        liveLabel="Project folders are up to date"
+        cachedLabel="Showing cached project folders"
+      />
 
       <div className="projects-toolbar">
         <input
@@ -697,12 +1103,8 @@ function TasksContent() {
 // Team Tab Content
 function TeamContent() {
   const { showAlert } = useCustomDialogs();
-  const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { members, loading, isRefreshing, myDepartment, isHodUser, activityByUser, cacheStatus } = useWorkspaceTeamDirectory();
   const [openMenuId, setOpenMenuId] = useState(null);
-  const [myDepartment, setMyDepartment] = useState('');
-  const [isHodUser, setIsHodUser] = useState(false);
-  const [activityByUser, setActivityByUser] = useState({});
   const [infoMember, setInfoMember] = useState(null);
 
   const formatSeconds = (seconds = 0) => {
@@ -730,63 +1132,20 @@ function TeamContent() {
     }
   };
 
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      try {
-        const me = await authAPI.getCurrentUser();
-        const myDept = me?.user?.department || '';
-        const position = (me?.user?.position || '').toLowerCase();
-        const roles = (me?.user?.roles || []).map((r) => String(r).toLowerCase());
-        const hod = position.includes('hod') || roles.includes('hod');
-        setIsHodUser(hod);
-        setMyDepartment(myDept);
-        if (!myDept) {
-          setMembers([]);
-          return;
-        }
-
-        const deptUsersResponse = await authAPI.getUsersByDepartment(myDept);
-        const users = (deptUsersResponse?.users || []).map((u) => ({
-          id: u.id,
-          name: u.name || `User ${u.id}`,
-          department: u.department || myDept,
-          position: u.position || 'Member',
-        }));
-        setMembers(users);
-
-        if (hod) {
-          try {
-            const activityResponse = await activityAPI.department();
-            const activityRows = activityResponse?.data || [];
-            const map = {};
-            activityRows.forEach((row) => {
-              map[row.userId] = row;
-            });
-            setActivityByUser(map);
-          } catch (activityError) {
-            console.warn('Activity data unavailable for team:', activityError);
-            setActivityByUser({});
-          }
-        } else {
-          setActivityByUser({});
-        }
-      } catch (error) {
-        console.error('Failed to load team data:', error);
-        setMembers([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    load();
-  }, []);
-
   return (
     <div className="tab-content">
       <div className="content-header">
         <h3>Team Members ({myDepartment || 'Department'})</h3>
       </div>
+      <CacheStatusBanner
+        showingCached={cacheStatus.showingCached}
+        isRefreshing={isRefreshing}
+        cachedAt={cacheStatus.cachedAt}
+        liveUpdatedAt={cacheStatus.liveUpdatedAt}
+        refreshingLabel="Refreshing team directory..."
+        liveLabel="Team directory is up to date"
+        cachedLabel="Showing cached team directory"
+      />
       <div className="team-grid">
         {loading && <div className="team-member-card">Loading team members...</div>}
         {!loading && members.length === 0 && <div className="team-member-card">No members found in your department.</div>}
@@ -868,14 +1227,19 @@ function TeamContent() {
 
 function CompanyContent() {
   const { showAlert } = useCustomDialogs();
-  const [loading, setLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [departments, setDepartments] = useState([]);
-  const [selectedDepartment, setSelectedDepartment] = useState('');
-  const [members, setMembers] = useState([]);
+  const {
+    loading,
+    isRefreshing,
+    isAdmin,
+    departments,
+    selectedDepartment,
+    members,
+    activityByUser,
+    cacheStatus,
+    selectDepartment,
+  } = useWorkspaceCompanyDirectory();
   const [openMenuId, setOpenMenuId] = useState(null);
   const [infoMember, setInfoMember] = useState(null);
-  const [activityByUser, setActivityByUser] = useState({});
 
   const formatSeconds = (seconds = 0) => {
     const total = Number(seconds) || 0;
@@ -902,63 +1266,6 @@ function CompanyContent() {
     }
   };
 
-  const loadMembersByDepartment = async (departmentName) => {
-    try {
-      const response = await authAPI.getUsersByDepartment(departmentName);
-      setMembers(response?.users || []);
-    } catch (error) {
-      console.error('Failed to load users by department:', error);
-      setMembers([]);
-    }
-  };
-
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      try {
-        const me = await authAPI.getCurrentUser();
-        const meRoles = (me?.user?.roles || []).map((r) => String(r).toLowerCase());
-        const mePosition = (me?.user?.position || '').toLowerCase();
-        const adminAccess = me?.user?.isAdmin || meRoles.includes('admin') || mePosition === 'admin';
-        setIsAdmin(!!adminAccess);
-
-        if (!adminAccess) {
-          setDepartments([]);
-          return;
-        }
-
-        const [deptRes, activityRes] = await Promise.all([
-          authAPI.getDepartments(),
-          activityAPI.allUsers().catch(() => ({ data: [] })),
-        ]);
-        const deptList = deptRes?.departments || [];
-        setDepartments(deptList);
-        if (deptList.length > 0) {
-          setSelectedDepartment(deptList[0]);
-          await loadMembersByDepartment(deptList[0]);
-        }
-
-        const activityMap = {};
-        (activityRes?.data || []).forEach((row) => {
-          activityMap[row.userId] = row;
-        });
-        setActivityByUser(activityMap);
-      } catch (error) {
-        console.error('Failed to load company view data:', error);
-        setDepartments([]);
-        setMembers([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, []);
-
-  const onSelectDepartment = async (departmentName) => {
-    setSelectedDepartment(departmentName);
-    await loadMembersByDepartment(departmentName);
-  };
-
   if (loading) {
     return (
       <div className="tab-content">
@@ -982,6 +1289,15 @@ function CompanyContent() {
       <div className="content-header">
         <h3>Company Directory</h3>
       </div>
+      <CacheStatusBanner
+        showingCached={cacheStatus.showingCached}
+        isRefreshing={isRefreshing}
+        cachedAt={cacheStatus.cachedAt}
+        liveUpdatedAt={cacheStatus.liveUpdatedAt}
+        refreshingLabel="Refreshing company directory..."
+        liveLabel="Company directory is up to date"
+        cachedLabel="Showing cached company directory"
+      />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '10px', marginBottom: '14px' }}>
         {departments.map((dept) => (
@@ -993,7 +1309,9 @@ function CompanyContent() {
               opacity: selectedDepartment === dept ? 1 : 0.8,
               border: selectedDepartment === dept ? '1px solid rgba(255,255,255,0.35)' : undefined
             }}
-            onClick={() => onSelectDepartment(dept)}
+            onClick={() => {
+              void selectDepartment(dept);
+            }}
           >
             {dept}
           </button>
@@ -1077,7 +1395,20 @@ function CompanyContent() {
 }
 
 function GroupsContent() {
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isMessagesRefreshing, setIsMessagesRefreshing] = useState(false);
+  const [groupsCacheStatus, setGroupsCacheStatus] = useState({
+    showingCached: false,
+    cachedAt: 0,
+    liveUpdatedAt: 0,
+  });
+  const [messageCacheStatus, setMessageCacheStatus] = useState({
+    showingCached: false,
+    cachedAt: 0,
+    liveUpdatedAt: 0,
+  });
   const [allUsers, setAllUsers] = useState([]);
   const [currentUserId, setCurrentUserId] = useState(null);
   const [groupName, setGroupName] = useState('');
@@ -1097,6 +1428,13 @@ function GroupsContent() {
   const selectedGroupIdRef = useRef(null);
   const groupMenuRef = useRef(null);
   const attachmentInputRef = useRef(null);
+  const cacheKeys = useMemo(() => {
+    if (!user?.id) return null;
+    return {
+      index: buildTaskPanelCacheKey(user.id, 'workspace_groups'),
+      messages: (groupId) => buildTaskPanelCacheKey(user.id, `workspace_group_messages_${groupId}`),
+    };
+  }, [user?.id]);
 
   const selectedGroup = useMemo(
     () => groups.find((g) => g.id === selectedGroupId) || null,
@@ -1181,58 +1519,161 @@ function GroupsContent() {
     return items;
   }, [messages]);
 
-  const syncGroups = async ({ keepSelected = true } = {}) => {
-    const res = await groupAPI.listGroups();
-    const nextGroups = res?.data || [];
-    setGroups(nextGroups);
-    if (nextGroups.length === 0) {
-      setSelectedGroupId(null);
-      setMessages([]);
-      return;
-    }
-    if (!keepSelected || !nextGroups.some((g) => g.id === selectedGroupId)) {
-      setSelectedGroupId(nextGroups[0].id);
+  useEffect(() => {
+    if (!cacheKeys) return;
+    setTaskPanelCache(cacheKeys.index, {
+      allUsers,
+      currentUserId,
+      groups,
+      selectedGroupId,
+    });
+  }, [allUsers, cacheKeys, currentUserId, groups, selectedGroupId]);
+
+  useEffect(() => {
+    if (!cacheKeys || !selectedGroupId) return;
+    setTaskPanelCache(cacheKeys.messages(selectedGroupId), {
+      messages,
+    });
+  }, [cacheKeys, messages, selectedGroupId]);
+
+  const syncGroups = async ({ keepSelected = true, silent = false } = {}) => {
+    try {
+      if (silent) {
+        setIsRefreshing(true);
+      }
+      const res = await groupAPI.listGroups();
+      const nextGroups = res?.data || [];
+      setGroups(nextGroups);
+      setGroupsCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
+      if (nextGroups.length === 0) {
+        setSelectedGroupId(null);
+        setMessages([]);
+        return;
+      }
+      const activeGroupId = selectedGroupIdRef.current;
+      if (!keepSelected || !nextGroups.some((g) => g.id === activeGroupId)) {
+        const fallbackGroupId = nextGroups[0].id;
+        const cachedMessages = cacheKeys
+          ? getTaskPanelCache(cacheKeys.messages(fallbackGroupId), WORKSPACE_GROUP_MESSAGES_CACHE_TTL_MS)
+          : null;
+        if (cachedMessages?.messages) {
+          setMessages(cachedMessages.messages);
+        }
+        setSelectedGroupId(fallbackGroupId);
+      }
+    } finally {
+      if (silent) setIsRefreshing(false);
     }
   };
 
-  const loadMessages = async (groupId) => {
-    if (!groupId) {
-      setMessages([]);
-      return;
+  const loadMessages = async (groupId, { silent = false } = {}) => {
+    try {
+      if (!groupId) {
+        setMessages([]);
+        return;
+      }
+      if (silent) setIsMessagesRefreshing(true);
+      const res = await groupAPI.listMessages(groupId);
+      setMessages(res?.data || []);
+      setMessageCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
+    } finally {
+      if (silent) setIsMessagesRefreshing(false);
     }
-    const res = await groupAPI.listMessages(groupId);
-    setMessages(res?.data || []);
   };
 
   useEffect(() => {
+    if (!cacheKeys) return;
+
+    const cachedGroupsEntry = getTaskPanelCacheEntry(cacheKeys.index, WORKSPACE_GROUPS_CACHE_TTL_MS);
+    const cachedGroups = cachedGroupsEntry?.value || null;
+    if (cachedGroups) {
+      setAllUsers(cachedGroups.allUsers || []);
+      setCurrentUserId(cachedGroups.currentUserId || null);
+      setGroups(cachedGroups.groups || []);
+      setSelectedGroupId(cachedGroups.selectedGroupId || null);
+      setLoading(false);
+      setGroupsCacheStatus({
+        showingCached: true,
+        cachedAt: cachedGroupsEntry?.cachedAt || 0,
+        liveUpdatedAt: 0,
+      });
+      if (cachedGroups.selectedGroupId) {
+        const cachedMessagesEntry = getTaskPanelCacheEntry(
+          cacheKeys.messages(cachedGroups.selectedGroupId),
+          WORKSPACE_GROUP_MESSAGES_CACHE_TTL_MS
+        );
+        if (cachedMessagesEntry?.value?.messages) {
+          setMessages(cachedMessagesEntry.value.messages);
+          setMessageCacheStatus({
+            showingCached: true,
+            cachedAt: cachedMessagesEntry.cachedAt || 0,
+            liveUpdatedAt: 0,
+          });
+        }
+      }
+    }
+
     const load = async () => {
-      setLoading(true);
+      if (cachedGroups) setIsRefreshing(true);
+      else setLoading(true);
       try {
         const [meRes, usersRes] = await Promise.all([
-          authAPI.getCurrentUser(),
+          authAPI.getCurrentUser().catch(() => ({ user: user || null })),
           groupAPI.listUsers(),
         ]);
         setCurrentUserId(meRes?.user?.id || null);
         setAllUsers(usersRes?.data || []);
-        await syncGroups({ keepSelected: false });
+        await syncGroups({ keepSelected: false, silent: !!cachedGroups });
       } catch (error) {
         console.error('Failed to load users for groups:', error);
-        setAllUsers([]);
-        setGroups([]);
-        setSelectedGroupId(null);
+        if (!cachedGroups) {
+          setAllUsers([]);
+          setGroups([]);
+          setSelectedGroupId(null);
+        }
       } finally {
-        setLoading(false);
+        if (cachedGroups) setIsRefreshing(false);
+        else setLoading(false);
       }
     };
     load();
-  }, []);
+  }, [cacheKeys, user]);
 
   useEffect(() => {
-    loadMessages(selectedGroupId).catch((err) => {
-      console.error('Failed to load messages:', err);
+    if (!selectedGroupId) {
       setMessages([]);
+      return;
+    }
+
+    const cachedMessagesEntry = cacheKeys
+      ? getTaskPanelCacheEntry(cacheKeys.messages(selectedGroupId), WORKSPACE_GROUP_MESSAGES_CACHE_TTL_MS)
+      : null;
+    const cachedMessages = cachedMessagesEntry?.value || null;
+    if (cachedMessages?.messages) {
+      setMessages(cachedMessages.messages);
+      setMessageCacheStatus({
+        showingCached: true,
+        cachedAt: cachedMessagesEntry?.cachedAt || 0,
+        liveUpdatedAt: 0,
+      });
+    }
+
+    loadMessages(selectedGroupId, { silent: !!cachedMessages }).catch((err) => {
+      console.error('Failed to load messages:', err);
+      if (!cachedMessages) {
+        setMessages([]);
+      }
+      setIsMessagesRefreshing(false);
     });
-  }, [selectedGroupId]);
+  }, [cacheKeys, selectedGroupId]);
 
   useEffect(() => {
     selectedGroupIdRef.current = selectedGroupId;
@@ -1262,9 +1703,9 @@ function GroupsContent() {
   useEffect(() => {
     const interval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      syncGroups().catch(() => {});
+      syncGroups({ silent: true }).catch(() => {});
       if (selectedGroupId) {
-        loadMessages(selectedGroupId).catch(() => {});
+        loadMessages(selectedGroupId, { silent: true }).catch(() => {});
       }
     }, 60000);
     return () => clearInterval(interval);
@@ -1277,15 +1718,15 @@ function GroupsContent() {
         const groupId = payload?.metadata?.groupId;
         if (!groupId) return;
 
-        syncGroups().catch(() => {});
+        syncGroups({ silent: true }).catch(() => {});
         if (selectedGroupIdRef.current === groupId) {
-          loadMessages(groupId).catch(() => {});
+          loadMessages(groupId, { silent: true }).catch(() => {});
         }
       },
       onOpen: () => {
-        syncGroups().catch(() => {});
+        syncGroups({ silent: true }).catch(() => {});
         if (selectedGroupIdRef.current) {
-          loadMessages(selectedGroupIdRef.current).catch(() => {});
+          loadMessages(selectedGroupIdRef.current, { silent: true }).catch(() => {});
         }
       },
     });
@@ -1313,7 +1754,7 @@ function GroupsContent() {
         setGroups((prev) => [created, ...prev.filter((g) => g.id !== created.id)]);
         setSelectedGroupId(created.id);
       } else {
-        await syncGroups();
+        await syncGroups({ silent: true });
       }
       setGroupName('');
       setSelectedIds([]);
@@ -1351,7 +1792,7 @@ function GroupsContent() {
       setMessages((prev) => (sent ? [...prev, sent] : prev));
       setNewMessage('');
       setPendingAttachments([]);
-      await syncGroups();
+      await syncGroups({ silent: true });
     } catch (error) {
       setFeedback(error?.response?.data?.detail || 'Failed to send message.');
     } finally {
@@ -1394,7 +1835,7 @@ function GroupsContent() {
       const res = await groupAPI.removeMember(selectedGroupId, memberId);
       const updated = res?.data;
       if (memberId === currentUserId) {
-        await syncGroups({ keepSelected: false });
+        await syncGroups({ keepSelected: false, silent: true });
       } else {
         setGroups((prev) => prev.map((g) => (g.id === selectedGroupId ? updated : g)));
       }
@@ -1407,10 +1848,19 @@ function GroupsContent() {
     <div className="tab-content">
       <div className="content-header">
         <h3>Groups</h3>
-        <button className="add-btn" onClick={() => syncGroups().catch(() => {})}>Refresh</button>
+        <button className="add-btn" onClick={() => syncGroups({ silent: true }).catch(() => {})}>Refresh</button>
       </div>
 
       {feedback && <div className="team-member-card" style={{ marginBottom: '10px' }}>{feedback}</div>}
+      <CacheStatusBanner
+        showingCached={groupsCacheStatus.showingCached}
+        isRefreshing={isRefreshing}
+        cachedAt={groupsCacheStatus.cachedAt}
+        liveUpdatedAt={groupsCacheStatus.liveUpdatedAt}
+        refreshingLabel="Refreshing latest groups..."
+        liveLabel="Groups list is up to date"
+        cachedLabel="Showing cached groups"
+      />
 
       <div className="groups-shell">
         <div className="groups-sidebar">
@@ -1592,6 +2042,15 @@ function GroupsContent() {
 
               <div className="group-chat-body">
                 <div className="group-chat-thread">
+                  <CacheStatusBanner
+                    showingCached={messageCacheStatus.showingCached}
+                    isRefreshing={isMessagesRefreshing}
+                    cachedAt={messageCacheStatus.cachedAt}
+                    liveUpdatedAt={messageCacheStatus.liveUpdatedAt}
+                    refreshingLabel="Refreshing latest conversation..."
+                    liveLabel="Conversation is up to date"
+                    cachedLabel="Showing cached conversation"
+                  />
                   {messages.length === 0 && <div className="group-chat-empty-thread">No messages yet. Say hello to the group.</div>}
                   {messageItems.map((item) => {
                     if (item.type === 'separator') {
@@ -1860,6 +2319,7 @@ function buildTrend(currentValue, previousValue, invert = false) {
 }
 
 function AnalyticsContent() {
+  const { tasks, loading: tasksLoading, isRefreshing, error: taskError, cacheStatus } = useWorkspaceTaskDataset();
   const [loading, setLoading] = useState(true);
   const [filterKey, setFilterKey] = useState('today');
   const [analyticsData, setAnalyticsData] = useState({
@@ -1890,17 +2350,13 @@ function AnalyticsContent() {
       setLoading(true);
       setError('');
       try {
-        const [inboxRes, outboxRes, activityRes] = await Promise.all([
-          taskAPI.getInbox().catch(() => ({ data: [] })),
-          taskAPI.getOutbox().catch(() => ({ data: [] })),
+        const [activityRes] = await Promise.all([
           activityAPI.myActivity().catch(() => ({ data: null })),
         ]);
 
-        const mergedTasks = [...(inboxRes?.data || []), ...(outboxRes?.data || [])];
-        const uniqueTasks = Array.from(new Map(mergedTasks.map((task) => [task.id, task])).values());
         const range = getAnalyticsRange(filterKey);
-        const currentTasks = getTasksForRange(uniqueTasks, range.start, range.end);
-        const previousTasks = getTasksForRange(uniqueTasks, range.previousStart, range.previousEnd);
+        const currentTasks = getTasksForRange(tasks, range.start, range.end);
+        const previousTasks = getTasksForRange(tasks, range.previousStart, range.previousEnd);
 
         const completionRate = computeCompletionRate(currentTasks);
         const previousCompletionRate = computeCompletionRate(previousTasks);
@@ -1944,7 +2400,7 @@ function AnalyticsContent() {
     return () => {
       mounted = false;
     };
-  }, [filterKey]);
+  }, [filterKey, tasks]);
 
   const formatTrendText = (trend, suffix, comparisonLabel) => {
     const absDelta = Math.abs(trend.delta);
@@ -1977,28 +2433,39 @@ function AnalyticsContent() {
         </div>
       </div>
 
+      <CacheStatusBanner
+        showingCached={cacheStatus.showingCached}
+        isRefreshing={isRefreshing}
+        cachedAt={cacheStatus.cachedAt}
+        liveUpdatedAt={cacheStatus.liveUpdatedAt}
+        refreshingLabel="Refreshing latest analytics source data..."
+        liveLabel="Analytics source data is up to date"
+        cachedLabel="Showing cached analytics source data"
+      />
+
+      {taskError && <div className="team-member-card">{taskError}</div>}
       {error && <div className="team-member-card">{error}</div>}
 
       <div className="analytics-grid">
         <div className="analytics-card">
           <h4>Task Completion Rate</h4>
-          <div className="analytics-value">{loading ? '--' : `${analyticsData.completionRate}%`}</div>
+          <div className="analytics-value">{(loading || tasksLoading) ? '--' : `${analyticsData.completionRate}%`}</div>
           <div className={`analytics-trend ${analyticsData.completionTrend.direction}`}>
-            {loading ? 'Loading user analytics...' : formatTrendText(analyticsData.completionTrend, '%', analyticsData.comparisonLabel)}
+            {(loading || tasksLoading) ? 'Loading user analytics...' : formatTrendText(analyticsData.completionTrend, '%', analyticsData.comparisonLabel)}
           </div>
         </div>
         <div className="analytics-card">
           <h4>Average Task Duration</h4>
-          <div className="analytics-value">{loading ? '--' : `${analyticsData.averageTaskDuration} days`}</div>
+          <div className="analytics-value">{(loading || tasksLoading) ? '--' : `${analyticsData.averageTaskDuration} days`}</div>
           <div className={`analytics-trend ${analyticsData.durationTrend.direction}`}>
-            {loading ? 'Loading user analytics...' : formatTrendText(analyticsData.durationTrend, ' days', analyticsData.comparisonLabel)}
+            {(loading || tasksLoading) ? 'Loading user analytics...' : formatTrendText(analyticsData.durationTrend, ' days', analyticsData.comparisonLabel)}
           </div>
         </div>
         <div className="analytics-card">
           <h4>User Productivity</h4>
-          <div className="analytics-value">{loading ? '--' : `${analyticsData.productivityScore}%`}</div>
+          <div className="analytics-value">{(loading || tasksLoading) ? '--' : `${analyticsData.productivityScore}%`}</div>
           <div className={`analytics-trend ${analyticsData.productivityTrend.direction}`}>
-            {loading ? 'Loading user analytics...' : formatTrendText(analyticsData.productivityTrend, '%', analyticsData.comparisonLabel)}
+            {(loading || tasksLoading) ? 'Loading user analytics...' : formatTrendText(analyticsData.productivityTrend, '%', analyticsData.comparisonLabel)}
           </div>
         </div>
         <div className="analytics-card analytics-card-wide">
@@ -2006,18 +2473,18 @@ function AnalyticsContent() {
           <div className="analytics-mini-grid">
             <div className="analytics-mini-stat">
               <span>Total Tasks</span>
-              <strong>{loading ? '--' : analyticsData.totalTasks}</strong>
+              <strong>{(loading || tasksLoading) ? '--' : analyticsData.totalTasks}</strong>
             </div>
             <div className="analytics-mini-stat">
               <span>Completed</span>
-              <strong>{loading ? '--' : analyticsData.completedTasks}</strong>
+              <strong>{(loading || tasksLoading) ? '--' : analyticsData.completedTasks}</strong>
             </div>
             <div className="analytics-mini-stat">
               <span>Active</span>
-              <strong>{loading ? '--' : analyticsData.activeTasks}</strong>
+              <strong>{(loading || tasksLoading) ? '--' : analyticsData.activeTasks}</strong>
             </div>
           </div>
-          {!loading && !analyticsData.totalTasks && (
+          {!(loading || tasksLoading) && !analyticsData.totalTasks && (
             <p className="analytics-empty-state">
               No user tasks were updated in this time range yet. Switch the filter to see another period.
             </p>

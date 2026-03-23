@@ -360,6 +360,11 @@ export const taskAPI = {
     const response = await api.get('/api/tasks/inbox');
     return response.data;
   },
+
+  getInboxUnreadCount: async () => {
+    const response = await api.get('/api/tasks/inbox/unread-count');
+    return response.data;
+  },
   
   getOutbox: async () => {
     const response = await api.get('/api/tasks/outbox');

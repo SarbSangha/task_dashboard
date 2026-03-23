@@ -145,6 +145,19 @@
   gap: 16px;
 }
 
+.admin-queue-refresh-indicator {
+  grid-column: 1 / -1;
+  margin-bottom: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.08);
+  color: rgba(219, 234, 254, 0.96);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 @media (max-width: 900px) {
   .admin-queue-content {
     grid-template-columns: 1fr;

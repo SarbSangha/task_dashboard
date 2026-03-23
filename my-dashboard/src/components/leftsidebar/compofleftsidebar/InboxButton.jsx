@@ -2,15 +2,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './MenuButton.css';
 import { useAuth } from '../../../context/AuthContext';
-import { subscribeRealtimeNotifications } from '../../../services/api';
+import { subscribeRealtimeNotifications, taskAPI } from '../../../services/api';
+import {
+  buildTaskPanelCacheKey,
+  getTaskPanelCache,
+  setTaskPanelCache,
+} from '../../../utils/taskPanelCache';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const INBOX_BADGE_CACHE_TTL_MS = 90 * 1000;
+
+const getUnreadCountFromTasks = (rows = []) =>
+  rows.filter((task) => !(task?.isRead ?? task?.is_read ?? false)).length;
 
 const InboxButton = ({ isActive, onClick }) => {
   const { user } = useAuth();
   const [unreadCount, setUnreadCount] = useState(0);
   const inFlightRef = useRef(false);
   const refreshTimerRef = useRef(null);
+  const unreadCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'inbox_unread_count') : null;
+  const inboxCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'inbox') : null;
 
   useEffect(() => {
     if (!user) {
@@ -25,6 +35,19 @@ const InboxButton = ({ isActive, onClick }) => {
         fetchUnreadCount();
       }, 250);
     };
+
+    const cachedUnread = unreadCacheKey
+      ? getTaskPanelCache(unreadCacheKey, INBOX_BADGE_CACHE_TTL_MS)
+      : null;
+    const cachedInbox = inboxCacheKey
+      ? getTaskPanelCache(inboxCacheKey, INBOX_BADGE_CACHE_TTL_MS)
+      : null;
+
+    if (typeof cachedUnread?.unreadCount === 'number') {
+      setUnreadCount(cachedUnread.unreadCount);
+    } else if (Array.isArray(cachedInbox?.tasks)) {
+      setUnreadCount(getUnreadCountFromTasks(cachedInbox.tasks));
+    }
 
     fetchUnreadCount();
     // Fallback polling every 3 minutes (WebSocket drives real-time updates).
@@ -54,19 +77,20 @@ const InboxButton = ({ isActive, onClick }) => {
         refreshTimerRef.current = null;
       }
     };
-  }, [user]);
+  }, [inboxCacheKey, unreadCacheKey, user]);
 
   const fetchUnreadCount = async () => {
     if (!user) return;
+    if (!unreadCacheKey) return;
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     try {
-      const response = await fetch(`${API_BASE}/api/tasks/inbox/unread-count`, {
-        credentials: 'include'
-      });
-      const data = await response.json();
+      const data = await taskAPI.getInboxUnreadCount();
       if (data.success) {
         setUnreadCount(data.unreadCount);
+        setTaskPanelCache(unreadCacheKey, {
+          unreadCount: data.unreadCount,
+        });
       }
     } catch (error) {
       console.error('Error fetching unread count:', error);

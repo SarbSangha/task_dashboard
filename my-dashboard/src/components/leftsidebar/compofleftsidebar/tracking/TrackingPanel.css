@@ -144,6 +144,18 @@
   padding: 16px;
 }
 
+.tracking-refresh-indicator {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.08);
+  color: rgba(191, 219, 254, 0.95);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 /* Loading State */
 .loading-state {
   display: flex;

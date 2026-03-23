@@ -217,6 +217,18 @@
   animation: fadeIn 0.3s ease-out;
 }
 
+.workspace-refresh-indicator {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.1);
+  color: rgba(219, 234, 254, 0.96);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 .tab-content h3 {
   margin: 0 0 20px 0;
   font-size: 22px;

@@ -218,6 +218,14 @@
   background: #f9f9f9;
 }
 
+.inbox-refresh-indicator {
+  margin-bottom: 12px;
+  color: #9bb2d8;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .inbox-task-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
