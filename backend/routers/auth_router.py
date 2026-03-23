@@ -208,27 +208,11 @@ def generate_employee_id(db: Session) -> str:
     return f"{prefix}{count + 1:04d}"
 
 
-def _prepare_deleted_user_for_reregistration(db: Session, existing_user: User, user_data: "UserRegister") -> User:
-    existing_user.email = user_data.email
-    existing_user.name = user_data.name
-    existing_user.hashed_password = get_password_hash(user_data.password)
-    existing_user.position = user_data.position
-    existing_user.department = user_data.department
-    existing_user.roles_json = [r.lower() for r in (user_data.roles or [])]
-    existing_user.is_deleted = False
-    existing_user.is_active = False
-    existing_user.is_admin = False
-    existing_user.deleted_at = None
-    existing_user.deleted_by = None
-    existing_user.deleted_reason = None
-    existing_user.rejection_reason = None
-    existing_user.approved_at = None
-    existing_user.approved_by = None
-    existing_user.last_login = None
-    existing_user.session_revoked_at = datetime.utcnow()
-    if not existing_user.employee_id:
-        existing_user.employee_id = generate_employee_id(db)
-    return existing_user
+def _archive_deleted_user_identity(existing_user: User) -> None:
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    existing_user.email = f"deleted+{existing_user.id}.{timestamp}@archived.local"
+    if existing_user.employee_id:
+        existing_user.employee_id = f"{existing_user.employee_id}-DEL-{existing_user.id}-{timestamp}"
 
 
 def _admin_user_ids(db: Session) -> list[int]:
@@ -353,38 +337,37 @@ async def register(
                     status_code=400,
                     detail="Email already registered"
                 )
-            print(f"♻️ Re-registering deleted account: {existing_user.email}")
-            new_user = _prepare_deleted_user_for_reregistration(db, existing_user, user_data)
-        else:
-            # Hash password
-            hashed_password = get_password_hash(user_data.password)
-            
-            # Create user
-            new_user = User(
-                email=user_data.email,
-                employee_id=generate_employee_id(db),
-                name=user_data.name,
-                hashed_password=hashed_password,
-                position=user_data.position,
-                department=user_data.department,
-                roles_json=[r.lower() for r in (user_data.roles or [])],
-                is_active=False,
-                is_admin=False,
-                created_at=datetime.utcnow()
-            )
-            
-            db.add(new_user)
+            print(f"♻️ Re-registering deleted account with fresh identity: {existing_user.email}")
+            stale_pending_rows = db.query(UserApprovalRequest).filter(
+                UserApprovalRequest.user_id == existing_user.id,
+                UserApprovalRequest.status == "pending",
+            ).all()
+            for row in stale_pending_rows:
+                row.status = "rejected"
+                row.reviewed_at = datetime.utcnow()
+                row.review_notes = "Superseded by a newer signup registration."
+            _archive_deleted_user_identity(existing_user)
+            db.flush()
 
+        # Hash password
+        hashed_password = get_password_hash(user_data.password)
+        
+        # Create user
+        new_user = User(
+            email=user_data.email,
+            employee_id=generate_employee_id(db),
+            name=user_data.name,
+            hashed_password=hashed_password,
+            position=user_data.position,
+            department=user_data.department,
+            roles_json=[r.lower() for r in (user_data.roles or [])],
+            is_active=False,
+            is_admin=False,
+            created_at=datetime.utcnow()
+        )
+        
+        db.add(new_user)
         db.flush()
-
-        stale_pending_rows = db.query(UserApprovalRequest).filter(
-            UserApprovalRequest.user_id == new_user.id,
-            UserApprovalRequest.status == "pending",
-        ).all()
-        for row in stale_pending_rows:
-            row.status = "rejected"
-            row.reviewed_at = datetime.utcnow()
-            row.review_notes = "Superseded by a newer signup registration."
 
         db.add(
             UserApprovalRequest(
