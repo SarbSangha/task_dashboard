@@ -1,6 +1,12 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useCustomDialogs } from "../../../common/CustomDialogs";
+import {
+  buildUploadFormData,
+  getAttachmentDisplayName,
+  mergeUniqueAttachments,
+  openSystemFilePicker,
+} from "../../../../utils/fileUploads";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -9,7 +15,6 @@ export default function AttachmentBox({ attachments = [], onChange }) {
   const [files, setFiles] = useState(attachments);
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef(null);
 
   // Sync with parent when attachments prop changes
   useEffect(() => {
@@ -25,7 +30,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
 
   const handleFiles = (selectedFiles) => {
     const fileArray = Array.from(selectedFiles);
-    const updatedFiles = [...files, ...fileArray];
+    const updatedFiles = mergeUniqueAttachments(files, fileArray);
     setFiles(updatedFiles);
     notifyParent(updatedFiles);
   };
@@ -33,6 +38,20 @@ export default function AttachmentBox({ attachments = [], onChange }) {
   const handleDrop = (e) => {
     e.preventDefault();
     handleFiles(e.dataTransfer.files);
+  };
+
+  const handleBoxClick = (e) => {
+    if (e.target.closest(".assign-attachment-actions")) {
+      return;
+    }
+    openPicker("files");
+  };
+
+  const openPicker = (mode) => {
+    openSystemFilePicker({
+      mode,
+      onSelect: handleFiles,
+    });
   };
 
   const removeFile = (index) => {
@@ -43,12 +62,10 @@ export default function AttachmentBox({ attachments = [], onChange }) {
   };
 
   const uploadFiles = async () => {
-    if (files.length === 0) return;
+    const filesToUpload = files.filter((file) => file instanceof File);
+    if (filesToUpload.length === 0) return;
 
-    const formData = new FormData();
-    files.forEach((file) => {
-      formData.append("files", file);
-    });
+    const formData = buildUploadFormData(filesToUpload);
 
     try {
       setUploading(true);
@@ -86,17 +103,35 @@ export default function AttachmentBox({ attachments = [], onChange }) {
         className="assign-attachment-box"
         onDrop={handleDrop}
         onDragOver={(e) => e.preventDefault()}
-        onClick={() => fileInputRef.current.click()}
+        onClick={handleBoxClick}
       >
         <p>📎 Drag & Drop files or click to browse</p>
+        <small>Supports single files, multiple files, and full folders.</small>
 
-        <input
-          type="file"
-          multiple
-          hidden
-          ref={fileInputRef}
-          onChange={(e) => handleFiles(e.target.files)}
-        />
+        <div className="assign-attachment-actions">
+          <button
+            type="button"
+            className="assign-attachment-action-btn"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              openPicker("files");
+            }}
+          >
+            Choose Files
+          </button>
+          <button
+            type="button"
+            className="assign-attachment-action-btn"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              openPicker("folder");
+            }}
+          >
+            Choose Folder
+          </button>
+        </div>
       </div>
 
       {files.length > 0 && (
@@ -105,7 +140,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
             {files.map((file, index) => (
               <div key={index} className="file-item">
                 <span className="file-name">
-                  📄 {file.name} 
+                  📄 {getAttachmentDisplayName(file)}
                   <span className="file-size">
                     ({(file.size / 1024).toFixed(1)} KB)
                   </span>
@@ -126,7 +161,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
           <button 
             className="upload-files-btn" 
             onClick={uploadFiles} 
-            disabled={uploading}
+            disabled={uploading || !files.some((file) => file instanceof File)}
           >
             {uploading ? `Uploading... ${progress}%` : "📤 Upload Files"}
           </button>

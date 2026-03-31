@@ -9,6 +9,7 @@ import {
   invalidateTaskPanelCache,
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
+import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import './AdminRequestPanel.css';
 
 const ADMIN_QUEUE_CACHE_TTL_MS = 90 * 1000;
@@ -31,6 +32,7 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
   const [infoUser, setInfoUser] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const minimizedWindowStyle = useMinimizedWindowStack('admin-queue-panel', isOpen && isMinimized);
   const refreshTimerRef = React.useRef(null);
   const cacheKey = useMemo(
     () => (user?.id ? buildTaskPanelCacheKey(user.id, 'admin_queue') : null),
@@ -153,7 +155,6 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
   const handleToggleMaximize = () => {
     if (isMinimized) {
       setIsMinimized(false);
-      setIsMaximized(true);
       return;
     }
     setIsMaximized((prev) => !prev);
@@ -241,32 +242,37 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
         className={`admin-queue-overlay ${isMinimized ? 'disabled' : ''}`}
         onClick={!isMinimized ? () => { setMenuUserId(null); onClose(); } : undefined}
       />
-      <div className={`admin-queue-panel ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}>
+      <div
+        className={`admin-queue-panel ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}
+        style={minimizedWindowStyle || undefined}
+      >
         <div
           className="admin-queue-header"
           onClick={isMinimized ? () => setIsMinimized(false) : undefined}
         >
-          <h3>Admin Request Queue</h3>
+          <h3>Admin Queue</h3>
           <div className="admin-queue-controls">
-            <button
-              className="admin-queue-window-btn"
-              onClick={(event) => {
-                event.stopPropagation();
-                handleToggleMinimize();
-              }}
-              title={isMinimized ? 'Restore' : 'Minimize'}
-            >
-              {isMinimized ? '▢' : '─'}
-            </button>
+            {!isMinimized && (
+              <button
+                className="admin-queue-window-btn"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  handleToggleMinimize();
+                }}
+                title="Minimize"
+              >
+                ─
+              </button>
+            )}
             <button
               className="admin-queue-window-btn"
               onClick={(event) => {
                 event.stopPropagation();
                 handleToggleMaximize();
               }}
-              title={isMaximized ? 'Restore Window' : 'Maximize'}
+              title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}
             >
-              {isMaximized ? '❐' : '□'}
+              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
             </button>
             <button
               className="admin-queue-close-btn"

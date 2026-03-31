@@ -1,12 +1,155 @@
 // OutboxButton.jsx - Matches MenuButton.css styling
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import './MenuButton.css';
+import { useAuth } from '../../../context/AuthContext';
+import { subscribeRealtimeNotifications, taskAPI } from '../../../services/api';
+import {
+  buildTaskPanelCacheKey,
+  getTaskPanelCache,
+  setTaskPanelCache,
+} from '../../../utils/taskPanelCache';
 
-const OutboxButton = ({ onClick, isActive }) => {
+const OUTBOX_BADGE_CACHE_TTL_MS = 90 * 1000;
+
+const isOutboxNotification = (notification, outboxTaskIds) => {
+  if (!notification?.taskId || !outboxTaskIds.has(notification.taskId)) return false;
+  const eventType = `${notification.eventType || ''}`.toLowerCase();
+  if (!eventType || eventType === 'group_message' || eventType === 'direct_message') return false;
+  if (eventType.startsWith('admin_')) return false;
+  return true;
+};
+
+const OutboxButton = ({ onClick, isActive, isOpen = false }) => {
+  const { user } = useAuth();
+  const [unreadCount, setUnreadCount] = useState(0);
+  const unreadIdsRef = useRef([]);
+  const inFlightRef = useRef(false);
+  const refreshTimerRef = useRef(null);
+  const badgeCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'outbox_badge') : null;
+  const outboxCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'outbox') : null;
+
+  useEffect(() => {
+    if (!user?.id) {
+      setUnreadCount(0);
+      unreadIdsRef.current = [];
+      return undefined;
+    }
+
+    const cachedBadge = badgeCacheKey
+      ? getTaskPanelCache(badgeCacheKey, OUTBOX_BADGE_CACHE_TTL_MS)
+      : null;
+    if (typeof cachedBadge?.unreadCount === 'number') {
+      setUnreadCount(cachedBadge.unreadCount);
+      unreadIdsRef.current = Array.isArray(cachedBadge.notificationIds)
+        ? cachedBadge.notificationIds
+        : [];
+    }
+
+    const scheduleRefresh = () => {
+      if (refreshTimerRef.current) return;
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        fetchUnreadCount();
+      }, 250);
+    };
+
+    fetchUnreadCount();
+
+    const unsubscribe = subscribeRealtimeNotifications({
+      onMessage: (payload) => {
+        if (!payload) return;
+        const eventType = `${payload.eventType || ''}`.toLowerCase();
+        if (eventType === 'group_message' || eventType === 'direct_message') return;
+        scheduleRefresh();
+      },
+      onOpen: () => scheduleRefresh(),
+    });
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      fetchUnreadCount();
+    }, 180000);
+
+    const onFocus = () => scheduleRefresh();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      unsubscribe();
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [badgeCacheKey, outboxCacheKey, user?.id]);
+
+  useEffect(() => {
+    if (!isOpen || unreadIdsRef.current.length === 0) return;
+    markNotificationsAsRead(unreadIdsRef.current);
+  }, [isOpen]);
+
+  const fetchUnreadCount = async () => {
+    if (!user?.id || !badgeCacheKey || !outboxCacheKey || inFlightRef.current) return;
+    inFlightRef.current = true;
+    try {
+      const cachedOutbox = getTaskPanelCache(outboxCacheKey, OUTBOX_BADGE_CACHE_TTL_MS);
+      const [notificationsResponse, outboxResponse] = await Promise.all([
+        taskAPI.getNotifications(true),
+        cachedOutbox?.tasks
+          ? Promise.resolve({ success: true, data: cachedOutbox.tasks })
+          : taskAPI.getOutbox(),
+      ]);
+
+      const outboxTaskIds = new Set((outboxResponse?.data || []).map((task) => task?.id).filter(Boolean));
+      const relevantNotifications = (notificationsResponse?.notifications || []).filter((notification) =>
+        isOutboxNotification(notification, outboxTaskIds)
+      );
+
+      unreadIdsRef.current = relevantNotifications.map((notification) => notification.id);
+      setUnreadCount(relevantNotifications.length);
+      setTaskPanelCache(badgeCacheKey, {
+        unreadCount: relevantNotifications.length,
+        notificationIds: unreadIdsRef.current,
+      });
+    } catch (error) {
+      console.error('Error fetching outbox unread count:', error);
+    } finally {
+      inFlightRef.current = false;
+    }
+  };
+
+  const markNotificationsAsRead = async (notificationIds) => {
+    const ids = [...new Set((notificationIds || []).filter(Boolean))];
+    if (ids.length === 0) return;
+
+    unreadIdsRef.current = [];
+    setUnreadCount(0);
+    if (badgeCacheKey) {
+      setTaskPanelCache(badgeCacheKey, {
+        unreadCount: 0,
+        notificationIds: [],
+      });
+    }
+
+    try {
+      await Promise.allSettled(ids.map((notificationId) => taskAPI.markNotificationRead(notificationId)));
+    } catch (error) {
+      console.error('Error marking outbox notifications as read:', error);
+    }
+  };
+
+  const handleClick = () => {
+    onClick?.();
+    if (unreadIdsRef.current.length > 0) {
+      markNotificationsAsRead(unreadIdsRef.current);
+    }
+  };
+
   return (
     <button 
-      className={`menu-button ${isActive ? 'active' : ''}`}
-      onClick={onClick}
+      className={`menu-button ${isActive ? 'active' : ''} ${unreadCount > 0 ? 'highlighted' : ''}`}
+      onClick={handleClick}
     >
       <span className="menu-button-icon">
         <svg 
@@ -22,7 +165,12 @@ const OutboxButton = ({ onClick, isActive }) => {
           <line x1="12" y1="2" x2="12" y2="15" />
         </svg>
       </span>
-      <span className="menu-button-label">Outbox</span>
+      <span className="menu-button-label">
+        Outbox
+        {unreadCount > 0 && (
+          <span className="notification-badge">{unreadCount}</span>
+        )}
+      </span>
     </button>
   );
 };

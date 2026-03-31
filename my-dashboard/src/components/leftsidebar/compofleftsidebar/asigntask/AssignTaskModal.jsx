@@ -14,11 +14,13 @@ import {
   invalidateTaskPanelCache,
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
+import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 
 const TASK_TAG_OPTIONS = [
   'Audio',
   'Video',
   'Image',
+  'Image and Vedio',
   'Script',
   'Content',
   'Animation',
@@ -61,6 +63,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   // NEW: Department and user data
   const [departments, setDepartments] = useState([]);
   const [departmentUsers, setDepartmentUsers] = useState([]);
+  const [knownUsersById, setKnownUsersById] = useState({});
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [projectIdState, setProjectIdState] = useState({ status: 'idle', message: '' });
@@ -82,6 +85,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   const [currentDraftId, setCurrentDraftId] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const minimizedWindowStyle = useMinimizedWindowStack('assign-task-modal', isOpen && isMinimized);
 
   const cacheKeys = useMemo(() => {
     if (!user?.id) return null;
@@ -105,6 +109,18 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       (department) => `${department || ''}`.trim().toLowerCase() === value.toLowerCase()
     );
     return match || value;
+  };
+
+  const rememberUsers = (users = []) => {
+    if (!Array.isArray(users) || users.length === 0) return;
+    setKnownUsersById((prev) => {
+      const next = { ...prev };
+      users.forEach((entry) => {
+        if (!entry?.id) return;
+        next[entry.id] = entry;
+      });
+      return next;
+    });
   };
 
   // NEW: Load current user and departments on mount
@@ -277,6 +293,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
 
     if (cachedUsers?.users) {
       setDepartmentUsers(cachedUsers.users);
+      rememberUsers(cachedUsers.users);
       setLoadingUsers(false);
     } else {
       setLoadingUsers(true);
@@ -285,6 +302,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       const response = await authAPI.getUsersByDepartment(normalizedDepartment);
       if (response.users) {
         setDepartmentUsers(response.users);
+        rememberUsers(response.users);
         if (cacheKey) {
           setTaskPanelCache(cacheKey, {
             users: response.users,
@@ -329,6 +347,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
         links: editingTask.links || []
       };
       setFormData(mappedEditData);
+      rememberUsers(editingTask.assignedTo || []);
       setCurrentDraftId(null);
       return;
     }
@@ -480,13 +499,6 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       setProjectIdState({ status: 'success', message: 'Existing project linked by name.' });
     }
 
-    // NEW: Load users when department changes
-    if (field === 'toDepartment') {
-      setFormData(prev => ({
-        ...prev,
-        selectedUserIds: [] // Reset selected users
-      }));
-    }
   };
 
   // NEW: Toggle user selection
@@ -498,6 +510,18 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
         : [...prev.selectedUserIds, userId]
     }));
   };
+
+  const selectedReceivers = useMemo(
+    () => formData.selectedUserIds.map((userId) => (
+      knownUsersById[userId] || {
+        id: userId,
+        name: `User #${userId}`,
+        department: '',
+        position: '',
+      }
+    )),
+    [formData.selectedUserIds, knownUsersById]
+  );
 
   // Handle attachments update
   const handleAttachmentsChange = (attachments) => {
@@ -739,12 +763,21 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
     if (hasFormData()) {
       const confirmClose = await showConfirm(
         'You have unsaved changes. Do you want to save as draft before closing?',
-        { title: 'Unsaved Changes', confirmText: 'Save Draft', cancelText: 'Discard' }
+        {
+          title: 'Unsaved Changes',
+          confirmText: 'Save Draft',
+          confirmValue: 'save',
+          cancelText: 'Discard',
+          cancelValue: 'discard',
+          tertiaryText: 'Stay Here',
+          tertiaryValue: 'stay',
+          dismissValue: 'stay',
+        }
       );
-      if (confirmClose) {
+      if (confirmClose === 'save') {
         await saveDraft();
         onClose();
-      } else {
+      } else if (confirmClose === 'discard') {
         onClose();
       }
     } else {
@@ -841,7 +874,6 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
   const handleToggleMaximize = () => {
     if (isMinimized) {
       setIsMinimized(false);
-      setIsMaximized(true);
       return;
     }
 
@@ -850,7 +882,11 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
 
   return (
     <div className={`assign-modal-backdrop ${isMinimized ? 'disabled' : ''}`} onClick={!isMinimized ? handleClose : undefined}>
-      <div className={`assign-modal ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`} onClick={stopPropagation}>
+      <div
+        className={`assign-modal ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}
+        onClick={stopPropagation}
+        style={minimizedWindowStyle || undefined}
+      >
         {/* Top dark bar */}
         <div className="assign-modal-header-bar" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
           <span>{editingTask ? 'EDIT TASK' : 'CREATE NEW TASK'}</span>
@@ -860,27 +896,29 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
                 {saveMessage.text}
               </span>
             )}
-            <button
-              className="assign-window-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleToggleMinimize();
-              }}
-              aria-label={isMinimized ? 'Restore' : 'Minimize'}
-              title={isMinimized ? 'Restore' : 'Minimize'}
-            >
-              {isMinimized ? '▢' : '─'}
-            </button>
+            {!isMinimized && (
+              <button
+                className="assign-window-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleToggleMinimize();
+                }}
+                aria-label="Minimize"
+                title="Minimize"
+              >
+                ─
+              </button>
+            )}
             <button
               className="assign-window-btn"
               onClick={(e) => {
                 e.stopPropagation();
                 handleToggleMaximize();
               }}
-              aria-label={isMaximized ? 'Restore window' : 'Maximize'}
-              title={isMaximized ? 'Restore window' : 'Maximize'}
+              aria-label={isMinimized ? 'Restore' : isMaximized ? 'Restore window' : 'Maximize'}
+              title={isMinimized ? 'Restore' : isMaximized ? 'Restore window' : 'Maximize'}
             >
-              {isMaximized ? '❐' : '□'}
+              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
             </button>
             <button
               className="assign-close-icon"
@@ -1001,10 +1039,10 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
               <label>&nbsp;</label>
               <div className="project-id-btn-row">
                 <button type="button" className="assign-secondary-btn" onClick={handleValidateProjectId}>
-                  Validate ID
+                  Validate Proj ID
                 </button>
                 <button type="button" className="assign-draft-btn" onClick={handleGenerateProjectId}>
-                  Generate ID
+                  Generate Proj ID
                 </button>
               </div>
             </div>
@@ -1023,68 +1061,123 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
             </div>
           </div>
 
-          {/* Departments */}
-          <div className="assign-row">
-            <div className="assign-card">
-              <div className="assign-field">
-                <label>My Department</label>
-                <input 
-                  type="text" 
-                  placeholder='Your department' 
-                  value={formData.myDepartment}
-                  readOnly
-                  disabled
-                />
+          <div className="assign-receiver-shell">
+            <div className="assign-receiver-top-grid">
+              <div className="assign-card assign-receiver-control-card">
+                <div className="assign-field">
+                  <label>My Department</label>
+                  <input 
+                    type="text" 
+                    placeholder='Your department' 
+                    value={formData.myDepartment}
+                    readOnly
+                    disabled
+                  />
+                </div>
+              </div>
+              <div className="assign-card assign-receiver-control-card">
+                <div className="assign-field">
+                  <label>Browse Department</label>
+                  <select 
+                    value={formData.toDepartment}
+                    onChange={(e) => handleChange('toDepartment', e.target.value)}
+                  >
+                    <option value="">-- Select Department --</option>
+                    {departments.map(dept => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                  </select>
+                  <small className="assign-help-text">
+                    Switch departments to keep building one mixed receiver list. Remove anyone anytime from the selected panel.
+                  </small>
+                </div>
               </div>
             </div>
-            <div className='assign-card'>
-              <div className="assign-field">
-                <label>Send To Department</label>
-                <select 
-                  value={formData.toDepartment}
-                  onChange={(e) => handleChange('toDepartment', e.target.value)}
-                >
-                  <option value="">-- Select Department --</option>
-                  {departments.map(dept => (
-                    <option key={dept} value={dept}>{dept}</option>
-                  ))}
-                </select>
+
+            <div className="assign-receiver-grid">
+              <div className="assign-card assign-receiver-panel">
+                <div className="selected-receivers-header">
+                  <div>
+                    <h3>Selected Receivers</h3>
+                    <p>People already added to this task from one or more departments.</p>
+                  </div>
+                  <span>{selectedReceivers.length} picked</span>
+                </div>
+
+                {selectedReceivers.length > 0 ? (
+                  <div className="selected-receivers-list">
+                    {selectedReceivers.map((receiver) => (
+                      <div key={receiver.id} className="selected-receiver-chip">
+                        <div className="selected-receiver-copy">
+                          <strong>{receiver.name}</strong>
+                          <small>
+                            {[receiver.department, receiver.position].filter(Boolean).join(' | ') || `User ID ${receiver.id}`}
+                          </small>
+                        </div>
+                        <button
+                          type="button"
+                          className="selected-receiver-remove"
+                          onClick={() => toggleUserSelection(receiver.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="selected-receivers-empty">
+                    Start by choosing a department on the right, then pick users to build your receiver list.
+                  </div>
+                )}
+              </div>
+
+              <div className="assign-card assign-receiver-panel">
+                <div className="receiver-panel-header">
+                  <div>
+                    <h3>{formData.toDepartment ? `Add Users from ${formData.toDepartment}` : 'Choose a Department'}</h3>
+                    <p>
+                      {formData.toDepartment
+                        ? 'Checked users are added instantly to the selected receiver list.'
+                        : 'Select a department above to browse and add available users.'}
+                    </p>
+                  </div>
+                  {formData.selectedUserIds.length > 0 && (
+                    <span className="receiver-selection-badge">
+                      {formData.selectedUserIds.length} selected
+                    </span>
+                  )}
+                </div>
+
+                {formData.toDepartment ? (
+                  loadingUsers ? (
+                    <div className="receiver-panel-state">Loading users...</div>
+                  ) : departmentUsers.length > 0 ? (
+                    <div className="department-users-list">
+                      {departmentUsers.map(user => (
+                        <label key={user.id} className="user-checkbox-item">
+                          <input 
+                            type="checkbox"
+                            checked={formData.selectedUserIds.includes(user.id)}
+                            onChange={() => toggleUserSelection(user.id)}
+                          />
+                          <span className="user-checkbox-label">
+                            <strong>{user.name}</strong>
+                            <small>
+                              {[user.department, user.position].filter(Boolean).join(' | ')}
+                            </small>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="receiver-panel-state">No users found in this department.</div>
+                  )
+                ) : (
+                  <div className="receiver-panel-state">Pick a department to start adding receivers.</div>
+                )}
               </div>
             </div>
           </div>
-
-          {/* Department Users Selection */}
-          {formData.toDepartment && (
-            <div className="assign-row assign-card">
-              <h3>Select Users from {formData.toDepartment} Department</h3>
-              {loadingUsers ? (
-                <p style={{ color: '#666', fontSize: '14px' }}>Loading users...</p>
-              ) : departmentUsers.length > 0 ? (
-                <div className="department-users-list">
-                  {departmentUsers.map(user => (
-                    <label key={user.id} className="user-checkbox-item">
-                      <input 
-                        type="checkbox"
-                        checked={formData.selectedUserIds.includes(user.id)}
-                        onChange={() => toggleUserSelection(user.id)}
-                      />
-                      <span className="user-checkbox-label">
-                        <strong>{user.name}</strong>
-                        {user.position && <small> ({user.position})</small>}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <p style={{ color: '#999', fontSize: '14px' }}>No users found in this department</p>
-              )}
-              {formData.selectedUserIds.length > 0 && (
-                <p style={{ fontSize: '12px', color: '#0066cc', marginTop: '10px' }}>
-                  ✓ {formData.selectedUserIds.length} user(s) selected
-                </p>
-              )}
-            </div>
-          )}
 
           {/* Timeline & Priority */}
           <div className="assign-row">

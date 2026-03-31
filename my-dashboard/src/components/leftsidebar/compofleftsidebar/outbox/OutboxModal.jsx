@@ -3,10 +3,12 @@ import './Outbox.css';
 import React, { useState, useEffect, useRef } from 'react';
 import OutboxTaskCard from './OutboxTaskCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
+import TaskChatPanel from '../messagesystem/TaskChatPanel';
 import { taskAPI, draftAPI } from '../../../../services/api';
 import { formatDateIndia, formatTimeIndia } from '../../../../utils/dateTime';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useAuth } from '../../../../context/AuthContext';
+import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
 import {
   buildTaskPanelCacheKey,
@@ -38,8 +40,10 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
   const [isMaximized, setIsMaximized] = useState(false);
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
+  const [chatTask, setChatTask] = useState(null);
   const fetchInFlightRef = useRef(false);
   const cacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'outbox') : null;
+  const minimizedWindowStyle = useMinimizedWindowStack('outbox-modal', isOpen && isMinimized);
 
   // Fetch data when modal opens
   useEffect(() => {
@@ -158,6 +162,11 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
   };
 
   const handleTaskAction = async (task, action) => {
+    if (action === 'chat') {
+      setChatTask(task);
+      return;
+    }
+
     if (action === 'edit_task' && onEditTask) {
       onEditTask(task);
       return;
@@ -260,7 +269,6 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
   const handleToggleMaximize = () => {
     if (isMinimized) {
       setIsMinimized(false);
-      setIsMaximized(true);
       return;
     }
 
@@ -273,11 +281,14 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
       <div className={`outbox-modal-backdrop ${isMinimized ? 'disabled' : ''}`} onClick={!isMinimized ? onClose : undefined}></div>
 
       {/* Modal Content */}
-      <div className={`outbox-modal ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}>
+      <div
+        className={`outbox-modal ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}
+        style={minimizedWindowStyle || undefined}
+      >
         {/* Main Header with Close Button */}
         <div className="outbox-main-header" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
           <div className="header-title-section">
-            <h1 className="outbox-main-title">MY OUTBOX</h1>
+            <h1 className="outbox-main-title">Outbox</h1>
             {/* NEW: Display current user info */}
             {currentUser && (
               <span className="current-user-badge">
@@ -286,11 +297,13 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
             )}
           </div>
           <div className="outbox-window-controls">
-            <button className="outbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title={isMinimized ? 'Restore' : 'Minimize'}>
-              {isMinimized ? '▢' : '─'}
-            </button>
-            <button className="outbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMaximize(); }} title={isMaximized ? 'Restore Window' : 'Maximize'}>
-              {isMaximized ? '❐' : '□'}
+            {!isMinimized && (
+              <button className="outbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title="Minimize">
+                ─
+              </button>
+            )}
+            <button className="outbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMaximize(); }} title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}>
+              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
             </button>
             <button className="outbox-close-btn" onClick={(e) => { e.stopPropagation(); onClose(); }}>
               ✕
@@ -429,6 +442,11 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
           setWorkflowOpen(false);
           setSelectedTaskForWorkflow(null);
         }}
+      />
+      <TaskChatPanel
+        task={chatTask}
+        isOpen={!!chatTask}
+        onClose={() => setChatTask(null)}
       />
     </>
   );

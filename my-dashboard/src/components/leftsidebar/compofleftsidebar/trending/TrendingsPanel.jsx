@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { authAPI, taskAPI } from '../../../../services/api';
+import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
@@ -118,6 +119,7 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
   const [openMenuAssetId, setOpenMenuAssetId] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const minimizedWindowStyle = useMinimizedWindowStack('trendings-panel', isOpen && isMinimized);
   const [showDirectoryWindow, setShowDirectoryWindow] = useState(false);
   const [selectedUploaderKey, setSelectedUploaderKey] = useState('');
   const [selectedDateKey, setSelectedDateKey] = useState('');
@@ -413,6 +415,25 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
     return <div className="trendings-card-fallback">Text/Document</div>;
   };
 
+  const handleToggleMinimize = () => {
+    if (isMinimized) {
+      setIsMinimized(false);
+      return;
+    }
+
+    setIsMaximized(false);
+    setIsMinimized(true);
+  };
+
+  const handleToggleMaximize = () => {
+    if (isMinimized) {
+      setIsMinimized(false);
+      return;
+    }
+
+    setIsMaximized((prev) => !prev);
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -421,26 +442,28 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
         className={`trendings-overlay ${isMinimized ? 'disabled' : ''}`}
         onClick={!isMinimized ? onClose : undefined}
       />
-      <div className={`trendings-panel ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}>
+      <div
+        className={`trendings-panel ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}
+        style={minimizedWindowStyle || undefined}
+      >
         <div className="trendings-header">
-          <h2>Trendings Databank</h2>
+          <h2>RMW Data</h2>
           <div className="trendings-controls">
+            {!isMinimized && (
+              <button
+                className="trendings-control-btn"
+                onClick={handleToggleMinimize}
+                title="Minimize"
+              >
+                —
+              </button>
+            )}
             <button
               className="trendings-control-btn"
-              onClick={() => setIsMinimized((prev) => !prev)}
-              title={isMinimized ? 'Restore' : 'Minimize'}
+              onClick={handleToggleMaximize}
+              title={isMinimized ? 'Restore' : isMaximized ? 'Restore Size' : 'Maximize'}
             >
-              {isMinimized ? '▢' : '—'}
-            </button>
-            <button
-              className="trendings-control-btn"
-              onClick={() => {
-                setIsMaximized((prev) => !prev);
-                setIsMinimized(false);
-              }}
-              title={isMaximized ? 'Restore Size' : 'Maximize'}
-            >
-              {isMaximized ? '❐' : '□'}
+              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
             </button>
             <button className="trendings-close-btn" onClick={onClose}>×</button>
           </div>

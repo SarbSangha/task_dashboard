@@ -70,6 +70,8 @@
   margin: 0;
   color: #eef5ff;
   letter-spacing: 0.2px;
+  flex: 1;
+  min-width: 0;
 }
 
 .trendings-close-btn {
@@ -91,6 +93,31 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
+}
+
+.trendings-panel.minimized .trendings-header {
+  padding: 10px 12px;
+  border-bottom: none;
+}
+
+.trendings-panel.minimized .trendings-header h2 {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trendings-panel.minimized .trendings-controls {
+  gap: 6px;
+}
+
+.trendings-panel.minimized .trendings-close-btn,
+.trendings-panel.minimized .trendings-control-btn {
+  width: 30px;
+  height: 30px;
+  font-size: 14px;
+  border-radius: 7px;
 }
 
 .trendings-control-btn {

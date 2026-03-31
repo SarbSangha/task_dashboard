@@ -3,9 +3,11 @@ import Topnavbar from '../components/navbar/top/Topnavbar';
 import FunctionalMenu from '../components/leftsidebar/Leftside';
 import AIAssistant from '../components/aiAssistant/AIAssistant';
 import RMWHero from '../components/hero/RMWHero';
+import useBackgroundRealtimeAlerts from '../hooks/useBackgroundRealtimeAlerts';
 
 const Dashboard = () => {
   const trackingRef = useRef(null);
+  useBackgroundRealtimeAlerts();
 
   const handleStartTrack = () => {
     if (trackingRef.current) {

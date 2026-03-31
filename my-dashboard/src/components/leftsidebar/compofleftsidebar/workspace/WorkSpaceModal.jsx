@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import './WorkSpaceModal.css';
 import Tools from './Tools';
-import { activityAPI, authAPI, fileAPI, groupAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
+import { activityAPI, authAPI, taskAPI } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useAuth } from '../../../../context/AuthContext';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
@@ -11,12 +11,12 @@ import {
   getTaskPanelCache,
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
+import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import CompanyMemberPreview from './CompanyMemberPreview';
+import ChatAttachmentGallery from '../../../common/chat/ChatAttachmentGallery';
 
-const FILES_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const WORKSPACE_TASK_CACHE_TTL_MS = 90 * 1000;
 const WORKSPACE_REFERENCE_CACHE_TTL_MS = 5 * 60 * 1000;
-const WORKSPACE_GROUPS_CACHE_TTL_MS = 2 * 60 * 1000;
-const WORKSPACE_GROUP_MESSAGES_CACHE_TTL_MS = 90 * 1000;
 
 function mergeWorkspaceTasks(inboxTasks = [], outboxTasks = []) {
   return Array.from(
@@ -246,6 +246,7 @@ function useWorkspaceCompanyDirectory() {
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [canViewCompany, setCanViewCompany] = useState(false);
   const [departments, setDepartments] = useState([]);
   const [selectedDepartment, setSelectedDepartment] = useState('');
   const [members, setMembers] = useState([]);
@@ -298,9 +299,12 @@ function useWorkspaceCompanyDirectory() {
       const meRoles = (me?.user?.roles || []).map((r) => String(r).toLowerCase());
       const mePosition = (me?.user?.position || '').toLowerCase();
       const adminAccess = me?.user?.isAdmin || meRoles.includes('admin') || mePosition === 'admin';
+      const facultyAccess = meRoles.includes('faculty') || mePosition === 'faculty';
+      const companyAccess = adminAccess || facultyAccess;
       setIsAdmin(!!adminAccess);
+      setCanViewCompany(!!companyAccess);
 
-      if (!adminAccess) {
+      if (!companyAccess) {
         setDepartments([]);
         setSelectedDepartment('');
         setMembers([]);
@@ -308,6 +312,7 @@ function useWorkspaceCompanyDirectory() {
         setActivityByUser({});
         persistCompanyCache({
           isAdmin: false,
+          canViewCompany: false,
           departments: [],
           selectedDepartment: '',
           members: [],
@@ -344,7 +349,8 @@ function useWorkspaceCompanyDirectory() {
       };
 
       persistCompanyCache({
-        isAdmin: true,
+        isAdmin: !!adminAccess,
+        canViewCompany: true,
         departments: deptList,
         selectedDepartment: nextSelectedDepartment,
         members: departmentMembers,
@@ -378,6 +384,11 @@ function useWorkspaceCompanyDirectory() {
     const cached = cachedEntry?.value || null;
     if (cached) {
       setIsAdmin(!!cached.isAdmin);
+      setCanViewCompany(
+        Object.prototype.hasOwnProperty.call(cached, 'canViewCompany')
+          ? !!cached.canViewCompany
+          : !!cached.isAdmin
+      );
       setDepartments(cached.departments || []);
       setSelectedDepartment(cached.selectedDepartment || '');
       setMembers(cached.members || []);
@@ -405,6 +416,7 @@ function useWorkspaceCompanyDirectory() {
         persistCompanyCache({
           ...(cachedSnapshot || {}),
           isAdmin,
+          canViewCompany,
           departments,
           selectedDepartment: departmentName,
           members: departmentMembers,
@@ -425,6 +437,7 @@ function useWorkspaceCompanyDirectory() {
       persistCompanyCache({
         ...(cachedSnapshot || {}),
         isAdmin,
+        canViewCompany,
         departments,
         selectedDepartment: departmentName,
         members: departmentMembers,
@@ -443,6 +456,7 @@ function useWorkspaceCompanyDirectory() {
     loading,
     isRefreshing,
     isAdmin,
+    canViewCompany,
     departments,
     selectedDepartment,
     members,
@@ -456,10 +470,14 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
   const [activeTab, setActiveTab] = useState('overview');
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const minimizedWindowStyle = useMinimizedWindowStack('workspace-window', isOpen && isMinimized);
 
   useEffect(() => {
     if (isOpen) {
-      setActiveTab(initialTab || 'overview');
+      const nextTab = ['overview', 'projects', 'tasks', 'team', 'company', 'analytics', 'Tools'].includes(initialTab)
+        ? initialTab
+        : 'overview';
+      setActiveTab(nextTab);
     }
   }, [isOpen, initialTab]);
 
@@ -485,7 +503,6 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
   const handleToggleMaximize = () => {
     if (isMinimized) {
       setIsMinimized(false);
-      setIsMaximized(true);
       return;
     }
     setIsMaximized((prev) => !prev);
@@ -497,33 +514,38 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
       <div className={`workspace-backdrop ${isMinimized ? 'disabled' : ''}`} onClick={!isMinimized ? onClose : undefined} />
 
       {/* Main Workspace Window */}
-      <div className={`workspace-window ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}>
+      <div
+        className={`workspace-window ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}
+        style={minimizedWindowStyle || undefined}
+      >
         {/* Header */}
         <div className="workspace-header" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
           <div className="workspace-header-left">
-            <div className="workspace-icon">📊</div>
+            {/* <div className="workspace-icon">📊</div> */}
             <h2>Workspace</h2>
           </div>
           <div className="workspace-header-right">
-            <button
-              className="workspace-minimize-btn"
-              title={isMinimized ? 'Restore' : 'Minimize'}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleToggleMinimize();
-              }}
-            >
-              {isMinimized ? '▢' : '─'}
-            </button>
+            {!isMinimized && (
+              <button
+                className="workspace-minimize-btn"
+                title="Minimize"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleToggleMinimize();
+                }}
+              >
+                ─
+              </button>
+            )}
             <button
               className="workspace-maximize-btn"
-              title={isMaximized ? 'Restore Window' : 'Maximize'}
+              title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}
               onClick={(e) => {
                 e.stopPropagation();
                 handleToggleMaximize();
               }}
             >
-              {isMaximized ? '❐' : '□'}
+              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
             </button>
             <button
               className="workspace-close-btn"
@@ -576,13 +598,6 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
             Company
           </button>
           <button
-            className={`workspace-tab ${activeTab === 'groups' ? 'active' : ''}`}
-            onClick={() => setActiveTab('groups')}
-          >
-            <span className="tab-icon">💬</span>
-            Groups
-          </button>
-          <button
             className={`workspace-tab ${activeTab === 'analytics' ? 'active' : ''}`}
             onClick={() => setActiveTab('analytics')}
           >
@@ -601,13 +616,12 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
 
         {/* Content Area */}
         {!isMinimized && (
-        <div className="workspace-content">
+        <div className={`workspace-content ${activeTab === 'projects' ? 'workspace-content-projects' : ''}`}>
           {activeTab === 'overview' && <OverviewContent />}
           {activeTab === 'projects' && <ProjectsContent />}
           {activeTab === 'tasks' && <TasksContent />}
           {activeTab === 'team' && <TeamContent />}
           {activeTab === 'company' && <CompanyContent />}
-          {activeTab === 'groups' && <GroupsContent />}
           {activeTab === 'analytics' && <AnalyticsContent />}
           {activeTab === 'Tools' && <Tools />}
         </div>
@@ -709,7 +723,7 @@ function OverviewContent() {
   }, [tasks]);
 
   return (
-    <div className="tab-content">
+    <div className="tab-content tab-content-groups">
       <h3>Workspace Overview</h3>
       <CacheStatusBanner
         showingCached={cacheStatus.showingCached}
@@ -906,7 +920,7 @@ function ProjectsContent() {
   }, [filteredProjects, projects, selectedProjectKey]);
 
   return (
-    <div className="tab-content">
+    <div className="tab-content tab-content-projects">
       <div className="content-header">
         <h3>Projects</h3>
         <button className="add-btn" onClick={() => void refresh()}>
@@ -1231,6 +1245,7 @@ function CompanyContent() {
     loading,
     isRefreshing,
     isAdmin,
+    canViewCompany,
     departments,
     selectedDepartment,
     members,
@@ -1239,7 +1254,7 @@ function CompanyContent() {
     selectDepartment,
   } = useWorkspaceCompanyDirectory();
   const [openMenuId, setOpenMenuId] = useState(null);
-  const [infoMember, setInfoMember] = useState(null);
+  const [previewMember, setPreviewMember] = useState(null);
 
   const formatSeconds = (seconds = 0) => {
     const total = Number(seconds) || 0;
@@ -1275,11 +1290,11 @@ function CompanyContent() {
     );
   }
 
-  if (!isAdmin) {
+  if (!canViewCompany) {
     return (
       <div className="tab-content">
         <h3>Company</h3>
-        <p>Admin access required to view all company members.</p>
+        <p>Admin or faculty access is required to view the company directory.</p>
       </div>
     );
   }
@@ -1321,7 +1336,19 @@ function CompanyContent() {
       <div className="team-grid">
         {members.length === 0 && <div className="team-member-card">No members found in selected department.</div>}
         {members.map((member) => (
-          <div className="team-member-card" key={member.id}>
+          <div
+            className="team-member-card company-member-card"
+            key={member.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => setPreviewMember(member)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setPreviewMember(member);
+              }
+            }}
+          >
             <div className="member-avatar">{member.name?.[0]?.toUpperCase() || 'U'}</div>
             <div className="member-info">
               <div className="member-name">{member.name}</div>
@@ -1329,11 +1356,20 @@ function CompanyContent() {
               <div className="member-role">{member.position || 'Member'}</div>
             </div>
             <div className="outbox-card-menu-wrap" style={{ marginLeft: 'auto' }}>
-              <button className="outbox-card-menu-btn" onClick={() => setOpenMenuId(openMenuId === member.id ? null : member.id)}>⋮</button>
+              <button
+                className="outbox-card-menu-btn"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpenMenuId(openMenuId === member.id ? null : member.id);
+                }}
+              >
+                ⋮
+              </button>
               {openMenuId === member.id && (
                 <div className="outbox-card-menu">
                   <button
-                    onClick={() => {
+                    onClick={(event) => {
+                      event.stopPropagation();
                       setOpenMenuId(null);
                       void showAlert(`Chat with ${member.name} will open here.`, { title: 'Team Chat' });
                     }}
@@ -1341,9 +1377,10 @@ function CompanyContent() {
                     Chat
                   </button>
                   <button
-                    onClick={() => {
+                    onClick={(event) => {
+                      event.stopPropagation();
                       setOpenMenuId(null);
-                      setInfoMember(member);
+                      setPreviewMember(member);
                     }}
                   >
                     Info
@@ -1355,46 +1392,20 @@ function CompanyContent() {
         ))}
       </div>
 
-      {infoMember && (
-        <>
-          <div
-            className="admin-queue-overlay"
-            onClick={() => setInfoMember(null)}
-            style={{ zIndex: 1400 }}
-          />
-          <div
-            className="admin-queue-panel"
-            style={{ zIndex: 1401, width: 'min(560px, 92vw)', height: 'auto', maxHeight: '80vh' }}
-          >
-            <div className="admin-queue-header">
-              <h3>Member Info</h3>
-              <button onClick={() => setInfoMember(null)}>✕</button>
-            </div>
-            <div className="admin-queue-content" style={{ gridTemplateColumns: '1fr', gap: '10px' }}>
-              <div className="admin-queue-item">
-                <p><strong>Name:</strong> {infoMember.name}</p>
-                <p><strong>Department:</strong> {infoMember.department || selectedDepartment}</p>
-                <p><strong>Position:</strong> {infoMember.position || 'Member'}</p>
-                <p><strong>Status:</strong> {activityByUser[infoMember.id]?.status || 'OFFLINE'}</p>
-                <p><strong>Login Time:</strong> {formatDateTimeIndia(activityByUser[infoMember.id]?.loginTime)}</p>
-                <p><strong>Session Duration:</strong> {formatSeconds(activityByUser[infoMember.id]?.totalSessionDuration || 0)}</p>
-                <p><strong>Active Duration:</strong> {formatSeconds(activityByUser[infoMember.id]?.activeTime || 0)}</p>
-                <p><strong>Idle Duration:</strong> {formatSeconds(activityByUser[infoMember.id]?.idleTime || 0)}</p>
-                <p><strong>Away Duration:</strong> {formatSeconds(activityByUser[infoMember.id]?.awayTime || 0)}</p>
-                <p><strong>Last Seen:</strong> {formatDateTimeIndia(activityByUser[infoMember.id]?.lastSeen)}</p>
-                <p><strong>Heartbeat Count:</strong> {activityByUser[infoMember.id]?.heartbeatCount ?? 0}</p>
-                <p><strong>Productivity:</strong> {activityByUser[infoMember.id]?.productivity ?? 0}%</p>
-                <p><strong>Tasks Done Today:</strong> {activityByUser[infoMember.id]?.tasksDone ?? 0}</p>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
+      <CompanyMemberPreview
+        isOpen={!!previewMember}
+        member={previewMember}
+        selectedDepartment={selectedDepartment}
+        activity={previewMember ? activityByUser[previewMember.id] : null}
+        onClose={() => setPreviewMember(null)}
+      />
     </div>
   );
 }
 
 function GroupsContent() {
+  return null;
+
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -1424,10 +1435,9 @@ function GroupsContent() {
   const [showGroupMenu, setShowGroupMenu] = useState(false);
   const [addMemberSelection, setAddMemberSelection] = useState([]);
   const [feedback, setFeedback] = useState('');
-  const messagesEndRef = useRef(null);
+  const messageThreadRef = useRef(null);
   const selectedGroupIdRef = useRef(null);
   const groupMenuRef = useRef(null);
-  const attachmentInputRef = useRef(null);
   const cacheKeys = useMemo(() => {
     if (!user?.id) return null;
     return {
@@ -1478,30 +1488,8 @@ function GroupsContent() {
   const buildAvatarHue = (value) =>
     Array.from(value || 'group').reduce((total, char) => total + char.charCodeAt(0), 0) % 360;
 
-  const buildAttachmentOpenUrl = (attachment) => {
-    const params = new URLSearchParams();
-    if (attachment?.path) params.set('path', attachment.path);
-    else if (attachment?.url) params.set('url', attachment.url);
-    return `${FILES_API_BASE}/api/files/open?${params.toString()}`;
-  };
-
-  const buildAttachmentPreviewUrl = (attachment) => buildAttachmentOpenUrl(attachment);
-
-  const buildAttachmentDownloadUrl = (attachment) => {
-    const params = new URLSearchParams();
-    if (attachment?.path) params.set('path', attachment.path);
-    else if (attachment?.url) params.set('url', attachment.url);
-    if (attachment?.originalName || attachment?.filename) {
-      params.set('filename', attachment.originalName || attachment.filename);
-    }
-    return `${FILES_API_BASE}/api/files/download?${params.toString()}`;
-  };
-
   const getAttachmentLabel = (attachment) =>
-    attachment?.originalName || attachment?.filename || 'Attachment';
-
-  const isImageAttachment = (attachment) => `${attachment?.mimetype || ''}`.startsWith('image/');
-  const isVideoAttachment = (attachment) => `${attachment?.mimetype || ''}`.startsWith('video/');
+    getAttachmentDisplayName(attachment);
 
   const messageItems = useMemo(() => {
     const items = [];
@@ -1737,8 +1725,16 @@ function GroupsContent() {
   }, []);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!selectedGroupId) return undefined;
+
+    const frameId = window.requestAnimationFrame(() => {
+      const thread = messageThreadRef.current;
+      if (!thread) return;
+      thread.scrollTop = thread.scrollHeight;
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [selectedGroupId, messageItems.length]);
 
   const toggleSelected = (id) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -1800,22 +1796,26 @@ function GroupsContent() {
     }
   };
 
-  const handleAttachmentSelect = async (event) => {
-    const files = Array.from(event.target.files || []);
+  const handleAttachmentSelect = async (selectedFiles) => {
+    const files = Array.from(selectedFiles || []);
     if (!files.length) return;
     setUploadingAttachment(true);
     try {
       const response = await fileAPI.uploadFiles(files);
-      setPendingAttachments((prev) => [...prev, ...(response?.data || [])]);
+      setPendingAttachments((prev) => mergeUniqueAttachments(prev, response?.data || []));
       setFeedback('');
     } catch (error) {
       setFeedback(error?.response?.data?.detail || 'Failed to upload attachment.');
     } finally {
       setUploadingAttachment(false);
-      if (attachmentInputRef.current) {
-        attachmentInputRef.current.value = '';
-      }
     }
+  };
+
+  const openAttachmentPicker = (mode) => {
+    openSystemFilePicker({
+      mode,
+      onSelect: handleAttachmentSelect,
+    });
   };
 
   const updateMemberRole = async (memberId, role) => {
@@ -2041,7 +2041,7 @@ function GroupsContent() {
               </div>
 
               <div className="group-chat-body">
-                <div className="group-chat-thread">
+                <div className="group-chat-thread" ref={messageThreadRef}>
                   <CacheStatusBanner
                     showingCached={messageCacheStatus.showingCached}
                     isRefreshing={isMessagesRefreshing}
@@ -2078,50 +2078,7 @@ function GroupsContent() {
                           {msg.message && <div className="group-message-text">{msg.message}</div>}
                           {!!msg.attachments?.length && (
                             <div className="group-message-attachments">
-                              {msg.attachments.map((attachment, index) => (
-                                <a
-                                  key={`${msg.id}-attachment-${index}`}
-                                  className="group-message-attachment-card"
-                                  href={buildAttachmentOpenUrl(attachment)}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  {isImageAttachment(attachment) ? (
-                                    <img
-                                      className="group-message-attachment-preview group-message-attachment-preview-media"
-                                      src={buildAttachmentPreviewUrl(attachment)}
-                                      alt={getAttachmentLabel(attachment)}
-                                    />
-                                  ) : isVideoAttachment(attachment) ? (
-                                    <video
-                                      className="group-message-attachment-preview group-message-attachment-preview-media"
-                                      src={buildAttachmentPreviewUrl(attachment)}
-                                      controls
-                                      preload="metadata"
-                                      onClick={(event) => {
-                                        event.preventDefault();
-                                        event.stopPropagation();
-                                      }}
-                                    />
-                                  ) : (
-                                    <div className="group-message-attachment-icon">+</div>
-                                  )}
-                                  <div className="group-message-attachment-copy">
-                                    <span>{getAttachmentLabel(attachment)}</span>
-                                    <small>{attachment.mimetype || 'Attachment'}</small>
-                                  </div>
-                                  <span
-                                    className="group-message-attachment-download"
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      window.open(buildAttachmentDownloadUrl(attachment), '_blank', 'noopener,noreferrer');
-                                    }}
-                                  >
-                                    Open
-                                  </span>
-                                </a>
-                              ))}
+                              <ChatAttachmentGallery attachments={msg.attachments} />
                             </div>
                           )}
                           <div className="group-message-meta">
@@ -2131,7 +2088,6 @@ function GroupsContent() {
                       </div>
                     );
                   })}
-                  <div ref={messagesEndRef} />
                 </div>
               </div>
 
@@ -2157,19 +2113,29 @@ function GroupsContent() {
                   <button
                     type="button"
                     className="group-chat-tool-btn"
-                    onClick={() => attachmentInputRef.current?.click()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openAttachmentPicker('files');
+                    }}
                     title="Attach files"
                     disabled={uploadingAttachment}
                   >
                     +
                   </button>
-                  <input
-                    ref={attachmentInputRef}
-                    type="file"
-                    multiple
-                    onChange={handleAttachmentSelect}
-                    style={{ display: 'none' }}
-                  />
+                  <button
+                    type="button"
+                    className="group-chat-tool-btn"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openAttachmentPicker('folder');
+                    }}
+                    title="Attach folder"
+                    disabled={uploadingAttachment}
+                  >
+                    F
+                  </button>
                   <input
                     className="groups-input group-chat-input"
                     type="text"

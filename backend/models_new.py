@@ -464,6 +464,18 @@ class GroupChatMessage(Base):
     edited_at = Column(DateTime)
 
 
+class DirectMessage(Base):
+    __tablename__ = "direct_messages"
+
+    id = Column(Integer, primary_key=True)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    recipient_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    message = Column(Text, nullable=False)
+    attachments_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    edited_at = Column(DateTime)
+
+
 # ==================== ARCHIVE DATABASE MODELS ====================
 
 class ArchivedTask(ArchiveBase):

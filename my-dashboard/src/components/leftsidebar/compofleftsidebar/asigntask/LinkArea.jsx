@@ -55,55 +55,57 @@ export default function TaskForm({ links = [], onChange }) {
   };
 
   return (
-    <div className="assign-row assign-card">
+    <div className="assign-row assign-card link-area-card">
       <h3>Related Links</h3>
 
-      {/* Link Input Section */}
-      <div className="link-section">
-        <input
-          type="text"
-          placeholder="🔗 Paste link here... (e.g., https://example.com)"
-          value={linkInput}
-          onChange={(e) => setLinkInput(e.target.value)}
-          onKeyPress={handleKeyPress}
-          className="link-input"
-        />
-        <button 
-          onClick={addLink} 
-          className="add-link-btn"
-          disabled={!linkInput.trim()}
-        >
-          ➕ Add
-        </button>
-      </div>
-
-      {/* Stored Links */}
-      {localLinks.length > 0 && (
-        <div className="link-container">
-          <p className="link-count">
-            {localLinks.length} link{localLinks.length > 1 ? 's' : ''} added
-          </p>
-          {localLinks.map((link, index) => (
-            <div key={index} className="link-item">
-              <a 
-                href={link} 
-                target="_blank" 
-                rel="noopener noreferrer"
-                title={link}
-              >
-                🔗 {link.length > 50 ? link.substring(0, 47) + '...' : link}
-              </a>
-              <button
-                className="remove-btn"
-                onClick={() => removeLink(index)}
-                title="Remove link"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+      <div className="link-main">
+        {/* Link Input Section */}
+        <div className="link-section">
+          <input
+            type="text"
+            placeholder="🔗 Paste link here... (e.g., https://example.com)"
+            value={linkInput}
+            onChange={(e) => setLinkInput(e.target.value)}
+            onKeyPress={handleKeyPress}
+            className="link-input"
+          />
+          <button 
+            onClick={addLink} 
+            className="add-link-btn"
+            disabled={!linkInput.trim()}
+          >
+            ➕ Add
+          </button>
         </div>
-      )}
+
+        {/* Stored Links */}
+        {localLinks.length > 0 && (
+          <div className="link-container">
+            <p className="link-count">
+              {localLinks.length} link{localLinks.length > 1 ? 's' : ''} added
+            </p>
+            {localLinks.map((link, index) => (
+              <div key={index} className="link-item">
+                <a 
+                  href={link} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  title={link}
+                >
+                  🔗 {link.length > 50 ? link.substring(0, 47) + '...' : link}
+                </a>
+                <button
+                  className="remove-btn"
+                  onClick={() => removeLink(index)}
+                  title="Remove link"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

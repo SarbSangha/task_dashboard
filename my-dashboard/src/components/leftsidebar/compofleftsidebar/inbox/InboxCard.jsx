@@ -29,7 +29,10 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
   const computedActions = canShowSubmitTask && !withStart.includes('submit')
     ? [...withStart, 'submit']
     : withStart;
-  const actions = isRevoked ? [] : computedActions;
+  const withChat = !computedActions.includes('chat')
+    ? ['chat', ...computedActions]
+    : computedActions;
+  const actions = isRevoked ? [] : withChat;
   const assignedNames = (task.assignedTo || []).map((x) => x.name).join(', ') || 'Unassigned';
   const description = task.description || '';
   const shortDescription = description.length > 120 ? `${description.slice(0, 120)}...` : description;
@@ -40,6 +43,7 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
     return 'Task';
   })();
   const actionLabel = (action) => {
+    if (action === 'chat') return 'Chat';
     if (action === 'start') return 'Start Task';
     if (action === 'submit') return 'Submit Task';
     if (action === 'forward') return 'Forward To';

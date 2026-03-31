@@ -1,5 +1,6 @@
 // src/services/api.js - UNIFIED API SERVICE
 import axios from 'axios';
+import { buildUploadFormData } from '../utils/fileUploads';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const SESSION_TOKEN_STORAGE_KEY = 'rmw_session_token_v1';
@@ -294,6 +295,7 @@ export const taskAPI = {
           .map((item) => ({
             filename: item.filename || item.name || null,
             originalName: item.originalName || item.name || null,
+            relativePath: item.relativePath || item.webkitRelativePath || null,
             path: item.path || null,
             url: item.url || null,
             mimetype: item.mimetype || item.type || null,
@@ -556,6 +558,31 @@ export const groupAPI = {
   },
 };
 
+export const directMessageAPI = {
+  listUsers: async () => {
+    const response = await api.get('/api/direct-messages/users');
+    return response.data;
+  },
+
+  listConversations: async () => {
+    const response = await api.get('/api/direct-messages/conversations');
+    return response.data;
+  },
+
+  listMessages: async (userId) => {
+    const response = await api.get(`/api/direct-messages/conversations/${userId}/messages`);
+    return response.data;
+  },
+
+  sendMessage: async (userId, messageOrPayload) => {
+    const payload = typeof messageOrPayload === 'object' && messageOrPayload !== null
+      ? messageOrPayload
+      : { message: messageOrPayload };
+    const response = await api.post(`/api/direct-messages/conversations/${userId}/messages`, payload);
+    return response.data;
+  },
+};
+
 const realtimeSubscribers = new Map();
 let realtimeSubscriberSeq = 0;
 let realtimeSocket = null;
@@ -754,10 +781,7 @@ export const draftAPI = {
 // ==================== FILE API ====================
 export const fileAPI = {
   uploadFiles: async (files) => {
-    const formData = new FormData();
-    files.forEach(file => {
-      formData.append('files', file);
-    });
+    const formData = buildUploadFormData(files);
 
     const response = await api.post('/upload', formData, {
       headers: {

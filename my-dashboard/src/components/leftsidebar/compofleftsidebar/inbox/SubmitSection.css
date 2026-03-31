@@ -94,6 +94,9 @@
 
 .upload-area {
   margin-top: 8px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .upload-btn {
@@ -112,6 +115,11 @@
 .upload-btn:hover {
   background: rgba(26, 188, 156, 0.3);
   transform: translateY(-2px);
+}
+
+.upload-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .attachments-preview {

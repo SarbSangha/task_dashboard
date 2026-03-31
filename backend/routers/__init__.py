@@ -11,6 +11,7 @@ from . import upload
 from . import activity_router
 from . import admin_router
 from . import groups_router
+from . import direct_messages_router
 
 __all__ = [
     'auth_router',
@@ -21,5 +22,6 @@ __all__ = [
     'upload',
     'activity_router',
     'admin_router',
-    'groups_router'
+    'groups_router',
+    'direct_messages_router'
 ]

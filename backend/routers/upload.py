@@ -1,13 +1,16 @@
 # routers/upload.py
+import io
 import os
 import time
+import zipfile
+from uuid import uuid4
 from pathlib import Path
 from typing import List, Optional
 from urllib.parse import unquote, urlparse
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 
@@ -75,9 +78,36 @@ def _safe_filename(filename: Optional[str], fallback: str = "download") -> str:
     return os.path.basename(name)
 
 
-def _upload_to_r2(file: UploadFile, unique_filename: str, timestamp_ms: int) -> dict:
-    key = f"task-attachments/{timestamp_ms}/{unique_filename}"
+def _normalize_relative_path(relative_path: Optional[str]) -> Optional[str]:
+    raw = (relative_path or "").replace("\\", "/").strip().lstrip("/")
+    if not raw:
+        return None
+
+    parts = [part for part in raw.split("/") if part and part not in {".", ".."}]
+    if not parts:
+        return None
+
+    return "/".join(parts)
+
+
+def _safe_zip_entry_name(filename: Optional[str], fallback: str = "download") -> str:
+    normalized = _normalize_relative_path(filename)
+    if normalized:
+        return normalized
+    return _safe_filename(filename, fallback=fallback)
+
+
+def _upload_to_r2(file: UploadFile, unique_filename: str, timestamp_ms: int, relative_path: Optional[str] = None) -> dict:
+    normalized_relative_path = _normalize_relative_path(relative_path)
+    relative_dir = ""
+    if normalized_relative_path:
+        relative_parent = Path(normalized_relative_path).parent.as_posix()
+        if relative_parent not in {"", "."}:
+            relative_dir = f"{relative_parent.strip('/')}/"
+
+    key = f"task-attachments/{timestamp_ms}/{relative_dir}{unique_filename}"
     client = _build_r2_client()
+    original_name = _safe_filename(file.filename, fallback=unique_filename)
 
     file.file.seek(0)
     extra_args = {}
@@ -97,7 +127,8 @@ def _upload_to_r2(file: UploadFile, unique_filename: str, timestamp_ms: int) -> 
 
     return {
         "filename": unique_filename,
-        "originalName": file.filename,
+        "originalName": original_name,
+        "relativePath": normalized_relative_path,
         "path": key,
         "size": file.size,
         "mimetype": file.content_type,
@@ -107,23 +138,28 @@ def _upload_to_r2(file: UploadFile, unique_filename: str, timestamp_ms: int) -> 
 
 
 @router.post("/upload")
-async def upload_files(files: List[UploadFile] = File(...)):
+async def upload_files(
+    files: List[UploadFile] = File(...),
+    relative_paths: List[str] = Form(default=[]),
+):
     """Upload multiple files to Cloudflare R2."""
     try:
         if not _is_r2_configured():
             raise HTTPException(status_code=500, detail="R2 is not configured on server")
 
         uploaded_files = []
-        for file in files:
+        for index, file in enumerate(files):
             if not file.filename:
                 continue
 
             file_extension = Path(file.filename).suffix
             timestamp_ms = int(time.time() * 1000)
-            unique_filename = f"{Path(file.filename).stem}_{timestamp_ms}{file_extension}"
+            original_name = _safe_filename(file.filename, fallback=f"file{file_extension}")
+            unique_filename = f"{Path(original_name).stem}_{timestamp_ms}_{uuid4().hex[:8]}{file_extension}"
+            relative_path = relative_paths[index] if index < len(relative_paths) else None
 
             try:
-                uploaded_file = _upload_to_r2(file, unique_filename, timestamp_ms)
+                uploaded_file = _upload_to_r2(file, unique_filename, timestamp_ms, relative_path)
             except (ClientError, BotoCoreError, ValueError) as exc:
                 raise HTTPException(status_code=500, detail=f"R2 upload failed: {exc}") from exc
 
@@ -203,3 +239,54 @@ async def download_file(
         return RedirectResponse(url=url, status_code=307)
 
     raise HTTPException(status_code=404, detail="File not found")
+
+
+@router.get("/api/files/download-folder")
+async def download_folder(
+    name: Optional[str] = Query(None),
+    path: List[str] = Query(default=[]),
+    relative_paths: List[str] = Query(default=[], alias="relative_path"),
+):
+    """Download a folder attachment collection as a ZIP archive."""
+    if not _is_r2_configured():
+        raise HTTPException(status_code=500, detail="R2 is not configured on server")
+
+    normalized_items = []
+    for index, item_path in enumerate(path or []):
+        r2_key = _extract_r2_key(item_path, None)
+        if not r2_key:
+            continue
+        relative_path = relative_paths[index] if index < len(relative_paths) else None
+        archive_name = _safe_zip_entry_name(relative_path, fallback=Path(r2_key).name)
+        normalized_items.append((r2_key, archive_name))
+
+    if not normalized_items:
+        raise HTTPException(status_code=404, detail="Folder files not found")
+
+    try:
+        client = _build_r2_client()
+        zip_buffer = io.BytesIO()
+        seen_names = set()
+
+        with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            for r2_key, archive_name in normalized_items:
+                obj = client.get_object(Bucket=_env("R2_BUCKET"), Key=r2_key)
+                entry_name = archive_name
+                if entry_name in seen_names:
+                    stem = Path(entry_name).stem
+                    suffix = Path(entry_name).suffix
+                    counter = 2
+                    while f"{stem}_{counter}{suffix}" in seen_names:
+                        counter += 1
+                    entry_name = f"{stem}_{counter}{suffix}"
+                seen_names.add(entry_name)
+                zip_file.writestr(entry_name, obj["Body"].read())
+
+        zip_buffer.seek(0)
+        folder_name = _safe_filename(name or "folder")
+        if not folder_name.lower().endswith(".zip"):
+            folder_name = f"{folder_name}.zip"
+        headers = {"Content-Disposition": f'attachment; filename="{folder_name}"'}
+        return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
+    except (ClientError, BotoCoreError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to download folder archive: {exc}") from exc

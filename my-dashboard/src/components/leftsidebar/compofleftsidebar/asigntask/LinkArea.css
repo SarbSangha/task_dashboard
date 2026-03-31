@@ -1,12 +1,28 @@
+.link-area-card {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.link-area-card h3 {
+  margin: 6px 0 0;
+}
+
+.link-main {
+  min-width: 0;
+}
+
 .link-section {
   display: flex;
   gap: 10px;
-  margin-top: 15px;
-  
+  width: 100%;
+  align-items: stretch;
 }
 
 .link-input {
   flex: 1;
+  min-width: 0;
   padding: 10px;
   border-radius: 6px;
   border: 1px solid #ccc;
@@ -57,4 +73,18 @@
   color: red;
   cursor: pointer;
   font-size: 14px;
+}
+
+@media (max-width: 768px) {
+  .link-area-card {
+    grid-template-columns: 1fr;
+  }
+
+  .link-area-card h3 {
+    margin-top: 0;
+  }
+
+  .link-section {
+    flex-direction: column;
+  }
 }

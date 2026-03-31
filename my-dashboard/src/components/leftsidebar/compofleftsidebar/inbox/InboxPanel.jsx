@@ -13,6 +13,12 @@ import {
   invalidateTaskPanelCache,
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
+import {
+  getAttachmentDisplayName,
+  mergeUniqueAttachments,
+  openSystemFilePicker,
+} from '../../../../utils/fileUploads';
+import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import './InboxPanel.css';
 
 const INBOX_CACHE_TTL_MS = 90 * 1000;
@@ -42,7 +48,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
     task: null,
     targets: [],
     searchQuery: '',
-    selectedUserId: '',
+    selectedUserIds: [],
     comments: '',
     loading: false,
     submitting: false,
@@ -62,6 +68,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
   const refreshTimerRef = React.useRef(null);
   const cacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'inbox') : null;
   const unreadCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'inbox_unread_count') : null;
+  const minimizedWindowStyle = useMinimizedWindowStack('inbox-panel', isOpen && isMinimized);
 
   useEffect(() => {
     if (isOpen && user?.id) {
@@ -187,7 +194,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
       task,
       targets: [],
       searchQuery: '',
-      selectedUserId: '',
+      selectedUserIds: [],
       comments: '',
       loading: true,
       submitting: false,
@@ -216,7 +223,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
       task: null,
       targets: [],
       searchQuery: '',
-      selectedUserId: '',
+      selectedUserIds: [],
       comments: '',
       loading: false,
       submitting: false,
@@ -289,6 +296,23 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
     }));
   };
 
+  const appendSubmitAttachments = (selectedFiles) => {
+    const selected = Array.from(selectedFiles || []);
+    if (!selected.length) return;
+
+    setSubmitModal((prev) => ({
+      ...prev,
+      attachments: mergeUniqueAttachments(prev.attachments, selected),
+    }));
+  };
+
+  const openSubmitPicker = (mode) => {
+    openSystemFilePicker({
+      mode,
+      onSelect: appendSubmitAttachments,
+    });
+  };
+
   const submitTaskFromModal = async () => {
     const task = submitModal.task;
     if (!task) return;
@@ -329,12 +353,12 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
   };
 
   const submitForwardTask = async () => {
-    if (!forwardModal.task || !forwardModal.selectedUserId) return;
+    if (!forwardModal.task || forwardModal.selectedUserIds.length === 0) return;
 
     setForwardModal((prev) => ({ ...prev, submitting: true, error: '' }));
     try {
       await taskAPI.forwardTask(forwardModal.task.id, {
-        to_user_id: Number(forwardModal.selectedUserId),
+        to_user_ids: forwardModal.selectedUserIds.map((id) => Number(id)),
         comments: forwardModal.comments
       });
       closeForwardModal();
@@ -355,6 +379,23 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
     const haystack = `${target.name || ''} ${target.department || ''} ${target.position || ''}`.toLowerCase();
     return haystack.includes(search);
   });
+  const selectedForwardTargets = (forwardModal.targets || []).filter((target) =>
+    forwardModal.selectedUserIds.includes(String(target.id))
+  );
+
+  const toggleForwardRecipient = (targetId, targetName = '') => {
+    setForwardModal((prev) => {
+      const nextSelectedUserIds = prev.selectedUserIds.includes(String(targetId))
+        ? prev.selectedUserIds.filter((id) => id !== String(targetId))
+        : [...prev.selectedUserIds, String(targetId)];
+
+      return {
+        ...prev,
+        selectedUserIds: nextSelectedUserIds,
+        searchQuery: nextSelectedUserIds.includes(String(targetId)) && targetName ? '' : prev.searchQuery,
+      };
+    });
+  };
 
   const runTaskAction = async (task, action) => {
     try {
@@ -450,7 +491,6 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
   const handleToggleMaximize = () => {
     if (isMinimized) {
       setIsMinimized(false);
-      setIsMaximized(true);
       return;
     }
 
@@ -460,16 +500,22 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
   return (
     <>
       <div className={`inbox-panel-overlay ${isMinimized ? 'disabled' : ''}`} onClick={!isMinimized ? onClose : undefined} />
-      <div className={`inbox-panel-container ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`} onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`inbox-panel-container ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}
+        onClick={(e) => e.stopPropagation()}
+        style={minimizedWindowStyle || undefined}
+      >
         {/* Header */}
         <div className="inbox-panel-header" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
-          <h2>📥 Inbox</h2>
+          <h2>Inbox</h2>
           <div className="inbox-window-controls">
-            <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title={isMinimized ? 'Restore' : 'Minimize'}>
-              {isMinimized ? '▢' : '─'}
-            </button>
-            <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMaximize(); }} title={isMaximized ? 'Restore Window' : 'Maximize'}>
-              {isMaximized ? '❐' : '□'}
+            {!isMinimized && (
+              <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title="Minimize">
+                ─
+              </button>
+            )}
+            <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMaximize(); }} title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}>
+              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
             </button>
             <button className="inbox-close-btn" onClick={(e) => { e.stopPropagation(); onClose(); }}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -583,45 +629,105 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
       {forwardModal.open && (
         <div className="forward-modal-overlay" onClick={closeForwardModal}>
           <div className="forward-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Forward Task</h3>
-            <p className="forward-modal-title">{forwardModal.task?.title}</p>
+            <div className="forward-modal-header">
+              <div>
+                <h3>Forward Task</h3>
+                <p className="forward-modal-subtitle">Send this task to the right teammate with a clear handoff note.</p>
+              </div>
+            </div>
+
+            <div className="forward-modal-task-card">
+              <span className="forward-modal-task-label">Task</span>
+              <p className="forward-modal-title">{forwardModal.task?.title}</p>
+            </div>
 
             {forwardModal.loading ? (
               <p className="forward-modal-loading">Loading users...</p>
             ) : (
               <>
-                <label htmlFor="forward-target-select">Select user</label>
-                <input
-                  id="forward-target-search"
-                  type="text"
-                  value={forwardModal.searchQuery}
-                  onChange={(e) => setForwardModal((prev) => ({ ...prev, searchQuery: e.target.value }))}
-                  placeholder="Search by name, department, position..."
-                />
-                <select
-                  id="forward-target-select"
-                  value={forwardModal.selectedUserId}
-                  onChange={(e) => setForwardModal((prev) => ({ ...prev, selectedUserId: e.target.value }))}
-                >
-                  <option value="">Choose user...</option>
-                  {filteredForwardTargets.map((target) => (
-                    <option key={target.id} value={target.id}>
-                      {target.name} ({target.department || 'N/A'} - {target.position || 'User'})
-                    </option>
-                  ))}
-                </select>
+                <div className="forward-modal-section">
+                  <label htmlFor="forward-target-search">Find teammate</label>
+                  <input
+                    id="forward-target-search"
+                    type="text"
+                    value={forwardModal.searchQuery}
+                    onChange={(e) => setForwardModal((prev) => ({ ...prev, searchQuery: e.target.value }))}
+                    placeholder="Search by name, department, position..."
+                  />
+                  <p className="forward-modal-hint">Click a result below to add more teammates to this forward action.</p>
+                </div>
+
+                <div className="forward-modal-section">
+                  <div className="forward-modal-label-row">
+                    <label>Selected teammates</label>
+                    <span>{selectedForwardTargets.length} chosen</span>
+                  </div>
+
+                  {selectedForwardTargets.length > 0 ? (
+                    <div className="forward-modal-selected-list">
+                      {selectedForwardTargets.map((target) => (
+                        <div key={target.id} className="forward-modal-target-card active">
+                          <div className="forward-modal-target-copy">
+                            <strong>{target.name}</strong>
+                            <span>
+                              {[target.department, target.position].filter(Boolean).join(' | ') || 'User'}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="forward-modal-remove-btn"
+                            onClick={() => toggleForwardRecipient(target.id)}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="forward-modal-target-card">
+                      <strong>No teammate selected yet</strong>
+                      <span>Choose one or more people from the matching list below.</span>
+                    </div>
+                  )}
+
+                  {filteredForwardTargets.length > 0 && (
+                    <div className="forward-modal-match-list">
+                      {filteredForwardTargets.slice(0, 6).map((target) => {
+                        const isActive = forwardModal.selectedUserIds.includes(String(target.id));
+                        return (
+                          <button
+                            key={target.id}
+                            type="button"
+                            className={`forward-modal-match-chip ${isActive ? 'active' : ''}`}
+                            onClick={() => toggleForwardRecipient(target.id, target.name || '')}
+                          >
+                            <strong>{target.name}</strong>
+                            <span>{[target.department, target.position].filter(Boolean).join(' | ') || 'User'}</span>
+                            <em>{isActive ? 'Selected' : 'Add member'}</em>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
                 {!filteredForwardTargets.length && (
-                  <p className="forward-modal-loading">No matching users found.</p>
+                  <p className="forward-modal-empty">No matching users found for your search.</p>
                 )}
 
-                <label htmlFor="forward-note-input">Note (optional)</label>
-                <textarea
-                  id="forward-note-input"
-                  rows={3}
-                  value={forwardModal.comments}
-                  onChange={(e) => setForwardModal((prev) => ({ ...prev, comments: e.target.value }))}
-                  placeholder="Add forwarding note..."
-                />
+                <div className="forward-modal-section">
+                  <div className="forward-modal-label-row">
+                    <label htmlFor="forward-note-input">Forwarding note</label>
+                    <span>Optional</span>
+                  </div>
+                  <textarea
+                    id="forward-note-input"
+                    rows={4}
+                    value={forwardModal.comments}
+                    onChange={(e) => setForwardModal((prev) => ({ ...prev, comments: e.target.value }))}
+                    placeholder="Add context, instructions, or expectations for the next teammate..."
+                  />
+                </div>
 
                 {forwardModal.error && <p className="forward-modal-error">{forwardModal.error}</p>}
 
@@ -630,7 +736,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
                   <button
                     type="button"
                     className="primary"
-                    disabled={!forwardModal.selectedUserId || forwardModal.submitting}
+                    disabled={forwardModal.selectedUserIds.length === 0 || forwardModal.submitting}
                     onClick={submitForwardTask}
                   >
                     {forwardModal.submitting ? 'Forwarding...' : 'Forward'}
@@ -700,26 +806,34 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
               </div>
             )}
 
-            <label htmlFor="submit-file-input">Attach Files (PDF, video, audio, docs)</label>
-            <input
-              id="submit-file-input"
-              type="file"
-              multiple
-              onChange={(e) => {
-                const selected = Array.from(e.target.files || []);
-                if (!selected.length) return;
-                setSubmitModal((prev) => ({
-                  ...prev,
-                  attachments: [...prev.attachments, ...selected],
-                }));
-                e.target.value = '';
-              }}
-            />
+            <label>Attach Files Or Folder (PDF, video, audio, docs)</label>
+            <div className="submit-file-actions">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openSubmitPicker('files');
+                }}
+              >
+                Choose Files
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openSubmitPicker('folder');
+                }}
+              >
+                Choose Folder
+              </button>
+            </div>
             {submitModal.attachments.length > 0 && (
               <div className="submit-attachment-list">
                 {submitModal.attachments.map((file, idx) => (
-                  <div key={`${file.name}-${idx}`} className="submit-attachment-item">
-                    <span>{file.name} ({Math.max(1, Math.round(file.size / 1024))} KB)</span>
+                  <div key={`${getAttachmentDisplayName(file)}-${idx}`} className="submit-attachment-item">
+                    <span>{getAttachmentDisplayName(file)} ({Math.max(1, Math.round(file.size / 1024))} KB)</span>
                     <button type="button" onClick={() => removeSubmitAttachment(idx)}>Remove</button>
                   </div>
                 ))}

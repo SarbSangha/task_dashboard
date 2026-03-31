@@ -6,6 +6,7 @@ import AssignTaskButton from './compofleftsidebar/AssignTaskButton';
 import InboxButton from './compofleftsidebar/InboxButton';
 import OutboxButton from './compofleftsidebar/OutboxButton';
 import MessageSystemButton from './compofleftsidebar/messagesystem/MessageSystemButton';
+import GroupMessagePanel from './compofleftsidebar/messagesystem/GroupMessagePanel';
 import WorkSpaceButton from './compofleftsidebar/WorkSpaceButton';
 import AdminQueueButton from './compofleftsidebar/adminqueue/AdminQueueButton';
 import TrendingsButton from './compofleftsidebar/trending/TrendingsButton';
@@ -28,6 +29,7 @@ const FunctionalMenu = () => {
   const [isOutboxModalOpen, setIsOutboxModalOpen] = useState(false);
   const [isWorkSpaceOpen, setIsWorkSpaceOpen] = useState(false);
   const [isTrackingPanelOpen, setIsTrackingPanelOpen] = useState(false);
+  const [isMessageSystemOpen, setIsMessageSystemOpen] = useState(false);
   const [workspaceInitialTab, setWorkspaceInitialTab] = useState('overview');
   const [editingTask, setEditingTask] = useState(null);
   const [isAdminQueueOpen, setIsAdminQueueOpen] = useState(false);
@@ -95,6 +97,11 @@ const FunctionalMenu = () => {
   };
 
   const closeTrackingPanel = () => setIsTrackingPanelOpen(false);
+  const openMessageSystem = () => {
+    setActiveItem('message-system');
+    setIsMessageSystemOpen(true);
+  };
+  const closeMessageSystem = () => setIsMessageSystemOpen(false);
   const openTrendingsPanel = () => {
     setActiveItem('trendings');
     setIsTrendingsOpen(true);
@@ -140,12 +147,14 @@ const FunctionalMenu = () => {
 
           <OutboxButton
             isActive={activeItem === 'outbox'}
+            isOpen={isOutboxModalOpen}
             onClick={openOutboxModal}
           />
 
           <MessageSystemButton
             isActive={activeItem === 'message-system'}
-            onClick={() => handleItemClick('message-system')}
+            isOpen={isMessageSystemOpen}
+            onClick={openMessageSystem}
           />
           
           <WorkSpaceButton 
@@ -183,6 +192,7 @@ const FunctionalMenu = () => {
 
       {/* Tracking Panel */}
       <TrackingPanel isOpen={isTrackingPanelOpen} onClose={closeTrackingPanel} />
+      <GroupMessagePanel isOpen={isMessageSystemOpen} onClose={closeMessageSystem} variant="overlay" />
       <TrendingsPanel isOpen={isTrendingsOpen} onClose={closeTrendingsPanel} />
 
       {/* Outbox Modal */}

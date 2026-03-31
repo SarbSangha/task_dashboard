@@ -85,6 +85,12 @@
   color: #23304a;
 }
 
+.custom-dialog-btn.tertiary {
+  background: #f8fafc;
+  color: #334155;
+  border: 1px solid #d7dfef;
+}
+
 .custom-dialog-btn.primary {
   background: #2b62ff;
   color: #ffffff;

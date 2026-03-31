@@ -2,8 +2,12 @@
 import React, { useState } from 'react';
 import './SubmitSection.css';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+import { fileAPI, taskAPI } from '../../../../services/api';
+import {
+  getAttachmentDisplayName,
+  mergeUniqueAttachments,
+  openSystemFilePicker,
+} from '../../../../utils/fileUploads';
 
 const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
   const { showAlert } = useCustomDialogs();
@@ -16,32 +20,17 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
   const [submitting, setSubmitting] = useState(false);
 
   const handleFileUpload = async (e) => {
-    const files = Array.from(e.target.files);
+    const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
 
     setUploading(true);
     try {
-      const uploadedUrls = [];
-      
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append('files', file);
-
-        const response = await fetch(`${API_BASE}/upload`, {
-          method: 'POST',
-          credentials: 'include',
-          body: formData
-        });
-
-        const data = await response.json();
-        if (data.success && data.data?.length > 0) {
-          uploadedUrls.push(data.data[0].url);
-        }
-      }
+      const response = await fileAPI.uploadFiles(files);
+      const uploadedAttachments = response?.data || [];
 
       setFormData(prev => ({
         ...prev,
-        attachments: [...prev.attachments, ...uploadedUrls]
+        attachments: mergeUniqueAttachments(prev.attachments, uploadedAttachments)
       }));
 
       await showAlert(`${files.length} file(s) uploaded successfully!`, { title: 'Upload Complete' });
@@ -50,7 +39,17 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
       await showAlert('Failed to upload files.', { title: 'Upload Failed' });
     } finally {
       setUploading(false);
+      e.target.value = '';
     }
+  };
+
+  const openPicker = (mode) => {
+    openSystemFilePicker({
+      mode,
+      onSelect: (selectedFiles) => {
+        handleFileUpload({ target: { files: selectedFiles, value: '' } });
+      },
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -63,24 +62,16 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`${API_BASE}/api/tasks/${taskId}/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(formData)
+      await taskAPI.submitTask(taskId, {
+        result_text: formData.resultDetails.trim(),
+        comments: formData.comments.trim(),
+        result_attachments: formData.attachments,
       });
-
-      const data = await response.json();
-
-      if (data.success) {
-        await showAlert('Task submitted successfully!', { title: 'Success' });
-        onSubmitComplete();
-      } else {
-        await showAlert(data.detail || 'Task submission failed.', { title: 'Submission Failed' });
-      }
+      await showAlert('Task submitted successfully!', { title: 'Success' });
+      onSubmitComplete();
     } catch (error) {
       console.error('Submit error:', error);
-      await showAlert('Failed to submit task.', { title: 'Submission Failed' });
+      await showAlert(error?.response?.data?.detail || 'Failed to submit task.', { title: 'Submission Failed' });
     } finally {
       setSubmitting(false);
     }
@@ -129,26 +120,39 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
           <div className="form-group">
             <label>Attachments</label>
             <div className="upload-area">
-              <input
-                type="file"
-                multiple
-                onChange={handleFileUpload}
+              <button
+                type="button"
+                className="upload-btn"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openPicker('files');
+                }}
                 disabled={uploading}
-                id="file-upload"
-                style={{ display: 'none' }}
-              />
-              <label htmlFor="file-upload" className="upload-btn">
-                {uploading ? '⏳ Uploading...' : '📎 Upload Files'}
-              </label>
+              >
+                {uploading ? 'Uploading...' : 'Upload Files'}
+              </button>
+              <button
+                type="button"
+                className="upload-btn"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openPicker('folder');
+                }}
+                disabled={uploading}
+              >
+                {uploading ? 'Uploading...' : 'Upload Folder'}
+              </button>
             </div>
 
             {/* Attachment List */}
             {formData.attachments.length > 0 && (
               <div className="attachments-preview">
                 <h4>Uploaded Files ({formData.attachments.length})</h4>
-                {formData.attachments.map((url, index) => (
+                {formData.attachments.map((attachment, index) => (
                   <div key={index} className="attachment-preview-item">
-                    <span>📄 {url.split('/').pop()}</span>
+                    <span>📄 {getAttachmentDisplayName(attachment)}</span>
                     <button 
                       type="button" 
                       onClick={() => removeAttachment(index)}

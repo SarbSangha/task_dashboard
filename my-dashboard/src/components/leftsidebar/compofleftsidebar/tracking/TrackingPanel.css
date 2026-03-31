@@ -62,6 +62,8 @@
   font-size: 20px;
   font-weight: 700;
   color: white;
+  flex: 1;
+  min-width: 0;
 }
 
 .tracking-close-btn {
@@ -501,6 +503,7 @@
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .tracking-control-btn {
@@ -556,12 +559,26 @@
 
 .tracking-panel.minimized .tracking-header {
   border-bottom: none;
-  padding: 12px 16px;
+  padding: 10px 12px;
 }
 
 .tracking-panel.minimized .tracking-header h2 {
-  font-size: 14px;
+  font-size: 12px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tracking-panel.minimized .tracking-controls {
+  gap: 6px;
+}
+
+.tracking-panel.minimized .tracking-control-btn,
+.tracking-panel.minimized .tracking-close-btn {
+  width: 30px;
+  height: 30px;
+  padding: 6px;
+  border-radius: 7px;
 }
 
 @keyframes slideToBottom {

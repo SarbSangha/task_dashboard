@@ -12,7 +12,7 @@ const TrendingsButton = ({ isActive, onClick }) => {
           <path d="M3 17h3l3-5 4 4 5-8 3 2v7H3v-2zm0-9h5v2H3V8zm7 0h11v2H10V8z" />
         </svg>
       </div>
-      <span className="menu-button-label">Trendings</span>
+      <span className="menu-button-label">RMW Data</span>
     </button>
   );
 };

@@ -3,6 +3,7 @@ import { taskAPI, subscribeRealtimeNotifications } from '../../../../services/ap
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import './TaskChatPanel.css';
 import { formatDateTimeIndia } from '../../../../utils/dateTime';
+import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 
 const COMMENT_TYPES = ['general', 'suggestion', 'need_improvement', 'approved'];
 const taskChatCache = new Map();
@@ -22,8 +23,11 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
   const [sending, setSending] = useState(false);
   const [chatLoaded, setChatLoaded] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
   const refreshTimerRef = useRef(null);
   const commentsEndRef = useRef(null);
+  const minimizedWindowStyle = useMinimizedWindowStack('task-chat-panel', isOpen && isMinimized);
 
   const taskId = task?.id;
 
@@ -99,6 +103,8 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
 
   useEffect(() => {
     if (!isOpen || !taskId) return;
+    setIsMinimized(false);
+    setIsMaximized(false);
     setActiveTab('chat');
     setCommentText('');
     setCommentType('general');
@@ -214,68 +220,132 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
 
   if (!isOpen || !task) return null;
 
+  const handleToggleMinimize = () => {
+    if (isMinimized) {
+      setIsMinimized(false);
+      return;
+    }
+    setIsMaximized(false);
+    setIsMinimized(true);
+  };
+
+  const handleToggleMaximize = () => {
+    if (isMinimized) {
+      setIsMinimized(false);
+      return;
+    }
+    setIsMaximized((prev) => !prev);
+  };
+
   return (
-    <div className="task-chat-overlay" onClick={onClose}>
-      <div className="task-chat-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="task-chat-header">
+    <div
+      className={`task-chat-overlay ${isMinimized ? 'minimized' : ''}`}
+      onClick={!isMinimized ? onClose : undefined}
+    >
+      <div
+        className={`task-chat-panel ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}
+        onClick={(e) => e.stopPropagation()}
+        style={minimizedWindowStyle || undefined}
+      >
+        <div
+          className="task-chat-header"
+          onClick={isMinimized ? () => setIsMinimized(false) : undefined}
+        >
           <div>
             <h3>Task Chat</h3>
             <p>{task.taskNumber || 'No Task ID'} • {task.projectId || 'No Project ID'}</p>
           </div>
-          <button onClick={onClose}>✕</button>
+          <div className="task-chat-window-controls">
+            {!isMinimized && (
+              <button
+                className="task-chat-window-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleToggleMinimize();
+                }}
+                title="Minimize"
+              >
+                ─
+              </button>
+            )}
+            <button
+              className="task-chat-window-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleMaximize();
+              }}
+              title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}
+            >
+              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
+            </button>
+            <button
+              className="task-chat-close-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }}
+              title="Close"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
-        <div className="task-chat-tabs">
-          <button className={activeTab === 'chat' ? 'active' : ''} onClick={() => setActiveTab('chat')}>Chat</button>
-          <button className={activeTab === 'history' ? 'active' : ''} onClick={() => setActiveTab('history')}>History</button>
-        </div>
+        {!isMinimized && (
+          <div className="task-chat-tabs">
+            <button className={activeTab === 'chat' ? 'active' : ''} onClick={() => setActiveTab('chat')}>Chat</button>
+            <button className={activeTab === 'history' ? 'active' : ''} onClick={() => setActiveTab('history')}>History</button>
+          </div>
+        )}
 
-        <div className="task-chat-content">
-          {activeTab === 'chat' && loadingChat ? <p className="task-chat-status">Loading chat...</p> : null}
-          {activeTab === 'history' && loadingHistory ? <p className="task-chat-status">Loading history...</p> : null}
+        {!isMinimized && (
+          <div className="task-chat-content">
+            {activeTab === 'chat' && loadingChat ? <p className="task-chat-status">Loading chat...</p> : null}
+            {activeTab === 'history' && loadingHistory ? <p className="task-chat-status">Loading history...</p> : null}
 
-          {!loadingChat && activeTab === 'chat' && comments.length === 0 && (
-            <p className="task-chat-status">No comments yet. Start the conversation.</p>
-          )}
+            {!loadingChat && activeTab === 'chat' && comments.length === 0 && (
+              <p className="task-chat-status">No comments yet. Start the conversation.</p>
+            )}
 
-          {!loadingHistory && activeTab === 'history' && history.length === 0 && (
-            <p className="task-chat-status">No history entries yet.</p>
-          )}
+            {!loadingHistory && activeTab === 'history' && history.length === 0 && (
+              <p className="task-chat-status">No history entries yet.</p>
+            )}
 
-          {!loadingChat && activeTab === 'chat' && (
-            <>
-              {comments.map((item) => (
-                <div className="chat-item" key={item.id}>
-                  <div className="chat-meta">
-                    <strong>{item.user?.name || 'Unknown'}</strong>
-                    <span>{item.user?.role || 'unknown'} | {item.user?.department || 'N/A'}</span>
-                    <span>{formatDateTimeIndia(item.createdAt)}</span>
-                    <span className="chat-tag">{item.commentType || 'general'}</span>
+            {!loadingChat && activeTab === 'chat' && (
+              <>
+                {comments.map((item) => (
+                  <div className="chat-item" key={item.id}>
+                    <div className="chat-meta">
+                      <strong>{item.user?.name || 'Unknown'}</strong>
+                      <span>{item.user?.role || 'unknown'} | {item.user?.department || 'N/A'}</span>
+                      <span>{formatDateTimeIndia(item.createdAt)}</span>
+                      <span className="chat-tag">{item.commentType || 'general'}</span>
+                    </div>
+                    <p>{item.comment}</p>
                   </div>
-                  <p>{item.comment}</p>
-                </div>
-              ))}
-              <div ref={commentsEndRef} />
-            </>
-          )}
+                ))}
+                <div ref={commentsEndRef} />
+              </>
+            )}
 
-          {!loadingHistory && activeTab === 'history' && (
-            <>
-              {history.map((h) => (
-                <div className="chat-item" key={h.id}>
-                  <div className="chat-meta">
-                    <strong>{h.editor?.name || 'Unknown'}</strong>
-                    <span>{h.editor?.role || 'unknown'} | {h.editor?.department || 'N/A'}</span>
-                    <span>{formatDateTimeIndia(h.timestamp)}</span>
-                    <span className="chat-tag">{h.scope}</span>
+            {!loadingHistory && activeTab === 'history' && (
+              <>
+                {history.map((h) => (
+                  <div className="chat-item" key={h.id}>
+                    <div className="chat-meta">
+                      <strong>{h.editor?.name || 'Unknown'}</strong>
+                      <span>{h.editor?.role || 'unknown'} | {h.editor?.department || 'N/A'}</span>
+                      <span>{formatDateTimeIndia(h.timestamp)}</span>
+                      <span className="chat-tag">{h.scope}</span>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
 
-        {activeTab === 'chat' && (
+        {!isMinimized && activeTab === 'chat' && (
           <div className="task-chat-input">
             <select value={commentType} onChange={(e) => setCommentType(e.target.value)}>
               {COMMENT_TYPES.map((ct) => (
@@ -299,9 +369,11 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
           </div>
         )}
 
-        <div className="task-chat-seenby">
-          Seen by: {seenBy.map((s) => s.name).join(', ') || 'No views yet'}
-        </div>
+        {!isMinimized && (
+          <div className="task-chat-seenby">
+            Seen by: {seenBy.map((s) => s.name).join(', ') || 'No views yet'}
+          </div>
+        )}
       </div>
     </div>
   );

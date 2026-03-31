@@ -42,7 +42,12 @@ export const CustomDialogProvider = ({ children }) => {
           message,
           title: options.title,
           confirmText: options.confirmText,
+          confirmValue: options.confirmValue,
           cancelText: options.cancelText,
+          cancelValue: options.cancelValue,
+          tertiaryText: options.tertiaryText,
+          tertiaryValue: options.tertiaryValue,
+          dismissValue: options.dismissValue,
         }),
       showPrompt: (message, options = {}) =>
         enqueueDialog({
@@ -64,7 +69,16 @@ export const CustomDialogProvider = ({ children }) => {
     <DialogContext.Provider value={value}>
       {children}
       {activeDialog && (
-        <div className="custom-dialog-overlay" onClick={() => resolveActiveDialog(null)}>
+        <div
+          className="custom-dialog-overlay"
+          onClick={() =>
+            resolveActiveDialog(
+              activeDialog.dismissValue !== undefined
+                ? activeDialog.dismissValue
+                : (activeDialog.cancelValue !== undefined ? activeDialog.cancelValue : null)
+            )
+          }
+        >
           <div className="custom-dialog" onClick={(event) => event.stopPropagation()}>
             <div className="custom-dialog-title">{activeDialog.title || 'Message'}</div>
             <div className="custom-dialog-message">{activeDialog.message}</div>
@@ -94,11 +108,28 @@ export const CustomDialogProvider = ({ children }) => {
               />
             )}
             <div className="custom-dialog-actions">
+              {activeDialog.type === 'confirm' && activeDialog.tertiaryText && (
+                <button
+                  type="button"
+                  className="custom-dialog-btn tertiary"
+                  onClick={() =>
+                    resolveActiveDialog(
+                      activeDialog.tertiaryValue !== undefined ? activeDialog.tertiaryValue : 'tertiary'
+                    )
+                  }
+                >
+                  {activeDialog.tertiaryText}
+                </button>
+              )}
               {activeDialog.type !== 'alert' && (
                 <button
                   type="button"
                   className="custom-dialog-btn secondary"
-                  onClick={() => resolveActiveDialog(null)}
+                  onClick={() =>
+                    resolveActiveDialog(
+                      activeDialog.cancelValue !== undefined ? activeDialog.cancelValue : null
+                    )
+                  }
                 >
                   {activeDialog.cancelText || 'Cancel'}
                 </button>
@@ -107,7 +138,11 @@ export const CustomDialogProvider = ({ children }) => {
                 type="button"
                 className="custom-dialog-btn primary"
                 onClick={() =>
-                  resolveActiveDialog(activeDialog.type === 'prompt' ? promptValue : true)
+                  resolveActiveDialog(
+                    activeDialog.type === 'prompt'
+                      ? promptValue
+                      : (activeDialog.confirmValue !== undefined ? activeDialog.confirmValue : true)
+                  )
                 }
               >
                 {activeDialog.confirmText || 'OK'}

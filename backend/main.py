@@ -32,6 +32,7 @@ from routers import upload
 from routers import activity_router
 from routers import admin_router
 from routers import groups_router
+from routers import direct_messages_router
 
 # Import auth utilities for system status
 from auth import SESSION_STORE
@@ -231,6 +232,9 @@ app.include_router(admin_router.router)
 
 # Groups & Messages
 app.include_router(groups_router.router)
+
+# Direct Messages
+app.include_router(direct_messages_router.router)
 
 
 # ==================== ROOT ENDPOINTS ====================

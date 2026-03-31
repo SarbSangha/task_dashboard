@@ -344,3 +344,27 @@ def ensure_operational_schema(engine) -> None:
             cols = _table_columns(conn, "group_chat_messages")
             if "attachments_json" not in cols:
                 conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN attachments_json JSON"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS direct_messages (
+                    id INTEGER PRIMARY KEY,
+                    sender_id INTEGER NOT NULL,
+                    recipient_id INTEGER NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at DATETIME,
+                    edited_at DATETIME,
+                    FOREIGN KEY(sender_id) REFERENCES users (id),
+                    FOREIGN KEY(recipient_id) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_sender_id ON direct_messages(sender_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_recipient_id ON direct_messages(recipient_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_created_at ON direct_messages(created_at)"))
+        if _table_exists(conn, "direct_messages"):
+            cols = _table_columns(conn, "direct_messages")
+            if "attachments_json" not in cols:
+                conn.execute(text("ALTER TABLE direct_messages ADD COLUMN attachments_json JSON"))

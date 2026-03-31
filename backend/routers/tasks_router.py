@@ -2,7 +2,7 @@ from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Cookie, Header, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session, aliased
-from sqlalchemy import or_, func, case
+from sqlalchemy import or_, and_, func, case
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional, List, Set
 from pydantic import BaseModel, Field
@@ -723,6 +723,7 @@ def _build_task_assets(task: Task, creator: Optional[User], submitter: Optional[
             "stage": stage,
             "filename": filename,
             "originalName": item.get("originalName") or item.get("filename") or filename,
+            "relativePath": item.get("relativePath"),
             "path": item.get("path"),
             "url": item.get("url"),
             "mimetype": item.get("mimetype"),
@@ -1074,6 +1075,7 @@ async def create_task(
                     {
                         "filename": item.get("filename"),
                         "originalName": item.get("originalName"),
+                        "relativePath": item.get("relativePath"),
                         "path": item.get("path"),
                         "url": item.get("url"),
                         "mimetype": item.get("mimetype"),
@@ -1309,6 +1311,7 @@ async def get_all_user_tasks(
     q: Optional[str] = Query(None),
     task_id: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
+    user_id: Optional[int] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
@@ -1325,6 +1328,19 @@ async def get_all_user_tasks(
         query = query.filter(Task.task_number.ilike(f"%{task_id}%"))
     if project_id:
         query = query.filter(Task.project_id.ilike(f"%{project_id}%"))
+    if user_id is not None:
+        query = query.filter(
+            or_(
+                Task.creator_id == user_id,
+                Task.submitted_by == user_id,
+                Task.participants.any(
+                    and_(
+                        TaskParticipant.user_id == user_id,
+                        TaskParticipant.is_active == True,
+                    )
+                ),
+            )
+        )
     if q:
         like_q = f"%{q}%"
         query = query.filter(
@@ -1591,6 +1607,7 @@ async def submit_task(
                     {
                         "filename": item.get("filename"),
                         "originalName": item.get("originalName"),
+                        "relativePath": item.get("relativePath"),
                         "path": item.get("path"),
                         "url": item.get("url"),
                         "mimetype": item.get("mimetype"),

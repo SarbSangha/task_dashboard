@@ -43,10 +43,19 @@
   cursor: default;
 }
 
+.admin-queue-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  flex: 1;
+  min-width: 0;
+}
+
 .admin-queue-controls {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .admin-queue-window-btn {
@@ -102,7 +111,27 @@
 
 .admin-queue-panel.minimized .admin-queue-header {
   border-bottom: none;
+  padding: 10px 12px;
   cursor: pointer;
+}
+
+.admin-queue-panel.minimized .admin-queue-header h3 {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-queue-panel.minimized .admin-queue-controls {
+  gap: 6px;
+}
+
+.admin-queue-panel.minimized .admin-queue-window-btn,
+.admin-queue-panel.minimized .admin-queue-close-btn {
+  width: 30px;
+  height: 30px;
+  font-size: 14px;
+  border-radius: 7px;
 }
 
 .admin-queue-panel.maximized {

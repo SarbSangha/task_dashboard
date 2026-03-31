@@ -76,6 +76,7 @@ def _normalize_group_message_attachments(items: list[dict]) -> list[dict]:
         normalized_item = {
             "filename": item.get("filename") or item.get("name") or None,
             "originalName": item.get("originalName") or item.get("filename") or item.get("name") or None,
+            "relativePath": item.get("relativePath") or None,
             "path": item.get("path") or None,
             "url": item.get("url") or None,
             "mimetype": item.get("mimetype") or item.get("type") or None,
