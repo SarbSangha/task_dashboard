@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from auth import verify_session_token, get_request_session_token
+from auth import get_request_session_token, resolve_session_user
 from database_config import get_operational_db
 from models_new import ActivityStatus, Task, TaskStatus, User, UserActivity
 from utils.permissions import require_admin
@@ -49,8 +49,7 @@ def get_current_user_from_session(
     if not resolved_session_id:
         return None
     try:
-        user_id = verify_session_token(resolved_session_id, db)
-        return db.query(User).filter(User.id == user_id).first()
+        return resolve_session_user(resolved_session_id, db, raise_on_missing=False)
     except Exception:
         return None
 

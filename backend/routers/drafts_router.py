@@ -7,7 +7,7 @@ from datetime import datetime
 
 from database_config import get_operational_db
 from models_new import Task, User, TaskStatus, Priority, ParticipantRole, TaskParticipant
-from auth import verify_session_token, get_request_session_token
+from auth import get_request_session_token, resolve_session_user
 from task_helpers import TaskHelpers
 
 router = APIRouter(prefix="/api/drafts", tags=["Drafts"])
@@ -47,9 +47,7 @@ def get_current_user_from_session(
     if not resolved_session_id:
         return None
     try:
-        user_id = verify_session_token(resolved_session_id, db)
-        user = db.query(User).filter(User.id == user_id).first()
-        return user
+        return resolve_session_user(resolved_session_id, db, raise_on_missing=False)
     except:
         return None
 

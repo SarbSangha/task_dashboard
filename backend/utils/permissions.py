@@ -3,7 +3,7 @@ from typing import Iterable, Optional
 from fastapi import Cookie, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
-from auth import get_request_session_token, verify_session_token
+from auth import get_request_session_token, resolve_session_user
 from database_config import get_operational_db
 from models_new import User
 
@@ -51,15 +51,7 @@ def get_current_user(
     if not resolved_session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    user_id = verify_session_token(resolved_session_id, db)
-    user = db.query(User).filter(User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    if user.is_deleted:
-        raise HTTPException(status_code=401, detail="Account has been deleted")
-
-    return user
+    return resolve_session_user(resolved_session_id, db)
 
 
 class RoleChecker:

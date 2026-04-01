@@ -26,11 +26,10 @@ from models_new import (
     Priority,
     ParticipantRole,
 )
-from auth import verify_session_token, get_request_session_token
+from auth import verify_session_token, get_request_session_token, resolve_session_user
 from task_helpers import TaskHelpers
 from utils.cache import cache_response, invalidate_pattern
 from utils.edge_cache import queue_edge_cache_purge
-from utils.parallel import run_parallel
 
 router = APIRouter(prefix="/api/tasks", tags=["Tasks"])
 
@@ -218,8 +217,7 @@ def get_current_user_from_session(
     if not resolved_session_id:
         return None
     try:
-        user_id = verify_session_token(resolved_session_id, db)
-        return db.query(User).filter(User.id == user_id).first()
+        return resolve_session_user(resolved_session_id, db, raise_on_missing=False)
     except Exception:
         return None
 
@@ -495,7 +493,15 @@ def _serialize_task_list_base(task: Task) -> dict:
     }
 
 
-def build_task_serialization_context(tasks: List[Task], db: Session, current_user: Optional[User] = None) -> dict:
+def build_task_serialization_context(
+    tasks: List[Task],
+    db: Session,
+    current_user: Optional[User] = None,
+    *,
+    include_comment_counts: bool = True,
+    include_forward_history: bool = True,
+    include_seen_by: bool = True,
+) -> dict:
     task_ids = [task.id for task in tasks]
     if not task_ids:
         return {
@@ -559,34 +565,38 @@ def build_task_serialization_context(tasks: List[Task], db: Session, current_use
             participants_by_task[participant.task_id].append((participant, user))
             user_lookup[user.id] = user
 
-    comment_counts = {
-        task_id: count
-        for task_id, count in (
-            db.query(TaskComment.task_id, func.count(TaskComment.id))
-            .filter(TaskComment.task_id.in_(task_ids))
-            .group_by(TaskComment.task_id)
+    comment_counts = {}
+    if include_comment_counts:
+        comment_counts = {
+            task_id: count
+            for task_id, count in (
+                db.query(TaskComment.task_id, func.count(TaskComment.id))
+                .filter(TaskComment.task_id.in_(task_ids))
+                .group_by(TaskComment.task_id)
+                .all()
+            )
+        }
+
+    forward_rows = []
+    if include_forward_history:
+        forward_rows = (
+            db.query(TaskForward)
+            .options(
+                load_only(
+                    TaskForward.id,
+                    TaskForward.task_id,
+                    TaskForward.from_user_id,
+                    TaskForward.to_user_id,
+                    TaskForward.from_department,
+                    TaskForward.to_department,
+                    TaskForward.reason,
+                    TaskForward.created_at,
+                )
+            )
+            .filter(TaskForward.task_id.in_(task_ids))
+            .order_by(TaskForward.task_id.asc(), TaskForward.created_at.asc(), TaskForward.id.asc())
             .all()
         )
-    }
-
-    forward_rows = (
-        db.query(TaskForward)
-        .options(
-            load_only(
-                TaskForward.id,
-                TaskForward.task_id,
-                TaskForward.from_user_id,
-                TaskForward.to_user_id,
-                TaskForward.from_department,
-                TaskForward.to_department,
-                TaskForward.reason,
-                TaskForward.created_at,
-            )
-        )
-        .filter(TaskForward.task_id.in_(task_ids))
-        .order_by(TaskForward.task_id.asc(), TaskForward.created_at.asc(), TaskForward.id.asc())
-        .all()
-    )
     forwards_by_task = defaultdict(list)
     forward_user_ids = set()
     for forward in forward_rows:
@@ -597,7 +607,7 @@ def build_task_serialization_context(tasks: List[Task], db: Session, current_use
             forward_user_ids.add(forward.to_user_id)
 
     missing_user_ids = [user_id for user_id in forward_user_ids if user_id not in user_lookup]
-    if missing_user_ids:
+    if include_forward_history and missing_user_ids:
         for user in (
             db.query(User)
             .options(load_only(User.id, User.name, User.department))
@@ -606,15 +616,17 @@ def build_task_serialization_context(tasks: List[Task], db: Session, current_use
         ):
             user_lookup[user.id] = user
 
-    try:
-        seen_by_rows = (
-            db.query(TaskView, User)
-            .join(User, User.id == TaskView.user_id)
-            .filter(TaskView.task_id.in_(task_ids))
-            .all()
-        )
-    except SQLAlchemyError:
-        seen_by_rows = []
+    seen_by_rows = []
+    if include_seen_by:
+        try:
+            seen_by_rows = (
+                db.query(TaskView, User)
+                .join(User, User.id == TaskView.user_id)
+                .filter(TaskView.task_id.in_(task_ids))
+                .all()
+            )
+        except SQLAlchemyError:
+            seen_by_rows = []
 
     seen_by_by_task = defaultdict(list)
     for view, user in seen_by_rows:
@@ -787,8 +799,13 @@ def serialize_task_with_context(
     return task_dict
 
 
-def serialize_task_list(tasks: List[Task], db: Session, current_user: Optional[User] = None) -> List[dict]:
-    context = build_task_serialization_context(tasks, db, current_user=current_user)
+def serialize_task_list(
+    tasks: List[Task],
+    db: Session,
+    current_user: Optional[User] = None,
+    **context_options,
+) -> List[dict]:
+    context = build_task_serialization_context(tasks, db, current_user=current_user, **context_options)
     return [
         serialize_task_with_context(task, db, current_user=current_user, context=context)
         for task in tasks
@@ -1423,37 +1440,8 @@ async def get_inbox(
 
     db.commit()
 
-    def fetch_serialized_tasks():
-        if not task_ids:
-            return []
-
-        read_db = OperationalSessionLocal()
-        try:
-            read_current_user = (
-                read_db.query(User)
-                .filter(User.id == current_user.id)
-                .first()
-            )
-            ordered_rows = (
-                read_db.query(Task)
-                .options(*_task_list_loader_options())
-                .filter(Task.id.in_(task_ids), Task.is_deleted == False)
-                .all()
-            )
-            tasks_by_id = {task.id: task for task in ordered_rows}
-            ordered_tasks = [tasks_by_id[task_id] for task_id in task_ids if task_id in tasks_by_id]
-            return serialize_task_list(ordered_tasks, read_db, read_current_user)
-        finally:
-            read_db.close()
-
-    def fetch_unread_count():
-        read_db = OperationalSessionLocal()
-        try:
-            return TaskHelpers.get_unread_count(current_user.id, read_db)
-        finally:
-            read_db.close()
-
-    result, unread_count = await run_parallel(fetch_serialized_tasks, fetch_unread_count)
+    result = serialize_task_list(task_rows, db, current_user)
+    unread_count = TaskHelpers.get_unread_count(current_user.id, db)
 
     return {
         "success": True,
@@ -1509,7 +1497,14 @@ async def get_outbox(
         "page": page,
         "limit": limit,
         "hasMore": has_more,
-        "data": serialize_task_list(tasks, db, current_user),
+        "data": serialize_task_list(
+            tasks,
+            db,
+            current_user,
+            include_comment_counts=False,
+            include_forward_history=False,
+            include_seen_by=False,
+        ),
     }
 
 

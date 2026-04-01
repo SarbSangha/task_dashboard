@@ -1,7 +1,7 @@
 # auth.py - Authentication Utilities ONLY (NO ROUTES)
 from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
 from sqlalchemy.orm import Session
 import secrets
 import os
@@ -37,15 +37,19 @@ def _normalize_to_utc_naive(value: Optional[datetime]) -> Optional[datetime]:
     return value
 
 
-def _ensure_user_session_not_revoked(db: Optional[Session], user_id: int, issued_at: Optional[datetime]) -> None:
-    if db is None or issued_at is None:
-        return
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
+def _ensure_session_not_revoked_for_user(user: Optional[User], issued_at: Optional[datetime]) -> None:
+    if user is None or issued_at is None:
         return
     revoked_at = _normalize_to_utc_naive(user.session_revoked_at)
     if revoked_at and issued_at <= revoked_at:
         raise HTTPException(status_code=401, detail="Session revoked")
+
+
+def _ensure_user_session_not_revoked(db: Optional[Session], user_id: int, issued_at: Optional[datetime]) -> None:
+    if db is None or issued_at is None:
+        return
+    user = db.query(User).filter(User.id == user_id).first()
+    _ensure_session_not_revoked_for_user(user, issued_at)
 
 
 # ==================== PASSWORD FUNCTIONS ====================
@@ -109,10 +113,7 @@ def create_session_token(user_id: int) -> str:
     return token
 
 
-def verify_session_token(token: str, db: Optional[Session] = None) -> int:
-    """Verify session token and return user_id"""
-    from fastapi import HTTPException
-
+def _decode_session_token(token: str) -> Tuple[int, Optional[datetime]]:
     revoked = REVOKED_SESSION_STORE.get(token)
     if revoked and datetime.utcnow() <= revoked["expires_at"]:
         raise HTTPException(status_code=401, detail="Session revoked")
@@ -125,8 +126,7 @@ def verify_session_token(token: str, db: Optional[Session] = None) -> int:
         if datetime.utcnow() > session["expires_at"]:
             del SESSION_STORE[token]
             raise HTTPException(status_code=401, detail="Session expired")
-        _ensure_user_session_not_revoked(db, int(session["user_id"]), session.get("created_at"))
-        return session["user_id"]
+        return int(session["user_id"]), session.get("created_at")
 
     # Cross-process fallback for production (stateless signed token)
     serializer = _get_session_serializer()
@@ -136,13 +136,42 @@ def verify_session_token(token: str, db: Optional[Session] = None) -> int:
             max_age=SESSION_MAX_AGE_SECONDS,
             return_timestamp=True,
         )
-        user_id = int(payload.get("user_id"))
-        _ensure_user_session_not_revoked(db, user_id, _normalize_to_utc_naive(issued_at))
-        return user_id
+        return int(payload.get("user_id")), _normalize_to_utc_naive(issued_at)
     except SignatureExpired:
         raise HTTPException(status_code=401, detail="Session expired")
     except (BadSignature, TypeError, ValueError):
         raise HTTPException(status_code=401, detail="Invalid session")
+
+
+def verify_session_token(token: str, db: Optional[Session] = None) -> int:
+    """Verify session token and return user_id."""
+    user_id, issued_at = _decode_session_token(token)
+    _ensure_user_session_not_revoked(db, user_id, issued_at)
+    return user_id
+
+
+def resolve_session_user(
+    token: str,
+    db: Session,
+    *,
+    allow_deleted: bool = False,
+    raise_on_missing: bool = True,
+) -> Optional[User]:
+    """Resolve a signed session to a user with one database lookup."""
+    user_id, issued_at = _decode_session_token(token)
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        if raise_on_missing:
+            raise HTTPException(status_code=401, detail="User not found")
+        return None
+
+    _ensure_session_not_revoked_for_user(user, issued_at)
+
+    if not allow_deleted and user.is_deleted:
+        raise HTTPException(status_code=401, detail="Account has been deleted")
+
+    return user
 
 
 def get_request_session_token(

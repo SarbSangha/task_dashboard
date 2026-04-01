@@ -27,6 +27,7 @@ from auth import (
     get_password_hash, 
     authenticate_user, 
     create_session_token,
+    resolve_session_user,
     verify_session_token,
     invalidate_session,
     revoke_user_sessions,
@@ -186,15 +187,7 @@ def get_current_user(
     if not resolved_session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    user_id = verify_session_token(resolved_session_id, db)
-    user = db.query(User).filter(User.id == user_id).first()
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    if user.is_deleted:
-        raise HTTPException(status_code=401, detail="Account has been deleted")
-    
-    return user
+    return resolve_session_user(resolved_session_id, db)
 
 
 def ensure_admin(current_user: User):
@@ -593,13 +586,7 @@ async def get_current_user_profile(
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
-        user_id = verify_session_token(resolved_session_id, db)
-        user = db.query(User).filter(User.id == user_id).first()
-        
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        if user.is_deleted:
-            raise HTTPException(status_code=401, detail="Account has been deleted")
+        user = resolve_session_user(resolved_session_id, db)
         
         return {
             "success": True,

@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional
 import asyncio
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -104,6 +105,14 @@ def _serialize_group(
         )
         .all()
     )
+    return _serialize_group_with_members(group, current_user_id, members)
+
+
+def _serialize_group_with_members(
+    group: GroupChat,
+    current_user_id: int,
+    members: list[tuple[GroupChatMember, User]],
+) -> dict:
     payload_members = []
     my_role = "member"
     for m, u in members:
@@ -130,6 +139,38 @@ def _serialize_group(
         "members": payload_members,
         "memberCount": len(payload_members),
     }
+
+
+def _serialize_groups(
+    db: Session,
+    groups: list[GroupChat],
+    current_user_id: int,
+) -> list[dict]:
+    if not groups:
+        return []
+
+    group_ids = [group.id for group in groups]
+    member_rows = (
+        db.query(GroupChatMember, User)
+        .join(User, User.id == GroupChatMember.user_id)
+        .filter(
+            GroupChatMember.group_id.in_(group_ids),
+            GroupChatMember.is_active == True,
+            User.is_active == True,
+            User.is_deleted == False,
+        )
+        .order_by(GroupChatMember.group_id.asc(), User.name.asc())
+        .all()
+    )
+
+    members_by_group = defaultdict(list)
+    for member, user in member_rows:
+        members_by_group[member.group_id].append((member, user))
+
+    return [
+        _serialize_group_with_members(group, current_user_id, members_by_group.get(group.id, []))
+        for group in groups
+    ]
 
 
 @router.get("/users")
@@ -181,7 +222,7 @@ async def list_my_groups(
         .order_by(GroupChat.last_message_at.desc(), GroupChat.id.desc())
         .all()
     )
-    return {"success": True, "data": [_serialize_group(db, g, current_user.id) for g in groups]}
+    return {"success": True, "data": _serialize_groups(db, groups, current_user.id)}
 
 
 @router.post("")

@@ -3,7 +3,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
@@ -98,27 +98,47 @@ async def list_direct_conversations(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):
-    rows = (
-        db.query(DirectMessage)
+    partner_id_case = case(
+        (DirectMessage.sender_id == current_user.id, DirectMessage.recipient_id),
+        else_=DirectMessage.sender_id,
+    )
+
+    ranked_rows = (
+        db.query(
+            DirectMessage.sender_id.label("sender_id"),
+            DirectMessage.message.label("message"),
+            DirectMessage.attachments_json.label("attachments_json"),
+            DirectMessage.created_at.label("created_at"),
+            partner_id_case.label("partner_id"),
+            func.row_number().over(
+                partition_by=partner_id_case,
+                order_by=(DirectMessage.created_at.desc(), DirectMessage.id.desc()),
+            ).label("row_num"),
+        )
         .filter(or_(DirectMessage.sender_id == current_user.id, DirectMessage.recipient_id == current_user.id))
-        .order_by(DirectMessage.created_at.desc(), DirectMessage.id.desc())
+        .subquery()
+    )
+
+    rows = (
+        db.query(
+            ranked_rows.c.partner_id,
+            ranked_rows.c.sender_id,
+            ranked_rows.c.message,
+            ranked_rows.c.attachments_json,
+            ranked_rows.c.created_at,
+        )
+        .filter(ranked_rows.c.row_num == 1)
+        .order_by(ranked_rows.c.created_at.desc())
         .all()
     )
 
-    latest_by_partner = {}
-    for message in rows:
-        partner_id = message.recipient_id if message.sender_id == current_user.id else message.sender_id
-        if partner_id == current_user.id or partner_id in latest_by_partner:
-            continue
-        latest_by_partner[partner_id] = message
-
-    if not latest_by_partner:
+    if not rows:
         return {"success": True, "data": []}
 
     partners = (
         db.query(User)
         .filter(
-            User.id.in_(list(latest_by_partner.keys())),
+            User.id.in_([row.partner_id for row in rows]),
             User.is_active == True,
             User.is_deleted == False,
         )
@@ -127,18 +147,18 @@ async def list_direct_conversations(
     partner_map = {partner.id: partner for partner in partners}
 
     data = []
-    for partner_id, message in latest_by_partner.items():
-        partner = partner_map.get(partner_id)
+    for row in rows:
+        partner = partner_map.get(row.partner_id)
         if not partner:
             continue
-        attachments = message.attachments_json or []
-        preview = (message.message or "").strip() or f"{len(attachments)} attachment{'s' if len(attachments) != 1 else ''}"
+        attachments = row.attachments_json or []
+        preview = (row.message or "").strip() or f"{len(attachments)} attachment{'s' if len(attachments) != 1 else ''}"
         data.append(
             {
                 "user": _serialize_user(partner),
-                "lastMessageAt": message.created_at.isoformat() if message.created_at else None,
+                "lastMessageAt": row.created_at.isoformat() if row.created_at else None,
                 "lastMessagePreview": preview[:180],
-                "lastMessageSenderId": message.sender_id,
+                "lastMessageSenderId": row.sender_id,
             }
         )
 

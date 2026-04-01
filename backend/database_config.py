@@ -96,14 +96,15 @@ def _is_supabase_pooler_url(url: str) -> bool:
 
 def _pool_settings(url: str) -> dict:
     is_supabase_pooler = _is_supabase_pooler_url(url)
-    default_pool_size = 5 if is_supabase_pooler else 10
-    default_max_overflow = 5 if is_supabase_pooler else 20
+    default_pool_size = 10 if is_supabase_pooler else 10
+    default_max_overflow = 20 if is_supabase_pooler else 20
     return {
         "pool_size": max(1, _int_env("DB_POOL_SIZE", default_pool_size)),
         "max_overflow": max(0, _int_env("DB_MAX_OVERFLOW", default_max_overflow)),
         "pool_timeout": max(1, _int_env("DB_POOL_TIMEOUT", 30)),
         "pool_recycle": max(30, _int_env("DB_POOL_RECYCLE", 1800)),
         "pool_pre_ping": True,
+        "pool_use_lifo": True,
     }
 
 
