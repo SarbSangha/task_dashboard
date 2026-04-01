@@ -5,10 +5,11 @@ import ProfileSettingsPanel from './settingsButtons/profilesetting/ProfileSettin
 import AdminApprovalsPanel from './settingsButtons/admin/AdminApprovalsPanel';
 import NotificationsPanel from './settingsButtons/NotificationsPanel';
 import { useAuth } from '../../context/AuthContext';
+import { usePermissions } from '../../hooks/usePermissions';
 const SettingsSidebar = ({ isOpen, onClose }) => {
   const [activePanel, setActivePanel] = useState(null);
-  const { user, logout } = useAuth();
-  const isAdmin = user?.isAdmin || (user?.position || '').toLowerCase() === 'admin' || (user?.roles || []).includes('admin');
+  const { logout } = useAuth();
+  const { can } = usePermissions();
 
   const openPanel = (panelName) => {
     setActivePanel(panelName);
@@ -84,7 +85,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
             </svg>
           </button>
 
-          {isAdmin && (
+          {can('approve_signups') && (
             <button
               className="settings-menu-item"
               onClick={() => openPanel('admin-approvals')}

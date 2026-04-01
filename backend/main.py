@@ -24,7 +24,7 @@ from db_migrations import ensure_operational_schema
 from models_new import User, Task, TaskParticipant, TaskStatusHistory, ArchivedTask, ActivityLog
 # Import routers
 from routers import auth_router
-from routers import tasks_router
+from routers.tasks import router as tasks_router
 from routers import drafts_router
 from routers import archive_router
 from routers import approvals
@@ -33,6 +33,7 @@ from routers import activity_router
 from routers import admin_router
 from routers import groups_router
 from routers import direct_messages_router
+from utils.cache import init_redis, close_redis
 
 # Import auth utilities for system status
 from auth import SESSION_STORE
@@ -159,11 +160,13 @@ async def lifespan(app: FastAPI):
     print("\nAPI Documentation: http://localhost:8000/docs")
     print(f"Operational DB: {_mask_db_url(OPERATIONAL_DB_URL)}")
     print(f"Archive DB: {_mask_db_url(ARCHIVE_DB_URL)}")
+    await init_redis()
     print("Frontend: http://localhost:5173\n")
     
     yield
     
     print("\nShutting down gracefully...")
+    await close_redis()
 
 
 # ==================== CREATE APP ====================
@@ -210,7 +213,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(auth_router.router)
 
 # Task Management
-app.include_router(tasks_router.router)
+app.include_router(tasks_router)
 
 # Drafts
 app.include_router(drafts_router.router)

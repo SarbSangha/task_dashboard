@@ -1,0 +1,6 @@
+# Local-only fallback used by `npx wrangler dev`.
+# Use the direct Postgres port (5432), not Supabase pooler port 6543.
+# Add `?sslmode=require` when your remote database requires TLS.
+FASTAPI_URL=https://task-dashboard-fg5d.onrender.com
+PURGE_SECRET=replace-with-a-long-random-secret
+CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE=postgresql://postgres:replace-password@db.bqfpocatqqlxppvcpzot.supabase.co:5432/postgres?sslmode=require

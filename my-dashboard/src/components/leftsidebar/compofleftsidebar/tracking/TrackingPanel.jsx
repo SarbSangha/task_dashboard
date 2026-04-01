@@ -12,6 +12,8 @@ import {
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
+import { TrackingPanelSkeleton } from '../../../ui/TrackingPanelSkeleton';
 import './TrackingPanel.css';
 
 const dedupeTasks = (rows = []) =>
@@ -38,6 +40,9 @@ const TrackingPanel = ({ isOpen, onClose }) => {
   const [openActionMenuId, setOpenActionMenuId] = useState(null);
   const [chatTask, setChatTask] = useState(null);
   const minimizedWindowStyle = useMinimizedWindowStack('tracking-panel', isOpen && isMinimized);
+  const tasksRef = React.useRef([]);
+  const selectedTaskRef = React.useRef(null);
+  const chatTaskRef = React.useRef(null);
   const [selectionModal, setSelectionModal] = useState({
     open: false,
     mode: 'forward',
@@ -60,6 +65,18 @@ const TrackingPanel = ({ isOpen, onClose }) => {
       tracking: buildTaskPanelCacheKey(user.id, 'tracking'),
     };
   }, [user?.id]);
+
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
+
+  useEffect(() => {
+    selectedTaskRef.current = selectedTask;
+  }, [selectedTask]);
+
+  useEffect(() => {
+    chatTaskRef.current = chatTask;
+  }, [chatTask]);
 
   useEffect(() => {
     if (!isOpen || !cacheKeys) return;
@@ -149,6 +166,36 @@ const TrackingPanel = ({ isOpen, onClose }) => {
     invalidateTaskPanelCache(cacheKeys.outbox);
     invalidateTaskPanelCache(cacheKeys.tracking);
   };
+
+  const { mutateAsync: updateTaskStatus } = useUpdateTaskStatus({
+    onOptimisticUpdate: ({ taskId, status }) => {
+      const optimisticPatch = {
+        status,
+        updatedAt: new Date().toISOString(),
+      };
+      const snapshot = {
+        tasks: tasksRef.current,
+        selectedTask: selectedTaskRef.current,
+        chatTask: chatTaskRef.current,
+      };
+
+      setTasks((prev) => prev.map((row) => (row.id === taskId ? { ...row, ...optimisticPatch } : row)));
+      setSelectedTask((prev) => (prev?.id === taskId ? { ...prev, ...optimisticPatch } : prev));
+      setChatTask((prev) => (prev?.id === taskId ? { ...prev, ...optimisticPatch } : prev));
+
+      return snapshot;
+    },
+    onRollback: (snapshot) => {
+      if (!snapshot) return;
+      setTasks(snapshot.tasks || []);
+      setSelectedTask(snapshot.selectedTask || null);
+      setChatTask(snapshot.chatTask || null);
+    },
+    onSettled: async () => {
+      invalidateTrackingCaches();
+      await loadTasks({ silent: true });
+    },
+  });
 
   const getStatusColor = (status) => {
     const colors = {
@@ -284,7 +331,11 @@ const TrackingPanel = ({ isOpen, onClose }) => {
           title: 'Approve Task',
           defaultValue: '',
         })) ?? '';
-        await taskAPI.approveTask(task.id, comments);
+        await updateTaskStatus({
+          taskId: task.id,
+          status: 'approved',
+          execute: () => taskAPI.approveTask(task.id, comments),
+        });
       } else if (action === 'need_improvement') {
         const comments = (await showPrompt('Need Improvement note:', {
           title: 'Need Improvement',
@@ -294,13 +345,21 @@ const TrackingPanel = ({ isOpen, onClose }) => {
           placeholder: 'Describe what needs to be improved...',
         })) ?? '';
         if (!comments) return;
-        await taskAPI.needImprovement(task.id, comments);
+        await updateTaskStatus({
+          taskId: task.id,
+          status: 'need_improvement',
+          execute: () => taskAPI.needImprovement(task.id, comments),
+        });
       } else if (action === 'submit') {
         const resultText = (await showPrompt('Submit result details:', {
           title: 'Submit Result',
           defaultValue: '',
         })) ?? '';
-        await taskAPI.submitTask(task.id, resultText);
+        await updateTaskStatus({
+          taskId: task.id,
+          status: 'submitted',
+          execute: () => taskAPI.submitTask(task.id, resultText),
+        });
       } else if (action === 'assign') {
         await openSelectionModal(task, 'assign');
         return;
@@ -322,8 +381,10 @@ const TrackingPanel = ({ isOpen, onClose }) => {
         if (!result) return;
         await taskAPI.editResult(task.id, result);
       }
-      invalidateTrackingCaches();
-      await loadTasks({ silent: true });
+      if (!['approve', 'need_improvement', 'submit'].includes(action)) {
+        invalidateTrackingCaches();
+        await loadTasks({ silent: true });
+      }
     } catch (error) {
       console.error('Action failed', error);
       await showAlert(error?.response?.data?.detail || 'Action failed', { title: 'Action Failed' });
@@ -460,10 +521,7 @@ const TrackingPanel = ({ isOpen, onClose }) => {
               cachedLabel="Showing cached tracking data"
             />
             {loading ? (
-              <div className="loading-state">
-                <div className="spinner"></div>
-                <p>Loading tasks...</p>
-              </div>
+              <TrackingPanelSkeleton />
             ) : filteredTasks.length === 0 ? (
               <div className="empty-state">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">

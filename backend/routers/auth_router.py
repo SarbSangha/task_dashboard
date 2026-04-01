@@ -36,6 +36,7 @@ from auth import (
     invalidate_reset_token,
     get_request_session_token,
 )
+from utils.permissions import has_any_role, require_admin
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -197,7 +198,7 @@ def get_current_user(
 
 
 def ensure_admin(current_user: User):
-    if not (current_user.is_admin or ((current_user.position or "").lower() == "admin")):
+    if not has_any_role(current_user, {"admin"}):
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
@@ -889,10 +890,9 @@ async def latest_password_change_status(
 
 @router.get("/admin/pending-signups")
 async def admin_pending_signups(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db)
 ):
-    ensure_admin(current_user)
     items = db.query(UserApprovalRequest).filter(
         UserApprovalRequest.request_type == "signup",
         UserApprovalRequest.status == "pending"
@@ -914,10 +914,9 @@ async def admin_pending_signups(
 
 @router.get("/admin/pending-profile-changes")
 async def admin_pending_profile_changes(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db)
 ):
-    ensure_admin(current_user)
     items = db.query(UserApprovalRequest).filter(
         UserApprovalRequest.request_type == "profile_update",
         UserApprovalRequest.status == "pending"
@@ -939,10 +938,9 @@ async def admin_pending_profile_changes(
 
 @router.get("/admin/pending-password-changes")
 async def admin_pending_password_changes(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db)
 ):
-    ensure_admin(current_user)
     items = db.query(UserApprovalRequest).filter(
         UserApprovalRequest.request_type == "password_change",
         UserApprovalRequest.status == "pending"
@@ -966,10 +964,9 @@ async def admin_pending_password_changes(
 async def admin_review_request(
     request_id: int,
     decision: ApprovalDecision,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db)
 ):
-    ensure_admin(current_user)
     req = db.query(UserApprovalRequest).filter(UserApprovalRequest.id == request_id).first()
     if not req:
         raise HTTPException(status_code=404, detail="Approval request not found")

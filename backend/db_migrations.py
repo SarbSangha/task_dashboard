@@ -106,6 +106,60 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_tasks_active_creator_status_updated
+            ON tasks(creator_id, status, updated_at DESC)
+            WHERE is_deleted = FALSE
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_tasks_active_submitted_by_updated
+            ON tasks(submitted_by, updated_at DESC)
+            WHERE is_deleted = FALSE AND submitted_by IS NOT NULL
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_task_participants_active_user_task
+            ON task_participants(user_id, task_id)
+            WHERE is_active = TRUE
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_task_participants_active_task_user
+            ON task_participants(task_id, user_id)
+            WHERE is_active = TRUE
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_task_participants_unread_user_task
+            ON task_participants(user_id, task_id)
+            WHERE is_active = TRUE AND is_read = FALSE AND role <> 'creator'
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_views_user_task ON task_views(user_id, task_id)"))
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_task_forwards_task_created_id
+            ON task_forwards(task_id, created_at, id)
+            """
+        )
+    )
 
 
 def ensure_operational_schema(engine) -> None:

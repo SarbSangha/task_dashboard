@@ -10,7 +10,7 @@ from database_config import get_operational_db
 from models_new import User, UserApprovalRequest
 from auth import SESSION_STORE, invalidate_session, revoke_user_sessions
 from routers.tasks_router import notification_hub
-from routers.auth_router import get_current_user, ensure_admin
+from utils.permissions import require_admin
 
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -114,10 +114,9 @@ def _archive_deleted_user_identity(user: User) -> None:
 
 @router.get("/pending-signups")
 async def pending_signups(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     requests = (
         db.query(UserApprovalRequest)
         .filter(
@@ -143,10 +142,9 @@ async def pending_signups(
 
 @router.get("/requests/pending")
 async def pending_requests(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     rows = (
         db.query(UserApprovalRequest)
         .filter(UserApprovalRequest.status == "pending")
@@ -174,10 +172,9 @@ async def pending_requests(
 @router.post("/approve-user/{user_id}")
 async def approve_user(
     user_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -205,10 +202,9 @@ async def approve_user(
 async def reject_user(
     user_id: int,
     payload: RejectPayload,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -234,10 +230,9 @@ async def reject_user(
 async def review_request(
     request_id: int,
     payload: ReviewPayload,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     req = db.query(UserApprovalRequest).filter(UserApprovalRequest.id == request_id).first()
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -302,10 +297,9 @@ async def review_request(
 async def deactivate_user(
     user_id: int,
     payload: Optional[RejectPayload] = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -336,10 +330,9 @@ async def deactivate_user(
 @router.post("/activate-user/{user_id}")
 async def activate_user(
     user_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -368,10 +361,9 @@ async def activate_user(
 async def delete_user_account(
     user_id: int,
     payload: Optional[DeleteUserPayload] = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     if current_user.id == user_id:
         raise HTTPException(status_code=400, detail="You cannot delete your own account")
 
@@ -420,10 +412,9 @@ async def delete_user_account(
 
 @router.get("/deleted-users")
 async def deleted_users(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     rows = db.query(User).filter(User.is_deleted == True).order_by(User.deleted_at.desc(), User.created_at.desc()).all()
     return {
         "success": True,
@@ -434,10 +425,9 @@ async def deleted_users(
 
 @router.get("/all-users")
 async def all_users(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    ensure_admin(current_user)
     users = db.query(User).order_by(User.is_deleted.asc(), User.created_at.desc()).all()
     data = []
     for user in users:

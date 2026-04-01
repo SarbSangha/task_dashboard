@@ -1,42 +1,27 @@
 // src/components/leftsidebar/compofleftsidebar/inbox/InboxPanel.jsx
 import React, { useState, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import InboxCard from './InboxCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
 import { fileAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import { useAuth } from '../../../../context/AuthContext';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
-import CacheStatusBanner from '../../../common/CacheStatusBanner';
-import {
-  buildTaskPanelCacheKey,
-  getTaskPanelCacheEntry,
-  invalidateTaskPanelCache,
-  setTaskPanelCache,
-} from '../../../../utils/taskPanelCache';
 import {
   getAttachmentDisplayName,
   mergeUniqueAttachments,
   openSystemFilePicker,
 } from '../../../../utils/fileUploads';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { useInbox } from '../../../../hooks/useInbox';
+import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
+import { InboxSkeleton } from '../../../ui/InboxSkeleton';
 import './InboxPanel.css';
-
-const INBOX_CACHE_TTL_MS = 90 * 1000;
-
-const getUnreadCountFromTasks = (rows = []) =>
-  rows.filter((task) => !(task?.isRead ?? task?.is_read ?? false)).length;
 
 const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
   const { showAlert, showPrompt } = useCustomDialogs();
   const { user } = useAuth();
-  const [tasks, setTasks] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [cacheStatus, setCacheStatus] = useState({
-    showingCached: false,
-    cachedAt: 0,
-    liveUpdatedAt: 0,
-  });
+  const queryClient = useQueryClient();
   const [filter, setFilter] = useState('all');
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
@@ -66,26 +51,18 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
     error: '',
   });
   const refreshTimerRef = React.useRef(null);
-  const cacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'inbox') : null;
-  const unreadCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'inbox_unread_count') : null;
   const minimizedWindowStyle = useMinimizedWindowStack('inbox-panel', isOpen && isMinimized);
-
-  useEffect(() => {
-    if (isOpen && user?.id) {
-      const cachedInboxEntry = cacheKey ? getTaskPanelCacheEntry(cacheKey, INBOX_CACHE_TTL_MS) : null;
-      const cachedInbox = cachedInboxEntry?.value || null;
-      const hasCachedTasks = Array.isArray(cachedInbox?.tasks);
-      if (hasCachedTasks) {
-        setTasks(cachedInbox.tasks);
-        setCacheStatus({
-          showingCached: true,
-          cachedAt: cachedInboxEntry?.cachedAt || 0,
-          liveUpdatedAt: 0,
-        });
-      }
-      fetchInboxTasks({ silent: hasCachedTasks });
-    }
-  }, [cacheKey, isOpen, user?.id]);
+  const {
+    data: inboxData,
+    isLoading,
+    isFetching,
+    isError,
+    refetch,
+  } = useInbox({}, { enabled: isOpen });
+  const tasks = inboxData?.tasks || [];
+  const loading = isLoading;
+  const isRefreshing = isFetching && !isLoading;
+  const { mutateAsync: updateTaskStatus } = useUpdateTaskStatus();
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -94,7 +71,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
       if (refreshTimerRef.current) return;
       refreshTimerRef.current = window.setTimeout(() => {
         refreshTimerRef.current = null;
-        fetchInboxTasks({ silent: true });
+        void refetch();
       }, 250);
     };
 
@@ -110,7 +87,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
 
     const interval = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      fetchInboxTasks();
+      void refetch();
     }, 180000);
 
     const onFocus = () => scheduleRefresh();
@@ -125,7 +102,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         refreshTimerRef.current = null;
       }
     };
-  }, [isOpen, user?.id]);
+  }, [isOpen, refetch, user?.id]);
 
   useEffect(() => {
     if (isOpen) {
@@ -134,48 +111,13 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
     }
   }, [isOpen]);
 
-  const invalidateInboxCache = () => {
-    if (cacheKey) {
-      invalidateTaskPanelCache(cacheKey);
-    }
-    if (unreadCacheKey) {
-      invalidateTaskPanelCache(unreadCacheKey);
-    }
-  };
-
-  const fetchInboxTasks = async ({ silent = false } = {}) => {
-    if (!user?.id || !cacheKey) return;
-    if (silent) {
-      setIsRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-    try {
-      const data = await taskAPI.getInbox();
-      if (data.success) {
-        const nextTasks = data.data || [];
-        setTasks(nextTasks);
-        setTaskPanelCache(cacheKey, { tasks: nextTasks });
-        if (unreadCacheKey) {
-          setTaskPanelCache(unreadCacheKey, {
-            unreadCount: getUnreadCountFromTasks(nextTasks),
-          });
-        }
-        setCacheStatus((prev) => ({
-          showingCached: false,
-          cachedAt: prev.cachedAt,
-          liveUpdatedAt: Date.now(),
-        }));
-      }
-    } catch (error) {
-      console.error('Error fetching inbox:', error);
-    } finally {
-      if (silent) {
-        setIsRefreshing(false);
-      } else {
-        setLoading(false);
-      }
-    }
+  const refreshTaskQueries = async () => {
+    const userKey = user?.id ?? 'anonymous';
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['inbox', userKey] }),
+      queryClient.invalidateQueries({ queryKey: ['outbox', userKey] }),
+      queryClient.invalidateQueries({ queryKey: ['tracking', userKey] }),
+    ]);
   };
 
   const handleTrackClick = (task) => {
@@ -333,16 +275,19 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         uploadedAttachments = uploadRes?.data || [];
       }
 
-      await taskAPI.submitTask(task.id, {
-        result_text: submitModal.resultText.trim(),
-        comments: submitModal.comments.trim(),
-        result_links: submitModal.links,
-        result_attachments: uploadedAttachments,
+      await updateTaskStatus({
+        taskId: task.id,
+        status: 'submitted',
+        execute: () =>
+          taskAPI.submitTask(task.id, {
+            result_text: submitModal.resultText.trim(),
+            comments: submitModal.comments.trim(),
+            result_links: submitModal.links,
+            result_attachments: uploadedAttachments,
+          }),
       });
 
       closeSubmitModal();
-      invalidateInboxCache();
-      await fetchInboxTasks({ silent: true });
     } catch (error) {
       setSubmitModal((prev) => ({
         ...prev,
@@ -362,8 +307,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         comments: forwardModal.comments
       });
       closeForwardModal();
-      invalidateInboxCache();
-      await fetchInboxTasks({ silent: true });
+      await refreshTaskQueries();
     } catch (error) {
       setForwardModal((prev) => ({
         ...prev,
@@ -404,17 +348,23 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
           title: 'Approve Task',
           defaultValue: '',
         })) ?? '';
-        await taskAPI.approveTask(task.id, comments);
+        await updateTaskStatus({
+          taskId: task.id,
+          status: 'approved',
+          execute: () => taskAPI.approveTask(task.id, comments),
+        });
       } else if (action === 'start') {
         try {
-          await taskAPI.startTask(task.id);
-          invalidateInboxCache();
-          await fetchInboxTasks({ silent: true });
+          await updateTaskStatus({
+            taskId: task.id,
+            status: 'in_progress',
+            execute: () => taskAPI.startTask(task.id),
+          });
         } catch (error) {
           console.warn('Start task API failed:', error);
         }
         if (typeof onStartTaskToWorkspace === 'function') {
-          onStartTaskToWorkspace(task);
+          onStartTaskToWorkspace({ ...task, status: 'in_progress' });
         }
         // Move to Tools immediately after trying to persist status change.
         return;
@@ -427,7 +377,11 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
           placeholder: 'Describe what needs to be improved...',
         })) ?? '';
         if (!comments) return;
-        await taskAPI.needImprovement(task.id, comments);
+        await updateTaskStatus({
+          taskId: task.id,
+          status: 'need_improvement',
+          execute: () => taskAPI.needImprovement(task.id, comments),
+        });
       } else if (action === 'submit') {
         openSubmitModal(task);
         return;
@@ -457,8 +411,9 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         if (!result) return;
         await taskAPI.editResult(task.id, result);
       }
-      invalidateInboxCache();
-      await fetchInboxTasks({ silent: true });
+      if (!['approve', 'need_improvement'].includes(action)) {
+        await refreshTaskQueries();
+      }
     } catch (error) {
       await showAlert(error?.response?.data?.detail || 'Action failed', { title: 'Action Failed' });
     }
@@ -577,19 +532,17 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         {/* Task List */}
         {!isMinimized && (
         <div className="inbox-panel-content">
-          <CacheStatusBanner
-            showingCached={cacheStatus.showingCached}
-            isRefreshing={isRefreshing}
-            cachedAt={cacheStatus.cachedAt}
-            liveUpdatedAt={cacheStatus.liveUpdatedAt}
-            refreshingLabel="Refreshing latest inbox..."
-            liveLabel="Inbox is up to date"
-            cachedLabel="Showing cached inbox"
-          />
+          {isRefreshing ? <div className="inbox-refresh-bar" aria-hidden="true" /> : null}
           {loading ? (
-            <div className="inbox-loading">
-              <div className="spinner"></div>
-              <p>Loading tasks...</p>
+            <InboxSkeleton />
+          ) : isError && tasks.length === 0 ? (
+            <div className="inbox-error-state">
+              <div className="empty-icon">⚠️</div>
+              <h3>Could not load inbox</h3>
+              <p>There was a problem fetching your latest tasks.</p>
+              <button type="button" className="inbox-retry-btn" onClick={() => void refetch()}>
+                Retry
+              </button>
             </div>
           ) : filteredTasks.length === 0 ? (
             <div className="inbox-empty">

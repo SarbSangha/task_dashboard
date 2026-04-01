@@ -17,11 +17,10 @@ import InboxPanel from './compofleftsidebar/inbox/InboxPanel';
 import TrackingPanel from './compofleftsidebar/tracking/TrackingPanel';
 import AdminRequestPanel from './compofleftsidebar/adminqueue/AdminRequestPanel';
 import TrendingsPanel from './compofleftsidebar/trending/TrendingsPanel';
-import { useAuth } from '../../context/AuthContext';
+import { usePermissions } from '../../hooks/usePermissions';
 
 const FunctionalMenu = () => {
-  const { user } = useAuth();
-  const isAdmin = user?.isAdmin || (user?.position || '').toLowerCase() === 'admin' || (user?.roles || []).includes('admin');
+  const { can } = usePermissions();
   const [activeItem, setActiveItem] = useState('tracking-alt');
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -167,7 +166,7 @@ const FunctionalMenu = () => {
             onClick={openTrendingsPanel}
           />
 
-          {isAdmin && (
+          {can('view_admin_queue') && (
             <AdminQueueButton
               isActive={activeItem === 'admin-queue'}
               onClick={openAdminQueue}

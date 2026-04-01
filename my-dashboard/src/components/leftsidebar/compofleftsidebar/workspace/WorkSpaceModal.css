@@ -1417,6 +1417,12 @@
   transition: background 0.2s ease, color 0.2s ease;
 }
 
+.group-chat-tool-icon {
+  width: 21px;
+  height: 21px;
+  display: block;
+}
+
 .group-chat-tool-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
@@ -1467,10 +1473,8 @@
   height: 24px;
   display: block;
   margin: 0 auto;
-  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAFxSURBVHhe7devTsRAEMfxuu1V7Fwy24CDR+AReAQeAYlEIs8hkTwCEolEIpFIJPLkySNt+ie3uWx63d5mpv19kjFwlPAVnSHLAAAAAAAAAABGMnRx7X9tUQzxJrfud0V8539vEeoA5Pb1WP42xLf+Z2btIEAXwn0WVN74n52lowH6EO+zf0cEA/TzWhTlpf+zszAwwD4n3hlyz0S09p+h2vAAzVi3zS0/ZdlV7j9LpZMDNGOI/4zlB/956owN0I32GyI6QDtab4jJArSj7YaYPEA7Wm6IswXoR/YNkSCA7BsiTYBmJN4QSQM0U90QYl6U6QPwh5g/vpIqgCH3JfJOSBDgR/SleK4A9f8KVN77v0+cyQNYt12RexT1pg+ZLkC163kjcteHTBLA8ovoay8kJoAhflNx74eMCyBsl8c4JYDYXR5jYADZuzxGKICaXR7jaABtuzzGYQCluzxGF0DzLo9RvdXV73IAAAAAAACAZfgH9j45Ho4oUFEAAAAASUVORK5CYII=");
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: contain;
+  color: #0a1b15;
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.18));
 }
 
 .group-chat-send-icon.sending {

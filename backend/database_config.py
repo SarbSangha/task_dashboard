@@ -1,6 +1,7 @@
 # database_config.py - Dual Database Configuration (Env-driven, SQLite/PostgreSQL)
 import os
 import re
+from urllib.parse import urlparse
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -9,6 +10,16 @@ from contextlib import contextmanager
 
 def _is_truthy(value: str) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def _should_load_env_file() -> bool:
@@ -72,13 +83,38 @@ def _normalize_db_url(url: str) -> str:
     return url
 
 
+def _sql_echo_enabled() -> bool:
+    return _is_truthy(os.getenv("SQLALCHEMY_ECHO") or os.getenv("DB_SQL_ECHO"))
+
+
+def _is_supabase_pooler_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    return port == 6543 or "pooler.supabase.com" in host or "pooler.supabase.co" in host
+
+
+def _pool_settings(url: str) -> dict:
+    is_supabase_pooler = _is_supabase_pooler_url(url)
+    default_pool_size = 5 if is_supabase_pooler else 10
+    default_max_overflow = 5 if is_supabase_pooler else 20
+    return {
+        "pool_size": max(1, _int_env("DB_POOL_SIZE", default_pool_size)),
+        "max_overflow": max(0, _int_env("DB_MAX_OVERFLOW", default_max_overflow)),
+        "pool_timeout": max(1, _int_env("DB_POOL_TIMEOUT", 30)),
+        "pool_recycle": max(30, _int_env("DB_POOL_RECYCLE", 1800)),
+        "pool_pre_ping": True,
+    }
+
+
 def _create_engine(url: str):
     normalized = _normalize_db_url(url)
     if not normalized.startswith("postgresql+psycopg://"):
         raise RuntimeError("Only PostgreSQL connection URLs are supported in this environment.")
     kwargs = {
-        "echo": False,
-        "pool_pre_ping": True,
+        # Keep SQL logging opt-in so profiling can be enabled without code edits.
+        "echo": _sql_echo_enabled(),
+        **_pool_settings(normalized),
         # Supabase pooler (PgBouncer) can conflict with psycopg prepared statements.
         # Disable automatic prepare to avoid DuplicatePreparedStatement on startup.
         "connect_args": {"prepare_threshold": None},

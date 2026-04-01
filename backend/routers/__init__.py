@@ -4,6 +4,7 @@ Routers package initialization
 """
 from . import auth_router
 from . import tasks_router
+from . import tasks
 from . import drafts_router
 from . import archive_router
 from . import approvals
@@ -15,7 +16,8 @@ from . import direct_messages_router
 
 __all__ = [
     'auth_router',
-    'tasks_router', 
+    'tasks_router',
+    'tasks',
     'drafts_router',
     'archive_router',
     'approvals',

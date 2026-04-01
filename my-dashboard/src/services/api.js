@@ -358,8 +358,8 @@ export const taskAPI = {
     return response.data;
   },
   
-  getInbox: async () => {
-    const response = await api.get('/api/tasks/inbox');
+  getInbox: async (params = {}) => {
+    const response = await api.get('/api/tasks/inbox', { params });
     return response.data;
   },
 
@@ -368,12 +368,17 @@ export const taskAPI = {
     return response.data;
   },
   
-  getOutbox: async () => {
-    const response = await api.get('/api/tasks/outbox');
+  getOutbox: async (params = {}) => {
+    const response = await api.get('/api/tasks/outbox', { params });
     return response.data;
   },
 
   getAllTasks: async (filters = {}) => {
+    const response = await api.get('/api/tasks/all', { params: filters });
+    return response.data;
+  },
+
+  getTracking: async (filters = {}) => {
     const response = await api.get('/api/tasks/all', { params: filters });
     return response.data;
   },
@@ -443,6 +448,11 @@ export const taskAPI = {
 
   startTask: async (taskId, comments = '') => {
     const response = await api.post(`/api/tasks/${taskId}/actions/start`, { comments });
+    return response.data;
+  },
+
+  markSeen: async (taskId) => {
+    const response = await api.post(`/api/tasks/${taskId}/actions/mark-seen`);
     return response.data;
   },
 

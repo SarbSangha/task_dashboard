@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from auth import verify_session_token, get_request_session_token
 from database_config import get_operational_db
 from models_new import ActivityStatus, Task, TaskStatus, User, UserActivity
+from utils.permissions import require_admin
 
 
 router = APIRouter(prefix="/api/activity", tags=["Activity"])
@@ -341,11 +342,9 @@ async def department_activity(
 @router.get("/all-users")
 async def all_users_activity(
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(get_current_user_from_session),
+    current_user: User = Depends(require_admin),
 ):
     user = ensure_authenticated(current_user)
-    if "admin" not in role_set(user):
-        raise HTTPException(status_code=403, detail="Admin only")
 
     today = utcnow_naive().date()
     users = db.query(User).filter(User.is_active == True).all()
@@ -379,11 +378,9 @@ async def all_users_activity(
 @router.get("/live-stats")
 async def live_stats(
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(get_current_user_from_session),
+    current_user: User = Depends(require_admin),
 ):
     user = ensure_authenticated(current_user)
-    if "admin" not in role_set(user):
-        raise HTTPException(status_code=403, detail="Admin only")
 
     today = utcnow_naive().date()
     total_users = db.query(func.count(User.id)).filter(User.is_active == True).scalar() or 0

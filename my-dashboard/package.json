@@ -3,13 +3,21 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20 <25"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "cf:dev": "npx wrangler dev",
+    "cf:dev:remote": "npx wrangler dev --remote",
+    "cf:deploy": "npm run build && npx wrangler deploy"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.96.0",
+    "@tanstack/react-query-devtools": "^5.96.0",
     "axios": "^1.13.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

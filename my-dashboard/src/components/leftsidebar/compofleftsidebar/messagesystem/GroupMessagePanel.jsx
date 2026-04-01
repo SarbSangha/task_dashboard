@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import './GroupMessagePanel.css';
 import { authAPI, directMessageAPI, fileAPI, groupAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
@@ -15,13 +16,42 @@ import {
   openSystemFilePicker,
 } from '../../../../utils/fileUploads';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { GROUP_MESSAGES_KEY, useSendGroupMessage } from '../../../../hooks/useMessages';
 import ChatAttachmentGallery from '../../../common/chat/ChatAttachmentGallery';
 
 const GROUP_PANEL_CACHE_TTL_MS = 2 * 60 * 1000;
 const GROUP_MESSAGES_CACHE_TTL_MS = 90 * 1000;
+const createInitialForwardState = () => ({
+  open: false,
+  groupIds: [],
+  userIds: [],
+  note: '',
+  sending: false,
+});
+
+const appendMessageById = (rows = [], nextMessage) => {
+  if (!nextMessage?.id) return rows;
+  if (rows.some((row) => row.id === nextMessage.id)) return rows;
+  return [...rows, nextMessage];
+};
+
+const replaceMessageById = (rows = [], messageId, nextMessage) => {
+  if (!messageId || !nextMessage) return rows;
+  let replaced = false;
+  const nextRows = rows.map((row) => {
+    if (row?.id !== messageId) return row;
+    replaced = true;
+    return nextMessage;
+  });
+  return replaced ? nextRows : appendMessageById(rows, nextMessage);
+};
+
+const removeMessageById = (rows = [], messageId) =>
+  rows.filter((row) => row?.id !== messageId);
 
 const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const isActive = variant === 'embedded' || isOpen;
   const [activeTab, setActiveTab] = useState('groups');
   const [loading, setLoading] = useState(true);
@@ -52,6 +82,10 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
   const [showGroupMenu, setShowGroupMenu] = useState(false);
   const [addMemberSelection, setAddMemberSelection] = useState([]);
   const [feedback, setFeedback] = useState('');
+  const [selectionMode, setSelectionMode] = useState(null);
+  const [selectedGroupMessageIds, setSelectedGroupMessageIds] = useState([]);
+  const [selectedDirectMessageIds, setSelectedDirectMessageIds] = useState([]);
+  const [forwardState, setForwardState] = useState(createInitialForwardState);
   const messageThreadRef = useRef(null);
   const directThreadRef = useRef(null);
   const selectedGroupIdRef = useRef(null);
@@ -146,6 +180,33 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
 
     return items;
   }, [directConversations, directUsers]);
+  const selectedForwardMessages = useMemo(() => {
+    if (selectionMode === 'group') {
+      const selectedIds = new Set(selectedGroupMessageIds);
+      return messages.filter((message) => selectedIds.has(message.id));
+    }
+
+    if (selectionMode === 'direct') {
+      const selectedIds = new Set(selectedDirectMessageIds);
+      return directMessages.filter((message) => selectedIds.has(message.id));
+    }
+
+    return [];
+  }, [directMessages, messages, selectedDirectMessageIds, selectedGroupMessageIds, selectionMode]);
+  const selectedForwardCount = selectedForwardMessages.length;
+  const forwardableGroups = useMemo(
+    () => groups.filter((group) => !(selectionMode === 'group' && group.id === selectedGroupId)),
+    [groups, selectedGroupId, selectionMode]
+  );
+  const forwardableUsers = useMemo(
+    () =>
+      allUsers.filter(
+        (groupUser) =>
+          groupUser.id !== currentUserId
+          && !(selectionMode === 'direct' && groupUser.id === selectedDirectUserId)
+      ),
+    [allUsers, currentUserId, selectedDirectUserId, selectionMode]
+  );
 
   const buildDayLabel = (value) => {
     if (!value) return 'Recent';
@@ -183,6 +244,17 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
     Array.from(value || 'group').reduce((total, char) => total + char.charCodeAt(0), 0) % 360;
 
   const getAttachmentLabel = (attachment) => getAttachmentDisplayName(attachment);
+  const formatForwardTimestamp = (value) => {
+    if (!value) return 'Unknown time';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Unknown time';
+    return date.toLocaleString([], {
+      day: 'numeric',
+      month: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
 
   const messageItems = useMemo(() => {
     const items = [];
@@ -230,7 +302,34 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
     setTaskPanelCache(cacheKeys.groupMessages(selectedGroupId), {
       messages,
     });
-  }, [cacheKeys, isActive, messages, selectedGroupId]);
+    queryClient.setQueryData(GROUP_MESSAGES_KEY(selectedGroupId), messages);
+  }, [cacheKeys, isActive, messages, queryClient, selectedGroupId]);
+
+  const { mutateAsync: sendGroupMessage } = useSendGroupMessage(selectedGroupId, {
+    onOptimisticMessage: (optimisticMessage) => {
+      setMessages((prev) => appendMessageById(prev, optimisticMessage));
+      setMessageCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
+    },
+    onConfirmedMessage: ({ tempId, message }) => {
+      setMessages((prev) => replaceMessageById(prev, tempId, message));
+      setMessageCacheStatus((prev) => ({
+        showingCached: false,
+        cachedAt: prev.cachedAt,
+        liveUpdatedAt: Date.now(),
+      }));
+    },
+    onRollbackMessage: ({ context }) => {
+      if (!context?.tempId) return;
+      setMessages((prev) => removeMessageById(prev, context.tempId));
+    },
+    onSettled: async () => {
+      await syncGroups({ silent: true }).catch(() => {});
+    },
+  });
 
   const syncGroups = async ({ keepSelected = true, silent = false } = {}) => {
     if (syncGroupsPromiseRef.current) {
@@ -585,9 +684,6 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
           const groupId = payload?.metadata?.groupId;
           if (!groupId) return;
           scheduleGroupIndexRefresh();
-          if (selectedGroupIdRef.current === groupId) {
-            scheduleGroupMessagesRefresh(groupId);
-          }
           return;
         }
 
@@ -602,9 +698,6 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
       },
       onOpen: () => {
         scheduleGroupIndexRefresh(120);
-        if (selectedGroupIdRef.current) {
-          scheduleGroupMessagesRefresh(selectedGroupIdRef.current, 120);
-        }
         scheduleDirectIndexRefresh(120);
         if (selectedDirectUserIdRef.current) {
           scheduleDirectMessagesRefresh(selectedDirectUserIdRef.current, 120);
@@ -616,6 +709,39 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
       unsubscribe();
     };
   }, [isActive]);
+
+  useEffect(() => {
+    if (!isActive || !selectedGroupId) return undefined;
+
+    const unsubscribe = subscribeRealtimeNotifications({
+      onMessage: (payload) => {
+        if (!payload || payload.eventType !== 'group_message') return;
+
+        const groupId = payload?.metadata?.groupId;
+        if (groupId !== selectedGroupId) return;
+
+        const incomingMessage = {
+          id: payload?.metadata?.messageId,
+          senderId: payload?.metadata?.senderId || null,
+          senderName: payload?.metadata?.senderName || 'Unknown',
+          message: payload?.message || '',
+          attachments: [],
+          createdAt: payload?.metadata?.createdAt || new Date().toISOString(),
+        };
+
+        setMessages((prev) => appendMessageById(prev, incomingMessage));
+        setMessageCacheStatus((prev) => ({
+          showingCached: false,
+          cachedAt: prev.cachedAt,
+          liveUpdatedAt: Date.now(),
+        }));
+      },
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [isActive, selectedGroupId]);
 
   useEffect(() => {
     if (isActive) return;
@@ -753,6 +879,13 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
   }, [isActive, selectedDirectUserId]);
 
   useEffect(() => {
+    setSelectionMode(null);
+    setSelectedGroupMessageIds([]);
+    setSelectedDirectMessageIds([]);
+    setForwardState(createInitialForwardState());
+  }, [activeTab, selectedDirectUserId, selectedGroupId]);
+
+  useEffect(() => {
     if (!isActive || !selectedDirectUserId) return undefined;
 
     const frameId = window.requestAnimationFrame(() => {
@@ -806,19 +939,21 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
     if (!selectedGroupId || sendingMessage || uploadingAttachment) return;
     const trimmedMessage = newMessage.trim();
     if (!trimmedMessage && pendingAttachments.length === 0) return;
+    const draftMessage = trimmedMessage;
+    const draftAttachments = pendingAttachments;
     setSendingMessage(true);
+    setNewMessage('');
+    setPendingAttachments([]);
 
     try {
-      const response = await groupAPI.sendMessage(selectedGroupId, {
-        message: trimmedMessage,
-        attachments: pendingAttachments,
+      await sendGroupMessage({
+        message: draftMessage,
+        attachments: draftAttachments,
       });
-      const sent = response?.data;
-      setMessages((prev) => (sent ? [...prev, sent] : prev));
-      setNewMessage('');
-      setPendingAttachments([]);
-      await syncGroups({ silent: true });
+      setFeedback('');
     } catch (error) {
+      setNewMessage(draftMessage);
+      setPendingAttachments(draftAttachments);
       setFeedback(error?.response?.data?.detail || 'Failed to send message.');
     } finally {
       setSendingMessage(false);
@@ -910,6 +1045,152 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
       setSendingDirectMessage(false);
     }
   };
+
+  const resetMessageForwarding = () => {
+    setSelectionMode(null);
+    setSelectedGroupMessageIds([]);
+    setSelectedDirectMessageIds([]);
+    setForwardState(createInitialForwardState());
+  };
+
+  const startMessageSelection = (mode) => {
+    setFeedback('');
+    setSelectionMode(mode);
+    if (mode === 'group') {
+      setSelectedDirectMessageIds([]);
+      return;
+    }
+    setSelectedGroupMessageIds([]);
+  };
+
+  const cancelMessageSelection = () => {
+    resetMessageForwarding();
+  };
+
+  const toggleMessageSelection = (mode, messageId) => {
+    if (mode === 'group') {
+      setSelectedGroupMessageIds((prev) =>
+        prev.includes(messageId) ? prev.filter((value) => value !== messageId) : [...prev, messageId]
+      );
+      return;
+    }
+
+    setSelectedDirectMessageIds((prev) =>
+      prev.includes(messageId) ? prev.filter((value) => value !== messageId) : [...prev, messageId]
+    );
+  };
+
+  const openForwardModal = () => {
+    if (!selectedForwardMessages.length) {
+      setFeedback('Select at least one message to forward.');
+      return;
+    }
+
+    setForwardState((prev) => ({
+      ...createInitialForwardState(),
+      open: true,
+      note: prev.note || '',
+    }));
+  };
+
+  const closeForwardModal = () => {
+    setForwardState((prev) => ({
+      ...createInitialForwardState(),
+      open: false,
+      note: prev.note,
+    }));
+  };
+
+  const toggleForwardGroupTarget = (groupId) => {
+    setForwardState((prev) => ({
+      ...prev,
+      groupIds: prev.groupIds.includes(groupId)
+        ? prev.groupIds.filter((value) => value !== groupId)
+        : [...prev.groupIds, groupId],
+    }));
+  };
+
+  const toggleForwardUserTarget = (userId) => {
+    setForwardState((prev) => ({
+      ...prev,
+      userIds: prev.userIds.includes(userId)
+        ? prev.userIds.filter((value) => value !== userId)
+        : [...prev.userIds, userId],
+    }));
+  };
+
+  const buildForwardPayload = () => {
+    const sourceLabel = selectionMode === 'group'
+      ? `group "${selectedGroup?.name || 'Unknown group'}"`
+      : `chat with ${selectedDirectUser?.name || 'Unknown user'}`;
+    const note = forwardState.note.trim();
+    const messageBlocks = selectedForwardMessages.map((message, index) => {
+      const attachmentCount = Array.isArray(message.attachments) ? message.attachments.length : 0;
+      const attachmentLine = attachmentCount
+        ? `Attachments: ${message.attachments.map((attachment) => getAttachmentLabel(attachment)).join(', ')}`
+        : '';
+
+      return [
+        `[${index + 1}] ${message.senderName || 'Unknown'} • ${formatForwardTimestamp(message.createdAt)}`,
+        message.message || (attachmentCount ? 'Forwarded attachment message' : ''),
+        attachmentLine,
+      ]
+        .filter(Boolean)
+        .join('\n');
+    });
+
+    const attachments = selectedForwardMessages.reduce(
+      (accumulator, message) => mergeUniqueAttachments(accumulator, message.attachments || []),
+      []
+    );
+
+    const message = [
+      `Forwarded ${selectedForwardMessages.length === 1 ? 'message' : 'messages'} from ${sourceLabel}`,
+      note ? `Note: ${note}` : '',
+      '',
+      ...messageBlocks,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    return {
+      message,
+      attachments,
+    };
+  };
+
+  const submitForwardMessages = async () => {
+    const targetCount = forwardState.groupIds.length + forwardState.userIds.length;
+    if (!selectedForwardMessages.length) {
+      setFeedback('Select at least one message to forward.');
+      return;
+    }
+    if (targetCount === 0) {
+      setFeedback('Choose at least one group or individual recipient.');
+      return;
+    }
+
+    setForwardState((prev) => ({ ...prev, sending: true }));
+    try {
+      const payload = buildForwardPayload();
+      await Promise.all([
+        ...forwardState.groupIds.map((groupId) => groupAPI.sendMessage(groupId, payload)),
+        ...forwardState.userIds.map((userId) => directMessageAPI.sendMessage(userId, payload)),
+      ]);
+      setFeedback(
+        `Forwarded ${selectedForwardMessages.length} ${selectedForwardMessages.length === 1 ? 'message' : 'messages'} to ${targetCount} ${targetCount === 1 ? 'destination' : 'destinations'}.`
+      );
+      resetMessageForwarding();
+      syncGroups({ silent: true }).catch(() => {});
+      syncDirectData({ silent: true }).catch(() => {});
+    } catch (error) {
+      setForwardState((prev) => ({ ...prev, sending: false }));
+      setFeedback(error?.response?.data?.detail || 'Failed to forward selected messages.');
+    }
+  };
+
+  const isGroupSelectionActive = selectionMode === 'group';
+  const isDirectSelectionActive = selectionMode === 'direct';
 
   const content = (
     <div className={`group-message-root group-message-root--${variant}`}>
@@ -1044,6 +1325,13 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
                 </div>
                 <div className="group-chat-actions">
                   <span className="group-chat-badge">{selectedGroup.myRole}</span>
+                  <button
+                    type="button"
+                    className={`group-chat-selection-toggle ${isGroupSelectionActive ? 'active' : ''}`}
+                    onClick={() => (isGroupSelectionActive ? cancelMessageSelection() : startMessageSelection('group'))}
+                  >
+                    {isGroupSelectionActive ? 'Cancel Select' : 'Select Messages'}
+                  </button>
                   <div className="group-chat-menu-wrap" ref={groupMenuRef}>
                     <button
                       type="button"
@@ -1143,6 +1431,32 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
                 </div>
               </div>
 
+              {isGroupSelectionActive && (
+                <div className="group-chat-selection-bar">
+                  <div className="group-chat-selection-copy">
+                    <strong>{selectedGroupMessageIds.length}</strong>
+                    <span>{selectedGroupMessageIds.length === 1 ? 'message selected' : 'messages selected'}</span>
+                  </div>
+                  <div className="group-chat-selection-actions">
+                    <button
+                      type="button"
+                      className="group-chat-selection-btn"
+                      onClick={openForwardModal}
+                      disabled={selectedGroupMessageIds.length === 0}
+                    >
+                      Forward Selected
+                    </button>
+                    <button
+                      type="button"
+                      className="group-chat-selection-btn secondary"
+                      onClick={cancelMessageSelection}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="group-chat-body">
                 <div className="group-chat-thread" ref={messageThreadRef}>
                   <CacheStatusBanner
@@ -1166,9 +1480,27 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
 
                     const message = item.message;
                     const mine = message.senderId === currentUserId;
+                    const isSelected = selectedGroupMessageIds.includes(message.id);
 
                     return (
-                      <div key={item.id} className={`group-chat-row ${mine ? 'mine' : 'theirs'}`}>
+                      <div
+                        key={item.id}
+                        className={`group-chat-row ${mine ? 'mine' : 'theirs'} ${isGroupSelectionActive ? 'selecting' : ''} ${isSelected ? 'selected' : ''}`}
+                        onClick={isGroupSelectionActive ? () => toggleMessageSelection('group', message.id) : undefined}
+                      >
+                        {isGroupSelectionActive && (
+                          <button
+                            type="button"
+                            className={`group-message-select-toggle ${isSelected ? 'selected' : ''}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleMessageSelection('group', message.id);
+                            }}
+                            aria-label={isSelected ? 'Deselect message' : 'Select message'}
+                          >
+                            {isSelected ? '✓' : ''}
+                          </button>
+                        )}
                         {!mine && (
                           <div
                             className="group-message-avatar"
@@ -1177,7 +1509,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
                             {buildInitials(message.senderName)}
                           </div>
                         )}
-                        <div className={`group-message-bubble ${mine ? 'mine' : 'theirs'}`}>
+                        <div className={`group-message-bubble ${mine ? 'mine' : 'theirs'} ${message.isOptimistic ? 'optimistic' : ''}`}>
                           {!mine && <div className="group-message-sender">{message.senderName}</div>}
                           {message.message && <div className="group-message-text">{message.message}</div>}
                           {!!message.attachments?.length && (
@@ -1187,6 +1519,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
                           )}
                           <div className="group-message-meta">
                             <span>{formatMessageTime(message.createdAt)}</span>
+                            {message.isOptimistic && <span className="group-message-status">Sending...</span>}
                           </div>
                         </div>
                       </div>
@@ -1238,7 +1571,25 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
                     title="Attach folder"
                     disabled={uploadingAttachment}
                   >
-                    F
+                    <svg
+                      className="group-chat-tool-icon"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <path
+                        d="M3.75 6.75A2.25 2.25 0 0 1 6 4.5h3.12a2.25 2.25 0 0 1 1.59.66l1.35 1.34H18A2.25 2.25 0 0 1 20.25 8.75v7.5A2.25 2.25 0 0 1 18 18.5H6a2.25 2.25 0 0 1-2.25-2.25v-9.5Z"
+                        fill="currentColor"
+                        opacity="0.22"
+                      />
+                      <path
+                        d="M3.75 8.5A2 2 0 0 1 5.75 6.5h5.38l1.32 1.3c.23.24.55.37.88.37h5.42a1.5 1.5 0 0 1 1.45 1.89l-1.16 4.32a2 2 0 0 1-1.93 1.48H5.95a2 2 0 0 1-1.98-1.74L3.75 8.5Z"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.7"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
                   </button>
                   <input
                     className="groups-input group-chat-input"
@@ -1257,8 +1608,27 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
                     className="group-chat-send-btn"
                     onClick={sendMessage}
                     disabled={sendingMessage || uploadingAttachment || (!newMessage.trim() && pendingAttachments.length === 0)}
+                    aria-label="Send message"
                   >
-                    <span className={`group-chat-send-icon ${sendingMessage ? 'sending' : ''}`} />
+                    <svg
+                      className={`group-chat-send-icon ${sendingMessage ? 'sending' : ''}`}
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <path
+                        d="M4.5 11.5 18.95 5.48c.93-.39 1.88.55 1.49 1.48L14.4 21.47c-.38.92-1.71.89-2.04-.05l-1.7-4.86-4.83-1.73c-.93-.33-.96-1.65-.05-2.03Z"
+                        fill="currentColor"
+                      />
+                      <path
+                        d="M10.66 16.56 20.18 6.75"
+                        fill="none"
+                        stroke="#0b1a14"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
                   </button>
                 </div>
               </div>
@@ -1335,13 +1705,46 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
                         {selectedDirectUser.department || 'No department'}{selectedDirectUser.position ? `, ${selectedDirectUser.position}` : ''}
                       </div>
                     </div>
+                </div>
+                <div className="group-chat-actions">
+                  <span className="group-chat-badge">Direct</span>
+                  <button
+                    type="button"
+                    className={`group-chat-selection-toggle ${isDirectSelectionActive ? 'active' : ''}`}
+                    onClick={() => (isDirectSelectionActive ? cancelMessageSelection() : startMessageSelection('direct'))}
+                  >
+                    {isDirectSelectionActive ? 'Cancel Select' : 'Select Messages'}
+                  </button>
+                </div>
+              </div>
+
+              {isDirectSelectionActive && (
+                <div className="group-chat-selection-bar">
+                  <div className="group-chat-selection-copy">
+                    <strong>{selectedDirectMessageIds.length}</strong>
+                    <span>{selectedDirectMessageIds.length === 1 ? 'message selected' : 'messages selected'}</span>
                   </div>
-                  <div className="group-chat-actions">
-                    <span className="group-chat-badge">Direct</span>
+                  <div className="group-chat-selection-actions">
+                    <button
+                      type="button"
+                      className="group-chat-selection-btn"
+                      onClick={openForwardModal}
+                      disabled={selectedDirectMessageIds.length === 0}
+                    >
+                      Forward Selected
+                    </button>
+                    <button
+                      type="button"
+                      className="group-chat-selection-btn secondary"
+                      onClick={cancelMessageSelection}
+                    >
+                      Clear
+                    </button>
                   </div>
                 </div>
+              )}
 
-                <div className="group-chat-body">
+              <div className="group-chat-body">
                   <div className="group-chat-thread" ref={directThreadRef}>
                     <CacheStatusBanner
                       showingCached={directMessageCacheStatus.showingCached}
@@ -1366,9 +1769,27 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
 
                       const message = item.message;
                       const mine = message.senderId === currentUserId;
+                      const isSelected = selectedDirectMessageIds.includes(message.id);
 
                       return (
-                        <div key={item.id} className={`group-chat-row ${mine ? 'mine' : 'theirs'}`}>
+                        <div
+                          key={item.id}
+                          className={`group-chat-row ${mine ? 'mine' : 'theirs'} ${isDirectSelectionActive ? 'selecting' : ''} ${isSelected ? 'selected' : ''}`}
+                          onClick={isDirectSelectionActive ? () => toggleMessageSelection('direct', message.id) : undefined}
+                        >
+                          {isDirectSelectionActive && (
+                            <button
+                              type="button"
+                              className={`group-message-select-toggle ${isSelected ? 'selected' : ''}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleMessageSelection('direct', message.id);
+                              }}
+                              aria-label={isSelected ? 'Deselect message' : 'Select message'}
+                            >
+                              {isSelected ? '✓' : ''}
+                            </button>
+                          )}
                           {!mine && (
                             <div
                               className="group-message-avatar"
@@ -1438,7 +1859,25 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
                       title="Attach folder"
                       disabled={uploadingDirectAttachment}
                     >
-                      F
+                      <svg
+                        className="group-chat-tool-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M3.75 6.75A2.25 2.25 0 0 1 6 4.5h3.12a2.25 2.25 0 0 1 1.59.66l1.35 1.34H18A2.25 2.25 0 0 1 20.25 8.75v7.5A2.25 2.25 0 0 1 18 18.5H6a2.25 2.25 0 0 1-2.25-2.25v-9.5Z"
+                          fill="currentColor"
+                          opacity="0.22"
+                        />
+                        <path
+                          d="M3.75 8.5A2 2 0 0 1 5.75 6.5h5.38l1.32 1.3c.23.24.55.37.88.37h5.42a1.5 1.5 0 0 1 1.45 1.89l-1.16 4.32a2 2 0 0 1-1.93 1.48H5.95a2 2 0 0 1-1.98-1.74L3.75 8.5Z"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
                     </button>
                     <input
                       className="groups-input group-chat-input"
@@ -1461,13 +1900,128 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
                         uploadingDirectAttachment ||
                         (!directNewMessage.trim() && directPendingAttachments.length === 0)
                       }
+                      aria-label="Send direct message"
                     >
-                      <span className={`group-chat-send-icon ${sendingDirectMessage ? 'sending' : ''}`} />
+                      <svg
+                        className={`group-chat-send-icon ${sendingDirectMessage ? 'sending' : ''}`}
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M4.5 11.5 18.95 5.48c.93-.39 1.88.55 1.49 1.48L14.4 21.47c-.38.92-1.71.89-2.04-.05l-1.7-4.86-4.83-1.73c-.93-.33-.96-1.65-.05-2.03Z"
+                          fill="currentColor"
+                        />
+                        <path
+                          d="M10.66 16.56 20.18 6.75"
+                          fill="none"
+                          stroke="#0b1a14"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
                     </button>
                   </div>
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+      {forwardState.open && (
+        <div className="message-forward-overlay" onClick={closeForwardModal}>
+          <div className="message-forward-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="message-forward-header">
+              <div>
+                <h4>Forward Messages</h4>
+                <p>
+                  {selectedForwardCount} {selectedForwardCount === 1 ? 'message' : 'messages'} selected from{' '}
+                  {selectionMode === 'group' ? selectedGroup?.name || 'group chat' : selectedDirectUser?.name || 'direct chat'}.
+                </p>
+              </div>
+              <button type="button" className="message-forward-close" onClick={closeForwardModal}>
+                ✕
+              </button>
+            </div>
+
+            <div className="message-forward-body">
+              <div className="message-forward-summary">
+                {selectedForwardMessages.map((message) => (
+                  <div key={message.id} className="message-forward-summary-item">
+                    <strong>{message.senderName || 'Unknown'}</strong>
+                    <span>{message.message || 'Forwarded attachment message'}</span>
+                    <small>{formatForwardTimestamp(message.createdAt)}</small>
+                  </div>
+                ))}
+              </div>
+
+              <label className="message-forward-note">
+                <span>Add note (optional)</span>
+                <textarea
+                  value={forwardState.note}
+                  onChange={(event) => setForwardState((prev) => ({ ...prev, note: event.target.value }))}
+                  placeholder="Add context for the forwarded messages"
+                  rows={3}
+                />
+              </label>
+
+              <div className="message-forward-target-columns">
+                <div className="message-forward-target-card">
+                  <div className="message-forward-target-title">Forward To Group</div>
+                  <div className="message-forward-target-list">
+                    {forwardableGroups.length === 0 && (
+                      <div className="message-forward-empty">No other groups available.</div>
+                    )}
+                    {forwardableGroups.map((group) => (
+                      <label key={group.id} className="message-forward-target-option">
+                        <input
+                          type="checkbox"
+                          checked={forwardState.groupIds.includes(group.id)}
+                          onChange={() => toggleForwardGroupTarget(group.id)}
+                        />
+                        <span>{group.name}</span>
+                        <small>{group.memberCount} members</small>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="message-forward-target-card">
+                  <div className="message-forward-target-title">Forward To Individual</div>
+                  <div className="message-forward-target-list">
+                    {forwardableUsers.length === 0 && (
+                      <div className="message-forward-empty">No users available.</div>
+                    )}
+                    {forwardableUsers.map((groupUser) => (
+                      <label key={groupUser.id} className="message-forward-target-option">
+                        <input
+                          type="checkbox"
+                          checked={forwardState.userIds.includes(groupUser.id)}
+                          onChange={() => toggleForwardUserTarget(groupUser.id)}
+                        />
+                        <span>{groupUser.name}</span>
+                        <small>{groupUser.department || groupUser.position || 'User'}</small>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="message-forward-footer">
+              <button type="button" className="group-chat-selection-btn secondary" onClick={closeForwardModal}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="group-chat-selection-btn"
+                onClick={submitForwardMessages}
+                disabled={forwardState.sending}
+              >
+                {forwardState.sending ? 'Forwarding...' : 'Forward Now'}
+              </button>
+            </div>
           </div>
         </div>
       )}
