@@ -128,6 +128,7 @@ operational_engine = _create_engine(OPERATIONAL_DB_URL)
 OperationalSessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
+    expire_on_commit=False,
     bind=operational_engine
 )
 
@@ -136,6 +137,7 @@ archive_engine = _create_engine(ARCHIVE_DB_URL)
 ArchiveSessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
+    expire_on_commit=False,
     bind=archive_engine
 )
 

@@ -137,12 +137,6 @@ def _resolve_cookie_policy(request: Optional[Request] = None) -> tuple[bool, str
 
     return cookie_secure, cookie_samesite
 
-# ==================== SCHEMAS ====================
-class UserLogin(BaseModel):
-    email: str
-    password: str
-    remember_me: bool = False
-
 class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6)
@@ -449,7 +443,7 @@ async def register(
 
 @router.post("/login")
 async def login(
-    credentials: UserLogin,
+    credentials: UserLoginExtended,
     request: Request,
     response: Response,
     db: Session = Depends(get_operational_db)

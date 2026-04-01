@@ -92,23 +92,13 @@ export const AuthProvider = ({ children }) => {
       const response = await authAPI.login(email, password, rememberMe);
       
       if (response.success && response.user) {
-        const sessionCheck = await authAPI.getCurrentUser().catch(() => null);
-        const authenticatedUser = sessionCheck?.success && sessionCheck?.user
-          ? sessionCheck.user
-          : null;
-        if (!authenticatedUser) {
-          return {
-            success: false,
-            error: 'Login succeeded but the session could not be restored. Please try again or contact admin.'
-          };
-        }
-        setUser(authenticatedUser);
+        setUser(response.user);
         try {
           localStorage.removeItem('rmw_activity_auth_block_until_v1');
         } catch {
           // no-op
         }
-        console.log('✅ Login successful:', authenticatedUser.email);
+        console.log('✅ Login successful:', response.user.email);
         return { success: true };
       } else {
         console.error('❌ Login failed: Invalid response format');
@@ -119,6 +109,18 @@ export const AuthProvider = ({ children }) => {
       }
     } catch (error) {
       console.error('❌ Login error:', error);
+      if (!error.response) {
+        return {
+          success: false,
+          error: 'Network error',
+          errorDetails: {
+            message: 'Cannot reach the login service right now. Check the API URL, CORS, worker route, and backend health.',
+            code: 'NETWORK_ERROR',
+            reason: null,
+            nextAction: 'Try again in a moment. If it keeps failing, inspect the browser Network tab for the /api/auth/login request.',
+          },
+        };
+      }
       const errorInfo = normalizeApiError(
         error.response?.data?.detail,
         error.message || 'Login failed'

@@ -13,12 +13,12 @@ class UserCreate(BaseModel):
 
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    email: str = Field(..., min_length=1)
     password: str
 
 
 class UserLoginExtended(BaseModel):
-    email: EmailStr
+    email: str = Field(..., min_length=1)
     password: str
     remember_me: bool = False
 
