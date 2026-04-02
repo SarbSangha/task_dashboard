@@ -4,6 +4,77 @@ const CACHEABLE_ROUTES = [
   { prefix: '/api/tasks/assets', namespace: 'tasks_assets', ttl: 90 },
 ]
 
+function splitCsv(value) {
+  return `${value || ''}`
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function isAllowedOrigin(origin, env) {
+  if (!origin) return false
+
+  const configuredOrigins = [
+    ...splitCsv(env.FRONTEND_URL),
+    ...splitCsv(env.CORS_ORIGINS),
+  ]
+  if (configuredOrigins.includes(origin)) {
+    return true
+  }
+
+  try {
+    const url = new URL(origin)
+    const host = (url.hostname || '').toLowerCase()
+    return (
+      /^https:\/\/.*\.onrender\.com$/i.test(origin)
+      || /^https:\/\/.*\.workers\.dev$/i.test(origin)
+      || host === 'localhost'
+      || host === '127.0.0.1'
+      || host.startsWith('192.168.')
+    )
+  } catch {
+    return false
+  }
+}
+
+function applyCorsHeaders(headers, request, env) {
+  const nextHeaders = new Headers(headers || {})
+  const origin = request.headers.get('Origin')
+
+  if (!origin || !isAllowedOrigin(origin, env)) {
+    return nextHeaders
+  }
+
+  nextHeaders.set('Access-Control-Allow-Origin', origin)
+  nextHeaders.set('Access-Control-Allow-Credentials', 'true')
+  nextHeaders.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+  nextHeaders.set(
+    'Access-Control-Allow-Headers',
+    request.headers.get('Access-Control-Request-Headers') || 'Content-Type, X-Session-Id',
+  )
+  nextHeaders.set('Access-Control-Expose-Headers', 'Set-Cookie, X-Cache')
+  nextHeaders.append('Vary', 'Origin')
+
+  return nextHeaders
+}
+
+function withCors(response, request, env) {
+  const headers = applyCorsHeaders(response.headers, request, env)
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
+function handleCorsPreflight(request, env) {
+  const headers = applyCorsHeaders({}, request, env)
+  if (!headers.has('Access-Control-Allow-Origin')) {
+    return new Response(null, { status: 403 })
+  }
+  return new Response(null, { status: 204, headers })
+}
+
 function json(data, init = {}) {
   const headers = new Headers(init.headers || {})
   if (!headers.has('content-type')) {
@@ -176,19 +247,23 @@ export default {
     const isWebSocketUpgrade = request.headers.get('Upgrade') === 'websocket'
     const route = getRouteConfig(url.pathname)
 
+    if (request.method === 'OPTIONS' && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/edge/'))) {
+      return handleCorsPreflight(request, env)
+    }
+
     if (url.pathname === '/edge/health') {
-      return json({
+      return withCors(json({
         ok: true,
         route: '/edge/health',
         fastapiUrl: env.FASTAPI_URL || null,
         hyperdriveBound: Boolean(env.HYPERDRIVE),
         kvBound: Boolean(env.DASHBOARD_KV),
         timestamp: new Date().toISOString(),
-      })
+      }), request, env)
     }
 
     if ((url.pathname === '/edge/purge' || url.pathname === '/purge') && request.method === 'POST') {
-      return handlePurge(request, env)
+      return withCors(await handlePurge(request, env), request, env)
     }
 
     if (url.pathname.startsWith('/api/')) {
@@ -196,19 +271,19 @@ export default {
         return proxyToOrigin(request, env, url)
       }
       if (request.method === 'GET' && route) {
-        return handleCachedGet(request, env, url, route)
+        return withCors(await handleCachedGet(request, env, url, route), request, env)
       }
-      return proxyToOrigin(request, env, url)
+      return withCors(await proxyToOrigin(request, env, url), request, env)
     }
 
     if (url.pathname.startsWith('/edge/')) {
-      return json(
+      return withCors(json(
         {
           ok: false,
           message: 'Unknown edge route',
         },
         { status: 404 },
-      )
+      ), request, env)
     }
 
     if (env.ASSETS) {
