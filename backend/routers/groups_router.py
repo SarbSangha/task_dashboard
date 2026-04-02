@@ -6,7 +6,7 @@ from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from database_config import get_operational_db
 from models_new import GroupChat, GroupChatMember, GroupChatMessage, User
@@ -205,18 +205,17 @@ async def list_my_groups(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):
-    memberships = (
-        db.query(GroupChatMember.group_id)
-        .filter(
-            GroupChatMember.user_id == current_user.id,
-            GroupChatMember.is_active == True,
-        )
-        .subquery()
-    )
     groups = (
         db.query(GroupChat)
+        .join(
+            GroupChatMember,
+            and_(
+                GroupChatMember.group_id == GroupChat.id,
+                GroupChatMember.user_id == current_user.id,
+                GroupChatMember.is_active == True,
+            ),
+        )
         .filter(
-            GroupChat.id.in_(select(memberships.c.group_id)),
             GroupChat.is_archived == False,
         )
         .order_by(GroupChat.last_message_at.desc(), GroupChat.id.desc())

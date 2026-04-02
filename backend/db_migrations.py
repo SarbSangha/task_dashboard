@@ -160,6 +160,33 @@ def _ensure_postgres_schema(conn) -> None:
             """
         )
     )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_group_chat_members_active_user_group
+            ON group_chat_members(user_id, group_id)
+            WHERE is_active = TRUE
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_group_chat_members_active_group_user
+            ON group_chat_members(group_id, user_id)
+            WHERE is_active = TRUE
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_group_chats_active_last_message_id
+            ON group_chats(last_message_at DESC, id DESC)
+            WHERE is_archived = FALSE
+            """
+        )
+    )
 
 
 def ensure_operational_schema(engine) -> None:
