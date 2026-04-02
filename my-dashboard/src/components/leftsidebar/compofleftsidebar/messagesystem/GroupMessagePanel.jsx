@@ -53,6 +53,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const isActive = variant === 'embedded' || isOpen;
+  const isActiveRef = useRef(isActive);
   const [activeTab, setActiveTab] = useState('groups');
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -126,6 +127,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
   const groupMessagesRequestRef = useRef({ groupId: null, promise: null });
   const directMessagesRequestRef = useRef({ userId: null, promise: null });
   const minimizedWindowStyle = useMinimizedWindowStack('group-message-panel', variant === 'overlay' && isOpen && isMinimized);
+  isActiveRef.current = isActive;
   selectedGroupIdRef.current = selectedGroupId;
   selectedDirectUserIdRef.current = selectedDirectUserId;
   activeTabRef.current = activeTab;
@@ -342,6 +344,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
           setIsRefreshing(true);
         }
         const response = await groupAPI.listGroups();
+        if (!isActiveRef.current) return;
         const nextGroups = response?.data || [];
         setGroups(nextGroups);
         setGroupsCacheStatus((prev) => ({
@@ -397,6 +400,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
         if (silent) setIsMessagesRefreshing(true);
         const response = await groupAPI.listMessages(groupId);
         if (selectedGroupIdRef.current !== groupId) return;
+        if (!isActiveRef.current) return;
         setMessages(response?.data || []);
         setMessageCacheStatus((prev) => ({
           showingCached: false,
@@ -430,6 +434,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
           directMessageAPI.listUsers(),
           directMessageAPI.listConversations(),
         ]);
+        if (!isActiveRef.current) return;
         const nextUsers = usersResponse?.data || [];
         const nextConversations = conversationsResponse?.data || [];
         setDirectUsers(nextUsers);
@@ -484,6 +489,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
         if (silent) setDirectMessagesRefreshing(true);
         const response = await directMessageAPI.listMessages(otherUserId);
         if (selectedDirectUserIdRef.current !== otherUserId) return;
+        if (!isActiveRef.current) return;
         setDirectMessages(response?.data || []);
         if (response?.conversationWith) {
           setDirectUsers((prev) => {
@@ -513,10 +519,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
 
   const scheduleRealtimeRefresh = (key, callback, delay = 180) => {
     if (typeof window === 'undefined') return;
+    if (!isActiveRef.current) return;
     if (realtimeRefreshTimersRef.current[key]) return;
     realtimeRefreshTimersRef.current[key] = window.setTimeout(() => {
       realtimeRefreshTimersRef.current[key] = null;
-      callback().catch(() => {});
+      if (isActiveRef.current) callback().catch(() => {});
     }, delay);
   };
 
@@ -681,15 +688,36 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
         if (!payload) return;
 
         if (payload.eventType === 'group_message') {
-          const groupId = payload?.metadata?.groupId;
+          const groupId = Number(payload?.metadata?.groupId);
           if (!groupId) return;
+
           scheduleGroupIndexRefresh();
+
+          if (selectedGroupIdRef.current === groupId) {
+            const incomingMessage = {
+              id: payload?.metadata?.messageId,
+              senderId: payload?.metadata?.senderId || null,
+              senderName: payload?.metadata?.senderName || 'Unknown',
+              message: payload?.message || '',
+              attachments: [],
+              createdAt: payload?.metadata?.createdAt || new Date().toISOString(),
+            };
+
+            setMessages((prev) => appendMessageById(prev, incomingMessage));
+            setMessageCacheStatus((prev) => ({
+              showingCached: false,
+              cachedAt: prev.cachedAt,
+              liveUpdatedAt: Date.now(),
+            }));
+          }
+
           return;
         }
 
         if (payload.eventType === 'direct_message') {
-          const senderId = payload?.metadata?.senderId;
+          const senderId = Number(payload?.metadata?.senderId);
           if (!senderId) return;
+
           scheduleDirectIndexRefresh();
           if (selectedDirectUserIdRef.current === senderId) {
             scheduleDirectMessagesRefresh(senderId);
@@ -699,6 +727,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
       onOpen: () => {
         scheduleGroupIndexRefresh(120);
         scheduleDirectIndexRefresh(120);
+        if (selectedGroupIdRef.current) {
+          scheduleGroupMessagesRefresh(selectedGroupIdRef.current, 120);
+        }
         if (selectedDirectUserIdRef.current) {
           scheduleDirectMessagesRefresh(selectedDirectUserIdRef.current, 120);
         }
@@ -711,47 +742,13 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
   }, [isActive]);
 
   useEffect(() => {
-    if (!isActive || !selectedGroupId) return undefined;
-
-    const unsubscribe = subscribeRealtimeNotifications({
-      onMessage: (payload) => {
-        if (!payload || payload.eventType !== 'group_message') return;
-
-        const groupId = payload?.metadata?.groupId;
-        if (groupId !== selectedGroupId) return;
-
-        const incomingMessage = {
-          id: payload?.metadata?.messageId,
-          senderId: payload?.metadata?.senderId || null,
-          senderName: payload?.metadata?.senderName || 'Unknown',
-          message: payload?.message || '',
-          attachments: [],
-          createdAt: payload?.metadata?.createdAt || new Date().toISOString(),
-        };
-
-        setMessages((prev) => appendMessageById(prev, incomingMessage));
-        setMessageCacheStatus((prev) => ({
-          showingCached: false,
-          cachedAt: prev.cachedAt,
-          liveUpdatedAt: Date.now(),
-        }));
-      },
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, [isActive, selectedGroupId]);
-
-  useEffect(() => {
     if (isActive) return;
-
-    Object.values(realtimeRefreshTimersRef.current).forEach((timerId, index) => {
-      if (timerId) {
-        window.clearTimeout(timerId);
+    const timers = realtimeRefreshTimersRef.current;
+    Object.keys(timers).forEach((key) => {
+      if (timers[key]) {
+        window.clearTimeout(timers[key]);
+        timers[key] = null;
       }
-      const timerKeys = ['groupIndex', 'groupMessages', 'directIndex', 'directMessages'];
-      realtimeRefreshTimersRef.current[timerKeys[index]] = null;
     });
   }, [isActive]);
 

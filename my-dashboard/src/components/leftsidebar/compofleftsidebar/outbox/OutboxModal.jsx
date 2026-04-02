@@ -1,78 +1,44 @@
 // src/components/leftsidebar/compofleftsidebar/outbox/OutboxModal.jsx
 import './Outbox.css';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import OutboxTaskCard from './OutboxTaskCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
-import { taskAPI, draftAPI } from '../../../../services/api';
+import { taskAPI } from '../../../../services/api';
 import { formatDateIndia, formatTimeIndia } from '../../../../utils/dateTime';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
-import { useAuth } from '../../../../context/AuthContext';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
-import CacheStatusBanner from '../../../common/CacheStatusBanner';
-import {
-  buildTaskPanelCacheKey,
-  getTaskPanelCacheEntry,
-  invalidateTaskPanelCache,
-  setTaskPanelCache,
-} from '../../../../utils/taskPanelCache';
-
-const OUTBOX_CACHE_TTL_MS = 90 * 1000;
+import { useDrafts, useOutbox } from '../../../../hooks/useOutbox';
+import { OutboxSkeleton } from '../../../ui/OutboxSkeleton';
 
 const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
+  const queryClient = useQueryClient();
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
-  const { user } = useAuth();
-  const [tasks, setTasks] = useState([]);
-  const [drafts, setDrafts] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [cacheStatus, setCacheStatus] = useState({
-    showingCached: false,
-    cachedAt: 0,
-    liveUpdatedAt: 0,
-  });
-  const [error, setError] = useState(null);
   const [expandedTaskId, setExpandedTaskId] = useState(null);
   const [activeTab, setActiveTab] = useState('all-dispatched');
   const [filterStatus, setFilterStatus] = useState('all');
-  const [currentUser, setCurrentUser] = useState(null); // NEW: Track current user
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [chatTask, setChatTask] = useState(null);
-  const fetchInFlightRef = useRef(false);
-  const cacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'outbox') : null;
   const minimizedWindowStyle = useMinimizedWindowStack('outbox-modal', isOpen && isMinimized);
 
-  // Fetch data when modal opens
-  useEffect(() => {
-    if (!isOpen || !user?.id) return undefined;
+  const {
+    data: outboxData,
+    isLoading: loading,
+    isFetching,
+    isError,
+    refetch,
+  } = useOutbox({}, { enabled: isOpen });
 
-    const cachedOutboxEntry = cacheKey ? getTaskPanelCacheEntry(cacheKey, OUTBOX_CACHE_TTL_MS) : null;
-    const cachedOutbox = cachedOutboxEntry?.value || null;
-    const hasCachedOutbox = Boolean(cachedOutbox);
-    if (cachedOutbox) {
-      setTasks(cachedOutbox.tasks || []);
-      setDrafts(cachedOutbox.drafts || []);
-      setCurrentUser(cachedOutbox.currentUser || null);
-      setError(null);
-      setCacheStatus({
-        showingCached: true,
-        cachedAt: cachedOutboxEntry?.cachedAt || 0,
-        liveUpdatedAt: 0,
-      });
-    }
+  const tasks = outboxData?.tasks || [];
+  const currentUser = outboxData?.user || null;
 
-    fetchData({ silent: hasCachedOutbox, includeDrafts: activeTab === 'drafts' });
-    // Auto-refresh every 30 seconds while modal is open (reduced API load)
-    const interval = setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      fetchData({ silent: true, includeDrafts: activeTab === 'drafts' });
-    }, 30000);
-
-    return () => clearInterval(interval);
-  }, [activeTab, cacheKey, isOpen, user?.id]);
+  const { data: drafts = [] } = useDrafts({
+    enabled: isOpen && activeTab === 'drafts',
+  });
 
   useEffect(() => {
     if (isOpen) {
@@ -82,80 +48,11 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
   }, [isOpen]);
 
   const invalidateOutboxCache = () => {
-    if (cacheKey) {
-      invalidateTaskPanelCache(cacheKey);
-    }
+    queryClient.invalidateQueries({ queryKey: ['outbox'] });
+    queryClient.invalidateQueries({ queryKey: ['tracking'] });
   };
 
-  const fetchData = async ({ silent = false, includeDrafts = false } = {}) => {
-    if (!user?.id || !cacheKey) return;
-    if (fetchInFlightRef.current) return;
-    fetchInFlightRef.current = true;
-    try {
-      if (silent) {
-        setIsRefreshing(true);
-      } else {
-        setLoading(true);
-      }
-      
-      const tasksData = await taskAPI.getOutbox();
-      let nextTasks = tasks;
-      let nextCurrentUser = currentUser;
-      
-      if (tasksData.success) {
-        nextTasks = tasksData.data || [];
-        setTasks(nextTasks);
-        // Store current user info if available
-        if (tasksData.user) {
-          nextCurrentUser = tasksData.user;
-          setCurrentUser(tasksData.user);
-        }
-        console.log(`✅ Loaded ${tasksData.count} tasks for user: ${tasksData.user?.email}`);
-      } else {
-        setError('Failed to load tasks');
-      }
-
-      // Fetch drafts only when drafts tab is active or when explicitly requested
-      let nextDrafts = drafts;
-      if (includeDrafts) {
-        try {
-          const draftsData = await draftAPI.getDrafts();
-          if (draftsData.success) {
-            nextDrafts = draftsData.data || [];
-            setDrafts(nextDrafts);
-          }
-        } catch (err) {
-          console.warn('Drafts not available:', err);
-          nextDrafts = [];
-          setDrafts([]);
-        }
-      }
-      
-      setTaskPanelCache(cacheKey, {
-        tasks: nextTasks,
-        drafts: nextDrafts,
-        currentUser: nextCurrentUser,
-      });
-      setCacheStatus((prev) => ({
-        showingCached: false,
-        cachedAt: prev.cachedAt,
-        liveUpdatedAt: Date.now(),
-      }));
-      setError(null);
-    } catch (err) {
-      console.error('Error fetching data:', err);
-      if (!silent) setError('Failed to load tasks. Please check your connection.');
-    } finally {
-      if (silent) {
-        setIsRefreshing(false);
-      } else {
-        setLoading(false);
-      }
-      fetchInFlightRef.current = false;
-    }
-  };
-
-  const handleRefresh = () => fetchData({ silent: false, includeDrafts: activeTab === 'drafts' });
+  const handleRefresh = () => void refetch();
 
   const handleCardClick = (taskId) => {
     setExpandedTaskId(expandedTaskId === taskId ? null : taskId);
@@ -185,7 +82,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
       try {
         await taskAPI.revokeTask(task.id, comments.trim());
         invalidateOutboxCache();
-        await fetchData({ silent: true, includeDrafts: activeTab === 'drafts' });
+        await refetch();
       } catch (error) {
         await showAlert(error?.response?.data?.detail || 'Failed to revoke task', { title: 'Revoke Failed' });
       }
@@ -385,25 +282,13 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
         
         {/* Content */}
         {!isMinimized && (
-        <div className="outbox-content">
-          <CacheStatusBanner
-            showingCached={cacheStatus.showingCached}
-            isRefreshing={isRefreshing}
-            cachedAt={cacheStatus.cachedAt}
-            liveUpdatedAt={cacheStatus.liveUpdatedAt}
-            refreshingLabel="Refreshing latest outbox..."
-            liveLabel="Outbox is up to date"
-            cachedLabel="Showing cached outbox"
-          />
-          {loading && tasks.length === 0 ? (
-            <div className="outbox-loading">
-              <div className="spinner"></div>
-              <p>Loading tasks...</p>
-            </div>
-          ) : error ? (
+        <div className="outbox-content" aria-busy={isFetching && !loading}>
+          {loading ? (
+            <OutboxSkeleton count={4} />
+          ) : isError ? (
             <div className="error-banner">
-              ⚠️ {error}
-              <button onClick={handleRefresh} className="retry-btn">Retry</button>
+              ⚠️ Failed to load tasks. Please check your connection.
+              <button onClick={() => void refetch()} className="retry-btn">Retry</button>
             </div>
           ) : filteredData.length === 0 ? (
             <div className="no-tasks">

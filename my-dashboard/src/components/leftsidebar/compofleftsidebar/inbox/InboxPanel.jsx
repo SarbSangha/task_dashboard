@@ -12,6 +12,10 @@ import {
   mergeUniqueAttachments,
   openSystemFilePicker,
 } from '../../../../utils/fileUploads';
+import {
+  buildTaskPanelCacheKey,
+  setTaskPanelCache,
+} from '../../../../utils/taskPanelCache';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import { useInbox } from '../../../../hooks/useInbox';
 import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
@@ -51,6 +55,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
     error: '',
   });
   const refreshTimerRef = React.useRef(null);
+  const seenTaskIdsRef = React.useRef(new Set());
   const minimizedWindowStyle = useMinimizedWindowStack('inbox-panel', isOpen && isMinimized);
   const {
     data: inboxData,
@@ -63,6 +68,79 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
   const loading = isLoading;
   const isRefreshing = isFetching && !isLoading;
   const { mutateAsync: updateTaskStatus } = useUpdateTaskStatus();
+
+  const refreshTaskQueries = React.useCallback(async () => {
+    const userKey = user?.id ?? 'anonymous';
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['inbox', userKey] }),
+      queryClient.invalidateQueries({ queryKey: ['outbox', userKey] }),
+      queryClient.invalidateQueries({ queryKey: ['tracking', userKey] }),
+    ]);
+  }, [queryClient, user?.id]);
+
+  const markTaskSeen = React.useCallback(async (task) => {
+    if (!task?.id || task.isRead || seenTaskIdsRef.current.has(task.id)) {
+      return;
+    }
+
+    seenTaskIdsRef.current.add(task.id);
+
+    const userKey = user?.id ?? 'anonymous';
+    let nextTasksForCache = null;
+    let nextUnreadCount = null;
+
+    queryClient.setQueriesData({ queryKey: ['inbox', userKey] }, (current) => {
+      if (!current || !Array.isArray(current.tasks)) {
+        return current;
+      }
+
+      let changed = false;
+      const nextTasks = current.tasks.map((entry) => {
+        if (entry?.id !== task.id || entry?.isRead) {
+          return entry;
+        }
+        changed = true;
+        return {
+          ...entry,
+          isRead: true,
+        };
+      });
+
+      if (!changed) {
+        return current;
+      }
+
+      nextTasksForCache = nextTasks;
+      nextUnreadCount = typeof current.unreadCount === 'number'
+        ? Math.max(0, current.unreadCount - 1)
+        : nextTasks.filter((entry) => !entry?.isRead).length;
+
+      return {
+        ...current,
+        tasks: nextTasks,
+        unreadCount: nextUnreadCount,
+      };
+    });
+
+    if (user?.id && Array.isArray(nextTasksForCache)) {
+      setTaskPanelCache(buildTaskPanelCacheKey(user.id, 'inbox'), {
+        tasks: nextTasksForCache,
+      });
+    }
+    if (user?.id && typeof nextUnreadCount === 'number') {
+      setTaskPanelCache(buildTaskPanelCacheKey(user.id, 'inbox_unread_count'), {
+        unreadCount: nextUnreadCount,
+      });
+    }
+
+    try {
+      await taskAPI.markSeen(task.id);
+    } catch (error) {
+      seenTaskIdsRef.current.delete(task.id);
+      await refreshTaskQueries();
+      console.warn('Mark seen failed:', error);
+    }
+  }, [queryClient, refreshTaskQueries, user?.id]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -110,15 +188,6 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
       setIsMaximized(false);
     }
   }, [isOpen]);
-
-  const refreshTaskQueries = async () => {
-    const userKey = user?.id ?? 'anonymous';
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['inbox', userKey] }),
-      queryClient.invalidateQueries({ queryKey: ['outbox', userKey] }),
-      queryClient.invalidateQueries({ queryKey: ['tracking', userKey] }),
-    ]);
-  };
 
   const handleTrackClick = (task) => {
     setSelectedTaskForWorkflow(task);
@@ -343,6 +412,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
 
   const runTaskAction = async (task, action) => {
     try {
+      void markTaskSeen(task);
       if (action === 'approve') {
         const comments = (await showPrompt('Approval comment (optional):', {
           title: 'Approve Task',
@@ -556,6 +626,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
                 <InboxCard
                   key={task.id}
                   task={task}
+                  onMarkSeen={markTaskSeen}
                   onTrackClick={handleTrackClick}
                   onTaskAction={runTaskAction}
                   onOpenChat={(t) => setChatTask(t)}

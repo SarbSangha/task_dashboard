@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Cookie, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi import HTTPException, Depends, Query, Cookie, Header, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, load_only
 from sqlalchemy import or_, and_, func, case, inspect
 from sqlalchemy.exc import SQLAlchemyError
@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 import asyncio
 import hashlib
+import os
 import re
+from time import perf_counter
 
 from database_config import get_operational_db, OperationalSessionLocal
 from models_new import (
@@ -31,8 +33,6 @@ from task_helpers import TaskHelpers
 from utils.cache import cache_response, invalidate_pattern
 from utils.edge_cache import queue_edge_cache_purge
 
-router = APIRouter(prefix="/api/tasks", tags=["Tasks"])
-
 TASK_ALL_CACHE_PATTERN = "cache:tasks_all:*"
 TASK_ASSETS_CACHE_PATTERN = "cache:tasks_assets:*"
 EDGE_TASK_CACHE_PATTERNS = ("tasks_all:", "tasks_assets:")
@@ -42,6 +42,10 @@ async def invalidate_task_lane_b_cache():
     await invalidate_pattern(TASK_ALL_CACHE_PATTERN)
     await invalidate_pattern(TASK_ASSETS_CACHE_PATTERN)
     queue_edge_cache_purge(EDGE_TASK_CACHE_PATTERNS)
+
+
+def _inbox_profile_logging_enabled() -> bool:
+    return (os.getenv("INBOX_PROFILE_LOGGING") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class NotificationHub:
@@ -1071,7 +1075,6 @@ def _list_assets_from_tasks(
     }
 
 
-@router.get("/project-id/validate")
 async def validate_project_id(
     project_id: str = Query(..., min_length=4),
     db: Session = Depends(get_operational_db),
@@ -1099,7 +1102,6 @@ async def validate_project_id(
     }
 
 
-@router.post("/project-id/generate")
 async def generate_project_id(
     payload: ProjectIdGeneratePayload,
     db: Session = Depends(get_operational_db),
@@ -1128,7 +1130,6 @@ async def generate_project_id(
     }
 
 
-@router.get("/task-id/validate")
 async def validate_task_id(
     task_id: str = Query(..., min_length=4),
     db: Session = Depends(get_operational_db),
@@ -1144,7 +1145,6 @@ async def validate_task_id(
     }
 
 
-@router.post("/task-id/generate")
 async def generate_task_id(
     payload: TaskIdGeneratePayload,
     db: Session = Depends(get_operational_db),
@@ -1171,7 +1171,6 @@ async def generate_task_id(
     }
 
 
-@router.post("/create")
 async def create_task(
     task_data: TaskCreate,
     db: Session = Depends(get_operational_db),
@@ -1323,7 +1322,6 @@ async def create_task(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.get("/inbox")
 async def get_inbox(
     include_read: bool = Query(True),
     q: Optional[str] = Query(None),
@@ -1335,6 +1333,9 @@ async def get_inbox(
 ):
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    profile_enabled = _inbox_profile_logging_enabled()
+    started_at = perf_counter()
 
     review_statuses_for_creator = [
         TaskStatus.SUBMITTED,
@@ -1389,59 +1390,32 @@ async def get_inbox(
         .limit(limit + 1)
         .all()
     )
+    query_ms = (perf_counter() - started_at) * 1000
     has_more = len(task_rows) > limit
     if has_more:
         task_rows = task_rows[:limit]
 
-    task_ids = [task.id for task in task_rows]
-    now = datetime.utcnow()
+    # Keep inbox fetch read-only. Marking tasks seen/read is handled by the
+    # dedicated action endpoint when the user explicitly opens a task.
+    write_ms = 0.0
 
-    if task_ids:
-        try:
-            existing_seen_ids = {
-                task_id
-                for (task_id,) in (
-                    db.query(TaskView.task_id)
-                    .filter(
-                        TaskView.task_id.in_(task_ids),
-                        TaskView.user_id == current_user.id,
-                    )
-                    .all()
-                )
-            }
-            if existing_seen_ids:
-                (
-                    db.query(TaskView)
-                    .filter(
-                        TaskView.task_id.in_(existing_seen_ids),
-                        TaskView.user_id == current_user.id,
-                    )
-                    .update({TaskView.seen_at: now}, synchronize_session=False)
-                )
-            for task_id in task_ids:
-                if task_id not in existing_seen_ids:
-                    db.add(TaskView(task_id=task_id, user_id=current_user.id, seen_at=now))
-        except SQLAlchemyError:
-            pass
-
-        participations = (
-            db.query(TaskParticipant)
-            .filter(
-                TaskParticipant.task_id.in_(task_ids),
-                TaskParticipant.user_id == current_user.id,
-                TaskParticipant.is_active == True,
-            )
-            .all()
-        )
-        for participation in participations:
-            if not participation.is_read:
-                participation.is_read = True
-                participation.read_at = now
-
-    db.commit()
-
+    serialize_started_at = perf_counter()
     result = serialize_task_list(task_rows, db, current_user)
+    serialize_ms = (perf_counter() - serialize_started_at) * 1000
+
+    unread_started_at = perf_counter()
     unread_count = TaskHelpers.get_unread_count(current_user.id, db)
+    unread_ms = (perf_counter() - unread_started_at) * 1000
+
+    total_ms = (perf_counter() - started_at) * 1000
+    if profile_enabled:
+        print(
+            "[INBOX_PROFILE] "
+            f"user_id={current_user.id} "
+            f"page={page} limit={limit} tasks={len(task_rows)} has_more={has_more} "
+            f"query_ms={query_ms:.2f} write_ms={write_ms:.2f} "
+            f"serialize_ms={serialize_ms:.2f} unread_ms={unread_ms:.2f} total_ms={total_ms:.2f}"
+        )
 
     return {
         "success": True,
@@ -1454,7 +1428,6 @@ async def get_inbox(
     }
 
 
-@router.get("/outbox")
 async def get_outbox(
     q: Optional[str] = Query(None),
     page: int = Query(0, ge=0),
@@ -1508,7 +1481,6 @@ async def get_outbox(
     }
 
 
-@router.get("/all")
 @cache_response(ttl=60, vary_by_user=True, namespace="tasks_all")
 async def get_all_user_tasks(
     request: Request,
@@ -1536,32 +1508,48 @@ async def get_all_user_tasks(
     if project_id:
         query = query.filter(Task.project_id.ilike(f"%{project_id}%"))
     if user_id is not None:
-        query = query.filter(
-            or_(
-                Task.creator_id == user_id,
-                Task.submitted_by == user_id,
-                Task.participants.any(
-                    and_(
-                        TaskParticipant.user_id == user_id,
-                        TaskParticipant.is_active == True,
-                    )
+        scope_participant = aliased(TaskParticipant)
+        query = (
+            query.outerjoin(
+                scope_participant,
+                and_(
+                    scope_participant.task_id == Task.id,
+                    scope_participant.user_id == user_id,
+                    scope_participant.is_active == True,
                 ),
             )
+            .filter(
+                or_(
+                    Task.creator_id == user_id,
+                    Task.submitted_by == user_id,
+                    scope_participant.id.isnot(None),
+                )
+            )
+            .distinct()
         )
     if q:
         like_q = f"%{q}%"
-        query = query.filter(
-            or_(
-                Task.title.ilike(like_q),
-                Task.description.ilike(like_q),
-                Task.task_number.ilike(like_q),
-                Task.project_id.ilike(like_q),
-                Task.project_name.ilike(like_q),
-                Task.from_department.ilike(like_q),
-                Task.to_department.ilike(like_q),
-                Task.creator.has(User.name.ilike(like_q)),
-                Task.participants.any(TaskParticipant.user.has(User.name.ilike(like_q))),
+        creator_user = aliased(User)
+        search_participant = aliased(TaskParticipant)
+        participant_user = aliased(User)
+        query = (
+            query.join(creator_user, creator_user.id == Task.creator_id)
+            .outerjoin(search_participant, search_participant.task_id == Task.id)
+            .outerjoin(participant_user, participant_user.id == search_participant.user_id)
+            .filter(
+                or_(
+                    Task.title.ilike(like_q),
+                    Task.description.ilike(like_q),
+                    Task.task_number.ilike(like_q),
+                    Task.project_id.ilike(like_q),
+                    Task.project_name.ilike(like_q),
+                    Task.from_department.ilike(like_q),
+                    Task.to_department.ilike(like_q),
+                    creator_user.name.ilike(like_q),
+                    participant_user.name.ilike(like_q),
+                )
             )
+            .distinct()
         )
 
     tasks = (
@@ -1583,7 +1571,6 @@ async def get_all_user_tasks(
     }
 
 
-@router.get("/assets")
 @cache_response(ttl=90, vary_by_user=False, namespace="tasks_assets")
 async def get_task_assets(
     request: Request,
@@ -1621,17 +1608,20 @@ async def get_task_assets(
     return {"success": True, **asset_payload}
 
 
-@router.get("/inbox/unread-count")
 async def get_unread_count(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return {"success": True, "unreadCount": TaskHelpers.get_unread_count(current_user.id, db)}
+    started_at = perf_counter()
+    unread_count = TaskHelpers.get_unread_count(current_user.id, db)
+    if _inbox_profile_logging_enabled():
+        elapsed_ms = (perf_counter() - started_at) * 1000
+        print(f"[INBOX_PROFILE] unread_count user_id={current_user.id} total_ms={elapsed_ms:.2f}")
+    return {"success": True, "unreadCount": unread_count}
 
 
-@router.post("/{task_id}/actions/mark-seen")
 async def mark_task_seen(
     task_id: int,
     db: Session = Depends(get_operational_db),
@@ -1667,7 +1657,6 @@ async def mark_task_seen(
     return {"success": True, "taskId": task_id}
 
 
-@router.get("/users/forward-targets")
 async def get_forward_targets(
     task_id: Optional[int] = Query(None),
     db: Session = Depends(get_operational_db),
@@ -1712,7 +1701,6 @@ async def get_forward_targets(
     }
 
 
-@router.websocket("/ws/notifications")
 async def notifications_ws(websocket: WebSocket):
     session_id = (
         websocket.cookies.get("session_id")
@@ -1739,7 +1727,6 @@ async def notifications_ws(websocket: WebSocket):
         notification_hub.disconnect(user_id, websocket)
 
 
-@router.post("/{task_id}/actions/assign")
 async def assign_task_members(
     task_id: int,
     payload: TaskAssignPayload,
@@ -1824,7 +1811,6 @@ async def assign_task_members(
     }
 
 
-@router.post("/{task_id}/actions/submit")
 async def submit_task(
     task_id: int,
     payload: TaskActionPayload,
@@ -1933,7 +1919,6 @@ async def submit_task(
     return {"success": True, "message": "Task submitted for SPOC review"}
 
 
-@router.post("/{task_id}/actions/start")
 async def start_task_work(
     task_id: int,
     payload: TaskActionPayload,
@@ -1994,7 +1979,6 @@ async def start_task_work(
     return {"success": True, "message": "Task marked as in progress"}
 
 
-@router.post("/{task_id}/actions/approve")
 async def approve_task(
     task_id: int,
     payload: TaskActionPayload,
@@ -2059,7 +2043,6 @@ async def approve_task(
     return {"success": True, "message": "Task approved", "status": task.status.value}
 
 
-@router.post("/{task_id}/actions/need-improvement")
 async def request_improvement(
     task_id: int,
     payload: TaskActionPayload,
@@ -2119,7 +2102,6 @@ async def request_improvement(
     return {"success": True, "message": "Task marked as Need Improvement"}
 
 
-@router.post("/{task_id}/actions/forward")
 async def forward_task(
     task_id: int,
     payload: TaskForwardPayload,
@@ -2222,7 +2204,6 @@ async def forward_task(
     return {"success": True, "message": "Task forwarded", "recipientCount": len(target_users)}
 
 
-@router.post("/{task_id}/actions/revoke")
 async def revoke_task(
     task_id: int,
     payload: TaskActionPayload,
@@ -2312,7 +2293,6 @@ async def revoke_task(
     }
 
 
-@router.put("/{task_id}/edit-task")
 async def edit_task_details(
     task_id: int,
     payload: TaskUpdate,
@@ -2398,7 +2378,6 @@ async def edit_task_details(
     return {"success": True, "message": "Task updated", "data": serialize_task(task, db, current_user)}
 
 
-@router.put("/{task_id}/edit-result")
 async def edit_task_result(
     task_id: int,
     payload: ResultEditPayload,
@@ -2462,7 +2441,6 @@ async def edit_task_result(
     return {"success": True, "message": "Result updated"}
 
 
-@router.post("/{task_id}/comments")
 async def add_comment(
     task_id: int,
     payload: TaskCommentPayload,
@@ -2547,7 +2525,6 @@ async def add_comment(
     }
 
 
-@router.get("/{task_id}/comments")
 async def get_comments(
     task_id: int,
     page: int = Query(1, ge=1),
@@ -2677,7 +2654,6 @@ async def get_comments(
     }
 
 
-@router.get("/notifications/me")
 async def get_my_notifications(
     unread_only: bool = Query(False),
     db: Session = Depends(get_operational_db),
@@ -2718,7 +2694,6 @@ async def get_my_notifications(
     }
 
 
-@router.post("/notifications/{notification_id}/read")
 async def mark_notification_read(
     notification_id: int,
     db: Session = Depends(get_operational_db),
@@ -2740,7 +2715,6 @@ async def mark_notification_read(
     return {"success": True, "message": "Notification marked as read"}
 
 
-@router.delete("/notifications/{notification_id}")
 async def delete_notification(
     notification_id: int,
     db: Session = Depends(get_operational_db),
@@ -2761,7 +2735,6 @@ async def delete_notification(
     return {"success": True, "message": "Notification removed"}
 
 
-@router.get("/debug/current-user")
 async def debug_current_user(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),

@@ -1,5 +1,6 @@
 // src/components/leftsidebar/Leftside.jsx (FunctionalMenu)
 import { useState } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import './Leftside.css';
 import TrackingButton from './compofleftsidebar/tracking/TrackingButton';
 import AssignTaskButton from './compofleftsidebar/AssignTaskButton';
@@ -19,98 +20,100 @@ import AdminRequestPanel from './compofleftsidebar/adminqueue/AdminRequestPanel'
 import TrendingsPanel from './compofleftsidebar/trending/TrendingsPanel';
 import { usePermissions } from '../../hooks/usePermissions';
 
+const PANEL_TO_ACTIVE = {
+  inbox: 'inbox',
+  outbox: 'outbox',
+  workspace: 'workspace',
+  tracking: 'tracking',
+  messages: 'message-system',
+  'admin-queue': 'admin-queue',
+  trendings: 'trendings',
+  'create-task': 'create-task',
+};
+
 const FunctionalMenu = () => {
   const { can } = usePermissions();
-  const [activeItem, setActiveItem] = useState('tracking-alt');
-  const [isCollapsed, setIsCollapsed] = useState(false);
-  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
-  const [isInboxPanelOpen, setIsInboxPanelOpen] = useState(false);
-  const [isOutboxModalOpen, setIsOutboxModalOpen] = useState(false);
-  const [isWorkSpaceOpen, setIsWorkSpaceOpen] = useState(false);
-  const [isTrackingPanelOpen, setIsTrackingPanelOpen] = useState(false);
-  const [isMessageSystemOpen, setIsMessageSystemOpen] = useState(false);
-  const [workspaceInitialTab, setWorkspaceInitialTab] = useState('overview');
-  const [editingTask, setEditingTask] = useState(null);
-  const [isAdminQueueOpen, setIsAdminQueueOpen] = useState(false);
-  const [isTrendingsOpen, setIsTrendingsOpen] = useState(false);
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const [searchParams] = useSearchParams();
 
-  const handleItemClick = (itemId) => {
-    setActiveItem(itemId);
-    console.log(`Clicked: ${itemId}`);
-  };
+  const panel = pathname.replace(/^\/dashboard\/?/, '').split('/')[0] || '';
+
+  const isInboxPanelOpen = panel === 'inbox';
+  const isOutboxModalOpen = panel === 'outbox';
+  const isWorkSpaceOpen = panel === 'workspace';
+  const isTrackingPanelOpen = panel === 'tracking';
+  const isMessageSystemOpen = panel === 'messages';
+  const isAdminQueueOpen = panel === 'admin-queue';
+  const isTrendingsOpen = panel === 'trendings';
+  const isAssignModalOpen = panel === 'create-task';
+
+  const activeItem = PANEL_TO_ACTIVE[panel] || 'tracking-alt';
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const workspaceInitialTab = searchParams.get('tab') || 'overview';
+  const [editingTask, setEditingTask] = useState(null);
 
   const toggleCollapse = () => {
     setIsCollapsed(!isCollapsed);
   };
 
+  const goTo = (segment) => navigate(`/dashboard/${segment}`);
+  const goHome = () => navigate('/dashboard');
+
   const openAssignModal = (taskToEdit = null) => {
-    setActiveItem('create-task');
     setEditingTask(taskToEdit);
-    setIsAssignModalOpen(true);
+    goTo('create-task');
   };
 
   const closeAssignModal = () => {
-    setIsAssignModalOpen(false);
     setEditingTask(null);
+    goHome();
   };
 
   const openInboxPanel = () => {
-    setActiveItem('inbox');
-    setIsInboxPanelOpen(true);
+    goTo('inbox');
   };
 
   const closeInboxPanel = () => {
-    setIsInboxPanelOpen(false);
+    goHome();
   };
 
   const openOutboxModal = () => {
-    setActiveItem('outbox');
-    setIsOutboxModalOpen(true);
+    goTo('outbox');
   };
   
-  const closeOutboxModal = () => setIsOutboxModalOpen(false);
+  const closeOutboxModal = () => goHome();
 
   const handleEditTaskFromOutbox = (task) => {
-    setIsOutboxModalOpen(false);
-    openAssignModal(task);
+    setEditingTask(task);
+    goTo('create-task');
   };
   
-  const openWorkSpace = () => {
-    setActiveItem('workspace');
-    setWorkspaceInitialTab('overview');
-    setIsWorkSpaceOpen(true);
-  };
+  const openWorkSpace = () => navigate('/dashboard/workspace?tab=overview');
   
-  const closeWorkSpace = () => setIsWorkSpaceOpen(false);
+  const closeWorkSpace = () => goHome();
 
   const handleStartTaskFromInbox = () => {
-    setIsInboxPanelOpen(false);
-    setActiveItem('workspace');
-    setWorkspaceInitialTab('Tools');
-    setIsWorkSpaceOpen(true);
+    navigate('/dashboard/workspace?tab=Tools');
   };
 
   const openTrackingPanel = () => {
-    setActiveItem('tracking');
-    setIsTrackingPanelOpen(true);
+    goTo('tracking');
   };
 
-  const closeTrackingPanel = () => setIsTrackingPanelOpen(false);
+  const closeTrackingPanel = () => goHome();
   const openMessageSystem = () => {
-    setActiveItem('message-system');
-    setIsMessageSystemOpen(true);
+    goTo('messages');
   };
-  const closeMessageSystem = () => setIsMessageSystemOpen(false);
+  const closeMessageSystem = () => goHome();
   const openTrendingsPanel = () => {
-    setActiveItem('trendings');
-    setIsTrendingsOpen(true);
+    goTo('trendings');
   };
-  const closeTrendingsPanel = () => setIsTrendingsOpen(false);
+  const closeTrendingsPanel = () => goHome();
   const openAdminQueue = () => {
-    setActiveItem('admin-queue');
-    setIsAdminQueueOpen(true);
+    goTo('admin-queue');
   };
-  const closeAdminQueue = () => setIsAdminQueueOpen(false);
+  const closeAdminQueue = () => goHome();
 
   return (
     <>

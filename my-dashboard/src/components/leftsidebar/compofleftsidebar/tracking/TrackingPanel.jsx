@@ -1,48 +1,26 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import { taskAPI } from '../../../../services/api';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
-import CacheStatusBanner from '../../../common/CacheStatusBanner';
-import { useAuth } from '../../../../context/AuthContext';
-import {
-  buildTaskPanelCacheKey,
-  getTaskPanelCacheEntry,
-  invalidateTaskPanelCache,
-  setTaskPanelCache,
-} from '../../../../utils/taskPanelCache';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { useTracking } from '../../../../hooks/useTracking';
 import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
 import { TrackingPanelSkeleton } from '../../../ui/TrackingPanelSkeleton';
 import './TrackingPanel.css';
 
-const dedupeTasks = (rows = []) =>
-  Array.from(new Map(rows.map((task) => [task.id, task])).values());
-
-const TRACKING_CACHE_TTL_MS = 90 * 1000;
-
 const TrackingPanel = ({ isOpen, onClose }) => {
-  const { user } = useAuth();
+  const queryClient = useQueryClient();
   const { showAlert, showPrompt } = useCustomDialogs();
-  const [tasks, setTasks] = useState([]);
   const [selectedTask, setSelectedTask] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [cacheStatus, setCacheStatus] = useState({
-    showingCached: false,
-    cachedAt: 0,
-    liveUpdatedAt: 0,
-  });
   const [filter, setFilter] = useState('all');
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [openActionMenuId, setOpenActionMenuId] = useState(null);
   const [chatTask, setChatTask] = useState(null);
   const minimizedWindowStyle = useMinimizedWindowStack('tracking-panel', isOpen && isMinimized);
-  const tasksRef = React.useRef([]);
-  const selectedTaskRef = React.useRef(null);
-  const chatTaskRef = React.useRef(null);
   const [selectionModal, setSelectionModal] = useState({
     open: false,
     mode: 'forward',
@@ -57,114 +35,20 @@ const TrackingPanel = ({ isOpen, onClose }) => {
     error: '',
   });
 
-  const cacheKeys = useMemo(() => {
-    if (!user?.id) return null;
-    return {
-      inbox: buildTaskPanelCacheKey(user.id, 'inbox'),
-      outbox: buildTaskPanelCacheKey(user.id, 'outbox'),
-      tracking: buildTaskPanelCacheKey(user.id, 'tracking'),
-    };
-  }, [user?.id]);
+  const {
+    data: trackingData,
+    isLoading: loading,
+    isFetching,
+    refetch,
+  } = useTracking({}, { enabled: isOpen });
 
-  useEffect(() => {
-    tasksRef.current = tasks;
-  }, [tasks]);
-
-  useEffect(() => {
-    selectedTaskRef.current = selectedTask;
-  }, [selectedTask]);
-
-  useEffect(() => {
-    chatTaskRef.current = chatTask;
-  }, [chatTask]);
-
-  useEffect(() => {
-    if (!isOpen || !cacheKeys) return;
-
-    const cachedInboxEntry = getTaskPanelCacheEntry(cacheKeys.inbox, TRACKING_CACHE_TTL_MS);
-    const cachedOutboxEntry = getTaskPanelCacheEntry(cacheKeys.outbox, TRACKING_CACHE_TTL_MS);
-    const cachedTrackingEntry = getTaskPanelCacheEntry(cacheKeys.tracking, TRACKING_CACHE_TTL_MS);
-    const cachedTasks = dedupeTasks([
-      ...(Array.isArray(cachedTrackingEntry?.value?.tasks) ? cachedTrackingEntry.value.tasks : []),
-      ...(Array.isArray(cachedInboxEntry?.value?.tasks) ? cachedInboxEntry.value.tasks : []),
-      ...(Array.isArray(cachedOutboxEntry?.value?.tasks) ? cachedOutboxEntry.value.tasks : []),
-    ]).filter((task) => task.status !== 'draft');
-
-    if (cachedTasks.length > 0) {
-      setTasks(cachedTasks);
-      setLoading(false);
-      setCacheStatus({
-        showingCached: true,
-        cachedAt: cachedTrackingEntry?.cachedAt || cachedInboxEntry?.cachedAt || cachedOutboxEntry?.cachedAt || 0,
-        liveUpdatedAt: 0,
-      });
-    }
-
-    loadTasks({ silent: cachedTasks.length > 0 });
-  }, [cacheKeys, isOpen]);
-
-  const loadTasks = async ({ silent = false } = {}) => {
-    if (silent) {
-      setIsRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-
-    try {
-      console.log('📊 Fetching tracking tasks from inbox and outbox...');
-      const [inboxData, outboxData] = await Promise.all([
-        taskAPI.getInbox().catch((error) => {
-          console.warn('Inbox tasks unavailable for tracking:', error);
-          return { data: [] };
-        }),
-        taskAPI.getOutbox().catch((error) => {
-          console.warn('Outbox tasks unavailable for tracking:', error);
-          return { data: [] };
-        }),
-      ]);
-
-      const mergedTasks = dedupeTasks([
-        ...(Array.isArray(inboxData?.data) ? inboxData.data : []),
-        ...(Array.isArray(outboxData?.data) ? outboxData.data : []),
-      ]);
-      const nonDraftTasks = mergedTasks.filter((task) => task.status !== 'draft');
-      setTasks(nonDraftTasks);
-      if (cacheKeys) {
-        setTaskPanelCache(cacheKeys.inbox, {
-          tasks: Array.isArray(inboxData?.data) ? inboxData.data : [],
-        });
-        setTaskPanelCache(cacheKeys.outbox, {
-          tasks: Array.isArray(outboxData?.data) ? outboxData.data : [],
-        });
-        setTaskPanelCache(cacheKeys.tracking, {
-          tasks: nonDraftTasks,
-        });
-      }
-      setCacheStatus((prev) => ({
-        showingCached: false,
-        cachedAt: prev.cachedAt,
-        liveUpdatedAt: Date.now(),
-      }));
-      console.log(`📋 Loaded ${nonDraftTasks.length} tracking tasks from user scope`);
-    } catch (error) {
-      console.error('❌ Error loading tasks:', error);
-      if (!silent) {
-        setTasks([]);
-      }
-    } finally {
-      if (silent) {
-        setIsRefreshing(false);
-      } else {
-        setLoading(false);
-      }
-    }
-  };
+  const tasks = trackingData?.tasks || [];
+  const isRefreshing = isFetching && !loading;
 
   const invalidateTrackingCaches = () => {
-    if (!cacheKeys) return;
-    invalidateTaskPanelCache(cacheKeys.inbox);
-    invalidateTaskPanelCache(cacheKeys.outbox);
-    invalidateTaskPanelCache(cacheKeys.tracking);
+    queryClient.invalidateQueries({ queryKey: ['tracking'] });
+    queryClient.invalidateQueries({ queryKey: ['inbox'] });
+    queryClient.invalidateQueries({ queryKey: ['outbox'] });
   };
 
   const { mutateAsync: updateTaskStatus } = useUpdateTaskStatus({
@@ -174,12 +58,10 @@ const TrackingPanel = ({ isOpen, onClose }) => {
         updatedAt: new Date().toISOString(),
       };
       const snapshot = {
-        tasks: tasksRef.current,
-        selectedTask: selectedTaskRef.current,
-        chatTask: chatTaskRef.current,
+        selectedTask,
+        chatTask,
       };
 
-      setTasks((prev) => prev.map((row) => (row.id === taskId ? { ...row, ...optimisticPatch } : row)));
       setSelectedTask((prev) => (prev?.id === taskId ? { ...prev, ...optimisticPatch } : prev));
       setChatTask((prev) => (prev?.id === taskId ? { ...prev, ...optimisticPatch } : prev));
 
@@ -187,13 +69,12 @@ const TrackingPanel = ({ isOpen, onClose }) => {
     },
     onRollback: (snapshot) => {
       if (!snapshot) return;
-      setTasks(snapshot.tasks || []);
       setSelectedTask(snapshot.selectedTask || null);
       setChatTask(snapshot.chatTask || null);
     },
     onSettled: async () => {
       invalidateTrackingCaches();
-      await loadTasks({ silent: true });
+      await refetch();
     },
   });
 
@@ -309,7 +190,7 @@ const TrackingPanel = ({ isOpen, onClose }) => {
 
       closeSelectionModal();
       invalidateTrackingCaches();
-      await loadTasks({ silent: true });
+      await refetch();
     } catch (error) {
       setSelectionModal((prev) => ({
         ...prev,
@@ -383,7 +264,7 @@ const TrackingPanel = ({ isOpen, onClose }) => {
       }
       if (!['approve', 'need_improvement', 'submit'].includes(action)) {
         invalidateTrackingCaches();
-        await loadTasks({ silent: true });
+        await refetch();
       }
     } catch (error) {
       console.error('Action failed', error);
@@ -510,16 +391,7 @@ const TrackingPanel = ({ isOpen, onClose }) => {
 
         {/* Tasks List - Only show when not minimized */}
         {!isMinimized && (
-          <div className="tracking-content">
-            <CacheStatusBanner
-              showingCached={cacheStatus.showingCached}
-              isRefreshing={isRefreshing}
-              cachedAt={cacheStatus.cachedAt}
-              liveUpdatedAt={cacheStatus.liveUpdatedAt}
-              refreshingLabel="Refreshing latest tracking data..."
-              liveLabel="Tracking data is up to date"
-              cachedLabel="Showing cached tracking data"
-            />
+          <div className="tracking-content" aria-busy={isRefreshing}>
             {loading ? (
               <TrackingPanelSkeleton />
             ) : filteredTasks.length === 0 ? (

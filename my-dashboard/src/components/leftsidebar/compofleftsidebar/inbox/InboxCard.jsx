@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import './InboxCard.css';
 import { formatDateTimeIndia } from '../../../../utils/dateTime';
 
-const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
+const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat }) => {
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
   const [menuOpen, setMenuOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -92,6 +92,27 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
     }
   };
 
+  const handleOpenChat = () => {
+    if (typeof onMarkSeen === 'function') {
+      void onMarkSeen(task);
+    }
+    onOpenChat(task);
+  };
+
+  const handleTrack = () => {
+    if (typeof onMarkSeen === 'function') {
+      void onMarkSeen(task);
+    }
+    onTrackClick(task);
+  };
+
+  const handleToggleExpanded = () => {
+    if (!expanded && typeof onMarkSeen === 'function') {
+      void onMarkSeen(task);
+    }
+    setExpanded((s) => !s);
+  };
+
   return (
     <div className={`inbox-card ${isRevoked ? 'revoked-card' : ''}`}>
       <div className="card-header">
@@ -113,7 +134,7 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
                   key={action}
                   onClick={() => {
                     setMenuOpen(false);
-                    if (action === 'chat') onOpenChat(task);
+                    if (action === 'chat') handleOpenChat();
                     else onTaskAction(task, action);
                   }}
                 >
@@ -274,10 +295,10 @@ const InboxCard = ({ task, onTrackClick, onTaskAction, onOpenChat }) => {
       <div className="card-footer">
         <span className="seenby">Seen by: {(task.seenBy || []).map((s) => s.name).join(', ') || 'None'}</span>
         <div className="card-footer-actions">
-          <button className="track-btn" onClick={() => setExpanded((s) => !s)}>
+          <button className="track-btn" onClick={handleToggleExpanded}>
             {expanded ? 'Hide Details' : 'Show Details'}
           </button>
-          <button className="track-btn" onClick={() => onTrackClick(task)}>Track</button>
+          <button className="track-btn" onClick={handleTrack}>Track</button>
         </div>
       </div>
       {toastMessage && <div className="copy-toast">{toastMessage}</div>}
