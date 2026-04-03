@@ -1,6 +1,6 @@
 // src/context/AuthContext.jsx - ADD useAuth HOOK
 
-import React, { createContext, useState, useEffect, useContext, useCallback } from 'react';
+import React, { createContext, useState, useEffect, useContext, useCallback, useRef } from 'react';
 import { activityAPI, authAPI } from '../services/api';
 import useActivityTracker from '../hooks/useActivityTracker';
 
@@ -18,7 +18,9 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const noAvatarUserIdsRef = useRef(new Set());
   const handleActivityAuthFailure = useCallback(() => {
+    noAvatarUserIdsRef.current.clear();
     setUser(null);
   }, []);
   const activity = useActivityTracker({
@@ -31,19 +33,45 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, []);
 
+  const fetchAndPatchAvatar = useCallback(async (currentUser) => {
+    if (!currentUser?.id) return;
+    if (currentUser.avatar) return;
+    if (noAvatarUserIdsRef.current.has(currentUser.id)) return;
+
+    try {
+      const response = await authAPI.getAvatar();
+      if (response?.userId !== currentUser.id) return;
+
+      if (!response?.hasAvatar || !response?.avatar) {
+        noAvatarUserIdsRef.current.add(currentUser.id);
+        return;
+      }
+
+      setUser((prev) => {
+        if (!prev || prev.id !== currentUser.id) return prev;
+        return { ...prev, avatar: response.avatar };
+      });
+    } catch {
+      // Non-fatal. The app can continue with initials/avatar fallback.
+    }
+  }, []);
+
   const checkAuth = async () => {
     console.log('🔍 Checking authentication...');
     try {
       const response = await authAPI.getCurrentUser();
       if (response.success && response.user) {
         setUser(response.user);
+        void fetchAndPatchAvatar(response.user);
         console.log('✅ User authenticated:', response.user.email);
       } else {
         console.log('ℹ️ No active session');
+        noAvatarUserIdsRef.current.clear();
         setUser(null);
       }
     } catch (error) {
       console.log('ℹ️ No active session');
+      noAvatarUserIdsRef.current.clear();
       setUser(null);
     } finally {
       setLoading(false);
@@ -93,6 +121,7 @@ export const AuthProvider = ({ children }) => {
       
       if (response.success && response.user) {
         setUser(response.user);
+        void fetchAndPatchAvatar(response.user);
         try {
           localStorage.removeItem('rmw_activity_auth_block_until_v1');
         } catch {
@@ -182,10 +211,12 @@ export const AuthProvider = ({ children }) => {
         timestamp: new Date().toISOString(),
       }).catch(() => {});
       await authAPI.logout();
+      noAvatarUserIdsRef.current.clear();
       setUser(null);
       console.log('✅ Logout successful');
     } catch (error) {
       console.error('❌ Logout error:', error);
+      noAvatarUserIdsRef.current.clear();
       setUser(null);
     }
   };
@@ -208,6 +239,16 @@ export const AuthProvider = ({ children }) => {
     });
   }, []);
 
+  const clearAvatarCache = useCallback((userId = null) => {
+    if (userId) {
+      noAvatarUserIdsRef.current.delete(userId);
+      return;
+    }
+    if (user?.id) {
+      noAvatarUserIdsRef.current.delete(user.id);
+    }
+  }, [user?.id]);
+
   const value = {
     user,
     loading,
@@ -216,6 +257,7 @@ export const AuthProvider = ({ children }) => {
     register,
     checkAuth,
     updateUser,
+    clearAvatarCache,
     activity
   };
 

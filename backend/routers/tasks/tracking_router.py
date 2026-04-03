@@ -15,6 +15,7 @@ router.add_api_route("/{task_id}/actions/revoke", handlers.revoke_task, methods=
 router.add_api_route("/{task_id}/comments", handlers.add_comment, methods=["POST"])
 router.add_api_route("/{task_id}/comments", handlers.get_comments, methods=["GET"])
 router.add_api_route("/notifications/me", handlers.get_my_notifications, methods=["GET"])
+router.add_api_route("/notifications/outbox-unread", handlers.get_outbox_unread_count, methods=["GET"])
 router.add_api_route("/notifications/{notification_id}/read", handlers.mark_notification_read, methods=["POST"])
 router.add_api_route("/notifications/{notification_id}", handlers.delete_notification, methods=["DELETE"])
 router.add_api_websocket_route("/ws/notifications", handlers.notifications_ws)

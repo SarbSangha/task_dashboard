@@ -124,6 +124,11 @@ export const authAPI = {
     return response.data;
   },
 
+  getAvatar: async () => {
+    const response = await api.get('/api/auth/avatar');
+    return response.data;
+  },
+
   uploadAvatar: async (base64Image) => {
     const response = await api.post('/api/auth/avatar', { avatar: base64Image });
     return response.data;
@@ -504,6 +509,11 @@ export const taskAPI = {
     const response = await api.get('/api/tasks/notifications/me', {
       params: { unread_only: unreadOnly }
     });
+    return response.data;
+  },
+
+  getOutboxUnreadCount: async () => {
+    const response = await api.get('/api/tasks/notifications/outbox-unread');
     return response.data;
   },
 

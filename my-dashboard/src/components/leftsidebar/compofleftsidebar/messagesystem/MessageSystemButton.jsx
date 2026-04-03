@@ -45,10 +45,16 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
   const [unseenCount, setUnseenCount] = useState(0);
   const inFlightRef = useRef(false);
   const refreshTimerRef = useRef(null);
+  const unseenGroupIdsRef = useRef(new Set());
+  const unseenSenderIdsRef = useRef(new Set());
+  const setsHydratedRef = useRef(false);
   const badgeCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'message_system_badge') : null;
 
   useEffect(() => {
     if (!user?.id) {
+      unseenGroupIdsRef.current = new Set();
+      unseenSenderIdsRef.current = new Set();
+      setsHydratedRef.current = false;
       setUnseenCount(0);
       return undefined;
     }
@@ -85,7 +91,29 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
           clearUnseenCount();
           return;
         }
-        scheduleRefresh();
+
+        if (!setsHydratedRef.current) {
+          scheduleRefresh();
+          return;
+        }
+
+        if (eventType === 'group_message') {
+          const groupId = Number(payload?.metadata?.groupId);
+          if (groupId) {
+            unseenGroupIdsRef.current.add(groupId);
+          }
+        } else {
+          const senderId = Number(payload?.metadata?.senderId);
+          if (senderId && senderId !== user.id) {
+            unseenSenderIdsRef.current.add(senderId);
+          }
+        }
+
+        const nextCount = unseenGroupIdsRef.current.size + unseenSenderIdsRef.current.size;
+        setUnseenCount(nextCount);
+        if (badgeCacheKey) {
+          setTaskPanelCache(badgeCacheKey, { unseenCount: nextCount });
+        }
       },
       onOpen: () => {
         if (!isOpen) scheduleRefresh();
@@ -97,15 +125,9 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
       fetchUnseenCount();
     }, 180000);
 
-    const onFocus = () => {
-      if (!isOpen) scheduleRefresh();
-    };
-    window.addEventListener('focus', onFocus);
-
     return () => {
       unsubscribe();
       window.clearInterval(interval);
-      window.removeEventListener('focus', onFocus);
       if (refreshTimerRef.current) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
@@ -120,6 +142,9 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
 
   const clearUnseenCount = () => {
     if (!user?.id) return;
+    unseenGroupIdsRef.current = new Set();
+    unseenSenderIdsRef.current = new Set();
+    setsHydratedRef.current = true;
     markMessageSystemSeen(user.id);
     setUnseenCount(0);
     if (badgeCacheKey) {
@@ -137,13 +162,27 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
         directMessageAPI.listConversations(),
       ]);
 
-      const unseenGroupCount = (groupsResponse?.data || []).filter((group) => parseTimestamp(group?.lastMessageAt) > seenAt).length;
-      const unseenDirectCount = (directResponse?.data || []).filter((conversation) => {
-        const lastMessageAt = parseTimestamp(conversation?.lastMessageAt);
-        return lastMessageAt > seenAt && conversation?.lastMessageSenderId !== user.id;
-      }).length;
+      const unseenGroupIds = new Set(
+        (groupsResponse?.data || [])
+          .filter((group) => parseTimestamp(group?.lastMessageAt) > seenAt)
+          .map((group) => group?.id)
+          .filter(Boolean)
+      );
+      const unseenSenderIds = new Set(
+        (directResponse?.data || [])
+          .filter((conversation) => {
+            const lastMessageAt = parseTimestamp(conversation?.lastMessageAt);
+            return lastMessageAt > seenAt && conversation?.lastMessageSenderId !== user.id;
+          })
+          .map((conversation) => conversation?.user?.id)
+          .filter(Boolean)
+      );
 
-      const nextCount = unseenGroupCount + unseenDirectCount;
+      unseenGroupIdsRef.current = unseenGroupIds;
+      unseenSenderIdsRef.current = unseenSenderIds;
+      setsHydratedRef.current = true;
+
+      const nextCount = unseenGroupIds.size + unseenSenderIds.size;
       setUnseenCount(nextCount);
       setTaskPanelCache(badgeCacheKey, { unseenCount: nextCount });
     } catch (error) {

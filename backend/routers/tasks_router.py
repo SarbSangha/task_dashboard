@@ -2694,6 +2694,28 @@ async def get_my_notifications(
     }
 
 
+async def get_outbox_unread_count(
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    count = (
+        db.query(func.count(TaskNotification.id))
+        .join(Task, Task.id == TaskNotification.task_id)
+        .filter(
+            TaskNotification.user_id == current_user.id,
+            TaskNotification.is_read == False,
+            Task.creator_id == current_user.id,
+            Task.is_deleted == False,
+        )
+        .scalar()
+        or 0
+    )
+    return {"success": True, "unreadCount": count}
+
+
 async def mark_notification_read(
     notification_id: int,
     db: Session = Depends(get_operational_db),

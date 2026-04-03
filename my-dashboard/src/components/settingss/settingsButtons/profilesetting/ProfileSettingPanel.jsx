@@ -8,7 +8,7 @@ import './ProfileSettingsPanel.css';
 
 const ProfileSettingsPanel = ({ isOpen, onClose }) => {
   const { showAlert } = useCustomDialogs();
-  const { user, updateUser } = useAuth();
+  const { user, updateUser, clearAvatarCache } = useAuth();
   
   const [profileData, setProfileData] = useState({
     name: '',
@@ -27,18 +27,25 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
 
   const POSITION_OPTIONS = ['NORMAL', 'FACULTY', 'HOD', 'SPOC', 'ADMIN'];
 
+  const buildProfileData = () => ({
+    name: user?.name || '',
+    email: user?.email || '',
+    position: user?.position || '',
+    department: user?.department || '',
+    employeeId: user?.employeeId || '',
+    flag: user?.department || '',
+    avatar: user?.avatar || null
+  });
+
+  useEffect(() => {
+    if (!isOpen || !user?.id) return;
+    setProfileData(buildProfileData());
+  }, [isOpen, user?.id]);
+
   useEffect(() => {
     if (!isOpen) return;
-    setProfileData({
-      name: user?.name || '',
-      email: user?.email || '',
-      position: user?.position || '',
-      department: user?.department || '',
-      employeeId: user?.employeeId || '',
-      flag: user?.department || '',
-      avatar: user?.avatar || null
-    });
-  }, [isOpen, user]);
+    setProfileData((prev) => ({ ...prev, avatar: user?.avatar || null }));
+  }, [isOpen, user?.avatar]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -50,9 +57,11 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
         ]);
         setDepartmentOptions(departmentsRes.departments || []);
         setEmployeeIdOptions(employeeIdsRes.options || []);
-        if (!profileData.employeeId && employeeIdsRes.suggested) {
-          setProfileData(prev => ({ ...prev, employeeId: employeeIdsRes.suggested }));
-        }
+        setProfileData(prev => (
+          !prev.employeeId && employeeIdsRes.suggested
+            ? { ...prev, employeeId: employeeIdsRes.suggested }
+            : prev
+        ));
       } catch (error) {
         setStatusMessage(error?.response?.data?.detail || 'Failed to load dropdown options');
       }
@@ -78,6 +87,7 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
 
   const handleAvatarUpdate = (newAvatar) => {
     setProfileData(prev => ({ ...prev, avatar: newAvatar }));
+    clearAvatarCache(user?.id);
     updateUser({ avatar: newAvatar });
   };
 

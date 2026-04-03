@@ -24,6 +24,7 @@ const OutboxButton = ({ onClick, isActive, isOpen = false }) => {
   const [unreadCount, setUnreadCount] = useState(0);
   const unreadIdsRef = useRef([]);
   const inFlightRef = useRef(false);
+  const markingReadRef = useRef(false);
   const refreshTimerRef = useRef(null);
   const badgeCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'outbox_badge') : null;
   const outboxCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'outbox') : null;
@@ -70,13 +71,9 @@ const OutboxButton = ({ onClick, isActive, isOpen = false }) => {
       fetchUnreadCount();
     }, 180000);
 
-    const onFocus = () => scheduleRefresh();
-    window.addEventListener('focus', onFocus);
-
     return () => {
       unsubscribe();
       window.clearInterval(interval);
-      window.removeEventListener('focus', onFocus);
       if (refreshTimerRef.current) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
@@ -85,32 +82,21 @@ const OutboxButton = ({ onClick, isActive, isOpen = false }) => {
   }, [badgeCacheKey, outboxCacheKey, user?.id]);
 
   useEffect(() => {
-    if (!isOpen || unreadIdsRef.current.length === 0) return;
+    if (!isOpen || unreadCount === 0) return;
     markNotificationsAsRead(unreadIdsRef.current);
-  }, [isOpen]);
+  }, [isOpen, unreadCount]);
 
   const fetchUnreadCount = async () => {
-    if (!user?.id || !badgeCacheKey || !outboxCacheKey || inFlightRef.current) return;
+    if (!user?.id || !badgeCacheKey || inFlightRef.current) return;
     inFlightRef.current = true;
     try {
-      const cachedOutbox = getTaskPanelCache(outboxCacheKey, OUTBOX_BADGE_CACHE_TTL_MS);
-      const [notificationsResponse, outboxResponse] = await Promise.all([
-        taskAPI.getNotifications(true),
-        cachedOutbox?.tasks
-          ? Promise.resolve({ success: true, data: cachedOutbox.tasks })
-          : taskAPI.getOutbox(),
-      ]);
-
-      const outboxTaskIds = new Set((outboxResponse?.data || []).map((task) => task?.id).filter(Boolean));
-      const relevantNotifications = (notificationsResponse?.notifications || []).filter((notification) =>
-        isOutboxNotification(notification, outboxTaskIds)
-      );
-
-      unreadIdsRef.current = relevantNotifications.map((notification) => notification.id);
-      setUnreadCount(relevantNotifications.length);
+      const data = await taskAPI.getOutboxUnreadCount();
+      const nextCount = data?.success ? (data.unreadCount ?? 0) : 0;
+      unreadIdsRef.current = [];
+      setUnreadCount(nextCount);
       setTaskPanelCache(badgeCacheKey, {
-        unreadCount: relevantNotifications.length,
-        notificationIds: unreadIdsRef.current,
+        unreadCount: nextCount,
+        notificationIds: [],
       });
     } catch (error) {
       console.error('Error fetching outbox unread count:', error);
@@ -119,9 +105,42 @@ const OutboxButton = ({ onClick, isActive, isOpen = false }) => {
     }
   };
 
-  const markNotificationsAsRead = async (notificationIds) => {
-    const ids = [...new Set((notificationIds || []).filter(Boolean))];
-    if (ids.length === 0) return;
+  const markNotificationsAsRead = async (notificationIds = null) => {
+    if (markingReadRef.current) return;
+    markingReadRef.current = true;
+
+    let ids = [...new Set((notificationIds || []).filter(Boolean))];
+    if (ids.length === 0) {
+      if (!user?.id || !outboxCacheKey) {
+        markingReadRef.current = false;
+        return;
+      }
+
+      try {
+        const cachedOutbox = getTaskPanelCache(outboxCacheKey, OUTBOX_BADGE_CACHE_TTL_MS);
+        const [notificationsResponse, outboxResponse] = await Promise.all([
+          taskAPI.getNotifications(true),
+          cachedOutbox?.tasks
+            ? Promise.resolve({ success: true, data: cachedOutbox.tasks })
+            : taskAPI.getOutbox(),
+        ]);
+
+        const outboxTaskIds = new Set((outboxResponse?.data || []).map((task) => task?.id).filter(Boolean));
+        ids = (notificationsResponse?.notifications || [])
+          .filter((notification) => isOutboxNotification(notification, outboxTaskIds))
+          .map((notification) => notification.id)
+          .filter(Boolean);
+      } catch (error) {
+        console.error('Error loading outbox notifications to mark as read:', error);
+        markingReadRef.current = false;
+        return;
+      }
+    }
+
+    if (ids.length === 0) {
+      markingReadRef.current = false;
+      return;
+    }
 
     unreadIdsRef.current = [];
     setUnreadCount(0);
@@ -136,14 +155,13 @@ const OutboxButton = ({ onClick, isActive, isOpen = false }) => {
       await Promise.allSettled(ids.map((notificationId) => taskAPI.markNotificationRead(notificationId)));
     } catch (error) {
       console.error('Error marking outbox notifications as read:', error);
+    } finally {
+      markingReadRef.current = false;
     }
   };
 
   const handleClick = () => {
     onClick?.();
-    if (unreadIdsRef.current.length > 0) {
-      markNotificationsAsRead(unreadIdsRef.current);
-    }
   };
 
   return (

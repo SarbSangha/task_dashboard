@@ -79,11 +79,15 @@ def _serialize_user(user: User) -> dict:
         "employeeId": user.employee_id,
         "position": user.position,
         "department": user.department,
-        "avatar": user.avatar,
+        "avatar": None if _is_base64_avatar(user.avatar) else user.avatar,
         "roles": user.roles_json or [],
         "isAdmin": user.is_admin,
         "lastLogin": user.last_login.isoformat() if user.last_login else None,
     }
+
+
+def _is_base64_avatar(value: Optional[str]) -> bool:
+    return bool(value and value.lower().startswith("data:"))
 
 
 def _normalize_avatar(avatar: Optional[str]) -> Optional[str]:
@@ -600,6 +604,18 @@ async def get_profile(
     return {
         "success": True,
         "user": _serialize_user(current_user),
+    }
+
+
+@router.get("/avatar")
+async def get_avatar(
+    current_user: User = Depends(get_current_user),
+):
+    return {
+        "success": True,
+        "userId": current_user.id,
+        "avatar": current_user.avatar,
+        "hasAvatar": bool(current_user.avatar),
     }
 
 

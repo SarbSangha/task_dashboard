@@ -65,13 +65,9 @@ const InboxButton = ({ isActive, onClick }) => {
       },
     });
 
-    const onFocus = () => scheduleUnreadRefresh();
-    window.addEventListener('focus', onFocus);
-
     return () => {
       clearInterval(interval);
       unsubscribe();
-      window.removeEventListener('focus', onFocus);
       if (refreshTimerRef.current) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
