@@ -187,6 +187,22 @@ def _ensure_postgres_schema(conn) -> None:
             """
         )
     )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_direct_messages_sender_created
+            ON direct_messages(sender_id, created_at DESC, id DESC)
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_direct_messages_recipient_created
+            ON direct_messages(recipient_id, created_at DESC, id DESC)
+            """
+        )
+    )
 
 
 def ensure_operational_schema(engine) -> None:
@@ -445,6 +461,8 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_sender_id ON direct_messages(sender_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_recipient_id ON direct_messages(recipient_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_created_at ON direct_messages(created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_sender_created ON direct_messages(sender_id, created_at DESC, id DESC)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_recipient_created ON direct_messages(recipient_id, created_at DESC, id DESC)"))
         if _table_exists(conn, "direct_messages"):
             cols = _table_columns(conn, "direct_messages")
             if "attachments_json" not in cols:

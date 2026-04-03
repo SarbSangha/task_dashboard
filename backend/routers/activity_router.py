@@ -290,6 +290,8 @@ async def department_activity(
         raise HTTPException(status_code=403, detail="Only HOD/Admin can view department activity")
 
     today = utcnow_naive().date()
+    today_start = datetime.combine(today, datetime.min.time())
+    today_end = datetime.combine(today + timedelta(days=1), datetime.min.time())
     users = db.query(User).filter(User.is_active == True, User.department == user.department).all()
     user_ids = [u.id for u in users]
 
@@ -301,6 +303,23 @@ async def department_activity(
         else []
     )
     row_by_user = {r.user_id: r for r in rows}
+
+    active_member_ids = [member_id for member_id in user_ids if member_id in row_by_user]
+    task_counts = {}
+    if active_member_ids:
+        task_counts = {
+            submitted_by: count
+            for submitted_by, count in (
+                db.query(Task.submitted_by, func.count(Task.id))
+                .filter(
+                    Task.submitted_by.in_(active_member_ids),
+                    Task.updated_at >= today_start,
+                    Task.updated_at < today_end,
+                )
+                .group_by(Task.submitted_by)
+                .all()
+            )
+        }
 
     data = []
     for member in users:
@@ -323,16 +342,7 @@ async def department_activity(
         item = serialize_activity(row, member)
         item["productivity"] = compute_productivity(item["activeTime"], item["totalSessionDuration"])
         # Use submitted_by as practical "tasks done today" metric.
-        item["tasksDone"] = (
-            db.query(func.count(Task.id))
-            .filter(
-                Task.submitted_by == member.id,
-                Task.updated_at >= datetime.combine(today, datetime.min.time()),
-                Task.updated_at < datetime.combine(today + timedelta(days=1), datetime.min.time()),
-            )
-            .scalar()
-            or 0
-        )
+        item["tasksDone"] = task_counts.get(member.id, 0)
         data.append(item)
 
     return {"success": True, "count": len(data), "data": data}
