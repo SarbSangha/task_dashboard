@@ -3,7 +3,7 @@ from typing import Optional
 import asyncio
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, select
@@ -12,6 +12,7 @@ from database_config import get_operational_db
 from models_new import GroupChat, GroupChatMember, GroupChatMessage, User
 from routers.auth_router import get_current_user
 from routers.tasks_router import notification_hub
+from utils.cache import cache_response
 
 
 router = APIRouter(prefix="/api/groups", tags=["Groups"])
@@ -174,7 +175,9 @@ def _serialize_groups(
 
 
 @router.get("/users")
+@cache_response(ttl=120, vary_by_user=False, namespace="group_users")
 async def list_group_users(
+    request: Request,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):

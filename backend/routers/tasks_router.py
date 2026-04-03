@@ -35,12 +35,14 @@ from utils.edge_cache import queue_edge_cache_purge
 
 TASK_ALL_CACHE_PATTERN = "cache:tasks_all:*"
 TASK_ASSETS_CACHE_PATTERN = "cache:tasks_assets:*"
+TASK_UNREAD_CACHE_PATTERN = "cache:tasks_unread:*"
 EDGE_TASK_CACHE_PATTERNS = ("tasks_all:", "tasks_assets:")
 
 
 async def invalidate_task_lane_b_cache():
     await invalidate_pattern(TASK_ALL_CACHE_PATTERN)
     await invalidate_pattern(TASK_ASSETS_CACHE_PATTERN)
+    await invalidate_pattern(TASK_UNREAD_CACHE_PATTERN)
     queue_edge_cache_purge(EDGE_TASK_CACHE_PATTERNS)
 
 
@@ -1608,7 +1610,9 @@ async def get_task_assets(
     return {"success": True, **asset_payload}
 
 
+@cache_response(ttl=30, vary_by_user=True, namespace="tasks_unread")
 async def get_unread_count(
+    request: Request,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
@@ -1654,6 +1658,7 @@ async def mark_task_seen(
         participation.read_at = datetime.utcnow()
 
     db.commit()
+    await invalidate_pattern(TASK_UNREAD_CACHE_PATTERN)
     return {"success": True, "taskId": task_id}
 
 

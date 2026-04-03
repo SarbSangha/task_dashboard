@@ -1,8 +1,10 @@
 # routers/auth_router.py - Authentication endpoints
 from fastapi import APIRouter, Depends, HTTPException, Response, Cookie, Request, Header
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime
+from time import monotonic as _monotonic
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field, validator
 import traceback
@@ -37,6 +39,7 @@ from auth import (
     invalidate_reset_token,
     get_request_session_token,
 )
+from utils.cache import cache_response
 from utils.permissions import has_any_role, require_admin
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -47,6 +50,9 @@ DEFAULT_ALLOWED_COMPANY_DOMAINS = (
     "@rmwcreative.in",
     "@contenaissance.com",
 )
+
+_ADMIN_IDS_CACHE: dict = {"ids": [], "exp": 0.0}
+_ADMIN_IDS_TTL = 60.0
 
 
 def _allowed_company_domains() -> tuple[str, ...]:
@@ -227,12 +233,26 @@ def _archive_deleted_user_identity(existing_user: User) -> None:
 
 
 def _admin_user_ids(db: Session) -> list[int]:
-    rows = db.query(User.id).filter(
-        User.is_active == True,
-        User.is_deleted == False,
-        ((User.is_admin == True) | (User.position.ilike("%admin%"))),
-    ).all()
-    return [row[0] for row in rows]
+    now = _monotonic()
+    if _ADMIN_IDS_CACHE["exp"] > now:
+        return _ADMIN_IDS_CACHE["ids"]
+
+    rows = (
+        db.query(User.id)
+        .filter(
+            User.is_active == True,
+            User.is_deleted == False,
+            or_(
+                User.is_admin == True,
+                User.position.ilike("%admin%"),
+            ),
+        )
+        .all()
+    )
+    ids = [row[0] for row in rows]
+    _ADMIN_IDS_CACHE["ids"] = ids
+    _ADMIN_IDS_CACHE["exp"] = now + _ADMIN_IDS_TTL
+    return ids
 
 
 def _push_admin_realtime_event(db: Session, event_type: str, title: str, message: str, metadata: Optional[dict] = None):
@@ -740,26 +760,33 @@ async def get_users_by_department(
 
 
 @router.get("/departments")
+@cache_response(ttl=300, vary_by_user=False, namespace="auth_departments")
 async def get_all_departments(
+    request: Request,
     db: Session = Depends(get_operational_db)
 ):
     """Get all unique departments"""
     try:
-        departments = db.query(User.department).distinct().filter(
-            User.is_active == True,
-            User.is_deleted == False,
-            User.department != None
-        ).all()
-        
+        departments = (
+            db.query(User.department)
+            .distinct()
+            .filter(
+                User.is_active == True,
+                User.is_deleted == False,
+                User.department != None,
+            )
+            .all()
+        )
+
         dept_list = [dept[0] for dept in departments if dept[0]]
-        
+
         return {
             "success": True,
             "departments": sorted(dept_list),
             "count": len(dept_list)
         }
     except Exception as e:
-        print(f"❌ Error fetching departments: {str(e)}")
+        print(f"Error fetching departments: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail="Failed to fetch departments"

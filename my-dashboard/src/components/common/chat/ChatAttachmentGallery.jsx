@@ -201,7 +201,7 @@ function AttachmentFileCard({ attachment }) {
           className="chat-attachment-preview chat-attachment-preview-media"
           src={openUrl}
           controls
-          preload="metadata"
+          preload="none"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();

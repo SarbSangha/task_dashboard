@@ -126,6 +126,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
   const syncDirectDataPromiseRef = useRef(null);
   const groupMessagesRequestRef = useRef({ groupId: null, promise: null });
   const directMessagesRequestRef = useRef({ userId: null, promise: null });
+  const hasBootstrappedDirectRef = useRef(false);
   const minimizedWindowStyle = useMinimizedWindowStack('group-message-panel', variant === 'overlay' && isOpen && isMinimized);
   isActiveRef.current = isActive;
   selectedGroupIdRef.current = selectedGroupId;
@@ -182,6 +183,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
 
     return items;
   }, [directConversations, directUsers]);
+  const isDirectTabActive = activeTab === 'direct';
   const selectedForwardMessages = useMemo(() => {
     if (selectionMode === 'group') {
       const selectedIds = new Set(selectedGroupMessageIds);
@@ -429,6 +431,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
 
     const request = (async () => {
       try {
+        hasBootstrappedDirectRef.current = true;
         if (silent) setDirectRefreshing(true);
         const [usersResponse, conversationsResponse] = await Promise.all([
           directMessageAPI.listUsers(),
@@ -663,7 +666,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
     const interval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       scheduleGroupIndexRefresh();
-      scheduleDirectIndexRefresh();
+      if (hasBootstrappedDirectRef.current || activeTabRef.current === 'direct') {
+        scheduleDirectIndexRefresh();
+      }
 
       if (activeTabRef.current === 'groups' && selectedGroupIdRef.current) {
         scheduleGroupMessagesRefresh(selectedGroupIdRef.current);
@@ -715,7 +720,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
           const senderId = Number(payload?.metadata?.senderId);
           if (!senderId) return;
 
-          scheduleDirectIndexRefresh();
+          if (hasBootstrappedDirectRef.current || activeTabRef.current === 'direct') {
+            scheduleDirectIndexRefresh();
+          }
           if (selectedDirectUserIdRef.current === senderId) {
             scheduleDirectMessagesRefresh(senderId);
           }
@@ -723,7 +730,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
       },
       onOpen: () => {
         scheduleGroupIndexRefresh(120);
-        scheduleDirectIndexRefresh(120);
+        if (hasBootstrappedDirectRef.current || activeTabRef.current === 'direct') {
+          scheduleDirectIndexRefresh(120);
+        }
         if (selectedGroupIdRef.current) {
           scheduleGroupMessagesRefresh(selectedGroupIdRef.current, 120);
         }
@@ -786,7 +795,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
   }, [cacheKeys, directMessages, isActive, selectedDirectUserId]);
 
   useEffect(() => {
-    if (!isActive || !cacheKeys) return;
+    if (!isActive || !cacheKeys || !isDirectTabActive) return;
 
     const cachedDirectEntry = getTaskPanelCacheEntry(cacheKeys.directIndex, GROUP_PANEL_CACHE_TTL_MS);
     const cachedDirectData = cachedDirectEntry?.value || null;
@@ -817,6 +826,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
     }
 
     const load = async () => {
+      hasBootstrappedDirectRef.current = true;
       if (cachedDirectData) setDirectRefreshing(true);
       else setDirectLoading(true);
       try {
@@ -835,10 +845,10 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
     };
 
     load();
-  }, [cacheKeys, isActive]);
+  }, [cacheKeys, isActive, isDirectTabActive]);
 
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive || !isDirectTabActive || !hasBootstrappedDirectRef.current) return;
     if (!selectedDirectUserId) {
       setDirectMessages([]);
       return;
@@ -864,7 +874,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
       }
       setDirectMessagesRefreshing(false);
     });
-  }, [cacheKeys, isActive, selectedDirectUserId]);
+  }, [cacheKeys, isActive, isDirectTabActive, selectedDirectUserId]);
 
   useEffect(() => {
     if (!isActive) return;

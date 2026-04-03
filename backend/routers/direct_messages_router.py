@@ -3,7 +3,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
@@ -98,24 +98,46 @@ async def list_direct_conversations(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):
-    partner_id_case = case(
-        (DirectMessage.sender_id == current_user.id, DirectMessage.recipient_id),
-        else_=DirectMessage.sender_id,
-    )
-
-    ranked_rows = (
+    # Split sent/received sides first so the database can use the dedicated
+    # sender/recipient indexes before ranking the latest row per conversation.
+    sent_rows = (
         db.query(
+            DirectMessage.id.label("message_id"),
             DirectMessage.sender_id.label("sender_id"),
             DirectMessage.message.label("message"),
             DirectMessage.attachments_json.label("attachments_json"),
             DirectMessage.created_at.label("created_at"),
-            partner_id_case.label("partner_id"),
+            DirectMessage.recipient_id.label("partner_id"),
+        )
+        .filter(DirectMessage.sender_id == current_user.id)
+    )
+
+    received_rows = (
+        db.query(
+            DirectMessage.id.label("message_id"),
+            DirectMessage.sender_id.label("sender_id"),
+            DirectMessage.message.label("message"),
+            DirectMessage.attachments_json.label("attachments_json"),
+            DirectMessage.created_at.label("created_at"),
+            DirectMessage.sender_id.label("partner_id"),
+        )
+        .filter(DirectMessage.recipient_id == current_user.id)
+    )
+
+    conversation_rows = sent_rows.union_all(received_rows).subquery()
+
+    ranked_rows = (
+        db.query(
+            conversation_rows.c.partner_id,
+            conversation_rows.c.sender_id,
+            conversation_rows.c.message,
+            conversation_rows.c.attachments_json,
+            conversation_rows.c.created_at,
             func.row_number().over(
-                partition_by=partner_id_case,
-                order_by=(DirectMessage.created_at.desc(), DirectMessage.id.desc()),
+                partition_by=conversation_rows.c.partner_id,
+                order_by=(conversation_rows.c.created_at.desc(), conversation_rows.c.message_id.desc()),
             ).label("row_num"),
         )
-        .filter(or_(DirectMessage.sender_id == current_user.id, DirectMessage.recipient_id == current_user.id))
         .subquery()
     )
 
