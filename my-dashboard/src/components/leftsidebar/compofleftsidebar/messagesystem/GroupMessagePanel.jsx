@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import './GroupMessagePanel.css';
-import { authAPI, directMessageAPI, fileAPI, groupAPI, subscribeRealtimeNotifications } from '../../../../services/api';
+import { directMessageAPI, fileAPI, groupAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
 import { useAuth } from '../../../../context/AuthContext';
 import {
@@ -577,11 +577,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
       else setLoading(true);
 
       try {
-        const [meResponse, usersResponse] = await Promise.all([
-          authAPI.getCurrentUser().catch(() => ({ user: user || null })),
-          groupAPI.listUsers(),
-        ]);
-        setCurrentUserId(meResponse?.user?.id || null);
+        const usersResponse = await groupAPI.listUsers();
+        setCurrentUserId(user?.id || null);
         setAllUsers(usersResponse?.data || []);
         await syncGroups({ keepSelected: false, silent: !!cachedGroups });
       } catch (error) {

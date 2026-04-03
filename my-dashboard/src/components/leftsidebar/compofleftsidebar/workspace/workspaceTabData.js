@@ -91,19 +91,17 @@ export function useWorkspaceTaskDataset() {
     setError('');
 
     try {
-      const [inboxRes, outboxRes, meRes] = await Promise.all([
+      const [inboxRes, outboxRes] = await Promise.all([
         taskAPI.getInbox().catch(() => ({ data: [] })),
         taskAPI.getOutbox().catch(() => ({ data: [] })),
-        authAPI.getCurrentUser().catch(() => ({ user: user || null })),
       ]);
 
       const inboxTasks = Array.isArray(inboxRes?.data) ? inboxRes.data : [];
       const outboxTasks = Array.isArray(outboxRes?.data) ? outboxRes.data : [];
       const mergedTasks = mergeWorkspaceTasks(inboxTasks, outboxTasks);
-      const me = meRes?.user || user || null;
 
       setTasks(mergedTasks);
-      setCurrentUser(me);
+      setCurrentUser(user || null);
       setTaskPanelCache(cacheKeys.inbox, { tasks: inboxTasks });
       setTaskPanelCache(cacheKeys.outbox, { tasks: outboxTasks });
       setCacheStatus((prev) => ({
@@ -182,9 +180,8 @@ export function useWorkspaceTeamDirectory() {
     else setLoading(true);
 
     try {
-      const me = await authAPI.getCurrentUser().catch(() => ({ user: user || null }));
-      const myDept = me?.user?.department || '';
-      const permissions = resolvePermissionSnapshot(me?.user || user);
+      const myDept = user?.department || '';
+      const permissions = resolvePermissionSnapshot(user);
       const hod = permissions.roles.includes('hod');
 
       let users = [];
@@ -326,8 +323,7 @@ export function useWorkspaceCompanyDirectory() {
     else setLoading(true);
 
     try {
-      const me = await authAPI.getCurrentUser().catch(() => ({ user: user || null }));
-      const permissions = resolvePermissionSnapshot(me?.user || user);
+      const permissions = resolvePermissionSnapshot(user);
       const adminAccess = permissions.isAdmin;
       const companyAccess = permissions.can('view_company_members');
       setIsAdmin(adminAccess);

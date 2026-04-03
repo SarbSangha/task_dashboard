@@ -211,12 +211,8 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
       setIsReferenceRefreshing(true);
     }
     try {
-      const [meResponse, departmentsResponse] = await Promise.all([
-        authAPI.getCurrentUser().catch(() => ({ user: user || null })),
-        authAPI.getDepartments().catch(() => ({ departments: [] })),
-      ]);
-
-      const myDepartment = meResponse?.user?.department || '';
+      const departmentsResponse = await authAPI.getDepartments().catch(() => ({ departments: [] }));
+      const myDepartment = user?.department || '';
       const nextDepartments = departmentsResponse?.departments || [];
       setCurrentUserDepartment(myDepartment);
       if ((!editingTask || !formData.myDepartment) && myDepartment) {
