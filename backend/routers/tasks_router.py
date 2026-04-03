@@ -36,7 +36,7 @@ from utils.edge_cache import queue_edge_cache_purge
 TASK_ALL_CACHE_PATTERN = "cache:tasks_all:*"
 TASK_ASSETS_CACHE_PATTERN = "cache:tasks_assets:*"
 TASK_UNREAD_CACHE_PATTERN = "cache:tasks_unread:*"
-EDGE_TASK_CACHE_PATTERNS = ("tasks_all:", "tasks_assets:")
+EDGE_TASK_CACHE_PATTERNS = ("tasks_all:", "tasks_assets:", "tasks_outbox:", "tasks_unread:")
 
 
 async def invalidate_task_lane_b_cache():

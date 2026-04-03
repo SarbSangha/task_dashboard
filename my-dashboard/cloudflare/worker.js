@@ -2,6 +2,10 @@ const memCache = new Map()
 const CACHEABLE_ROUTES = [
   { prefix: '/api/tasks/all', namespace: 'tasks_all', ttl: 60 },
   { prefix: '/api/tasks/assets', namespace: 'tasks_assets', ttl: 90 },
+  { prefix: '/api/auth/departments', namespace: 'auth_departments', ttl: 300 },
+  { prefix: '/api/groups/users', namespace: 'group_users', ttl: 120 },
+  { prefix: '/api/tasks/inbox/unread-count', namespace: 'tasks_unread', ttl: 30 },
+  { prefix: '/api/tasks/outbox', namespace: 'tasks_outbox', ttl: 45 },
 ]
 
 function splitCsv(value) {
@@ -92,7 +96,20 @@ function getRouteConfig(pathname) {
 }
 
 function getSessionValue(request) {
-  return request.headers.get('X-Session-Id') || 'public'
+  const sessionHeader = request.headers.get('X-Session-Id')
+  if (sessionHeader) return sessionHeader
+
+  const cookieHeader = request.headers.get('cookie') || ''
+  const sessionMatch = cookieHeader.match(/(?:^|;\s*)session_id=([^;]+)/)
+  if (sessionMatch?.[1]) {
+    try {
+      return decodeURIComponent(sessionMatch[1])
+    } catch {
+      return sessionMatch[1]
+    }
+  }
+
+  return 'public'
 }
 
 async function hashText(value) {
