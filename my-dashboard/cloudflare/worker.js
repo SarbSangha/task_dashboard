@@ -5,7 +5,6 @@ const CACHEABLE_ROUTES = [
   { prefix: '/api/auth/departments', namespace: 'auth_departments', ttl: 300 },
   { prefix: '/api/groups/users', namespace: 'group_users', ttl: 120 },
   { prefix: '/api/tasks/inbox/unread-count', namespace: 'tasks_unread', ttl: 30 },
-  { prefix: '/api/tasks/outbox', namespace: 'tasks_outbox', ttl: 45 },
 ]
 
 function splitCsv(value) {
