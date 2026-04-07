@@ -53,6 +53,8 @@ def _allowed_origins() -> list[str]:
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
         "http://192.168.1.15:5173",
+        "https://dashboard.ritzmediaworld.in",
+        "http://dashboard.ritzmediaworld.in",
     ]
     merged = []
     for origin in [*env_origins, frontend_url, *defaults]:
