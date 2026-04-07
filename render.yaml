@@ -38,6 +38,10 @@ services:
         sync: false
       - key: R2_PUBLIC_BASE_URL
         sync: false
+      - key: EDGE_CACHE_PURGE_URL
+        value: https://rmwworker.sarabjeet.workers.dev/purge
+      - key: EDGE_CACHE_PURGE_SECRET
+        sync: false
 
 staticSites:
   - name: task-dashboard-web

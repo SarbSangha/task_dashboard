@@ -1659,6 +1659,7 @@ async def mark_task_seen(
 
     db.commit()
     await invalidate_pattern(TASK_UNREAD_CACHE_PATTERN)
+    queue_edge_cache_purge(("tasks_unread:",))
     return {"success": True, "taskId": task_id}
 
 
