@@ -558,6 +558,7 @@
 
 .forward-modal {
   width: min(92vw, 540px);
+  max-height: calc(100dvh - 40px);
   background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
   border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 18px;
@@ -567,6 +568,8 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .forward-modal,

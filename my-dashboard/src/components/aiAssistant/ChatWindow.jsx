@@ -7,7 +7,7 @@ const ChatWindow = ({ onClose, avatarPosition }) => {
     {
       id: 1,
       type: 'bot',
-      text: 'Hello! I\'m your AI Copilot. How can I assist you today?',
+      text: 'Hello! I\'m your RMW AI. How can I assist you today?',
       timestamp: new Date()
     }
   ]);
@@ -91,7 +91,7 @@ const ChatWindow = ({ onClose, avatarPosition }) => {
               </svg>
             </div>
             <div>
-              <h3>AI Copilot</h3>
+              <h3>RMW AI</h3>
               <span className="status">Online</span>
             </div>
           </div>

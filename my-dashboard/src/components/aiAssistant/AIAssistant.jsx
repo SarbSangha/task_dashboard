@@ -59,7 +59,7 @@ const AIAssistant = () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, dragOffset]);
+  }, [isDragging,dragOffset]);
 
   return (
     <>
@@ -88,7 +88,7 @@ const AIAssistant = () => {
         <div className="pulse-ring-delayed"></div>
 
         {/* Tooltip */}
-        <div className="avatar-tooltip">AI Copilot</div>
+        <div className="avatar-tooltip">RMW EYE AI</div>
       </div>
 
       {/* Chat Window */}

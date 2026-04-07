@@ -94,6 +94,12 @@ function getRouteConfig(pathname) {
   return CACHEABLE_ROUTES.find((route) => pathname.startsWith(route.prefix)) || null
 }
 
+function isOriginProxyPath(pathname) {
+  return pathname.startsWith('/api/')
+    || pathname === '/upload'
+    || pathname.startsWith('/upload/')
+}
+
 function getSessionValue(request) {
   const sessionHeader = request.headers.get('X-Session-Id')
   if (sessionHeader) return sessionHeader
@@ -174,9 +180,13 @@ async function cacheOriginJson(request, env, url, route, cacheKey) {
   const ttl = route.ttl
 
   if (env.DASHBOARD_KV) {
-    await env.DASHBOARD_KV.put(cacheKey, JSON.stringify(data), {
-      expirationTtl: ttl,
-    })
+    try {
+      await env.DASHBOARD_KV.put(cacheKey, JSON.stringify(data), {
+        expirationTtl: ttl,
+      })
+    } catch (error) {
+      console.warn('KV cache write failed:', error)
+    }
   }
   writeMemCache(cacheKey, data, ttl, response.status)
 
@@ -197,13 +207,17 @@ async function handleCachedGet(request, env, url, route) {
   }
 
   if (env.DASHBOARD_KV) {
-    const kvData = await env.DASHBOARD_KV.get(cacheKey, { type: 'json' })
-    if (kvData) {
-      writeMemCache(cacheKey, kvData, route.ttl)
-      return json(kvData, {
-        status: 200,
-        headers: setCacheHeaders({}, 'HIT-KV', route.ttl),
-      })
+    try {
+      const kvData = await env.DASHBOARD_KV.get(cacheKey, { type: 'json' })
+      if (kvData) {
+        writeMemCache(cacheKey, kvData, route.ttl)
+        return json(kvData, {
+          status: 200,
+          headers: setCacheHeaders({}, 'HIT-KV', route.ttl),
+        })
+      }
+    } catch (error) {
+      console.warn('KV cache read failed:', error)
     }
   }
 
@@ -260,52 +274,64 @@ async function handlePurge(request, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
-    const isWebSocketUpgrade = request.headers.get('Upgrade') === 'websocket'
-    const route = getRouteConfig(url.pathname)
+    try {
+      const isWebSocketUpgrade = request.headers.get('Upgrade') === 'websocket'
+      const isProxyPath = isOriginProxyPath(url.pathname)
+      const route = getRouteConfig(url.pathname)
 
-    if (request.method === 'OPTIONS' && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/edge/'))) {
-      return handleCorsPreflight(request, env)
-    }
-
-    if (url.pathname === '/edge/health') {
-      return withCors(json({
-        ok: true,
-        route: '/edge/health',
-        fastapiUrl: env.FASTAPI_URL || null,
-        hyperdriveBound: Boolean(env.HYPERDRIVE),
-        kvBound: Boolean(env.DASHBOARD_KV),
-        timestamp: new Date().toISOString(),
-      }), request, env)
-    }
-
-    if ((url.pathname === '/edge/purge' || url.pathname === '/purge') && request.method === 'POST') {
-      return withCors(await handlePurge(request, env), request, env)
-    }
-
-    if (url.pathname.startsWith('/api/')) {
-      if (isWebSocketUpgrade) {
-        return proxyToOrigin(request, env, url)
+      if (request.method === 'OPTIONS' && (isProxyPath || url.pathname.startsWith('/edge/') || url.pathname === '/purge')) {
+        return handleCorsPreflight(request, env)
       }
-      if (request.method === 'GET' && route) {
-        return withCors(await handleCachedGet(request, env, url, route), request, env)
-      }
-      return withCors(await proxyToOrigin(request, env, url), request, env)
-    }
 
-    if (url.pathname.startsWith('/edge/')) {
+      if (url.pathname === '/edge/health') {
+        return withCors(json({
+          ok: true,
+          route: '/edge/health',
+          fastapiUrl: env.FASTAPI_URL || null,
+          hyperdriveBound: Boolean(env.HYPERDRIVE),
+          kvBound: Boolean(env.DASHBOARD_KV),
+          timestamp: new Date().toISOString(),
+        }), request, env)
+      }
+
+      if ((url.pathname === '/edge/purge' || url.pathname === '/purge') && request.method === 'POST') {
+        return withCors(await handlePurge(request, env), request, env)
+      }
+
+      if (isProxyPath) {
+        if (isWebSocketUpgrade) {
+          return proxyToOrigin(request, env, url)
+        }
+        if (request.method === 'GET' && route) {
+          return withCors(await handleCachedGet(request, env, url, route), request, env)
+        }
+        return withCors(await proxyToOrigin(request, env, url), request, env)
+      }
+
+      if (url.pathname.startsWith('/edge/')) {
+        return withCors(json(
+          {
+            ok: false,
+            message: 'Unknown edge route',
+          },
+          { status: 404 },
+        ), request, env)
+      }
+
+      if (env.ASSETS) {
+        return env.ASSETS.fetch(request)
+      }
+
+      return new Response('Not found', { status: 404 })
+    } catch (error) {
+      console.error('Worker request failed:', error)
       return withCors(json(
         {
           ok: false,
-          message: 'Unknown edge route',
+          message: 'Worker request failed',
         },
-        { status: 404 },
+        { status: 500 },
       ), request, env)
     }
-
-    if (env.ASSETS) {
-      return env.ASSETS.fetch(request)
-    }
-
-    return new Response('Not found', { status: 404 })
   },
 }
