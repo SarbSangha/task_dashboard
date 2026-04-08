@@ -152,6 +152,35 @@ async def get_drafts(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==================== GET LATEST DRAFT ====================
+@router.get("/latest")
+async def get_latest_draft(
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session)
+):
+    """Get the most recently updated draft for the current user."""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        draft = db.query(Task).filter(
+            Task.status == TaskStatus.DRAFT,
+            Task.creator_id == current_user.id,
+            Task.is_deleted == False
+        ).order_by(Task.updated_at.desc(), Task.created_at.desc()).first()
+
+        if not draft:
+            raise HTTPException(status_code=404, detail="No draft found")
+
+        return draft.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error fetching latest draft: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== UPDATE DRAFT ====================
 @router.put("/{draft_id}")
 async def update_draft(

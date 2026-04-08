@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Cookie, Header
 from pydantic import BaseModel, Field
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from auth import get_request_session_token, resolve_session_user
@@ -84,6 +85,51 @@ def get_today_activity(db: Session, user_id: int) -> Optional[UserActivity]:
     )
 
 
+def get_or_create_today_activity(
+    db: Session,
+    user: User,
+    now: datetime,
+    *,
+    status: ActivityStatus,
+    logout_time: Optional[datetime] = None,
+    total_session_duration: Optional[int] = None,
+) -> tuple[UserActivity, bool]:
+    today = now.date()
+    row = (
+        db.query(UserActivity)
+        .filter(UserActivity.user_id == user.id, UserActivity.date == today)
+        .first()
+    )
+    if row:
+        return row, False
+
+    row = UserActivity(
+        user_id=user.id,
+        date=today,
+        login_time=now,
+        logout_time=logout_time,
+        status=status,
+        last_seen=now,
+        heartbeat_count=0,
+        total_session_duration=total_session_duration or 0,
+    )
+    db.add(row)
+    try:
+        db.flush()
+        return row, True
+    except (IntegrityError, OperationalError):
+        # Another concurrent request may have created today's row first.
+        db.rollback()
+        existing = (
+            db.query(UserActivity)
+            .filter(UserActivity.user_id == user.id, UserActivity.date == today)
+            .first()
+        )
+        if existing:
+            return existing, False
+        raise
+
+
 def serialize_activity(row: UserActivity, user: Optional[User] = None) -> dict:
     return {
         "id": row.id,
@@ -118,29 +164,14 @@ async def start_session(
 ):
     user = ensure_authenticated(current_user)
     now = utcnow_naive()
-    today = now.date()
+    row, created = get_or_create_today_activity(db, user, now, status=ActivityStatus.ACTIVE)
 
-    row = (
-        db.query(UserActivity)
-        .filter(UserActivity.user_id == user.id, UserActivity.date == today)
-        .first()
-    )
-    if not row:
-        row = UserActivity(
-            user_id=user.id,
-            date=today,
-            login_time=now,
-            status=ActivityStatus.ACTIVE,
-            last_seen=now,
-            heartbeat_count=0,
-        )
-        db.add(row)
-    else:
+    if not created:
         if not row.login_time:
             row.login_time = now
-        row.status = ActivityStatus.ACTIVE
-        row.last_seen = now
-        row.logout_time = None
+    row.status = ActivityStatus.ACTIVE
+    row.last_seen = now
+    row.logout_time = None
 
     db.commit()
     db.refresh(row)
@@ -155,24 +186,7 @@ async def heartbeat(
 ):
     user = ensure_authenticated(current_user)
     now = normalize_to_utc_naive(payload.timestamp) or utcnow_naive()
-    today = now.date()
-
-    row = (
-        db.query(UserActivity)
-        .filter(UserActivity.user_id == user.id, UserActivity.date == today)
-        .first()
-    )
-    if not row:
-        row = UserActivity(
-            user_id=user.id,
-            date=today,
-            login_time=now,
-            status=payload.status,
-            last_seen=now,
-            heartbeat_count=0,
-        )
-        db.add(row)
-        db.flush()
+    row, _ = get_or_create_today_activity(db, user, now, status=payload.status)
 
     # Soft rate limit: accept at most one persisted heartbeat every 20s.
     # Extra heartbeats are treated as no-op to avoid 429 noise storms.
@@ -208,24 +222,12 @@ async def update_status(
 ):
     user = ensure_authenticated(current_user)
     now = normalize_to_utc_naive(payload.timestamp) or utcnow_naive()
-    row = get_today_activity(db, user.id)
-
-    if not row:
-        row = UserActivity(
-            user_id=user.id,
-            date=now.date(),
-            login_time=now,
-            status=payload.status,
-            last_seen=now,
-            heartbeat_count=0,
-        )
-        db.add(row)
-    else:
-        row.status = payload.status
-        row.last_seen = now
-        login_time = normalize_to_utc_naive(row.login_time)
-        if login_time:
-            row.total_session_duration = int((now - login_time).total_seconds())
+    row, _ = get_or_create_today_activity(db, user, now, status=payload.status)
+    row.status = payload.status
+    row.last_seen = now
+    login_time = normalize_to_utc_naive(row.login_time)
+    if login_time:
+        row.total_session_duration = int((now - login_time).total_seconds())
 
     db.commit()
     db.refresh(row)
@@ -240,27 +242,20 @@ async def end_session(
 ):
     user = ensure_authenticated(current_user)
     now = normalize_to_utc_naive(payload.timestamp) if payload and payload.timestamp else utcnow_naive()
-    row = get_today_activity(db, user.id)
-
-    if not row:
-        row = UserActivity(
-            user_id=user.id,
-            date=now.date(),
-            login_time=now,
-            logout_time=now,
-            status=ActivityStatus.OFFLINE,
-            last_seen=now,
-            heartbeat_count=0,
-            total_session_duration=0,
-        )
-        db.add(row)
-    else:
-        row.status = ActivityStatus.OFFLINE
-        row.logout_time = now
-        row.last_seen = now
-        login_time = normalize_to_utc_naive(row.login_time)
-        if login_time:
-            row.total_session_duration = int((now - login_time).total_seconds())
+    row, _ = get_or_create_today_activity(
+        db,
+        user,
+        now,
+        status=ActivityStatus.OFFLINE,
+        logout_time=now,
+        total_session_duration=0,
+    )
+    row.status = ActivityStatus.OFFLINE
+    row.logout_time = now
+    row.last_seen = now
+    login_time = normalize_to_utc_naive(row.login_time)
+    if login_time:
+        row.total_session_duration = int((now - login_time).total_seconds())
 
     db.commit()
     db.refresh(row)
