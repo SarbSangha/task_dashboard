@@ -102,7 +102,7 @@ const buildDirectoryTree = (rows = []) => {
     .sort((a, b) => a.name.localeCompare(b.name));
 };
 
-const TrendingsPanel = ({ isOpen, onClose }) => {
+const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -124,6 +124,10 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
   const [selectedUploaderKey, setSelectedUploaderKey] = useState('');
   const [selectedDateKey, setSelectedDateKey] = useState('');
   const [selectedProjectKey, setSelectedProjectKey] = useState('');
+
+  useEffect(() => {
+    onMinimizedChange?.(isOpen && isMinimized);
+  }, [isMinimized, isOpen, onMinimizedChange]);
 
   const buildOpenUrl = (asset) => {
     if (asset?.path) {
@@ -417,6 +421,7 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
 
   const handleToggleMinimize = () => {
     if (isMinimized) {
+      onActivate?.();
       setIsMinimized(false);
       return;
     }
@@ -427,6 +432,7 @@ const TrendingsPanel = ({ isOpen, onClose }) => {
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
+      onActivate?.();
       setIsMinimized(false);
       return;
     }

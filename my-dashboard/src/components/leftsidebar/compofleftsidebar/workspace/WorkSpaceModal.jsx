@@ -45,7 +45,7 @@ function TabSkeleton({ activeTab }) {
   return <WorkspaceSkeleton variant={TAB_SKELETON_VARIANTS[activeTab] || 'overview'} />;
 }
 
-export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview' }) {
+export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview', onMinimizedChange, onActivate }) {
   const [activeTab, setActiveTab] = useState('overview');
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
@@ -63,13 +63,21 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    onMinimizedChange?.(isOpen && isMinimized);
+  }, [isMinimized, isOpen, onMinimizedChange]);
+
   if (!isOpen) return null;
 
   const ActiveTabComponent = TAB_COMPONENTS[activeTab] || OverviewTab;
+  const restoreWindow = () => {
+    onActivate?.();
+    setIsMinimized(false);
+  };
 
   const handleToggleMinimize = () => {
     if (isMinimized) {
-      setIsMinimized(false);
+      restoreWindow();
       return;
     }
     setIsMaximized(false);
@@ -78,7 +86,7 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
-      setIsMinimized(false);
+      restoreWindow();
       return;
     }
     setIsMaximized((prev) => !prev);
@@ -97,7 +105,7 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
       >
         <div
           className="workspace-header"
-          onClick={isMinimized ? () => setIsMinimized(false) : undefined}
+          onClick={isMinimized ? restoreWindow : undefined}
         >
           <div className="workspace-header-left">
             <h2>Workspace</h2>

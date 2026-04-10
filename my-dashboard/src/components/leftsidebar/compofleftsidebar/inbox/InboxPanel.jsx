@@ -22,7 +22,7 @@ import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
 import { InboxSkeleton } from '../../../ui/InboxSkeleton';
 import './InboxPanel.css';
 
-const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
+const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange, onActivate }) => {
   const { showAlert, showPrompt } = useCustomDialogs();
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -68,6 +68,10 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
   const loading = isLoading;
   const isRefreshing = isFetching && !isLoading;
   const { mutateAsync: updateTaskStatus } = useUpdateTaskStatus();
+
+  useEffect(() => {
+    onMinimizedChange?.(isOpen && isMinimized);
+  }, [isMinimized, isOpen, onMinimizedChange]);
 
   const refreshTaskQueries = React.useCallback(async () => {
     const userKey = user?.id ?? 'anonymous';
@@ -503,9 +507,14 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
 
   if (!isOpen) return null;
 
+  const restoreWindow = () => {
+    onActivate?.();
+    setIsMinimized(false);
+  };
+
   const handleToggleMinimize = () => {
     if (isMinimized) {
-      setIsMinimized(false);
+      restoreWindow();
       return;
     }
 
@@ -515,7 +524,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
-      setIsMinimized(false);
+      restoreWindow();
       return;
     }
 
@@ -531,7 +540,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace }) => {
         style={minimizedWindowStyle || undefined}
       >
         {/* Header */}
-        <div className="inbox-panel-header" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
+        <div className="inbox-panel-header" onClick={isMinimized ? restoreWindow : undefined}>
           <h2>Inbox</h2>
           <div className="inbox-window-controls">
             {!isMinimized && (

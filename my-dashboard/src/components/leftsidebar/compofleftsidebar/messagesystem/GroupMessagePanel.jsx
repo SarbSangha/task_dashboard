@@ -49,7 +49,7 @@ const replaceMessageById = (rows = [], messageId, nextMessage) => {
 const removeMessageById = (rows = [], messageId) =>
   rows.filter((row) => row?.id !== messageId);
 
-const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => {
+const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMinimizedChange, onActivate }) => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const isActive = variant === 'embedded' || isOpen;
@@ -132,6 +132,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
   selectedGroupIdRef.current = selectedGroupId;
   selectedDirectUserIdRef.current = selectedDirectUserId;
   activeTabRef.current = activeTab;
+
+  useEffect(() => {
+    if (variant !== 'overlay') return;
+    onMinimizedChange?.(isOpen && isMinimized);
+  }, [isMinimized, isOpen, onMinimizedChange, variant]);
 
   const cacheKeys = useMemo(() => {
     if (!user?.id) return null;
@@ -2034,6 +2039,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
 
   const handleToggleMinimize = () => {
     if (isMinimized) {
+      onActivate?.();
       setIsMinimized(false);
       return;
     }
@@ -2044,6 +2050,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
+      onActivate?.();
       setIsMinimized(false);
       return;
     }
@@ -2065,7 +2072,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded' }) => 
         >
           <div
             className="group-message-modal-header"
-            onClick={isMinimized ? () => setIsMinimized(false) : undefined}
+            onClick={isMinimized ? () => { onActivate?.(); setIsMinimized(false); } : undefined}
           >
             <div className="group-message-modal-copy">
               <h3>Message System</h3>

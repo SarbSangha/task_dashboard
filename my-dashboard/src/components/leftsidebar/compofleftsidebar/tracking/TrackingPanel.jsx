@@ -10,7 +10,7 @@ import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
 import { TrackingPanelSkeleton } from '../../../ui/TrackingPanelSkeleton';
 import './TrackingPanel.css';
 
-const TrackingPanel = ({ isOpen, onClose }) => {
+const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const queryClient = useQueryClient();
   const { showAlert, showPrompt } = useCustomDialogs();
   const [selectedTask, setSelectedTask] = useState(null);
@@ -41,6 +41,10 @@ const TrackingPanel = ({ isOpen, onClose }) => {
     isFetching,
     refetch,
   } = useTracking({}, { enabled: isOpen });
+
+  React.useEffect(() => {
+    onMinimizedChange?.(isOpen && isMinimized);
+  }, [isMinimized, isOpen, onMinimizedChange]);
 
   const tasks = trackingData?.tasks || [];
   const isRefreshing = isFetching && !loading;
@@ -276,6 +280,7 @@ const TrackingPanel = ({ isOpen, onClose }) => {
 
   const handleToggleMinimize = () => {
     if (isMinimized) {
+      onActivate?.();
       setIsMinimized(false);
       return;
     }
@@ -286,6 +291,7 @@ const TrackingPanel = ({ isOpen, onClose }) => {
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
+      onActivate?.();
       setIsMinimized(false);
       return;
     }
@@ -309,7 +315,7 @@ const TrackingPanel = ({ isOpen, onClose }) => {
         style={minimizedWindowStyle || undefined}
       >
         {/* Header */}
-        <div className="tracking-header" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
+        <div className="tracking-header" onClick={isMinimized ? () => { onActivate?.(); setIsMinimized(false); } : undefined}>
           <h2>Tracking</h2>
           
           {/* Control Buttons */}
