@@ -24,14 +24,17 @@ jobs:
             git pull origin main
 
             echo "Install backend dependencies"
+            cd backend
             pip install -r requirements.txt
 
             echo "Build frontend"
-            cd frontend
+            cd ..
+            cd my-dashboard
             npm install
             npm run build
 
             echo "Restart server"
-            pm2 restart all
+            cd ..
+            pm2 restart backend
 
             echo "Deploy complete"
