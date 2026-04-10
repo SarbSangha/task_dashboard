@@ -88,7 +88,7 @@ const AIAssistant = () => {
         <div className="pulse-ring-delayed"></div>
 
         {/* Tooltip */}
-        <div className="avatar-tooltip">RMW eye AI</div>
+        <div className="avatar-tooltip">RMW chat bot </div>
       </div>
 
       {/* Chat Window */}
