@@ -12,7 +12,7 @@ import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowSta
 import { useDrafts, useOutbox } from '../../../../hooks/useOutbox';
 import { OutboxSkeleton } from '../../../ui/OutboxSkeleton';
 
-const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
+const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivate }) => {
   const queryClient = useQueryClient();
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
   const [expandedTaskId, setExpandedTaskId] = useState(null);
@@ -46,6 +46,10 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
       setIsMaximized(false);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    onMinimizedChange?.(isOpen && isMinimized);
+  }, [isMinimized, isOpen, onMinimizedChange]);
 
   const invalidateOutboxCache = () => {
     queryClient.invalidateQueries({ queryKey: ['outbox'] });
@@ -153,9 +157,14 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
 
   if (!isOpen) return null;
 
+  const restoreWindow = () => {
+    onActivate?.();
+    setIsMinimized(false);
+  };
+
   const handleToggleMinimize = () => {
     if (isMinimized) {
-      setIsMinimized(false);
+      restoreWindow();
       return;
     }
 
@@ -165,7 +174,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
-      setIsMinimized(false);
+      restoreWindow();
       return;
     }
 
@@ -183,7 +192,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask }) => {
         style={minimizedWindowStyle || undefined}
       >
         {/* Main Header with Close Button */}
-        <div className="outbox-main-header" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
+        <div className="outbox-main-header" onClick={isMinimized ? restoreWindow : undefined}>
           <div className="header-title-section">
             <h1 className="outbox-main-title">Outbox</h1>
             {/* NEW: Display current user info */}

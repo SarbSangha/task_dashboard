@@ -5,7 +5,9 @@ const STACK_BASE_BOTTOM = 12;
 const STACK_GAP = 10;
 const MINIMIZED_WINDOW_HEIGHT = 60;
 const MINIMIZED_WINDOW_STEP = MINIMIZED_WINDOW_HEIGHT + STACK_GAP;
-const STACK_Z_INDEX_BASE = 2147483000;
+// Keep minimized windows above every fullscreen panel/backdrop so the stack
+// remains visible even when another overlay opens later.
+const STACK_Z_INDEX_BASE = 2147483400;
 
 const minimizedWindowOrder = [];
 const listeners = new Set();

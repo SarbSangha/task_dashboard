@@ -16,6 +16,7 @@
 .group-message-overlay.disabled {
   background: transparent;
   pointer-events: none;
+  display: contents;
 }
 
 .group-message-panel {

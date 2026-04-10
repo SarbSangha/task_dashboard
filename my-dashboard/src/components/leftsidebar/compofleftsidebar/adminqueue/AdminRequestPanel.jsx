@@ -14,7 +14,7 @@ import './AdminRequestPanel.css';
 
 const ADMIN_QUEUE_CACHE_TTL_MS = 90 * 1000;
 
-const AdminRequestPanel = ({ isOpen, onClose }) => {
+const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const { user } = useAuth();
   const { showConfirm, showPrompt } = useCustomDialogs();
   const [loading, setLoading] = useState(false);
@@ -38,6 +38,10 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
     () => (user?.id ? buildTaskPanelCacheKey(user.id, 'admin_queue') : null),
     [user?.id]
   );
+
+  useEffect(() => {
+    onMinimizedChange?.(isOpen && isMinimized);
+  }, [isMinimized, isOpen, onMinimizedChange]);
 
   const formatDateTime = (value) => {
     if (!value) return 'N/A';
@@ -145,6 +149,7 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
 
   const handleToggleMinimize = () => {
     if (isMinimized) {
+      onActivate?.();
       setIsMinimized(false);
       return;
     }
@@ -154,6 +159,7 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
+      onActivate?.();
       setIsMinimized(false);
       return;
     }
@@ -248,7 +254,7 @@ const AdminRequestPanel = ({ isOpen, onClose }) => {
       >
         <div
           className="admin-queue-header"
-          onClick={isMinimized ? () => setIsMinimized(false) : undefined}
+          onClick={isMinimized ? () => { onActivate?.(); setIsMinimized(false); } : undefined}
         >
           <h3>Admin Queue</h3>
           <div className="admin-queue-controls">

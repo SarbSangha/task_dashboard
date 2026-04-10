@@ -35,7 +35,7 @@ const TASK_TAG_OPTIONS = [
 const ASSIGN_REFERENCE_CACHE_TTL_MS = 5 * 60 * 1000;
 const ASSIGN_DEPARTMENT_USERS_CACHE_TTL_MS = 3 * 60 * 1000;
 
-const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
+const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChange, onActivate }) => {
   const { user } = useAuth();
   const { showConfirm } = useCustomDialogs();
   // Form state
@@ -95,6 +95,10 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
         buildTaskPanelCacheKey(user.id, `assign_task_department_${String(departmentName || '').toLowerCase()}`),
     };
   }, [user?.id]);
+
+  useEffect(() => {
+    onMinimizedChange?.(isOpen && isMinimized);
+  }, [isMinimized, isOpen, onMinimizedChange]);
 
   // ✅ ADDED: showMessage helper function
   const showMessage = (message, type) => {
@@ -785,9 +789,14 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
 
   if (!isOpen) return null;
 
+  const restoreWindow = () => {
+    onActivate?.();
+    setIsMinimized(false);
+  };
+
   const handleToggleMinimize = () => {
     if (isMinimized) {
-      setIsMinimized(false);
+      restoreWindow();
       return;
     }
 
@@ -884,7 +893,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null }) => {
         style={minimizedWindowStyle || undefined}
       >
         {/* Top dark bar */}
-        <div className="assign-modal-header-bar" onClick={isMinimized ? () => setIsMinimized(false) : undefined}>
+        <div className="assign-modal-header-bar" onClick={isMinimized ? restoreWindow : undefined}>
           <span>{editingTask ? 'EDIT TASK' : 'CREATE NEW TASK'}</span>
           <div className="header-actions">
             {saveMessage && (

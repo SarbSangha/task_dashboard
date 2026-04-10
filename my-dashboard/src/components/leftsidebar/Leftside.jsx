@@ -52,6 +52,7 @@ const FunctionalMenu = () => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const workspaceInitialTab = searchParams.get('tab') || 'overview';
   const [editingTask, setEditingTask] = useState(null);
+  const [persistedMinimizedPanels, setPersistedMinimizedPanels] = useState({});
 
   const toggleCollapse = () => {
     setIsCollapsed(!isCollapsed);
@@ -59,6 +60,32 @@ const FunctionalMenu = () => {
 
   const goTo = (segment) => navigate(`/dashboard/${segment}`);
   const goHome = () => navigate('/dashboard');
+  const isPanelVisible = (panelKey) => panel === panelKey || !!persistedMinimizedPanels[panelKey];
+  const setPanelMinimized = (panelKey, isMinimized) => {
+    setPersistedMinimizedPanels((prev) => {
+      if (!!prev[panelKey] === isMinimized) {
+        return prev;
+      }
+
+      if (!isMinimized && !prev[panelKey]) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [panelKey]: isMinimized,
+      };
+    });
+  };
+  const activatePanel = (segment, search = '') => {
+    navigate(`/dashboard/${segment}${search}`);
+  };
+  const closePanel = (panelKey) => {
+    setPanelMinimized(panelKey, false);
+    if (panel === panelKey) {
+      goHome();
+    }
+  };
 
   const openAssignModal = (taskToEdit = null) => {
     setEditingTask(taskToEdit);
@@ -67,7 +94,7 @@ const FunctionalMenu = () => {
 
   const closeAssignModal = () => {
     setEditingTask(null);
-    goHome();
+    closePanel('create-task');
   };
 
   const openInboxPanel = () => {
@@ -75,14 +102,14 @@ const FunctionalMenu = () => {
   };
 
   const closeInboxPanel = () => {
-    goHome();
+    closePanel('inbox');
   };
 
   const openOutboxModal = () => {
     goTo('outbox');
   };
   
-  const closeOutboxModal = () => goHome();
+  const closeOutboxModal = () => closePanel('outbox');
 
   const handleEditTaskFromOutbox = (task) => {
     setEditingTask(task);
@@ -91,7 +118,7 @@ const FunctionalMenu = () => {
   
   const openWorkSpace = () => navigate('/dashboard/workspace?tab=overview');
   
-  const closeWorkSpace = () => goHome();
+  const closeWorkSpace = () => closePanel('workspace');
 
   const handleStartTaskFromInbox = () => {
     navigate('/dashboard/workspace?tab=Tools');
@@ -101,19 +128,19 @@ const FunctionalMenu = () => {
     goTo('tracking');
   };
 
-  const closeTrackingPanel = () => goHome();
+  const closeTrackingPanel = () => closePanel('tracking');
   const openMessageSystem = () => {
     goTo('messages');
   };
-  const closeMessageSystem = () => goHome();
+  const closeMessageSystem = () => closePanel('messages');
   const openTrendingsPanel = () => {
     goTo('trendings');
   };
-  const closeTrendingsPanel = () => goHome();
+  const closeTrendingsPanel = () => closePanel('trendings');
   const openAdminQueue = () => {
     goTo('admin-queue');
   };
-  const closeAdminQueue = () => goHome();
+  const closeAdminQueue = () => closePanel('admin-queue');
 
   return (
     <>
@@ -180,40 +207,66 @@ const FunctionalMenu = () => {
 
       {/* Assign Task Modal */}
       <AssignTaskModal
-        isOpen={isAssignModalOpen}
+        isOpen={isPanelVisible('create-task')}
         onClose={closeAssignModal}
         editingTask={editingTask}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('create-task', isMinimized)}
+        onActivate={() => activatePanel('create-task')}
       />
 
       {/* Inbox Panel */}
       <InboxPanel
-        isOpen={isInboxPanelOpen}
+        isOpen={isPanelVisible('inbox')}
         onClose={closeInboxPanel}
         onStartTaskToWorkspace={handleStartTaskFromInbox}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('inbox', isMinimized)}
+        onActivate={() => activatePanel('inbox')}
       />
 
       {/* Tracking Panel */}
-      <TrackingPanel isOpen={isTrackingPanelOpen} onClose={closeTrackingPanel} />
-      <GroupMessagePanel isOpen={isMessageSystemOpen} onClose={closeMessageSystem} variant="overlay" />
-      <TrendingsPanel isOpen={isTrendingsOpen} onClose={closeTrendingsPanel} />
+      <TrackingPanel
+        isOpen={isPanelVisible('tracking')}
+        onClose={closeTrackingPanel}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('tracking', isMinimized)}
+        onActivate={() => activatePanel('tracking')}
+      />
+      <GroupMessagePanel
+        isOpen={isPanelVisible('messages')}
+        onClose={closeMessageSystem}
+        variant="overlay"
+        onMinimizedChange={(isMinimized) => setPanelMinimized('messages', isMinimized)}
+        onActivate={() => activatePanel('messages')}
+      />
+      <TrendingsPanel
+        isOpen={isPanelVisible('trendings')}
+        onClose={closeTrendingsPanel}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('trendings', isMinimized)}
+        onActivate={() => activatePanel('trendings')}
+      />
 
       {/* Outbox Modal */}
       <OutboxModal
-        isOpen={isOutboxModalOpen}
+        isOpen={isPanelVisible('outbox')}
         onClose={closeOutboxModal}
         onEditTask={handleEditTaskFromOutbox}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('outbox', isMinimized)}
+        onActivate={() => activatePanel('outbox')}
       />
 
       {/* WorkSpace Modal */}
       <WorkSpaceModal
-        isOpen={isWorkSpaceOpen}
+        isOpen={isPanelVisible('workspace')}
         onClose={closeWorkSpace}
         initialTab={workspaceInitialTab}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('workspace', isMinimized)}
+        onActivate={() => activatePanel('workspace')}
       />
 
       <AdminRequestPanel
-        isOpen={isAdminQueueOpen}
+        isOpen={isPanelVisible('admin-queue')}
         onClose={closeAdminQueue}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('admin-queue', isMinimized)}
+        onActivate={() => activatePanel('admin-queue')}
       />
     </>
   );
