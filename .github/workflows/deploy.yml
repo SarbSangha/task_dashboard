@@ -18,24 +18,23 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           debug: true
           script: |
-            cd /
             cd /var/www/task_dashboard
 
             echo "Pull latest code"
             git pull origin main
 
-            echo "Install backend dependencies"
+            echo "Setup backend"
             cd backend
-            pip install -r requirements.txt
+            python3 -m venv venv
+            ./venv/bin/pip install -r requirements.txt
 
             echo "Build frontend"
-            cd ..
-            cd my-dashboard
-            npm install
+            cd ../my-dashboard
+            npm ci
             npm run build
 
             echo "Restart server"
             cd ..
-            pm2 restart backend
+            pm2 reload backend
 
             echo "Deploy complete"
