@@ -19,6 +19,8 @@
 .assign-modal-backdrop.disabled {
   background: transparent;
   backdrop-filter: none;
+  pointer-events: none;
+  display: contents;
 }
 
 /* Card */
