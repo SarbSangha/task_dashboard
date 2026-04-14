@@ -819,4 +819,42 @@ export const fileAPI = {
   },
 };
 
+// ==================== IT PROFILE / TOOL VAULT API ====================
+export const itToolsAPI = {
+  listTools: async () => {
+    const response = await api.get('/api/it-tools/tools');
+    return response.data;
+  },
+
+  createTool: async (payload) => {
+    const response = await api.post('/api/it-tools/tools', payload);
+    return response.data;
+  },
+
+  updateTool: async (toolId, payload) => {
+    const response = await api.patch(`/api/it-tools/tools/${toolId}`, payload);
+    return response.data;
+  },
+
+  deleteTool: async (toolId) => {
+    const response = await api.delete(`/api/it-tools/tools/${toolId}`);
+    return response.data;
+  },
+
+  listCredentials: async (toolId) => {
+    const response = await api.get(`/api/it-tools/tools/${toolId}/credentials`);
+    return response.data;
+  },
+
+  upsertCredential: async (toolId, payload) => {
+    const response = await api.post(`/api/it-tools/tools/${toolId}/credentials`, payload);
+    return response.data;
+  },
+
+  launchTool: async (toolId) => {
+    const response = await api.post(`/api/it-tools/tools/${toolId}/launch`);
+    return response.data;
+  },
+};
+
 export default api;

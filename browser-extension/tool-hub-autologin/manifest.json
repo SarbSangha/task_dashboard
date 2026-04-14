@@ -1,0 +1,74 @@
+{
+  "manifest_version": 3,
+  "name": "RMW Tool Hub Auto Login",
+  "description": "Auto-fills approved company tool credentials from the RMW Tool Hub.",
+  "version": "0.1.2",
+  "permissions": ["storage", "cookies"],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*",
+    "https://dashboard.ritzmediaworld.in/*",
+    "https://freepik.com/*",
+    "https://*.freepik.com/*",
+    "https://kling.ai/*",
+    "https://*.kling.ai/*",
+    "https://klingai.com/*",
+    "https://*.klingai.com/*",
+    "https://*.onrender.com/*",
+    "https://*.workers.dev/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://dashboard.ritzmediaworld.in/*",
+        "http://localhost:5173/*",
+        "http://127.0.0.1:5173/*"
+      ],
+      "js": ["content-dashboard.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://auth.openai.com/*"
+      ],
+      "js": ["content-chatgpt.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    },
+    {
+      "matches": [
+        "https://www.freepik.com/*",
+        "https://freepik.com/*"
+      ],
+      "js": ["content-freepik.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://kling.ai/*",
+        "https://*.kling.ai/*",
+        "https://klingai.com/*",
+        "https://*.klingai.com/*"
+      ],
+      "js": ["content-kling.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://accounts.google.com/*"
+      ],
+      "js": ["content-google.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Tool Hub Auto Login",
+    "default_popup": "popup.html"
+  }
+}

@@ -1,0 +1,147 @@
+body {
+  margin: 0;
+  min-width: 340px;
+  font-family: Arial, sans-serif;
+  color: #172033;
+  background: #f7f9fc;
+}
+
+main {
+  padding: 16px;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+p {
+  margin: 0 0 14px;
+  color: #526070;
+  line-height: 1.4;
+}
+
+.hint {
+  margin-top: -4px;
+  font-size: 12px;
+}
+
+label {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #334155;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+}
+
+button {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #fff;
+  background: #1f6feb;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.secondary {
+  margin-top: 8px;
+  color: #172033;
+  background: #e2e8f0;
+}
+
+button.ghost {
+  background: #eef2ff;
+}
+
+.remembered-section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #dbe3ef;
+}
+
+.remembered-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.remembered-header h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.remembered-count {
+  display: inline-flex;
+  min-width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.remembered-sites {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.remembered-site {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid #dbe3ef;
+  color: #172033;
+  text-decoration: none;
+}
+
+.remembered-site:hover {
+  border-color: #93c5fd;
+  background: #f8fbff;
+}
+
+.remembered-site-name {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.remembered-site-host {
+  font-size: 12px;
+  color: #526070;
+}
+
+.empty-state {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px dashed #cbd5e1;
+  font-size: 12px;
+}
+
+.status {
+  min-height: 18px;
+  margin-top: 10px;
+  color: #047857;
+  font-size: 12px;
+}

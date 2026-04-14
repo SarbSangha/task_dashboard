@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tool Hub Auto Login</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>Tool Hub Auto Login</h1>
+    <p>Connect this browser to your company dashboard session.</p>
+
+    <label>
+      Backend API URL
+      <input id="apiBase" type="url" placeholder="https://dashboard.ritzmediaworld.in">
+    </label>
+
+    <label>
+      Session token optional
+      <input id="sessionToken" type="password" placeholder="Usually syncs automatically when the dashboard is open">
+    </label>
+
+    <p class="hint">Open the dashboard in another tab and the extension will try to sync `rmw_session_token_v1` automatically.</p>
+    <p class="hint">This extension does not save website passwords in Chrome storage. It only remembers approved tool sites and your dashboard session token.</p>
+
+    <button id="save" type="button">Save</button>
+    <button id="clearToken" type="button" class="secondary">Clear token</button>
+    <button id="clearRemembered" type="button" class="secondary ghost">Forget remembered sites</button>
+
+    <section class="remembered-section">
+      <div class="remembered-header">
+        <h2>Remembered Sites</h2>
+        <span id="rememberedCount" class="remembered-count">0</span>
+      </div>
+      <div id="rememberedSites" class="remembered-sites">
+        <p class="empty-state">Launch a tool from the dashboard once and it will appear here for quick access.</p>
+      </div>
+    </section>
+
+    <p id="status" class="status"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

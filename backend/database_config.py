@@ -96,8 +96,11 @@ def _is_supabase_pooler_url(url: str) -> bool:
 
 def _pool_settings(url: str) -> dict:
     is_supabase_pooler = _is_supabase_pooler_url(url)
-    default_pool_size = 10 if is_supabase_pooler else 10
-    default_max_overflow = 20 if is_supabase_pooler else 20
+    # Supabase pooler session mode caps client connections at its configured
+    # pool size. Keep the application pool small and never create overflow
+    # clients unless the deployment explicitly opts in via env vars.
+    default_pool_size = 2 if is_supabase_pooler else 10
+    default_max_overflow = 0 if is_supabase_pooler else 20
     return {
         "pool_size": max(1, _int_env("DB_POOL_SIZE", default_pool_size)),
         "max_overflow": max(0, _int_env("DB_MAX_OVERFLOW", default_max_overflow)),
@@ -124,6 +127,9 @@ def _create_engine(url: str):
 
 
 # ==================== OPERATIONAL DATABASE ====================
+_NORMALIZED_OPERATIONAL_DB_URL = _normalize_db_url(OPERATIONAL_DB_URL)
+_NORMALIZED_ARCHIVE_DB_URL = _normalize_db_url(ARCHIVE_DB_URL)
+
 operational_engine = _create_engine(OPERATIONAL_DB_URL)
 OperationalSessionLocal = sessionmaker(
     autocommit=False,
@@ -133,7 +139,11 @@ OperationalSessionLocal = sessionmaker(
 )
 
 # ==================== ARCHIVE DATABASE ====================
-archive_engine = _create_engine(ARCHIVE_DB_URL)
+archive_engine = (
+    operational_engine
+    if _NORMALIZED_ARCHIVE_DB_URL == _NORMALIZED_OPERATIONAL_DB_URL
+    else _create_engine(ARCHIVE_DB_URL)
+)
 ArchiveSessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,

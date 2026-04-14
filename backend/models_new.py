@@ -427,6 +427,60 @@ class UserActivity(Base):
     heartbeat_count = Column(Integer, default=0)
 
 
+# ==================== IT PROFILE / TOOL VAULT MODELS ====================
+
+class ITPortalTool(Base):
+    __tablename__ = "it_portal_tools"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, index=True)
+    slug = Column(String, unique=True, nullable=False, index=True)
+    category = Column(String, default="General", index=True)
+    description = Column(Text)
+    website_url = Column(Text, nullable=False)
+    login_url = Column(Text)
+    icon = Column(String, default="Globe")
+    launch_mode = Column(String, default="manual_credential", index=True)
+    status = Column(String, default="active", index=True)
+    is_active = Column(Boolean, default=True, index=True)
+    metadata_json = Column(JSON)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ITPortalToolCredential(Base):
+    __tablename__ = "it_portal_tool_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tool_id = Column(Integer, ForeignKey("it_portal_tools.id"), nullable=False, index=True)
+    scope = Column(String, nullable=False, default="company", index=True)  # company/user
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    login_identifier_encrypted = Column(Text)
+    password_encrypted = Column(Text)
+    api_key_encrypted = Column(Text)
+    notes = Column(Text)
+    is_active = Column(Boolean, default=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ITPortalToolAudit(Base):
+    __tablename__ = "it_portal_tool_audit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tool_id = Column(Integer, ForeignKey("it_portal_tools.id"), index=True)
+    credential_id = Column(Integer, ForeignKey("it_portal_tool_credentials.id"), index=True)
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    target_user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    action = Column(String, nullable=False, index=True)
+    details_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 # ==================== GROUP CHAT MODELS ====================
 
 class GroupChat(Base):

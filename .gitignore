@@ -1,6 +1,10 @@
 backend/.env
 backend/.env.*
-!backend/.env.example
+backend/.env.example
+my-dashboard/.env
+my-dashboard/.env.* 
+my-dashboard/.env.example
+my-dashboard/.env.production
 
 *.sqlite
 *.sqlite3

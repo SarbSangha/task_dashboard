@@ -33,6 +33,7 @@ from routers import activity_router
 from routers import admin_router
 from routers import groups_router
 from routers import direct_messages_router
+from routers import it_tools_router
 from utils.cache import init_redis, close_redis
 
 # Import auth utilities for system status
@@ -169,6 +170,9 @@ async def lifespan(app: FastAPI):
     
     print("\nShutting down gracefully...")
     await close_redis()
+    operational_engine.dispose()
+    if archive_engine is not operational_engine:
+        archive_engine.dispose()
 
 
 # ==================== CREATE APP ====================
@@ -241,6 +245,9 @@ app.include_router(groups_router.router)
 # Direct Messages
 app.include_router(direct_messages_router.router)
 
+# IT Profile / Tool Vault
+app.include_router(it_tools_router.router)
+
 
 # ==================== ROOT ENDPOINTS ====================
 @app.get("/")
@@ -278,17 +285,15 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     try:
-        op_db = OperationalSessionLocal()
-        op_db.execute(text("SELECT 1"))
-        op_db.close()
+        with OperationalSessionLocal() as op_db:
+            op_db.execute(text("SELECT 1"))
         op_status = "healthy"
     except Exception as e:
         op_status = f"unhealthy: {str(e)}"
     
     try:
-        ar_db = ArchiveSessionLocal()
-        ar_db.execute(text("SELECT 1"))
-        ar_db.close()
+        with ArchiveSessionLocal() as ar_db:
+            ar_db.execute(text("SELECT 1"))
         ar_status = "healthy"
     except Exception as e:
         ar_status = f"unhealthy: {str(e)}"
@@ -308,11 +313,10 @@ async def health_check():
 async def system_status():
     """Get system status"""
     try:
-        op_db = OperationalSessionLocal()
-        user_count = op_db.query(User).count()
-        task_count = op_db.query(Task).count()
-        active_tasks = op_db.query(Task).filter(Task.is_deleted == False).count()
-        op_db.close()
+        with OperationalSessionLocal() as op_db:
+            user_count = op_db.query(User).count()
+            task_count = op_db.query(Task).count()
+            active_tasks = op_db.query(Task).filter(Task.is_deleted == False).count()
         
         return {
             "status": "operational",
