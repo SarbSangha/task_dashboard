@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { authAPI } from '../../../../../services/api';
+import { authAPI, isRequestCanceled } from '../../../../../services/api';
 import CacheStatusBanner from '../../../../common/CacheStatusBanner';
 import { WorkspaceSkeleton } from '../../../../ui/WorkspaceSkeleton';
 import { ACTIVE_PROJECT_STATUSES, useWorkspaceTaskDataset } from '../workspaceTabData';
@@ -23,6 +23,7 @@ export default function OverviewTab() {
 
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
     const loadTeamMembers = async () => {
       const myDept = currentUser?.department || '';
       if (!myDept) {
@@ -30,11 +31,18 @@ export default function OverviewTab() {
         return;
       }
       try {
-        const deptRes = await authAPI.getUsersByDepartment(myDept).catch(() => ({ users: [] }));
+        const deptRes = await authAPI.getUsersByDepartment(myDept, '', { signal: controller.signal }).catch((error) => {
+          if (isRequestCanceled(error)) {
+            return { __canceled: true };
+          }
+          return { users: [] };
+        });
+        if (deptRes?.__canceled || controller.signal.aborted) return;
         if (mounted) {
           setTeamMembers((deptRes?.users || []).length);
         }
       } catch (loadError) {
+        if (isRequestCanceled(loadError) || controller.signal.aborted) return;
         console.error('Failed to load workspace team count:', loadError);
         if (mounted) setTeamMembers(0);
       }
@@ -43,6 +51,7 @@ export default function OverviewTab() {
     void loadTeamMembers();
     return () => {
       mounted = false;
+      controller.abort();
     };
   }, [currentUser?.department]);
 

@@ -5,6 +5,7 @@ import { buildUploadFormData } from '../utils/fileUploads';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const SESSION_TOKEN_STORAGE_KEY = 'rmw_session_token_v1';
 const SESSION_TOKEN_REMEMBER_KEY = 'rmw_session_token_remember_v1';
+const REQUEST_TIMEOUT_MS = 15000;
 
 const canUseBrowserStorage = () => typeof window !== 'undefined';
 
@@ -42,10 +43,27 @@ const clearStoredSessionToken = () => {
 const api = axios.create({
   baseURL: API_URL,
   withCredentials: true,  // ✅ Use cookies for auth
+  timeout: REQUEST_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json'
   }
 });
+
+const mergeRequestConfig = (baseConfig = {}, requestConfig = {}) => ({
+  ...baseConfig,
+  ...requestConfig,
+  headers: {
+    ...(baseConfig.headers || {}),
+    ...(requestConfig.headers || {}),
+  },
+  params: {
+    ...(baseConfig.params || {}),
+    ...(requestConfig.params || {}),
+  },
+});
+
+export const isRequestCanceled = (error) =>
+  axios.isCancel(error) || error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError';
 
 api.interceptors.request.use((config) => {
   const sessionToken = getStoredSessionToken();
@@ -149,8 +167,8 @@ export const authAPI = {
     return response.data;
   },
 
-  getDepartments: async () => {
-    const response = await api.get('/api/auth/departments');
+  getDepartments: async (requestConfig = {}) => {
+    const response = await api.get('/api/auth/departments', requestConfig);
     return response.data;
   },
 
@@ -197,10 +215,14 @@ export const authAPI = {
     return response.data;
   },
 
-  getUsersByDepartment: async (departmentName, role = '') => {
-    const response = await api.get(`/api/auth/department/${departmentName}/users`, {
-      params: role ? { role } : {}
-    });
+  getUsersByDepartment: async (departmentName, role = '', requestConfig = {}) => {
+    const response = await api.get(
+      `/api/auth/department/${departmentName}/users`,
+      mergeRequestConfig(
+        { params: role ? { role } : {} },
+        requestConfig
+      )
+    );
     return response.data;
   },
 
@@ -219,8 +241,8 @@ export const authAPI = {
     return response.data;
   },
 
-  getAdminAllUsers: async () => {
-    const response = await api.get('/api/admin/all-users');
+  getAdminAllUsers: async (requestConfig = {}) => {
+    const response = await api.get('/api/admin/all-users', requestConfig);
     return response.data;
   },
 
@@ -266,18 +288,18 @@ export const activityAPI = {
     return response.data;
   },
 
-  myActivity: async () => {
-    const response = await api.get('/api/activity/my-activity');
+  myActivity: async (requestConfig = {}) => {
+    const response = await api.get('/api/activity/my-activity', requestConfig);
     return response.data;
   },
 
-  department: async () => {
-    const response = await api.get('/api/activity/department');
+  department: async (requestConfig = {}) => {
+    const response = await api.get('/api/activity/department', requestConfig);
     return response.data;
   },
 
-  allUsers: async () => {
-    const response = await api.get('/api/activity/all-users');
+  allUsers: async (requestConfig = {}) => {
+    const response = await api.get('/api/activity/all-users', requestConfig);
     return response.data;
   },
 
@@ -363,18 +385,18 @@ export const taskAPI = {
     return response.data;
   },
   
-  getInbox: async (params = {}) => {
-    const response = await api.get('/api/tasks/inbox', { params });
+  getInbox: async (params = {}, requestConfig = {}) => {
+    const response = await api.get('/api/tasks/inbox', mergeRequestConfig({ params }, requestConfig));
     return response.data;
   },
 
-  getInboxUnreadCount: async () => {
-    const response = await api.get('/api/tasks/inbox/unread-count');
+  getInboxUnreadCount: async (requestConfig = {}) => {
+    const response = await api.get('/api/tasks/inbox/unread-count', requestConfig);
     return response.data;
   },
   
-  getOutbox: async (params = {}) => {
-    const response = await api.get('/api/tasks/outbox', { params });
+  getOutbox: async (params = {}, requestConfig = {}) => {
+    const response = await api.get('/api/tasks/outbox', mergeRequestConfig({ params }, requestConfig));
     return response.data;
   },
 
@@ -505,15 +527,16 @@ export const taskAPI = {
     return response.data;
   },
 
-  getNotifications: async (unreadOnly = false) => {
-    const response = await api.get('/api/tasks/notifications/me', {
-      params: { unread_only: unreadOnly }
-    });
+  getNotifications: async (unreadOnly = false, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/tasks/notifications/me',
+      mergeRequestConfig({ params: { unread_only: unreadOnly } }, requestConfig)
+    );
     return response.data;
   },
 
-  getOutboxUnreadCount: async () => {
-    const response = await api.get('/api/tasks/notifications/outbox-unread');
+  getOutboxUnreadCount: async (requestConfig = {}) => {
+    const response = await api.get('/api/tasks/notifications/outbox-unread', requestConfig);
     return response.data;
   },
 
@@ -821,8 +844,8 @@ export const fileAPI = {
 
 // ==================== IT PROFILE / TOOL VAULT API ====================
 export const itToolsAPI = {
-  listTools: async () => {
-    const response = await api.get('/api/it-tools/tools');
+  listTools: async (requestConfig = {}) => {
+    const response = await api.get('/api/it-tools/tools', requestConfig);
     return response.data;
   },
 

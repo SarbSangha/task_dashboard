@@ -97,10 +97,11 @@ def _is_supabase_pooler_url(url: str) -> bool:
 def _pool_settings(url: str) -> dict:
     is_supabase_pooler = _is_supabase_pooler_url(url)
     # Supabase pooler session mode caps client connections at its configured
-    # pool size. Keep the application pool small and never create overflow
-    # clients unless the deployment explicitly opts in via env vars.
-    default_pool_size = 2 if is_supabase_pooler else 10
-    default_max_overflow = 0 if is_supabase_pooler else 20
+    # pool size. Keep defaults conservative, but allow enough concurrency to
+    # handle the dashboard's parallel startup requests without queueing behind
+    # only one or two checked-out connections.
+    default_pool_size = 5 if is_supabase_pooler else 10
+    default_max_overflow = 5 if is_supabase_pooler else 20
     return {
         "pool_size": max(1, _int_env("DB_POOL_SIZE", default_pool_size)),
         "max_overflow": max(0, _int_env("DB_MAX_OVERFLOW", default_max_overflow)),

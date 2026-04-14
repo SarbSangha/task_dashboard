@@ -34,16 +34,16 @@ export function useTracking(filters = {}, options = {}) {
   return useQuery({
     queryKey: TRACKING_KEY(user?.id, filters),
     enabled: Boolean(user?.id) && enabled,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const [inboxData, outboxData] = await Promise.all([
         queryClient.fetchQuery({
           queryKey: INBOX_KEY(user?.id, {}),
-          queryFn: async () => normalizeInboxResponse(await taskAPI.getInbox({})),
+          queryFn: async () => normalizeInboxResponse(await taskAPI.getInbox({}, { signal })),
           staleTime,
         }).catch(() => ({ tasks: [] })),
         queryClient.fetchQuery({
           queryKey: OUTBOX_KEY(user?.id, {}),
-          queryFn: async () => normalizeOutboxResponse(await taskAPI.getOutbox({})),
+          queryFn: async () => normalizeOutboxResponse(await taskAPI.getOutbox({}, { signal })),
           staleTime,
         }).catch(() => ({ tasks: [] })),
       ]);

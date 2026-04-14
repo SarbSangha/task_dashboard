@@ -18,6 +18,8 @@ const normalizeInboxResponse = (response) => {
   };
 };
 
+export { normalizeInboxResponse };
+
 export const INBOX_KEY = (userId, params = {}) => ['inbox', userId ?? 'anonymous', params];
 
 export function useInbox(params = {}, options = {}) {
@@ -31,7 +33,7 @@ export function useInbox(params = {}, options = {}) {
   return useQuery({
     queryKey: INBOX_KEY(user?.id, params),
     enabled: Boolean(user?.id) && enabled,
-    queryFn: async () => normalizeInboxResponse(await taskAPI.getInbox(params)),
+    queryFn: async ({ signal }) => normalizeInboxResponse(await taskAPI.getInbox(params, { signal })),
     staleTime,
     placeholderData: (previousData) => previousData,
     ...queryOptions,

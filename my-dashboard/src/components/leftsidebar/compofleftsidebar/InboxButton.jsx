@@ -10,6 +10,7 @@ import {
 } from '../../../utils/taskPanelCache';
 
 const INBOX_BADGE_CACHE_TTL_MS = 90 * 1000;
+const INITIAL_UNREAD_FETCH_DELAY_MS = 1500;
 
 const getUnreadCountFromTasks = (rows = []) =>
   rows.filter((task) => !(task?.isRead ?? task?.is_read ?? false)).length;
@@ -49,7 +50,10 @@ const InboxButton = ({ isActive, onClick }) => {
       setUnreadCount(getUnreadCountFromTasks(cachedInbox.tasks));
     }
 
-    fetchUnreadCount();
+    const initialTimer = window.setTimeout(() => {
+      if (document.visibilityState !== 'visible') return;
+      fetchUnreadCount();
+    }, INITIAL_UNREAD_FETCH_DELAY_MS);
     // Fallback polling every 3 minutes (WebSocket drives real-time updates).
     const interval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
@@ -68,6 +72,7 @@ const InboxButton = ({ isActive, onClick }) => {
     return () => {
       clearInterval(interval);
       unsubscribe();
+      window.clearTimeout(initialTimer);
       if (refreshTimerRef.current) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;

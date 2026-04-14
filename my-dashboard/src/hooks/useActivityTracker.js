@@ -9,6 +9,7 @@ const HEARTBEAT_LEADER_KEY = 'rmw_activity_heartbeat_leader_v1';
 const HEARTBEAT_LEADER_TTL_MS = 45 * 1000;
 const ACTIVITY_AUTH_BLOCK_KEY = 'rmw_activity_auth_block_until_v1';
 const ACTIVITY_AUTH_BLOCK_MS = 60 * 1000;
+const START_SESSION_DELAY_MS = 2500;
 
 const STATUS = {
   ACTIVE: 'ACTIVE',
@@ -176,6 +177,7 @@ export default function useActivityTracker({ enabled, onAuthFailure }) {
     }
 
     let disposed = false;
+    let startSessionTimerId = null;
 
     const start = async () => {
       if (startedRef.current) return;
@@ -299,7 +301,10 @@ export default function useActivityTracker({ enabled, onAuthFailure }) {
       flushEndSessionBeacon();
     };
 
-    void start();
+    startSessionTimerId = window.setTimeout(() => {
+      if (disposed) return;
+      void start();
+    }, START_SESSION_DELAY_MS);
 
     const events = ['mousemove', 'mousedown', 'keydown', 'keypress', 'scroll', 'touchstart'];
     events.forEach((eventName) => window.addEventListener(eventName, onUserActivity, { passive: true }));
@@ -318,6 +323,7 @@ export default function useActivityTracker({ enabled, onAuthFailure }) {
       events.forEach((eventName) => window.removeEventListener(eventName, onUserActivity));
       document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (startSessionTimerId) window.clearTimeout(startSessionTimerId);
       if (timerIntervalRef.current) window.clearInterval(timerIntervalRef.current);
       if (heartbeatIntervalRef.current) window.clearInterval(heartbeatIntervalRef.current);
       timerIntervalRef.current = null;

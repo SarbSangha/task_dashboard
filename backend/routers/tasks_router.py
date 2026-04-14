@@ -36,13 +36,29 @@ from utils.edge_cache import queue_edge_cache_purge
 TASK_ALL_CACHE_PATTERN = "cache:tasks_all:*"
 TASK_ASSETS_CACHE_PATTERN = "cache:tasks_assets:*"
 TASK_UNREAD_CACHE_PATTERN = "cache:tasks_unread:*"
-EDGE_TASK_CACHE_PATTERNS = ("tasks_all:", "tasks_assets:", "tasks_unread:")
+TASK_INBOX_CACHE_PATTERN = "cache:tasks_inbox:*"
+TASK_OUTBOX_CACHE_PATTERN = "cache:tasks_outbox:*"
+TASK_NOTIFICATIONS_CACHE_PATTERN = "cache:tasks_notifications:*"
+TASK_OUTBOX_UNREAD_CACHE_PATTERN = "cache:tasks_outbox_unread:*"
+EDGE_TASK_CACHE_PATTERNS = (
+    "tasks_all:",
+    "tasks_assets:",
+    "tasks_unread:",
+    "tasks_inbox:",
+    "tasks_outbox:",
+    "tasks_notifications:",
+    "tasks_outbox_unread:",
+)
 
 
 async def invalidate_task_lane_b_cache():
     await invalidate_pattern(TASK_ALL_CACHE_PATTERN)
     await invalidate_pattern(TASK_ASSETS_CACHE_PATTERN)
     await invalidate_pattern(TASK_UNREAD_CACHE_PATTERN)
+    await invalidate_pattern(TASK_INBOX_CACHE_PATTERN)
+    await invalidate_pattern(TASK_OUTBOX_CACHE_PATTERN)
+    await invalidate_pattern(TASK_NOTIFICATIONS_CACHE_PATTERN)
+    await invalidate_pattern(TASK_OUTBOX_UNREAD_CACHE_PATTERN)
     queue_edge_cache_purge(EDGE_TASK_CACHE_PATTERNS)
 
 
@@ -1324,7 +1340,9 @@ async def create_task(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@cache_response(ttl=15, vary_by_user=True, namespace="tasks_inbox")
 async def get_inbox(
+    request: Request,
     include_read: bool = Query(True),
     q: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
@@ -1430,7 +1448,9 @@ async def get_inbox(
     }
 
 
+@cache_response(ttl=15, vary_by_user=True, namespace="tasks_outbox")
 async def get_outbox(
+    request: Request,
     q: Optional[str] = Query(None),
     page: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=50),
@@ -1659,7 +1679,8 @@ async def mark_task_seen(
 
     db.commit()
     await invalidate_pattern(TASK_UNREAD_CACHE_PATTERN)
-    queue_edge_cache_purge(("tasks_unread:",))
+    await invalidate_pattern(TASK_INBOX_CACHE_PATTERN)
+    queue_edge_cache_purge(("tasks_unread:", "tasks_inbox:"))
     return {"success": True, "taskId": task_id}
 
 
@@ -2660,7 +2681,9 @@ async def get_comments(
     }
 
 
+@cache_response(ttl=15, vary_by_user=True, namespace="tasks_notifications")
 async def get_my_notifications(
+    request: Request,
     unread_only: bool = Query(False),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -2700,7 +2723,9 @@ async def get_my_notifications(
     }
 
 
+@cache_response(ttl=15, vary_by_user=True, namespace="tasks_outbox_unread")
 async def get_outbox_unread_count(
+    request: Request,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
@@ -2740,6 +2765,8 @@ async def mark_notification_read(
     n.is_read = True
     n.read_at = datetime.utcnow()
     db.commit()
+    await invalidate_pattern(TASK_NOTIFICATIONS_CACHE_PATTERN)
+    await invalidate_pattern(TASK_OUTBOX_UNREAD_CACHE_PATTERN)
     return {"success": True, "message": "Notification marked as read"}
 
 
@@ -2760,6 +2787,8 @@ async def delete_notification(
 
     db.delete(n)
     db.commit()
+    await invalidate_pattern(TASK_NOTIFICATIONS_CACHE_PATTERN)
+    await invalidate_pattern(TASK_OUTBOX_UNREAD_CACHE_PATTERN)
     return {"success": True, "message": "Notification removed"}
 
 

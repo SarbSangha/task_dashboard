@@ -9,6 +9,7 @@ import {
 } from '../../../../utils/taskPanelCache';
 
 const MESSAGE_BADGE_CACHE_TTL_MS = 90 * 1000;
+const INITIAL_MESSAGE_FETCH_DELAY_MS = 3000;
 
 const getMessageSeenStorageKey = (userId) => `rmw_message_system_last_seen_${userId}`;
 
@@ -79,7 +80,63 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
     if (isOpen) {
       clearUnseenCount();
     } else {
-      fetchUnseenCount();
+      const initialTimer = window.setTimeout(() => {
+        if (document.visibilityState !== 'visible') return;
+        fetchUnseenCount();
+      }, INITIAL_MESSAGE_FETCH_DELAY_MS);
+
+      const unsubscribe = subscribeRealtimeNotifications({
+        onMessage: (payload) => {
+          if (!payload) return;
+          const eventType = `${payload.eventType || ''}`.toLowerCase();
+          if (eventType !== 'group_message' && eventType !== 'direct_message') return;
+          if (isOpen) {
+            clearUnseenCount();
+            return;
+          }
+
+          if (!setsHydratedRef.current) {
+            scheduleRefresh();
+            return;
+          }
+
+          if (eventType === 'group_message') {
+            const groupId = Number(payload?.metadata?.groupId);
+            if (groupId) {
+              unseenGroupIdsRef.current.add(groupId);
+            }
+          } else {
+            const senderId = Number(payload?.metadata?.senderId);
+            if (senderId && senderId !== user.id) {
+              unseenSenderIdsRef.current.add(senderId);
+            }
+          }
+
+          const nextCount = unseenGroupIdsRef.current.size + unseenSenderIdsRef.current.size;
+          setUnseenCount(nextCount);
+          if (badgeCacheKey) {
+            setTaskPanelCache(badgeCacheKey, { unseenCount: nextCount });
+          }
+        },
+        onOpen: () => {
+          if (!isOpen) scheduleRefresh();
+        },
+      });
+
+      const interval = window.setInterval(() => {
+        if (document.visibilityState !== 'visible' || isOpen) return;
+        fetchUnseenCount();
+      }, 180000);
+
+      return () => {
+        unsubscribe();
+        window.clearInterval(interval);
+        window.clearTimeout(initialTimer);
+        if (refreshTimerRef.current) {
+          window.clearTimeout(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
+      };
     }
 
     const unsubscribe = subscribeRealtimeNotifications({
@@ -87,47 +144,12 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
         if (!payload) return;
         const eventType = `${payload.eventType || ''}`.toLowerCase();
         if (eventType !== 'group_message' && eventType !== 'direct_message') return;
-        if (isOpen) {
-          clearUnseenCount();
-          return;
-        }
-
-        if (!setsHydratedRef.current) {
-          scheduleRefresh();
-          return;
-        }
-
-        if (eventType === 'group_message') {
-          const groupId = Number(payload?.metadata?.groupId);
-          if (groupId) {
-            unseenGroupIdsRef.current.add(groupId);
-          }
-        } else {
-          const senderId = Number(payload?.metadata?.senderId);
-          if (senderId && senderId !== user.id) {
-            unseenSenderIdsRef.current.add(senderId);
-          }
-        }
-
-        const nextCount = unseenGroupIdsRef.current.size + unseenSenderIdsRef.current.size;
-        setUnseenCount(nextCount);
-        if (badgeCacheKey) {
-          setTaskPanelCache(badgeCacheKey, { unseenCount: nextCount });
-        }
-      },
-      onOpen: () => {
-        if (!isOpen) scheduleRefresh();
+        clearUnseenCount();
       },
     });
 
-    const interval = window.setInterval(() => {
-      if (document.visibilityState !== 'visible' || isOpen) return;
-      fetchUnseenCount();
-    }, 180000);
-
     return () => {
       unsubscribe();
-      window.clearInterval(interval);
       if (refreshTimerRef.current) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;

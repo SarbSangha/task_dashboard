@@ -29,7 +29,7 @@ export function useOutbox(params = {}, options = {}) {
   return useQuery({
     queryKey: OUTBOX_KEY(user?.id, params),
     enabled: Boolean(user?.id) && enabled,
-    queryFn: async () => normalizeOutboxResponse(await taskAPI.getOutbox(params)),
+    queryFn: async ({ signal }) => normalizeOutboxResponse(await taskAPI.getOutbox(params, { signal })),
     staleTime,
     placeholderData: (previousData) => previousData,
     ...queryOptions,

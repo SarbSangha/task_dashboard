@@ -10,6 +10,7 @@ import {
 } from '../../../utils/taskPanelCache';
 
 const OUTBOX_BADGE_CACHE_TTL_MS = 90 * 1000;
+const INITIAL_OUTBOX_FETCH_DELAY_MS = 2200;
 
 const isOutboxNotification = (notification, outboxTaskIds) => {
   if (!notification?.taskId || !outboxTaskIds.has(notification.taskId)) return false;
@@ -54,7 +55,10 @@ const OutboxButton = ({ onClick, isActive, isOpen = false }) => {
       }, 250);
     };
 
-    fetchUnreadCount();
+    const initialTimer = window.setTimeout(() => {
+      if (document.visibilityState !== 'visible') return;
+      fetchUnreadCount();
+    }, INITIAL_OUTBOX_FETCH_DELAY_MS);
 
     const unsubscribe = subscribeRealtimeNotifications({
       onMessage: (payload) => {
@@ -74,6 +78,7 @@ const OutboxButton = ({ onClick, isActive, isOpen = false }) => {
     return () => {
       unsubscribe();
       window.clearInterval(interval);
+      window.clearTimeout(initialTimer);
       if (refreshTimerRef.current) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;

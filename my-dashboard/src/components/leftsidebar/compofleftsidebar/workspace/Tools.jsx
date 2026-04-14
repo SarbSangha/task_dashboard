@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { authAPI, itToolsAPI } from '../../../../services/api';
+import { authAPI, isRequestCanceled, itToolsAPI } from '../../../../services/api';
 import './Tools.css';
 
 const EXTENSION_LAUNCH_EVENT = 'rmw:tool-hub-extension-launch';
@@ -163,26 +163,37 @@ export default function Tools() {
   const [credentialForm, setCredentialForm] = useState(EMPTY_CREDENTIAL_FORM);
   const [launchResult, setLaunchResult] = useState(null);
 
-  const loadTools = async () => {
+  const loadTools = async (signal) => {
+    if (signal?.aborted) return;
     setLoading(true);
     setError('');
     try {
-      const response = await itToolsAPI.listTools();
+      const response = await itToolsAPI.listTools({ signal });
+      if (signal?.aborted) return;
       setTools(response.tools || []);
       setIsAdmin(!!response.isAdmin);
       if (response.isAdmin) {
-        const userResponse = await authAPI.getAdminAllUsers();
+        const userResponse = await authAPI.getAdminAllUsers({ signal });
+        if (signal?.aborted) return;
         setUsers((userResponse.users || []).filter((user) => !user.isDeleted));
       }
     } catch (err) {
+      if (isRequestCanceled(err) || signal?.aborted) return;
       setError(err?.response?.data?.detail || 'Unable to load IT tools.');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    void loadTools();
+    const controller = new AbortController();
+    void loadTools(controller.signal);
+
+    return () => {
+      controller.abort();
+    };
   }, []);
 
   const categories = useMemo(() => {

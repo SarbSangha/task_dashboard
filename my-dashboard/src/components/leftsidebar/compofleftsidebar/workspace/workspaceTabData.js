@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { activityAPI, authAPI, taskAPI } from '../../../../services/api';
+import { useQueryClient } from '@tanstack/react-query';
+import { activityAPI, authAPI, isRequestCanceled, taskAPI } from '../../../../services/api';
 import { useAuth } from '../../../../context/AuthContext';
+import { INBOX_KEY, normalizeInboxResponse } from '../../../../hooks/useInbox';
+import { normalizeOutboxResponse, OUTBOX_KEY } from '../../../../hooks/useOutbox';
 import { resolvePermissionSnapshot } from '../../../../hooks/usePermissions';
 import {
   buildTaskPanelCacheKey,
@@ -64,6 +67,7 @@ export function formatDateTimeIndia(value) {
 
 export function useWorkspaceTaskDataset() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [tasks, setTasks] = useState([]);
   const [currentUser, setCurrentUser] = useState(user || null);
   const [loading, setLoading] = useState(true);
@@ -83,8 +87,8 @@ export function useWorkspaceTaskDataset() {
     };
   }, [user?.id]);
 
-  const loadTasks = async ({ silent = false } = {}) => {
-    if (!cacheKeys) return;
+  const loadTasks = async ({ silent = false, signal } = {}) => {
+    if (!cacheKeys || signal?.aborted) return;
 
     if (silent) setIsRefreshing(true);
     else setLoading(true);
@@ -92,9 +96,19 @@ export function useWorkspaceTaskDataset() {
 
     try {
       const [inboxRes, outboxRes] = await Promise.all([
-        taskAPI.getInbox().catch(() => ({ data: [] })),
-        taskAPI.getOutbox().catch(() => ({ data: [] })),
+        queryClient.fetchQuery({
+          queryKey: INBOX_KEY(user?.id, {}),
+          queryFn: async () => normalizeInboxResponse(await taskAPI.getInbox({}, { signal })),
+          staleTime: WORKSPACE_TASK_CACHE_TTL_MS,
+        }).catch(() => ({ data: [], tasks: [] })),
+        queryClient.fetchQuery({
+          queryKey: OUTBOX_KEY(user?.id, {}),
+          queryFn: async () => normalizeOutboxResponse(await taskAPI.getOutbox({}, { signal })),
+          staleTime: WORKSPACE_TASK_CACHE_TTL_MS,
+        }).catch(() => ({ data: [], tasks: [] })),
       ]);
+
+      if (signal?.aborted) return;
 
       const inboxTasks = Array.isArray(inboxRes?.data) ? inboxRes.data : [];
       const outboxTasks = Array.isArray(outboxRes?.data) ? outboxRes.data : [];
@@ -110,6 +124,7 @@ export function useWorkspaceTaskDataset() {
         liveUpdatedAt: Date.now(),
       }));
     } catch (loadError) {
+      if (isRequestCanceled(loadError) || signal?.aborted) return;
       console.error('Failed to load workspace task dataset:', loadError);
       setError('Could not refresh workspace data right now.');
       if (!silent) {
@@ -117,6 +132,7 @@ export function useWorkspaceTaskDataset() {
         setCurrentUser(user || null);
       }
     } finally {
+      if (signal?.aborted) return;
       if (silent) setIsRefreshing(false);
       else setLoading(false);
     }
@@ -140,8 +156,13 @@ export function useWorkspaceTaskDataset() {
       });
     }
 
-    void loadTasks({ silent: cachedTasks.length > 0 });
-  }, [cacheKeys]);
+    const controller = new AbortController();
+    void loadTasks({ silent: cachedTasks.length > 0, signal: controller.signal });
+
+    return () => {
+      controller.abort();
+    };
+  }, [cacheKeys, queryClient, user]);
 
   return {
     tasks,
@@ -173,8 +194,8 @@ export function useWorkspaceTeamDirectory() {
     [user?.id]
   );
 
-  const loadTeamDirectory = async ({ silent = false } = {}) => {
-    if (!cacheKey) return;
+  const loadTeamDirectory = async ({ silent = false, signal } = {}) => {
+    if (!cacheKey || signal?.aborted) return;
 
     if (silent) setIsRefreshing(true);
     else setLoading(true);
@@ -186,7 +207,7 @@ export function useWorkspaceTeamDirectory() {
 
       let users = [];
       if (myDept) {
-        const deptUsersResponse = await authAPI.getUsersByDepartment(myDept).catch(() => ({ users: [] }));
+        const deptUsersResponse = await authAPI.getUsersByDepartment(myDept, '', { signal }).catch(() => ({ users: [] }));
         users = (deptUsersResponse?.users || []).map((member) => ({
           id: member.id,
           name: member.name || `User ${member.id}`,
@@ -198,15 +219,20 @@ export function useWorkspaceTeamDirectory() {
       let nextActivityByUser = {};
       if (hod) {
         try {
-          const activityResponse = await activityAPI.department();
+          const activityResponse = await activityAPI.department({ signal });
           const activityRows = activityResponse?.data || [];
           activityRows.forEach((row) => {
             nextActivityByUser[row.userId] = row;
           });
         } catch (activityError) {
+          if (isRequestCanceled(activityError) || signal?.aborted) {
+            return;
+          }
           console.warn('Activity data unavailable for team:', activityError);
         }
       }
+
+      if (signal?.aborted) return;
 
       setMembers(users);
       setMyDepartment(myDept);
@@ -224,6 +250,7 @@ export function useWorkspaceTeamDirectory() {
         liveUpdatedAt: Date.now(),
       }));
     } catch (error) {
+      if (isRequestCanceled(error) || signal?.aborted) return;
       console.error('Failed to load team data:', error);
       if (!silent) {
         setMembers([]);
@@ -232,6 +259,7 @@ export function useWorkspaceTeamDirectory() {
         setActivityByUser({});
       }
     } finally {
+      if (signal?.aborted) return;
       if (silent) setIsRefreshing(false);
       else setLoading(false);
     }
@@ -255,7 +283,12 @@ export function useWorkspaceTeamDirectory() {
       });
     }
 
-    void loadTeamDirectory({ silent: !!cached });
+    const controller = new AbortController();
+    void loadTeamDirectory({ silent: !!cached, signal: controller.signal });
+
+    return () => {
+      controller.abort();
+    };
   }, [cacheKey]);
 
   return {
@@ -296,7 +329,7 @@ export function useWorkspaceCompanyDirectory() {
     setTaskPanelCache(cacheKey, nextState);
   };
 
-  const loadDepartmentMembers = async (departmentName, { cacheSnapshot = null } = {}) => {
+  const loadDepartmentMembers = async (departmentName, { cacheSnapshot = null, signal } = {}) => {
     if (!departmentName) {
       setMembers([]);
       return [];
@@ -306,7 +339,13 @@ export function useWorkspaceCompanyDirectory() {
       setMembers(cacheSnapshot.membersByDepartment[departmentName]);
     }
 
-    const response = await authAPI.getUsersByDepartment(departmentName).catch(() => ({ users: [] }));
+    const response = await authAPI.getUsersByDepartment(departmentName, '', { signal }).catch((error) => {
+      if (isRequestCanceled(error) || signal?.aborted) {
+        return { __canceled: true };
+      }
+      return { users: [] };
+    });
+    if (response?.__canceled || signal?.aborted) return [];
     const departmentMembers = response?.users || [];
     setMembers(departmentMembers);
     setMembersByDepartment((prev) => ({
@@ -316,8 +355,8 @@ export function useWorkspaceCompanyDirectory() {
     return departmentMembers;
   };
 
-  const loadCompanyDirectory = async ({ silent = false } = {}) => {
-    if (!cacheKey) return;
+  const loadCompanyDirectory = async ({ silent = false, signal } = {}) => {
+    if (!cacheKey || signal?.aborted) return;
 
     if (silent) setIsRefreshing(true);
     else setLoading(true);
@@ -348,9 +387,11 @@ export function useWorkspaceCompanyDirectory() {
       }
 
       const [deptRes, activityRes] = await Promise.all([
-        authAPI.getDepartments().catch(() => ({ departments: [] })),
-        activityAPI.allUsers().catch(() => ({ data: [] })),
+        authAPI.getDepartments({ signal }).catch(() => ({ departments: [] })),
+        activityAPI.allUsers({ signal }).catch(() => ({ data: [] })),
       ]);
+
+      if (signal?.aborted) return;
 
       const deptList = deptRes?.departments || [];
       const activityMap = {};
@@ -367,7 +408,11 @@ export function useWorkspaceCompanyDirectory() {
 
       setSelectedDepartment(nextSelectedDepartment);
       const cachedSnapshot = getTaskPanelCache(cacheKey, WORKSPACE_REFERENCE_CACHE_TTL_MS);
-      const departmentMembers = await loadDepartmentMembers(nextSelectedDepartment, { cacheSnapshot: cachedSnapshot });
+      const departmentMembers = await loadDepartmentMembers(nextSelectedDepartment, {
+        cacheSnapshot: cachedSnapshot,
+        signal,
+      });
+      if (signal?.aborted) return;
       const mergedMembersByDepartment = {
         ...(cachedSnapshot?.membersByDepartment || {}),
         ...(nextSelectedDepartment ? { [nextSelectedDepartment]: departmentMembers } : {}),
@@ -388,6 +433,7 @@ export function useWorkspaceCompanyDirectory() {
         liveUpdatedAt: Date.now(),
       }));
     } catch (error) {
+      if (isRequestCanceled(error) || signal?.aborted) return;
       console.error('Failed to load company view data:', error);
       if (!silent) {
         setDepartments([]);
@@ -397,6 +443,7 @@ export function useWorkspaceCompanyDirectory() {
         setActivityByUser({});
       }
     } finally {
+      if (signal?.aborted) return;
       if (silent) setIsRefreshing(false);
       else setLoading(false);
     }
@@ -427,7 +474,12 @@ export function useWorkspaceCompanyDirectory() {
       });
     }
 
-    void loadCompanyDirectory({ silent: !!cached });
+    const controller = new AbortController();
+    void loadCompanyDirectory({ silent: !!cached, signal: controller.signal });
+
+    return () => {
+      controller.abort();
+    };
   }, [cacheKey]);
 
   const selectDepartment = async (departmentName) => {
@@ -704,12 +756,19 @@ export function useWorkspaceAnalytics(filterKey) {
 
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
 
     const loadAnalytics = async () => {
       setLoading(true);
       setError('');
       try {
-        const activityRes = await activityAPI.myActivity().catch(() => ({ data: null }));
+        const activityRes = await activityAPI.myActivity({ signal: controller.signal }).catch((error) => {
+          if (isRequestCanceled(error)) {
+            return { __canceled: true };
+          }
+          return { data: null };
+        });
+        if (activityRes?.__canceled) return;
         const range = getAnalyticsRange(filterKey);
         const currentTasks = getTasksForRange(tasks, range.start, range.end);
         const previousTasks = getTasksForRange(tasks, range.previousStart, range.previousEnd);
@@ -741,12 +800,13 @@ export function useWorkspaceAnalytics(filterKey) {
           productivityTrend: buildTrend(productivityScore, previousProductivityScore),
         });
       } catch (loadError) {
+        if (isRequestCanceled(loadError)) return;
         console.error('Failed to load analytics:', loadError);
         if (mounted) {
           setError('Could not load analytics right now.');
         }
       } finally {
-        if (mounted) {
+        if (mounted && !controller.signal.aborted) {
           setLoading(false);
         }
       }
@@ -755,6 +815,7 @@ export function useWorkspaceAnalytics(filterKey) {
     void loadAnalytics();
     return () => {
       mounted = false;
+      controller.abort();
     };
   }, [filterKey, tasks]);
 
