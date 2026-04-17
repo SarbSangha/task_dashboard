@@ -293,10 +293,23 @@ function isLoginPage() {
 async function loadLaunchState() {
   const directTicket = captureLaunchTicketFromHash() || getStoredLaunchTicket();
   if (directTicket) {
-    STATE.launchChecked = true;
-    STATE.launchAuthorized = true;
-    STATE.launchExpiresAt = Number(markerFromValue(directTicket));
-    return;
+    const activation = await sendRuntimeMessage({
+      type: 'TOOL_HUB_ACTIVATE_LAUNCH',
+      toolSlug: TOOL_SLUG,
+      hostname: window.location.hostname,
+      pageUrl: window.location.href,
+      extensionTicket: directTicket,
+    });
+
+    if (activation?.ok && activation.authorized) {
+      clearStoredLaunchTicket();
+      STATE.launchChecked = true;
+      STATE.launchAuthorized = true;
+      STATE.launchExpiresAt = Number(activation.expiresAt || 0);
+      return;
+    }
+
+    clearStoredLaunchTicket();
   }
 
   const response = await sendRuntimeMessage({
@@ -307,7 +320,7 @@ async function loadLaunchState() {
   });
 
   STATE.launchChecked = true;
-  STATE.launchAuthorized = true;
+  STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
 }
 
@@ -433,6 +446,10 @@ function attemptFill() {
     setStatus('Checking dashboard launch');
     return;
   }
+  if (!STATE.launchAuthorized) {
+    scheduleAsyncStep(enforceDashboardOnlyAccess);
+    return;
+  }
   if (STATE.launchExpiresAt && window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) !== `${STATE.launchExpiresAt}`) {
     scheduleAsyncStep(ensureFreshLaunchSession);
     return;
@@ -542,7 +559,7 @@ function start() {
   loadLaunchState()
     .catch(() => {
       STATE.launchChecked = true;
-      STATE.launchAuthorized = true;
+      STATE.launchAuthorized = false;
       STATE.launchExpiresAt = 0;
     })
     .finally(() => {

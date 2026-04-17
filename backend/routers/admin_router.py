@@ -8,8 +8,9 @@ import asyncio
 
 from database_config import get_operational_db
 from models_new import User, UserApprovalRequest
-from auth import SESSION_STORE, invalidate_session, revoke_user_sessions
+from auth import SESSION_STORE, get_password_hash, invalidate_session, revoke_user_sessions
 from routers.tasks_router import notification_hub
+from utils.datetime_utils import serialize_utc_datetime
 from utils.permissions import require_admin
 
 
@@ -29,6 +30,10 @@ class DeleteUserPayload(BaseModel):
     reason: Optional[str] = None
 
 
+class AdminPasswordChangePayload(BaseModel):
+    new_password: str = Field(..., min_length=8)
+
+
 def _serialize_user(user: User, approval_status: str) -> dict:
     return {
         "id": user.id,
@@ -43,13 +48,13 @@ def _serialize_user(user: User, approval_status: str) -> dict:
         "isAdmin": user.is_admin,
         "approvalStatus": approval_status,
         "approvedBy": user.approved_by,
-        "approvedAt": user.approved_at.isoformat() if user.approved_at else None,
+        "approvedAt": serialize_utc_datetime(user.approved_at),
         "rejectionReason": user.rejection_reason,
         "deletedBy": user.deleted_by,
-        "deletedAt": user.deleted_at.isoformat() if user.deleted_at else None,
+        "deletedAt": serialize_utc_datetime(user.deleted_at),
         "deletedReason": user.deleted_reason,
-        "createdAt": user.created_at.isoformat() if user.created_at else None,
-        "lastLogin": user.last_login.isoformat() if user.last_login else None,
+        "createdAt": serialize_utc_datetime(user.created_at),
+        "lastLogin": serialize_utc_datetime(user.last_login),
     }
 
 
@@ -134,7 +139,7 @@ async def pending_signups(
             continue
         item = _serialize_user(user, "pending")
         item["requestId"] = req.id
-        item["requestCreatedAt"] = req.created_at.isoformat() if req.created_at else None
+        item["requestCreatedAt"] = serialize_utc_datetime(req.created_at)
         users.append(item)
 
     return {"success": True, "count": len(users), "users": users}
@@ -162,7 +167,7 @@ async def pending_requests(
                 "requestType": req.request_type,
                 "status": req.status,
                 "payload": _sanitize_request_payload(req.request_type, req.payload_json),
-                "createdAt": req.created_at.isoformat() if req.created_at else None,
+                "createdAt": serialize_utc_datetime(req.created_at),
                 "user": _serialize_user(user, req.status),
             }
         )
@@ -402,12 +407,44 @@ async def delete_user_account(
             "userId": user.id,
             "userEmail": user.email,
             "userName": user.name,
-            "deletedAt": user.deleted_at.isoformat() if user.deleted_at else None,
+            "deletedAt": serialize_utc_datetime(user.deleted_at),
             "deletedReason": user.deleted_reason,
             "deletedBy": current_user.id,
         },
     )
     return {"success": True, "message": "User account deleted permanently"}
+
+
+@router.post("/users/{user_id}/password")
+async def admin_change_user_password(
+    user_id: int,
+    payload: AdminPasswordChangePayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_deleted:
+        raise HTTPException(status_code=400, detail="Cannot change password for a deleted account")
+
+    user.hashed_password = get_password_hash(payload.new_password)
+    revoke_user_sessions(db, user.id)
+    db.commit()
+
+    _push_admin_realtime_event(
+        db,
+        "admin_user_password_changed",
+        "User Password Changed",
+        f"Password updated for {user.name}.",
+        {
+            "userId": user.id,
+            "userEmail": user.email,
+            "userName": user.name,
+            "updatedBy": current_user.id,
+        },
+    )
+    return {"success": True, "message": "User password updated successfully"}
 
 
 @router.get("/deleted-users")

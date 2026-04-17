@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { getAttachmentDisplayName, getFileRelativePath } from '../../../utils/fileUploads';
+import FilePreviewModal from '../FilePreviewModal';
 import './ChatAttachmentGallery.css';
 
 const FILES_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -187,7 +188,7 @@ function getNodeByPath(node, path) {
   return null;
 }
 
-function AttachmentFileCard({ attachment }) {
+function AttachmentFileCard({ attachment, onPreview }) {
   const openUrl = buildAttachmentOpenUrl(attachment);
   const downloadUrl = buildAttachmentDownloadUrl(attachment);
   const label = getAttachmentDisplayName(attachment);
@@ -215,9 +216,9 @@ function AttachmentFileCard({ attachment }) {
         <small>{attachment.mimetype || 'Attachment'}</small>
       </div>
       <div className="chat-attachment-actions">
-        <a className="chat-attachment-action" href={openUrl} target="_blank" rel="noreferrer">
+        <button type="button" className="chat-attachment-action" onClick={() => openUrl && onPreview?.(attachment)}>
           Preview
-        </a>
+        </button>
         <a className="chat-attachment-action" href={downloadUrl} target="_blank" rel="noreferrer">
           Download
         </a>
@@ -226,7 +227,7 @@ function AttachmentFileCard({ attachment }) {
   );
 }
 
-function FolderPreviewModal({ folderGroup, onClose }) {
+function FolderPreviewModal({ folderGroup, onClose, onPreviewFile }) {
   const folderTree = useMemo(() => buildFolderTree(folderGroup), [folderGroup]);
   const treeItems = useMemo(() => flattenFolderTree(folderTree), [folderTree]);
   const [activePath, setActivePath] = useState('');
@@ -296,7 +297,7 @@ function FolderPreviewModal({ folderGroup, onClose }) {
                     <small>{file.attachment.mimetype || 'File'}</small>
                   </div>
                   <div className="chat-folder-entry-actions">
-                    <a href={buildAttachmentOpenUrl(file.attachment)} target="_blank" rel="noreferrer">Preview</a>
+                    <button type="button" onClick={() => onPreviewFile?.(file.attachment)}>Preview</button>
                     <a href={buildAttachmentDownloadUrl(file.attachment)} target="_blank" rel="noreferrer">Download</a>
                   </div>
                 </div>
@@ -335,6 +336,7 @@ function FolderAttachmentCard({ folderGroup, onPreview }) {
 export default function ChatAttachmentGallery({ attachments = [] }) {
   const items = useMemo(() => buildAttachmentItems(attachments), [attachments]);
   const [previewFolderId, setPreviewFolderId] = useState(null);
+  const [previewFile, setPreviewFile] = useState(null);
 
   const previewFolder = useMemo(
     () => items.find((item) => item.type === 'folder' && item.id === previewFolderId) || null,
@@ -356,11 +358,25 @@ export default function ChatAttachmentGallery({ attachments = [] }) {
           item.type === 'folder' ? (
             <FolderAttachmentCard key={item.id} folderGroup={item} onPreview={() => setPreviewFolderId(item.id)} />
           ) : (
-            <AttachmentFileCard key={item.id} attachment={item.attachment} />
+            <AttachmentFileCard key={item.id} attachment={item.attachment} onPreview={setPreviewFile} />
           )
         )}
       </div>
-      {previewFolder && <FolderPreviewModal folderGroup={previewFolder} onClose={() => setPreviewFolderId(null)} />}
+      {previewFolder && (
+        <FolderPreviewModal
+          folderGroup={previewFolder}
+          onClose={() => setPreviewFolderId(null)}
+          onPreviewFile={setPreviewFile}
+        />
+      )}
+      {previewFile ? (
+        <FilePreviewModal
+          file={previewFile}
+          title={getAttachmentDisplayName(previewFile)}
+          subtitle={previewFile?.relativePath || previewFile?.mimetype || 'Attachment'}
+          onClose={() => setPreviewFile(null)}
+        />
+      ) : null}
     </>
   );
 }

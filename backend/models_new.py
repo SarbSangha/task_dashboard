@@ -1,9 +1,10 @@
 # models_new.py - New Database Models
-from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Boolean, ForeignKey, JSON, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Boolean, ForeignKey, JSON, Enum as SQLEnum, Index, UniqueConstraint, text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from database_config import Base, ArchiveBase
 import enum
+from utils.datetime_utils import serialize_utc_datetime
 
 
 # ==================== ENUMS ====================
@@ -24,6 +25,25 @@ class TaskStatus(enum.Enum):
     REJECTED = "rejected"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+
+
+class TaskWorkflowStatus(enum.Enum):
+    NOT_STARTED = "not_started"
+    ACTIVE = "active"
+    WAITING_APPROVAL = "waiting_approval"
+    REVISION_REQUESTED = "revision_requested"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+
+
+class TaskStageStatus(enum.Enum):
+    NOT_STARTED = "not_started"
+    ACTIVE = "active"
+    SUBMITTED = "submitted"
+    APPROVED = "approved"
+    REVISION_REQUESTED = "revision_requested"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
 
 
 class ParticipantRole(enum.Enum):
@@ -131,6 +151,12 @@ class Task(Base):
         index=True,
     )
     workflow_stage = Column(String)
+    workflow_enabled = Column(Boolean, default=False, nullable=False, index=True)
+    workflow_status = Column(String, index=True)
+    current_stage_id = Column(Integer, ForeignKey("task_stages.id"))
+    current_stage_order = Column(Integer, index=True)
+    current_stage_title = Column(String)
+    final_approval_required = Column(Boolean, default=False, nullable=False)
     current_assignee_ids_json = Column(JSON)
     
     # Deadlines & Timing
@@ -161,6 +187,14 @@ class Task(Base):
     
     # Relationships
     creator = relationship("User", foreign_keys=[creator_id], back_populates="created_tasks")
+    current_stage = relationship("TaskStage", foreign_keys=[current_stage_id], post_update=True)
+    stages = relationship(
+        "TaskStage",
+        foreign_keys="TaskStage.task_id",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="TaskStage.stage_order",
+    )
     participants = relationship("TaskParticipant", back_populates="task", cascade="all, delete-orphan")
     status_history = relationship("TaskStatusHistory", back_populates="task", cascade="all, delete-orphan")
     attachments = relationship("TaskAttachment", back_populates="task", cascade="all, delete-orphan")
@@ -186,12 +220,18 @@ class Task(Base):
             "toDepartment": self.to_department,
             "status": self.status.value if self.status else None,
             "workflowStage": self.workflow_stage,
-            "deadline": self.deadline.isoformat() if self.deadline else None,
-            "createdAt": self.created_at.isoformat() if self.created_at else None,
-            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
-            "startedAt": self.started_at.isoformat() if self.started_at else None,
-            "completedAt": self.completed_at.isoformat() if self.completed_at else None,
-            "submittedAt": self.submitted_at.isoformat() if self.submitted_at else None,
+            "workflowEnabled": bool(self.workflow_enabled),
+            "workflowStatus": self.workflow_status,
+            "currentStageId": self.current_stage_id,
+            "currentStageOrder": self.current_stage_order,
+            "currentStageTitle": self.current_stage_title,
+            "finalApprovalRequired": bool(self.final_approval_required),
+            "deadline": serialize_utc_datetime(self.deadline),
+            "createdAt": serialize_utc_datetime(self.created_at),
+            "updatedAt": serialize_utc_datetime(self.updated_at),
+            "startedAt": serialize_utc_datetime(self.started_at),
+            "completedAt": serialize_utc_datetime(self.completed_at),
+            "submittedAt": serialize_utc_datetime(self.submitted_at),
             "submittedBy": self.submitted_by,
             "taskVersion": self.task_version,
             "resultVersion": self.result_version,
@@ -242,8 +282,8 @@ class TaskParticipant(Base):
             "userId": self.user_id,
             "role": self.role.value,
             "isRead": self.is_read,
-            "readAt": self.read_at.isoformat() if self.read_at else None,
-            "addedAt": self.added_at.isoformat() if self.added_at else None
+            "readAt": serialize_utc_datetime(self.read_at),
+            "addedAt": serialize_utc_datetime(self.added_at)
         }
 
 
@@ -276,7 +316,7 @@ class TaskStatusHistory(Base):
             "statusTo": self.status_to,
             "action": self.action,
             "comments": self.comments,
-            "timestamp": self.timestamp.isoformat() if self.timestamp else None
+            "timestamp": serialize_utc_datetime(self.timestamp)
         }
 
 
@@ -299,12 +339,95 @@ class TaskAttachment(Base):
     task = relationship("Task", back_populates="attachments")
 
 
+class TaskStage(Base):
+    __tablename__ = "task_stages"
+    __table_args__ = (
+        UniqueConstraint("task_id", "stage_order", name="uq_task_stages_task_id_stage_order"),
+        Index("ix_task_stages_task_status", "task_id", "status"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    stage_order = Column(Integer, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(Text)
+    status = Column(String, nullable=False, default=TaskStageStatus.NOT_STARTED.value, index=True)
+    approval_required = Column(Boolean, default=False, nullable=False)
+    is_final_stage = Column(Boolean, default=False, nullable=False)
+    started_at = Column(DateTime)
+    submitted_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    approved_at = Column(DateTime)
+    approved_by_user_id = Column(Integer, ForeignKey("users.id"))
+    revision_notes = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    task = relationship("Task", foreign_keys=[task_id], back_populates="stages")
+    assignees = relationship("TaskStageAssignee", back_populates="stage", cascade="all, delete-orphan")
+    submissions = relationship(
+        "TaskStageSubmission",
+        back_populates="stage",
+        cascade="all, delete-orphan",
+        order_by="TaskStageSubmission.version.desc()",
+    )
+    comments = relationship("TaskComment", back_populates="stage")
+
+
+class TaskStageAssignee(Base):
+    __tablename__ = "task_stage_assignees"
+    __table_args__ = (
+        UniqueConstraint("stage_id", "user_id", "role", name="uq_task_stage_assignees_stage_user_role"),
+        Index("ix_task_stage_assignees_stage_user", "stage_id", "user_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    stage_id = Column(Integer, ForeignKey("task_stages.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String, nullable=False, default="assignee")
+    is_primary = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    assigned_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    stage = relationship("TaskStage", back_populates="assignees")
+    user = relationship("User", foreign_keys=[user_id])
+
+
+class TaskStageSubmission(Base):
+    __tablename__ = "task_stage_submissions"
+    __table_args__ = (
+        UniqueConstraint("stage_id", "version", name="uq_task_stage_submissions_stage_version"),
+        Index("ix_task_stage_submissions_stage_current", "stage_id", "is_current"),
+        Index(
+            "uq_task_stage_submissions_current_stage",
+            "stage_id",
+            unique=True,
+            postgresql_where=text("is_current = true"),
+            sqlite_where=text("is_current = 1"),
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    stage_id = Column(Integer, ForeignKey("task_stages.id"), nullable=False, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    output_text = Column(Text)
+    links_json = Column(JSON)
+    attachments_json = Column(JSON)
+    submitted_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    submitted_at = Column(DateTime, default=datetime.utcnow, index=True)
+    is_current = Column(Boolean, default=True, nullable=False, index=True)
+
+    stage = relationship("TaskStage", back_populates="submissions")
+    submitted_by = relationship("User", foreign_keys=[submitted_by_user_id])
+
+
 class TaskComment(Base):
     """Comments and notes on tasks"""
     __tablename__ = "task_comments"
     
     id = Column(Integer, primary_key=True)
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    stage_id = Column(Integer, ForeignKey("task_stages.id"), index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     
     comment = Column(Text, nullable=False)
@@ -316,6 +439,7 @@ class TaskComment(Base):
     
     # Relationships
     task = relationship("Task", back_populates="comments")
+    stage = relationship("TaskStage", back_populates="comments")
     user = relationship("User", back_populates="comments")
 
 
@@ -549,7 +673,7 @@ class ArchivedTask(ArchiveBase):
             "id": self.id,
             "originalTaskId": self.original_task_id,
             "taskData": self.task_data,
-            "archivedAt": self.archived_at.isoformat() if self.archived_at else None,
+            "archivedAt": serialize_utc_datetime(self.archived_at),
             "archiveReason": self.archive_reason
         }
 
@@ -579,5 +703,5 @@ class ActivityLog(ArchiveBase):
             "taskId": self.task_id,
             "action": self.action,
             "details": self.details,
-            "timestamp": self.timestamp.isoformat() if self.timestamp else None
+            "timestamp": serialize_utc_datetime(self.timestamp)
         }

@@ -1,5 +1,5 @@
 const DEFAULT_API_BASE = 'https://dashboard.ritzmediaworld.in';
-const REMEMBERED_TOOLS_STORAGE_KEY = 'rememberedToolLaunches';
+const ACTIVE_TAB_LAUNCHES_STORAGE_KEY = 'activeExtensionTabLaunches';
 const TOOL_SESSION_DOMAINS = {
   freepik: ['freepik.com', 'www.freepik.com'],
   'kling-ai': ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
@@ -34,27 +34,6 @@ function resolvePendingLaunchKey(launches, toolSlug, hostname) {
   }
 
   return Object.keys(launches).find((key) => normalizeHostname(launches[key]?.hostname) === normalizedHostname) || '';
-}
-
-function resolveRememberedToolKey(rememberedTools, toolSlug, hostname) {
-  const normalizedSlug = normalizeToolSlug(toolSlug);
-  if (normalizedSlug && rememberedTools[normalizedSlug]?.hostname) {
-    return normalizedSlug;
-  }
-
-  const normalizedHostname = normalizeHostname(hostname);
-  if (!normalizedHostname) {
-    return '';
-  }
-
-  return Object.keys(rememberedTools).find((key) => normalizeHostname(rememberedTools[key]?.hostname) === normalizedHostname) || '';
-}
-
-async function getRememberedTool(toolSlug, hostname) {
-  const stored = await chrome.storage.local.get([REMEMBERED_TOOLS_STORAGE_KEY]);
-  const rememberedTools = { ...(stored[REMEMBERED_TOOLS_STORAGE_KEY] || {}) };
-  const rememberedKey = resolveRememberedToolKey(rememberedTools, toolSlug, hostname);
-  return rememberedTools[rememberedKey] || null;
 }
 
 async function consumePendingLaunch(toolSlug, hostname) {
@@ -117,6 +96,123 @@ async function getPendingLaunch(toolSlug, hostname) {
   return launches[launchKey] || null;
 }
 
+async function getActiveLaunchMap() {
+  const stored = await chrome.storage.local.get([ACTIVE_TAB_LAUNCHES_STORAGE_KEY]);
+  const launchMap = { ...(stored[ACTIVE_TAB_LAUNCHES_STORAGE_KEY] || {}) };
+  const now = Date.now();
+  let changed = false;
+
+  Object.keys(launchMap).forEach((key) => {
+    const item = launchMap[key];
+    if (!item || Number(item.expiresAt || 0) <= now) {
+      delete launchMap[key];
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+  }
+
+  return launchMap;
+}
+
+async function getActiveLaunch(tabId, toolSlug) {
+  if (!tabId) return null;
+  const launchMap = await getActiveLaunchMap();
+  const item = launchMap[`${tabId}`];
+  if (!item) return null;
+  if (toolSlug && normalizeToolSlug(item.toolSlug) !== normalizeToolSlug(toolSlug)) {
+    return null;
+  }
+  return item;
+}
+
+async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug) {
+  const primaryLaunch = await getActiveLaunch(primaryTabId, toolSlug);
+  if (primaryLaunch?.ticket) {
+    return primaryLaunch;
+  }
+
+  if (!fallbackTabId || fallbackTabId === primaryTabId) {
+    return null;
+  }
+
+  return getActiveLaunch(fallbackTabId, toolSlug);
+}
+
+async function setActiveLaunch(tabId, launch) {
+  if (!tabId || !launch?.ticket || !launch?.expiresAt) return;
+  const launchMap = await getActiveLaunchMap();
+  const existingLaunch = launchMap[`${tabId}`] || {};
+  launchMap[`${tabId}`] = {
+    toolSlug: normalizeToolSlug(launch.toolSlug),
+    ticket: `${launch.ticket}`.trim(),
+    expiresAt: Number(launch.expiresAt || 0),
+    hostname: normalizeHostname(launch.hostname),
+    activatedAt: Date.now(),
+    directCredentialIssuedAt: Number(existingLaunch.directCredentialIssuedAt || 0),
+    inheritedCredentialIssuedAt: Number(existingLaunch.inheritedCredentialIssuedAt || 0),
+  };
+  await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+}
+
+async function clearActiveLaunch(tabId, toolSlug = '') {
+  if (!tabId) return;
+  const launchMap = await getActiveLaunchMap();
+  const key = `${tabId}`;
+  const current = launchMap[key];
+  if (!current) return;
+  if (toolSlug && normalizeToolSlug(current.toolSlug) !== normalizeToolSlug(toolSlug)) {
+    return;
+  }
+  delete launchMap[key];
+  await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+}
+
+async function markCredentialIssued(tabId, mode = 'direct') {
+  if (!tabId) return;
+  const launchMap = await getActiveLaunchMap();
+  const key = `${tabId}`;
+  const current = launchMap[key];
+  if (!current) return;
+
+  if (mode === 'inherited') {
+    current.inheritedCredentialIssuedAt = Date.now();
+  } else {
+    current.directCredentialIssuedAt = Date.now();
+  }
+
+  launchMap[key] = current;
+  await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+}
+
+async function activateLaunchForTab(tabId, toolSlug, hostname, extensionTicket) {
+  if (!tabId || !extensionTicket) {
+    throw new Error('Dashboard launch ticket required.');
+  }
+
+  const activeLaunch = await getActiveLaunch(tabId, toolSlug);
+  if (activeLaunch?.ticket === `${extensionTicket}`.trim()) {
+    return activeLaunch;
+  }
+
+  const storedLaunch = await getPendingLaunch(toolSlug, hostname);
+  if (!storedLaunch?.ticket || `${storedLaunch.ticket}`.trim() !== `${extensionTicket}`.trim()) {
+    throw new Error('Open this tool from the dashboard first.');
+  }
+
+  await consumePendingLaunch(toolSlug, hostname);
+  const launch = {
+    toolSlug,
+    hostname,
+    ticket: extensionTicket,
+    expiresAt: Number(storedLaunch.expiresAt || 0),
+  };
+  await setActiveLaunch(tabId, launch);
+  return launch;
+}
+
 async function clearToolSession(toolSlug) {
   const normalizedSlug = normalizeToolSlug(toolSlug);
   const domains = TOOL_SESSION_DOMAINS[normalizedSlug] || [];
@@ -150,21 +246,25 @@ async function getSettings() {
   };
 }
 
-async function fetchCredential(message) {
+async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   const settings = await getSettings();
-  let extensionTicket = `${message.extensionTicket || ''}`.trim();
-  let rememberedTool = null;
+  const tabId = message.tabId || senderTabId || 0;
+  const directLaunch = await getActiveLaunch(tabId, message.toolSlug);
+  const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, message.toolSlug);
+  const activeLaunch = directLaunch || inheritedLaunch;
+  const launchMode = directLaunch?.ticket ? 'direct' : 'inherited';
+  const extensionTicket = `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim();
+
   if (!extensionTicket) {
-    try {
-      extensionTicket = await consumePendingLaunch(message.toolSlug, message.hostname || message.pageUrl);
-    } catch {
-      rememberedTool = await getRememberedTool(message.toolSlug, message.hostname || message.pageUrl);
-      extensionTicket = '';
-    }
+    throw new Error('Open this tool from the dashboard first.');
   }
 
-  if (!extensionTicket && !rememberedTool) {
-    throw new Error('Open this tool once from the dashboard so the extension can remember it.');
+  if (launchMode === 'direct' && Number(activeLaunch?.directCredentialIssuedAt || 0) > 0) {
+    throw new Error('Open this tool from the dashboard first.');
+  }
+
+  if (launchMode === 'inherited' && Number(activeLaunch?.inheritedCredentialIssuedAt || 0) > 0) {
+    throw new Error('Open this tool from the dashboard first.');
   }
 
   const headers = {
@@ -198,40 +298,55 @@ async function fetchCredential(message) {
     throw new Error(parts.join(' | '));
   }
 
+  if (launchMode === 'direct' && tabId) {
+    await markCredentialIssued(tabId, 'direct');
+  } else if (launchMode === 'inherited' && openerTabId) {
+    await markCredentialIssued(openerTabId, 'inherited');
+  }
+
   return data;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === 'TOOL_HUB_GET_LAUNCH_STATE') {
-    Promise.all([
-      getPendingLaunch(message.toolSlug, message.hostname || message.pageUrl),
-      getRememberedTool(message.toolSlug, message.hostname || message.pageUrl),
-    ])
-      .then(([launch, rememberedTool]) => sendResponse({
+  const senderTabId = sender?.tab?.id || 0;
+  const senderOpenerTabId = sender?.tab?.openerTabId || 0;
+
+  if (message?.type === 'TOOL_HUB_ACTIVATE_LAUNCH') {
+    activateLaunchForTab(
+      senderTabId,
+      message.toolSlug,
+      message.hostname || message.pageUrl,
+      `${message.extensionTicket || ''}`.trim()
+    )
+      .then((launch) => sendResponse({
         ok: true,
-        authorized: Boolean(launch?.ticket || rememberedTool),
+        authorized: true,
+        expiresAt: Number(launch?.expiresAt || 0),
+      }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_GET_LAUNCH_STATE') {
+    getAuthorizedLaunchForTabs(senderTabId, senderOpenerTabId, message.toolSlug)
+      .then((launch) => sendResponse({
+        ok: true,
+        authorized: Boolean(launch?.ticket),
         expiresAt: Number(launch?.expiresAt || 0),
         remainingUses: Number(launch?.remainingUses || 0),
-        remembered: Boolean(rememberedTool),
+        remembered: false,
       }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
 
   if (message?.type === 'TOOL_HUB_LIST_REMEMBERED_TOOLS') {
-    chrome.storage.local.get([REMEMBERED_TOOLS_STORAGE_KEY])
-      .then((stored) => {
-        const rememberedTools = Object.values(stored[REMEMBERED_TOOLS_STORAGE_KEY] || {})
-          .filter((item) => item && item.toolSlug && item.hostname)
-          .sort((left, right) => Number(right?.lastLaunchedAt || 0) - Number(left?.lastLaunchedAt || 0));
-        sendResponse({ ok: true, tools: rememberedTools });
-      })
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    sendResponse({ ok: true, tools: [] });
     return true;
   }
 
   if (message?.type === 'TOOL_HUB_CLEAR_REMEMBERED_TOOLS') {
-    chrome.storage.local.remove(REMEMBERED_TOOLS_STORAGE_KEY)
+    chrome.storage.local.remove('rememberedToolLaunches')
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -239,7 +354,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'TOOL_HUB_CLEAR_TOOL_SESSION') {
     clearToolSession(message.toolSlug)
-      .then((result) => sendResponse({ ok: true, ...result }))
+      .then(async (result) => {
+        await clearActiveLaunch(senderTabId, message.toolSlug);
+        sendResponse({ ok: true, ...result });
+      })
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -248,9 +366,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  fetchCredential(message)
+  fetchCredential(message, senderTabId, senderOpenerTabId)
     .then((data) => sendResponse({ ok: true, data }))
     .catch((error) => sendResponse({ ok: false, error: error.message }));
 
   return true;
+});
+
+chrome.storage.local.remove('rememberedToolLaunches').catch(() => {});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clearActiveLaunch(tabId).catch(() => {});
 });

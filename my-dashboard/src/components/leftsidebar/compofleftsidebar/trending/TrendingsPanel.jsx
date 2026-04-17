@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { authAPI, taskAPI } from '../../../../services/api';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { buildFileDownloadUrl, buildFileOpenUrl } from '../../../../utils/fileLinks';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
 const ALL_DEPARTMENTS = 'all_departments';
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const PAGE_SIZE = 60;
 
 const getSourceExtension = (asset) => {
@@ -130,22 +130,11 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   }, [isMinimized, isOpen, onMinimizedChange]);
 
   const buildOpenUrl = (asset) => {
-    if (asset?.path) {
-      return `${API_BASE}/api/files/open?path=${encodeURIComponent(asset.path)}`;
-    }
-    if (asset?.url) {
-      return `${API_BASE}/api/files/open?url=${encodeURIComponent(asset.url)}`;
-    }
-    return null;
+    return buildFileOpenUrl(asset) || null;
   };
 
   const buildDownloadUrl = (asset) => {
-    if (!asset?.path && !asset?.url) return null;
-    const params = new URLSearchParams();
-    if (asset?.url) params.set('url', asset.url);
-    if (asset?.path) params.set('path', asset.path);
-    params.set('filename', asset.filename || 'download');
-    return `${API_BASE}/api/files/download?${params.toString()}`;
+    return buildFileDownloadUrl(asset, asset?.filename || 'download') || null;
   };
 
   const openAssetInNewTab = (asset) => {
@@ -154,7 +143,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       setPreviewAsset(asset);
       return;
     }
-    window.open(openUrl, '_blank', 'noopener,noreferrer');
+    setPreviewAsset(asset);
   };
 
   const downloadAsset = (asset) => {
@@ -382,7 +371,11 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     return (
       <div className="trendings-preview-link">
         <p>This file type is not embeddable.</p>
-        <a href={previewUrl} target="_blank" rel="noreferrer">Open in new tab</a>
+        {buildDownloadUrl(asset) ? (
+          <button type="button" className="trendings-open-link-btn" onClick={() => downloadAsset(asset)}>
+            Download
+          </button>
+        ) : null}
       </div>
     );
   };

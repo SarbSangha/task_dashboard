@@ -1,14 +1,11 @@
 import React, { useState, useEffect } from "react";
-import axios from "axios";
 import { useCustomDialogs } from "../../../common/CustomDialogs";
+import { fileAPI } from "../../../../services/api";
 import {
-  buildUploadFormData,
   getAttachmentDisplayName,
   mergeUniqueAttachments,
   openSystemFilePicker,
 } from "../../../../utils/fileUploads";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export default function AttachmentBox({ attachments = [], onChange }) {
   const { showAlert } = useCustomDialogs();
@@ -65,30 +62,23 @@ export default function AttachmentBox({ attachments = [], onChange }) {
     const filesToUpload = files.filter((file) => file instanceof File);
     if (filesToUpload.length === 0) return;
 
-    const formData = buildUploadFormData(filesToUpload);
-
     try {
       setUploading(true);
-
-      const response = await axios.post(`${API_BASE}/upload`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-        withCredentials: true,
-        onUploadProgress: (progressEvent) => {
-          const percent = Math.round(
-            (progressEvent.loaded * 100) / progressEvent.total
-          );
+      const response = await fileAPI.uploadFiles(filesToUpload, {
+        onProgress: (percent) => {
           setProgress(percent);
         },
       });
+      const uploadedAttachments = Array.isArray(response?.data) ? response.data : [];
+      const remainingFiles = files.filter((file) => !(file instanceof File));
+      const updatedFiles = mergeUniqueAttachments(remainingFiles, uploadedAttachments);
+      setFiles(updatedFiles);
+      notifyParent(updatedFiles);
 
       await showAlert("All files uploaded.", { title: "Upload Complete" });
-      
-      // Keep files in state but mark as uploaded
-      // Don't clear - parent component will handle this
-      // setFiles([]);
     } catch (err) {
       console.error("Upload error:", err);
-      await showAlert("Upload failed.", { title: "Upload Failed" });
+      await showAlert(err?.response?.data?.detail || err?.message || "Upload failed.", { title: "Upload Failed" });
     } finally {
       setUploading(false);
       setProgress(0);

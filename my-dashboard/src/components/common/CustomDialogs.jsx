@@ -56,6 +56,7 @@ export const CustomDialogProvider = ({ children }) => {
           title: options.title,
           defaultValue: options.defaultValue || '',
           placeholder: options.placeholder || '',
+          inputType: options.inputType || 'text',
           multiline: !!options.multiline,
           rows: options.rows || 5,
           confirmText: options.confirmText,
@@ -85,7 +86,7 @@ export const CustomDialogProvider = ({ children }) => {
             {activeDialog.type === 'prompt' && !activeDialog.multiline && (
               <input
                 className="custom-dialog-input"
-                type="text"
+                type={activeDialog.inputType || 'text'}
                 value={promptValue}
                 placeholder={activeDialog.placeholder}
                 onChange={(event) => setPromptValue(event.target.value)}

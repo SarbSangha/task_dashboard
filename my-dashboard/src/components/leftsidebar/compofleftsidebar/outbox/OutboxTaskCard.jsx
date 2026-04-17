@@ -2,6 +2,8 @@
 import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import './OutboxTaskCard.css';
+import { buildFileDownloadUrl } from '../../../../utils/fileLinks';
+import FilePreviewModal from '../../../common/FilePreviewModal';
 
 const OutboxTaskCard = ({ 
   task, 
@@ -13,14 +15,16 @@ const OutboxTaskCard = ({
   formatTime, 
   getStatusClass 
 }) => {
-  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
   const [menuOpen, setMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+  const [previewFile, setPreviewFile] = useState(null);
+  const normalizedStatus = `${task?.status || ''}`.toLowerCase();
 
   const {
     id,
     projectName,
+    projectId,
     title,
     taskName,
     description,
@@ -49,29 +53,91 @@ const OutboxTaskCard = ({
   } = task;
   const displayTaskName = taskName || title || 'Untitled Task';
   const displayTaskDetails = taskDetails || description || '';
-
-  const menuActions = [
-    'track',
-    'chat',
-    ...(task.availableActions || []).filter((action) => action === 'edit_task' || action === 'revoke_task')
+  const summaryText = displayTaskDetails.length > 160
+    ? `${displayTaskDetails.slice(0, 160)}...`
+    : displayTaskDetails;
+  const activeStageLabel = task.workflowEnabled
+    ? [task.currentStageOrder ? `Stage ${task.currentStageOrder}` : '', task.currentStageTitle || ''].filter(Boolean).join(': ')
+    : '';
+  const isDraft = normalizedStatus === 'draft';
+  const statusLabel = `${status || 'pending'}`
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+  const statusFallsThroughReceived = [
+    'assigned',
+    'forwarded',
+    'in_progress',
+    'submitted',
+    'approved',
+    'completed',
+    'need_improvement',
+    'cancelled',
+    'rejected',
+  ].includes(normalizedStatus);
+  const statusFallsThroughStarted = [
+    'in_progress',
+    'submitted',
+    'approved',
+    'completed',
+    'need_improvement',
+    'cancelled',
+    'rejected',
+  ].includes(normalizedStatus);
+  const statusFallsThroughSubmitted = [
+    'submitted',
+    'approved',
+    'completed',
+    'need_improvement',
+    'cancelled',
+    'rejected',
+  ].includes(normalizedStatus);
+  const statusFallsThroughCompleted = ['approved', 'completed'].includes(normalizedStatus);
+  const timelineSteps = [
+    {
+      key: 'sent',
+      label: 'Sent',
+      reached: Boolean(sentAt || createdAt || normalizedStatus),
+    },
+    {
+      key: 'received',
+      label: 'Receive',
+      reached: Boolean(receivedAt || statusFallsThroughReceived),
+    },
+    {
+      key: 'started',
+      label: 'Start',
+      reached: Boolean(startedAt || completedAt || statusFallsThroughStarted),
+    },
+    {
+      key: 'submitted',
+      label: 'Submit',
+      reached: Boolean(task.submittedAt || completedAt || statusFallsThroughSubmitted),
+    },
+    {
+      key: 'completed',
+      label: 'Done',
+      reached: Boolean(completedAt || statusFallsThroughCompleted),
+    },
   ];
+  const currentTimelineKey = (() => {
+    const latestReachedStep = [...timelineSteps].reverse().find((step) => step.reached);
+    return latestReachedStep?.key || '';
+  })();
+  const menuActions = isDraft
+    ? ['edit_draft', 'delete_draft']
+    : [
+        'track',
+        'chat',
+        ...(task.availableActions || []).filter((action) => action === 'edit_task' || action === 'revoke_task')
+      ];
   const requestTypeLabel = (() => {
     const type = (taskType || 'task').toLowerCase();
     if (type === 'task_approval') return 'Task Approval';
     if (type === 'submission_result') return 'Submission Result';
     return 'Task';
   })();
-  const buildFileActionUrl = (file, action, fallbackName) => {
-    const params = new URLSearchParams();
-    if (file?.url) params.set('url', file.url);
-    if (file?.path) params.set('path', file.path);
-    if (action === 'download') {
-      params.set('filename', fallbackName || file?.originalName || file?.filename || 'download');
-    }
-    return `${apiBase}/api/files/${action}?${params.toString()}`;
-  };
   const forceDownload = (file, filename) => {
-    const downloadUrl = buildFileActionUrl(file, 'download', filename);
+    const downloadUrl = buildFileDownloadUrl(file, filename);
     const link = document.createElement('a');
     link.href = downloadUrl;
     link.style.display = 'none';
@@ -123,15 +189,24 @@ const OutboxTaskCard = ({
             <span>{toDepartment?.[0] || 'T'}</span>
           </div>
           <div className="outbox-header-text">
-            <h3 className="outbox-task-title">
-              {displayTaskName}
-              {isResult && <span className="result-badge">📊 Result</span>}
-            </h3>
-            <p className="outbox-project-name">📁 {projectName}</p>
+            <div className="outbox-title-row">
+              <h3 className="outbox-task-title">
+                {displayTaskName}
+                {isResult && <span className="result-badge">Result</span>}
+              </h3>
+            </div>
+            <div className="outbox-subtitle-row">
+              <p className="outbox-project-name">📁 {projectName || 'No project'}</p>
+              {(projectId || id) && (
+                <span className="outbox-reference-pill">
+                  {projectId || `Task #${id}`}
+                </span>
+              )}
+            </div>
           </div>
           <div className="status-and-track">
             <span className={`outbox-status-pill ${getStatusClass(status)}`}>
-              {status?.replace('_', ' ')}
+              {statusLabel}
             </span>
             <div className="outbox-card-menu-wrap" onClick={(e) => e.stopPropagation()}>
               <button className="outbox-card-menu-btn" onClick={() => setMenuOpen((prev) => !prev)}>⋮</button>
@@ -153,6 +228,10 @@ const OutboxTaskCard = ({
                         ? 'Track'
                         : action === 'chat'
                           ? 'Chat'
+                          : action === 'edit_draft'
+                            ? 'Edit Draft'
+                            : action === 'delete_draft'
+                              ? 'Delete Draft'
                           : action === 'edit_task'
                             ? 'Edit Task'
                             : 'Revoke Task'}
@@ -170,6 +249,7 @@ const OutboxTaskCard = ({
             <span className={`stage-indicator stage-${workflowStage}`}>
               {getStageIcon(workflowStage)} {workflowStage?.replace('_', ' ')}
             </span>
+            {activeStageLabel && <span className="stage-indicator">{activeStageLabel}</span>}
           </div>
         )}
 
@@ -222,28 +302,29 @@ const OutboxTaskCard = ({
           )}
         </div>
 
+        {summaryText && (
+          <div className="outbox-summary-panel">
+            <span className="outbox-summary-label">Summary</span>
+            <p className="outbox-summary-text">{summaryText}</p>
+          </div>
+        )}
+
         {/* Timeline Progress */}
-        {(sentAt || receivedAt || startedAt || completedAt) && (
+        {timelineSteps.some((step) => step.reached) && (
           <div className="timeline-progress">
-            <div className={`timeline-step ${sentAt ? 'completed' : ''}`}>
-              <div className="timeline-dot"></div>
-              <span className="timeline-label">Sent</span>
-            </div>
-            <div className="timeline-line"></div>
-            <div className={`timeline-step ${receivedAt ? 'completed' : ''}`}>
-              <div className="timeline-dot"></div>
-              <span className="timeline-label">Received</span>
-            </div>
-            <div className="timeline-line"></div>
-            <div className={`timeline-step ${startedAt ? 'completed' : ''}`}>
-              <div className="timeline-dot"></div>
-              <span className="timeline-label">Started</span>
-            </div>
-            <div className="timeline-line"></div>
-            <div className={`timeline-step ${completedAt ? 'completed' : ''}`}>
-              <div className="timeline-dot"></div>
-              <span className="timeline-label">Completed</span>
-            </div>
+            {timelineSteps.map((step, index) => (
+              <React.Fragment key={step.key}>
+                <div
+                  className={`timeline-step ${step.reached ? 'completed' : ''} ${currentTimelineKey === step.key ? 'current' : ''}`}
+                >
+                  <div className="timeline-dot"></div>
+                  <span className="timeline-label">{step.label}</span>
+                </div>
+                {index < timelineSteps.length - 1 ? (
+                  <div className={`timeline-line ${timelineSteps[index].reached && timelineSteps[index + 1].reached ? 'reached' : ''}`}></div>
+                ) : null}
+              </React.Fragment>
+            ))}
           </div>
         )}
 
@@ -278,7 +359,16 @@ const OutboxTaskCard = ({
                     <li key={idx}>
                       <span>{att.originalName || att.filename || `Attachment ${idx + 1}`}</span>
                       <span className="attachment-actions">
-                        <a href={buildFileActionUrl(att, 'open')} target="_blank" rel="noopener noreferrer">Open</a>
+                        <button
+                          type="button"
+                          className="mini-action-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPreviewFile(att);
+                          }}
+                        >
+                          Open
+                        </button>
                         <button
                           type="button"
                           className="mini-action-btn"
@@ -330,6 +420,14 @@ const OutboxTaskCard = ({
         )}
       </div>
       {toastMessage && <div className="copy-toast">{toastMessage}</div>}
+      {previewFile ? (
+        <FilePreviewModal
+          file={previewFile}
+          title={previewFile?.originalName || previewFile?.filename || 'Attachment'}
+          subtitle={`${displayTaskName}${id ? ` • ${id}` : ''}`}
+          onClose={() => setPreviewFile(null)}
+        />
+      ) : null}
 
     </>
   );
@@ -361,6 +459,7 @@ OutboxTaskCard.propTypes = {
   task: PropTypes.shape({
     id: PropTypes.number.isRequired,
     projectName: PropTypes.string.isRequired,
+    projectId: PropTypes.string,
     title: PropTypes.string,
     taskName: PropTypes.string,
     description: PropTypes.string,

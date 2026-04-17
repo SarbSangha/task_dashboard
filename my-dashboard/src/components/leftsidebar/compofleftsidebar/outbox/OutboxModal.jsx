@@ -5,7 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import OutboxTaskCard from './OutboxTaskCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
-import { taskAPI } from '../../../../services/api';
+import { draftAPI, taskAPI } from '../../../../services/api';
 import { formatDateIndia, formatTimeIndia } from '../../../../utils/dateTime';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
@@ -54,6 +54,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   const invalidateOutboxCache = () => {
     queryClient.invalidateQueries({ queryKey: ['outbox'] });
     queryClient.invalidateQueries({ queryKey: ['tracking'] });
+    queryClient.invalidateQueries({ queryKey: ['drafts'] });
   };
 
   const handleRefresh = () => void refetch();
@@ -70,6 +71,39 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
 
     if (action === 'edit_task' && onEditTask) {
       onEditTask(task);
+      return;
+    }
+
+    if (action === 'edit_draft' && onEditTask) {
+      onEditTask(task);
+      return;
+    }
+
+    if (action === 'delete_draft') {
+      const confirmed = await showConfirm(
+        'Delete this draft? This cannot be undone.',
+        { title: 'Delete Draft' }
+      );
+      if (!confirmed) return;
+
+      try {
+        await draftAPI.deleteDraft(task.id);
+        const localDraftRaw = localStorage.getItem('taskDraft');
+        if (localDraftRaw) {
+          try {
+            const parsedLocalDraft = JSON.parse(localDraftRaw);
+            if (Number(parsedLocalDraft?.__draftId) === Number(task.id)) {
+              localStorage.removeItem('taskDraft');
+            }
+          } catch (storageError) {
+            console.warn('Failed to inspect local draft cache during delete:', storageError);
+          }
+        }
+        invalidateOutboxCache();
+        await refetch();
+      } catch (error) {
+        await showAlert(error?.response?.data?.detail || 'Failed to delete draft', { title: 'Delete Draft Failed' });
+      }
       return;
     }
 
@@ -98,6 +132,15 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
     setWorkflowOpen(true);
   };
 
+  const mergeUniqueById = (items = []) => {
+    const seen = new Map();
+    items.forEach((item) => {
+      if (!item?.id) return;
+      seen.set(item.id, item);
+    });
+    return Array.from(seen.values());
+  };
+
   const getFilteredData = () => {
     let data = [];
     
@@ -112,10 +155,10 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
         data = tasks.filter(t => t.status === 'need_improvement');
         break;
       case 'drafts':
-        data = [
+        data = mergeUniqueById([
           ...tasks.filter((t) => t.status === 'draft'),
           ...drafts
-        ];
+        ]);
         break;
       default:
         data = tasks.filter((t) => t.status !== 'draft');
@@ -146,8 +189,13 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   const getStatusClass = (status) => {
     switch (status?.toLowerCase()) {
       case 'pending': return 'status-pending';
+      case 'assigned':
+      case 'forwarded':
+        return 'status-pending';
       case 'in_progress': return 'status-in-progress';
+      case 'need_improvement':
       case 'submitted': return 'status-in-progress';
+      case 'approved':
       case 'completed': return 'status-completed';
       case 'cancelled': return 'status-cancelled';
       case 'draft': return 'status-draft';

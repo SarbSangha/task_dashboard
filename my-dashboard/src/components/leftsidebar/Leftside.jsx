@@ -87,8 +87,8 @@ const FunctionalMenu = () => {
     }
   };
 
-  const openAssignModal = (taskToEdit = null) => {
-    setEditingTask(taskToEdit);
+  const openAssignModal = () => {
+    setEditingTask(null);
     goTo('create-task');
   };
 

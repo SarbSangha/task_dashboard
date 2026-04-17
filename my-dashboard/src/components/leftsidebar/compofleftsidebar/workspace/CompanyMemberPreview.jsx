@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { UserAvatar } from '../../../common/UserAvatar';
 import { taskAPI } from '../../../../services/api';
 import { getTaskPanelCache, setTaskPanelCache } from '../../../../utils/taskPanelCache';
+import { formatDateIndia, formatDateTimeIndia } from '../../../../utils/dateTime';
+import { buildFileDownloadUrl, buildFileOpenUrl } from '../../../../utils/fileLinks';
+import FilePreviewModal from '../../../common/FilePreviewModal';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import './CompanyMemberPreview.css';
 
@@ -18,8 +21,6 @@ const NAV_ITEMS = [
 const MEMBER_TASK_PREVIEW_CACHE_TTL_MS = 60 * 1000;
 const FUNCTIONAL_SECTION_IDS = new Set(['overview', 'inbox', 'outbox', 'tracking']);
 const memberTaskPreviewRequests = new Map();
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
 function buildMemberTaskPreviewCacheKey(memberId) {
   return `company_member_preview_tasks_${memberId}`;
 }
@@ -48,24 +49,6 @@ async function loadMemberPreviewTasks(memberId) {
 
   memberTaskPreviewRequests.set(memberId, request);
   return request;
-}
-
-function formatDateTimeIndia(value) {
-  if (!value) return 'N/A';
-  try {
-    return new Date(value).toLocaleString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true,
-    });
-  } catch {
-    return 'N/A';
-  }
 }
 
 function formatSeconds(seconds = 0) {
@@ -97,17 +80,7 @@ function formatTaskStatus(value) {
 }
 
 function formatTaskDate(value) {
-  if (!value) return 'N/A';
-  try {
-    return new Date(value).toLocaleDateString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  } catch {
-    return 'N/A';
-  }
+  return formatDateIndia(value);
 }
 
 function formatAttachmentName(item, index = 0) {
@@ -126,19 +99,10 @@ function formatAttachmentName(item, index = 0) {
 }
 
 function buildFileActionUrl(item, action) {
-  const params = new URLSearchParams();
-  if (typeof item === 'string') {
-    params.set('url', item);
-  } else {
-    if (item?.url) params.set('url', item.url);
-    if (item?.path) params.set('path', item.path);
-  }
-
   if (action === 'download') {
-    params.set('filename', formatAttachmentName(item));
+    return buildFileDownloadUrl(item, formatAttachmentName(item));
   }
-
-  return `${API_BASE}/api/files/${action}?${params.toString()}`;
+  return buildFileOpenUrl(item);
 }
 
 function SummaryMetric({ label, value, tone = 'default' }) {
@@ -207,7 +171,7 @@ function TrackingMetroLine({ task }) {
   );
 }
 
-function TaskArtifactsSection({ title, items, type = 'files' }) {
+function TaskArtifactsSection({ title, items, type = 'files', onPreviewFile }) {
   if (!Array.isArray(items) || items.length === 0) return null;
 
   return (
@@ -246,9 +210,9 @@ function TaskArtifactsSection({ title, items, type = 'files' }) {
               </div>
               <div className="company-member-preview-artifact-actions">
                 {hasPreview && (
-                  <a href={previewHref} target="_blank" rel="noreferrer">
+                  <button type="button" onClick={() => previewHref && onPreviewFile?.(item)}>
                     Preview
-                  </a>
+                  </button>
                 )}
                 {hasPreview && (
                   <a href={downloadHref}>
@@ -265,6 +229,7 @@ function TaskArtifactsSection({ title, items, type = 'files' }) {
 }
 
 function ReadOnlyTaskDetailsModal({ task, onClose }) {
+  const [previewFile, setPreviewFile] = useState(null);
   if (!task) return null;
 
   const assignedMembers = Array.isArray(task.assignedTo) && task.assignedTo.length > 0
@@ -332,9 +297,9 @@ function ReadOnlyTaskDetailsModal({ task, onClose }) {
             </div>
           )}
 
-          <TaskArtifactsSection title="Input Attachments" items={task.attachments} />
+          <TaskArtifactsSection title="Input Attachments" items={task.attachments} onPreviewFile={setPreviewFile} />
           <TaskArtifactsSection title="Reference Links" items={task.links} type="links" />
-          <TaskArtifactsSection title="Result Attachments" items={task.resultAttachments} />
+          <TaskArtifactsSection title="Result Attachments" items={task.resultAttachments} onPreviewFile={setPreviewFile} />
           <TaskArtifactsSection title="Result Links" items={task.resultLinks} type="links" />
 
           {forwardHistory.length > 0 && (
@@ -353,6 +318,14 @@ function ReadOnlyTaskDetailsModal({ task, onClose }) {
           )}
         </div>
       </div>
+      {previewFile ? (
+        <FilePreviewModal
+          file={previewFile}
+          title={formatAttachmentName(previewFile)}
+          subtitle={`${task.title || 'Task'}${task.taskNumber ? ` • ${task.taskNumber}` : ''}`}
+          onClose={() => setPreviewFile(null)}
+        />
+      ) : null}
     </>
   );
 }

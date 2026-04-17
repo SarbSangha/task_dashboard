@@ -22,21 +22,10 @@
     </label>
 
     <p class="hint">Open the dashboard in another tab and the extension will try to sync `rmw_session_token_v1` automatically.</p>
-    <p class="hint">This extension does not save website passwords in Chrome storage. It only remembers approved tool sites and your dashboard session token.</p>
+    <p class="hint">This extension does not save website passwords in Chrome storage. It only works for launches that start from the dashboard.</p>
 
     <button id="save" type="button">Save</button>
     <button id="clearToken" type="button" class="secondary">Clear token</button>
-    <button id="clearRemembered" type="button" class="secondary ghost">Forget remembered sites</button>
-
-    <section class="remembered-section">
-      <div class="remembered-header">
-        <h2>Remembered Sites</h2>
-        <span id="rememberedCount" class="remembered-count">0</span>
-      </div>
-      <div id="rememberedSites" class="remembered-sites">
-        <p class="empty-state">Launch a tool from the dashboard once and it will appear here for quick access.</p>
-      </div>
-    </section>
 
     <p id="status" class="status"></p>
   </main>

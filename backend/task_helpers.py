@@ -4,6 +4,7 @@ from sqlalchemy import func
 from models_new import Task, TaskParticipant, User, ParticipantRole, TaskStatus, IdSequence
 from typing import List, Optional
 from datetime import datetime
+from utils.datetime_utils import serialize_utc_datetime
 
 
 class TaskHelpers:
@@ -160,8 +161,8 @@ class TaskHelpers:
                 "userDepartment": participant.user.department,
                 "role": participant.role.value,
                 "isRead": participant.is_read,
-                "readAt": participant.read_at.isoformat() if participant.read_at else None,
-                "addedAt": participant.added_at.isoformat() if participant.added_at else None
+                "readAt": serialize_utc_datetime(participant.read_at),
+                "addedAt": serialize_utc_datetime(participant.added_at)
             })
         
         return result

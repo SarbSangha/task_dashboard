@@ -1,64 +1,18 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useKeepLoggedIn } from './KeepLoggedInManager';
-import { authAPI } from '../../../../services/api';
 import './LoginSecurityPanel.css';
 
 const LoginSecurityPanel = ({ isOpen, onClose }) => {
+  const navigate = useNavigate();
   const { isEnabled, toggle } = useKeepLoggedIn();
   const [message, setMessage] = useState('');
   const [syncedEnabled, setSyncedEnabled] = useState(isEnabled);
-  const [passwordForm, setPasswordForm] = useState({
-    newPassword: '',
-    confirmPassword: '',
-  });
-  const [showPasswordForm, setShowPasswordForm] = useState(false);
-  const [passwordStatus, setPasswordStatus] = useState('');
-  const [submittingPasswordRequest, setSubmittingPasswordRequest] = useState(false);
 
   // Update syncedEnabled when isEnabled changes (syncs from login or other panels)
   useEffect(() => {
     setSyncedEnabled(isEnabled);
   }, [isEnabled]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const loadLatestPasswordRequest = async () => {
-      try {
-        const response = await authAPI.getLatestPasswordChange();
-        const request = response?.request;
-        if (!request) {
-          setPasswordStatus('');
-          return;
-        }
-
-        if (request.status === 'pending') {
-          setPasswordStatus('Your password change request is pending admin approval.');
-          return;
-        }
-
-        if (request.status === 'rejected') {
-          setPasswordStatus(
-            request.reviewNotes
-              ? `Your last password change request was rejected: ${request.reviewNotes}`
-              : 'Your last password change request was rejected.'
-          );
-          return;
-        }
-
-        if (request.status === 'approved') {
-          setPasswordStatus('Your last password change request was approved.');
-          return;
-        }
-
-        setPasswordStatus('');
-      } catch (error) {
-        setPasswordStatus(error?.response?.data?.detail || 'Failed to load password change status.');
-      }
-    };
-
-    loadLatestPasswordRequest();
-  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -77,34 +31,9 @@ const LoginSecurityPanel = ({ isOpen, onClose }) => {
     setTimeout(() => setMessage(''), 3000);
   };
 
-  const handlePasswordSubmit = async (event) => {
-    event.preventDefault();
-    if (passwordForm.newPassword.length < 8) {
-      setPasswordStatus('New password must be at least 8 characters long.');
-      return;
-    }
-    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      setPasswordStatus('Passwords do not match.');
-      return;
-    }
-
-    setSubmittingPasswordRequest(true);
-    try {
-      const response = await authAPI.requestPasswordChange({
-        new_password: passwordForm.newPassword,
-        confirm_password: passwordForm.confirmPassword,
-      });
-      setPasswordStatus(response?.message || 'Password change request submitted for admin approval.');
-      setPasswordForm({
-        newPassword: '',
-        confirmPassword: '',
-      });
-      setShowPasswordForm(false);
-    } catch (error) {
-      setPasswordStatus(error?.response?.data?.detail || 'Failed to submit password change request.');
-    } finally {
-      setSubmittingPasswordRequest(false);
-    }
+  const handleOpenForgotPassword = () => {
+    onClose();
+    navigate('/forgot-password');
   };
 
  return (
@@ -223,53 +152,15 @@ const LoginSecurityPanel = ({ isOpen, onClose }) => {
           <div className="card-content card-content-stacked">
             <div className="card-title">Change Password</div>
             <p className="card-description">
-              Submit a password change request. Admin approval is required before the new password becomes active.
+              Open the password reset screen and send yourself a reset link from the login flow.
             </p>
             <button
               type="button"
               className="security-inline-btn"
-              onClick={() => setShowPasswordForm((prev) => !prev)}
+              onClick={handleOpenForgotPassword}
             >
-              {showPasswordForm ? 'Hide Form' : 'Change Password'}
+              Open Reset Screen
             </button>
-
-            {showPasswordForm && (
-              <form className="security-password-form" onSubmit={handlePasswordSubmit}>
-                <label className="security-field">
-                  <span>New Password</span>
-                  <input
-                    type="password"
-                    value={passwordForm.newPassword}
-                    onChange={(event) => setPasswordForm((prev) => ({ ...prev, newPassword: event.target.value }))}
-                    placeholder="Enter new password"
-                    autoComplete="new-password"
-                  />
-                </label>
-
-                <label className="security-field">
-                  <span>Confirm Password</span>
-                  <input
-                    type="password"
-                    value={passwordForm.confirmPassword}
-                    onChange={(event) => setPasswordForm((prev) => ({ ...prev, confirmPassword: event.target.value }))}
-                    placeholder="Re-enter new password"
-                    autoComplete="new-password"
-                  />
-                </label>
-
-                <button
-                  type="submit"
-                  className="security-submit-btn"
-                  disabled={submittingPasswordRequest}
-                >
-                  {submittingPasswordRequest ? 'Submitting...' : 'Submit for Admin Approval'}
-                </button>
-              </form>
-            )}
-
-            {passwordStatus && (
-              <div className="security-request-status">{passwordStatus}</div>
-            )}
           </div>
         </div>
 

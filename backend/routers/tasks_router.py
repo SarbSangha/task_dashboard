@@ -4,7 +4,7 @@ from fastapi import HTTPException, Depends, Query, Cookie, Header, Request, WebS
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, load_only
 from sqlalchemy import or_, and_, func, case, inspect
 from sqlalchemy.exc import SQLAlchemyError
-from typing import Optional, List, Set
+from typing import Optional, List, Set, Dict
 from pydantic import BaseModel, Field
 from datetime import datetime
 import asyncio
@@ -16,6 +16,9 @@ from time import perf_counter
 from database_config import get_operational_db, OperationalSessionLocal
 from models_new import (
     Task,
+    TaskStage,
+    TaskStageAssignee,
+    TaskStageSubmission,
     TaskParticipant,
     TaskStatusHistory,
     TaskComment,
@@ -25,12 +28,15 @@ from models_new import (
     TaskEditLog,
     User,
     TaskStatus,
+    TaskWorkflowStatus,
+    TaskStageStatus,
     Priority,
     ParticipantRole,
 )
 from auth import verify_session_token, get_request_session_token, resolve_session_user
 from task_helpers import TaskHelpers
 from utils.cache import cache_response, invalidate_pattern
+from utils.datetime_utils import serialize_utc_datetime
 from utils.edge_cache import queue_edge_cache_purge
 
 TASK_ALL_CACHE_PATTERN = "cache:tasks_all:*"
@@ -51,15 +57,19 @@ EDGE_TASK_CACHE_PATTERNS = (
 )
 
 
-async def invalidate_task_lane_b_cache():
+async def invalidate_task_lane_b_cache(*, include_assets: bool = True):
     await invalidate_pattern(TASK_ALL_CACHE_PATTERN)
-    await invalidate_pattern(TASK_ASSETS_CACHE_PATTERN)
     await invalidate_pattern(TASK_UNREAD_CACHE_PATTERN)
     await invalidate_pattern(TASK_INBOX_CACHE_PATTERN)
     await invalidate_pattern(TASK_OUTBOX_CACHE_PATTERN)
     await invalidate_pattern(TASK_NOTIFICATIONS_CACHE_PATTERN)
     await invalidate_pattern(TASK_OUTBOX_UNREAD_CACHE_PATTERN)
-    queue_edge_cache_purge(EDGE_TASK_CACHE_PATTERNS)
+    edge_patterns = list(EDGE_TASK_CACHE_PATTERNS)
+    if include_assets:
+        await invalidate_pattern(TASK_ASSETS_CACHE_PATTERN)
+    else:
+        edge_patterns = [pattern for pattern in edge_patterns if pattern != "tasks_assets:"]
+    queue_edge_cache_purge(edge_patterns)
 
 
 def _inbox_profile_logging_enabled() -> bool:
@@ -110,6 +120,21 @@ class TaskCreate(BaseModel):
     reference: Optional[str] = None
     links: List[str] = Field(default_factory=list)
     attachments: List[dict] = Field(default_factory=list)
+    workflow: Optional["TaskWorkflowCreatePayload"] = None
+
+
+class TaskWorkflowStageCreatePayload(BaseModel):
+    order: int = Field(..., ge=1)
+    title: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = None
+    approvalRequired: bool = False
+    assigneeIds: List[int] = Field(default_factory=list)
+
+
+class TaskWorkflowCreatePayload(BaseModel):
+    enabled: bool = False
+    finalApprovalRequired: bool = False
+    stages: List[TaskWorkflowStageCreatePayload] = Field(default_factory=list)
 
 
 class TaskUpdate(BaseModel):
@@ -142,22 +167,36 @@ class TaskCommentPayload(BaseModel):
     comment: str = Field(..., min_length=1)
     comment_type: str = Field(default="general")
     is_internal: bool = False
+    stage_id: Optional[int] = None
 
 
 class ProjectIdGeneratePayload(BaseModel):
     project_name: str = Field(..., min_length=1)
-    customer_name: str = Field(..., min_length=1)
+    customer_name: str = Field(default="")
     date: Optional[str] = None
 
 
 class TaskIdGeneratePayload(BaseModel):
     project_name: str = Field(..., min_length=1)
-    customer_name: str = Field(..., min_length=1)
+    customer_name: str = Field(default="")
     date: Optional[str] = None
 
 
 class ResultEditPayload(BaseModel):
     result_text: str = Field(..., min_length=1)
+
+
+class TaskStageUpdatePayload(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    approval_required: Optional[bool] = None
+    assignee_ids: Optional[List[int]] = None
+
+
+if hasattr(TaskCreate, "model_rebuild"):
+    TaskCreate.model_rebuild()
+else:
+    TaskCreate.update_forward_refs()
 
 
 def parse_deadline(deadline_str: Optional[str]) -> Optional[datetime]:
@@ -214,9 +253,17 @@ def has_any_role(user: User, allowed: Set[str]) -> bool:
 
 def can_approve(user: User, task: Task) -> bool:
     roles = role_set(user)
+    workflow_meta = dict(task.metadata_json or {})
+    workflow_waiting_approval = _is_workflow_task(task) and (
+        (task.workflow_status or "").strip().lower() == TaskWorkflowStatus.WAITING_APPROVAL.value
+        or bool(workflow_meta.get(WORKFLOW_FINAL_PENDING_META_KEY))
+    )
     if "super_admin" in roles:
         return True
-    if user.id == task.creator_id and task.status in {TaskStatus.APPROVED, TaskStatus.SUBMITTED, TaskStatus.NEED_IMPROVEMENT}:
+    if user.id == task.creator_id and (
+        workflow_waiting_approval
+        or task.status in {TaskStatus.APPROVED, TaskStatus.SUBMITTED, TaskStatus.NEED_IMPROVEMENT}
+    ):
         return True
     if "spoc" in roles and user.department == task.to_department:
         return True
@@ -228,6 +275,540 @@ def can_approve(user: User, task: Task) -> bool:
 def can_assign(user: User, task: Task) -> bool:
     roles = role_set(user)
     return "super_admin" in roles or ("hod" in roles and user.department == task.to_department)
+
+
+WORKFLOW_ASSIGNEE_ROLE = "assignee"
+WORKFLOW_SUMMARY_APPROVAL_META_KEY = "workflowCurrentStageApprovalRequired"
+WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY = "workflowCurrentStageAssigneeNames"
+WORKFLOW_FINAL_PENDING_META_KEY = "workflowFinalApprovalPending"
+
+
+def _is_workflow_task(task: Task) -> bool:
+    return bool(
+        task.workflow_enabled
+        or task.current_stage_id
+        or task.current_stage_order
+        or (task.current_stage_title or "").strip()
+        or (task.workflow_status or "").strip()
+        or bool(task.final_approval_required)
+    )
+
+
+def _workflow_submission_needs_repair(task: Task) -> bool:
+    if not _is_workflow_task(task):
+        return False
+    if task.status != TaskStatus.SUBMITTED:
+        return False
+    if not (task.current_stage_id or task.current_stage_order):
+        return False
+    return (task.workflow_stage or "").strip().lower() == "submitted_to_spoc"
+
+
+def _repair_workflow_submission_if_needed(
+    task: Task,
+    db: Session,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[TaskStage]:
+    if not _workflow_submission_needs_repair(task):
+        return None
+
+    now = now or datetime.utcnow()
+    stage = _get_task_workflow_stage(task.current_stage_id, task.id, db) if task.current_stage_id else _get_current_workflow_stage(task, db)
+    if not stage or not stage.approval_required:
+        return None
+    if stage.status == TaskStageStatus.SUBMITTED.value:
+        _sync_task_workflow_summary(task, db, now=now)
+        return stage
+    if stage.status not in {TaskStageStatus.ACTIVE.value, TaskStageStatus.REVISION_REQUESTED.value}:
+        return None
+
+    current_submission = (
+        db.query(TaskStageSubmission)
+        .filter(TaskStageSubmission.stage_id == stage.id, TaskStageSubmission.is_current == True)
+        .first()
+    )
+    meta = dict(task.metadata_json or {})
+    if not current_submission:
+        latest_version = (
+            db.query(func.max(TaskStageSubmission.version))
+            .filter(TaskStageSubmission.stage_id == stage.id)
+            .scalar()
+            or 0
+        )
+        version = max(latest_version, int(task.result_version or 0))
+        if version <= 0:
+            version = latest_version + 1 if latest_version else 1
+        elif version <= latest_version:
+            version = latest_version + 1
+
+        submission_user_id = task.submitted_by or next(iter(_stage_assignee_ids(stage)), None) or task.creator_id
+        current_submission = TaskStageSubmission(
+            stage_id=stage.id,
+            version=version,
+            output_text=task.result_text,
+            links_json=meta.get("resultLinks", []) or [],
+            attachments_json=meta.get("resultAttachments", []) or [],
+            submitted_by_user_id=submission_user_id,
+            submitted_at=task.submitted_at or now,
+            is_current=True,
+        )
+        db.add(current_submission)
+
+    stage.submitted_at = current_submission.submitted_at or task.submitted_at or now
+    stage.revision_notes = None
+    stage.status = TaskStageStatus.SUBMITTED.value
+    task.result_version = current_submission.version
+    task.submitted_at = current_submission.submitted_at
+    task.submitted_by = current_submission.submitted_by_user_id
+    task.updated_at = now
+    _sync_task_workflow_summary(task, db, now=now)
+    return stage
+
+
+def _stage_assignee_ids(stage: Optional[TaskStage]) -> List[int]:
+    if not stage:
+        return []
+    return [
+        assignee.user_id
+        for assignee in (stage.assignees or [])
+        if assignee.is_active and assignee.role == WORKFLOW_ASSIGNEE_ROLE
+    ]
+
+
+def _stage_assignee_names(stage: Optional[TaskStage]) -> List[str]:
+    if not stage:
+        return []
+    names = []
+    for assignee in stage.assignees or []:
+        if not assignee.is_active or assignee.role != WORKFLOW_ASSIGNEE_ROLE or not assignee.user:
+            continue
+        names.append(assignee.user.name)
+    return names
+
+
+def _normalize_stage_payload(
+    stage_payloads: List[TaskWorkflowStageCreatePayload],
+) -> List[TaskWorkflowStageCreatePayload]:
+    ordered = sorted(stage_payloads, key=lambda stage: (stage.order, stage.title.lower(), len(stage.assigneeIds or [])))
+    normalized: List[TaskWorkflowStageCreatePayload] = []
+    seen_orders: Set[int] = set()
+    for stage in ordered:
+        if stage.order in seen_orders:
+            raise HTTPException(status_code=400, detail="Workflow stages must have unique order values")
+        seen_orders.add(stage.order)
+        if not stage.assigneeIds:
+            raise HTTPException(status_code=400, detail=f"Stage {stage.order} must have at least one assignee")
+        normalized.append(stage)
+    return normalized
+
+
+def _workflow_visibility_allowed(task: Task, current_user: User, db: Session) -> bool:
+    return current_user.id == task.creator_id or user_is_participant(task.id, current_user.id, None, db)
+
+
+def _get_task_workflow_stages(task_id: int, db: Session) -> List[TaskStage]:
+    return (
+        db.query(TaskStage)
+        .options(
+            selectinload(TaskStage.assignees).joinedload(TaskStageAssignee.user),
+        )
+        .filter(TaskStage.task_id == task_id)
+        .order_by(TaskStage.stage_order.asc(), TaskStage.id.asc())
+        .all()
+    )
+
+
+def _get_task_workflow_stage(stage_id: int, task_id: int, db: Session) -> TaskStage:
+    stage = (
+        db.query(TaskStage)
+        .options(selectinload(TaskStage.assignees).joinedload(TaskStageAssignee.user))
+        .filter(TaskStage.id == stage_id, TaskStage.task_id == task_id)
+        .first()
+    )
+    if not stage:
+        raise HTTPException(status_code=404, detail="Task stage not found")
+    return stage
+
+
+def _get_current_stage_submission_map(stage_ids: List[int], db: Session) -> Dict[int, TaskStageSubmission]:
+    if not stage_ids:
+        return {}
+    rows = (
+        db.query(TaskStageSubmission)
+        .options(joinedload(TaskStageSubmission.submitted_by))
+        .filter(
+            TaskStageSubmission.stage_id.in_(stage_ids),
+            TaskStageSubmission.is_current == True,
+        )
+        .all()
+    )
+    return {row.stage_id: row for row in rows}
+
+
+def _serialize_task_comment(comment: TaskComment, user: Optional[User]) -> dict:
+    return {
+        "id": comment.id,
+        "taskId": comment.task_id,
+        "stageId": comment.stage_id,
+        "comment": comment.comment,
+        "commentType": comment.comment_type or "general",
+        "isInternal": bool(comment.is_internal),
+        "createdAt": serialize_utc_datetime(comment.created_at),
+        "updatedAt": serialize_utc_datetime(comment.updated_at),
+        "user": {
+            "id": user.id if user else None,
+            "name": user.name if user else "Unknown",
+            "role": ", ".join(sorted(role_set(user))) if user else "unknown",
+            "department": user.department if user else None,
+        },
+    }
+
+
+def _get_stage_comments_map(task_id: int, stage_ids: List[int], db: Session) -> Dict[int, List[dict]]:
+    comments_by_stage: Dict[int, List[dict]] = defaultdict(list)
+    if not stage_ids:
+        return comments_by_stage
+
+    rows = (
+        db.query(TaskComment, User)
+        .join(User, User.id == TaskComment.user_id)
+        .filter(
+            TaskComment.task_id == task_id,
+            TaskComment.stage_id.in_(stage_ids),
+        )
+        .order_by(TaskComment.created_at.asc(), TaskComment.id.asc())
+        .all()
+    )
+    for comment, user in rows:
+        comments_by_stage[comment.stage_id].append(_serialize_task_comment(comment, user))
+    return comments_by_stage
+
+
+def _get_stage_history_map(task_id: int, stage_ids: List[int], db: Session) -> Dict[int, List[dict]]:
+    history_by_stage: Dict[int, List[dict]] = defaultdict(list)
+    if not stage_ids:
+        return history_by_stage
+
+    rows = (
+        db.query(TaskStatusHistory, User)
+        .outerjoin(User, User.id == TaskStatusHistory.user_id)
+        .filter(TaskStatusHistory.task_id == task_id)
+        .order_by(TaskStatusHistory.timestamp.asc(), TaskStatusHistory.id.asc())
+        .all()
+    )
+    valid_stage_ids = set(stage_ids)
+    for entry, user in rows:
+        meta = entry.metadata_json if isinstance(entry.metadata_json, dict) else {}
+        stage_id = meta.get("stageId")
+        if stage_id not in valid_stage_ids:
+            continue
+        history_by_stage[stage_id].append(
+            {
+                "id": entry.id,
+                "action": entry.action,
+                "statusFrom": entry.status_from,
+                "statusTo": entry.status_to,
+                "comments": entry.comments,
+                "timestamp": serialize_utc_datetime(entry.timestamp),
+                "user": {
+                    "id": user.id if user else None,
+                    "name": user.name if user else "Unknown",
+                    "role": ", ".join(sorted(role_set(user))) if user else "unknown",
+                    "department": user.department if user else None,
+                },
+            }
+        )
+    return history_by_stage
+
+
+def _build_stage_event_log(stage: TaskStage, current_submission: Optional[TaskStageSubmission], history_entries: Optional[List[dict]] = None) -> List[dict]:
+    events: List[dict] = []
+    if stage.started_at:
+        events.append(
+            {
+                "id": f"started-{stage.id}",
+                "action": "stage_started",
+                "label": "Stage started",
+                "timestamp": serialize_utc_datetime(stage.started_at),
+                "comments": None,
+            }
+        )
+    if current_submission and current_submission.submitted_at:
+        events.append(
+            {
+                "id": f"submission-{current_submission.id}",
+                "action": "stage_submitted",
+                "label": f"Submission v{current_submission.version}",
+                "timestamp": serialize_utc_datetime(current_submission.submitted_at),
+                "comments": current_submission.output_text,
+            }
+        )
+    if stage.submitted_at:
+        events.append(
+            {
+                "id": f"submitted-{stage.id}",
+                "action": "waiting_approval",
+                "label": "Submitted for approval",
+                "timestamp": serialize_utc_datetime(stage.submitted_at),
+                "comments": None,
+            }
+        )
+    if stage.approved_at:
+        events.append(
+            {
+                "id": f"approved-{stage.id}",
+                "action": "stage_approved",
+                "label": "Stage approved",
+                "timestamp": serialize_utc_datetime(stage.approved_at),
+                "comments": None,
+            }
+        )
+    if stage.completed_at:
+        events.append(
+            {
+                "id": f"completed-{stage.id}",
+                "action": "stage_completed",
+                "label": "Stage completed",
+                "timestamp": serialize_utc_datetime(stage.completed_at),
+                "comments": None,
+            }
+        )
+    if stage.revision_notes:
+        events.append(
+            {
+                "id": f"revision-{stage.id}",
+                "action": "revision_requested",
+                "label": "Revision requested",
+                "timestamp": serialize_utc_datetime(stage.updated_at),
+                "comments": stage.revision_notes,
+            }
+        )
+
+    for entry in history_entries or []:
+        events.append(
+            {
+                "id": f"history-{entry['id']}",
+                "action": entry["action"],
+                "label": entry["action"].replace("_", " "),
+                "timestamp": entry["timestamp"],
+                "comments": entry.get("comments"),
+                "user": entry.get("user"),
+            }
+        )
+
+    deduped = {}
+    for event in events:
+        deduped[event["id"]] = event
+    return sorted(
+        deduped.values(),
+        key=lambda item: item.get("timestamp") or "",
+        reverse=True,
+    )
+
+
+def _is_active_stage_assignee(stage_id: int, user_id: int, db: Session) -> bool:
+    return (
+        db.query(TaskStageAssignee)
+        .filter(
+            TaskStageAssignee.stage_id == stage_id,
+            TaskStageAssignee.user_id == user_id,
+            TaskStageAssignee.is_active == True,
+            TaskStageAssignee.role == WORKFLOW_ASSIGNEE_ROLE,
+        )
+        .first()
+        is not None
+    )
+
+
+def _set_task_workflow_summary_meta(task: Task, current_stage: Optional[TaskStage]) -> None:
+    meta = dict(task.metadata_json or {})
+    meta[WORKFLOW_SUMMARY_APPROVAL_META_KEY] = bool(current_stage.approval_required) if current_stage else False
+    meta[WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY] = _stage_assignee_names(current_stage)
+    task.metadata_json = meta
+
+
+def _sync_task_workflow_summary(task: Task, db: Session, *, now: Optional[datetime] = None) -> List[TaskStage]:
+    now = now or datetime.utcnow()
+    stages = _get_task_workflow_stages(task.id, db)
+    meta = dict(task.metadata_json or {})
+    final_pending = bool(meta.get(WORKFLOW_FINAL_PENDING_META_KEY))
+
+    revision_stage = next((stage for stage in stages if stage.status == TaskStageStatus.REVISION_REQUESTED.value), None)
+    submitted_stage = next((stage for stage in stages if stage.status == TaskStageStatus.SUBMITTED.value), None)
+    active_stage = next((stage for stage in stages if stage.status == TaskStageStatus.ACTIVE.value), None)
+    current_stage: Optional[TaskStage] = None
+
+    if revision_stage:
+        current_stage = revision_stage
+        task.workflow_status = TaskWorkflowStatus.REVISION_REQUESTED.value
+        task.status = TaskStatus.NEED_IMPROVEMENT
+        task.workflow_stage = f"workflow_stage_{revision_stage.stage_order}_revision"
+    elif submitted_stage:
+        current_stage = submitted_stage
+        task.workflow_status = TaskWorkflowStatus.WAITING_APPROVAL.value
+        task.status = TaskStatus.SUBMITTED
+        task.workflow_stage = f"workflow_stage_{submitted_stage.stage_order}_waiting_approval"
+    elif active_stage:
+        current_stage = active_stage
+        task.workflow_status = TaskWorkflowStatus.ACTIVE.value
+        task.status = TaskStatus.IN_PROGRESS if active_stage.started_at else TaskStatus.ASSIGNED
+        task.workflow_stage = f"workflow_stage_{active_stage.stage_order}_active"
+        if active_stage.started_at and not task.started_at:
+            task.started_at = active_stage.started_at
+    elif stages and all(stage.status == TaskStageStatus.COMPLETED.value for stage in stages):
+        if final_pending:
+            current_stage = stages[-1]
+            task.workflow_status = TaskWorkflowStatus.WAITING_APPROVAL.value
+            task.status = TaskStatus.SUBMITTED
+            task.workflow_stage = "workflow_final_waiting_approval"
+        else:
+            task.workflow_status = TaskWorkflowStatus.COMPLETED.value
+            task.status = TaskStatus.COMPLETED
+            task.workflow_stage = "workflow_completed"
+            task.current_stage_id = None
+            task.current_stage_order = None
+            task.current_stage_title = None
+            task.current_assignee_ids_json = []
+            _set_task_workflow_summary_meta(task, None)
+            if not task.completed_at:
+                task.completed_at = now
+            return stages
+    else:
+        current_stage = stages[0] if stages else None
+        task.workflow_status = TaskWorkflowStatus.NOT_STARTED.value if stages else None
+        task.status = TaskStatus.PENDING
+        task.workflow_stage = "workflow_not_started" if stages else task.workflow_stage
+
+    task.current_stage_id = current_stage.id if current_stage else None
+    task.current_stage_order = current_stage.stage_order if current_stage else None
+    task.current_stage_title = current_stage.title if current_stage else None
+    task.current_assignee_ids_json = _stage_assignee_ids(current_stage)
+    _set_task_workflow_summary_meta(task, current_stage)
+    if task.workflow_status != TaskWorkflowStatus.COMPLETED.value:
+        task.completed_at = None
+    return stages
+
+
+def _activate_next_workflow_stage(task: Task, stages: List[TaskStage], current_stage_id: int, now: datetime) -> Optional[TaskStage]:
+    current_index = next((index for index, stage in enumerate(stages) if stage.id == current_stage_id), -1)
+    if current_index == -1:
+        return None
+    if current_index + 1 >= len(stages):
+        return None
+    next_stage = stages[current_index + 1]
+    if next_stage.status == TaskStageStatus.NOT_STARTED.value:
+        next_stage.status = TaskStageStatus.ACTIVE.value
+        next_stage.updated_at = now
+    return next_stage
+
+
+def _set_stage_current_submission(
+    stage: TaskStage,
+    payload: TaskActionPayload,
+    current_user: User,
+    db: Session,
+    *,
+    now: Optional[datetime] = None,
+) -> TaskStageSubmission:
+    now = now or datetime.utcnow()
+    (
+        db.query(TaskStageSubmission)
+        .filter(
+            TaskStageSubmission.stage_id == stage.id,
+            TaskStageSubmission.is_current == True,
+        )
+        .update({TaskStageSubmission.is_current: False}, synchronize_session=False)
+    )
+    latest_version = (
+        db.query(func.max(TaskStageSubmission.version))
+        .filter(TaskStageSubmission.stage_id == stage.id)
+        .scalar()
+        or 0
+    )
+    submission = TaskStageSubmission(
+        stage_id=stage.id,
+        version=latest_version + 1,
+        output_text=payload.result_text,
+        links_json=[str(x).strip() for x in (payload.result_links or []) if str(x).strip()],
+        attachments_json=[
+            {
+                "filename": item.get("filename"),
+                "originalName": item.get("originalName"),
+                "relativePath": item.get("relativePath"),
+                "path": item.get("path"),
+                "url": item.get("url"),
+                "mimetype": item.get("mimetype"),
+                "size": item.get("size"),
+                "storage": item.get("storage"),
+            }
+            for item in (payload.result_attachments or [])
+            if isinstance(item, dict)
+        ],
+        submitted_by_user_id=current_user.id,
+        submitted_at=now,
+        is_current=True,
+    )
+    db.add(submission)
+    stage.updated_at = now
+    return submission
+
+
+def _mirror_submission_to_task(task: Task, submission: TaskStageSubmission) -> None:
+    meta = dict(task.metadata_json or {})
+    task.result_text = submission.output_text
+    meta["resultLinks"] = submission.links_json or []
+    meta["resultAttachments"] = submission.attachments_json or []
+    task.metadata_json = meta
+
+
+def _serialize_task_stage(
+    stage: TaskStage,
+    current_submission: Optional[TaskStageSubmission],
+    comments: Optional[List[dict]] = None,
+    history_entries: Optional[List[dict]] = None,
+) -> dict:
+    return {
+        "id": stage.id,
+        "order": stage.stage_order,
+        "title": stage.title,
+        "description": stage.description,
+        "status": stage.status,
+        "approvalRequired": bool(stage.approval_required),
+        "isFinalStage": bool(stage.is_final_stage),
+        "startedAt": serialize_utc_datetime(stage.started_at),
+        "submittedAt": serialize_utc_datetime(stage.submitted_at),
+        "completedAt": serialize_utc_datetime(stage.completed_at),
+        "approvedAt": serialize_utc_datetime(stage.approved_at),
+        "approvedByUserId": stage.approved_by_user_id,
+        "revisionNotes": stage.revision_notes,
+        "assignees": [
+            {
+                "id": assignee.user_id,
+                "name": assignee.user.name if assignee.user else "Unknown",
+                "department": assignee.user.department if assignee.user else None,
+                "role": assignee.role,
+                "isPrimary": bool(assignee.is_primary),
+            }
+            for assignee in (stage.assignees or [])
+            if assignee.is_active
+        ],
+        "currentSubmission": {
+            "id": current_submission.id,
+            "version": current_submission.version,
+            "outputText": current_submission.output_text,
+            "links": current_submission.links_json or [],
+            "attachments": current_submission.attachments_json or [],
+            "submittedByUserId": current_submission.submitted_by_user_id,
+            "submittedByName": current_submission.submitted_by.name if current_submission.submitted_by else "Unknown",
+            "submittedAt": serialize_utc_datetime(current_submission.submitted_at),
+        }
+        if current_submission
+        else None,
+        "comments": comments or [],
+        "history": history_entries or [],
+        "eventLog": _build_stage_event_log(stage, current_submission, history_entries),
+    }
 
 
 def get_current_user_from_session(
@@ -384,6 +965,45 @@ def compute_available_actions(
     if task.status == TaskStatus.CANCELLED:
         return []
 
+    if _is_workflow_task(task):
+        actions = ["chat"]
+        is_creator = user.id == task.creator_id
+        current_assignee_ids = {
+            int(user_id)
+            for user_id in (task.current_assignee_ids_json or [])
+            if f"{user_id}".strip().isdigit()
+        }
+        is_current_stage_assignee = user.id in current_assignee_ids
+        workflow_status = (task.workflow_status or "").strip().lower()
+
+        if is_current_stage_assignee and workflow_status in {
+            TaskWorkflowStatus.ACTIVE.value,
+            TaskWorkflowStatus.REVISION_REQUESTED.value,
+        }:
+            if task.status in {TaskStatus.ASSIGNED, TaskStatus.PENDING, TaskStatus.NEED_IMPROVEMENT}:
+                actions.append("start")
+            actions.append("submit")
+
+        if can_approve(user, task) and (
+            workflow_status == TaskWorkflowStatus.WAITING_APPROVAL.value
+            or _workflow_submission_needs_repair(task)
+        ):
+            actions.extend(["approve", "need_improvement"])
+
+        if is_creator and task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.REJECTED}:
+            actions.append("revoke_task")
+        if is_creator and workflow_status in {
+            TaskWorkflowStatus.NOT_STARTED.value,
+            TaskWorkflowStatus.ACTIVE.value,
+        }:
+            actions.append("edit_task")
+
+        deduped = []
+        for action in actions:
+            if action not in deduped:
+                deduped.append(action)
+        return deduped
+
     roles = role_set(user)
     actions = ["chat"]
     is_creator = user.id == task.creator_id
@@ -449,6 +1069,13 @@ def _task_list_loader_options():
             Task.to_department,
             Task.status,
             Task.workflow_stage,
+            Task.workflow_enabled,
+            Task.workflow_status,
+            Task.current_stage_id,
+            Task.current_stage_order,
+            Task.current_stage_title,
+            Task.final_approval_required,
+            Task.current_assignee_ids_json,
             Task.deadline,
             Task.created_at,
             Task.updated_at,
@@ -477,6 +1104,34 @@ def _task_list_loader_options():
     )
 
 
+def _workflow_task_loader_options():
+    return (
+        load_only(
+            Task.id,
+            Task.task_number,
+            Task.title,
+            Task.project_name,
+            Task.priority,
+            Task.creator_id,
+            Task.status,
+            Task.workflow_stage,
+            Task.workflow_enabled,
+            Task.workflow_status,
+            Task.current_stage_id,
+            Task.current_stage_order,
+            Task.current_stage_title,
+            Task.final_approval_required,
+            Task.current_assignee_ids_json,
+            Task.deadline,
+            Task.created_at,
+            Task.updated_at,
+            Task.metadata_json,
+            Task.result_text,
+        ),
+        joinedload(Task.creator).load_only(User.id, User.name, User.department),
+    )
+
+
 def serialize_task(task: Task, db: Session, current_user: Optional[User] = None) -> dict:
     return serialize_task_with_context(task, db, current_user=current_user, context=None)
 
@@ -501,17 +1156,57 @@ def _serialize_task_list_base(task: Task) -> dict:
         "toDepartment": task.to_department,
         "status": task.status.value if task.status else None,
         "workflowStage": task.workflow_stage,
-        "deadline": task.deadline.isoformat() if task.deadline else None,
-        "createdAt": task.created_at.isoformat() if task.created_at else None,
-        "updatedAt": task.updated_at.isoformat() if task.updated_at else None,
-        "startedAt": task.started_at.isoformat() if task.started_at else None,
-        "completedAt": task.completed_at.isoformat() if task.completed_at else None,
-        "submittedAt": task.submitted_at.isoformat() if task.submitted_at else None,
+        "workflowEnabled": _is_workflow_task(task),
+        "workflowStatus": task.workflow_status,
+        "currentStageId": task.current_stage_id,
+        "currentStageOrder": task.current_stage_order,
+        "currentStageTitle": task.current_stage_title,
+        "finalApprovalRequired": bool(task.final_approval_required),
+        "deadline": serialize_utc_datetime(task.deadline),
+        "createdAt": serialize_utc_datetime(task.created_at),
+        "updatedAt": serialize_utc_datetime(task.updated_at),
+        "startedAt": serialize_utc_datetime(task.started_at),
+        "completedAt": serialize_utc_datetime(task.completed_at),
+        "submittedAt": serialize_utc_datetime(task.submitted_at),
         "submittedBy": task.submitted_by,
         "taskVersion": task.task_version,
         "resultVersion": task.result_version,
         "resultText": task.result_text,
         "isDeleted": task.is_deleted,
+    }
+
+
+def _serialize_task_workflow_summary(task: Task) -> dict:
+    meta = task.metadata_json or {}
+    creator = task.creator if "creator" not in inspect(task).unloaded else None
+    return {
+        "id": task.id,
+        "taskNumber": task.task_number,
+        "title": task.title,
+        "projectName": task.project_name,
+        "priority": task.priority.value if task.priority else None,
+        "status": task.status.value if task.status else None,
+        "workflowStage": task.workflow_stage,
+        "workflowEnabled": _is_workflow_task(task),
+        "workflowStatus": task.workflow_status,
+        "currentStageId": task.current_stage_id,
+        "currentStageOrder": task.current_stage_order,
+        "currentStageTitle": task.current_stage_title,
+        "finalApprovalRequired": bool(task.final_approval_required),
+        "deadline": serialize_utc_datetime(task.deadline),
+        "createdAt": serialize_utc_datetime(task.created_at),
+        "updatedAt": serialize_utc_datetime(task.updated_at),
+        "resultText": task.result_text,
+        "customerName": meta.get("customerName"),
+        "reference": meta.get("reference"),
+        "currentStageAssigneeIds": task.current_assignee_ids_json or [],
+        "currentStageApprovalRequired": bool(meta.get(WORKFLOW_SUMMARY_APPROVAL_META_KEY)),
+        "currentStageAssigneeNames": meta.get(WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY, []),
+        "creator": {
+            "id": creator.id if creator else task.creator_id,
+            "name": creator.name if creator else "Unknown",
+            "department": creator.department if creator else None,
+        },
     }
 
 
@@ -691,6 +1386,9 @@ def serialize_task_with_context(
     task_dict["resultLinks"] = meta.get("resultLinks", [])
     task_dict["resultAttachments"] = meta.get("resultAttachments", [])
     task_dict["revocation"] = meta.get("revocation")
+    task_dict["currentStageAssigneeIds"] = task.current_assignee_ids_json or []
+    task_dict["currentStageApprovalRequired"] = bool(meta.get(WORKFLOW_SUMMARY_APPROVAL_META_KEY))
+    task_dict["currentStageAssigneeNames"] = meta.get(WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY, [])
     creators = (context or {}).get("creators") or {}
     creator = creators.get(task.creator_id)
     if creator is None and "creator" not in inspect(task).unloaded:
@@ -769,7 +1467,7 @@ def serialize_task_with_context(
                 "fromDepartment": fwd.from_department,
                 "toDepartment": fwd.to_department,
                 "reason": fwd.reason,
-                "createdAt": fwd.created_at.isoformat() if fwd.created_at else None,
+                "createdAt": serialize_utc_datetime(fwd.created_at),
             }
         )
     seen_by_by_task = (context or {}).get("seen_by_by_task") or {}
@@ -794,7 +1492,7 @@ def serialize_task_with_context(
             "id": user.id,
             "name": user.name,
             "department": user.department,
-            "seenAt": view.seen_at.isoformat() if view.seen_at else None,
+            "seenAt": serialize_utc_datetime(view.seen_at),
         }
         for view, user in seen_by_rows
     ]
@@ -888,8 +1586,8 @@ def _build_task_assets(task: Task, creator: Optional[User], submitter: Optional[
     customer_name = meta.get("customerName") or ""
     project_name = task.project_name or ""
     priority = task.priority.value if task.priority else "medium"
-    created_at = task.created_at.isoformat() if task.created_at else None
-    updated_at = task.updated_at.isoformat() if task.updated_at else None
+    created_at = serialize_utc_datetime(task.created_at)
+    updated_at = serialize_utc_datetime(task.updated_at)
     created_by_name = creator.name if creator else None
     created_by_department = creator.department if creator else None
     submitted_by_name = submitter.name if submitter else None
@@ -1199,6 +1897,24 @@ async def create_task(
 
     try:
         deadline = parse_deadline(task_data.deadline)
+        workflow_config = (
+            task_data.workflow
+            if task_data.workflow and task_data.workflow.enabled and task_data.workflow.stages
+            else None
+        )
+        normalized_workflow_stages = (
+            _normalize_stage_payload(task_data.workflow.stages)
+            if workflow_config
+            else []
+        )
+        workflow_stage_assignee_ids = sorted(
+            {
+                assignee_id
+                for stage in normalized_workflow_stages
+                for assignee_id in (stage.assigneeIds or [])
+            }
+        )
+        initial_stage_payload = normalized_workflow_stages[0] if normalized_workflow_stages else None
 
         priority_map = {
             "low": Priority.LOW,
@@ -1228,6 +1944,35 @@ async def create_task(
                 suffix += 1
             task_data.taskId = candidate
 
+        initial_assignee_ids = (
+            workflow_stage_assignee_ids
+            if workflow_config
+            else sorted({user_id for user_id in (task_data.assigneeIds or []) if user_id})
+        )
+        metadata_json = {
+            "customerName": task_data.customerName,
+            "suggestedAssigneeIds": initial_assignee_ids,
+            "reference": (task_data.reference or "").strip() or None,
+            "links": [str(x).strip() for x in (task_data.links or []) if str(x).strip()],
+            "attachments": [
+                {
+                    "filename": item.get("filename"),
+                    "originalName": item.get("originalName"),
+                    "relativePath": item.get("relativePath"),
+                    "path": item.get("path"),
+                    "url": item.get("url"),
+                    "mimetype": item.get("mimetype"),
+                    "size": item.get("size"),
+                    "storage": item.get("storage"),
+                }
+                for item in (task_data.attachments or [])
+                if isinstance(item, dict)
+            ],
+            WORKFLOW_FINAL_PENDING_META_KEY: False,
+            WORKFLOW_SUMMARY_APPROVAL_META_KEY: bool(initial_stage_payload.approvalRequired) if initial_stage_payload else False,
+            WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY: [],
+        }
+
         new_task = Task(
             task_number=task_data.taskId,
             task_id_project_hex=to_hex4(task_data.projectName or task_data.title),
@@ -1245,30 +1990,17 @@ async def create_task(
             from_department=current_user.department,
             to_department=task_data.toDepartment,
             status=TaskStatus.PENDING,
-            workflow_stage="pending_creator_hod",
+            workflow_stage="pending_creator_hod" if not workflow_config else "workflow_stage_1_active",
+            workflow_enabled=bool(workflow_config),
+            workflow_status=TaskWorkflowStatus.ACTIVE.value if workflow_config else None,
+            current_stage_order=initial_stage_payload.order if initial_stage_payload else None,
+            current_stage_title=initial_stage_payload.title if initial_stage_payload else None,
+            final_approval_required=bool(workflow_config.finalApprovalRequired) if workflow_config else False,
+            current_assignee_ids_json=sorted({user_id for user_id in ((initial_stage_payload.assigneeIds if initial_stage_payload else []) or []) if user_id}),
             deadline=deadline,
             task_edit_locked=False,
             result_edit_locked=True,
-            metadata_json={
-                "customerName": task_data.customerName,
-                "suggestedAssigneeIds": task_data.assigneeIds,
-                "reference": (task_data.reference or "").strip() or None,
-                "links": [str(x).strip() for x in (task_data.links or []) if str(x).strip()],
-                "attachments": [
-                    {
-                        "filename": item.get("filename"),
-                        "originalName": item.get("originalName"),
-                        "relativePath": item.get("relativePath"),
-                        "path": item.get("path"),
-                        "url": item.get("url"),
-                        "mimetype": item.get("mimetype"),
-                        "size": item.get("size"),
-                        "storage": item.get("storage"),
-                    }
-                    for item in (task_data.attachments or [])
-                    if isinstance(item, dict)
-                ],
-            },
+            metadata_json=metadata_json,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
@@ -1278,22 +2010,85 @@ async def create_task(
 
         ensure_participant(db, new_task.id, current_user.id, ParticipantRole.CREATOR)
 
-        # Add selected receivers so they can see this in Inbox immediately.
-        # They remain passive until approval/assignment actions progress workflow.
-        for receiver_id in (task_data.assigneeIds or []):
-            receiver = db.query(User).filter(User.id == receiver_id, User.is_active == True).first()
-            if not receiver:
-                continue
-            ensure_participant(db, new_task.id, receiver.id, ParticipantRole.ASSIGNEE)
-            create_notification(
-                db,
-                new_task,
-                receiver.id,
-                "task_received",
-                f"New task received: {new_task.title}",
-                "You have been included in a newly created task.",
-                actor=current_user,
-            )
+        if workflow_config:
+            assignee_users = (
+                db.query(User)
+                .filter(User.id.in_(workflow_stage_assignee_ids), User.is_active == True)
+                .all()
+            ) if workflow_stage_assignee_ids else []
+            assignee_users_by_id = {user.id: user for user in assignee_users}
+            missing_assignee_ids = sorted(set(workflow_stage_assignee_ids) - set(assignee_users_by_id))
+            if missing_assignee_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Workflow assignees not found or inactive: {', '.join(str(user_id) for user_id in missing_assignee_ids)}",
+                )
+
+            created_stages: List[TaskStage] = []
+            for index, stage_payload in enumerate(normalized_workflow_stages):
+                stage = TaskStage(
+                    task_id=new_task.id,
+                    stage_order=stage_payload.order,
+                    title=stage_payload.title,
+                    description=stage_payload.description,
+                    status=TaskStageStatus.ACTIVE.value if index == 0 else TaskStageStatus.NOT_STARTED.value,
+                    approval_required=bool(stage_payload.approvalRequired),
+                    is_final_stage=index == len(normalized_workflow_stages) - 1,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(stage)
+                db.flush()
+
+                for assignee_index, assignee_id in enumerate(sorted(set(stage_payload.assigneeIds or []))):
+                    db.add(
+                        TaskStageAssignee(
+                            stage_id=stage.id,
+                            user_id=assignee_id,
+                            role=WORKFLOW_ASSIGNEE_ROLE,
+                            is_primary=assignee_index == 0,
+                            is_active=True,
+                            assigned_at=datetime.utcnow(),
+                        )
+                    )
+                    ensure_participant(db, new_task.id, assignee_id, ParticipantRole.ASSIGNEE)
+                created_stages.append(stage)
+
+            db.flush()
+            _sync_task_workflow_summary(new_task, db)
+
+            for assignee_id in (new_task.current_assignee_ids_json or []):
+                create_notification(
+                    db,
+                    new_task,
+                    assignee_id,
+                    "workflow_stage_assigned",
+                    f"Stage {new_task.current_stage_order} assigned: {new_task.current_stage_title}",
+                    "You have been assigned the current active workflow stage.",
+                    actor=current_user,
+                    metadata_json={
+                        "stageOrder": new_task.current_stage_order,
+                        "stageTitle": new_task.current_stage_title,
+                        "workflowEvent": "stage_assigned",
+                    },
+                )
+        else:
+            # Add selected receivers so they can see this in Inbox immediately.
+            # They remain passive until approval/assignment actions progress workflow.
+            for receiver_id in (task_data.assigneeIds or []):
+                receiver = db.query(User).filter(User.id == receiver_id, User.is_active == True).first()
+                if not receiver:
+                    continue
+                ensure_participant(db, new_task.id, receiver.id, ParticipantRole.ASSIGNEE)
+                create_notification(
+                    db,
+                    new_task,
+                    receiver.id,
+                    "task_received",
+                    f"New task received: {new_task.title}",
+                    "You have been included in a newly created task.",
+                    actor=current_user,
+                )
 
         creator_hods = db.query(User).filter(
             User.is_active == True,
@@ -1319,7 +2114,7 @@ async def create_task(
             current_user.id,
             "created",
             TaskStatus.PENDING.value,
-            "Task created",
+            "Workflow task created" if workflow_config else "Task created",
         )
 
         db.commit()
@@ -1332,6 +2127,633 @@ async def create_task(
             "data": serialize_task(new_task, db, current_user),
         }
 
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _get_current_workflow_stage(task: Task, db: Session) -> Optional[TaskStage]:
+    if task.current_stage_id:
+        return _get_task_workflow_stage(task.current_stage_id, task.id, db)
+    return None
+
+
+def _post_stage_comment(
+    db: Session,
+    task: Task,
+    stage: TaskStage,
+    user_id: int,
+    comment: str,
+    comment_type: str,
+) -> None:
+    if not comment:
+        return
+    db.add(
+        TaskComment(
+            task_id=task.id,
+            stage_id=stage.id,
+            user_id=user_id,
+            comment=comment,
+            comment_type=comment_type,
+            is_internal=False,
+            created_at=datetime.utcnow(),
+        )
+    )
+
+
+def _submit_workflow_stage(
+    task: Task,
+    payload: TaskActionPayload,
+    db: Session,
+    current_user: User,
+    *,
+    stage_id: Optional[int] = None,
+) -> dict:
+    now = datetime.utcnow()
+    stage = _get_task_workflow_stage(stage_id, task.id, db) if stage_id else _get_current_workflow_stage(task, db)
+    if not stage:
+        raise HTTPException(status_code=400, detail="No active workflow stage found")
+    if stage.status not in {TaskStageStatus.ACTIVE.value, TaskStageStatus.REVISION_REQUESTED.value}:
+        raise HTTPException(status_code=400, detail="This workflow stage cannot be submitted right now")
+    if not _is_active_stage_assignee(stage.id, current_user.id, db):
+        raise HTTPException(status_code=403, detail="Only current stage assignee can submit")
+
+    if not stage.started_at:
+        stage.started_at = now
+    if not task.started_at:
+        task.started_at = stage.started_at
+
+    submission = _set_stage_current_submission(stage, payload, current_user, db, now=now)
+    stage.submitted_at = now
+    stage.revision_notes = None
+    _mirror_submission_to_task(task, submission)
+    task.result_version = submission.version
+    task.submitted_at = now
+    task.submitted_by = current_user.id
+    task.updated_at = now
+
+    stages = _get_task_workflow_stages(task.id, db)
+    task_meta = dict(task.metadata_json or {})
+    task_meta[WORKFLOW_FINAL_PENDING_META_KEY] = False
+    task.metadata_json = task_meta
+
+    if stage.approval_required:
+        stage.status = TaskStageStatus.SUBMITTED.value
+        _sync_task_workflow_summary(task, db, now=now)
+        create_notification(
+            db,
+            task,
+            task.creator_id,
+            "workflow_stage_submitted",
+            f"Stage {stage.stage_order} submitted: {task.title}",
+            payload.comments or "A workflow stage is waiting for approval.",
+            actor=current_user,
+            metadata_json={
+                "stageId": stage.id,
+                "stageOrder": stage.stage_order,
+                "stageTitle": stage.title,
+                "workflowEvent": "stage_submitted",
+            },
+        )
+    else:
+        stage.status = TaskStageStatus.COMPLETED.value
+        stage.completed_at = now
+        _mirror_submission_to_task(task, submission)
+        next_stage = _activate_next_workflow_stage(task, stages, stage.id, now)
+        task_meta = dict(task.metadata_json or {})
+        if next_stage is None and task.final_approval_required:
+            task_meta[WORKFLOW_FINAL_PENDING_META_KEY] = True
+        else:
+            task_meta[WORKFLOW_FINAL_PENDING_META_KEY] = False
+        task.metadata_json = task_meta
+        _sync_task_workflow_summary(task, db, now=now)
+
+        if next_stage:
+            next_stage = _get_task_workflow_stage(next_stage.id, task.id, db)
+            for assignee_id in _stage_assignee_ids(next_stage):
+                create_notification(
+                    db,
+                    task,
+                    assignee_id,
+                    "workflow_stage_assigned",
+                    f"Stage {next_stage.stage_order} assigned: {task.title}",
+                    "A previous workflow stage was completed and your stage is now active.",
+                    actor=current_user,
+                    metadata_json={
+                        "stageId": next_stage.id,
+                        "stageOrder": next_stage.stage_order,
+                        "stageTitle": next_stage.title,
+                        "workflowEvent": "stage_assigned",
+                    },
+                )
+        elif task.final_approval_required:
+            create_notification(
+                db,
+                task,
+                task.creator_id,
+                "workflow_final_approval_required",
+                f"Final approval required: {task.title}",
+                payload.comments or "The last workflow stage is complete and waiting for final approval.",
+                actor=current_user,
+                metadata_json={
+                    "stageId": stage.id,
+                    "stageOrder": stage.stage_order,
+                    "stageTitle": stage.title,
+                    "workflowEvent": "final_approval_required",
+                },
+            )
+        else:
+            create_notification(
+                db,
+                task,
+                task.creator_id,
+                "workflow_completed",
+                f"Workflow completed: {task.title}",
+                payload.comments or "All workflow stages are complete.",
+                actor=current_user,
+                metadata_json={
+                    "stageId": stage.id,
+                    "stageOrder": stage.stage_order,
+                    "stageTitle": stage.title,
+                    "workflowEvent": "workflow_completed",
+                },
+            )
+
+    add_history(
+        db,
+        task,
+        current_user.id,
+        "workflow_stage_submitted",
+        task.status.value,
+        payload.comments or f"Stage {stage.stage_order} submitted",
+        metadata_json={
+            "stageId": stage.id,
+            "stageOrder": stage.stage_order,
+            "stageTitle": stage.title,
+        },
+    )
+    _post_stage_comment(db, task, stage, current_user.id, payload.comments or "", "workflow_stage_submitted")
+    db.commit()
+    return {
+        "success": True,
+        "message": "Workflow stage submitted",
+        "task": serialize_task(task, db, current_user),
+        "stage": _serialize_task_stage(stage, submission),
+    }
+
+
+def _approve_workflow_stage(
+    task: Task,
+    payload: TaskActionPayload,
+    db: Session,
+    current_user: User,
+    *,
+    stage_id: Optional[int] = None,
+) -> dict:
+    now = datetime.utcnow()
+    task_meta = dict(task.metadata_json or {})
+
+    if task_meta.get(WORKFLOW_FINAL_PENDING_META_KEY) and stage_id is None:
+        task_meta[WORKFLOW_FINAL_PENDING_META_KEY] = False
+        task.metadata_json = task_meta
+        _sync_task_workflow_summary(task, db, now=now)
+        stage = None
+        current_submission = None
+    elif stage_id or task.current_stage_id:
+        stage = _get_task_workflow_stage(stage_id or task.current_stage_id, task.id, db)
+        if stage.status != TaskStageStatus.SUBMITTED.value and _workflow_submission_needs_repair(task):
+            repaired_stage = _repair_workflow_submission_if_needed(task, db, now=now)
+            if repaired_stage:
+                stage = repaired_stage
+        if stage.status != TaskStageStatus.SUBMITTED.value:
+            raise HTTPException(status_code=400, detail="This workflow stage is not waiting for approval")
+        current_submission = (
+            db.query(TaskStageSubmission)
+            .filter(TaskStageSubmission.stage_id == stage.id, TaskStageSubmission.is_current == True)
+            .first()
+        )
+        stage.status = TaskStageStatus.COMPLETED.value
+        stage.approved_at = now
+        stage.approved_by_user_id = current_user.id
+        stage.completed_at = now
+        stage.updated_at = now
+        if current_submission:
+            _mirror_submission_to_task(task, current_submission)
+
+        stages = _get_task_workflow_stages(task.id, db)
+        next_stage = _activate_next_workflow_stage(task, stages, stage.id, now)
+        if next_stage is None and task.final_approval_required and current_user.id != task.creator_id:
+            task_meta[WORKFLOW_FINAL_PENDING_META_KEY] = True
+        else:
+            task_meta[WORKFLOW_FINAL_PENDING_META_KEY] = False
+        task.metadata_json = task_meta
+        _sync_task_workflow_summary(task, db, now=now)
+
+        if next_stage:
+            next_stage = _get_task_workflow_stage(next_stage.id, task.id, db)
+            for assignee_id in _stage_assignee_ids(next_stage):
+                create_notification(
+                    db,
+                    task,
+                    assignee_id,
+                    "workflow_stage_assigned",
+                    f"Stage {next_stage.stage_order} assigned: {task.title}",
+                    "The previous workflow stage was approved and your stage is now active.",
+                    actor=current_user,
+                    metadata_json={
+                        "stageId": next_stage.id,
+                        "stageOrder": next_stage.stage_order,
+                        "stageTitle": next_stage.title,
+                        "workflowEvent": "stage_assigned",
+                    },
+                )
+        elif task.final_approval_required and current_user.id != task.creator_id:
+            create_notification(
+                db,
+                task,
+                task.creator_id,
+                "workflow_final_approval_required",
+                f"Final approval required: {task.title}",
+                payload.comments or "The final workflow stage is complete and waiting for creator approval.",
+                actor=current_user,
+                metadata_json={
+                    "stageId": stage.id,
+                    "stageOrder": stage.stage_order,
+                    "stageTitle": stage.title,
+                    "workflowEvent": "final_approval_required",
+                },
+            )
+    else:
+        raise HTTPException(status_code=400, detail="No workflow stage is waiting for approval")
+
+    task.updated_at = now
+    add_history(
+        db,
+        task,
+        current_user.id,
+        "workflow_stage_approved",
+        task.status.value,
+        payload.comments or "Workflow approval completed",
+        metadata_json={
+            "stageId": stage.id if stage else None,
+            "stageOrder": stage.stage_order if stage else None,
+            "stageTitle": stage.title if stage else None,
+        },
+    )
+    if stage:
+        _post_stage_comment(db, task, stage, current_user.id, payload.comments or "Approved", "approved")
+    db.commit()
+    return {
+        "success": True,
+        "message": "Workflow approval completed",
+        "task": serialize_task(task, db, current_user),
+        "stage": _serialize_task_stage(stage, current_submission) if stage else None,
+    }
+
+
+def _request_workflow_stage_improvement(
+    task: Task,
+    payload: TaskActionPayload,
+    db: Session,
+    current_user: User,
+    *,
+    stage_id: Optional[int] = None,
+) -> dict:
+    now = datetime.utcnow()
+    task_meta = dict(task.metadata_json or {})
+    stage = _get_task_workflow_stage(stage_id or task.current_stage_id, task.id, db) if (stage_id or task.current_stage_id) else None
+    if not stage:
+        raise HTTPException(status_code=400, detail="No workflow stage is available for revision")
+    if _workflow_submission_needs_repair(task):
+        repaired_stage = _repair_workflow_submission_if_needed(task, db, now=now)
+        if repaired_stage:
+            stage = repaired_stage
+    allowed_statuses = {TaskStageStatus.SUBMITTED.value, TaskStageStatus.ACTIVE.value}
+    if task_meta.get(WORKFLOW_FINAL_PENDING_META_KEY):
+        allowed_statuses.add(TaskStageStatus.COMPLETED.value)
+    if stage.status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="This workflow stage cannot be sent back for revision")
+
+    stage.status = TaskStageStatus.REVISION_REQUESTED.value
+    stage.revision_notes = payload.comments
+    stage.updated_at = now
+    task_meta[WORKFLOW_FINAL_PENDING_META_KEY] = False
+    task.metadata_json = task_meta
+    _sync_task_workflow_summary(task, db, now=now)
+    task.updated_at = now
+
+    for assignee_id in _stage_assignee_ids(stage):
+        create_notification(
+            db,
+            task,
+            assignee_id,
+            "workflow_stage_revision_requested",
+            f"Revision requested on stage {stage.stage_order}: {task.title}",
+            payload.comments or "Please revise and resubmit this workflow stage.",
+            actor=current_user,
+            metadata_json={
+                "stageId": stage.id,
+                "stageOrder": stage.stage_order,
+                "stageTitle": stage.title,
+                "workflowEvent": "revision_requested",
+            },
+        )
+
+    add_history(
+        db,
+        task,
+        current_user.id,
+        "workflow_stage_revision_requested",
+        task.status.value,
+        payload.comments or "Revision requested",
+        metadata_json={
+            "stageId": stage.id,
+            "stageOrder": stage.stage_order,
+            "stageTitle": stage.title,
+        },
+    )
+    _post_stage_comment(db, task, stage, current_user.id, payload.comments or "Need improvement", "need_improvement")
+    db.commit()
+    return {
+        "success": True,
+        "message": "Workflow stage sent back for revision",
+        "task": serialize_task(task, db, current_user),
+        "stage": _serialize_task_stage(
+            stage,
+            (
+                db.query(TaskStageSubmission)
+                .filter(TaskStageSubmission.stage_id == stage.id, TaskStageSubmission.is_current == True)
+                .first()
+            ),
+        ),
+    }
+
+
+def _start_workflow_stage(
+    task: Task,
+    payload: TaskActionPayload,
+    db: Session,
+    current_user: User,
+) -> dict:
+    now = datetime.utcnow()
+    stage = _get_current_workflow_stage(task, db)
+    if not stage:
+        raise HTTPException(status_code=400, detail="No active workflow stage found")
+    if stage.status not in {TaskStageStatus.ACTIVE.value, TaskStageStatus.REVISION_REQUESTED.value}:
+        raise HTTPException(status_code=400, detail="This workflow stage cannot be started right now")
+    if not _is_active_stage_assignee(stage.id, current_user.id, db):
+        raise HTTPException(status_code=403, detail="Only current stage assignee can start work")
+
+    if stage.status == TaskStageStatus.REVISION_REQUESTED.value:
+        stage.status = TaskStageStatus.ACTIVE.value
+        stage.revision_notes = None
+    if not stage.started_at:
+        stage.started_at = now
+    stage.updated_at = now
+
+    _sync_task_workflow_summary(task, db, now=now)
+    task.status = TaskStatus.IN_PROGRESS
+    task.updated_at = now
+    task.result_edit_locked = False
+
+    add_history(
+        db,
+        task,
+        current_user.id,
+        "workflow_stage_started",
+        task.status.value,
+        payload.comments or f"Stage {stage.stage_order} started",
+        metadata_json={
+            "stageId": stage.id,
+            "stageOrder": stage.stage_order,
+            "stageTitle": stage.title,
+        },
+    )
+    _post_stage_comment(db, task, stage, current_user.id, payload.comments or "", "workflow_stage_started")
+    db.commit()
+    return {
+        "success": True,
+        "message": "Workflow stage started",
+        "task": serialize_task(task, db, current_user),
+        "stage": _serialize_task_stage(
+            stage,
+            (
+                db.query(TaskStageSubmission)
+                .filter(TaskStageSubmission.stage_id == stage.id, TaskStageSubmission.is_current == True)
+                .first()
+            ),
+        ),
+    }
+
+
+async def get_task_workflow(
+    task_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    task = db.query(Task).options(*_workflow_task_loader_options()).filter(Task.id == task_id, Task.is_deleted == False).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if not _workflow_visibility_allowed(task, current_user, db):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if not _is_workflow_task(task):
+        raise HTTPException(status_code=400, detail="This task does not use workflow stages")
+
+    repaired_stage = _repair_workflow_submission_if_needed(task, db)
+    if repaired_stage:
+        db.commit()
+        db.refresh(task)
+
+    stages = _get_task_workflow_stages(task.id, db)
+    stage_ids = [stage.id for stage in stages]
+    current_submission_by_stage = _get_current_stage_submission_map(stage_ids, db)
+    comments_by_stage = _get_stage_comments_map(task.id, stage_ids, db)
+    history_by_stage = _get_stage_history_map(task.id, stage_ids, db)
+    return {
+        "success": True,
+        "task": _serialize_task_workflow_summary(task),
+        "stages": [
+            _serialize_task_stage(
+                stage,
+                current_submission_by_stage.get(stage.id),
+                comments=comments_by_stage.get(stage.id),
+                history_entries=history_by_stage.get(stage.id),
+            )
+            for stage in stages
+        ],
+    }
+
+
+async def submit_task_stage(
+    task_id: int,
+    stage_id: int,
+    payload: TaskActionPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if not _is_workflow_task(task):
+        raise HTTPException(status_code=400, detail="This task does not use workflow stages")
+    try:
+        result = _submit_workflow_stage(task, payload, db, current_user, stage_id=stage_id)
+        await invalidate_task_lane_b_cache(include_assets=bool(payload.result_attachments))
+        return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+async def approve_task_stage(
+    task_id: int,
+    stage_id: int,
+    payload: TaskActionPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if not _is_workflow_task(task):
+        raise HTTPException(status_code=400, detail="This task does not use workflow stages")
+    if not can_approve(current_user, task):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    try:
+        result = _approve_workflow_stage(task, payload, db, current_user, stage_id=stage_id)
+        await invalidate_task_lane_b_cache(include_assets=False)
+        return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+async def request_stage_improvement(
+    task_id: int,
+    stage_id: int,
+    payload: TaskActionPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if not _is_workflow_task(task):
+        raise HTTPException(status_code=400, detail="This task does not use workflow stages")
+    if not can_approve(current_user, task):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    try:
+        result = _request_workflow_stage_improvement(task, payload, db, current_user, stage_id=stage_id)
+        await invalidate_task_lane_b_cache(include_assets=False)
+        return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+async def update_task_stage(
+    task_id: int,
+    stage_id: int,
+    payload: TaskStageUpdatePayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if not _is_workflow_task(task):
+        raise HTTPException(status_code=400, detail="This task does not use workflow stages")
+    if current_user.id != task.creator_id and not has_any_role(current_user, {"super_admin", "hod"}):
+        raise HTTPException(status_code=403, detail="Only the creator or admin can update workflow stages")
+
+    stage = _get_task_workflow_stage(stage_id, task.id, db)
+    if stage.status in {TaskStageStatus.SUBMITTED.value, TaskStageStatus.COMPLETED.value}:
+        raise HTTPException(status_code=400, detail="Submitted or completed stages cannot be edited")
+
+    try:
+        if payload.title is not None:
+            stage.title = payload.title
+        if payload.description is not None:
+            stage.description = payload.description
+        if payload.approval_required is not None:
+            stage.approval_required = bool(payload.approval_required)
+
+        if payload.assignee_ids is not None:
+            normalized_user_ids = sorted({user_id for user_id in (payload.assignee_ids or []) if user_id})
+            if not normalized_user_ids:
+                raise HTTPException(status_code=400, detail="Stage must keep at least one assignee")
+
+            assignee_users = (
+                db.query(User)
+                .filter(User.id.in_(normalized_user_ids), User.is_active == True)
+                .all()
+            )
+            assignee_users_by_id = {user.id: user for user in assignee_users}
+            missing_assignee_ids = sorted(set(normalized_user_ids) - set(assignee_users_by_id))
+            if missing_assignee_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Workflow assignees not found or inactive: {', '.join(str(user_id) for user_id in missing_assignee_ids)}",
+                )
+
+            (
+                db.query(TaskStageAssignee)
+                .filter(TaskStageAssignee.stage_id == stage.id)
+                .update({TaskStageAssignee.is_active: False}, synchronize_session=False)
+            )
+            for index, assignee_id in enumerate(normalized_user_ids):
+                db.add(
+                    TaskStageAssignee(
+                        stage_id=stage.id,
+                        user_id=assignee_id,
+                        role=WORKFLOW_ASSIGNEE_ROLE,
+                        is_primary=index == 0,
+                        is_active=True,
+                        assigned_at=datetime.utcnow(),
+                    )
+                )
+                ensure_participant(db, task.id, assignee_id, ParticipantRole.ASSIGNEE)
+
+        stage.updated_at = datetime.utcnow()
+        db.flush()
+        _sync_task_workflow_summary(task, db, now=datetime.utcnow())
+        db.commit()
+        await invalidate_task_lane_b_cache(include_assets=False)
+
+        current_submission = (
+            db.query(TaskStageSubmission)
+            .filter(TaskStageSubmission.stage_id == stage.id, TaskStageSubmission.is_current == True)
+            .first()
+        )
+        return {
+            "success": True,
+            "message": "Workflow stage updated",
+            "stage": _serialize_task_stage(_get_task_workflow_stage(stage.id, task.id, db), current_submission),
+            "task": serialize_task(task, db, current_user),
+        }
     except HTTPException:
         db.rollback()
         raise
@@ -1418,6 +2840,12 @@ async def get_inbox(
     # Keep inbox fetch read-only. Marking tasks seen/read is handled by the
     # dedicated action endpoint when the user explicitly opens a task.
     write_ms = 0.0
+    repaired_any = False
+    for task in task_rows:
+        if _repair_workflow_submission_if_needed(task, db):
+            repaired_any = True
+    if repaired_any:
+        db.commit()
 
     serialize_started_at = perf_counter()
     result = serialize_task_list(task_rows, db, current_user)
@@ -1519,9 +2947,33 @@ async def get_all_user_tasks(
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    # Global visibility: return all tasks for any authenticated user.
-    # Trendings/Databank needs cross-user media visibility.
-    query = db.query(Task).options(*_task_list_loader_options()).filter(Task.is_deleted == False)
+    scoped_user_id = user_id if user_id is not None else current_user.id
+    if user_id is not None and user_id != current_user.id and not has_any_role(current_user, {"super_admin", "hod"}):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    tracking_participant = aliased(TaskParticipant)
+    query = (
+        db.query(Task)
+        .options(*_task_list_loader_options())
+        .outerjoin(
+            tracking_participant,
+            and_(
+                tracking_participant.task_id == Task.id,
+                tracking_participant.user_id == scoped_user_id,
+                tracking_participant.is_active == True,
+            ),
+        )
+        .filter(
+            Task.is_deleted == False,
+            Task.status != TaskStatus.DRAFT,
+            or_(
+                Task.creator_id == scoped_user_id,
+                Task.submitted_by == scoped_user_id,
+                tracking_participant.id.isnot(None),
+            ),
+        )
+        .distinct()
+    )
 
     if status:
         query = query.filter(Task.status == status)
@@ -1529,26 +2981,6 @@ async def get_all_user_tasks(
         query = query.filter(Task.task_number.ilike(f"%{task_id}%"))
     if project_id:
         query = query.filter(Task.project_id.ilike(f"%{project_id}%"))
-    if user_id is not None:
-        scope_participant = aliased(TaskParticipant)
-        query = (
-            query.outerjoin(
-                scope_participant,
-                and_(
-                    scope_participant.task_id == Task.id,
-                    scope_participant.user_id == user_id,
-                    scope_participant.is_active == True,
-                ),
-            )
-            .filter(
-                or_(
-                    Task.creator_id == user_id,
-                    Task.submitted_by == user_id,
-                    scope_participant.id.isnot(None),
-                )
-            )
-            .distinct()
-        )
     if q:
         like_q = f"%{q}%"
         creator_user = aliased(User)
@@ -1590,6 +3022,80 @@ async def get_all_user_tasks(
         "limit": limit,
         "hasMore": has_more,
         "tasks": serialize_task_list(tasks, db, current_user),
+    }
+
+
+@cache_response(ttl=180, vary_by_user=False, namespace="tasks_reference_suggestions")
+async def get_task_reference_suggestions(
+    request: Request,
+    limit: int = Query(300, ge=50, le=500),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    rows = (
+        db.query(
+            Task.task_number,
+            Task.project_id,
+            Task.project_id_raw,
+            Task.project_id_hex,
+            Task.project_name,
+        )
+        .filter(Task.is_deleted == False)
+        .order_by(Task.updated_at.desc())
+        .limit(max(limit * 4, 200))
+        .all()
+    )
+
+    task_id_suggestions: List[str] = []
+    project_id_suggestions: List[str] = []
+    project_name_suggestions: List[str] = []
+    known_projects: Dict[str, dict] = {}
+    seen_task_ids: Set[str] = set()
+    seen_project_ids: Set[str] = set()
+
+    for row in rows:
+        task_number = f"{row.task_number or ''}".strip()
+        if task_number and task_number not in seen_task_ids and len(task_id_suggestions) < limit:
+            seen_task_ids.add(task_number)
+            task_id_suggestions.append(task_number)
+
+        project_id = f"{row.project_id or ''}".strip()
+        if project_id and project_id not in seen_project_ids and len(project_id_suggestions) < limit:
+            seen_project_ids.add(project_id)
+            project_id_suggestions.append(project_id)
+
+        project_name = f"{row.project_name or ''}".strip()
+        if project_name:
+            project_key = project_name.lower()
+            if project_key not in known_projects:
+                known_projects[project_key] = {
+                    "projectName": project_name,
+                    "projectId": project_id,
+                    "projectIdRaw": row.project_id_raw or "",
+                    "projectIdHex": row.project_id_hex or "",
+                }
+            elif not known_projects[project_key].get("projectId") and project_id:
+                known_projects[project_key] = {
+                    "projectName": project_name,
+                    "projectId": project_id,
+                    "projectIdRaw": row.project_id_raw or "",
+                    "projectIdHex": row.project_id_hex or "",
+                }
+
+    project_name_suggestions = sorted(
+        (project["projectName"] for project in known_projects.values()),
+        key=lambda value: value.lower(),
+    )[:limit]
+
+    return {
+        "success": True,
+        "taskIdSuggestions": task_id_suggestions,
+        "projectIdSuggestions": project_id_suggestions,
+        "projectNameSuggestions": project_name_suggestions,
+        "knownProjects": known_projects,
     }
 
 
@@ -1768,6 +3274,11 @@ async def assign_task_members(
         raise HTTPException(status_code=404, detail="Task not found")
     if not can_assign(current_user, task):
         raise HTTPException(status_code=403, detail="Permission denied")
+    if _is_workflow_task(task):
+        raise HTTPException(
+            status_code=400,
+            detail="This task uses workflow stages. Update the stage assignees instead of using generic assignment.",
+        )
 
     if not task.task_number:
         date_part = datetime.utcnow().strftime("%Y%m%d")
@@ -1850,6 +3361,17 @@ async def submit_task(
     task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    if _is_workflow_task(task):
+        try:
+            result = _submit_workflow_stage(task, payload, db, current_user)
+            await invalidate_task_lane_b_cache()
+            return result
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
 
     is_assignee = user_is_participant(task.id, current_user.id, ParticipantRole.ASSIGNEE, db)
     if not is_assignee:
@@ -1958,6 +3480,17 @@ async def start_task_work(
     task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    if _is_workflow_task(task):
+        try:
+            result = _start_workflow_stage(task, payload, db, current_user)
+            await invalidate_task_lane_b_cache()
+            return result
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
 
     is_assignee = user_is_participant(task.id, current_user.id, ParticipantRole.ASSIGNEE, db)
     if not is_assignee:
@@ -2020,6 +3553,17 @@ async def approve_task(
         raise HTTPException(status_code=404, detail="Task not found")
     if not can_approve(current_user, task):
         raise HTTPException(status_code=403, detail="Permission denied")
+    if _is_workflow_task(task):
+        try:
+            result = _approve_workflow_stage(task, payload, db, current_user)
+            await invalidate_task_lane_b_cache()
+            return result
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
 
     actor_roles = role_set(current_user)
     if current_user.id == task.creator_id and task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED}:
@@ -2084,6 +3628,17 @@ async def request_improvement(
         raise HTTPException(status_code=404, detail="Task not found")
     if not can_approve(current_user, task):
         raise HTTPException(status_code=403, detail="Permission denied")
+    if _is_workflow_task(task):
+        try:
+            result = _request_workflow_stage_improvement(task, payload, db, current_user)
+            await invalidate_task_lane_b_cache()
+            return result
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
 
     previous_status = task.status
     task.status = TaskStatus.NEED_IMPROVEMENT
@@ -2257,7 +3812,7 @@ async def revoke_task(
         "regularised": True,
         "revokedById": current_user.id,
         "revokedBy": current_user.name,
-        "revokedAt": now.isoformat(),
+        "revokedAt": serialize_utc_datetime(now),
         "reason": revoke_note or None,
     }
     meta["revocation"] = revocation
@@ -2341,7 +3896,7 @@ async def edit_task_details(
         "title": task.title,
         "description": task.description,
         "priority": task.priority.value if task.priority else None,
-        "deadline": task.deadline.isoformat() if task.deadline else None,
+        "deadline": serialize_utc_datetime(task.deadline),
         "taskVersion": task.task_version,
     }
 
@@ -2367,7 +3922,7 @@ async def edit_task_details(
                 "title": task.title,
                 "description": task.description,
                 "priority": task.priority.value if task.priority else None,
-                "deadline": task.deadline.isoformat() if task.deadline else None,
+                "deadline": serialize_utc_datetime(task.deadline),
                 "taskVersion": task.task_version,
             },
             created_at=datetime.utcnow(),
@@ -2485,8 +4040,13 @@ async def add_comment(
     if current_user.id != task.creator_id and not is_participant:
         raise HTTPException(status_code=403, detail="Permission denied")
 
+    stage = None
+    if payload.stage_id is not None:
+        stage = _get_task_workflow_stage(payload.stage_id, task.id, db)
+
     new_comment = TaskComment(
         task_id=task.id,
+        stage_id=stage.id if stage else None,
         user_id=current_user.id,
         comment=payload.comment,
         comment_type=(payload.comment_type or "general")[:40],
@@ -2498,7 +4058,18 @@ async def add_comment(
         mark_seen(db, task.id, current_user.id)
     except SQLAlchemyError:
         pass
-    add_history(db, task, current_user.id, "commented", task.status.value, payload.comment)
+    add_history(
+        db,
+        task,
+        current_user.id,
+        "commented",
+        task.status.value,
+        payload.comment,
+        {
+            "stageId": stage.id if stage else None,
+            "stageOrder": stage.stage_order if stage else None,
+        } if stage else None,
+    )
     db.flush()
 
     participants = db.query(TaskParticipant).filter(
@@ -2513,9 +4084,10 @@ async def add_comment(
         "taskNumber": task.task_number,
         "projectId": task.project_id,
         "commentId": new_comment.id,
+        "stageId": new_comment.stage_id,
         "senderId": current_user.id,
         "senderName": current_user.name,
-        "createdAt": new_comment.created_at.isoformat() if new_comment.created_at else None,
+        "createdAt": serialize_utc_datetime(new_comment.created_at),
         "commentType": new_comment.comment_type,
     }
     for user_id in recipients:
@@ -2537,11 +4109,12 @@ async def add_comment(
         "comment": {
             "id": new_comment.id,
             "taskId": new_comment.task_id,
+            "stageId": new_comment.stage_id,
             "userId": new_comment.user_id,
             "comment": new_comment.comment,
             "commentType": new_comment.comment_type,
             "isInternal": new_comment.is_internal,
-            "createdAt": new_comment.created_at.isoformat(),
+            "createdAt": serialize_utc_datetime(new_comment.created_at),
             "user": {
                 "id": current_user.id,
                 "name": current_user.name,
@@ -2597,10 +4170,11 @@ async def get_comments(
         {
             "id": comment.id,
             "taskId": comment.task_id,
+            "stageId": comment.stage_id,
             "comment": comment.comment,
             "commentType": comment.comment_type or "general",
             "isInternal": comment.is_internal,
-            "createdAt": comment.created_at.isoformat() if comment.created_at else None,
+            "createdAt": serialize_utc_datetime(comment.created_at),
             "user": {
                 "id": user.id if user else None,
                 "name": user.name if user else "Unknown",
@@ -2657,7 +4231,7 @@ async def get_comments(
                 "scope": h.edit_scope,
                 "before": h.before_json,
                 "after": h.after_json,
-                "timestamp": h.created_at.isoformat() if h.created_at else None,
+                "timestamp": serialize_utc_datetime(h.created_at),
                 "editor": {
                     "id": editor.id if editor else None,
                     "name": editor.name if editor else "Unknown",
@@ -2674,7 +4248,7 @@ async def get_comments(
                 "name": user.name,
                 "role": ", ".join(sorted(role_set(user))),
                 "department": user.department,
-                "seenAt": view.seen_at.isoformat() if view.seen_at else None,
+                "seenAt": serialize_utc_datetime(view.seen_at),
             }
             for view, user in seen_by_rows
         ],
@@ -2715,7 +4289,7 @@ async def get_my_notifications(
                     f"{(n.metadata_json or {}).get('actorDescription', 'Someone')} {n.message or n.title}"
                 ).strip(),
                 "isRead": n.is_read,
-                "createdAt": n.created_at.isoformat() if n.created_at else None,
+                "createdAt": serialize_utc_datetime(n.created_at),
                 "metadata": n.metadata_json,
             }
             for n in items

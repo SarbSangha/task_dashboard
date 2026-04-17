@@ -75,7 +75,7 @@
 .status-and-track {
   display: flex;
   flex-direction: row;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
 }
 
@@ -264,11 +264,15 @@
   align-items: center;
   gap: 6px;
   opacity: 0.4;
-  transition: opacity 0.3s;
+  transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
 .timeline-step.completed {
   opacity: 1;
+}
+
+.timeline-step.current {
+  transform: translateY(-1px);
 }
 
 .timeline-dot {
@@ -276,12 +280,18 @@
   height: 12px;
   border-radius: 50%;
   background: #d1d5db;
-  transition: all 0.3s;
+  border: 2px solid transparent;
+  transition: all 0.3s ease;
 }
 
 .timeline-step.completed .timeline-dot {
   background: #10b981;
   box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.2);
+}
+
+.timeline-step.current .timeline-dot {
+  border-color: rgba(191, 219, 254, 0.9);
+  box-shadow: 0 0 0 5px rgba(59, 130, 246, 0.16);
 }
 
 .timeline-label {
@@ -296,6 +306,11 @@
   height: 2px;
   background: #e5e7eb;
   margin: 0 8px;
+  transition: background 0.3s ease;
+}
+
+.timeline-line.reached {
+  background: linear-gradient(90deg, rgba(52, 211, 153, 0.85) 0%, rgba(96, 165, 250, 0.9) 100%);
 }
 
 /* Journey Modal */
@@ -683,25 +698,28 @@
 
 /* Inbox-like visual style for outbox cards */
 .outbox-task-card {
-  background: #1f2d45;
-  border: 1px solid #334766;
-  border-left: 1px solid #334766;
-  border-radius: 12px;
-  padding: 12px;
-  margin-bottom: 12px;
-  box-shadow: none;
+  background:
+    radial-gradient(circle at top right, rgba(96, 165, 250, 0.12), transparent 32%),
+    linear-gradient(180deg, #22324c 0%, #1b2940 100%);
+  border: 1px solid #39506f;
+  border-left: 1px solid #39506f;
+  border-radius: 16px;
+  padding: 16px;
+  margin-bottom: 14px;
+  box-shadow: 0 10px 28px rgba(8, 15, 30, 0.22);
   color: #e5e7eb;
   transform: none;
+  overflow: hidden;
 }
 
 .outbox-task-card:hover {
   transform: none;
-  box-shadow: none;
-  border-color: #3d567a;
+  box-shadow: 0 16px 34px rgba(8, 15, 30, 0.28);
+  border-color: #4a668d;
 }
 
 .outbox-task-card.expanded {
-  border-left: 1px solid #334766;
+  border-left: 1px solid #5c7caa;
 }
 
 .outbox-task-header {
@@ -718,53 +736,90 @@
 
 .outbox-task-title {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
   line-height: 1.2;
   color: #f8fafc;
 }
 
+.outbox-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.outbox-subtitle-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 5px;
+}
+
 .outbox-project-name {
-  margin-top: 3px;
+  margin: 0;
   font-size: 12px;
   color: rgba(229, 231, 235, 0.85);
 }
 
+.outbox-reference-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .outbox-status-pill {
   border-radius: 999px;
-  padding: 6px 14px;
+  padding: 7px 14px;
   font-size: 12px;
   font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
 .outbox-card-menu-btn {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.38);
   color: #fff;
 }
 
 .workflow-stage-badge {
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
 .stage-indicator {
-  background: transparent;
-  color: #e5e7eb;
-  padding: 0;
-  font-size: 13px;
+  background: rgba(99, 102, 241, 0.14);
+  border: 1px solid rgba(129, 140, 248, 0.16);
+  color: #e8ecff;
+  padding: 6px 12px;
+  font-size: 12px;
   font-weight: 600;
+  border-radius: 999px;
 }
 
 .outbox-task-meta {
   margin-top: 8px;
-  margin-bottom: 10px;
-  padding: 10px;
-  border-radius: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 14px;
   border: 1px solid #334766;
-  background: #172743;
-  gap: 8px 12px;
+  background: rgba(16, 28, 48, 0.92);
+  gap: 10px 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.meta-item {
+  align-items: flex-start;
+  padding: 2px 0;
 }
 
 .outbox-label {
@@ -783,22 +838,79 @@
 .tag-badge,
 .type-badge,
 .deadline-badge {
-  border-radius: 6px;
-  padding: 5px 10px;
+  border-radius: 999px;
+  padding: 6px 11px;
   font-size: 12px;
 }
 
+.request-type {
+  background: rgba(96, 165, 250, 0.16);
+  color: #dbeafe;
+}
+
 .timeline-progress {
-  background: #172743;
+  background: rgba(16, 28, 48, 0.92);
   border: 1px solid #334766;
+  border-radius: 14px;
+  padding: 14px 10px;
+  gap: 0;
+}
+
+.timeline-step {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.timeline-label {
+  color: #8fa4c4;
+  font-size: clamp(8px, 0.7vw, 10px);
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  text-align: center;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.timeline-line {
+  flex: 0 0 12px;
+  margin: 0 4px;
+}
+
+.timeline-step.completed .timeline-label,
+.timeline-step.current .timeline-label {
+  color: #ecfdf5;
+}
+
+.outbox-summary-panel {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(71, 85, 105, 0.42);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.outbox-summary-label {
+  display: inline-block;
+  margin-bottom: 6px;
+  color: #9fb1c9;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.outbox-summary-text {
+  margin: 0;
+  color: #e2e8f0;
+  line-height: 1.55;
 }
 
 .outbox-task-extra {
   margin-top: 10px;
-  padding: 10px;
-  border-radius: 10px;
+  padding: 12px;
+  border-radius: 14px;
   border: 1px solid #334766;
-  background: #172743;
+  background: rgba(16, 28, 48, 0.94);
 }
 
 .outbox-task-extra .extra-col {
@@ -858,4 +970,54 @@
 .outbox-task-card,
 .outbox-task-card * {
   font-size: 13px;
+}
+
+.result-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(52, 211, 153, 0.24);
+  color: #b7f7d8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 640px) {
+  .outbox-task-card {
+    padding: 14px;
+  }
+
+  .outbox-task-header {
+    align-items: flex-start;
+  }
+
+  .status-and-track {
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .outbox-task-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .timeline-progress {
+    padding: 12px 10px;
+  }
+
+  .timeline-step {
+    min-width: 0;
+  }
+
+  .timeline-label {
+    font-size: 9px;
+  }
+
+  .timeline-line {
+    flex-basis: 8px;
+    margin: 0 3px;
+  }
 }

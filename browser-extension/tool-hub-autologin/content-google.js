@@ -14,6 +14,8 @@ const STATE = {
   observer: null,
   lastRunAt: 0,
   lastMutationHandledAt: 0,
+  launchChecked: false,
+  launchAuthorized: false,
   settled: false,
   status: 'Waiting for Google sign-in',
 };
@@ -50,6 +52,18 @@ function setStatus(message) {
   if (STATE.status === message) return;
   STATE.status = message;
   ensureStatusBadge();
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(response || { ok: false, error: 'No response received' });
+    });
+  });
 }
 
 function isVisible(element) {
@@ -120,6 +134,23 @@ function getGoogleEmailValue(loginIdentifier, input) {
   }
 
   return full;
+}
+
+async function loadLaunchState() {
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_GET_LAUNCH_STATE',
+    toolSlug: TOOL_SLUG,
+    hostname: TOOL_HOSTNAME,
+    pageUrl: window.location.href,
+  });
+
+  STATE.launchChecked = true;
+  STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
+}
+
+function enforceDashboardOnlyAccess() {
+  setStatus('Launch this tool from the dashboard first');
+  STATE.settled = true;
 }
 
 function requestCredential() {
@@ -228,6 +259,14 @@ function attemptPasswordStep(credential) {
 
 function attemptFill() {
   if (STATE.settled) return;
+  if (!STATE.launchChecked) {
+    setStatus('Checking dashboard launch');
+    return;
+  }
+  if (!STATE.launchAuthorized) {
+    enforceDashboardOnlyAccess();
+    return;
+  }
 
   const credential = STATE.credential;
   if (!credential?.loginIdentifier || !credential?.password) {
@@ -281,7 +320,14 @@ function start() {
   STATE.observer = new MutationObserver(() => handleMutations());
   STATE.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
   STATE.keepAliveTimer = window.setInterval(() => scheduleAttempt(0), KEEP_ALIVE_MS);
-  scheduleAttempt(0);
+  loadLaunchState()
+    .catch(() => {
+      STATE.launchChecked = true;
+      STATE.launchAuthorized = false;
+    })
+    .finally(() => {
+      scheduleAttempt(0);
+    });
 }
 
 start();

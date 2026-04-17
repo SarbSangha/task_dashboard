@@ -3,9 +3,7 @@ const EXTENSION_LAUNCH_EVENT = 'rmw:tool-hub-extension-launch';
 const EXTENSION_LAUNCH_STORED_EVENT = 'rmw:tool-hub-extension-launch-stored';
 const EXTENSION_LAUNCH_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_LAUNCH';
 const EXTENSION_LAUNCH_STORED_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_LAUNCH_STORED';
-const REMEMBERED_TOOLS_STORAGE_KEY = 'rememberedToolLaunches';
 const MAX_LAUNCH_USES = 3;
-const MAX_REMEMBERED_TOOLS = 12;
 
 function normalizeToolSlug(value) {
   return `${value || ''}`.trim().toLowerCase();
@@ -55,39 +53,6 @@ async function savePendingLaunch(detail) {
   await chrome.storage.local.set({ pendingExtensionLaunches: launches });
 }
 
-async function rememberToolLaunch(detail) {
-  const toolSlug = normalizeToolSlug(detail?.toolSlug);
-  const hostname = normalizeHostname(detail?.launchUrl || detail?.hostname);
-  const launchUrl = `${detail?.launchUrl || ''}`.trim();
-  const toolName = `${detail?.toolName || ''}`.trim();
-
-  if (!toolSlug || !hostname) {
-    return;
-  }
-
-  const stored = await chrome.storage.local.get([REMEMBERED_TOOLS_STORAGE_KEY]);
-  const remembered = { ...(stored[REMEMBERED_TOOLS_STORAGE_KEY] || {}) };
-  const now = Date.now();
-
-  remembered[toolSlug] = {
-    toolSlug,
-    toolName,
-    hostname,
-    launchUrl,
-    rememberedAt: remembered[toolSlug]?.rememberedAt || now,
-    lastLaunchedAt: now,
-  };
-
-  const trimmedEntries = Object.entries(remembered)
-    .filter(([, item]) => item && item.toolSlug && item.hostname)
-    .sort(([, left], [, right]) => Number(right?.lastLaunchedAt || 0) - Number(left?.lastLaunchedAt || 0))
-    .slice(0, MAX_REMEMBERED_TOOLS);
-
-  await chrome.storage.local.set({
-    [REMEMBERED_TOOLS_STORAGE_KEY]: Object.fromEntries(trimmedEntries),
-  });
-}
-
 function emitLaunchStored(toolSlug) {
   const normalizedSlug = normalizeToolSlug(toolSlug);
   window.dispatchEvent(new CustomEvent(EXTENSION_LAUNCH_STORED_EVENT, {
@@ -102,7 +67,6 @@ function emitLaunchStored(toolSlug) {
 
 function handleLaunchDetail(detail) {
   savePendingLaunch(detail)
-    .then(() => rememberToolLaunch(detail))
     .then(() => {
       emitLaunchStored(detail?.toolSlug);
     })
@@ -139,21 +103,31 @@ async function syncSessionToken() {
 
   const stored = await chrome.storage.local.get(['sessionToken', 'apiBase']);
   const nextValues = {};
+  const removeKeys = [];
 
   if (sessionToken && `${stored.sessionToken || ''}`.trim() !== sessionToken) {
     nextValues.sessionToken = sessionToken;
     nextValues.sessionTokenSyncedAt = Date.now();
+  }
+  if (!sessionToken && `${stored.sessionToken || ''}`.trim()) {
+    removeKeys.push('sessionToken');
+    removeKeys.push('sessionTokenSyncedAt');
   }
 
   if (`${stored.apiBase || ''}`.trim() !== apiBase) {
     nextValues.apiBase = apiBase;
   }
 
-  if (Object.keys(nextValues).length === 0) {
+  if (Object.keys(nextValues).length === 0 && removeKeys.length === 0) {
     return;
   }
 
-  await chrome.storage.local.set(nextValues);
+  if (removeKeys.length > 0) {
+    await chrome.storage.local.remove(removeKeys);
+  }
+  if (Object.keys(nextValues).length > 0) {
+    await chrome.storage.local.set(nextValues);
+  }
 }
 
 function queueSync() {
@@ -184,4 +158,5 @@ window.setInterval(() => {
   syncSessionToken().catch(() => {});
 }, 5000);
 
+chrome.storage.local.remove('rememberedToolLaunches').catch(() => {});
 queueSync();

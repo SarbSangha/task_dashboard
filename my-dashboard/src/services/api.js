@@ -1,11 +1,17 @@
 // src/services/api.js - UNIFIED API SERVICE
 import axios from 'axios';
-import { buildUploadFormData } from '../utils/fileUploads';
+import { buildUploadFormData, getFileRelativePath } from '../utils/fileUploads';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const SESSION_TOKEN_STORAGE_KEY = 'rmw_session_token_v1';
 const SESSION_TOKEN_REMEMBER_KEY = 'rmw_session_token_remember_v1';
 const REQUEST_TIMEOUT_MS = 15000;
+const PRESIGN_TIMEOUT_MS = 30000;
+const DIRECT_UPLOAD_CONCURRENCY = 2;
+const DIRECT_UPLOAD_PART_CONCURRENCY = 3;
+const LEGACY_UPLOAD_FALLBACK_MAX_BYTES = 90 * 1024 * 1024;
+const DIRECT_UPLOAD_RETRY_COUNT = 2;
+const DIRECT_UPLOAD_RETRY_BASE_DELAY_MS = 1200;
 
 const canUseBrowserStorage = () => typeof window !== 'undefined';
 
@@ -61,6 +67,259 @@ const mergeRequestConfig = (baseConfig = {}, requestConfig = {}) => ({
     ...(requestConfig.params || {}),
   },
 });
+
+const isBrowserFile = (value) => typeof File !== 'undefined' && value instanceof File;
+
+const toUploadFiles = (files = []) => files.filter((file) => isBrowserFile(file));
+
+const buildPresignPayload = (files = []) => ({
+  files: files.map((file) => ({
+    name: file.name,
+    size: Number.isFinite(file.size) ? file.size : 0,
+    contentType: file.type || 'application/octet-stream',
+    relativePath: getFileRelativePath(file) || null,
+  })),
+});
+
+const emitLegacyUploadProgress = (progressEvent, onProgress) => {
+  if (typeof onProgress !== 'function') return;
+  const total = Math.max(progressEvent?.total || 0, 1);
+  const loaded = Math.min(progressEvent?.loaded || 0, total);
+  const percent = Math.min(100, Math.round((loaded * 100) / total));
+  onProgress(percent, { loaded, total });
+};
+
+const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const createProgressTracker = (files, { onProgress, onFileProgress } = {}) => {
+  const fileTotals = files.map((file) => Math.max(file?.size || 0, 1));
+  const loadedByFile = new Array(files.length).fill(0);
+  const aggregateTotal = Math.max(
+    fileTotals.reduce((sum, value) => sum + value, 0),
+    1
+  );
+
+  const emitAggregate = (fileIndex) => {
+    if (typeof onProgress !== 'function') return;
+    const loaded = loadedByFile.reduce((sum, value) => sum + value, 0);
+    const percent = Math.min(100, Math.round((loaded * 100) / aggregateTotal));
+    onProgress(percent, { loaded, total: aggregateTotal, fileIndex });
+  };
+
+  return {
+    update(fileIndex, loaded) {
+      const total = fileTotals[fileIndex] || 1;
+      const safeLoaded = Math.min(Math.max(loaded || 0, 0), total);
+      loadedByFile[fileIndex] = safeLoaded;
+      if (typeof onFileProgress === 'function') {
+        onFileProgress({
+          fileIndex,
+          file: files[fileIndex],
+          loaded: safeLoaded,
+          total,
+          percent: Math.min(100, Math.round((safeLoaded * 100) / total)),
+        });
+      }
+      emitAggregate(fileIndex);
+    },
+    complete(fileIndex) {
+      this.update(fileIndex, fileTotals[fileIndex] || 1);
+    },
+  };
+};
+
+const runWithConcurrency = async (tasks, concurrency = DIRECT_UPLOAD_CONCURRENCY) => {
+  const results = new Array(tasks.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= tasks.length) {
+        return;
+      }
+      results[currentIndex] = await tasks[currentIndex]();
+    }
+  };
+
+  const workerCount = Math.min(Math.max(concurrency, 1), tasks.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+};
+
+const withUploadRetry = async (fn, retryCount = DIRECT_UPLOAD_RETRY_COUNT) => {
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt <= retryCount) {
+    try {
+      return await fn(attempt);
+    } catch (error) {
+      lastError = error;
+      const status = error?.response?.status;
+      const isRetryableStatus = !status || status >= 500 || status === 408 || status === 429;
+      if (attempt >= retryCount || !isRetryableStatus || isRequestCanceled(error)) {
+        break;
+      }
+      const delayMs = DIRECT_UPLOAD_RETRY_BASE_DELAY_MS * (attempt + 1);
+      await sleep(delayMs);
+      attempt += 1;
+    }
+  }
+
+  throw lastError;
+};
+
+const shouldUseLegacyUploadFallback = (files, error, options = {}) => {
+  if (options.allowLegacyFallback === false) return false;
+  if (isRequestCanceled(error)) return false;
+  const status = error?.response?.status;
+  if ([401, 403, 422].includes(status)) return false;
+  return files.every((file) => (file?.size || 0) <= LEGACY_UPLOAD_FALLBACK_MAX_BYTES);
+};
+
+const uploadFilesLegacy = async (files, options = {}) => {
+  const formData = buildUploadFormData(files);
+  const response = await api.post('/upload', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+    timeout: 0,
+    onUploadProgress: (progressEvent) => emitLegacyUploadProgress(progressEvent, options.onProgress),
+  });
+
+  return response.data;
+};
+
+const uploadFileDirectToR2 = async (file, target, tracker, fileIndex) => {
+  const contentType = file.type || target?.headers?.['Content-Type'] || 'application/octet-stream';
+
+  await withUploadRetry(async () => {
+    await axios.put(target.uploadUrl, file, {
+      headers: {
+        'Content-Type': contentType,
+      },
+      timeout: 0,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      onUploadProgress: (progressEvent) => {
+        const loaded = progressEvent?.loaded ?? file.size ?? 0;
+        tracker.update(fileIndex, loaded);
+      },
+    });
+  });
+
+  tracker.complete(fileIndex);
+  return target.attachment;
+};
+
+const abortMultipartUpload = async (target) => {
+  if (!target?.key || !target?.uploadId) return;
+  try {
+    await api.post(
+      '/api/uploads/multipart/abort',
+      {
+        key: target.key,
+        uploadId: target.uploadId,
+      },
+      { timeout: PRESIGN_TIMEOUT_MS }
+    );
+  } catch (error) {
+    console.warn('Multipart upload abort failed:', error);
+  }
+};
+
+const uploadFileMultipartToR2 = async (file, target, tracker, fileIndex, options = {}) => {
+  const parts = Array.isArray(target?.parts) ? target.parts : [];
+  const partSize = Math.max(Number(target?.partSize) || 0, 5 * 1024 * 1024);
+  if (!target?.uploadId || !target?.key || parts.length === 0) {
+    throw new Error(`Multipart upload target is incomplete for "${file.name}".`);
+  }
+
+  const partLoaded = new Array(parts.length).fill(0);
+  const emitLoaded = () => {
+    const loaded = partLoaded.reduce((sum, value) => sum + value, 0);
+    tracker.update(fileIndex, loaded);
+  };
+
+  const tasks = parts.map((part, index) => async () => {
+    const partNumber = Number(part?.partNumber) || (index + 1);
+    const start = (partNumber - 1) * partSize;
+    const end = Math.min(file.size, start + partSize);
+    const blob = file.slice(start, end);
+    const uploadedPart = await withUploadRetry(async () => {
+      const response = await axios.put(part.uploadUrl, blob, {
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+        timeout: 0,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        onUploadProgress: (progressEvent) => {
+          partLoaded[index] = Math.min(blob.size, progressEvent?.loaded ?? blob.size);
+          emitLoaded();
+        },
+      });
+      const etag = response?.headers?.etag || response?.headers?.ETag;
+      if (!etag) {
+        throw new Error(`Missing ETag for uploaded part ${partNumber} of "${file.name}".`);
+      }
+      partLoaded[index] = blob.size;
+      emitLoaded();
+      return {
+        partNumber,
+        etag,
+      };
+    });
+
+    return uploadedPart;
+  });
+
+  try {
+    const uploadedParts = await runWithConcurrency(
+      tasks,
+      options.partConcurrency || DIRECT_UPLOAD_PART_CONCURRENCY
+    );
+    await api.post(
+      '/api/uploads/multipart/complete',
+      {
+        key: target.key,
+        uploadId: target.uploadId,
+        parts: uploadedParts,
+      },
+      { timeout: PRESIGN_TIMEOUT_MS }
+    );
+    tracker.complete(fileIndex);
+    return target.attachment;
+  } catch (error) {
+    await abortMultipartUpload(target);
+    throw error;
+  }
+};
+
+const buildUploadError = (error) => {
+  if (error?.response?.data?.detail) {
+    return error;
+  }
+
+  const status = error?.response?.status;
+  if (status === 401) {
+    error.message = 'Your session expired. Please sign in again and retry the upload.';
+    return error;
+  }
+  if (status === 413) {
+    error.message = 'Upload rejected by a proxy size limit before it reached storage.';
+    return error;
+  }
+  if (status === 400 && !error?.response?.data?.detail && error?.message) {
+    return error;
+  }
+  if (!status) {
+    error.message = 'Direct upload to storage failed. Check the R2 bucket CORS rules for PUT requests from this dashboard origin.';
+  }
+  return error;
+};
 
 export const isRequestCanceled = (error) =>
   axios.isCancel(error) || error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError';
@@ -261,6 +520,13 @@ export const authAPI = {
     return response.data;
   },
 
+  adminChangeUserPassword: async (userId, newPassword) => {
+    const response = await api.post(`/api/admin/users/${userId}/password`, {
+      new_password: newPassword,
+    });
+    return response.data;
+  },
+
   getDeletedUsers: async () => {
     const response = await api.get('/api/admin/deleted-users');
     return response.data;
@@ -331,6 +597,26 @@ export const taskAPI = {
           }))
           .filter((item) => item.url || item.filename || item.originalName)
       : [];
+    const normalizedWorkflow = taskData.workflow?.enabled
+      ? {
+          enabled: true,
+          finalApprovalRequired: Boolean(taskData.workflow?.finalApprovalRequired),
+          stages: Array.isArray(taskData.workflow?.stages)
+            ? taskData.workflow.stages
+                .filter((stage) => stage && typeof stage === 'object')
+                .map((stage, index) => ({
+                  order: Number(stage.order || index + 1),
+                  title: `${stage.title || ''}`.trim(),
+                  description: `${stage.description || ''}`.trim() || null,
+                  approvalRequired: Boolean(stage.approvalRequired),
+                  assigneeIds: Array.isArray(stage.assigneeIds)
+                    ? Array.from(new Set(stage.assigneeIds.map((id) => Number(id)).filter(Boolean)))
+                    : [],
+                }))
+                .filter((stage) => stage.title && stage.assigneeIds.length > 0)
+            : [],
+        }
+      : null;
     
     // ✅ Ensure all required fields are present
     const payload = {
@@ -350,6 +636,7 @@ export const taskAPI = {
       reference: taskData.reference || '',
       links: normalizedLinks,
       attachments: normalizedAttachments,
+      workflow: normalizedWorkflow,
     };
     
     console.log('📦 Formatted payload:', payload);
@@ -372,6 +659,11 @@ export const taskAPI = {
 
   getTaskById: async (taskId) => {
     const response = await api.get(`/api/tasks/${taskId}`);
+    return response.data;
+  },
+
+  getWorkflow: async (taskId) => {
+    const response = await api.get(`/api/tasks/${taskId}/workflow`);
     return response.data;
   },
 
@@ -405,8 +697,16 @@ export const taskAPI = {
     return response.data;
   },
 
-  getTracking: async (filters = {}) => {
-    const response = await api.get('/api/tasks/all', { params: filters });
+  getTaskReferenceSuggestions: async (filters = {}) => {
+    const response = await api.get('/api/tasks/reference-suggestions', { params: filters });
+    return response.data;
+  },
+
+  getTracking: async (filters = {}, requestConfig = {}) => {
+    const response = await api.get('/api/tasks/all', {
+      ...requestConfig,
+      params: filters,
+    });
     return response.data;
   },
 
@@ -473,6 +773,11 @@ export const taskAPI = {
     return response.data;
   },
 
+  submitStage: async (taskId, stageId, payload = {}) => {
+    const response = await api.post(`/api/tasks/${taskId}/stages/${stageId}/submit`, payload);
+    return response.data;
+  },
+
   startTask: async (taskId, comments = '') => {
     const response = await api.post(`/api/tasks/${taskId}/actions/start`, { comments });
     return response.data;
@@ -488,8 +793,18 @@ export const taskAPI = {
     return response.data;
   },
 
+  approveStage: async (taskId, stageId, comments = '') => {
+    const response = await api.post(`/api/tasks/${taskId}/stages/${stageId}/approve`, { comments });
+    return response.data;
+  },
+
   needImprovement: async (taskId, comments = '') => {
     const response = await api.post(`/api/tasks/${taskId}/actions/need-improvement`, { comments });
+    return response.data;
+  },
+
+  requestStageImprovement: async (taskId, stageId, comments = '') => {
+    const response = await api.post(`/api/tasks/${taskId}/stages/${stageId}/request-improvement`, { comments });
     return response.data;
   },
 
@@ -503,6 +818,11 @@ export const taskAPI = {
     return response.data;
   },
 
+  updateStage: async (taskId, stageId, payload = {}) => {
+    const response = await api.patch(`/api/tasks/${taskId}/stages/${stageId}`, payload);
+    return response.data;
+  },
+
   editResult: async (taskId, resultText) => {
     const response = await api.put(`/api/tasks/${taskId}/edit-result`, { result_text: resultText });
     return response.data;
@@ -513,11 +833,12 @@ export const taskAPI = {
     return response.data;
   },
 
-  addComment: async (taskId, comment, isInternal = false, commentType = 'general') => {
+  addComment: async (taskId, comment, isInternal = false, commentType = 'general', options = {}) => {
     const response = await api.post(`/api/tasks/${taskId}/comments`, {
       comment,
       comment_type: commentType,
-      is_internal: isInternal
+      is_internal: isInternal,
+      stage_id: options.stageId || null,
     });
     return response.data;
   },
@@ -823,22 +1144,68 @@ export const draftAPI = {
 
 // ==================== FILE API ====================
 export const fileAPI = {
-  uploadFiles: async (files) => {
-    const formData = buildUploadFormData(files);
+  uploadFiles: async (files, options = {}) => {
+    const filesToUpload = toUploadFiles(files);
+    if (filesToUpload.length === 0) {
+      return {
+        success: true,
+        message: 'No valid files to upload',
+        data: [],
+        storage: 'r2',
+      };
+    }
 
-    const response = await api.post('/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      onUploadProgress: (progressEvent) => {
-        const percentCompleted = Math.round(
-          (progressEvent.loaded * 100) / progressEvent.total
-        );
-        console.log(`Upload progress: ${percentCompleted}%`);
-      },
-    });
+    try {
+      const prepareResponse = await api.post(
+        '/api/uploads/presign',
+        buildPresignPayload(filesToUpload),
+        { timeout: PRESIGN_TIMEOUT_MS }
+      );
 
-    return response.data;
+      const uploadTargets = Array.isArray(prepareResponse?.data?.data)
+        ? prepareResponse.data.data
+        : [];
+
+      if (uploadTargets.length !== filesToUpload.length) {
+        throw new Error('Upload preparation returned an unexpected number of targets.');
+      }
+
+      const tracker = createProgressTracker(filesToUpload, options);
+      const tasks = filesToUpload.map((file, index) => async () => {
+        const target = uploadTargets[index];
+        if (!target?.attachment) {
+          throw new Error(`Upload target is missing for "${file.name}".`);
+        }
+        if (target?.strategy === 'multipart') {
+          return uploadFileMultipartToR2(file, target, tracker, index, options);
+        }
+        if (!target?.uploadUrl) {
+          throw new Error(`Upload URL is missing for "${file.name}".`);
+        }
+        return uploadFileDirectToR2(file, target, tracker, index);
+      });
+
+      const data = await runWithConcurrency(
+        tasks,
+        options.concurrency || DIRECT_UPLOAD_CONCURRENCY
+      );
+
+      return {
+        success: true,
+        message: `${data.length} file(s) uploaded successfully`,
+        data,
+        storage: 'r2',
+      };
+    } catch (error) {
+      if (shouldUseLegacyUploadFallback(filesToUpload, error, options)) {
+        try {
+          return await uploadFilesLegacy(filesToUpload, options);
+        } catch (legacyError) {
+          throw buildUploadError(legacyError);
+        }
+      }
+      throw buildUploadError(error);
+    }
   },
 };
 

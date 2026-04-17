@@ -22,6 +22,16 @@ import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
 import { InboxSkeleton } from '../../../ui/InboxSkeleton';
 import './InboxPanel.css';
 
+const isWorkflowTask = (task) => Boolean(task?.workflowEnabled);
+const getActiveStageLabel = (task) => {
+  if (!isWorkflowTask(task)) return '';
+  const order = Number(task?.currentStageOrder || 0);
+  const title = `${task?.currentStageTitle || ''}`.trim();
+  if (order && title) return `Stage ${order}: ${title}`;
+  if (order) return `Stage ${order}`;
+  return title;
+};
+
 const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange, onActivate }) => {
   const { showAlert, showPrompt } = useCustomDialogs();
   const { user } = useAuth();
@@ -65,9 +75,48 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     refetch,
   } = useInbox({}, { enabled: isOpen });
   const tasks = inboxData?.tasks || [];
+  const currentUserId = user?.id != null ? String(user.id) : '';
   const loading = isLoading;
   const isRefreshing = isFetching && !isLoading;
   const { mutateAsync: updateTaskStatus } = useUpdateTaskStatus();
+
+  const getTaskFilterMeta = React.useCallback((task) => {
+    const normalizedStatus = `${task?.status || ''}`.toLowerCase();
+    const creatorId = task?.creator?.id ?? task?.creatorId;
+    const submittedBy = task?.submittedBy;
+    const isCreatorTask = task?.myRole === 'creator'
+      || (currentUserId !== '' && creatorId != null && String(creatorId) === currentUserId);
+    const isSubmittedByMe =
+      currentUserId !== ''
+      && submittedBy != null
+      && String(submittedBy) === currentUserId;
+
+    return {
+      normalizedStatus,
+      isCreatorTask,
+      isSubmittedByMe,
+      isParticipantTask: !isCreatorTask,
+    };
+  }, [currentUserId]);
+
+  const doesTaskMatchFilter = React.useCallback((task, currentFilter) => {
+    const { normalizedStatus, isCreatorTask, isSubmittedByMe, isParticipantTask } = getTaskFilterMeta(task);
+
+    if (currentFilter === 'unread') return !(task?.isRead ?? false);
+    if (currentFilter === 'working') return ['assigned', 'in_progress', 'need_improvement'].includes(normalizedStatus);
+    if (currentFilter === 'submitted') {
+      return normalizedStatus === 'submitted' && (isSubmittedByMe || isParticipantTask);
+    }
+    if (currentFilter === 'result') return normalizedStatus === 'submitted' && isCreatorTask;
+    if (currentFilter === 'need_improvement') return normalizedStatus === 'need_improvement';
+    if (currentFilter === 'final_result') return ['approved', 'completed'].includes(normalizedStatus);
+    return true;
+  }, [getTaskFilterMeta]);
+
+  const getFilterCount = React.useCallback(
+    (currentFilter) => tasks.filter((task) => doesTaskMatchFilter(task, currentFilter)).length,
+    [doesTaskMatchFilter, tasks],
+  );
 
   useEffect(() => {
     onMinimizedChange?.(isOpen && isMinimized);
@@ -352,12 +401,19 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         taskId: task.id,
         status: 'submitted',
         execute: () =>
-          taskAPI.submitTask(task.id, {
-            result_text: submitModal.resultText.trim(),
-            comments: submitModal.comments.trim(),
-            result_links: submitModal.links,
-            result_attachments: uploadedAttachments,
-          }),
+          (isWorkflowTask(task) && task.currentStageId
+            ? taskAPI.submitStage(task.id, task.currentStageId, {
+                result_text: submitModal.resultText.trim(),
+                comments: submitModal.comments.trim(),
+                result_links: submitModal.links,
+                result_attachments: uploadedAttachments,
+              })
+            : taskAPI.submitTask(task.id, {
+                result_text: submitModal.resultText.trim(),
+                comments: submitModal.comments.trim(),
+                result_links: submitModal.links,
+                result_attachments: uploadedAttachments,
+              })),
       });
 
       closeSubmitModal();
@@ -418,14 +474,18 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     try {
       void markTaskSeen(task);
       if (action === 'approve') {
+        const stageLabel = getActiveStageLabel(task);
         const comments = (await showPrompt('Approval comment (optional):', {
-          title: 'Approve Task',
+          title: stageLabel ? `Approve ${stageLabel}` : 'Approve Task',
           defaultValue: '',
         })) ?? '';
         await updateTaskStatus({
           taskId: task.id,
           status: 'approved',
-          execute: () => taskAPI.approveTask(task.id, comments),
+          execute: () =>
+            (isWorkflowTask(task) && task.currentStageId
+              ? taskAPI.approveStage(task.id, task.currentStageId, comments)
+              : taskAPI.approveTask(task.id, comments)),
         });
       } else if (action === 'start') {
         try {
@@ -443,8 +503,9 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         // Move to Tools immediately after trying to persist status change.
         return;
       } else if (action === 'need_improvement') {
+        const stageLabel = getActiveStageLabel(task);
         const comments = (await showPrompt('Need Improvement note:', {
-          title: 'Need Improvement',
+          title: stageLabel ? `Request Revision For ${stageLabel}` : 'Need Improvement',
           defaultValue: '',
           multiline: true,
           rows: 6,
@@ -454,7 +515,10 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         await updateTaskStatus({
           taskId: task.id,
           status: 'need_improvement',
-          execute: () => taskAPI.needImprovement(task.id, comments),
+          execute: () =>
+            (isWorkflowTask(task) && task.currentStageId
+              ? taskAPI.requestStageImprovement(task.id, task.currentStageId, comments)
+              : taskAPI.needImprovement(task.id, comments)),
         });
       } else if (action === 'submit') {
         openSubmitModal(task);
@@ -493,17 +557,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     }
   };
 
-  const filteredTasks = tasks.filter(task => {
-    const isCreatorTask = task.creator?.id === user?.id;
-    const isMySubmission = task.submittedBy === user?.id;
-    if (filter === 'unread') return !task.isRead;
-    if (filter === 'working') return ['assigned', 'in_progress', 'need_improvement'].includes(task.status);
-    if (filter === 'submitted') return task.status === 'submitted' && isMySubmission;
-    if (filter === 'result') return task.status === 'submitted' && isCreatorTask;
-    if (filter === 'need_improvement') return task.status === 'need_improvement';
-    if (filter === 'final_result') return ['approved', 'completed'].includes(task.status) && isCreatorTask;
-    return true;
-  });
+  const filteredTasks = tasks.filter((task) => doesTaskMatchFilter(task, filter));
 
   if (!isOpen) return null;
 
@@ -524,7 +578,9 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
-      restoreWindow();
+      onActivate?.();
+      setIsMinimized(false);
+      setIsMaximized(true);
       return;
     }
 
@@ -573,37 +629,37 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
             className={`filter-btn ${filter === 'unread' ? 'active' : ''}`}
             onClick={() => setFilter('unread')}
           >
-            Unread ({tasks.filter(t => !t.isRead).length})
+            Unread ({getFilterCount('unread')})
           </button>
           <button 
             className={`filter-btn ${filter === 'working' ? 'active' : ''}`}
             onClick={() => setFilter('working')}
           >
-            Working ({tasks.filter(t => ['assigned', 'in_progress', 'need_improvement'].includes(t.status)).length})
+            Working ({getFilterCount('working')})
           </button>
           <button 
             className={`filter-btn ${filter === 'submitted' ? 'active' : ''}`}
             onClick={() => setFilter('submitted')}
           >
-            Submitted ({tasks.filter(t => t.status === 'submitted' && t.submittedBy === user?.id).length})
+            Submitted ({getFilterCount('submitted')})
           </button>
           <button 
             className={`filter-btn ${filter === 'result' ? 'active' : ''}`}
             onClick={() => setFilter('result')}
           >
-            Result ({tasks.filter(t => t.status === 'submitted' && t.creator?.id === user?.id).length})
+            Result ({getFilterCount('result')})
           </button>
           <button 
             className={`filter-btn ${filter === 'need_improvement' ? 'active' : ''}`}
             onClick={() => setFilter('need_improvement')}
           >
-            Need Improvement ({tasks.filter(t => t.status === 'need_improvement').length})
+            Need Improvement ({getFilterCount('need_improvement')})
           </button>
           <button 
             className={`filter-btn ${filter === 'final_result' ? 'active' : ''}`}
             onClick={() => setFilter('final_result')}
           >
-            Final Result ({tasks.filter(t => ['approved', 'completed'].includes(t.status) && t.creator?.id === user?.id).length})
+            Final Result ({getFilterCount('final_result')})
           </button>
         </div>
         )}
@@ -784,25 +840,36 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       {submitModal.open && (
         <div className="forward-modal-overlay" onClick={closeSubmitModal}>
           <div className="submit-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Submit Task Result</h3>
+            <h3>{isWorkflowTask(submitModal.task) ? 'Submit Stage Result' : 'Submit Task Result'}</h3>
             <p className="submit-modal-subtitle">{submitModal.task?.title}</p>
 
             <div className="submit-task-info">
               <p><strong>Task ID:</strong> {submitModal.task?.taskNumber || '-'}</p>
               <p><strong>Project ID:</strong> {submitModal.task?.projectId || '-'}</p>
               <p><strong>Creator:</strong> {submitModal.task?.creator?.name || 'Unknown'}</p>
+              {isWorkflowTask(submitModal.task) && (
+                <p><strong>Active Stage:</strong> {getActiveStageLabel(submitModal.task) || 'Current stage'}</p>
+              )}
             </div>
 
-            <label htmlFor="submit-result-text">Result Details</label>
+            <label htmlFor="submit-result-text">
+              {isWorkflowTask(submitModal.task) ? 'Stage Output Details' : 'Result Details'}
+            </label>
             <textarea
               id="submit-result-text"
               rows={4}
               value={submitModal.resultText}
               onChange={(e) => setSubmitModal((prev) => ({ ...prev, resultText: e.target.value }))}
-              placeholder="Add result summary, steps completed, and outcome..."
+              placeholder={
+                isWorkflowTask(submitModal.task)
+                  ? 'Summarize what this stage completed, what the next stage should use, and any important handoff notes...'
+                  : 'Add result summary, steps completed, and outcome...'
+              }
             />
 
-            <label htmlFor="submit-result-notes">Submission Note (optional)</label>
+            <label htmlFor="submit-result-notes">
+              {isWorkflowTask(submitModal.task) ? 'Handoff Note (optional)' : 'Submission Note (optional)'}
+            </label>
             <textarea
               id="submit-result-notes"
               rows={2}
@@ -883,7 +950,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
                 disabled={submitModal.submitting}
                 onClick={submitTaskFromModal}
               >
-                {submitModal.submitting ? 'Submitting...' : 'Submit Result'}
+                {submitModal.submitting ? 'Submitting...' : (isWorkflowTask(submitModal.task) ? 'Submit Stage' : 'Submit Result')}
               </button>
             </div>
           </div>

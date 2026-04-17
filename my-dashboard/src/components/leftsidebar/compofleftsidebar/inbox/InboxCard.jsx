@@ -1,13 +1,23 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import './InboxCard.css';
 import { formatDateTimeIndia } from '../../../../utils/dateTime';
+import { buildFileDownloadUrl } from '../../../../utils/fileLinks';
+import FilePreviewModal from '../../../common/FilePreviewModal';
+import { taskAPI } from '../../../../services/api';
 
 const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat }) => {
-  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
   const [menuOpen, setMenuOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [copiedKey, setCopiedKey] = useState('');
   const [toastMessage, setToastMessage] = useState('');
+  const [previewFile, setPreviewFile] = useState(null);
+  const [workflowDetail, setWorkflowDetail] = useState(null);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
+  const [workflowError, setWorkflowError] = useState('');
+  const isWorkflowTask = Boolean(task.workflowEnabled);
+  const normalizedStatus = `${task.status || ''}`.toLowerCase();
+  const normalizedWorkflowStatus = `${task.workflowStatus || ''}`.toLowerCase();
+  const isCreatorTask = task.creator?.id === task.creatorId || task.myRole === 'creator';
   const isRevoked = task.status === 'cancelled' && !!(task.revocation || `${task.workflowStage || ''}`.includes('revoked'));
   const revokedBy = task.revocation?.revokedBy || task.creator?.name || 'Creator';
   const revokedAt = task.revocation?.revokedAt ? formatDateTimeIndia(task.revocation.revokedAt) : '';
@@ -18,9 +28,11 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     return task.status === 'need_improvement';
   });
   const canShowStartTask =
+    !isWorkflowTask &&
     task.myRole === 'assignee' &&
     !['completed', 'cancelled', 'rejected'].includes(task.status);
   const canShowSubmitTask =
+    !isWorkflowTask &&
     task.myRole === 'assignee' &&
     !['completed', 'cancelled', 'rejected', 'submitted'].includes(task.status);
   const withStart = canShowStartTask && !baseActions.includes('start')
@@ -29,9 +41,64 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const computedActions = canShowSubmitTask && !withStart.includes('submit')
     ? [...withStart, 'submit']
     : withStart;
-  const withChat = !computedActions.includes('chat')
-    ? ['chat', ...computedActions]
-    : computedActions;
+  const inferFallbackActions = () => {
+    const inferred = [];
+    const terminalStatuses = ['completed', 'cancelled', 'rejected'];
+
+    if (isWorkflowTask) {
+      const workflowWaitingApproval =
+        normalizedWorkflowStatus === 'waiting_approval'
+        || (normalizedStatus === 'submitted' && Boolean(task.currentStageApprovalRequired))
+        || (normalizedStatus === 'approved' && Boolean(task.finalApprovalRequired) && isCreatorTask);
+
+      if (
+        task.myRole === 'assignee'
+        && ['active', 'revision_requested'].includes(normalizedWorkflowStatus)
+      ) {
+        if (['assigned', 'pending', 'need_improvement'].includes(normalizedStatus)) {
+          inferred.push('start');
+        }
+        inferred.push('submit');
+      }
+
+      if (isCreatorTask && workflowWaitingApproval) {
+        inferred.push('approve', 'need_improvement');
+      }
+
+      if (isCreatorTask && !terminalStatuses.includes(normalizedStatus)) {
+        inferred.push('revoke_task');
+      }
+
+      if (
+        isCreatorTask
+        && ['not_started', 'active'].includes(normalizedWorkflowStatus)
+        && !terminalStatuses.includes(normalizedStatus)
+      ) {
+        inferred.push('edit_task');
+      }
+    } else {
+      if (isCreatorTask && ['submitted', 'approved'].includes(normalizedStatus)) {
+        inferred.push('approve', 'need_improvement');
+      }
+      if (isCreatorTask && !terminalStatuses.includes(normalizedStatus)) {
+        inferred.push('revoke_task');
+      }
+    }
+
+    return inferred;
+  };
+
+  const mergedActions = [...computedActions, ...inferFallbackActions()];
+  const dedupedActions = [];
+  mergedActions.forEach((action) => {
+    if (!dedupedActions.includes(action)) {
+      dedupedActions.push(action);
+    }
+  });
+
+  const withChat = !dedupedActions.includes('chat')
+    ? ['chat', ...dedupedActions]
+    : dedupedActions;
   const actions = isRevoked ? [] : withChat;
   const assignedNames = (task.assignedTo || []).map((x) => x.name).join(', ') || 'Unassigned';
   const description = task.description || '';
@@ -44,24 +111,60 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   })();
   const actionLabel = (action) => {
     if (action === 'chat') return 'Chat';
-    if (action === 'start') return 'Start Task';
-    if (action === 'submit') return 'Submit Task';
+    if (action === 'start') return isWorkflowTask ? 'Start Stage' : 'Start Task';
+    if (action === 'submit') return isWorkflowTask ? 'Submit Stage' : 'Submit Task';
+    if (action === 'approve') return isWorkflowTask ? 'Approve Stage' : 'Approve';
+    if (action === 'need_improvement') return isWorkflowTask ? 'Request Revision' : 'Need Improvement';
     if (action === 'forward') return 'Forward To';
     return action.replace(/_/g, ' ');
   };
   const editCount = Number(task.editCount ?? ((task.taskVersion || 1) - 1));
   const showEditBadge = task.myRole !== 'creator' && editCount > 0;
-  const buildFileActionUrl = (file, action, fallbackName) => {
-    const params = new URLSearchParams();
-    if (file?.url) params.set('url', file.url);
-    if (file?.path) params.set('path', file.path);
-    if (action === 'download') {
-      params.set('filename', fallbackName || file?.originalName || file?.filename || 'download');
+  const activeStageLabel = isWorkflowTask
+    ? [task.currentStageOrder ? `Stage ${task.currentStageOrder}` : '', task.currentStageTitle || ''].filter(Boolean).join(': ')
+    : '';
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadWorkflowDetail = async () => {
+      if (!expanded || !isWorkflowTask || !task?.id) return;
+      setWorkflowLoading(true);
+      setWorkflowError('');
+      try {
+        const response = await taskAPI.getWorkflow(task.id);
+        if (!cancelled) {
+          setWorkflowDetail(response);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setWorkflowError(error?.response?.data?.detail || 'Unable to load stage-wise workflow details right now.');
+        }
+      } finally {
+        if (!cancelled) {
+          setWorkflowLoading(false);
+        }
+      }
+    };
+
+    if (!expanded) return undefined;
+
+    if (!isWorkflowTask) {
+      setWorkflowDetail(null);
+      setWorkflowLoading(false);
+      setWorkflowError('');
+      return undefined;
     }
-    return `${apiBase}/api/files/${action}?${params.toString()}`;
-  };
+
+    void loadWorkflowDetail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, isWorkflowTask, task?.id]);
+
   const forceDownload = (file, filename) => {
-    const downloadUrl = buildFileActionUrl(file, 'download', filename);
+    const downloadUrl = buildFileDownloadUrl(file, filename);
     const link = document.createElement('a');
     link.href = downloadUrl;
     link.style.display = 'none';
@@ -113,6 +216,245 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     setExpanded((s) => !s);
   };
 
+  const renderLinkList = (links = [], prefix) => {
+    if (!Array.isArray(links) || links.length === 0) {
+      return <div className="workflow-stage-empty">No links shared.</div>;
+    }
+    return (
+      <div className="stage-resource-list">
+        {links.map((link, idx) => (
+          <div key={`${prefix}-link-${idx}`} className="stage-resource-item">
+            <span>{link}</span>
+            <span className="attachment-actions">
+              <a href={link} target="_blank" rel="noreferrer">Open</a>
+              <button
+                type="button"
+                className="mini-action-btn"
+                onClick={() => copyToClipboard(link, `${prefix}-link-${idx}`)}
+              >
+                {copiedKey === `${prefix}-link-${idx}` ? 'Copied' : 'Copy'}
+              </button>
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderFileList = (files = [], prefix) => {
+    if (!Array.isArray(files) || files.length === 0) {
+      return <div className="workflow-stage-empty">No files shared.</div>;
+    }
+    return (
+      <div className="stage-resource-list">
+        {files.map((file, idx) => {
+          const label = file?.originalName || file?.filename || `Attachment ${idx + 1}`;
+          return (
+            <div key={`${prefix}-file-${idx}`} className="stage-resource-item">
+              <span>{label}</span>
+              <span className="attachment-actions">
+                <button
+                  type="button"
+                  className="mini-action-btn"
+                  onClick={() => setPreviewFile(file)}
+                >
+                  Open
+                </button>
+                <button
+                  type="button"
+                  className="mini-action-btn"
+                  onClick={() => forceDownload(file, label)}
+                >
+                  Download
+                </button>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderWorkflowStages = () => {
+    if (!isWorkflowTask) return null;
+    if (workflowLoading) {
+      return (
+        <div className="workflow-stage-summary-block full-span">
+          <div className="workflow-stage-summary-head">
+            <strong>Stage-wise flow</strong>
+            <span>Loading workflow details...</span>
+          </div>
+        </div>
+      );
+    }
+
+    if (workflowError) {
+      return (
+        <div className="workflow-stage-summary-block full-span">
+          <div className="workflow-stage-summary-head">
+            <strong>Stage-wise flow</strong>
+            <span className="workflow-stage-error">{workflowError}</span>
+          </div>
+        </div>
+      );
+    }
+
+    const stages = Array.isArray(workflowDetail?.stages) ? workflowDetail.stages : [];
+    if (stages.length === 0) {
+      return (
+        <div className="workflow-stage-summary-block full-span">
+          <div className="workflow-stage-summary-head">
+            <strong>Stage-wise flow</strong>
+            <span>No stage details available.</span>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="workflow-stage-summary-block full-span">
+        <div className="workflow-stage-summary-head">
+          <strong>Stage-wise flow</strong>
+          <span>{stages.length} stage{stages.length === 1 ? '' : 's'} with input and output details</span>
+        </div>
+        <div className="workflow-stage-card-list">
+          {stages.map((stage) => {
+            const submission = stage.currentSubmission || null;
+            const links = Array.isArray(submission?.links) ? submission.links : [];
+            const attachments = Array.isArray(submission?.attachments) ? submission.attachments : [];
+            const comments = Array.isArray(stage.comments) ? stage.comments : [];
+            const eventLog = Array.isArray(stage.eventLog) ? stage.eventLog.slice(0, 2) : [];
+            const assigneeNames = (stage.assignees || []).map((assignee) => assignee.name).join(', ') || 'Unassigned';
+            const stageStatusLabel = `${stage.status || 'pending'}`.replace(/_/g, ' ');
+            const isCurrentStage = Number(task.currentStageId) === Number(stage.id);
+            const activityCount = (stage.history || []).length + comments.length;
+
+            return (
+              <article
+                key={stage.id}
+                className={`workflow-stage-card ${isCurrentStage ? 'current' : ''} status-${(stage.status || 'pending').toLowerCase()}`}
+              >
+                <div className="workflow-stage-card-head">
+                  <div className="workflow-stage-card-title">
+                    <span className="workflow-stage-chip">Stage {stage.order}</span>
+                    <h4>{stage.title}</h4>
+                    <p>{stage.description || 'No stage instructions added yet.'}</p>
+                  </div>
+                  <div className="workflow-stage-badges">
+                    {isCurrentStage ? <span className="workflow-stage-badge current">Current</span> : null}
+                    <span className="workflow-stage-badge">{stageStatusLabel}</span>
+                    <span className="workflow-stage-badge subtle">
+                      {stage.approvalRequired ? 'Approval required' : 'Auto handoff'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="workflow-stage-metrics">
+                  <div>
+                    <span>Owners</span>
+                    <strong>{assigneeNames}</strong>
+                  </div>
+                  <div>
+                    <span>Started</span>
+                    <strong>{formatDateTimeIndia(stage.startedAt) || 'N/A'}</strong>
+                  </div>
+                  <div>
+                    <span>Submitted</span>
+                    <strong>{formatDateTimeIndia(stage.submittedAt) || 'N/A'}</strong>
+                  </div>
+                  <div>
+                    <span>Completed</span>
+                    <strong>{formatDateTimeIndia(stage.completedAt) || 'N/A'}</strong>
+                  </div>
+                </div>
+
+                <div className="workflow-stage-io-grid">
+                  <section className="workflow-stage-pane">
+                    <div className="workflow-stage-pane-head">
+                      <span>Input</span>
+                      <strong>{stage.approvalRequired ? 'Review gate' : 'Auto flow'}</strong>
+                    </div>
+                    <div className="workflow-stage-field">
+                      <label>Instructions</label>
+                      <p>{stage.description || 'No instructions added for this stage.'}</p>
+                    </div>
+                    <div className="workflow-stage-field">
+                      <label>Assignees</label>
+                      <p>{assigneeNames}</p>
+                    </div>
+                    <div className="workflow-stage-field">
+                      <label>Handoff type</label>
+                      <p>{stage.approvalRequired ? 'Requires review before moving ahead.' : 'Moves to next stage automatically.'}</p>
+                    </div>
+                    {stage.revisionNotes ? (
+                      <div className="workflow-stage-field">
+                        <label>Revision note</label>
+                        <p>{stage.revisionNotes}</p>
+                      </div>
+                    ) : null}
+                  </section>
+
+                  <section className="workflow-stage-pane">
+                    <div className="workflow-stage-pane-head">
+                      <span>Output</span>
+                      <strong>{submission?.version ? `v${submission.version}` : 'No submission yet'}</strong>
+                    </div>
+                    <div className="workflow-stage-field">
+                      <label>Output text</label>
+                      <p>{submission?.outputText || 'No output submitted yet.'}</p>
+                    </div>
+                    <div className="workflow-stage-field">
+                      <label>Links</label>
+                      {renderLinkList(links, `stage-${stage.id}`)}
+                    </div>
+                    <div className="workflow-stage-field">
+                      <label>Files</label>
+                      {renderFileList(attachments, `stage-${stage.id}`)}
+                    </div>
+                  </section>
+                </div>
+
+                <div className="workflow-stage-activity">
+                  <div className="workflow-stage-pane-head">
+                    <span>Stage activity</span>
+                    <strong>{activityCount} item{activityCount === 1 ? '' : 's'}</strong>
+                  </div>
+                  {eventLog.length > 0 ? (
+                    <div className="workflow-stage-event-list">
+                      {eventLog.map((event) => (
+                        <div key={event.id} className="workflow-stage-event-item">
+                          <div className="workflow-stage-event-head">
+                            <strong>{event.label || event.action}</strong>
+                            <span>{formatDateTimeIndia(event.timestamp) || 'N/A'}</span>
+                          </div>
+                          {event.user?.name ? (
+                            <small>
+                              {event.user.name}
+                              {event.user.department ? ` • ${event.user.department}` : ''}
+                            </small>
+                          ) : null}
+                          {event.comments ? <p>{event.comments}</p> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="workflow-stage-empty">No activity recorded for this stage yet.</div>
+                  )}
+                  {comments.length > 0 ? (
+                    <div className="workflow-stage-comment-summary">
+                      <label>Latest comment</label>
+                      <p>{comments[comments.length - 1]?.comment || 'No stage comments yet.'}</p>
+                    </div>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className={`inbox-card ${isRevoked ? 'revoked-card' : ''}`}>
       <div className="card-header">
@@ -160,6 +502,9 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         <span><strong>Project ID:</strong> {task.projectId || '-'}</span>
         <span><strong>Creator:</strong> {task.creator?.name || 'Unknown'} ({task.creator?.department || 'N/A'})</span>
         <span><strong>Status:</strong> {(task.status || '').replace(/_/g, ' ')}</span>
+        {isWorkflowTask && (
+          <span><strong>Active Stage:</strong> {activeStageLabel || '-'}</span>
+        )}
         <span><strong>Assigned To:</strong> {assignedNames}</span>
         <span><strong>Request Type:</strong> {requestTypeLabel}</span>
         <span><strong>Chat:</strong> {task.chatCount || 0}</span>
@@ -193,8 +538,10 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
           <div><strong>From Department:</strong> {task.fromDepartment || '-'}</div>
           <div><strong>To Department:</strong> {task.toDepartment || '-'}</div>
           <div><strong>Workflow Stage:</strong> {task.workflowStage || '-'}</div>
+          {isWorkflowTask && <div><strong>Current Stage:</strong> {activeStageLabel || '-'}</div>}
           <div><strong>Created By:</strong> {task.creator?.name || '-'}</div>
           <div><strong>Last Forwarded By:</strong> {task.lastForwardedBy || '-'}</div>
+          {renderWorkflowStages()}
           <div className="forward-history">
             <strong>Task Links:</strong>
             {(task.links || []).length === 0 && <div className="forward-item">-</div>}
@@ -221,7 +568,13 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
               <div key={`${file?.url || file?.filename || idx}-${idx}`} className="forward-item">
                 <span>{file?.originalName || file?.filename || `Attachment ${idx + 1}`}</span>
                 <span className="attachment-actions">
-                  <a href={buildFileActionUrl(file, 'open')} target="_blank" rel="noreferrer">Open</a>
+                  <button
+                    type="button"
+                    className="mini-action-btn"
+                    onClick={() => setPreviewFile(file)}
+                  >
+                    Open
+                  </button>
                   <button
                     type="button"
                     className="mini-action-btn"
@@ -276,7 +629,13 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
                 <div key={`${file?.url || file?.filename || idx}-${idx}`} className="forward-item">
                   <span>{file?.originalName || file?.filename || `Attachment ${idx + 1}`}</span>
                   <span className="attachment-actions">
-                    <a href={buildFileActionUrl(file, 'open')} target="_blank" rel="noreferrer">Open</a>
+                    <button
+                      type="button"
+                      className="mini-action-btn"
+                      onClick={() => setPreviewFile(file)}
+                    >
+                      Open
+                    </button>
                     <button
                       type="button"
                       className="mini-action-btn"
@@ -302,6 +661,14 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         </div>
       </div>
       {toastMessage && <div className="copy-toast">{toastMessage}</div>}
+      {previewFile ? (
+        <FilePreviewModal
+          file={previewFile}
+          title={previewFile?.originalName || previewFile?.filename || 'Attachment'}
+          subtitle={`${task.title || 'Task'}${task.taskNumber ? ` • ${task.taskNumber}` : ''}`}
+          onClose={() => setPreviewFile(null)}
+        />
+      ) : null}
     </div>
   );
 };

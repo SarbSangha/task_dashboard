@@ -9,6 +9,7 @@ import './App.css';
 // Auth Components
 import Login from './components/auth/Login';
 import Register from './components/auth/Register';
+import { ForgotPassword } from './components/auth/ForgotPassword';
 
 // Protected Components
 import Dashboard from './pages/Dashboard';
@@ -29,6 +30,7 @@ function App() {
               {/* Public Routes */}
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
+              <Route path="/forgot-password" element={<ForgotPassword />} />
               
               {/* Protected Routes */}
               <Route 

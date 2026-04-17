@@ -11,6 +11,9 @@ import {
   getTaskPanelCacheEntry,
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
+import {
+  formatDateTimeIndia as formatDateTimeIndiaShared,
+} from '../../../../utils/dateTime';
 
 const WORKSPACE_TASK_CACHE_TTL_MS = 90 * 1000;
 const WORKSPACE_REFERENCE_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -33,10 +36,8 @@ function mergeWorkspaceTasks(inboxTasks = [], outboxTasks = []) {
 }
 
 export function formatProjectDate(value) {
-  if (!value) return 'No recent activity';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'No recent activity';
-  return date.toLocaleString();
+  const formattedValue = formatDateTimeIndiaShared(value);
+  return formattedValue === 'N/A' ? 'No recent activity' : formattedValue;
 }
 
 export function formatSeconds(seconds = 0) {
@@ -48,21 +49,7 @@ export function formatSeconds(seconds = 0) {
 }
 
 export function formatDateTimeIndia(value) {
-  if (!value) return 'N/A';
-  try {
-    return new Date(value).toLocaleString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true,
-    });
-  } catch {
-    return 'N/A';
-  }
+  return formatDateTimeIndiaShared(value);
 }
 
 export function useWorkspaceTaskDataset() {

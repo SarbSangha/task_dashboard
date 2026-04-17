@@ -9,6 +9,7 @@ import {
   invalidateTaskPanelCache,
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
+import { formatDateTimeIndia } from '../../../../utils/dateTime';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import './AdminRequestPanel.css';
 
@@ -44,10 +45,8 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
   }, [isMinimized, isOpen, onMinimizedChange]);
 
   const formatDateTime = (value) => {
-    if (!value) return 'N/A';
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return value;
-    return d.toLocaleString();
+    const formattedValue = formatDateTimeIndia(value);
+    return formattedValue === 'N/A' ? 'N/A' : formattedValue;
   };
 
   const loadData = async ({ silent = false } = {}) => {
@@ -242,6 +241,64 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
     }
   };
 
+  const handleChangePassword = async (user) => {
+    const nextPassword = await showPrompt(
+      `Enter a new password for ${user.name} (${user.email}).`,
+      {
+        title: 'Change User Password',
+        defaultValue: '',
+        placeholder: 'Minimum 8 characters',
+        confirmText: 'Continue',
+        inputType: 'password',
+      }
+    );
+
+    if (nextPassword === null) {
+      setMenuUserId(null);
+      return;
+    }
+
+    if (!nextPassword.trim() || nextPassword.trim().length < 8) {
+      setMessage('New password must be at least 8 characters long.');
+      setMenuUserId(null);
+      return;
+    }
+
+    const confirmedPassword = await showPrompt(
+      `Re-enter the new password for ${user.name} to confirm.`,
+      {
+        title: 'Confirm New Password',
+        defaultValue: '',
+        placeholder: 'Re-enter password',
+        confirmText: 'Update Password',
+        inputType: 'password',
+      }
+    );
+
+    if (confirmedPassword === null) {
+      setMenuUserId(null);
+      return;
+    }
+
+    if (nextPassword !== confirmedPassword) {
+      setMessage('Passwords do not match.');
+      setMenuUserId(null);
+      return;
+    }
+
+    try {
+      await authAPI.adminChangeUserPassword(user.id, nextPassword);
+      setMenuUserId(null);
+      setMessage(`Password updated for ${user.name}.`);
+      if (cacheKey) {
+        invalidateTaskPanelCache(cacheKey);
+      }
+      await loadData({ silent: true });
+    } catch (error) {
+      setMessage(error?.response?.data?.detail || 'Failed to update user password');
+    }
+  };
+
   return (
     <>
       <div
@@ -371,6 +428,11 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
                       {menuUserId === u.id && (
                         <div className="admin-user-menu">
                           <button onClick={() => { setInfoUser(u); setMenuUserId(null); }}>Info</button>
+                          {!u.isDeleted && (
+                            <button onClick={() => handleChangePassword(u)}>
+                              Change Password
+                            </button>
+                          )}
                           {!u.isDeleted && (
                             <button className="danger" onClick={() => handleDeleteAccount(u)}>
                               Delete Account

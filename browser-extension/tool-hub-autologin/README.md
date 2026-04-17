@@ -7,8 +7,8 @@ This Chrome extension is the company auto-fill layer for complex login pages suc
 - Runs on `chatgpt.com`, `chat.openai.com`, `auth.openai.com`, `freepik.com`, and Kling AI domains such as `kling.ai`.
 - Syncs the dashboard session token automatically when the dashboard is open in another tab.
 - Requests the assigned tool credential from the Tool Hub backend only after a login field is detected.
-- Requires a dashboard-triggered launch the first time so the extension can remember the approved site.
-- Remembers previously launched tool sites for direct revisits without storing the actual website password in Chrome storage.
+- Requires a dashboard-triggered launch each time before the extension can request a tool credential.
+- Does not authorize direct revisits outside the dashboard flow.
 - For supported sites like Freepik, the extension can clear the stored website session so users must launch again from the dashboard.
 - Pushes the logged-out landing page into the login flow when needed, then fills the email and password fields in the user's real browser tab.
 - Does not store the password in Chrome storage.
@@ -64,6 +64,6 @@ rmw_session_token_v1
 4. The extension moves the logged-out landing page to the login step if needed.
 5. Extension requests the assigned credential from the backend.
 6. Extension fills email/password and clicks the login button when possible.
-7. Future visits can open the remembered site directly from the browser or extension popup without going back through the dashboard first.
+7. Direct revisits outside the dashboard are not authorized. Users must start from the dashboard again.
 
 If the website shows CAPTCHA, 2FA, passkey, or device verification, the user must complete that step manually.

@@ -104,8 +104,19 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "users", "deleted_by", "INTEGER")
     _pg_add_column_if_missing(conn, "users", "session_revoked_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
+    _pg_add_column_if_missing(conn, "tasks", "workflow_enabled", "BOOLEAN DEFAULT FALSE")
+    _pg_add_column_if_missing(conn, "tasks", "workflow_status", "VARCHAR")
+    _pg_add_column_if_missing(conn, "tasks", "current_stage_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "tasks", "current_stage_order", "INTEGER")
+    _pg_add_column_if_missing(conn, "tasks", "current_stage_title", "VARCHAR")
+    _pg_add_column_if_missing(conn, "tasks", "final_approval_required", "BOOLEAN DEFAULT FALSE")
+    _pg_add_column_if_missing(conn, "task_comments", "stage_id", "INTEGER")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_enabled ON tasks(workflow_enabled)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_status ON tasks(workflow_status)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_current_stage_order ON tasks(current_stage_order)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_comments_stage_id ON task_comments(stage_id)"))
     conn.execute(
         text(
             """
@@ -203,6 +214,14 @@ def _ensure_postgres_schema(conn) -> None:
             """
         )
     )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_task_stage_assignees_user_id
+            ON task_stage_assignees(user_id)
+            """
+        )
+    )
 
 
 def ensure_operational_schema(engine) -> None:
@@ -260,17 +279,29 @@ def ensure_operational_schema(engine) -> None:
                 "task_edit_locked": "BOOLEAN DEFAULT 0",
                 "result_edit_locked": "BOOLEAN DEFAULT 1",
                 "result_text": "TEXT",
+                "workflow_enabled": "BOOLEAN DEFAULT 0",
+                "workflow_status": "VARCHAR",
+                "current_stage_id": "INTEGER",
+                "current_stage_order": "INTEGER",
+                "current_stage_title": "VARCHAR",
+                "final_approval_required": "BOOLEAN DEFAULT 0",
             }
             for column, sql_type in add_columns.items():
                 if column not in task_cols:
                     conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {column} {sql_type}"))
 
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_project_id ON tasks(project_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_enabled ON tasks(workflow_enabled)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_status ON tasks(workflow_status)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_current_stage_order ON tasks(current_stage_order)"))
 
         if _table_exists(conn, "task_comments"):
             comment_cols = _table_columns(conn, "task_comments")
             if "comment_type" not in comment_cols:
                 conn.execute(text("ALTER TABLE task_comments ADD COLUMN comment_type VARCHAR DEFAULT 'general'"))
+            if "stage_id" not in comment_cols:
+                conn.execute(text("ALTER TABLE task_comments ADD COLUMN stage_id INTEGER"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_comments_stage_id ON task_comments(stage_id)"))
 
         if _table_exists(conn, "task_notifications"):
             notif_cols = _table_columns(conn, "task_notifications")
@@ -318,6 +349,7 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_approval_requests_status ON user_approval_requests(status)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_views_task_id ON task_views(task_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_views_user_id ON task_views(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_stage_assignees_user_id ON task_stage_assignees(user_id)"))
 
         conn.execute(
             text(

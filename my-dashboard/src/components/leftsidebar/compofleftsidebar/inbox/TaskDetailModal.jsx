@@ -1,131 +1,101 @@
-// components/Inbox/TaskDetailModal.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import SubmitSection from './SubmitSection';
 import './TaskDetailModal.css';
 import { formatDateIndia, formatDateTimeIndia } from '../../../../utils/dateTime';
+import { buildFileOpenUrl } from '../../../../utils/fileLinks';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
+import { taskAPI } from '../../../../services/api';
+import FilePreviewModal from '../../../common/FilePreviewModal';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const isWorkflowTask = (task) => Boolean(task?.workflowEnabled);
+const getActiveStageLabel = (task) => {
+  if (!isWorkflowTask(task)) return '';
+  const order = Number(task?.currentStageOrder || 0);
+  const title = `${task?.currentStageTitle || ''}`.trim();
+  if (order && title) return `Stage ${order}: ${title}`;
+  if (order) return `Stage ${order}`;
+  return title;
+};
 
 const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
-  const [taskDetails, setTaskDetails] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [showSubmitSection, setShowSubmitSection] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [previewFile, setPreviewFile] = useState(null);
 
-  useEffect(() => {
-    fetchTaskDetails();
-  }, [task.id]);
-
-  const fetchTaskDetails = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch(`${API_BASE}/api/tasks/inbox/${task.id}`, {
-        credentials: 'include'
-      });
-      const data = await response.json();
-      if (data.success) {
-        setTaskDetails(data.data);
-      }
-    } catch (error) {
-      console.error('Error fetching task details:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const taskDetails = task || null;
 
   const handleStartWork = async () => {
     const confirmed = await showConfirm('Start working on this task?', { title: 'Start Work' });
     if (!confirmed) return;
-    
+
     setActionLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/tasks/${task.id}/start-work`, {
-        method: 'POST',
-        credentials: 'include'
-      });
-      const data = await response.json();
-      
-      if (data.success) {
-        await showAlert('Work started! You can now access the workspace tools.', { title: 'Success' });
-        fetchTaskDetails();
-        onRefresh();
-        // Optionally redirect to workspace
-        // window.location.href = '/workspace';
-      } else {
-        await showAlert(data.detail || 'Failed to start work.', { title: 'Start Work Failed' });
-      }
+      await taskAPI.startTask(task.id);
+      await showAlert('Work started! You can now access the workspace tools.', { title: 'Success' });
+      onRefresh?.();
+      onClose?.();
     } catch (error) {
       console.error('Error starting work:', error);
-      await showAlert('Failed to start work.', { title: 'Start Work Failed' });
+      await showAlert(error?.response?.data?.detail || 'Failed to start work.', { title: 'Start Work Failed' });
     } finally {
       setActionLoading(false);
     }
   };
 
   const handleApprove = async () => {
+    const stageLabel = getActiveStageLabel(task);
     const comments = await showPrompt('Add approval comments (optional):', {
-      title: 'Approve Task',
+      title: stageLabel ? `Approve ${stageLabel}` : 'Approve Task',
       defaultValue: '',
     });
-    if (comments === null) return; // Cancelled
-    
+    if (comments === null) return;
+
     setActionLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/tasks/${task.id}/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ comments })
-      });
-      const data = await response.json();
-      
-      if (data.success) {
-        await showAlert('Task approved and forwarded!', { title: 'Approved' });
-        onClose();
-        onRefresh();
+      if (isWorkflowTask(task) && task.currentStageId) {
+        await taskAPI.approveStage(task.id, task.currentStageId, comments);
       } else {
-        await showAlert(data.detail || 'Failed to approve task.', { title: 'Approval Failed' });
+        await taskAPI.approveTask(task.id, comments);
       }
+      await showAlert('Task approved successfully.', { title: 'Approved' });
+      onRefresh?.();
+      onClose?.();
     } catch (error) {
       console.error('Error approving task:', error);
-      await showAlert('Failed to approve task.', { title: 'Approval Failed' });
+      await showAlert(error?.response?.data?.detail || 'Failed to approve task.', { title: 'Approval Failed' });
     } finally {
       setActionLoading(false);
     }
   };
 
   const handleReject = async () => {
-    const reason = await showPrompt('Enter rejection reason:', {
-      title: 'Reject Task',
+    const stageLabel = getActiveStageLabel(task);
+    const reason = await showPrompt('Enter revision reason:', {
+      title: stageLabel ? `Request Revision For ${stageLabel}` : 'Reject Task',
       defaultValue: '',
+      multiline: true,
+      rows: 5,
+      placeholder: 'Describe what needs to be improved...',
     });
     if (!reason) {
-      await showAlert('Rejection reason is required.', { title: 'Reason Required' });
+      await showAlert('A revision reason is required.', { title: 'Reason Required' });
       return;
     }
-    
+
     setActionLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/tasks/${task.id}/reject`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ reason, revisionRequired: true })
-      });
-      const data = await response.json();
-      
-      if (data.success) {
-        await showAlert('Task rejected and sent back for revisions.', { title: 'Task Rejected' });
-        onClose();
-        onRefresh();
+      if (isWorkflowTask(task) && task.currentStageId) {
+        await taskAPI.requestStageImprovement(task.id, task.currentStageId, reason);
       } else {
-        await showAlert(data.detail || 'Failed to reject task.', { title: 'Rejection Failed' });
+        await taskAPI.needImprovement(task.id, reason);
       }
+      await showAlert('Task sent back for revision.', { title: 'Revision Requested' });
+      onRefresh?.();
+      onClose?.();
     } catch (error) {
-      console.error('Error rejecting task:', error);
-      await showAlert('Failed to reject task.', { title: 'Rejection Failed' });
+      console.error('Error requesting revision:', error);
+      await showAlert(error?.response?.data?.detail || 'Failed to request revision.', { title: 'Request Failed' });
     } finally {
       setActionLoading(false);
     }
@@ -133,11 +103,11 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
 
   const handleSubmitComplete = () => {
     setShowSubmitSection(false);
-    fetchTaskDetails();
-    onRefresh();
+    onRefresh?.();
+    onClose?.();
   };
 
-  if (loading || !taskDetails) {
+  if (!taskDetails) {
     return (
       <div className="modal-overlay">
         <div className="modal-content loading">Loading task details...</div>
@@ -146,39 +116,41 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   }
 
   const availableActions = taskDetails.availableActions || [];
+  const activeStageLabel = getActiveStageLabel(taskDetails);
+  const normalizedStatus = `${taskDetails.status || ''}`.replace(/_/g, ' ');
+  const attachments = Array.isArray(taskDetails.attachments) ? taskDetails.attachments : [];
+  const links = Array.isArray(taskDetails.links) ? taskDetails.links : [];
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content task-detail-modal" onClick={e => e.stopPropagation()}>
-        {/* Modal Header */}
+      <div className="modal-content task-detail-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div>
-            <h2>{taskDetails.taskName}</h2>
-            <p className="project-name">Project: {taskDetails.projectName}</p>
+            <h2>{taskDetails.title || taskDetails.taskName}</h2>
+            <p className="project-name">Project: {taskDetails.projectName || '-'}</p>
           </div>
           <button className="close-modal-btn" onClick={onClose}>✕</button>
         </div>
 
-        {/* Task Information */}
         <div className="modal-body">
           <div className="info-grid">
             <div className="info-item">
               <label>Status:</label>
               <span className={`status-chip ${taskDetails.status}`}>
-                {taskDetails.status}
+                {normalizedStatus || '-'}
               </span>
             </div>
 
             <div className="info-item">
               <label>Priority:</label>
-              <span className={`priority-chip ${taskDetails.priority.toLowerCase()}`}>
-                {taskDetails.priority}
+              <span className={`priority-chip ${`${taskDetails.priority || 'medium'}`.toLowerCase()}`}>
+                {taskDetails.priority || 'Medium'}
               </span>
             </div>
 
             <div className="info-item">
               <label>From:</label>
-              <span>{taskDetails.sender?.name} ({taskDetails.sender?.department})</span>
+              <span>{taskDetails.creator?.name || 'Unknown'} ({taskDetails.fromDepartment || taskDetails.creator?.department || 'N/A'})</span>
             </div>
 
             <div className="info-item">
@@ -188,103 +160,111 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
 
             <div className="info-item">
               <label>Department:</label>
-              <span>{taskDetails.toDepartment}</span>
+              <span>{taskDetails.toDepartment || '-'}</span>
             </div>
 
             <div className="info-item">
               <label>Tag:</label>
-              <span>{taskDetails.taskTag}</span>
+              <span>{taskDetails.taskTag || '-'}</span>
             </div>
+
+            {isWorkflowTask(taskDetails) && (
+              <div className="info-item">
+                <label>Active Stage:</label>
+                <span>{activeStageLabel || 'Workflow task'}</span>
+              </div>
+            )}
           </div>
 
-          {/* Task Details */}
-          {taskDetails.taskDetails && (
+          {taskDetails.description && (
             <div className="detail-section">
               <h3>Task Description</h3>
-              <p className="task-details-text">{taskDetails.taskDetails}</p>
+              <p className="task-details-text">{taskDetails.description}</p>
             </div>
           )}
 
-          {/* Attachments */}
-          {taskDetails.attachments && taskDetails.attachments.length > 0 && (
+          {links.length > 0 && (
             <div className="detail-section">
-              <h3>Attachments ({taskDetails.attachments.length})</h3>
+              <h3>Task Links ({links.length})</h3>
               <div className="attachments-list">
-                {taskDetails.attachments.map((file, index) => (
-                  <a key={index} href={file} target="_blank" rel="noopener noreferrer" className="attachment-item">
-                    📎 {file.split('/').pop()}
+                {links.map((link, index) => (
+                  <a key={`${link}-${index}`} href={link} target="_blank" rel="noopener noreferrer" className="attachment-item">
+                    {link}
                   </a>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Journey History */}
-          {taskDetails.journey && taskDetails.journey.length > 0 && (
+          {attachments.length > 0 && (
             <div className="detail-section">
-              <h3>Task Journey ({taskDetails.journey.length} events)</h3>
-              <div className="journey-timeline">
-                {taskDetails.journey.map((entry, index) => (
-                  <div key={entry.id} className="journey-entry">
-                    <div className="journey-icon">{index + 1}</div>
-                    <div className="journey-content">
-                      <div className="journey-header">
-                        <strong>{entry.action}</strong>
-                        <span className="journey-time">
-                          {formatDateTimeIndia(entry.timestamp)}
-                        </span>
-                      </div>
-                      <p>{entry.comments}</p>
-                      {entry.userName && (
-                        <small>By: {entry.userName} ({entry.userPosition})</small>
-                      )}
-                    </div>
-                  </div>
+              <h3>Attachments ({attachments.length})</h3>
+              <div className="attachments-list">
+                {attachments.map((file, index) => (
+                  <button
+                    key={`${file?.url || file?.filename || index}-${index}`}
+                    type="button"
+                    className="attachment-item"
+                    onClick={() => {
+                      if (buildFileOpenUrl(file)) setPreviewFile(file);
+                    }}
+                  >
+                    📎 {file?.originalName || file?.filename || `Attachment ${index + 1}`}
+                  </button>
                 ))}
               </div>
             </div>
           )}
+
+          {taskDetails.resultText && (
+            <div className="detail-section">
+              <h3>{isWorkflowTask(taskDetails) ? 'Latest Stage Output' : 'Submitted Result'}</h3>
+              <p className="task-details-text">{taskDetails.resultText}</p>
+              {taskDetails.updatedAt && (
+                <small className="journey-time">Updated {formatDateTimeIndia(taskDetails.updatedAt)}</small>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Action Buttons */}
         <div className="modal-footer">
-          {availableActions.includes('start_work') && (
-            <button 
-              className="action-btn primary" 
+          {(availableActions.includes('start') || availableActions.includes('start_work')) && (
+            <button
+              className="action-btn primary"
               onClick={handleStartWork}
               disabled={actionLoading}
             >
-              🚀 Start Work
+              {isWorkflowTask(taskDetails) ? '🚀 Start Stage' : '🚀 Start Work'}
             </button>
           )}
 
           {availableActions.includes('submit') && (
-            <button 
-              className="action-btn success" 
+            <button
+              className="action-btn success"
               onClick={() => setShowSubmitSection(true)}
               disabled={actionLoading}
             >
-              📤 Submit Result
+              {isWorkflowTask(taskDetails) ? '📤 Submit Stage' : '📤 Submit Result'}
             </button>
           )}
 
           {availableActions.includes('approve') && (
-            <button 
-              className="action-btn success" 
+            <button
+              className="action-btn success"
               onClick={handleApprove}
               disabled={actionLoading}
             >
-              ✓ Approve
+              {isWorkflowTask(taskDetails) ? '✓ Approve Stage' : '✓ Approve'}
             </button>
           )}
 
-          {availableActions.includes('reject') && (
-            <button 
-              className="action-btn danger" 
+          {(availableActions.includes('need_improvement') || availableActions.includes('reject')) && (
+            <button
+              className="action-btn danger"
               onClick={handleReject}
               disabled={actionLoading}
             >
-              ✕ Reject
+              {isWorkflowTask(taskDetails) ? '↺ Request Revision' : '✕ Reject'}
             </button>
           )}
 
@@ -293,14 +273,22 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
           </button>
         </div>
 
-        {/* Submit Section Modal */}
         {showSubmitSection && (
           <SubmitSection
             taskId={task.id}
+            task={taskDetails}
             onClose={() => setShowSubmitSection(false)}
             onSubmitComplete={handleSubmitComplete}
           />
         )}
+        {previewFile ? (
+          <FilePreviewModal
+            file={previewFile}
+            title={previewFile?.originalName || previewFile?.filename || 'Attachment'}
+            subtitle={`${taskDetails?.title || task?.title || 'Task'}${taskDetails?.taskNumber || task?.taskNumber ? ` • ${taskDetails?.taskNumber || task?.taskNumber}` : ''}`}
+            onClose={() => setPreviewFile(null)}
+          />
+        ) : null}
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import { taskAPI } from '../../../../services/api';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
+import SubmitSection from '../inbox/SubmitSection';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import { useTracking } from '../../../../hooks/useTracking';
@@ -10,9 +11,56 @@ import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
 import { TrackingPanelSkeleton } from '../../../ui/TrackingPanelSkeleton';
 import './TrackingPanel.css';
 
+const isWorkflowTask = (task) => Boolean(task?.workflowEnabled);
+const getActiveStageLabel = (task) => {
+  if (!isWorkflowTask(task)) return '';
+  const order = Number(task?.currentStageOrder || 0);
+  const title = `${task?.currentStageTitle || ''}`.trim();
+  if (order && title) return `Stage ${order}: ${title}`;
+  if (order) return `Stage ${order}`;
+  return title;
+};
+
+const getActionLabel = (task, action) => {
+  if (action === 'approve') return isWorkflowTask(task) ? 'approve stage' : 'approve';
+  if (action === 'need_improvement') return isWorkflowTask(task) ? 'request revision' : 'need improvement';
+  if (action === 'submit') return isWorkflowTask(task) ? 'submit stage' : 'submit';
+  if (action === 'start') return isWorkflowTask(task) ? 'start stage' : 'start task';
+  if (action === 'revoke_task') return 'revoke task';
+  return action.replace(/_/g, ' ');
+};
+
+const TRACKING_FILTERS = [
+  {
+    key: 'all',
+    label: 'All Tasks',
+    matches: () => true,
+  },
+  {
+    key: 'active',
+    label: 'Active',
+    matches: (task) => ['pending', 'assigned', 'forwarded', 'in_progress'].includes(task?.status),
+  },
+  {
+    key: 'submitted',
+    label: 'Waiting Review',
+    matches: (task) => ['submitted', 'under_review', 'approved'].includes(task?.status),
+  },
+  {
+    key: 'revision',
+    label: 'Revisions',
+    matches: (task) => task?.status === 'need_improvement',
+  },
+  {
+    key: 'completed',
+    label: 'Completed',
+    matches: (task) => ['completed', 'cancelled', 'rejected'].includes(task?.status),
+  },
+];
+
 const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const queryClient = useQueryClient();
-  const { showAlert, showPrompt } = useCustomDialogs();
+  const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
   const [selectedTask, setSelectedTask] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [filter, setFilter] = useState('all');
@@ -20,6 +68,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [isMaximized, setIsMaximized] = useState(false);
   const [openActionMenuId, setOpenActionMenuId] = useState(null);
   const [chatTask, setChatTask] = useState(null);
+  const [submitTask, setSubmitTask] = useState(null);
   const minimizedWindowStyle = useMinimizedWindowStack('tracking-panel', isOpen && isMinimized);
   const [selectionModal, setSelectionModal] = useState({
     open: false,
@@ -39,6 +88,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     data: trackingData,
     isLoading: loading,
     isFetching,
+    error,
     refetch,
   } = useTracking({}, { enabled: isOpen });
 
@@ -48,6 +98,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
 
   const tasks = trackingData?.tasks || [];
   const isRefreshing = isFetching && !loading;
+  const trackingError = error?.response?.data?.detail || error?.message || '';
 
   const invalidateTrackingCaches = () => {
     queryClient.invalidateQueries({ queryKey: ['tracking'] });
@@ -98,9 +149,16 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     return colors[status] || '#d1d5db';
   };
 
-  const filteredTasks = filter === 'all' 
-    ? tasks 
-    : tasks.filter(task => task.status === filter);
+  const filteredTasks = tasks.filter((task) => {
+    const activeFilter = TRACKING_FILTERS.find((entry) => entry.key === filter) || TRACKING_FILTERS[0];
+    return activeFilter.matches(task);
+  });
+
+  const handleSubmitComplete = async () => {
+    setSubmitTask(null);
+    invalidateTrackingCaches();
+    await refetch();
+  };
 
   const handleTrackClick = (task) => {
     setSelectedTask(task);
@@ -212,18 +270,34 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         return;
       }
       if (action === 'approve') {
+        const stageLabel = getActiveStageLabel(task);
         const comments = (await showPrompt('Approval comment (optional):', {
-          title: 'Approve Task',
+          title: stageLabel ? `Approve ${stageLabel}` : 'Approve Task',
           defaultValue: '',
         })) ?? '';
         await updateTaskStatus({
           taskId: task.id,
           status: 'approved',
-          execute: () => taskAPI.approveTask(task.id, comments),
+          execute: () =>
+            (isWorkflowTask(task) && task.currentStageId
+              ? taskAPI.approveStage(task.id, task.currentStageId, comments)
+              : taskAPI.approveTask(task.id, comments)),
+        });
+      } else if (action === 'start') {
+        const confirmed = await showConfirm(
+          isWorkflowTask(task) ? 'Start this workflow stage?' : 'Start working on this task?',
+          { title: isWorkflowTask(task) ? 'Start Stage' : 'Start Task' }
+        );
+        if (!confirmed) return;
+        await updateTaskStatus({
+          taskId: task.id,
+          status: 'in_progress',
+          execute: () => taskAPI.startTask(task.id),
         });
       } else if (action === 'need_improvement') {
+        const stageLabel = getActiveStageLabel(task);
         const comments = (await showPrompt('Need Improvement note:', {
-          title: 'Need Improvement',
+          title: stageLabel ? `Request Revision For ${stageLabel}` : 'Need Improvement',
           defaultValue: '',
           multiline: true,
           rows: 6,
@@ -233,18 +307,14 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         await updateTaskStatus({
           taskId: task.id,
           status: 'need_improvement',
-          execute: () => taskAPI.needImprovement(task.id, comments),
+          execute: () =>
+            (isWorkflowTask(task) && task.currentStageId
+              ? taskAPI.requestStageImprovement(task.id, task.currentStageId, comments)
+              : taskAPI.needImprovement(task.id, comments)),
         });
       } else if (action === 'submit') {
-        const resultText = (await showPrompt('Submit result details:', {
-          title: 'Submit Result',
-          defaultValue: '',
-        })) ?? '';
-        await updateTaskStatus({
-          taskId: task.id,
-          status: 'submitted',
-          execute: () => taskAPI.submitTask(task.id, resultText),
-        });
+        setSubmitTask(task);
+        return;
       } else if (action === 'assign') {
         await openSelectionModal(task, 'assign');
         return;
@@ -265,8 +335,19 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         })) ?? '';
         if (!result) return;
         await taskAPI.editResult(task.id, result);
+      } else if (action === 'revoke_task') {
+        const confirmed = await showConfirm(
+          'Revoke this task? This will mark it as revoked for receivers.',
+          { title: 'Revoke Task' }
+        );
+        if (!confirmed) return;
+        const comments = (await showPrompt('Optional reason for revoking this task:', {
+          title: 'Revoke Reason',
+          defaultValue: '',
+        })) ?? '';
+        await taskAPI.revokeTask(task.id, comments.trim());
       }
-      if (!['approve', 'need_improvement', 'submit'].includes(action)) {
+      if (!['approve', 'need_improvement'].includes(action)) {
         invalidateTrackingCaches();
         await refetch();
       }
@@ -368,30 +449,15 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         {/* Filter Tabs - Only show when not minimized */}
         {!isMinimized && (
           <div className="tracking-filters">
-            <button
-              className={`filter-btn ${filter === 'all' ? 'active' : ''}`}
-              onClick={() => setFilter('all')}
-            >
-              All Tasks
-            </button>
-            <button
-              className={`filter-btn ${filter === 'pending' ? 'active' : ''}`}
-              onClick={() => setFilter('pending')}
-            >
-              Pending
-            </button>
-            <button
-              className={`filter-btn ${filter === 'in_progress' ? 'active' : ''}`}
-              onClick={() => setFilter('in_progress')}
-            >
-              In Progress
-            </button>
-            <button
-              className={`filter-btn ${filter === 'completed' ? 'active' : ''}`}
-              onClick={() => setFilter('completed')}
-            >
-              Completed
-            </button>
+            {TRACKING_FILTERS.map((filterOption) => (
+              <button
+                key={filterOption.key}
+                className={`filter-btn ${filter === filterOption.key ? 'active' : ''}`}
+                onClick={() => setFilter(filterOption.key)}
+              >
+                {filterOption.label}
+              </button>
+            ))}
           </div>
         )}
 
@@ -400,6 +466,22 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
           <div className="tracking-content" aria-busy={isRefreshing}>
             {loading ? (
               <TrackingPanelSkeleton />
+            ) : trackingError ? (
+              <div className="empty-state">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <circle cx="12" cy="16" r="0.8" fill="currentColor" stroke="none" />
+                </svg>
+                <p>{trackingError || 'Unable to load tracking right now.'}</p>
+                <button
+                  type="button"
+                  className="track-workflow-btn"
+                  onClick={() => void refetch()}
+                >
+                  Retry
+                </button>
+              </div>
             ) : filteredTasks.length === 0 ? (
               <div className="empty-state">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -423,6 +505,9 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                     <div className="task-info">
                       <h4 className="task-title">{task.title}</h4>
                       <p className="task-number">{task.taskNumber}</p>
+                      {isWorkflowTask(task) && (
+                        <p className="task-number">{getActiveStageLabel(task) || 'Workflow task'}</p>
+                      )}
                       <div className="task-meta">
                         <span className="meta-item">
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -461,7 +546,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                         <div className="task-action-menu">
                           {(task.availableActions || []).map((action) => (
                             <button key={action} onClick={() => runTaskAction(task, action)}>
-                              {action.replace(/_/g, ' ')}
+                              {getActionLabel(task, action)}
                             </button>
                           ))}
                           {(!task.availableActions || task.availableActions.length === 0) && (
@@ -492,6 +577,14 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         isOpen={!!chatTask}
         onClose={() => setChatTask(null)}
       />
+      {submitTask && (
+        <SubmitSection
+          taskId={submitTask.id}
+          task={submitTask}
+          onClose={() => setSubmitTask(null)}
+          onSubmitComplete={() => void handleSubmitComplete()}
+        />
+      )}
 
       {selectionModal.open && (
         <div className="tracking-selection-overlay" onClick={closeSelectionModal}>

@@ -34,10 +34,27 @@ const TASK_TAG_OPTIONS = [
 
 const ASSIGN_REFERENCE_CACHE_TTL_MS = 5 * 60 * 1000;
 const ASSIGN_DEPARTMENT_USERS_CACHE_TTL_MS = 3 * 60 * 1000;
+const createEmptyWorkflowStage = (order = 1) => ({
+  order,
+  title: `Stage ${order}`,
+  description: '',
+  approvalRequired: false,
+  assigneeIds: [],
+});
+
+const isMeaningfulWorkflowStage = (stage) => {
+  const title = `${stage?.title || ''}`.trim();
+  const description = `${stage?.description || ''}`.trim();
+  const assigneeIds = Array.isArray(stage?.assigneeIds) ? stage.assigneeIds.filter(Boolean) : [];
+  const defaultStageTitle = /^stage\s+\d+$/i.test(title);
+  return Boolean(description || stage?.approvalRequired || assigneeIds.length || (title && !defaultStageTitle));
+};
 
 const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChange, onActivate }) => {
   const { user } = useAuth();
   const { showConfirm } = useCustomDialogs();
+  const isDraftEdit = Boolean(editingTask && `${editingTask.status || ''}`.toLowerCase() === 'draft');
+  const isTaskEditMode = Boolean(editingTask && !isDraftEdit);
   // Form state
   const [formData, setFormData] = useState({
     projectName: '',
@@ -57,7 +74,10 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     taskTag: 'Audio',
     taskType: 'task',
     attachments: [],
-    links: []
+    links: [],
+    workflowEnabled: false,
+    finalApprovalRequired: false,
+    workflowStages: [],
   });
 
   // NEW: Department and user data
@@ -152,59 +172,18 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
       });
     }
 
-    void loadBootstrapData({ silent: !!cachedBootstrap });
+    if (!cachedBootstrap) {
+      void loadBootstrapData();
+    }
   }, [cacheKeys, editingTask, isOpen]);
 
   const fetchIdSuggestions = async () => {
-    const response = await taskAPI.getAllTasks();
-    const rows = response?.tasks || [];
-    const projectMap = {};
-    const uniqueTaskIds = Array.from(
-      new Set(
-        rows
-          .map((row) => (row.taskNumber || '').trim())
-          .filter(Boolean)
-      )
-    ).slice(0, 300);
-    const uniqueProjectIds = Array.from(
-      new Set(
-        rows
-          .map((row) => (row.projectId || '').trim())
-          .filter(Boolean)
-      )
-    ).slice(0, 300);
-    rows.forEach((row) => {
-      const projectName = (row.projectName || '').trim();
-      if (!projectName) return;
-      const key = projectName.toLowerCase();
-      if (!projectMap[key]) {
-        projectMap[key] = {
-          projectName,
-          projectId: (row.projectId || '').trim(),
-          projectIdRaw: row.projectIdRaw || '',
-          projectIdHex: row.projectIdHex || '',
-        };
-        return;
-      }
-      if (!projectMap[key].projectId && row.projectId) {
-        projectMap[key] = {
-          ...projectMap[key],
-          projectId: (row.projectId || '').trim(),
-          projectIdRaw: row.projectIdRaw || '',
-          projectIdHex: row.projectIdHex || '',
-        };
-      }
-    });
-    const uniqueProjectNames = Object.values(projectMap)
-      .map((project) => project.projectName)
-      .sort((a, b) => a.localeCompare(b))
-      .slice(0, 300);
-
+    const response = await taskAPI.getTaskReferenceSuggestions();
     return {
-      taskIdSuggestions: uniqueTaskIds,
-      projectIdSuggestions: uniqueProjectIds,
-      projectNameSuggestions: uniqueProjectNames,
-      knownProjects: projectMap,
+      taskIdSuggestions: Array.isArray(response?.taskIdSuggestions) ? response.taskIdSuggestions : [],
+      projectIdSuggestions: Array.isArray(response?.projectIdSuggestions) ? response.projectIdSuggestions : [],
+      projectNameSuggestions: Array.isArray(response?.projectNameSuggestions) ? response.projectNameSuggestions : [],
+      knownProjects: response?.knownProjects || {},
     };
   };
 
@@ -295,9 +274,9 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
       setDepartmentUsers(cachedUsers.users);
       rememberUsers(cachedUsers.users);
       setLoadingUsers(false);
-    } else {
-      setLoadingUsers(true);
+      return;
     }
+    setLoadingUsers(true);
     try {
       const response = await authAPI.getUsersByDepartment(normalizedDepartment);
       if (response.users) {
@@ -326,7 +305,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     if (editingTask) {
       const mappedEditData = {
         projectName: editingTask.projectName || '',
-        taskId: editingTask.taskNumber || '',
+        taskId: editingTask.taskId || editingTask.taskNumber || '',
         projectId: editingTask.projectId || '',
         projectIdRaw: editingTask.projectIdRaw || '',
         projectIdHex: editingTask.projectIdHex || '',
@@ -334,7 +313,9 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
         taskName: editingTask.title || '',
         reference: editingTask.reference || '',
         myDepartment: editingTask.fromDepartment || currentUserDepartment || '',
-        selectedUserIds: (editingTask.assignedTo || []).map((u) => u.id),
+        selectedUserIds: Array.isArray(editingTask.selectedUserIds)
+          ? editingTask.selectedUserIds
+          : (editingTask.assignedTo || []).map((u) => u.id),
         toDepartment: normalizeDepartmentName(editingTask.toDepartment || 'Gen Ai'),
         deadline: editingTask.deadline ? new Date(editingTask.deadline).toISOString().slice(0, 16) : '',
         priority: editingTask.priority
@@ -344,16 +325,27 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
         taskTag: editingTask.taskTag || 'Audio',
         taskType: editingTask.taskType || 'task',
         attachments: editingTask.attachments || [],
-        links: editingTask.links || []
+        links: editingTask.links || [],
+        workflowEnabled: Boolean(editingTask.workflowEnabled),
+        finalApprovalRequired: Boolean(editingTask.finalApprovalRequired),
+        workflowStages: Array.isArray(editingTask.workflowStages)
+          ? editingTask.workflowStages.map((stage, index) => ({
+              order: Number(stage.order || index + 1),
+              title: stage.title || `Stage ${index + 1}`,
+              description: stage.description || '',
+              approvalRequired: Boolean(stage.approvalRequired),
+              assigneeIds: Array.isArray(stage.assigneeIds) ? stage.assigneeIds : [],
+            }))
+          : [],
       };
       setFormData(mappedEditData);
       rememberUsers(editingTask.assignedTo || []);
-      setCurrentDraftId(null);
+      setCurrentDraftId(isDraftEdit ? editingTask.id : null);
       return;
     }
 
     loadDraft();
-  }, [currentUserDepartment, isOpen, editingTask]);
+  }, [currentUserDepartment, isOpen, editingTask, isDraftEdit]);
 
   useEffect(() => {
     if (isOpen) {
@@ -391,7 +383,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
 
   // Auto-save every 30 seconds
   useEffect(() => {
-    if (!isOpen || editingTask) return;
+    if (!isOpen || isTaskEditMode) return;
 
     const autoSaveInterval = setInterval(() => {
       if (hasFormData()) {
@@ -400,7 +392,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     }, 30000);
 
     return () => clearInterval(autoSaveInterval);
-  }, [isOpen, formData, editingTask]);
+  }, [isOpen, formData, isTaskEditMode]);
 
   // Load draft from API or localStorage
   const loadDraft = async () => {
@@ -428,13 +420,26 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
           taskTag: result.data.taskTag || 'Audio',
           taskType: result.data.taskType || 'task',
           attachments: result.data.attachments || [],
-          links: result.data.links || []
+          links: result.data.links || [],
+          workflowEnabled: Boolean(result.data.workflowEnabled),
+          finalApprovalRequired: Boolean(result.data.finalApprovalRequired),
+          workflowStages: Array.isArray(result.data.workflowStages)
+            ? result.data.workflowStages.map((stage, index) => ({
+                order: Number(stage.order || index + 1),
+                title: stage.title || `Stage ${index + 1}`,
+                description: stage.description || '',
+                approvalRequired: Boolean(stage.approvalRequired),
+                assigneeIds: Array.isArray(stage.assigneeIds) ? stage.assigneeIds : [],
+              }))
+            : []
         };
         
         setFormData(mappedData);
 
         if (result.data.id) {
           setCurrentDraftId(result.data.id);
+        } else if (result.data.__draftId) {
+          setCurrentDraftId(result.data.__draftId);
         }
         
         showMessage(
@@ -448,18 +453,43 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
       // Fallback to localStorage
       const localDraft = localStorage.getItem('taskDraft');
       if (localDraft) {
-        setFormData(JSON.parse(localDraft));
+        const parsedDraft = JSON.parse(localDraft);
+        if (parsedDraft?.__draftId) {
+          setCurrentDraftId(parsedDraft.__draftId);
+        }
+        const { __draftId, ...draftFormData } = parsedDraft || {};
+        setFormData(draftFormData);
         showMessage('Local draft loaded', 'success');
       }
     }
   };
 
-  // Check if form has data
+  // Check if the draft has meaningful user-entered content.
   const hasFormData = () => {
-    return Object.values(formData).some(value => {
-      if (Array.isArray(value)) return value.length > 0;
-      return value !== '' && value !== 'Gen Ai' && value !== 'High' && value !== 'Audio';
-    });
+    const textFields = [
+      formData.projectName,
+      formData.taskId,
+      formData.projectId,
+      formData.customerName,
+      formData.taskName,
+      formData.reference,
+      formData.taskDetails,
+      formData.deadline,
+    ];
+
+    if (textFields.some((value) => `${value || ''}`.trim())) {
+      return true;
+    }
+    if ((formData.selectedUserIds || []).length > 0) {
+      return true;
+    }
+    if ((formData.attachments || []).length > 0 || (formData.links || []).length > 0) {
+      return true;
+    }
+    if (formData.workflowEnabled && (formData.workflowStages || []).some((stage) => isMeaningfulWorkflowStage(stage))) {
+      return true;
+    }
+    return false;
   };
 
   // Handle input changes
@@ -511,6 +541,67 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     }));
   };
 
+  const setWorkflowEnabled = (enabled) => {
+    setFormData((prev) => {
+      return {
+        ...prev,
+        workflowEnabled: enabled,
+        workflowStages: enabled
+          ? (prev.workflowStages.length > 0 ? prev.workflowStages : [createEmptyWorkflowStage(1)])
+          : [],
+      };
+    });
+  };
+
+  const toggleWorkflowEnabled = () => {
+    setWorkflowEnabled(!formData.workflowEnabled);
+  };
+
+  const addWorkflowStage = () => {
+    setFormData((prev) => ({
+      ...prev,
+      workflowStages: [...prev.workflowStages, createEmptyWorkflowStage(prev.workflowStages.length + 1)],
+    }));
+  };
+
+  const updateWorkflowStage = (stageIndex, patch) => {
+    setFormData((prev) => ({
+      ...prev,
+      workflowStages: prev.workflowStages.map((stage, index) => (
+        index === stageIndex ? { ...stage, ...patch } : stage
+      )),
+    }));
+  };
+
+  const removeWorkflowStage = (stageIndex) => {
+    setFormData((prev) => {
+      const nextStages = prev.workflowStages
+        .filter((_, index) => index !== stageIndex)
+        .map((stage, index) => ({
+          ...stage,
+          order: index + 1,
+          title: stage.title || `Stage ${index + 1}`,
+        }));
+      return {
+        ...prev,
+        workflowStages: nextStages,
+      };
+    });
+  };
+
+  const toggleStageAssignee = (stageIndex, userId) => {
+    setFormData((prev) => ({
+      ...prev,
+      workflowStages: prev.workflowStages.map((stage, index) => {
+        if (index !== stageIndex) return stage;
+        const assigneeIds = stage.assigneeIds.includes(userId)
+          ? stage.assigneeIds.filter((id) => id !== userId)
+          : [...stage.assigneeIds, userId];
+        return { ...stage, assigneeIds };
+      }),
+    }));
+  };
+
   const selectedReceivers = useMemo(
     () => formData.selectedUserIds.map((userId) => (
       knownUsersById[userId] || {
@@ -522,6 +613,27 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     )),
     [formData.selectedUserIds, knownUsersById]
   );
+
+  const workflowAssignedStageCount = useMemo(
+    () => formData.workflowStages.filter((stage) => Array.isArray(stage.assigneeIds) && stage.assigneeIds.length > 0).length,
+    [formData.workflowStages]
+  );
+
+  const workflowApprovalStageCount = useMemo(
+    () => formData.workflowStages.filter((stage) => Boolean(stage.approvalRequired)).length,
+    [formData.workflowStages]
+  );
+
+  useEffect(() => {
+    if (!formData.workflowEnabled) return;
+    setFormData((prev) => ({
+      ...prev,
+      workflowStages: prev.workflowStages.map((stage) => ({
+        ...stage,
+        assigneeIds: (stage.assigneeIds || []).filter((userId) => prev.selectedUserIds.includes(userId)),
+      })),
+    }));
+  }, [formData.selectedUserIds, formData.workflowEnabled]);
 
   // Handle attachments update
   const handleAttachmentsChange = (attachments) => {
@@ -566,7 +678,10 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
       taskTag: 'Audio',
       taskType: 'task',
       attachments: [],
-      links: []
+      links: [],
+      workflowEnabled: false,
+      finalApprovalRequired: false,
+      workflowStages: [],
     };
 
     setFormData(emptyForm);
@@ -586,7 +701,10 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
 
     try {
       // Save to localStorage with original field names
-      localStorage.setItem('taskDraft', JSON.stringify(formData));
+      localStorage.setItem('taskDraft', JSON.stringify({
+        ...formData,
+        __draftId: currentDraftId || null,
+      }));
 
       // ✅ Map to backend schema
       const draftPayload = {
@@ -603,7 +721,18 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
         priority: (formData.priority || 'medium').toLowerCase(),
         toDepartment: formData.toDepartment || '',
         selectedUserIds: formData.selectedUserIds || [],
-        deadline: formData.deadline || null
+        deadline: formData.deadline || null,
+        workflowEnabled: Boolean(formData.workflowEnabled),
+        finalApprovalRequired: Boolean(formData.finalApprovalRequired),
+        workflowStages: Array.isArray(formData.workflowStages)
+          ? formData.workflowStages.map((stage, index) => ({
+              order: Number(stage.order || index + 1),
+              title: `${stage.title || ''}`.trim(),
+              description: `${stage.description || ''}`.trim(),
+              approvalRequired: Boolean(stage.approvalRequired),
+              assigneeIds: Array.isArray(stage.assigneeIds) ? stage.assigneeIds : [],
+            }))
+          : [],
       };
 
       let response;
@@ -615,12 +744,20 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
           response = await draftAPI.saveDraft(draftPayload);
           if (response.data?.id) {
             setCurrentDraftId(response.data.id);
+            localStorage.setItem('taskDraft', JSON.stringify({
+              ...formData,
+              __draftId: response.data.id,
+            }));
           }
         }
       } else {
         response = await draftAPI.saveDraft(draftPayload);
         if (response.data?.id) {
           setCurrentDraftId(response.data.id);
+          localStorage.setItem('taskDraft', JSON.stringify({
+            ...formData,
+            __draftId: response.data.id,
+          }));
         }
       }
 
@@ -640,14 +777,44 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
   // ✅ FIXED: Create task with proper field mapping
   const handleCreateTask = async () => {
     // Validation
-    if (!formData.taskName || (!editingTask && !formData.projectName)) {
+    if (!formData.taskName || (!isTaskEditMode && !formData.projectName)) {
       showMessage(
-        editingTask
+        isTaskEditMode
           ? 'Please fill required field (Task Name)'
           : 'Please fill required fields (Project Name & Task Name)',
         'error'
       );
       return;
+    }
+
+    const normalizedWorkflowStages = formData.workflowEnabled
+      ? formData.workflowStages.map((stage, index) => ({
+          order: index + 1,
+          title: `${stage.title || ''}`.trim(),
+          description: `${stage.description || ''}`.trim(),
+          approvalRequired: Boolean(stage.approvalRequired),
+          assigneeIds: Array.isArray(stage.assigneeIds)
+            ? Array.from(new Set(stage.assigneeIds.map((id) => Number(id)).filter(Boolean)))
+            : [],
+        }))
+      : [];
+
+    if (formData.workflowEnabled) {
+      if (normalizedWorkflowStages.length === 0) {
+        showMessage('Add at least one workflow stage before creating the task.', 'error');
+        return;
+      }
+
+      const invalidStage = normalizedWorkflowStages.find(
+        (stage) => !stage.title || stage.assigneeIds.length === 0
+      );
+      if (invalidStage) {
+        showMessage(
+          `Stage ${invalidStage.order} needs a title and at least one assigned receiver.`,
+          'error'
+        );
+        return;
+      }
     }
 
     setIsSaving(true);
@@ -686,11 +853,18 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
         reference: formData.reference || '',
         links: formData.links || [],
         attachments: finalAttachments,
+        workflow: formData.workflowEnabled
+          ? {
+              enabled: true,
+              finalApprovalRequired: Boolean(formData.finalApprovalRequired),
+              stages: normalizedWorkflowStages,
+            }
+          : null,
       };
 
       console.log('📤 Sending task payload:', taskPayload);
 
-      if (editingTask?.id) {
+      if (isTaskEditMode && editingTask?.id) {
         const updatePayload = {
           title: taskPayload.title,
           description: taskPayload.description,
@@ -737,7 +911,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     } catch (error) {
       console.error('❌ Error creating task:', error);
       
-      let errorMsg = editingTask?.id ? 'Failed to update task' : 'Failed to create task';
+      let errorMsg = isTaskEditMode ? 'Failed to update task' : 'Failed to create task';
       
       if (error.response?.data?.detail) {
         const detail = error.response.data.detail;
@@ -822,15 +996,23 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     }
   };
 
+  const getIdGenerationInputs = () => ({
+    projectName: `${formData.projectName || ''}`.trim(),
+    customerName: `${formData.customerName || ''}`.trim(),
+  });
+
   const handleGenerateProjectId = async () => {
-    if (!formData.projectName || !formData.customerName) {
-      setProjectIdState({ status: 'error', message: 'Project Name and Customer Name are required to generate ID.' });
+    const { projectName, customerName } = getIdGenerationInputs();
+    if (!projectName) {
+      setProjectIdState({ status: 'error', message: 'Project Name is required to generate Project ID.' });
       return;
     }
     try {
-      const response = await taskAPI.generateProjectId(formData.projectName, formData.customerName);
+      const response = await taskAPI.generateProjectId(projectName, customerName);
       setFormData(prev => ({
         ...prev,
+        projectName,
+        customerName,
         projectId: response.projectId || '',
         projectIdRaw: response.projectIdRaw || '',
         projectIdHex: response.projectIdHex || ''
@@ -860,14 +1042,17 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
   };
 
   const handleGenerateTaskId = async () => {
-    if (!formData.projectName || !formData.customerName) {
-      setTaskIdState({ status: 'error', message: 'Project Name and Customer Name are required to generate Task ID.' });
+    const { projectName, customerName } = getIdGenerationInputs();
+    if (!projectName) {
+      setTaskIdState({ status: 'error', message: 'Project Name is required to generate Task ID.' });
       return;
     }
     try {
-      const response = await taskAPI.generateTaskId(formData.projectName, formData.customerName);
+      const response = await taskAPI.generateTaskId(projectName, customerName);
       setFormData(prev => ({
         ...prev,
+        projectName,
+        customerName,
         taskId: response.taskId || ''
       }));
       setTaskIdState({ status: 'success', message: 'Task ID generated.' });
@@ -878,7 +1063,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
-      setIsMinimized(false);
+      restoreWindow();
       return;
     }
 
@@ -894,7 +1079,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
       >
         {/* Top dark bar */}
         <div className="assign-modal-header-bar" onClick={isMinimized ? restoreWindow : undefined}>
-          <span>{editingTask ? 'EDIT TASK' : 'CREATE NEW TASK'}</span>
+          <span>{isTaskEditMode ? 'EDIT TASK' : isDraftEdit ? 'EDIT DRAFT' : 'CREATE NEW TASK'}</span>
           <div className="header-actions">
             {saveMessage && (
               <span className={`save-message ${saveMessage.type}`}>
@@ -940,7 +1125,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
 
         {!isMinimized && (
         <div className="assign-modal-body">
-          <h2 className="assign-title">{editingTask ? 'EDIT TASK' : 'CREATE NEW TASK'}</h2>
+          <h2 className="assign-title">{isTaskEditMode ? 'EDIT TASK' : isDraftEdit ? 'EDIT DRAFT' : 'CREATE NEW TASK'}</h2>
           <CacheStatusBanner
             showingCached={cacheStatus.showingCached}
             isRefreshing={isReferenceRefreshing}
@@ -1066,7 +1251,83 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
             </div>
           </div>
 
+          {!isTaskEditMode && (
+            <div className="assign-row">
+              <div className="assign-card full-width assignment-flow-card">
+                <div className="assignment-flow-header">
+                  <div>
+                    <h3>Assignment Flow</h3>
+                    <p>
+                      Choose whether this task goes to one receiver as a normal assignment, or moves through ordered stages with handoffs.
+                    </p>
+                  </div>
+                  {formData.workflowEnabled && (
+                    <span className="assignment-flow-live-badge">Staged workflow on</span>
+                  )}
+                </div>
+
+                <div className="assignment-flow-options">
+                  <button
+                    type="button"
+                    className={`assignment-flow-option ${!formData.workflowEnabled ? 'active' : ''}`}
+                    onClick={() => setWorkflowEnabled(false)}
+                    aria-pressed={!formData.workflowEnabled}
+                  >
+                    <strong>Single-step task</strong>
+                    <span>Assign the task normally and let one receiver or shared receiver pool handle it.</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`assignment-flow-option ${formData.workflowEnabled ? 'active' : ''}`}
+                    onClick={() => setWorkflowEnabled(true)}
+                    aria-pressed={formData.workflowEnabled}
+                  >
+                    <strong>Staged workflow</strong>
+                    <span>Create Stage 1, 2, 3 handoffs where each stage can have its own assignee and approval gate.</span>
+                  </button>
+                </div>
+
+                <div className="assignment-flow-summary">
+                  {formData.workflowEnabled ? (
+                    <>
+                      <div className="assignment-flow-summary-copy">
+                        <strong>How this works</strong>
+                        <p>
+                          Step 1: build the receiver pool below. Step 2: assign those receivers into stages. Step 3: create the task and the handoff flow will start from Stage 1.
+                        </p>
+                      </div>
+                      <div className="assignment-flow-metrics">
+                        <span>{formData.workflowStages.length} stage{formData.workflowStages.length === 1 ? '' : 's'}</span>
+                        <span>{selectedReceivers.length} receiver{selectedReceivers.length === 1 ? '' : 's'} in pool</span>
+                        <span>{workflowAssignedStageCount} stage{workflowAssignedStageCount === 1 ? '' : 's'} assigned</span>
+                        <span>{workflowApprovalStageCount} approval gate{workflowApprovalStageCount === 1 ? '' : 's'}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="assignment-flow-summary-copy">
+                      <strong>Normal task flow</strong>
+                      <p>
+                        Keep this off when you just want to assign the task without stage-by-stage handoff setup.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="assign-receiver-shell">
+            {formData.workflowEnabled && !isTaskEditMode && (
+              <div className="workflow-step-banner">
+                <span className="workflow-step-badge">Step 1</span>
+                <div>
+                  <strong>Build your receiver pool</strong>
+                  <p>Add everyone who might work on this task. You will place them into specific stages in the next section.</p>
+                </div>
+              </div>
+            )}
+
             <div className="assign-receiver-top-grid">
               <div className="assign-card assign-receiver-control-card">
                 <div className="assign-field">
@@ -1184,6 +1445,152 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
             </div>
           </div>
 
+          {!isTaskEditMode && (
+            <div className="assign-row">
+              <div className="assign-card full-width workflow-builder-card">
+                <div className="workflow-builder-header">
+                  <div>
+                    <div className="workflow-builder-title-row">
+                      <span className="workflow-step-badge">Step 2</span>
+                      <h3>Stage Setup</h3>
+                    </div>
+                    <p>
+                      Break this task into ordered handoff stages. Each stage can have its own assignee and approval gate.
+                    </p>
+                  </div>
+                  <label className="workflow-toggle">
+                    <input
+                      type="checkbox"
+                      checked={formData.workflowEnabled}
+                      onChange={toggleWorkflowEnabled}
+                    />
+                    <span>Enable staged workflow</span>
+                  </label>
+                </div>
+
+                {formData.workflowEnabled ? (
+                  <div className="workflow-builder-body">
+                    <div className="workflow-setup-summary">
+                      <span>{formData.workflowStages.length} stage{formData.workflowStages.length === 1 ? '' : 's'}</span>
+                      <span>{selectedReceivers.length} receiver{selectedReceivers.length === 1 ? '' : 's'} available for assignment</span>
+                      <span>{workflowApprovalStageCount} approval stage{workflowApprovalStageCount === 1 ? '' : 's'}</span>
+                    </div>
+
+                    <div className="workflow-builder-meta">
+                      <label className="workflow-toggle compact">
+                        <input
+                          type="checkbox"
+                          checked={formData.finalApprovalRequired}
+                          onChange={(e) => handleChange('finalApprovalRequired', e.target.checked)}
+                        />
+                        <span>Final stage needs creator approval</span>
+                      </label>
+                      <span className="workflow-builder-hint">
+                        Only receivers selected above can be assigned into workflow stages.
+                      </span>
+                    </div>
+
+                    {formData.workflowStages.map((stage, stageIndex) => (
+                      <div key={`workflow-stage-${stageIndex}`} className="workflow-stage-card">
+                        <div className="workflow-stage-top">
+                          <div>
+                            <span className="workflow-stage-order">Stage {stageIndex + 1}</span>
+                            <strong>{stage.title || `Stage ${stageIndex + 1}`}</strong>
+                          </div>
+                          <div className="workflow-stage-top-actions">
+                            <label className="workflow-toggle compact">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(stage.approvalRequired)}
+                                onChange={(e) => updateWorkflowStage(stageIndex, { approvalRequired: e.target.checked })}
+                              />
+                              <span>Need approval</span>
+                            </label>
+                            <button
+                              type="button"
+                              className="assign-secondary-btn workflow-stage-remove"
+                              onClick={() => removeWorkflowStage(stageIndex)}
+                              disabled={formData.workflowStages.length <= 1}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="assign-row workflow-stage-fields">
+                          <div className="assign-field">
+                            <label>Stage Title</label>
+                            <input
+                              type="text"
+                              placeholder={`Stage ${stageIndex + 1}`}
+                              value={stage.title}
+                              onChange={(e) => updateWorkflowStage(stageIndex, { title: e.target.value })}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="assign-row workflow-stage-fields">
+                          <div className="assign-field">
+                            <label>Stage Instructions</label>
+                            <textarea
+                              className="task-textarea workflow-stage-textarea"
+                              rows={3}
+                              placeholder="Describe what this stage needs to deliver."
+                              value={stage.description}
+                              onChange={(e) => updateWorkflowStage(stageIndex, { description: e.target.value })}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="workflow-stage-assignees">
+                          <div className="workflow-stage-assignees-copy">
+                            <h4>Stage Assignees</h4>
+                            <p>
+                              Pick one or more people from the selected receiver pool for this handoff.
+                            </p>
+                          </div>
+                          {selectedReceivers.length > 0 ? (
+                            <div className="workflow-stage-assignee-list">
+                              {selectedReceivers.map((receiver) => (
+                                <label key={`${stageIndex}-${receiver.id}`} className="workflow-stage-assignee-option">
+                                  <input
+                                    type="checkbox"
+                                    checked={stage.assigneeIds.includes(receiver.id)}
+                                    onChange={() => toggleStageAssignee(stageIndex, receiver.id)}
+                                  />
+                                  <span>
+                                    <strong>{receiver.name}</strong>
+                                    <small>
+                                      {[receiver.department, receiver.position].filter(Boolean).join(' | ') || `User ID ${receiver.id}`}
+                                    </small>
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="workflow-stage-empty">
+                              Add receivers above first, then assign them into stages here.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+
+                    <div className="workflow-builder-actions">
+                      <button type="button" className="assign-draft-btn" onClick={addWorkflowStage}>
+                        Add Stage
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="workflow-builder-empty">
+                    This task will follow the normal single-step assignment flow unless staged workflow is enabled.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Timeline & Priority */}
           <div className="assign-row">
             <div className="assign-card full-width">
@@ -1293,7 +1700,9 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
               onClick={handleCreateTask}
               disabled={isSaving}
             >
-              {isSaving ? (editingTask ? 'UPDATING...' : 'CREATING...') : (editingTask ? 'UPDATE TASK' : 'CREATE TASK')}
+              {isSaving
+                ? (isTaskEditMode ? 'UPDATING...' : isDraftEdit ? 'SENDING...' : 'CREATING...')
+                : (isTaskEditMode ? 'UPDATE TASK' : isDraftEdit ? 'SEND TASK' : 'CREATE TASK')}
             </button>
             
             <button 

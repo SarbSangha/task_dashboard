@@ -664,6 +664,7 @@
 }
 
 .company-member-preview-artifact-actions a,
+.company-member-preview-artifact-actions button,
 .company-member-preview-link-item {
   display: inline-flex;
   align-items: center;
@@ -676,6 +677,8 @@
   font-size: 12px;
   font-weight: 700;
   text-decoration: none;
+  border: none;
+  cursor: pointer;
 }
 
 .company-member-preview-link-item {

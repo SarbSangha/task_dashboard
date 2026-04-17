@@ -275,11 +275,16 @@
   flex-wrap: wrap;
 }
 
-.chat-folder-entry-actions a {
+.chat-folder-entry-actions a,
+.chat-folder-entry-actions button {
   color: #bfdbfe;
   text-decoration: none;
   font-size: 12px;
   font-weight: 700;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
 }
 
 .chat-folder-empty {

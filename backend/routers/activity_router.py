@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Cookie, Header
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from auth import get_request_session_token, resolve_session_user
 from database_config import get_operational_db
 from models_new import ActivityStatus, Task, TaskStatus, User, UserActivity
+from utils.datetime_utils import normalize_to_utc_naive, serialize_utc_datetime, utcnow_naive
 from utils.permissions import require_admin
 
 
@@ -27,18 +28,6 @@ class HeartbeatPayload(BaseModel):
 class StatusPayload(BaseModel):
     status: ActivityStatus
     timestamp: Optional[datetime] = None
-
-
-def utcnow_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def normalize_to_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
-    if not dt:
-        return None
-    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-        return dt
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def get_current_user_from_session(
@@ -139,14 +128,14 @@ def serialize_activity(row: UserActivity, user: Optional[User] = None) -> dict:
         "department": user.department if user else None,
         "position": user.position if user else None,
         "date": row.date.isoformat() if row.date else None,
-        "loginTime": row.login_time.isoformat() if row.login_time else None,
-        "logoutTime": row.logout_time.isoformat() if row.logout_time else None,
+        "loginTime": serialize_utc_datetime(row.login_time),
+        "logoutTime": serialize_utc_datetime(row.logout_time),
         "totalSessionDuration": row.total_session_duration or 0,
         "activeTime": row.active_time or 0,
         "idleTime": row.idle_time or 0,
         "awayTime": row.away_time or 0,
         "status": row.status.value if row.status else ActivityStatus.OFFLINE.value,
-        "lastSeen": row.last_seen.isoformat() if row.last_seen else None,
+        "lastSeen": serialize_utc_datetime(row.last_seen),
         "heartbeatCount": row.heartbeat_count or 0,
     }
 
@@ -419,6 +408,6 @@ async def live_stats(
             "away": away,
             "offline": offline,
             "totalUsers": total_users,
-            "timestamp": utcnow_naive().isoformat(),
+            "timestamp": serialize_utc_datetime(utcnow_naive()),
         },
     }

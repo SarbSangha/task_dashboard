@@ -1,4 +1,5 @@
 const TOOL_SLUG = 'chatgpt';
+const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
 const STATE = {
   credential: null,
   requested: false,
@@ -15,6 +16,8 @@ const STATE = {
   observer: null,
   lastRunAt: 0,
   lastMutationHandledAt: 0,
+  launchChecked: false,
+  launchAuthorized: false,
   settled: false,
   status: 'Waiting for login form',
 };
@@ -73,6 +76,71 @@ function setStatus(message) {
   if (STATE.status === message) return;
   STATE.status = message;
   ensureStatusBadge();
+}
+
+function readLaunchTicketFromUrl() {
+  const searchParams = new URLSearchParams(window.location.search || '');
+  const directQueryTicket = `${searchParams.get('rmw_extension_ticket') || ''}`.trim();
+  if (directQueryTicket) {
+    return directQueryTicket;
+  }
+
+  const hash = `${window.location.hash || ''}`.replace(/^#/, '');
+  if (!hash) return '';
+  const hashParams = new URLSearchParams(hash);
+  return `${hashParams.get('rmw_extension_ticket') || ''}`.trim();
+}
+
+function getStoredLaunchTicket() {
+  try {
+    return `${window.sessionStorage.getItem(EXTENSION_TICKET_KEY) || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function clearStoredLaunchTicket() {
+  try {
+    window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
+  } catch {}
+}
+
+function storeLaunchTicket(ticket) {
+  try {
+    if (ticket) {
+      window.sessionStorage.setItem(EXTENSION_TICKET_KEY, ticket);
+    } else {
+      window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
+    }
+  } catch {}
+}
+
+function captureLaunchTicketFromUrl() {
+  const ticket = readLaunchTicketFromUrl();
+  if (!ticket) return '';
+
+  storeLaunchTicket(ticket);
+  try {
+    const searchParams = new URLSearchParams(window.location.search || '');
+    searchParams.delete('rmw_extension_ticket');
+    searchParams.delete('rmw_tool_slug');
+    const nextSearch = searchParams.toString();
+    const cleanUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash || ''}`;
+    window.history.replaceState(null, '', cleanUrl);
+  } catch {}
+  return ticket;
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(response || { ok: false, error: 'No response received' });
+    });
+  });
 }
 
 function isVisible(element) {
@@ -327,6 +395,43 @@ function hasOpenLoginPrompt() {
   });
 }
 
+async function loadLaunchState() {
+  const directTicket = captureLaunchTicketFromUrl() || getStoredLaunchTicket();
+  if (directTicket) {
+    const activation = await sendRuntimeMessage({
+      type: 'TOOL_HUB_ACTIVATE_LAUNCH',
+      toolSlug: TOOL_SLUG,
+      hostname: window.location.hostname,
+      pageUrl: window.location.href,
+      extensionTicket: directTicket,
+    });
+
+    if (activation?.ok && activation.authorized) {
+      clearStoredLaunchTicket();
+      STATE.launchChecked = true;
+      STATE.launchAuthorized = true;
+      return;
+    }
+
+    clearStoredLaunchTicket();
+  }
+
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_GET_LAUNCH_STATE',
+    toolSlug: TOOL_SLUG,
+    hostname: window.location.hostname,
+    pageUrl: window.location.href,
+  });
+
+  STATE.launchChecked = true;
+  STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
+}
+
+function enforceDashboardOnlyAccess() {
+  setStatus('Launch this tool from the dashboard first');
+  STATE.settled = true;
+}
+
 function isEmailVerificationRoute() {
   const path = `${window.location.pathname || ''}`.toLowerCase();
   const bodyText = `${document.body?.innerText || ''}`.toLowerCase();
@@ -353,6 +458,7 @@ function requestCredential() {
       toolSlug: TOOL_SLUG,
       hostname: window.location.hostname,
       pageUrl: window.location.href,
+      extensionTicket: getStoredLaunchTicket(),
     },
     (response) => {
       STATE.requested = false;
@@ -364,6 +470,9 @@ function requestCredential() {
       }
 
       if (!response?.ok) {
+        if ((response?.error || '').toLowerCase().includes('launch this tool from the dashboard first')) {
+          clearStoredLaunchTicket();
+        }
         setStatus(response?.error || 'Credential unavailable');
         if ((response?.error || '').includes('http=404')) {
           STATE.settled = true;
@@ -371,6 +480,7 @@ function requestCredential() {
         return;
       }
 
+      clearStoredLaunchTicket();
       STATE.credential = response.data?.credential || null;
       setStatus(STATE.credential ? 'Credential loaded' : 'Credential missing');
       scheduleAttempt(150);
@@ -478,6 +588,14 @@ function attemptLandingLogin() {
 
 function attemptFill() {
   if (STATE.settled) return;
+  if (!STATE.launchChecked) {
+    setStatus('Checking dashboard launch');
+    return;
+  }
+  if (!STATE.launchAuthorized) {
+    enforceDashboardOnlyAccess();
+    return;
+  }
 
   if (isEmailVerificationRoute()) {
     STATE.emailStepPending = true;
@@ -543,7 +661,14 @@ function start() {
   STATE.observer = new MutationObserver(() => handleMutations());
   STATE.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
   STATE.keepAliveTimer = window.setInterval(() => scheduleAttempt(0), KEEP_ALIVE_MS);
-  scheduleAttempt(0);
+  loadLaunchState()
+    .catch(() => {
+      STATE.launchChecked = true;
+      STATE.launchAuthorized = false;
+    })
+    .finally(() => {
+      scheduleAttempt(0);
+    });
 }
 
 start();

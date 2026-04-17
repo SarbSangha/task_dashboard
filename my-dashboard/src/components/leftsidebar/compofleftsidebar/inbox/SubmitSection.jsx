@@ -9,7 +9,17 @@ import {
   openSystemFilePicker,
 } from '../../../../utils/fileUploads';
 
-const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
+const isWorkflowTask = (task) => Boolean(task?.workflowEnabled);
+const getActiveStageLabel = (task) => {
+  if (!isWorkflowTask(task)) return '';
+  const order = Number(task?.currentStageOrder || 0);
+  const title = `${task?.currentStageTitle || ''}`.trim();
+  if (order && title) return `Stage ${order}: ${title}`;
+  if (order) return `Stage ${order}`;
+  return title;
+};
+
+const SubmitSection = ({ taskId, task = null, onClose, onSubmitComplete }) => {
   const { showAlert } = useCustomDialogs();
   const [formData, setFormData] = useState({
     comments: '',
@@ -18,6 +28,7 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
   });
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const activeStageLabel = getActiveStageLabel(task);
 
   const handleFileUpload = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -62,12 +73,20 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
 
     setSubmitting(true);
     try {
-      await taskAPI.submitTask(taskId, {
+      const payload = {
         result_text: formData.resultDetails.trim(),
         comments: formData.comments.trim(),
         result_attachments: formData.attachments,
-      });
-      await showAlert('Task submitted successfully!', { title: 'Success' });
+      };
+      if (isWorkflowTask(task) && task?.currentStageId) {
+        await taskAPI.submitStage(taskId, task.currentStageId, payload);
+      } else {
+        await taskAPI.submitTask(taskId, payload);
+      }
+      await showAlert(
+        isWorkflowTask(task) ? 'Stage submitted successfully!' : 'Task submitted successfully!',
+        { title: 'Success' }
+      );
       onSubmitComplete();
     } catch (error) {
       console.error('Submit error:', error);
@@ -88,18 +107,31 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
     <div className="submit-overlay" onClick={onClose}>
       <div className="submit-modal" onClick={e => e.stopPropagation()}>
         <div className="submit-header">
-          <h2>📤 Submit Task Result</h2>
+          <h2>{isWorkflowTask(task) ? '📤 Submit Stage Result' : '📤 Submit Task Result'}</h2>
           <button className="close-btn" onClick={onClose}>✕</button>
         </div>
 
         <form onSubmit={handleSubmit} className="submit-form">
+          {isWorkflowTask(task) && (
+            <div className="form-group">
+              <label>Active Stage</label>
+              <div className="attachment-preview-item">
+                <span>{activeStageLabel || 'Current stage'}</span>
+              </div>
+            </div>
+          )}
+
           {/* Result Details */}
           <div className="form-group">
-            <label>Result Details *</label>
+            <label>{isWorkflowTask(task) ? 'Stage Output Details *' : 'Result Details *'}</label>
             <textarea
               value={formData.resultDetails}
               onChange={(e) => setFormData({...formData, resultDetails: e.target.value})}
-              placeholder="Describe what you've accomplished..."
+              placeholder={
+                isWorkflowTask(task)
+                  ? 'Describe what this stage completed and what the next stage should use...'
+                  : 'Describe what you\'ve accomplished...'
+              }
               rows="6"
               required
             />
@@ -107,11 +139,11 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
 
           {/* Comments */}
           <div className="form-group">
-            <label>Additional Comments</label>
+            <label>{isWorkflowTask(task) ? 'Handoff Notes' : 'Additional Comments'}</label>
             <textarea
               value={formData.comments}
               onChange={(e) => setFormData({...formData, comments: e.target.value})}
-              placeholder="Any additional notes or feedback..."
+              placeholder={isWorkflowTask(task) ? 'Anything the reviewer or next stage should know...' : 'Any additional notes or feedback...'}
               rows="3"
             />
           </div>
@@ -173,7 +205,7 @@ const SubmitSection = ({ taskId, onClose, onSubmitComplete }) => {
               className="submit-btn"
               disabled={submitting || uploading}
             >
-              {submitting ? '⏳ Submitting...' : '✓ Submit Result'}
+              {submitting ? '⏳ Submitting...' : (isWorkflowTask(task) ? '✓ Submit Stage' : '✓ Submit Result')}
             </button>
             <button 
               type="button" 

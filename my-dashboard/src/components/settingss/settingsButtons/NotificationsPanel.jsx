@@ -1,14 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { subscribeRealtimeNotifications, taskAPI } from '../../../services/api';
+import { formatDateTimeIndia } from '../../../utils/dateTime';
 import './NotificationsPanel.css';
 
 const formatDateTime = (value) => {
-  if (!value) return '-';
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
+  const formattedValue = formatDateTimeIndia(value);
+  return formattedValue === 'N/A' ? '-' : formattedValue;
 };
 
 const NotificationsPanel = ({ isOpen, onClose }) => {
