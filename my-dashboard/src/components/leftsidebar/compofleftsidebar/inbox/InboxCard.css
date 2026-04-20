@@ -332,8 +332,8 @@
 .workflow-stage-card {
   border-radius: 16px;
   border: 1px solid rgba(85, 106, 143, 0.26);
-  background:
-    linear-gradient(180deg, rgba(21, 33, 56, 0.96), rgba(11, 20, 35, 0.96));
+  /* background:
+    linear-gradient(180deg, rgba(21, 33, 56, 0.96), rgba(11, 20, 35, 0.96)); */
   padding: 14px;
   display: grid;
   gap: 12px;

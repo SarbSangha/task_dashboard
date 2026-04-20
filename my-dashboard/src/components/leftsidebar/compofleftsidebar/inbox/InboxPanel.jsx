@@ -791,7 +791,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
             className={`filter-btn ${filter === 'final_result' ? 'active' : ''}`}
             onClick={() => setFilter('final_result')}
           >
-            Final Result ({getFilterCount('final_result')})
+            Completed ({getFilterCount('final_result')})
           </button>
         </div>
         )}
