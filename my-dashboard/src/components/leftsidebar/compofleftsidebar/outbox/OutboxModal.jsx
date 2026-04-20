@@ -37,7 +37,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   const currentUser = outboxData?.user || null;
 
   const { data: drafts = [] } = useDrafts({
-    enabled: isOpen && activeTab === 'drafts',
+    enabled: isOpen && activeTab === 'all-dispatched' && filterStatus === 'draft',
   });
 
   useEffect(() => {
@@ -50,6 +50,26 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   useEffect(() => {
     onMinimizedChange?.(isOpen && isMinimized);
   }, [isMinimized, isOpen, onMinimizedChange]);
+
+  useEffect(() => {
+    if (activeTab !== 'all-dispatched' && filterStatus === 'draft') {
+      setFilterStatus('all');
+    }
+  }, [activeTab, filterStatus]);
+
+  useEffect(() => {
+    if (!Array.isArray(tasks) || tasks.length === 0) return;
+
+    setSelectedTaskForWorkflow((prev) => {
+      if (!prev?.id) return prev;
+      return tasks.find((task) => task.id === prev.id) || prev;
+    });
+
+    setChatTask((prev) => {
+      if (!prev?.id) return prev;
+      return tasks.find((task) => task.id === prev.id) || prev;
+    });
+  }, [tasks]);
 
   const invalidateOutboxCache = () => {
     queryClient.invalidateQueries({ queryKey: ['outbox'] });
@@ -141,9 +161,9 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
     return Array.from(seen.values());
   };
 
-  const getFilteredData = () => {
+  const getBaseDataForTab = React.useCallback(() => {
     let data = [];
-    
+
     switch (activeTab) {
       case 'all-dispatched':
         data = tasks.filter((t) => t.status !== 'draft');
@@ -154,29 +174,44 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
       case 'needs-reimprovement':
         data = tasks.filter(t => t.status === 'need_improvement');
         break;
-      case 'drafts':
-        data = mergeUniqueById([
-          ...tasks.filter((t) => t.status === 'draft'),
-          ...drafts
-        ]);
-        break;
       default:
         data = tasks.filter((t) => t.status !== 'draft');
     }
 
+    return data;
+  }, [activeTab, tasks]);
+
+  const getFilteredData = () => {
+    if (filterStatus === 'draft') {
+      return mergeUniqueById([
+        ...tasks.filter((item) => `${item.status || ''}`.toLowerCase() === 'draft'),
+        ...drafts,
+      ]);
+    }
+
+    let data = getBaseDataForTab();
+
     if (filterStatus !== 'all') {
-      data = data.filter(item => item.status?.toLowerCase() === filterStatus.toLowerCase());
+      if (filterStatus.toLowerCase() === 'completed') {
+        data = data.filter((item) => ['approved', 'completed'].includes(`${item.status || ''}`.toLowerCase()));
+      } else {
+        data = data.filter(item => item.status?.toLowerCase() === filterStatus.toLowerCase());
+      }
     }
 
     return data;
   };
 
   const filteredData = getFilteredData();
-  const allCount = tasks.length;
+  const allCount = getBaseDataForTab().length;
   const pendingCount = tasks.filter(t => ['pending', 'forwarded', 'assigned'].includes(t.status)).length;
   const inProgressCount = tasks.filter(t => t.status === 'in_progress').length;
   const submittedCount = tasks.filter(t => t.status === 'submitted').length;
-  const completedCount = tasks.filter(t => t.status === 'completed').length;
+  const completedCount = tasks.filter((t) => ['approved', 'completed'].includes(`${t.status || ''}`.toLowerCase())).length;
+  const draftCount = mergeUniqueById([
+    ...tasks.filter((t) => `${t.status || ''}`.toLowerCase() === 'draft'),
+    ...drafts,
+  ]).length;
 
   const formatDate = (dateString) => {
     return formatDateIndia(dateString);
@@ -286,12 +321,6 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
           >
             Needs Reimprovement
           </button>
-          <button
-            className={`top-tab-btn ${activeTab === 'drafts' ? 'active' : ''}`}
-            onClick={() => setActiveTab('drafts')}
-          >
-            Drafts
-          </button>
         </div>
         )}
 
@@ -328,6 +357,13 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
               onClick={() => setFilterStatus('completed')}
             >
               Completed ({completedCount})
+            </button>
+            <button 
+              className={`secondary-filter-btn ${filterStatus === 'draft' ? 'active' : ''}`}
+              onClick={() => setFilterStatus('draft')}
+              disabled={activeTab !== 'all-dispatched'}
+            >
+              Drafts ({draftCount})
             </button>
           </div>
           

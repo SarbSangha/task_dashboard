@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useCustomDialogs } from "../../../common/CustomDialogs";
 
-export default function TaskForm({ links = [], onChange }) {
+export default function TaskForm({ links = [], onChange, disabled = false }) {
   const { showAlert } = useCustomDialogs();
   const [linkInput, setLinkInput] = useState("");
   const [localLinks, setLocalLinks] = useState(links);
@@ -19,6 +19,7 @@ export default function TaskForm({ links = [], onChange }) {
   };
 
   const addLink = () => {
+    if (disabled) return;
     if (linkInput.trim() === "") {
       void showAlert("Please enter a valid link.", { title: "Invalid Link" });
       return;
@@ -42,6 +43,7 @@ export default function TaskForm({ links = [], onChange }) {
   };
 
   const removeLink = (index) => {
+    if (disabled) return;
     const updated = localLinks.filter((_, i) => i !== index);
     setLocalLinks(updated);
     notifyParent(updated);
@@ -50,6 +52,7 @@ export default function TaskForm({ links = [], onChange }) {
   const handleKeyPress = (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
+      if (disabled) return;
       addLink();
     }
   };
@@ -65,6 +68,7 @@ export default function TaskForm({ links = [], onChange }) {
             type="text"
             placeholder="🔗 Paste link here... (e.g., https://example.com)"
             value={linkInput}
+            disabled={disabled}
             onChange={(e) => setLinkInput(e.target.value)}
             onKeyPress={handleKeyPress}
             className="link-input"
@@ -72,7 +76,7 @@ export default function TaskForm({ links = [], onChange }) {
           <button 
             onClick={addLink} 
             className="add-link-btn"
-            disabled={!linkInput.trim()}
+            disabled={disabled || !linkInput.trim()}
           >
             ➕ Add
           </button>
@@ -96,6 +100,7 @@ export default function TaskForm({ links = [], onChange }) {
                 </a>
                 <button
                   className="remove-btn"
+                  disabled={disabled}
                   onClick={() => removeLink(index)}
                   title="Remove link"
                 >

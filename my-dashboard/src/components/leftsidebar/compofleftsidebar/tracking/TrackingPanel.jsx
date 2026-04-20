@@ -26,6 +26,7 @@ const getActionLabel = (task, action) => {
   if (action === 'need_improvement') return isWorkflowTask(task) ? 'request revision' : 'need improvement';
   if (action === 'submit') return isWorkflowTask(task) ? 'submit stage' : 'submit';
   if (action === 'start') return isWorkflowTask(task) ? 'start stage' : 'start task';
+  if (action === 'edit_task') return 'edit task';
   if (action === 'revoke_task') return 'revoke task';
   return action.replace(/_/g, ' ');
 };
@@ -44,7 +45,7 @@ const TRACKING_FILTERS = [
   {
     key: 'submitted',
     label: 'Waiting Review',
-    matches: (task) => ['submitted', 'under_review', 'approved'].includes(task?.status),
+    matches: (task) => ['submitted', 'under_review'].includes(task?.status),
   },
   {
     key: 'revision',
@@ -54,11 +55,11 @@ const TRACKING_FILTERS = [
   {
     key: 'completed',
     label: 'Completed',
-    matches: (task) => ['completed', 'cancelled', 'rejected'].includes(task?.status),
+    matches: (task) => ['approved', 'completed', 'cancelled', 'rejected'].includes(task?.status),
   },
 ];
 
-const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
+const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditTask }) => {
   const queryClient = useQueryClient();
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
   const [selectedTask, setSelectedTask] = useState(null);
@@ -137,6 +138,8 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     const colors = {
       draft: '#9ca3af',
       pending: '#fbbf24',
+      assigned: '#f59e0b',
+      forwarded: '#38bdf8',
       in_progress: '#3b82f6',
       submitted: '#8b5cf6',
       under_review: '#06b6d4',
@@ -153,6 +156,25 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     const activeFilter = TRACKING_FILTERS.find((entry) => entry.key === filter) || TRACKING_FILTERS[0];
     return activeFilter.matches(task);
   });
+
+  React.useEffect(() => {
+    if (!tasks.length) return;
+
+    setSelectedTask((prev) => {
+      if (!prev?.id) return prev;
+      return tasks.find((task) => task.id === prev.id) || prev;
+    });
+
+    setChatTask((prev) => {
+      if (!prev?.id) return prev;
+      return tasks.find((task) => task.id === prev.id) || prev;
+    });
+
+    setSubmitTask((prev) => {
+      if (!prev?.id) return prev;
+      return tasks.find((task) => task.id === prev.id) || prev;
+    });
+  }, [tasks]);
 
   const handleSubmitComplete = async () => {
     setSubmitTask(null);
@@ -322,18 +344,14 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         await openSelectionModal(task, 'forward');
         return;
       } else if (action === 'edit_task') {
-        const description = (await showPrompt('Update task description:', {
-          title: 'Edit Task',
-          defaultValue: task.description || '',
-        })) ?? '';
-        if (!description) return;
-        await taskAPI.editTask(task.id, { description });
+        onEditTask?.(task);
+        return;
       } else if (action === 'edit_result') {
-        const result = (await showPrompt('Update result text:', {
+        const result = await showPrompt('Update result text:', {
           title: 'Edit Result',
           defaultValue: task.resultText || '',
-        })) ?? '';
-        if (!result) return;
+        });
+        if (result === null) return;
         await taskAPI.editResult(task.id, result);
       } else if (action === 'revoke_task') {
         const confirmed = await showConfirm(
@@ -674,6 +692,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
           </div>
         </div>
       )}
+
     </>
   );
 };

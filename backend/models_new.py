@@ -433,6 +433,7 @@ class TaskComment(Base):
     comment = Column(Text, nullable=False)
     comment_type = Column(String, default="general")  # suggestion / need_improvement / approved / general
     is_internal = Column(Boolean, default=False)  # Internal notes vs public comments
+    attachments_json = Column(JSON)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, onupdate=datetime.utcnow)

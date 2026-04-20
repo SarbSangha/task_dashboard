@@ -1,5 +1,6 @@
 // src/components/leftsidebar/compofleftsidebar/AssignTaskModal.jsx
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import './AssignTaskModal.css';
 import AttachmentBox from './Attachments';
 import TaskForm from './LinkArea';
@@ -42,6 +43,82 @@ const createEmptyWorkflowStage = (order = 1) => ({
   assigneeIds: [],
 });
 
+const buildDirtySnapshot = (formData = {}) => {
+  const attachments = Array.isArray(formData.attachments) ? formData.attachments : [];
+  const links = Array.isArray(formData.links) ? formData.links : [];
+  const workflowStages = Array.isArray(formData.workflowStages) ? formData.workflowStages : [];
+
+  return JSON.stringify({
+    projectName: `${formData.projectName || ''}`.trim(),
+    taskId: `${formData.taskId || ''}`.trim(),
+    projectId: `${formData.projectId || ''}`.trim(),
+    projectIdRaw: `${formData.projectIdRaw || ''}`.trim(),
+    projectIdHex: `${formData.projectIdHex || ''}`.trim(),
+    customerName: `${formData.customerName || ''}`.trim(),
+    taskName: `${formData.taskName || ''}`.trim(),
+    reference: `${formData.reference || ''}`.trim(),
+    toDepartment: `${formData.toDepartment || ''}`.trim(),
+    deadline: `${formData.deadline || ''}`.trim(),
+    priority: `${formData.priority || ''}`.trim(),
+    taskDetails: `${formData.taskDetails || ''}`.trim(),
+    taskTag: `${formData.taskTag || ''}`.trim(),
+    taskType: `${formData.taskType || ''}`.trim(),
+    workflowEnabled: Boolean(formData.workflowEnabled),
+    finalApprovalRequired: Boolean(formData.finalApprovalRequired),
+    selectedUserIds: (Array.isArray(formData.selectedUserIds) ? formData.selectedUserIds : [])
+      .map((value) => `${value || ''}`)
+      .sort(),
+    attachments: attachments.map((file) => ({
+      name: `${file?.name || file?.filename || file?.original_name || ''}`.trim(),
+      size: Number(file?.size || 0),
+      url: `${file?.url || ''}`.trim(),
+    })),
+    links: links.map((link) => {
+      if (typeof link === 'string') {
+        return `${link}`.trim();
+      }
+
+      return {
+        title: `${link?.title || ''}`.trim(),
+        url: `${link?.url || ''}`.trim(),
+      };
+    }),
+    workflowStages: workflowStages.map((stage, index) => ({
+      order: Number(stage?.order || index + 1),
+      title: `${stage?.title || ''}`.trim(),
+      description: `${stage?.description || ''}`.trim(),
+      approvalRequired: Boolean(stage?.approvalRequired),
+      assigneeIds: (Array.isArray(stage?.assigneeIds) ? stage.assigneeIds : [])
+        .map((value) => `${value || ''}`)
+        .sort(),
+    })),
+  });
+};
+
+const createEmptyFormData = (myDepartment = '') => ({
+  projectName: '',
+  taskId: '',
+  projectId: '',
+  projectIdRaw: '',
+  projectIdHex: '',
+  customerName: '',
+  taskName: '',
+  reference: '',
+  myDepartment: myDepartment || '',
+  selectedUserIds: [],
+  toDepartment: 'Gen Ai',
+  deadline: '',
+  priority: 'High',
+  taskDetails: '',
+  taskTag: 'Audio',
+  taskType: 'task',
+  attachments: [],
+  links: [],
+  workflowEnabled: false,
+  finalApprovalRequired: false,
+  workflowStages: [],
+});
+
 const isMeaningfulWorkflowStage = (stage) => {
   const title = `${stage?.title || ''}`.trim();
   const description = `${stage?.description || ''}`.trim();
@@ -50,35 +127,14 @@ const isMeaningfulWorkflowStage = (stage) => {
   return Boolean(description || stage?.approvalRequired || assigneeIds.length || (title && !defaultStageTitle));
 };
 
-const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChange, onActivate }) => {
+const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMinimizedChange, onActivate }, ref) => {
+  const queryClient = useQueryClient();
   const { user } = useAuth();
   const { showConfirm } = useCustomDialogs();
   const isDraftEdit = Boolean(editingTask && `${editingTask.status || ''}`.toLowerCase() === 'draft');
   const isTaskEditMode = Boolean(editingTask && !isDraftEdit);
   // Form state
-  const [formData, setFormData] = useState({
-    projectName: '',
-    taskId: '',
-    projectId: '',
-    projectIdRaw: '',
-    projectIdHex: '',
-    customerName: '',
-    taskName: '',
-    reference: '',
-    myDepartment: '',
-    selectedUserIds: [], // NEW: Array of selected user IDs
-    toDepartment: 'Gen Ai',
-    deadline: '',
-    priority: 'High',
-    taskDetails: '',
-    taskTag: 'Audio',
-    taskType: 'task',
-    attachments: [],
-    links: [],
-    workflowEnabled: false,
-    finalApprovalRequired: false,
-    workflowStages: [],
-  });
+  const [formData, setFormData] = useState(createEmptyFormData());
 
   // NEW: Department and user data
   const [departments, setDepartments] = useState([]);
@@ -105,6 +161,8 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
   const [currentDraftId, setCurrentDraftId] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const allowNavigationRef = useRef(false);
+  const initialFormSnapshotRef = useRef(buildDirtySnapshot(createEmptyFormData()));
   const minimizedWindowStyle = useMinimizedWindowStack('assign-task-modal', isOpen && isMinimized);
 
   const cacheKeys = useMemo(() => {
@@ -298,7 +356,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     }
   };
 
-  // Load draft when modal opens
+  // Initialize form when modal opens.
   useEffect(() => {
     if (!isOpen) return;
 
@@ -339,18 +397,26 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
           : [],
       };
       setFormData(mappedEditData);
+      initialFormSnapshotRef.current = buildDirtySnapshot(mappedEditData);
       rememberUsers(editingTask.assignedTo || []);
       setCurrentDraftId(isDraftEdit ? editingTask.id : null);
       return;
     }
 
-    loadDraft();
-  }, [currentUserDepartment, isOpen, editingTask, isDraftEdit]);
+    const emptyForm = createEmptyFormData(currentUserDepartment);
+    setFormData(emptyForm);
+    initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
+    setCurrentDraftId(null);
+    setProjectIdState({ status: 'idle', message: '' });
+    setTaskIdState({ status: 'idle', message: '' });
+    setShowUserDropdown(false);
+  }, [isOpen, editingTask, isDraftEdit]);
 
   useEffect(() => {
     if (isOpen) {
       setIsMinimized(false);
       setIsMaximized(false);
+      allowNavigationRef.current = false;
     }
   }, [isOpen]);
 
@@ -394,103 +460,23 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     return () => clearInterval(autoSaveInterval);
   }, [isOpen, formData, isTaskEditMode]);
 
-  // Load draft from API or localStorage
-  const loadDraft = async () => {
-    try {
-      const result = await draftAPI.loadLatestDraft();
-      
-      if (result.data) {
-        // ✅ Map backend fields back to form fields
-      const mappedData = {
-          projectName: result.data.projectName || '',
-          taskId: result.data.taskId || '',
-          projectId: result.data.projectId || '',
-          projectIdRaw: result.data.projectIdRaw || '',
-          projectIdHex: result.data.projectIdHex || '',
-          customerName: result.data.customerName || '',
-          taskName: result.data.title || '',
-          reference: result.data.reference || '',
-          myDepartment: normalizeDepartmentName(result.data.myDepartment || currentUserDepartment || ''),
-          selectedUserIds: result.data.selectedUserIds || [],
-          toDepartment: normalizeDepartmentName(result.data.toDepartment || 'Gen Ai'),
-          deadline: result.data.deadline || '',
-          priority: result.data.priority ? 
-            result.data.priority.charAt(0).toUpperCase() + result.data.priority.slice(1) : 'High',
-          taskDetails: result.data.description || '',
-          taskTag: result.data.taskTag || 'Audio',
-          taskType: result.data.taskType || 'task',
-          attachments: result.data.attachments || [],
-          links: result.data.links || [],
-          workflowEnabled: Boolean(result.data.workflowEnabled),
-          finalApprovalRequired: Boolean(result.data.finalApprovalRequired),
-          workflowStages: Array.isArray(result.data.workflowStages)
-            ? result.data.workflowStages.map((stage, index) => ({
-                order: Number(stage.order || index + 1),
-                title: stage.title || `Stage ${index + 1}`,
-                description: stage.description || '',
-                approvalRequired: Boolean(stage.approvalRequired),
-                assigneeIds: Array.isArray(stage.assigneeIds) ? stage.assigneeIds : [],
-              }))
-            : []
-        };
-        
-        setFormData(mappedData);
-
-        if (result.data.id) {
-          setCurrentDraftId(result.data.id);
-        } else if (result.data.__draftId) {
-          setCurrentDraftId(result.data.__draftId);
-        }
-        
-        showMessage(
-          result.source === 'local' ? 'Local draft loaded' : 'Draft loaded from server',
-          'success'
-        );
-      }
-    } catch (error) {
-      console.error('Error loading draft:', error);
-      
-      // Fallback to localStorage
-      const localDraft = localStorage.getItem('taskDraft');
-      if (localDraft) {
-        const parsedDraft = JSON.parse(localDraft);
-        if (parsedDraft?.__draftId) {
-          setCurrentDraftId(parsedDraft.__draftId);
-        }
-        const { __draftId, ...draftFormData } = parsedDraft || {};
-        setFormData(draftFormData);
-        showMessage('Local draft loaded', 'success');
-      }
-    }
-  };
-
-  // Check if the draft has meaningful user-entered content.
+  // Compare against the form state when the modal was opened.
   const hasFormData = () => {
-    const textFields = [
-      formData.projectName,
-      formData.taskId,
-      formData.projectId,
-      formData.customerName,
-      formData.taskName,
-      formData.reference,
-      formData.taskDetails,
-      formData.deadline,
-    ];
-
-    if (textFields.some((value) => `${value || ''}`.trim())) {
-      return true;
-    }
-    if ((formData.selectedUserIds || []).length > 0) {
-      return true;
-    }
-    if ((formData.attachments || []).length > 0 || (formData.links || []).length > 0) {
-      return true;
-    }
-    if (formData.workflowEnabled && (formData.workflowStages || []).some((stage) => isMeaningfulWorkflowStage(stage))) {
-      return true;
-    }
-    return false;
+    return buildDirtySnapshot(formData) !== initialFormSnapshotRef.current;
   };
+  const isDirty = isOpen && hasFormData();
+
+  useEffect(() => {
+    if (!isDirty) return undefined;
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
 
   // Handle input changes
   const handleChange = (field, value) => {
@@ -651,6 +637,14 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     }));
   };
 
+  const resetFormState = () => {
+    const emptyForm = createEmptyFormData(currentUserDepartment);
+    setFormData(emptyForm);
+    initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
+    setCurrentDraftId(null);
+    localStorage.removeItem('taskDraft');
+  };
+
   // Clear form
   const handleClear = async () => {
     if (hasFormData()) {
@@ -660,33 +654,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
       if (!confirmClear) return;
     }
 
-    const emptyForm = {
-      projectName: '',
-      taskId: '',
-      projectId: '',
-      projectIdRaw: '',
-      projectIdHex: '',
-      customerName: '',
-      taskName: '',
-      reference: '',
-      myDepartment: '',
-      selectedUserIds: [],
-      toDepartment: 'Gen Ai',
-      deadline: '',
-      priority: 'High',
-      taskDetails: '',
-      taskTag: 'Audio',
-      taskType: 'task',
-      attachments: [],
-      links: [],
-      workflowEnabled: false,
-      finalApprovalRequired: false,
-      workflowStages: [],
-    };
-
-    setFormData(emptyForm);
-    setCurrentDraftId(null);
-    localStorage.removeItem('taskDraft');
+    resetFormState();
     showMessage('Form cleared', 'success');
   };
 
@@ -716,12 +684,16 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
         projectIdRaw: formData.projectIdRaw || '',
         projectIdHex: formData.projectIdHex || '',
         customerName: formData.customerName || '',
+        reference: formData.reference || '',
+        myDepartment: formData.myDepartment || currentUserDepartment || '',
         taskType: formData.taskType || 'task',
         taskTag: formData.taskTag || 'Audio',
         priority: (formData.priority || 'medium').toLowerCase(),
         toDepartment: formData.toDepartment || '',
         selectedUserIds: formData.selectedUserIds || [],
         deadline: formData.deadline || null,
+        links: Array.isArray(formData.links) ? formData.links : [],
+        attachments: Array.isArray(formData.attachments) ? formData.attachments : [],
         workflowEnabled: Boolean(formData.workflowEnabled),
         finalApprovalRequired: Boolean(formData.finalApprovalRequired),
         workflowStages: Array.isArray(formData.workflowStages)
@@ -742,21 +714,23 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
         } catch (updateError) {
           console.log('Draft not found, creating new one');
           response = await draftAPI.saveDraft(draftPayload);
-          if (response.data?.id) {
-            setCurrentDraftId(response.data.id);
+          const savedDraftId = response?.id || response?.data?.id || null;
+          if (savedDraftId) {
+            setCurrentDraftId(savedDraftId);
             localStorage.setItem('taskDraft', JSON.stringify({
               ...formData,
-              __draftId: response.data.id,
+              __draftId: savedDraftId,
             }));
           }
         }
       } else {
         response = await draftAPI.saveDraft(draftPayload);
-        if (response.data?.id) {
-          setCurrentDraftId(response.data.id);
+        const savedDraftId = response?.id || response?.data?.id || null;
+        if (savedDraftId) {
+          setCurrentDraftId(savedDraftId);
           localStorage.setItem('taskDraft', JSON.stringify({
             ...formData,
-            __draftId: response.data.id,
+            __draftId: savedDraftId,
           }));
         }
       }
@@ -889,6 +863,11 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
         invalidateTaskPanelCache(buildTaskPanelCacheKey(user.id, 'inbox'));
         invalidateTaskPanelCache(buildTaskPanelCacheKey(user.id, 'workspace_team_directory'));
         invalidateTaskPanelCache(buildTaskPanelCacheKey(user.id, 'workspace_company_directory'));
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['outbox', user.id] }),
+          queryClient.invalidateQueries({ queryKey: ['tracking', user.id] }),
+          queryClient.invalidateQueries({ queryKey: ['inbox', user.id] }),
+        ]);
       }
       
       // Clear draft from localStorage and API
@@ -901,8 +880,8 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
         }
       }
 
-      // Clear form
-      await handleClear();
+      // Clear form without re-triggering the manual clear confirmation.
+      resetFormState();
       
       // Close modal after 1.5 seconds
       setTimeout(() => {
@@ -932,31 +911,63 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
     }
   };
 
+  const confirmBeforeExit = async () => {
+    if (!hasFormData()) {
+      allowNavigationRef.current = true;
+      return true;
+    }
+
+    const confirmClose = await showConfirm(
+      'You have unsaved changes. Do you want to save as draft before closing?',
+      {
+        title: 'Unsaved Changes',
+        confirmText: 'Save Draft',
+        confirmValue: 'save',
+        cancelText: 'Discard',
+        cancelValue: 'discard',
+        tertiaryText: 'Stay Here',
+        tertiaryValue: 'stay',
+        dismissValue: 'stay',
+      }
+    );
+
+    if (confirmClose === 'save') {
+      await saveDraft();
+      allowNavigationRef.current = true;
+      return true;
+    }
+
+    if (confirmClose === 'discard') {
+      localStorage.removeItem('taskDraft');
+      setCurrentDraftId(null);
+      const emptyForm = createEmptyFormData(currentUserDepartment);
+      setFormData(emptyForm);
+      initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
+      allowNavigationRef.current = true;
+      return true;
+    }
+
+    return false;
+  };
+
+  useImperativeHandle(ref, () => ({
+    confirmBeforeExit,
+    hasUnsavedChanges: () => hasFormData(),
+    consumeNavigationAllowance: () => {
+      const allowed = allowNavigationRef.current;
+      allowNavigationRef.current = false;
+      return allowed;
+    },
+  }));
+
   // Handle modal close
   const handleClose = async () => {
-    if (hasFormData()) {
-      const confirmClose = await showConfirm(
-        'You have unsaved changes. Do you want to save as draft before closing?',
-        {
-          title: 'Unsaved Changes',
-          confirmText: 'Save Draft',
-          confirmValue: 'save',
-          cancelText: 'Discard',
-          cancelValue: 'discard',
-          tertiaryText: 'Stay Here',
-          tertiaryValue: 'stay',
-          dismissValue: 'stay',
-        }
-      );
-      if (confirmClose === 'save') {
-        await saveDraft();
-        onClose();
-      } else if (confirmClose === 'discard') {
-        onClose();
-      }
-    } else {
-      onClose();
+    const canClose = await confirmBeforeExit();
+    if (!canClose) {
+      return;
     }
+
+    onClose();
   };
 
   const stopPropagation = (e) => e.stopPropagation();
@@ -1126,6 +1137,11 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
         {!isMinimized && (
         <div className="assign-modal-body">
           <h2 className="assign-title">{isTaskEditMode ? 'EDIT TASK' : isDraftEdit ? 'EDIT DRAFT' : 'CREATE NEW TASK'}</h2>
+          {isTaskEditMode && (
+            <div className="assign-edit-note">
+              Edit mode currently updates only Task Name, Task Details, Deadline, and Priority. Other fields are shown read-only.
+            </div>
+          )}
           <CacheStatusBanner
             showingCached={cacheStatus.showingCached}
             isRefreshing={isReferenceRefreshing}
@@ -1145,6 +1161,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
                 type="text" 
                 placeholder="Project Alpha" 
                 value={formData.projectName}
+                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('projectName', e.target.value)}
                 list="project-name-suggestions"
               />
@@ -1160,6 +1177,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
                 type="text"
                 placeholder="Customer / Client"
                 value={formData.customerName}
+                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('customerName', e.target.value)}
               />
             </div>
@@ -1181,6 +1199,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
                 type="text"
                 placeholder="TASK-XXXX-YYYYMMDD-ZZZZ"
                 value={formData.taskId}
+                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('taskId', e.target.value)}
                 list="task-id-suggestions"
               />
@@ -1196,10 +1215,10 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
             <div className="assign-field project-id-actions">
               <label>&nbsp;</label>
               <div className="project-id-btn-row">
-                <button type="button" className="assign-secondary-btn" onClick={handleValidateTaskId}>
+                <button type="button" className="assign-secondary-btn" onClick={handleValidateTaskId} disabled={isTaskEditMode}>
                   Validate Task ID
                 </button>
-                <button type="button" className="assign-draft-btn" onClick={handleGenerateTaskId}>
+                <button type="button" className="assign-draft-btn" onClick={handleGenerateTaskId} disabled={isTaskEditMode}>
                   Generate Task ID
                 </button>
               </div>
@@ -1213,6 +1232,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
                 type="text"
                 placeholder="PROJ-XXXX-YYYYMMDD-ZZZZ"
                 value={formData.projectId}
+                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('projectId', e.target.value)}
                 list="project-id-suggestions"
               />
@@ -1228,10 +1248,10 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
             <div className="assign-field project-id-actions">
               <label>&nbsp;</label>
               <div className="project-id-btn-row">
-                <button type="button" className="assign-secondary-btn" onClick={handleValidateProjectId}>
+                <button type="button" className="assign-secondary-btn" onClick={handleValidateProjectId} disabled={isTaskEditMode}>
                   Validate Proj ID
                 </button>
-                <button type="button" className="assign-draft-btn" onClick={handleGenerateProjectId}>
+                <button type="button" className="assign-draft-btn" onClick={handleGenerateProjectId} disabled={isTaskEditMode}>
                   Generate Proj ID
                 </button>
               </div>
@@ -1246,6 +1266,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
                 type="text" 
                 placeholder="PN/TN/REF" 
                 value={formData.reference}
+                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('reference', e.target.value)}
               />
             </div>
@@ -1346,6 +1367,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
                   <label>Browse Department</label>
                   <select 
                     value={formData.toDepartment}
+                    disabled={isTaskEditMode}
                     onChange={(e) => handleChange('toDepartment', e.target.value)}
                   >
                     <option value="">-- Select Department --</option>
@@ -1383,6 +1405,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
                         <button
                           type="button"
                           className="selected-receiver-remove"
+                          disabled={isTaskEditMode}
                           onClick={() => toggleUserSelection(receiver.id)}
                         >
                           Remove
@@ -1424,6 +1447,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
                           <input 
                             type="checkbox"
                             checked={formData.selectedUserIds.includes(user.id)}
+                            disabled={isTaskEditMode}
                             onChange={() => toggleUserSelection(user.id)}
                           />
                           <span className="user-checkbox-label">
@@ -1657,6 +1681,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
               <label>Request Type</label>
               <select
                 value={formData.taskType}
+                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('taskType', e.target.value)}
               >
                 <option value="task">Task</option>
@@ -1668,6 +1693,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
               <label>Tag of Task</label>
               <select 
                 value={formData.taskTag}
+                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('taskTag', e.target.value)}
               >
                 {TASK_TAG_OPTIONS.map((tag) => (
@@ -1682,6 +1708,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
             <AttachmentBox 
               attachments={formData.attachments}
               onChange={handleAttachmentsChange}
+              disabled={isTaskEditMode}
             />
           </div>
 
@@ -1690,6 +1717,7 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
             <TaskForm 
               links={formData.links}
               onChange={handleLinksChange}
+              disabled={isTaskEditMode}
             />
           </div>
 
@@ -1733,6 +1761,6 @@ const AssignTaskModal = ({ isOpen, onClose, editingTask = null, onMinimizedChang
       </div>
     </div>
   );
-};
+});
 
 export default AssignTaskModal;

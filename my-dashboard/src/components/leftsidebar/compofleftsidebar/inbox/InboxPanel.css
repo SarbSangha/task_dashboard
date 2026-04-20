@@ -973,6 +973,24 @@
   background: rgba(255, 255, 255, 0.04);
 }
 
+.submit-attachment-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.submit-attachment-copy span,
+.submit-attachment-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submit-attachment-copy small {
+  color: #94a3b8;
+}
+
 .submit-link-item a {
   color: #93c5fd;
   text-decoration: none;

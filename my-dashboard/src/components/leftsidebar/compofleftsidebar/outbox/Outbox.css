@@ -216,7 +216,7 @@
 
 .top-tab-btn:hover {
   color: #1a1a1a;
-  background: rgba(0, 0, 0, 0.02);
+  background: rgb(255, 255, 255);
 }
 
 .top-tab-btn.active {
@@ -262,6 +262,7 @@
   border-color: #adb5bd;
   background: #f8f9fa;
   transform: translateY(-1px);
+  color: #495057;
 }
 
 .secondary-filter-btn.active {

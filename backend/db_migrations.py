@@ -104,6 +104,7 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "users", "deleted_by", "INTEGER")
     _pg_add_column_if_missing(conn, "users", "session_revoked_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
+    _pg_add_column_if_missing(conn, "task_comments", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "tasks", "workflow_enabled", "BOOLEAN DEFAULT FALSE")
     _pg_add_column_if_missing(conn, "tasks", "workflow_status", "VARCHAR")
     _pg_add_column_if_missing(conn, "tasks", "current_stage_id", "INTEGER")
@@ -301,6 +302,8 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE task_comments ADD COLUMN comment_type VARCHAR DEFAULT 'general'"))
             if "stage_id" not in comment_cols:
                 conn.execute(text("ALTER TABLE task_comments ADD COLUMN stage_id INTEGER"))
+            if "attachments_json" not in comment_cols:
+                conn.execute(text("ALTER TABLE task_comments ADD COLUMN attachments_json JSON"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_comments_stage_id ON task_comments(stage_id)"))
 
         if _table_exists(conn, "task_notifications"):

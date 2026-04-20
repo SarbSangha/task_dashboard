@@ -164,10 +164,31 @@ class TaskForwardPayload(BaseModel):
 
 
 class TaskCommentPayload(BaseModel):
-    comment: str = Field(..., min_length=1)
+    comment: str = Field(default="")
     comment_type: str = Field(default="general")
     is_internal: bool = False
     stage_id: Optional[int] = None
+    attachments: List[dict] = Field(default_factory=list)
+
+
+def _normalize_task_comment_attachments(items: List[dict]) -> List[dict]:
+    normalized: List[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        normalized_item = {
+            "filename": item.get("filename") or item.get("name") or None,
+            "originalName": item.get("originalName") or item.get("filename") or item.get("name") or None,
+            "relativePath": item.get("relativePath") or None,
+            "path": item.get("path") or None,
+            "url": item.get("url") or None,
+            "mimetype": item.get("mimetype") or item.get("type") or None,
+            "size": item.get("size") or None,
+            "storage": item.get("storage") or None,
+        }
+        if normalized_item["url"] or normalized_item["path"] or normalized_item["filename"]:
+            normalized.append(normalized_item)
+    return normalized
 
 
 class ProjectIdGeneratePayload(BaseModel):
@@ -4044,13 +4065,19 @@ async def add_comment(
     if payload.stage_id is not None:
         stage = _get_task_workflow_stage(payload.stage_id, task.id, db)
 
+    comment_text = (payload.comment or "").strip()
+    attachments = _normalize_task_comment_attachments(payload.attachments)
+    if not comment_text and not attachments:
+        raise HTTPException(status_code=400, detail="Comment or attachment is required")
+
     new_comment = TaskComment(
         task_id=task.id,
         stage_id=stage.id if stage else None,
         user_id=current_user.id,
-        comment=payload.comment,
+        comment=comment_text,
         comment_type=(payload.comment_type or "general")[:40],
         is_internal=payload.is_internal,
+        attachments_json=attachments,
         created_at=datetime.utcnow(),
     )
     db.add(new_comment)
@@ -4064,7 +4091,7 @@ async def add_comment(
         current_user.id,
         "commented",
         task.status.value,
-        payload.comment,
+        comment_text or f"{len(attachments)} attachment{'s' if len(attachments) != 1 else ''}",
         {
             "stageId": stage.id if stage else None,
             "stageOrder": stage.stage_order if stage else None,
@@ -4089,6 +4116,7 @@ async def add_comment(
         "senderName": current_user.name,
         "createdAt": serialize_utc_datetime(new_comment.created_at),
         "commentType": new_comment.comment_type,
+        "attachmentCount": len(attachments),
     }
     for user_id in recipients:
         create_notification(
@@ -4097,7 +4125,7 @@ async def add_comment(
             user_id,
             "task_comment",
             f"New comment on {task.title}",
-            payload.comment[:180],
+            (comment_text or f"{len(attachments)} attachment{'s' if len(attachments) != 1 else ''}")[:180],
             actor=current_user,
             metadata_json=comment_meta,
         )
@@ -4114,6 +4142,7 @@ async def add_comment(
             "comment": new_comment.comment,
             "commentType": new_comment.comment_type,
             "isInternal": new_comment.is_internal,
+            "attachments": new_comment.attachments_json or [],
             "createdAt": serialize_utc_datetime(new_comment.created_at),
             "user": {
                 "id": current_user.id,
@@ -4174,6 +4203,7 @@ async def get_comments(
             "comment": comment.comment,
             "commentType": comment.comment_type or "general",
             "isInternal": comment.is_internal,
+            "attachments": comment.attachments_json or [],
             "createdAt": serialize_utc_datetime(comment.created_at),
             "user": {
                 "id": user.id if user else None,

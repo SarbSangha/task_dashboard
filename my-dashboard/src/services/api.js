@@ -185,6 +185,7 @@ const uploadFilesLegacy = async (files, options = {}) => {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
+    signal: options.signal,
     timeout: 0,
     onUploadProgress: (progressEvent) => emitLegacyUploadProgress(progressEvent, options.onProgress),
   });
@@ -200,6 +201,7 @@ const uploadFileDirectToR2 = async (file, target, tracker, fileIndex) => {
       headers: {
         'Content-Type': contentType,
       },
+      signal: target?.signal,
       timeout: 0,
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
@@ -253,6 +255,7 @@ const uploadFileMultipartToR2 = async (file, target, tracker, fileIndex, options
         headers: {
           'Content-Type': 'application/octet-stream',
         },
+        signal: options.signal,
         timeout: 0,
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
@@ -288,7 +291,10 @@ const uploadFileMultipartToR2 = async (file, target, tracker, fileIndex, options
         uploadId: target.uploadId,
         parts: uploadedParts,
       },
-      { timeout: PRESIGN_TIMEOUT_MS }
+      {
+        signal: options.signal,
+        timeout: PRESIGN_TIMEOUT_MS,
+      }
     );
     tracker.complete(fileIndex);
     return target.attachment;
@@ -299,6 +305,10 @@ const uploadFileMultipartToR2 = async (file, target, tracker, fileIndex, options
 };
 
 const buildUploadError = (error) => {
+  if (isRequestCanceled(error)) {
+    error.message = error?.message || 'Upload canceled.';
+    return error;
+  }
   if (error?.response?.data?.detail) {
     return error;
   }
@@ -623,6 +633,7 @@ export const taskAPI = {
       title: taskData.title || taskData.taskName || '',
       description: taskData.description || taskData.taskDetails || '',
       projectName: taskData.projectName || '',
+      taskId: taskData.taskId || null,
       projectId: taskData.projectId || null,
       projectIdRaw: taskData.projectIdRaw || null,
       projectIdHex: taskData.projectIdHex || null,
@@ -835,10 +846,11 @@ export const taskAPI = {
 
   addComment: async (taskId, comment, isInternal = false, commentType = 'general', options = {}) => {
     const response = await api.post(`/api/tasks/${taskId}/comments`, {
-      comment,
+      comment: typeof comment === 'string' ? comment : '',
       comment_type: commentType,
       is_internal: isInternal,
       stage_id: options.stageId || null,
+      attachments: Array.isArray(options.attachments) ? options.attachments : [],
     });
     return response.data;
   },
@@ -1159,7 +1171,10 @@ export const fileAPI = {
       const prepareResponse = await api.post(
         '/api/uploads/presign',
         buildPresignPayload(filesToUpload),
-        { timeout: PRESIGN_TIMEOUT_MS }
+        {
+          signal: options.signal,
+          timeout: PRESIGN_TIMEOUT_MS,
+        }
       );
 
       const uploadTargets = Array.isArray(prepareResponse?.data?.data)
@@ -1182,7 +1197,7 @@ export const fileAPI = {
         if (!target?.uploadUrl) {
           throw new Error(`Upload URL is missing for "${file.name}".`);
         }
-        return uploadFileDirectToR2(file, target, tracker, index);
+        return uploadFileDirectToR2(file, { ...target, signal: options.signal }, tracker, index);
       });
 
       const data = await runWithConcurrency(

@@ -29,9 +29,7 @@ const ensureLastSeenTimestamp = (userId) => {
       return parsed;
     }
   }
-  const now = Date.now();
-  window.localStorage.setItem(storageKey, `${now}`);
-  return now;
+  return 0;
 };
 
 const markMessageSystemSeen = (userId) => {

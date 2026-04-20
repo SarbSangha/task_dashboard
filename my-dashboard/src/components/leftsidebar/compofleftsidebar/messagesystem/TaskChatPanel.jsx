@@ -1,14 +1,110 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
+import { fileAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import './TaskChatPanel.css';
 import { formatDateTimeIndia } from '../../../../utils/dateTime';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import ChatAttachmentGallery from '../../../common/chat/ChatAttachmentGallery';
+import {
+  getAttachmentDisplayName,
+  mergeUniqueAttachments,
+  openSystemFilePicker,
+} from '../../../../utils/fileUploads';
 
 const COMMENT_TYPES = ['general', 'suggestion', 'need_improvement', 'approved'];
 const taskChatCache = new Map();
 
 const getCacheKey = (taskId) => `task-${taskId}`;
+
+const createInitialAttachmentUploadState = () => ({
+  active: false,
+  fileCount: 0,
+  uploadedBytes: 0,
+  totalBytes: 0,
+  percent: 0,
+  currentFileName: '',
+  currentFileIndex: 0,
+  currentFileUploadedBytes: 0,
+  currentFileTotalBytes: 0,
+  currentFilePercent: 0,
+});
+
+const getUploadBytesTotal = (files = []) =>
+  files.reduce((sum, file) => sum + Math.max(Number(file?.size) || 0, 0), 0);
+
+const toUploadPercent = (loaded = 0, total = 0) => {
+  if (!total) return 0;
+  return Math.min(100, Math.round((loaded * 100) / total));
+};
+
+const formatUploadSize = (bytes = 0) => {
+  const safeBytes = Number.isFinite(bytes) ? Math.max(bytes, 0) : 0;
+  if (safeBytes < 1024) return `${safeBytes} B`;
+
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = safeBytes / 1024;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const decimals = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+};
+
+const buildAttachmentUploadState = (files = []) => {
+  const firstFile = files[0] || null;
+  const totalBytes = getUploadBytesTotal(files);
+  const currentFileTotalBytes = Math.max(Number(firstFile?.size) || 0, 0);
+
+  return {
+    ...createInitialAttachmentUploadState(),
+    active: files.length > 0,
+    fileCount: files.length,
+    totalBytes,
+    currentFileName: firstFile ? getAttachmentDisplayName(firstFile) : '',
+    currentFileIndex: firstFile ? 1 : 0,
+    currentFileTotalBytes,
+  };
+};
+
+function TaskAttachmentUploadStatus({ uploadState }) {
+  if (!uploadState?.active) return null;
+
+  const uploadLabel = uploadState.fileCount === 1 ? 'file' : 'items';
+  const currentFileLine = [
+    uploadState.currentFileIndex > 0
+      ? `File ${uploadState.currentFileIndex} of ${uploadState.fileCount}`
+      : '',
+    `${formatUploadSize(uploadState.currentFileUploadedBytes)} of ${formatUploadSize(uploadState.currentFileTotalBytes)}`,
+    uploadState.currentFileTotalBytes ? `${uploadState.currentFilePercent}%` : '',
+  ]
+    .filter(Boolean)
+    .join(' • ');
+
+  return (
+    <div className="task-chat-upload-status" role="status" aria-live="polite">
+      <div className="task-chat-upload-status-header">
+        <div className="task-chat-upload-status-copy">
+          <strong>Uploading {uploadState.fileCount} {uploadLabel}</strong>
+          <span>
+            {formatUploadSize(uploadState.uploadedBytes)} of {formatUploadSize(uploadState.totalBytes)} uploaded
+          </span>
+        </div>
+        <div className="task-chat-upload-status-percent">{uploadState.percent}%</div>
+      </div>
+      <div className="task-chat-upload-status-bar" aria-hidden="true">
+        <span style={{ width: `${uploadState.percent}%` }} />
+      </div>
+      <div className="task-chat-upload-status-file">
+        <span>{uploadState.currentFileName || 'Preparing upload...'}</span>
+        <small>{currentFileLine}</small>
+      </div>
+    </div>
+  );
+}
 
 const TaskChatPanel = ({ task, isOpen, onClose }) => {
   const { showAlert } = useCustomDialogs();
@@ -18,9 +114,12 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
   const [seenBy, setSeenBy] = useState([]);
   const [commentType, setCommentType] = useState('general');
   const [commentText, setCommentText] = useState('');
+  const [pendingAttachments, setPendingAttachments] = useState([]);
   const [loadingChat, setLoadingChat] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [sending, setSending] = useState(false);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [attachmentUploadState, setAttachmentUploadState] = useState(createInitialAttachmentUploadState);
   const [chatLoaded, setChatLoaded] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
@@ -108,6 +207,14 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
     setActiveTab('chat');
     setCommentText('');
     setCommentType('general');
+    setPendingAttachments([]);
+    setUploadingAttachment(false);
+    setAttachmentUploadState(createInitialAttachmentUploadState());
+    setComments([]);
+    setHistory([]);
+    setSeenBy([]);
+    setChatLoaded(false);
+    setHistoryLoaded(false);
 
     const cacheEntry = taskChatCache.get(getCacheKey(taskId));
     const hasCache = applyCachedState(cacheEntry);
@@ -181,10 +288,12 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
 
   const sendComment = async () => {
     const value = commentText.trim();
-    if (!taskId || !value || sending) return;
+    if (!taskId || sending || (!value && pendingAttachments.length === 0)) return;
     setSending(true);
     try {
-      const response = await taskAPI.addComment(taskId, value, false, commentType);
+      const response = await taskAPI.addComment(taskId, value, false, commentType, {
+        attachments: pendingAttachments,
+      });
       const nextComment = response?.comment;
       if (nextComment) {
         const nextSeenBy = seenBy.some((entry) => entry.id === nextComment.user?.id)
@@ -210,12 +319,67 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
         setSeenBy(nextSeenBy);
       }
       setCommentText('');
+      setPendingAttachments([]);
       void loadChat({ silent: true });
     } catch (error) {
       await showAlert(error?.response?.data?.detail || 'Failed to send comment', { title: 'Error' });
     } finally {
       setSending(false);
     }
+  };
+
+  const handleAttachmentSelect = async (selectedFiles) => {
+    const files = Array.from(selectedFiles || []);
+    if (!files.length) return;
+    const initialUploadState = buildAttachmentUploadState(files);
+    setUploadingAttachment(true);
+    setAttachmentUploadState(initialUploadState);
+    try {
+      const response = await fileAPI.uploadFiles(files, {
+        onProgress: (_percent, metrics = {}) => {
+          setAttachmentUploadState((prev) => {
+            const totalBytes = prev.totalBytes || initialUploadState.totalBytes;
+            const uploadedBytes = totalBytes
+              ? Math.min(Math.max(Number(metrics.loaded) || 0, 0), totalBytes)
+              : 0;
+            return {
+              ...prev,
+              active: true,
+              uploadedBytes,
+              percent: toUploadPercent(uploadedBytes, totalBytes),
+            };
+          });
+        },
+        onFileProgress: (metrics = {}) => {
+          const currentFileTotalBytes = Math.max(Number(metrics.file?.size) || Number(metrics.total) || 0, 0);
+          const currentFileUploadedBytes = currentFileTotalBytes
+            ? Math.min(Math.max(Number(metrics.loaded) || 0, 0), currentFileTotalBytes)
+            : 0;
+          setAttachmentUploadState((prev) => ({
+            ...prev,
+            active: true,
+            currentFileName: metrics.file ? getAttachmentDisplayName(metrics.file) : prev.currentFileName,
+            currentFileIndex: Number.isFinite(metrics.fileIndex) ? metrics.fileIndex + 1 : prev.currentFileIndex,
+            currentFileUploadedBytes,
+            currentFileTotalBytes,
+            currentFilePercent: toUploadPercent(currentFileUploadedBytes, currentFileTotalBytes),
+          }));
+        },
+      });
+      setPendingAttachments((prev) => mergeUniqueAttachments(prev, response?.data || []));
+    } catch (error) {
+      await showAlert(error?.response?.data?.detail || 'Failed to upload attachment', { title: 'Upload Failed' });
+    } finally {
+      setUploadingAttachment(false);
+      setAttachmentUploadState(createInitialAttachmentUploadState());
+    }
+  };
+
+  const openAttachmentPickerForTaskChat = (mode) => {
+    openSystemFilePicker({
+      mode,
+      onSelect: handleAttachmentSelect,
+    });
   };
 
   if (!isOpen || !task) return null;
@@ -321,7 +485,12 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
                       <span>{formatDateTimeIndia(item.createdAt)}</span>
                       <span className="chat-tag">{item.commentType || 'general'}</span>
                     </div>
-                    <p>{item.comment}</p>
+                    {item.comment ? <p>{item.comment}</p> : null}
+                    {!!item.attachments?.length && (
+                      <div className="task-chat-comment-attachments">
+                        <ChatAttachmentGallery attachments={item.attachments} />
+                      </div>
+                    )}
                   </div>
                 ))}
                 <div ref={commentsEndRef} />
@@ -347,25 +516,99 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
 
         {!isMinimized && activeTab === 'chat' && (
           <div className="task-chat-input">
-            <select value={commentType} onChange={(e) => setCommentType(e.target.value)}>
-              {COMMENT_TYPES.map((ct) => (
-                <option key={ct} value={ct}>{ct}</option>
-              ))}
-            </select>
-            <input
-              value={commentText}
-              onChange={(e) => setCommentText(e.target.value)}
-              placeholder="Write a comment..."
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  void sendComment();
-                }
-              }}
-            />
-            <button onClick={sendComment} disabled={sending || !commentText.trim()}>
-              {sending ? 'Sending...' : 'Send'}
-            </button>
+            <div className="task-chat-input-toolbar">
+              <select value={commentType} onChange={(e) => setCommentType(e.target.value)}>
+                {COMMENT_TYPES.map((ct) => (
+                  <option key={ct} value={ct}>{ct}</option>
+                ))}
+              </select>
+            </div>
+            <TaskAttachmentUploadStatus uploadState={attachmentUploadState} />
+            {!!pendingAttachments.length && (
+              <div className="task-chat-attachment-strip">
+                {pendingAttachments.map((attachment, index) => (
+                  <div
+                    key={`${attachment.path || attachment.url || attachment.filename || attachment.originalName}-${index}`}
+                    className="task-chat-attachment-pill"
+                  >
+                    <span>{getAttachmentDisplayName(attachment)}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPendingAttachments((prev) => prev.filter((_, attachmentIndex) => attachmentIndex !== index))
+                      }
+                    >
+                      x
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="task-chat-composer-shell">
+              <button
+                type="button"
+                className="task-chat-tool-btn"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  openAttachmentPickerForTaskChat('files');
+                }}
+                title="Attach files"
+                disabled={uploadingAttachment}
+              >
+                +
+              </button>
+              <button
+                type="button"
+                className="task-chat-tool-btn"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  openAttachmentPickerForTaskChat('folder');
+                }}
+                title="Attach folder"
+                disabled={uploadingAttachment}
+              >
+                <svg
+                  className="task-chat-tool-icon"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path
+                    d="M3.75 6.75A2.25 2.25 0 0 1 6 4.5h3.12a2.25 2.25 0 0 1 1.59.66l1.35 1.34H18A2.25 2.25 0 0 1 20.25 8.75v7.5A2.25 2.25 0 0 1 18 18.5H6a2.25 2.25 0 0 1-2.25-2.25v-9.5Z"
+                    fill="currentColor"
+                    opacity="0.22"
+                  />
+                  <path
+                    d="M3.75 8.5A2 2 0 0 1 5.75 6.5h5.38l1.32 1.3c.23.24.55.37.88.37h5.42a1.5 1.5 0 0 1 1.45 1.89l-1.16 4.32a2 2 0 0 1-1.93 1.48H5.95a2 2 0 0 1-1.98-1.74L3.75 8.5Z"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              <input
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                placeholder="Write a comment..."
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void sendComment();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="task-chat-send-btn"
+                onClick={sendComment}
+                disabled={sending || uploadingAttachment || (!commentText.trim() && pendingAttachments.length === 0)}
+              >
+                {sending ? 'Sending...' : 'Send'}
+              </button>
+            </div>
           </div>
         )}
 

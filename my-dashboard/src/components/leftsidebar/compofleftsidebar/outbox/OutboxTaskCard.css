@@ -822,12 +822,33 @@
   padding: 2px 0;
 }
 
+.outbox-meta-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  flex: 1;
+}
+
 .outbox-label {
   color: #9fb1c9;
 }
 
 .outbox-value {
+  margin: 0;
   color: #e5e7eb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.outbox-subvalue {
+  margin: 0;
+  color: #9fb1c9;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .outbox-task-badges {

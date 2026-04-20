@@ -7,7 +7,7 @@ import {
   openSystemFilePicker,
 } from "../../../../utils/fileUploads";
 
-export default function AttachmentBox({ attachments = [], onChange }) {
+export default function AttachmentBox({ attachments = [], onChange, disabled = false }) {
   const { showAlert } = useCustomDialogs();
   const [files, setFiles] = useState(attachments);
   const [progress, setProgress] = useState(0);
@@ -26,6 +26,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
   };
 
   const handleFiles = (selectedFiles) => {
+    if (disabled) return;
     const fileArray = Array.from(selectedFiles);
     const updatedFiles = mergeUniqueAttachments(files, fileArray);
     setFiles(updatedFiles);
@@ -34,6 +35,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
 
   const handleDrop = (e) => {
     e.preventDefault();
+    if (disabled) return;
     handleFiles(e.dataTransfer.files);
   };
 
@@ -41,10 +43,12 @@ export default function AttachmentBox({ attachments = [], onChange }) {
     if (e.target.closest(".assign-attachment-actions")) {
       return;
     }
+    if (disabled) return;
     openPicker("files");
   };
 
   const openPicker = (mode) => {
+    if (disabled) return;
     openSystemFilePicker({
       mode,
       onSelect: handleFiles,
@@ -52,6 +56,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
   };
 
   const removeFile = (index) => {
+    if (disabled) return;
     const updated = [...files];
     updated.splice(index, 1);
     setFiles(updated);
@@ -102,6 +107,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
           <button
             type="button"
             className="assign-attachment-action-btn"
+            disabled={disabled}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -113,6 +119,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
           <button
             type="button"
             className="assign-attachment-action-btn"
+            disabled={disabled}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -137,6 +144,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
                 </span>
                 <button 
                   className="remove-file-btn" 
+                  disabled={disabled}
                   onClick={(e) => {
                     e.stopPropagation();
                     removeFile(index);
@@ -151,7 +159,7 @@ export default function AttachmentBox({ attachments = [], onChange }) {
           <button 
             className="upload-files-btn" 
             onClick={uploadFiles} 
-            disabled={uploading || !files.some((file) => file instanceof File)}
+            disabled={disabled || uploading || !files.some((file) => file instanceof File)}
           >
             {uploading ? `Uploading... ${progress}%` : "📤 Upload Files"}
           </button>

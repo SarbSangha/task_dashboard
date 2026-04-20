@@ -45,9 +45,15 @@ const OutboxTaskCard = ({
     receivedAt,
     startedAt,
     completedAt,
+    creator,
+    createdByName,
+    createdByDepartment,
     createdBy,
     currentHolder,
     completedBy,
+    assignedTo,
+    forwardHistory,
+    currentStageAssigneeNames,
     trackingInfo,
     journeyCount
   } = task;
@@ -136,6 +142,57 @@ const OutboxTaskCard = ({
     if (type === 'submission_result') return 'Submission Result';
     return 'Task';
   })();
+
+  const formatPeoplePreview = (items = []) => {
+    const cleaned = items
+      .map((value) => `${value || ''}`.trim())
+      .filter(Boolean);
+
+    if (!cleaned.length) return '';
+    if (cleaned.length <= 2) return cleaned.join(', ');
+    return `${cleaned.slice(0, 2).join(', ')} +${cleaned.length - 2}`;
+  };
+
+  const formatDepartmentPreview = (items = []) => {
+    const unique = Array.from(
+      new Set(
+        items
+          .map((value) => `${value || ''}`.trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (!unique.length) return '';
+    return unique.join(', ');
+  };
+
+  const latestForward = Array.isArray(forwardHistory)
+    ? [...forwardHistory].reverse().find((entry) => entry?.toUser || entry?.toDepartment) || null
+    : null;
+  const assignedPeople = Array.isArray(assignedTo) ? assignedTo : [];
+  const stagedPeople = Array.isArray(currentStageAssigneeNames) ? currentStageAssigneeNames : [];
+
+  const senderPrimary = `${createdByName || creator?.name || fromDepartment || 'Unknown sender'}`.trim();
+  const senderSecondary = `${fromDepartment || createdByDepartment || creator?.department || ''}`.trim();
+
+  const receiverPrimary = (
+    formatPeoplePreview(assignedPeople.map((person) => person?.name)) ||
+    `${latestForward?.toUser || ''}`.trim() ||
+    formatPeoplePreview(stagedPeople) ||
+    `${toDepartment || 'Pending receiver'}`
+  ).trim();
+  const receiverSecondary = (
+    formatDepartmentPreview(assignedPeople.map((person) => person?.department)) ||
+    `${latestForward?.toDepartment || ''}`.trim() ||
+    `${toDepartment || ''}`.trim()
+  ).trim();
+
+  const senderSecondaryText = senderSecondary && senderSecondary.toLowerCase() !== senderPrimary.toLowerCase()
+    ? senderSecondary
+    : '';
+  const receiverSecondaryText = receiverSecondary && receiverSecondary.toLowerCase() !== receiverPrimary.toLowerCase()
+    ? receiverSecondary
+    : '';
   const forceDownload = (file, filename) => {
     const downloadUrl = buildFileDownloadUrl(file, filename);
     const link = document.createElement('a');
@@ -257,28 +314,34 @@ const OutboxTaskCard = ({
         <div className="outbox-task-meta">
           <div className="meta-item">
             <span className="meta-icon">📤</span>
-            <div>
+            <div className="outbox-meta-copy">
               <span className="outbox-label">From</span>
-              <p className="outbox-value">{fromDepartment || 'Me'}</p>
+              <p className="outbox-value" title={senderPrimary}>{senderPrimary}</p>
+              {senderSecondaryText ? (
+                <p className="outbox-subvalue" title={senderSecondaryText}>{senderSecondaryText}</p>
+              ) : null}
             </div>
           </div>
           <div className="meta-item">
             <span className="meta-icon">📥</span>
-            <div>
+            <div className="outbox-meta-copy">
               <span className="outbox-label">To</span>
-              <p className="outbox-value">{toDepartment}</p>
+              <p className="outbox-value" title={receiverPrimary}>{receiverPrimary}</p>
+              {receiverSecondaryText ? (
+                <p className="outbox-subvalue" title={receiverSecondaryText}>{receiverSecondaryText}</p>
+              ) : null}
             </div>
           </div>
           <div className="meta-item">
             <span className="meta-icon">📅</span>
-            <div>
+            <div className="outbox-meta-copy">
               <span className="outbox-label">Sent</span>
               <p className="outbox-value">{formatDate(sentAt || createdAt)}</p>
             </div>
           </div>
           <div className="meta-item">
             <span className="meta-icon">⏰</span>
-            <div>
+            <div className="outbox-meta-copy">
               <span className="outbox-label">Time</span>
               <p className="outbox-value">{formatTime(sentAt || createdAt)}</p>
             </div>
@@ -480,9 +543,31 @@ OutboxTaskCard.propTypes = {
     receivedAt: PropTypes.string,
     startedAt: PropTypes.string,
     completedAt: PropTypes.string,
+    creator: PropTypes.shape({
+      id: PropTypes.number,
+      name: PropTypes.string,
+      department: PropTypes.string,
+    }),
+    createdByName: PropTypes.string,
+    createdByDepartment: PropTypes.string,
     createdBy: PropTypes.number,
     currentHolder: PropTypes.number,
     completedBy: PropTypes.number,
+    assignedTo: PropTypes.arrayOf(PropTypes.shape({
+      id: PropTypes.number,
+      name: PropTypes.string,
+      department: PropTypes.string,
+      role: PropTypes.string,
+    })),
+    forwardHistory: PropTypes.arrayOf(PropTypes.shape({
+      id: PropTypes.number,
+      fromUser: PropTypes.string,
+      toUser: PropTypes.string,
+      fromDepartment: PropTypes.string,
+      toDepartment: PropTypes.string,
+      createdAt: PropTypes.string,
+    })),
+    currentStageAssigneeNames: PropTypes.arrayOf(PropTypes.string),
     trackingInfo: PropTypes.object,
     journeyCount: PropTypes.number,
   }).isRequired,

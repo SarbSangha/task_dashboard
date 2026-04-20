@@ -1,5 +1,5 @@
 // src/components/leftsidebar/Leftside.jsx (FunctionalMenu)
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import './Leftside.css';
 import TrackingButton from './compofleftsidebar/tracking/TrackingButton';
@@ -31,13 +31,16 @@ const PANEL_TO_ACTIVE = {
   'create-task': 'create-task',
 };
 
+const getPanelFromPath = (pathname = '') => pathname.replace(/^\/dashboard\/?/, '').split('/')[0] || '';
+
 const FunctionalMenu = () => {
   const { can } = usePermissions();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname, search } = location;
   const [searchParams] = useSearchParams();
 
-  const panel = pathname.replace(/^\/dashboard\/?/, '').split('/')[0] || '';
+  const panel = getPanelFromPath(pathname);
 
   const isInboxPanelOpen = panel === 'inbox';
   const isOutboxModalOpen = panel === 'outbox';
@@ -53,13 +56,50 @@ const FunctionalMenu = () => {
   const workspaceInitialTab = searchParams.get('tab') || 'overview';
   const [editingTask, setEditingTask] = useState(null);
   const [persistedMinimizedPanels, setPersistedMinimizedPanels] = useState({});
+  const assignModalRef = useRef(null);
+  const previousRouteRef = useRef({ pathname, search });
+  const routeInterceptionRef = useRef(false);
 
   const toggleCollapse = () => {
     setIsCollapsed(!isCollapsed);
   };
 
-  const goTo = (segment) => navigate(`/dashboard/${segment}`);
-  const goHome = () => navigate('/dashboard');
+  const confirmLeaveCreateTask = async () => {
+    if (panel !== 'create-task') {
+      return true;
+    }
+
+    if (assignModalRef.current?.consumeNavigationAllowance?.()) {
+      setEditingTask(null);
+      return true;
+    }
+
+    const canLeaveCreateTask = await assignModalRef.current?.confirmBeforeExit?.();
+    if (!canLeaveCreateTask) {
+      return false;
+    }
+
+    setEditingTask(null);
+    return true;
+  };
+
+  const goTo = async (segment) => {
+    if (segment !== 'create-task') {
+      const canLeave = await confirmLeaveCreateTask();
+      if (!canLeave) {
+        return;
+      }
+    }
+
+    navigate(`/dashboard/${segment}`);
+  };
+  const goHome = async () => {
+    const canLeave = await confirmLeaveCreateTask();
+    if (!canLeave) {
+      return;
+    }
+    navigate('/dashboard');
+  };
   const isPanelVisible = (panelKey) => panel === panelKey || !!persistedMinimizedPanels[panelKey];
   const setPanelMinimized = (panelKey, isMinimized) => {
     setPersistedMinimizedPanels((prev) => {
@@ -77,13 +117,20 @@ const FunctionalMenu = () => {
       };
     });
   };
-  const activatePanel = (segment, search = '') => {
+  const activatePanel = async (segment, search = '') => {
+    if (segment !== 'create-task') {
+      const canLeave = await confirmLeaveCreateTask();
+      if (!canLeave) {
+        return;
+      }
+    }
+
     navigate(`/dashboard/${segment}${search}`);
   };
   const closePanel = (panelKey) => {
     setPanelMinimized(panelKey, false);
     if (panel === panelKey) {
-      goHome();
+      void goHome();
     }
   };
 
@@ -115,8 +162,18 @@ const FunctionalMenu = () => {
     setEditingTask(task);
     goTo('create-task');
   };
+  const handleEditTaskFromTracking = (task) => {
+    setEditingTask(task);
+    goTo('create-task');
+  };
   
-  const openWorkSpace = () => navigate('/dashboard/workspace?tab=overview');
+  const openWorkSpace = async () => {
+    const canLeave = await confirmLeaveCreateTask();
+    if (!canLeave) {
+      return;
+    }
+    navigate('/dashboard/workspace?tab=overview');
+  };
   
   const closeWorkSpace = () => closePanel('workspace');
 
@@ -141,6 +198,55 @@ const FunctionalMenu = () => {
     goTo('admin-queue');
   };
   const closeAdminQueue = () => closePanel('admin-queue');
+
+  useEffect(() => {
+    const previousRoute = previousRouteRef.current;
+    const currentRoute = { pathname, search };
+
+    if (routeInterceptionRef.current) {
+      previousRouteRef.current = currentRoute;
+      return;
+    }
+
+    const previousPanel = getPanelFromPath(previousRoute?.pathname || '');
+    const currentPanel = getPanelFromPath(pathname);
+
+    if (previousPanel === 'create-task' && currentPanel !== 'create-task') {
+      const modalApi = assignModalRef.current;
+      if (!modalApi) {
+        previousRouteRef.current = currentRoute;
+        return;
+      }
+
+      if (modalApi.consumeNavigationAllowance?.()) {
+        previousRouteRef.current = currentRoute;
+        return;
+      }
+
+      if (!modalApi.hasUnsavedChanges?.()) {
+        previousRouteRef.current = currentRoute;
+        return;
+      }
+
+      routeInterceptionRef.current = true;
+      navigate(`${previousRoute.pathname}${previousRoute.search || ''}`, { replace: true });
+
+      Promise.resolve().then(async () => {
+        const canLeave = await modalApi.confirmBeforeExit?.();
+        if (canLeave) {
+          navigate(`${currentRoute.pathname}${currentRoute.search || ''}`, { replace: true });
+          previousRouteRef.current = currentRoute;
+        } else {
+          previousRouteRef.current = previousRoute;
+        }
+        routeInterceptionRef.current = false;
+      });
+
+      return;
+    }
+
+    previousRouteRef.current = currentRoute;
+  }, [navigate, pathname, search]);
 
   return (
     <>
@@ -207,6 +313,7 @@ const FunctionalMenu = () => {
 
       {/* Assign Task Modal */}
       <AssignTaskModal
+        ref={assignModalRef}
         isOpen={isPanelVisible('create-task')}
         onClose={closeAssignModal}
         editingTask={editingTask}
@@ -227,6 +334,7 @@ const FunctionalMenu = () => {
       <TrackingPanel
         isOpen={isPanelVisible('tracking')}
         onClose={closeTrackingPanel}
+        onEditTask={handleEditTaskFromTracking}
         onMinimizedChange={(isMinimized) => setPanelMinimized('tracking', isMinimized)}
         onActivate={() => activatePanel('tracking')}
       />

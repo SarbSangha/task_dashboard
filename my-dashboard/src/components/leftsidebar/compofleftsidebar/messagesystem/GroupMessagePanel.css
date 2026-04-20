@@ -239,6 +239,46 @@
   min-height: 0;
 }
 
+.group-message-root .group-chat-thread {
+  padding: 20px 22px 24px;
+  scroll-padding-block-end: 24px;
+}
+
+.group-message-root .group-chat-thread-end {
+  height: 40px;
+  flex-shrink: 0;
+}
+
+.group-message-root .group-chat-row {
+  width: fit-content;
+  max-width: min(82%, 860px);
+  min-width: 0;
+}
+
+.group-message-root .group-chat-row.theirs {
+  margin-left: 4px;
+}
+
+.group-message-root .group-message-avatar {
+  margin-bottom: 2px;
+}
+
+.group-message-root .group-message-bubble {
+  min-width: 0;
+  padding: 12px 14px 10px;
+  overflow: visible;
+}
+
+.group-message-root .group-message-sender {
+  line-height: 1.3;
+  padding-left: 1px;
+}
+
+.group-message-root .group-message-meta {
+  margin-top: 4px;
+  line-height: 1.2;
+}
+
 .group-chat-selection-toggle,
 .group-chat-selection-btn {
   padding: 9px 14px;
@@ -490,6 +530,79 @@
   font-size: 12px;
 }
 
+.group-chat-upload-status {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(45, 212, 191, 0.2);
+  background:
+    linear-gradient(180deg, rgba(11, 20, 31, 0.98) 0%, rgba(13, 27, 42, 0.96) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.group-chat-upload-status-header,
+.group-chat-upload-status-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.group-chat-upload-status-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.group-chat-upload-status-copy strong,
+.group-chat-upload-status-file span {
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.group-chat-upload-status-copy span,
+.group-chat-upload-status-file small {
+  color: rgba(226, 232, 240, 0.76);
+  font-size: 12px;
+}
+
+.group-chat-upload-status-file span,
+.group-chat-upload-status-file small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-chat-upload-status-percent {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.14);
+  color: #bbf7d0;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.group-chat-upload-status-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.group-chat-upload-status-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #22c55e 0%, #14b8a6 100%);
+  box-shadow: 0 0 16px rgba(20, 184, 166, 0.35);
+}
+
 @media (max-width: 768px) {
   .group-message-panel {
     width: 95vw;
@@ -509,6 +622,12 @@
   .group-chat-selection-bar,
   .message-forward-header,
   .message-forward-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .group-chat-upload-status-header,
+  .group-chat-upload-status-file {
     flex-direction: column;
     align-items: stretch;
   }

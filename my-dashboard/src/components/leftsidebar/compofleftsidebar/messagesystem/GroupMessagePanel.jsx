@@ -29,6 +29,103 @@ const createInitialForwardState = () => ({
   sending: false,
 });
 
+const createInitialAttachmentUploadState = () => ({
+  active: false,
+  fileCount: 0,
+  uploadedBytes: 0,
+  totalBytes: 0,
+  percent: 0,
+  currentFileName: '',
+  currentFileIndex: 0,
+  currentFileUploadedBytes: 0,
+  currentFileTotalBytes: 0,
+  currentFilePercent: 0,
+});
+
+const getUploadBytesTotal = (files = []) =>
+  files.reduce((sum, file) => sum + Math.max(Number(file?.size) || 0, 0), 0);
+
+const toUploadPercent = (loaded = 0, total = 0) => {
+  if (!total) return 0;
+  return Math.min(100, Math.round((loaded * 100) / total));
+};
+
+const formatUploadSize = (bytes = 0) => {
+  const safeBytes = Number.isFinite(bytes) ? Math.max(bytes, 0) : 0;
+  if (safeBytes < 1024) return `${safeBytes} B`;
+
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = safeBytes / 1024;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const decimals = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+};
+
+const buildAttachmentUploadState = (files = []) => {
+  const firstFile = files[0] || null;
+  const totalBytes = getUploadBytesTotal(files);
+  const currentFileTotalBytes = Math.max(Number(firstFile?.size) || 0, 0);
+
+  return {
+    ...createInitialAttachmentUploadState(),
+    active: files.length > 0,
+    fileCount: files.length,
+    totalBytes,
+    currentFileName: firstFile ? getAttachmentDisplayName(firstFile) : '',
+    currentFileIndex: firstFile ? 1 : 0,
+    currentFileTotalBytes,
+  };
+};
+
+const createInitialComposerDraft = () => ({
+  text: '',
+  attachments: [],
+  uploading: false,
+  uploadState: createInitialAttachmentUploadState(),
+});
+
+function AttachmentUploadStatus({ uploadState }) {
+  if (!uploadState?.active) return null;
+
+  const uploadLabel = uploadState.fileCount === 1 ? 'file' : 'items';
+  const currentFileLine = [
+    uploadState.currentFileIndex > 0
+      ? `File ${uploadState.currentFileIndex} of ${uploadState.fileCount}`
+      : '',
+    `${formatUploadSize(uploadState.currentFileUploadedBytes)} of ${formatUploadSize(uploadState.currentFileTotalBytes)}`,
+    uploadState.currentFileTotalBytes ? `${uploadState.currentFilePercent}%` : '',
+  ]
+    .filter(Boolean)
+    .join(' • ');
+
+  return (
+    <div className="group-chat-upload-status" role="status" aria-live="polite">
+      <div className="group-chat-upload-status-header">
+        <div className="group-chat-upload-status-copy">
+          <strong>Uploading {uploadState.fileCount} {uploadLabel}</strong>
+          <span>
+            {formatUploadSize(uploadState.uploadedBytes)} of {formatUploadSize(uploadState.totalBytes)} uploaded
+          </span>
+        </div>
+        <div className="group-chat-upload-status-percent">{uploadState.percent}%</div>
+      </div>
+      <div className="group-chat-upload-status-bar" aria-hidden="true">
+        <span style={{ width: `${uploadState.percent}%` }} />
+      </div>
+      <div className="group-chat-upload-status-file">
+        <span>{uploadState.currentFileName || 'Preparing upload...'}</span>
+        <small>{currentFileLine}</small>
+      </div>
+    </div>
+  );
+}
+
 const appendMessageById = (rows = [], nextMessage) => {
   if (!nextMessage?.id) return rows;
   if (rows.some((row) => row.id === nextMessage.id)) return rows;
@@ -37,17 +134,47 @@ const appendMessageById = (rows = [], nextMessage) => {
 
 const replaceMessageById = (rows = [], messageId, nextMessage) => {
   if (!messageId || !nextMessage) return rows;
+  const nextMessageId = nextMessage?.id;
   let replaced = false;
-  const nextRows = rows.map((row) => {
-    if (row?.id !== messageId) return row;
+  const nextRows = rows.reduce((acc, row) => {
+    if (!row) return acc;
+    if (row?.id === nextMessageId && row?.id !== messageId) {
+      return acc;
+    }
+    if (row?.id !== messageId) {
+      acc.push(row);
+      return acc;
+    }
     replaced = true;
-    return nextMessage;
-  });
+    acc.push(nextMessage);
+    return acc;
+  }, []);
   return replaced ? nextRows : appendMessageById(rows, nextMessage);
 };
 
 const removeMessageById = (rows = [], messageId) =>
   rows.filter((row) => row?.id !== messageId);
+
+const scrollThreadEndIntoView = (threadEndRef) => {
+  let firstFrameId = 0;
+  let secondFrameId = 0;
+  let timeoutId = 0;
+
+  firstFrameId = window.requestAnimationFrame(() => {
+    secondFrameId = window.requestAnimationFrame(() => {
+      threadEndRef.current?.scrollIntoView({ block: 'end' });
+      timeoutId = window.setTimeout(() => {
+        threadEndRef.current?.scrollIntoView({ block: 'end' });
+      }, 120);
+    });
+  });
+
+  return () => {
+    if (firstFrameId) window.cancelAnimationFrame(firstFrameId);
+    if (secondFrameId) window.cancelAnimationFrame(secondFrameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
+};
 
 const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMinimizedChange, onActivate }) => {
   const { user } = useAuth();
@@ -78,7 +205,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const [newMessage, setNewMessage] = useState('');
   const [sendingMessage, setSendingMessage] = useState(false);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [attachmentUploadState, setAttachmentUploadState] = useState(createInitialAttachmentUploadState);
   const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [groupComposerDrafts, setGroupComposerDrafts] = useState({});
   const [showAddMemberPanel, setShowAddMemberPanel] = useState(false);
   const [showGroupMenu, setShowGroupMenu] = useState(false);
   const [addMemberSelection, setAddMemberSelection] = useState([]);
@@ -88,7 +217,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const [selectedDirectMessageIds, setSelectedDirectMessageIds] = useState([]);
   const [forwardState, setForwardState] = useState(createInitialForwardState);
   const messageThreadRef = useRef(null);
+  const messageThreadEndRef = useRef(null);
   const directThreadRef = useRef(null);
+  const directThreadEndRef = useRef(null);
   const selectedGroupIdRef = useRef(null);
   const groupMenuRef = useRef(null);
   const [directUsers, setDirectUsers] = useState([]);
@@ -111,7 +242,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const [directNewMessage, setDirectNewMessage] = useState('');
   const [sendingDirectMessage, setSendingDirectMessage] = useState(false);
   const [uploadingDirectAttachment, setUploadingDirectAttachment] = useState(false);
+  const [directAttachmentUploadState, setDirectAttachmentUploadState] = useState(createInitialAttachmentUploadState);
   const [directPendingAttachments, setDirectPendingAttachments] = useState([]);
+  const [directComposerDrafts, setDirectComposerDrafts] = useState({});
   const selectedDirectUserIdRef = useRef(null);
   const activeTabRef = useRef(activeTab);
   const [isMinimized, setIsMinimized] = useState(false);
@@ -127,16 +260,100 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const groupMessagesRequestRef = useRef({ groupId: null, promise: null });
   const directMessagesRequestRef = useRef({ userId: null, promise: null });
   const hasBootstrappedDirectRef = useRef(false);
+  const previousSelectedGroupIdRef = useRef(null);
+  const previousSelectedDirectUserIdRef = useRef(null);
   const minimizedWindowStyle = useMinimizedWindowStack('group-message-panel', variant === 'overlay' && isOpen && isMinimized);
   isActiveRef.current = isActive;
   selectedGroupIdRef.current = selectedGroupId;
   selectedDirectUserIdRef.current = selectedDirectUserId;
   activeTabRef.current = activeTab;
 
+  const updateGroupComposerDraft = (groupId, updater) => {
+    if (!groupId) return;
+    setGroupComposerDrafts((prev) => {
+      const currentDraft = prev[groupId] || createInitialComposerDraft();
+      const nextDraft = typeof updater === 'function'
+        ? updater(currentDraft)
+        : { ...currentDraft, ...updater };
+      return {
+        ...prev,
+        [groupId]: nextDraft,
+      };
+    });
+  };
+
+  const updateDirectComposerDraft = (userId, updater) => {
+    if (!userId) return;
+    setDirectComposerDrafts((prev) => {
+      const currentDraft = prev[userId] || createInitialComposerDraft();
+      const nextDraft = typeof updater === 'function'
+        ? updater(currentDraft)
+        : { ...currentDraft, ...updater };
+      return {
+        ...prev,
+        [userId]: nextDraft,
+      };
+    });
+  };
+
+  const hydrateGroupComposer = (draft = createInitialComposerDraft()) => {
+    setNewMessage(draft.text || '');
+    setPendingAttachments(Array.isArray(draft.attachments) ? draft.attachments : []);
+    setUploadingAttachment(Boolean(draft.uploading));
+    setAttachmentUploadState(draft.uploadState || createInitialAttachmentUploadState());
+  };
+
+  const hydrateDirectComposer = (draft = createInitialComposerDraft()) => {
+    setDirectNewMessage(draft.text || '');
+    setDirectPendingAttachments(Array.isArray(draft.attachments) ? draft.attachments : []);
+    setUploadingDirectAttachment(Boolean(draft.uploading));
+    setDirectAttachmentUploadState(draft.uploadState || createInitialAttachmentUploadState());
+  };
+
   useEffect(() => {
     if (variant !== 'overlay') return;
     onMinimizedChange?.(isOpen && isMinimized);
   }, [isMinimized, isOpen, onMinimizedChange, variant]);
+
+  useEffect(() => {
+    const previousGroupId = previousSelectedGroupIdRef.current;
+    if (previousGroupId && previousGroupId !== selectedGroupId) {
+      updateGroupComposerDraft(previousGroupId, {
+        text: newMessage,
+        attachments: pendingAttachments,
+        uploading: uploadingAttachment,
+        uploadState: attachmentUploadState,
+      });
+    }
+
+    if (selectedGroupId) {
+      hydrateGroupComposer(groupComposerDrafts[selectedGroupId] || createInitialComposerDraft());
+    } else {
+      hydrateGroupComposer(createInitialComposerDraft());
+    }
+
+    previousSelectedGroupIdRef.current = selectedGroupId;
+  }, [selectedGroupId]);
+
+  useEffect(() => {
+    const previousUserId = previousSelectedDirectUserIdRef.current;
+    if (previousUserId && previousUserId !== selectedDirectUserId) {
+      updateDirectComposerDraft(previousUserId, {
+        text: directNewMessage,
+        attachments: directPendingAttachments,
+        uploading: uploadingDirectAttachment,
+        uploadState: directAttachmentUploadState,
+      });
+    }
+
+    if (selectedDirectUserId) {
+      hydrateDirectComposer(directComposerDrafts[selectedDirectUserId] || createInitialComposerDraft());
+    } else {
+      hydrateDirectComposer(createInitialComposerDraft());
+    }
+
+    previousSelectedDirectUserIdRef.current = selectedDirectUserId;
+  }, [selectedDirectUserId]);
 
   const cacheKeys = useMemo(() => {
     if (!user?.id) return null;
@@ -716,6 +933,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               cachedAt: prev.cachedAt,
               liveUpdatedAt: Date.now(),
             }));
+            scheduleGroupMessagesRefresh(groupId, 120);
           }
 
           return;
@@ -774,13 +992,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   useEffect(() => {
     if (!isActive || !selectedGroupId) return undefined;
 
-    const frameId = window.requestAnimationFrame(() => {
-      const thread = messageThreadRef.current;
-      if (!thread) return;
-      thread.scrollTop = thread.scrollHeight;
-    });
-
-    return () => window.cancelAnimationFrame(frameId);
+    return scrollThreadEndIntoView(messageThreadEndRef);
   }, [isActive, selectedGroupId, messageItems.length]);
 
   useEffect(() => {
@@ -882,12 +1094,6 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   }, [cacheKeys, isActive, isDirectTabActive, selectedDirectUserId]);
 
   useEffect(() => {
-    if (!isActive) return;
-    setDirectPendingAttachments([]);
-    setDirectNewMessage('');
-  }, [isActive, selectedDirectUserId]);
-
-  useEffect(() => {
     setSelectionMode(null);
     setSelectedGroupMessageIds([]);
     setSelectedDirectMessageIds([]);
@@ -897,13 +1103,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   useEffect(() => {
     if (!isActive || !selectedDirectUserId) return undefined;
 
-    const frameId = window.requestAnimationFrame(() => {
-      const thread = directThreadRef.current;
-      if (!thread) return;
-      thread.scrollTop = thread.scrollHeight;
-    });
-
-    return () => window.cancelAnimationFrame(frameId);
+    return scrollThreadEndIntoView(directThreadEndRef);
   }, [directMessageItems.length, isActive, selectedDirectUserId]);
 
   const toggleSelected = (id) => {
@@ -953,6 +1153,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     setSendingMessage(true);
     setNewMessage('');
     setPendingAttachments([]);
+    updateGroupComposerDraft(selectedGroupId, createInitialComposerDraft());
 
     try {
       await sendGroupMessage({
@@ -963,6 +1164,12 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     } catch (error) {
       setNewMessage(draftMessage);
       setPendingAttachments(draftAttachments);
+      updateGroupComposerDraft(selectedGroupId, {
+        text: draftMessage,
+        attachments: draftAttachments,
+        uploading: false,
+        uploadState: createInitialAttachmentUploadState(),
+      });
       setFeedback(error?.response?.data?.detail || 'Failed to send message.');
     } finally {
       setSendingMessage(false);
@@ -972,30 +1179,182 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const handleAttachmentSelect = async (selectedFiles) => {
     const files = Array.from(selectedFiles || []);
     if (!files.length) return;
+    const targetGroupId = selectedGroupIdRef.current;
+    if (!targetGroupId) return;
+    const initialUploadState = buildAttachmentUploadState(files);
     setUploadingAttachment(true);
+    setAttachmentUploadState(initialUploadState);
+    updateGroupComposerDraft(targetGroupId, {
+      text: newMessage,
+      attachments: pendingAttachments,
+      uploading: true,
+      uploadState: initialUploadState,
+    });
     try {
-      const response = await fileAPI.uploadFiles(files);
-      setPendingAttachments((prev) => mergeUniqueAttachments(prev, response?.data || []));
+      const response = await fileAPI.uploadFiles(files, {
+        onProgress: (_percent, metrics = {}) => {
+          const applyProgress = (prev) => {
+            const totalBytes = prev.totalBytes || initialUploadState.totalBytes;
+            const uploadedBytes = totalBytes
+              ? Math.min(Math.max(Number(metrics.loaded) || 0, 0), totalBytes)
+              : 0;
+            return {
+              ...prev,
+              active: true,
+              uploadedBytes,
+              percent: toUploadPercent(uploadedBytes, totalBytes),
+            };
+          };
+
+          if (selectedGroupIdRef.current === targetGroupId) {
+            setAttachmentUploadState(applyProgress);
+          } else {
+            updateGroupComposerDraft(targetGroupId, (draft) => ({
+              ...draft,
+              uploading: true,
+              uploadState: applyProgress(draft.uploadState || initialUploadState),
+            }));
+          }
+        },
+        onFileProgress: (metrics = {}) => {
+          const currentFileTotalBytes = Math.max(Number(metrics.file?.size) || Number(metrics.total) || 0, 0);
+          const currentFileUploadedBytes = currentFileTotalBytes
+            ? Math.min(Math.max(Number(metrics.loaded) || 0, 0), currentFileTotalBytes)
+            : 0;
+          const applyFileProgress = (prev) => ({
+            ...prev,
+            active: true,
+            currentFileName: metrics.file ? getAttachmentDisplayName(metrics.file) : prev.currentFileName,
+            currentFileIndex: Number.isFinite(metrics.fileIndex) ? metrics.fileIndex + 1 : prev.currentFileIndex,
+            currentFileUploadedBytes,
+            currentFileTotalBytes,
+            currentFilePercent: toUploadPercent(currentFileUploadedBytes, currentFileTotalBytes),
+          });
+
+          if (selectedGroupIdRef.current === targetGroupId) {
+            setAttachmentUploadState(applyFileProgress);
+          } else {
+            updateGroupComposerDraft(targetGroupId, (draft) => ({
+              ...draft,
+              uploading: true,
+              uploadState: applyFileProgress(draft.uploadState || initialUploadState),
+            }));
+          }
+        },
+      });
+      if (selectedGroupIdRef.current === targetGroupId) {
+        setPendingAttachments((prev) => mergeUniqueAttachments(prev, response?.data || []));
+      } else {
+        updateGroupComposerDraft(targetGroupId, (draft) => ({
+          ...draft,
+          attachments: mergeUniqueAttachments(draft.attachments || [], response?.data || []),
+        }));
+      }
       setFeedback('');
     } catch (error) {
       setFeedback(error?.response?.data?.detail || 'Failed to upload attachment.');
     } finally {
-      setUploadingAttachment(false);
+      if (selectedGroupIdRef.current === targetGroupId) {
+        setUploadingAttachment(false);
+        setAttachmentUploadState(createInitialAttachmentUploadState());
+      } else {
+        updateGroupComposerDraft(targetGroupId, (draft) => ({
+          ...draft,
+          uploading: false,
+          uploadState: createInitialAttachmentUploadState(),
+        }));
+      }
     }
   };
 
   const handleDirectAttachmentSelect = async (selectedFiles) => {
     const files = Array.from(selectedFiles || []);
     if (!files.length) return;
+    const targetUserId = selectedDirectUserIdRef.current;
+    if (!targetUserId) return;
+    const initialUploadState = buildAttachmentUploadState(files);
     setUploadingDirectAttachment(true);
+    setDirectAttachmentUploadState(initialUploadState);
+    updateDirectComposerDraft(targetUserId, {
+      text: directNewMessage,
+      attachments: directPendingAttachments,
+      uploading: true,
+      uploadState: initialUploadState,
+    });
     try {
-      const response = await fileAPI.uploadFiles(files);
-      setDirectPendingAttachments((prev) => mergeUniqueAttachments(prev, response?.data || []));
+      const response = await fileAPI.uploadFiles(files, {
+        onProgress: (_percent, metrics = {}) => {
+          const applyProgress = (prev) => {
+            const totalBytes = prev.totalBytes || initialUploadState.totalBytes;
+            const uploadedBytes = totalBytes
+              ? Math.min(Math.max(Number(metrics.loaded) || 0, 0), totalBytes)
+              : 0;
+            return {
+              ...prev,
+              active: true,
+              uploadedBytes,
+              percent: toUploadPercent(uploadedBytes, totalBytes),
+            };
+          };
+
+          if (selectedDirectUserIdRef.current === targetUserId) {
+            setDirectAttachmentUploadState(applyProgress);
+          } else {
+            updateDirectComposerDraft(targetUserId, (draft) => ({
+              ...draft,
+              uploading: true,
+              uploadState: applyProgress(draft.uploadState || initialUploadState),
+            }));
+          }
+        },
+        onFileProgress: (metrics = {}) => {
+          const currentFileTotalBytes = Math.max(Number(metrics.file?.size) || Number(metrics.total) || 0, 0);
+          const currentFileUploadedBytes = currentFileTotalBytes
+            ? Math.min(Math.max(Number(metrics.loaded) || 0, 0), currentFileTotalBytes)
+            : 0;
+          const applyFileProgress = (prev) => ({
+            ...prev,
+            active: true,
+            currentFileName: metrics.file ? getAttachmentDisplayName(metrics.file) : prev.currentFileName,
+            currentFileIndex: Number.isFinite(metrics.fileIndex) ? metrics.fileIndex + 1 : prev.currentFileIndex,
+            currentFileUploadedBytes,
+            currentFileTotalBytes,
+            currentFilePercent: toUploadPercent(currentFileUploadedBytes, currentFileTotalBytes),
+          });
+
+          if (selectedDirectUserIdRef.current === targetUserId) {
+            setDirectAttachmentUploadState(applyFileProgress);
+          } else {
+            updateDirectComposerDraft(targetUserId, (draft) => ({
+              ...draft,
+              uploading: true,
+              uploadState: applyFileProgress(draft.uploadState || initialUploadState),
+            }));
+          }
+        },
+      });
+      if (selectedDirectUserIdRef.current === targetUserId) {
+        setDirectPendingAttachments((prev) => mergeUniqueAttachments(prev, response?.data || []));
+      } else {
+        updateDirectComposerDraft(targetUserId, (draft) => ({
+          ...draft,
+          attachments: mergeUniqueAttachments(draft.attachments || [], response?.data || []),
+        }));
+      }
       setFeedback('');
     } catch (error) {
       setFeedback(error?.response?.data?.detail || 'Failed to upload attachment.');
     } finally {
-      setUploadingDirectAttachment(false);
+      if (selectedDirectUserIdRef.current === targetUserId) {
+        setUploadingDirectAttachment(false);
+        setDirectAttachmentUploadState(createInitialAttachmentUploadState());
+      } else {
+        updateDirectComposerDraft(targetUserId, (draft) => ({
+          ...draft,
+          uploading: false,
+          uploadState: createInitialAttachmentUploadState(),
+        }));
+      }
     }
   };
 
@@ -1047,6 +1406,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       setDirectMessages((prev) => (sent ? [...prev, sent] : prev));
       setDirectNewMessage('');
       setDirectPendingAttachments([]);
+      updateDirectComposerDraft(selectedDirectUserId, createInitialComposerDraft());
       await syncDirectData({ silent: true });
     } catch (error) {
       setFeedback(error?.response?.data?.detail || 'Failed to send message.');
@@ -1532,12 +1892,14 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                           </div>
                         </div>
                       </div>
-                    );
-                  })}
+                      );
+                    })}
+                  <div ref={messageThreadEndRef} className="group-chat-thread-end" aria-hidden="true" />
                 </div>
               </div>
 
               <div className="group-chat-composer">
+                <AttachmentUploadStatus uploadState={attachmentUploadState} />
                 {!!pendingAttachments.length && (
                   <div className="group-chat-attachment-strip">
                     {pendingAttachments.map((attachment, index) => (
@@ -1546,7 +1908,18 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                         <button
                           type="button"
                           onClick={() =>
-                            setPendingAttachments((prev) => prev.filter((_, attachmentIndex) => attachmentIndex !== index))
+                            setPendingAttachments((prev) => {
+                              const nextAttachments = prev.filter((_, attachmentIndex) => attachmentIndex !== index);
+                              if (selectedGroupIdRef.current) {
+                                updateGroupComposerDraft(selectedGroupIdRef.current, {
+                                  text: newMessage,
+                                  attachments: nextAttachments,
+                                  uploading: uploadingAttachment,
+                                  uploadState: attachmentUploadState,
+                                });
+                              }
+                              return nextAttachments;
+                            })
                           }
                         >
                           x
@@ -1603,9 +1976,20 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                   <input
                     className="groups-input group-chat-input"
                     type="text"
-                    placeholder={uploadingAttachment ? 'Uploading attachment...' : 'Type a message'}
+                    placeholder="Type a message"
                     value={newMessage}
-                    onChange={(event) => setNewMessage(event.target.value)}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setNewMessage(nextValue);
+                      if (selectedGroupIdRef.current) {
+                        updateGroupComposerDraft(selectedGroupIdRef.current, {
+                          text: nextValue,
+                          attachments: pendingAttachments,
+                          uploading: uploadingAttachment,
+                          uploadState: attachmentUploadState,
+                        });
+                      }
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') {
                         event.preventDefault();
@@ -1822,10 +2206,12 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                         </div>
                       );
                     })}
+                    <div ref={directThreadEndRef} className="group-chat-thread-end" aria-hidden="true" />
                   </div>
                 </div>
 
                 <div className="group-chat-composer">
+                  <AttachmentUploadStatus uploadState={directAttachmentUploadState} />
                   {!!directPendingAttachments.length && (
                     <div className="group-chat-attachment-strip">
                       {directPendingAttachments.map((attachment, index) => (
@@ -1834,7 +2220,18 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                           <button
                             type="button"
                             onClick={() =>
-                              setDirectPendingAttachments((prev) => prev.filter((_, attachmentIndex) => attachmentIndex !== index))
+                              setDirectPendingAttachments((prev) => {
+                                const nextAttachments = prev.filter((_, attachmentIndex) => attachmentIndex !== index);
+                                if (selectedDirectUserIdRef.current) {
+                                  updateDirectComposerDraft(selectedDirectUserIdRef.current, {
+                                    text: directNewMessage,
+                                    attachments: nextAttachments,
+                                    uploading: uploadingDirectAttachment,
+                                    uploadState: directAttachmentUploadState,
+                                  });
+                                }
+                                return nextAttachments;
+                              })
                             }
                           >
                             x
@@ -1891,9 +2288,20 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                     <input
                       className="groups-input group-chat-input"
                       type="text"
-                      placeholder={uploadingDirectAttachment ? 'Uploading attachment...' : 'Type a direct message'}
+                      placeholder="Type a direct message"
                       value={directNewMessage}
-                      onChange={(event) => setDirectNewMessage(event.target.value)}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        setDirectNewMessage(nextValue);
+                        if (selectedDirectUserIdRef.current) {
+                          updateDirectComposerDraft(selectedDirectUserIdRef.current, {
+                            text: nextValue,
+                            attachments: directPendingAttachments,
+                            uploading: uploadingDirectAttachment,
+                            uploadState: directAttachmentUploadState,
+                          });
+                        }
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') {
                           event.preventDefault();

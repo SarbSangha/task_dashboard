@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import InboxCard from './InboxCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
-import { fileAPI, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
+import { fileAPI, isRequestCanceled, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import { useAuth } from '../../../../context/AuthContext';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import {
@@ -63,9 +63,15 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     attachments: [],
     submitting: false,
     error: '',
+    uploadProgress: {},
+    uploadStatus: {},
   });
   const refreshTimerRef = React.useRef(null);
   const seenTaskIdsRef = React.useRef(new Set());
+  const submitUploadControllersRef = React.useRef(new Map());
+  const canceledSubmitUploadKeysRef = React.useRef(new Set());
+  const submitAttachmentKeyMapRef = React.useRef(new WeakMap());
+  const submitAttachmentKeySeqRef = React.useRef(0);
   const minimizedWindowStyle = useMinimizedWindowStack('inbox-panel', isOpen && isMinimized);
   const {
     data: inboxData,
@@ -79,6 +85,21 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
   const loading = isLoading;
   const isRefreshing = isFetching && !isLoading;
   const { mutateAsync: updateTaskStatus } = useUpdateTaskStatus();
+
+  const getSubmitAttachmentKey = React.useCallback((file) => {
+    if (!file || typeof file !== 'object') {
+      return `attachment-${submitAttachmentKeySeqRef.current++}`;
+    }
+    if (!submitAttachmentKeyMapRef.current.has(file)) {
+      const name = getAttachmentDisplayName(file);
+      const size = Number(file?.size || 0);
+      const lastModified = Number(file?.lastModified || 0);
+      const relativePath = `${file?.webkitRelativePath || file?.relativePath || ''}`;
+      const nextKey = `${name}:${size}:${lastModified}:${relativePath}:${submitAttachmentKeySeqRef.current++}`;
+      submitAttachmentKeyMapRef.current.set(file, nextKey);
+    }
+    return submitAttachmentKeyMapRef.current.get(file);
+  }, []);
 
   const getTaskFilterMeta = React.useCallback((task) => {
     const normalizedStatus = `${task?.status || ''}`.toLowerCase();
@@ -306,10 +327,17 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       attachments: [],
       submitting: false,
       error: '',
+      uploadProgress: {},
+      uploadStatus: {},
     });
   };
 
   const closeSubmitModal = () => {
+    submitUploadControllersRef.current.forEach((controller) => controller.abort());
+    submitUploadControllersRef.current.clear();
+    canceledSubmitUploadKeysRef.current.clear();
+    submitAttachmentKeyMapRef.current = new WeakMap();
+    submitAttachmentKeySeqRef.current = 0;
     setSubmitModal({
       open: false,
       task: null,
@@ -320,6 +348,36 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       attachments: [],
       submitting: false,
       error: '',
+      uploadProgress: {},
+      uploadStatus: {},
+    });
+  };
+
+  const cancelSubmitAttachment = (index) => {
+    setSubmitModal((prev) => {
+      const target = prev.attachments[index];
+      if (!target) return prev;
+      const key = getSubmitAttachmentKey(target);
+      if (prev.submitting) {
+        canceledSubmitUploadKeysRef.current.add(key);
+        const activeController = submitUploadControllersRef.current.get(key);
+        if (activeController) {
+          activeController.abort();
+        }
+      }
+
+      const nextAttachments = prev.attachments.filter((_, itemIndex) => itemIndex !== index);
+      const nextUploadProgress = { ...prev.uploadProgress };
+      const nextUploadStatus = { ...prev.uploadStatus };
+      delete nextUploadProgress[key];
+      delete nextUploadStatus[key];
+
+      return {
+        ...prev,
+        attachments: nextAttachments,
+        uploadProgress: nextUploadProgress,
+        uploadStatus: nextUploadStatus,
+      };
     });
   };
 
@@ -354,10 +412,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
   };
 
   const removeSubmitAttachment = (index) => {
-    setSubmitModal((prev) => ({
-      ...prev,
-      attachments: prev.attachments.filter((_, i) => i !== index),
-    }));
+    cancelSubmitAttachment(index);
   };
 
   const appendSubmitAttachments = (selectedFiles) => {
@@ -392,9 +447,83 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     setSubmitModal((prev) => ({ ...prev, submitting: true, error: '' }));
     try {
       let uploadedAttachments = [];
-      if (submitModal.attachments.length > 0) {
-        const uploadRes = await fileAPI.uploadFiles(submitModal.attachments);
-        uploadedAttachments = uploadRes?.data || [];
+      const selectedAttachments = [...submitModal.attachments];
+      if (selectedAttachments.length > 0) {
+        for (let index = 0; index < selectedAttachments.length; index += 1) {
+          const file = selectedAttachments[index];
+          const key = getSubmitAttachmentKey(file);
+          if (canceledSubmitUploadKeysRef.current.has(key)) {
+            continue;
+          }
+
+          const controller = new AbortController();
+          submitUploadControllersRef.current.set(key, controller);
+          setSubmitModal((prev) => ({
+            ...prev,
+            uploadProgress: {
+              ...prev.uploadProgress,
+              [key]: 0,
+            },
+            uploadStatus: {
+              ...prev.uploadStatus,
+              [key]: 'uploading',
+            },
+          }));
+
+          try {
+            const uploadRes = await fileAPI.uploadFiles([file], {
+              signal: controller.signal,
+              onFileProgress: ({ percent }) => {
+                setSubmitModal((prev) => ({
+                  ...prev,
+                  uploadProgress: {
+                    ...prev.uploadProgress,
+                    [key]: percent,
+                  },
+                }));
+              },
+            });
+            uploadedAttachments = [...uploadedAttachments, ...(uploadRes?.data || [])];
+            setSubmitModal((prev) => ({
+              ...prev,
+              uploadProgress: {
+                ...prev.uploadProgress,
+                [key]: 100,
+              },
+              uploadStatus: {
+                ...prev.uploadStatus,
+                [key]: 'uploaded',
+              },
+            }));
+          } catch (error) {
+            if (isRequestCanceled(error)) {
+              setSubmitModal((prev) => ({
+                ...prev,
+                uploadStatus: {
+                  ...prev.uploadStatus,
+                  [key]: 'canceled',
+                },
+              }));
+              continue;
+            }
+            throw error;
+          } finally {
+            submitUploadControllersRef.current.delete(key);
+          }
+        }
+      }
+
+      const hasFinalPayload =
+        submitModal.resultText.trim()
+        || submitModal.links.length > 0
+        || uploadedAttachments.length > 0;
+      if (!hasFinalPayload) {
+        setSubmitModal((prev) => ({
+          ...prev,
+          submitting: false,
+          error: 'All selected uploads were canceled. Add result text, links, or keep at least one file.',
+        }));
+        return;
       }
 
       await updateTaskStatus({
@@ -421,8 +550,11 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       setSubmitModal((prev) => ({
         ...prev,
         submitting: false,
-        error: error?.response?.data?.detail || 'Submit failed',
+        error: error?.response?.data?.detail || error?.message || 'Submit failed',
       }));
+    } finally {
+      submitUploadControllersRef.current.clear();
+      canceledSubmitUploadKeysRef.current.clear();
     }
   };
 
@@ -535,18 +667,18 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         await openForwardModal(task);
         return;
       } else if (action === 'edit_task') {
-        const description = (await showPrompt('Update task description:', {
+        const description = await showPrompt('Update task description:', {
           title: 'Edit Task',
           defaultValue: task.description || '',
-        })) ?? '';
-        if (!description) return;
+        });
+        if (description === null) return;
         await taskAPI.editTask(task.id, { description });
       } else if (action === 'edit_result') {
-        const result = (await showPrompt('Update result text:', {
+        const result = await showPrompt('Update result text:', {
           title: 'Edit Result',
           defaultValue: task.resultText || '',
-        })) ?? '';
-        if (!result) return;
+        });
+        if (result === null) return;
         await taskAPI.editResult(task.id, result);
       }
       if (!['approve', 'need_improvement'].includes(action)) {
@@ -838,7 +970,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       )}
 
       {submitModal.open && (
-        <div className="forward-modal-overlay" onClick={closeSubmitModal}>
+        <div className="forward-modal-overlay" onClick={submitModal.submitting ? undefined : closeSubmitModal}>
           <div className="submit-modal" onClick={(e) => e.stopPropagation()}>
             <h3>{isWorkflowTask(submitModal.task) ? 'Submit Stage Result' : 'Submit Task Result'}</h3>
             <p className="submit-modal-subtitle">{submitModal.task?.title}</p>
@@ -915,6 +1047,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
                   e.stopPropagation();
                   openSubmitPicker('files');
                 }}
+                disabled={submitModal.submitting}
               >
                 Choose Files
               </button>
@@ -925,25 +1058,43 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
                   e.stopPropagation();
                   openSubmitPicker('folder');
                 }}
+                disabled={submitModal.submitting}
               >
                 Choose Folder
               </button>
             </div>
             {submitModal.attachments.length > 0 && (
               <div className="submit-attachment-list">
-                {submitModal.attachments.map((file, idx) => (
-                  <div key={`${getAttachmentDisplayName(file)}-${idx}`} className="submit-attachment-item">
-                    <span>{getAttachmentDisplayName(file)} ({Math.max(1, Math.round(file.size / 1024))} KB)</span>
-                    <button type="button" onClick={() => removeSubmitAttachment(idx)}>Remove</button>
+                {submitModal.attachments.map((file, idx) => {
+                  const attachmentKey = getSubmitAttachmentKey(file);
+                  const uploadStatus = submitModal.uploadStatus?.[attachmentKey] || (submitModal.submitting ? 'queued' : 'pending');
+                  const uploadProgress = submitModal.uploadProgress?.[attachmentKey] || 0;
+                  const uploadLabel = uploadStatus === 'uploading'
+                    ? `Uploading ${uploadProgress}%`
+                    : uploadStatus === 'uploaded'
+                      ? 'Uploaded'
+                      : uploadStatus === 'queued'
+                        ? 'Queued'
+                        : 'Ready';
+
+                  return (
+                  <div key={attachmentKey} className="submit-attachment-item">
+                    <div className="submit-attachment-copy">
+                      <span>{getAttachmentDisplayName(file)} ({Math.max(1, Math.round(file.size / 1024))} KB)</span>
+                      <small>{uploadLabel}</small>
+                    </div>
+                    <button type="button" onClick={() => removeSubmitAttachment(idx)}>
+                      {submitModal.submitting ? (uploadStatus === 'uploading' ? 'Cancel Upload' : 'Cancel File') : 'Remove'}
+                    </button>
                   </div>
-                ))}
+                )})}
               </div>
             )}
 
             {submitModal.error && <p className="forward-modal-error">{submitModal.error}</p>}
 
             <div className="forward-modal-actions">
-              <button type="button" onClick={closeSubmitModal}>Cancel</button>
+              <button type="button" onClick={closeSubmitModal} disabled={submitModal.submitting}>Cancel</button>
               <button
                 type="button"
                 className="primary"
