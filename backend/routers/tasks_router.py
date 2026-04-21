@@ -425,7 +425,11 @@ def _normalize_stage_payload(
 
 
 def _workflow_visibility_allowed(task: Task, current_user: User, db: Session) -> bool:
-    return current_user.id == task.creator_id or user_is_participant(task.id, current_user.id, None, db)
+    return (
+        current_user.id == task.creator_id
+        or user_is_participant(task.id, current_user.id, None, db)
+        or has_any_role(current_user, {"super_admin", "hod", "faculty"})
+    )
 
 
 def _get_task_workflow_stages(task_id: int, db: Session) -> List[TaskStage]:
@@ -2969,7 +2973,7 @@ async def get_all_user_tasks(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     scoped_user_id = user_id if user_id is not None else current_user.id
-    if user_id is not None and user_id != current_user.id and not has_any_role(current_user, {"super_admin", "hod"}):
+    if user_id is not None and user_id != current_user.id and not has_any_role(current_user, {"super_admin", "hod", "faculty"}):
         raise HTTPException(status_code=403, detail="Permission denied")
 
     tracking_participant = aliased(TaskParticipant)

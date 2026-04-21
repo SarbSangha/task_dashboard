@@ -68,6 +68,36 @@ const mergeRequestConfig = (baseConfig = {}, requestConfig = {}) => ({
   },
 });
 
+const REQUEST_CONFIG_KEYS = new Set([
+  'adapter',
+  'auth',
+  'baseURL',
+  'headers',
+  'onDownloadProgress',
+  'onUploadProgress',
+  'params',
+  'responseType',
+  'signal',
+  'timeout',
+  'transformRequest',
+  'transformResponse',
+  'withCredentials',
+]);
+
+const isRequestConfigLike = (value) =>
+  value &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  Object.keys(value).some((key) => REQUEST_CONFIG_KEYS.has(key));
+
+const buildParamRequestConfig = (paramsOrConfig = {}, requestConfig = {}) => {
+  if (isRequestConfigLike(paramsOrConfig)) {
+    return paramsOrConfig;
+  }
+
+  return mergeRequestConfig({ params: paramsOrConfig }, requestConfig);
+};
+
 const isBrowserFile = (value) => typeof File !== 'undefined' && value instanceof File;
 
 const toUploadFiles = (files = []) => files.filter((file) => isBrowserFile(file));
@@ -564,18 +594,26 @@ export const activityAPI = {
     return response.data;
   },
 
-  myActivity: async (requestConfig = {}) => {
-    const response = await api.get('/api/activity/my-activity', requestConfig);
+  myActivity: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get('/api/activity/my-activity', buildParamRequestConfig(paramsOrConfig, requestConfig));
     return response.data;
   },
 
-  department: async (requestConfig = {}) => {
-    const response = await api.get('/api/activity/department', requestConfig);
+  userActivity: async (userId, params = {}, requestConfig = {}) => {
+    const response = await api.get(
+      `/api/activity/users/${userId}`,
+      mergeRequestConfig({ params }, requestConfig)
+    );
     return response.data;
   },
 
-  allUsers: async (requestConfig = {}) => {
-    const response = await api.get('/api/activity/all-users', requestConfig);
+  department: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get('/api/activity/department', buildParamRequestConfig(paramsOrConfig, requestConfig));
+    return response.data;
+  },
+
+  allUsers: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get('/api/activity/all-users', buildParamRequestConfig(paramsOrConfig, requestConfig));
     return response.data;
   },
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { UserAvatar } from '../../../common/UserAvatar';
-import { taskAPI } from '../../../../services/api';
+import { activityAPI, isRequestCanceled, taskAPI } from '../../../../services/api';
 import { getTaskPanelCache, setTaskPanelCache } from '../../../../utils/taskPanelCache';
 import { formatDateIndia, formatDateTimeIndia } from '../../../../utils/dateTime';
 import { buildFileDownloadUrl, buildFileOpenUrl } from '../../../../utils/fileLinks';
@@ -19,7 +19,7 @@ const NAV_ITEMS = [
 ];
 
 const MEMBER_TASK_PREVIEW_CACHE_TTL_MS = 60 * 1000;
-const FUNCTIONAL_SECTION_IDS = new Set(['overview', 'inbox', 'outbox', 'tracking']);
+const TASK_DATA_SECTION_IDS = new Set(['overview', 'inbox', 'outbox', 'tracking', 'activity']);
 const memberTaskPreviewRequests = new Map();
 function buildMemberTaskPreviewCacheKey(memberId) {
   return `company_member_preview_tasks_${memberId}`;
@@ -57,6 +57,49 @@ function formatSeconds(seconds = 0) {
   const mins = Math.floor((total % 3600) / 60);
   const secs = total % 60;
   return `${hrs}h ${mins}m ${secs}s`;
+}
+
+function getLocalDateInputValue(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatActivityDateLabel(value) {
+  if (!value) return 'selected date';
+  return formatDateIndia(`${value}T00:00:00`);
+}
+
+function isSameLocalDate(value, dateInputValue) {
+  if (!value || !dateInputValue) return false;
+  return getLocalDateInputValue(value) === dateInputValue;
+}
+
+function isClosedTaskStatus(status) {
+  return ['approved', 'completed', 'cancelled', 'rejected'].includes(String(status || '').toLowerCase());
+}
+
+function isSameUserId(left, right) {
+  return String(left ?? '') === String(right ?? '');
+}
+
+function hasMissedReceivedTaskDeadline(task, memberId, now = new Date()) {
+  if (!task?.deadline) return false;
+  const deadline = new Date(task.deadline);
+  if (Number.isNaN(deadline.getTime())) return false;
+
+  const submittedByMember = isSameUserId(task.submittedBy, memberId);
+  const submittedAt = task.submittedAt ? new Date(task.submittedAt) : null;
+  if (submittedByMember && submittedAt && !Number.isNaN(submittedAt.getTime())) {
+    return submittedAt.getTime() > deadline.getTime();
+  }
+
+  if (isClosedTaskStatus(task.status)) return false;
+  return deadline.getTime() < now.getTime();
 }
 
 function ReadOnlyField({ label, value }) {
@@ -412,12 +455,24 @@ export default function CompanyMemberPreview({
     error: '',
     tasks: [],
   });
+  const [activityDate, setActivityDate] = useState(getLocalDateInputValue);
+  const [activitySnapshotState, setActivitySnapshotState] = useState({
+    loading: false,
+    error: '',
+    data: null,
+  });
   const [workflowTask, setWorkflowTask] = useState(null);
   const [detailTask, setDetailTask] = useState(null);
 
   useEffect(() => {
     if (isOpen) {
       setActiveSection('overview');
+      setActivityDate(getLocalDateInputValue());
+      setActivitySnapshotState({
+        loading: false,
+        error: '',
+        data: null,
+      });
     }
   }, [isOpen, member?.id]);
 
@@ -449,7 +504,7 @@ export default function CompanyMemberPreview({
   }, [isOpen, member?.id]);
 
   useEffect(() => {
-    if (!isOpen || !member?.id || !FUNCTIONAL_SECTION_IDS.has(activeSection)) return;
+    if (!isOpen || !member?.id || !TASK_DATA_SECTION_IDS.has(activeSection)) return;
 
     let isCancelled = false;
     const cachedEntry = getTaskPanelCache(
@@ -502,16 +557,14 @@ export default function CompanyMemberPreview({
     };
   }, [member, selectedDepartment]);
 
-  const hasActivity =
-    !!activity &&
-    Object.values(activity).some((value) => value !== null && value !== undefined && value !== '');
-
   const previewData = useMemo(() => {
     if (!normalizedMember) {
       return {
         inboxTasks: [],
         outboxTasks: [],
         trackingTasks: [],
+        assignedTaskCount: 0,
+        deadlineMissedCount: 0,
         openTaskCount: 0,
         completedTaskCount: 0,
         trackingStatusCounts: [],
@@ -521,6 +574,8 @@ export default function CompanyMemberPreview({
     const inboxTasks = taskState.tasks.filter((task) =>
       Array.isArray(task.assignedTo) && task.assignedTo.some((assignee) => assignee.id === normalizedMember.id)
     );
+    const createdTasks = taskState.tasks.filter((task) => task.creatorId === normalizedMember.id);
+    const createdTasksForSelectedDate = createdTasks.filter((task) => isSameLocalDate(task.createdAt, activityDate));
     const outboxTasks = taskState.tasks.filter(
       (task) => task.creatorId === normalizedMember.id || task.submittedBy === normalizedMember.id
     );
@@ -551,16 +606,65 @@ export default function CompanyMemberPreview({
     const completedTaskCount = trackingTasks.filter((task) =>
       ['approved', 'completed'].includes(String(task.status || '').toLowerCase())
     ).length;
+    const deadlineMissedCount = inboxTasks.filter((task) =>
+      hasMissedReceivedTaskDeadline(task, normalizedMember.id)
+    ).length;
 
     return {
       inboxTasks,
       outboxTasks,
       trackingTasks,
+      assignedTaskCount: createdTasksForSelectedDate.length,
+      deadlineMissedCount,
       openTaskCount: Math.max(trackingTasks.length - completedTaskCount, 0),
       completedTaskCount,
       trackingStatusCounts,
     };
-  }, [normalizedMember, taskState.tasks]);
+  }, [activityDate, normalizedMember, taskState.tasks]);
+
+  useEffect(() => {
+    if (!isOpen || !member?.id || activeSection !== 'activity' || !activityDate) return;
+
+    const controller = new AbortController();
+    const isToday = activityDate === getLocalDateInputValue();
+
+    setActivitySnapshotState({
+      loading: true,
+      error: '',
+      data: isToday ? activity : null,
+    });
+
+    const loadActivitySnapshot = async () => {
+      try {
+        const response = await activityAPI.userActivity(
+          member.id,
+          { date: activityDate },
+          { signal: controller.signal }
+        );
+        if (controller.signal.aborted) return;
+
+        setActivitySnapshotState({
+          loading: false,
+          error: '',
+          data: response?.data || null,
+        });
+      } catch (error) {
+        if (isRequestCanceled(error) || controller.signal.aborted) return;
+
+        setActivitySnapshotState({
+          loading: false,
+          error: error?.response?.data?.detail || 'Could not load activity for the selected date.',
+          data: isToday ? activity : null,
+        });
+      }
+    };
+
+    void loadActivitySnapshot();
+
+    return () => {
+      controller.abort();
+    };
+  }, [activeSection, activity, activityDate, isOpen, member?.id]);
 
   if (!isOpen || !normalizedMember) return null;
 
@@ -568,6 +672,12 @@ export default function CompanyMemberPreview({
   const userItems = NAV_ITEMS.filter((item) => item.group === 'user');
   const activeItem = NAV_ITEMS.find((item) => item.id === activeSection) || NAV_ITEMS[0];
   const overviewTrackingTasks = previewData.trackingTasks.slice(0, 4);
+  const todayActivityDate = getLocalDateInputValue();
+  const selectedActivity = activitySnapshotState.data || (activityDate === todayActivityDate ? activity : null);
+  const hasActivitySnapshot =
+    !!selectedActivity &&
+    Object.values(selectedActivity).some((value) => value !== null && value !== undefined && value !== '');
+  const selectedActivityDateLabel = formatActivityDateLabel(activityDate);
   const buildTrackingTaskActions = (task, closeMenu) => (
     <>
       <button
@@ -833,21 +943,60 @@ export default function CompanyMemberPreview({
 
           {activeSection === 'activity' && (
             <div className="company-member-preview-card company-member-preview-card-wide">
-              <h4>Activity Snapshot</h4>
-              {hasActivity ? (
-                <div className="company-member-preview-stats-grid">
-                  <ReadOnlyField label="Session Duration" value={formatSeconds(activity?.totalSessionDuration || 0)} />
-                  <ReadOnlyField label="Active Duration" value={formatSeconds(activity?.activeTime || 0)} />
-                  <ReadOnlyField label="Idle Duration" value={formatSeconds(activity?.idleTime || 0)} />
-                  <ReadOnlyField label="Away Duration" value={formatSeconds(activity?.awayTime || 0)} />
-                  <ReadOnlyField label="Heartbeat Count" value={activity?.heartbeatCount ?? 0} />
-                  <ReadOnlyField label="Productivity" value={`${activity?.productivity ?? 0}%`} />
-                  <ReadOnlyField label="Tasks Done Today" value={activity?.tasksDone ?? 0} />
-                  <ReadOnlyField label="Last Seen" value={formatDateTimeIndia(activity?.lastSeen)} />
+              <div className="company-member-preview-card-heading-row">
+                <div>
+                  <h4>Activity Snapshot</h4>
+                  <p>Showing recorded metrics for {selectedActivityDateLabel}.</p>
                 </div>
+                <label className="company-member-preview-date-control">
+                  <span>Select Date</span>
+                  <input
+                    type="date"
+                    value={activityDate}
+                    max={todayActivityDate}
+                    onChange={(event) => setActivityDate(event.target.value)}
+                  />
+                </label>
+              </div>
+
+              {activitySnapshotState.error ? (
+                <div className="company-member-preview-inline-note">{activitySnapshotState.error}</div>
+              ) : null}
+
+              {activitySnapshotState.loading && !hasActivitySnapshot ? (
+                <div className="company-member-preview-empty-state">
+                  Loading activity for {selectedActivityDateLabel}...
+                </div>
+              ) : hasActivitySnapshot ? (
+                <>
+                  {activitySnapshotState.loading ? (
+                    <div className="company-member-preview-subtle-note">
+                      Refreshing activity for {selectedActivityDateLabel}...
+                    </div>
+                  ) : null}
+                  {!selectedActivity?.id ? (
+                    <div className="company-member-preview-subtle-note">
+                      No activity row was recorded for {selectedActivityDateLabel}; showing zeroed metrics.
+                    </div>
+                  ) : null}
+                  <div className="company-member-preview-stats-grid">
+                    <ReadOnlyField label="Activity Date" value={formatDateIndia(selectedActivity?.date)} />
+                    <ReadOnlyField label="Status" value={selectedActivity?.status || 'OFFLINE'} />
+                    <ReadOnlyField label="Session Duration" value={formatSeconds(selectedActivity?.totalSessionDuration || 0)} />
+                    <ReadOnlyField label="Active Duration" value={formatSeconds(selectedActivity?.activeTime || 0)} />
+                    <ReadOnlyField label="Idle Duration" value={formatSeconds(selectedActivity?.idleTime || 0)} />
+                    <ReadOnlyField label="Away Duration" value={formatSeconds(selectedActivity?.awayTime || 0)} />
+                    <ReadOnlyField label="Heartbeat Count" value={selectedActivity?.heartbeatCount ?? 0} />
+                    <ReadOnlyField label="Productivity" value={`${selectedActivity?.productivity ?? 0}%`} />
+                    <ReadOnlyField label="Tasks Done" value={selectedActivity?.tasksDone ?? 0} />
+                    <ReadOnlyField label="Tasks Assigned" value={previewData.assignedTaskCount} />
+                    <ReadOnlyField label="Deadline Missed Till Today" value={previewData.deadlineMissedCount} />
+                    <ReadOnlyField label="Last Seen" value={formatDateTimeIndia(selectedActivity?.lastSeen)} />
+                  </div>
+                </>
               ) : (
                 <div className="company-member-preview-empty-state">
-                  Live activity details are not available for this preview.
+                  Activity details are not available for {selectedActivityDateLabel}.
                 </div>
               )}
             </div>

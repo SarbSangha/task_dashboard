@@ -35,6 +35,7 @@ const OutboxTaskCard = ({
     taskDetails,
     deadline,
     createdAt,
+    updatedAt,
     attachments,
     links,
     taskTag,
@@ -44,6 +45,8 @@ const OutboxTaskCard = ({
     sentAt,
     receivedAt,
     startedAt,
+    submittedAt,
+    approvedAt,
     completedAt,
     creator,
     createdByName,
@@ -98,6 +101,8 @@ const OutboxTaskCard = ({
     'rejected',
   ].includes(normalizedStatus);
   const statusFallsThroughCompleted = ['approved', 'completed'].includes(normalizedStatus);
+  const submittedDisplayAt = submittedAt || (statusFallsThroughSubmitted ? (completedAt || approvedAt || updatedAt) : null);
+  const approvalDisplayAt = completedAt || approvedAt || (statusFallsThroughCompleted ? updatedAt : null);
   const timelineSteps = [
     {
       key: 'sent',
@@ -346,6 +351,22 @@ const OutboxTaskCard = ({
               <p className="outbox-value">{formatTime(sentAt || createdAt)}</p>
             </div>
           </div>
+          <div className="meta-item">
+            <span className="meta-icon">✅</span>
+            <div className="outbox-meta-copy">
+              <span className="outbox-label">Submitted</span>
+              <p className="outbox-value">{submittedDisplayAt ? formatDate(submittedDisplayAt) : 'Not reached'}</p>
+              {submittedDisplayAt ? <p className="outbox-subvalue">{formatTime(submittedDisplayAt)}</p> : null}
+            </div>
+          </div>
+          <div className="meta-item">
+            <span className="meta-icon">🏁</span>
+            <div className="outbox-meta-copy">
+              <span className="outbox-label">Approval</span>
+              <p className="outbox-value">{approvalDisplayAt ? formatDate(approvalDisplayAt) : 'Not reached'}</p>
+              {approvalDisplayAt ? <p className="outbox-subvalue">{formatTime(approvalDisplayAt)}</p> : null}
+            </div>
+          </div>
         </div>
 
         {/* Badges */}
@@ -533,6 +554,7 @@ OutboxTaskCard.propTypes = {
     taskDetails: PropTypes.string,
     deadline: PropTypes.string,
     createdAt: PropTypes.string,
+    updatedAt: PropTypes.string,
     attachments: PropTypes.array,
     links: PropTypes.array,
     taskTag: PropTypes.string,
@@ -542,6 +564,8 @@ OutboxTaskCard.propTypes = {
     sentAt: PropTypes.string,
     receivedAt: PropTypes.string,
     startedAt: PropTypes.string,
+    submittedAt: PropTypes.string,
+    approvedAt: PropTypes.string,
     completedAt: PropTypes.string,
     creator: PropTypes.shape({
       id: PropTypes.number,

@@ -392,7 +392,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
 
     if (asset.mediaType === 'video') {
       return (
-        <video className="trendings-card-video" preload="none" muted controls>
+        <video className="trendings-card-video"  muted controls>
           <source src={previewUrl} />
         </video>
       );

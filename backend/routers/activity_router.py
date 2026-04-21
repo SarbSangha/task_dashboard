@@ -1,7 +1,7 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Cookie, Header
+from fastapi import APIRouter, Depends, HTTPException, Cookie, Header, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session
 
 from auth import get_request_session_token, resolve_session_user
 from database_config import get_operational_db
-from models_new import ActivityStatus, Task, TaskStatus, User, UserActivity
+from models_new import ActivityStatus, Task, User, UserActivity
 from utils.datetime_utils import normalize_to_utc_naive, serialize_utc_datetime, utcnow_naive
-from utils.permissions import require_admin
+from utils.permissions import require_faculty
 
 
 router = APIRouter(prefix="/api/activity", tags=["Activity"])
@@ -65,11 +65,14 @@ def ensure_authenticated(user: Optional[User]) -> User:
     return user
 
 
-def get_today_activity(db: Session, user_id: int) -> Optional[UserActivity]:
-    today = utcnow_naive().date()
+def resolve_activity_date(activity_date: Optional[date] = None) -> date:
+    return activity_date or utcnow_naive().date()
+
+
+def get_activity_by_date(db: Session, user_id: int, activity_date: date) -> Optional[UserActivity]:
     return (
         db.query(UserActivity)
-        .filter(UserActivity.user_id == user_id, UserActivity.date == today)
+        .filter(UserActivity.user_id == user_id, UserActivity.date == activity_date)
         .first()
     )
 
@@ -144,6 +147,67 @@ def compute_productivity(active_time: int, total_time: int) -> float:
     if total_time <= 0:
         return 0.0
     return round((active_time / total_time) * 100.0, 2)
+
+
+def get_activity_day_range(activity_date: date) -> tuple[datetime, datetime]:
+    day_start = datetime.combine(activity_date, datetime.min.time())
+    day_end = datetime.combine(activity_date + timedelta(days=1), datetime.min.time())
+    return day_start, day_end
+
+
+def get_tasks_done_counts(db: Session, user_ids: list[int], activity_date: date) -> dict[int, int]:
+    target_user_ids = [user_id for user_id in user_ids if user_id is not None]
+    if not target_user_ids:
+        return {}
+
+    day_start, day_end = get_activity_day_range(activity_date)
+    return {
+        submitted_by: count
+        for submitted_by, count in (
+            db.query(Task.submitted_by, func.count(Task.id))
+            .filter(
+                Task.submitted_by.in_(target_user_ids),
+                Task.updated_at >= day_start,
+                Task.updated_at < day_end,
+            )
+            .group_by(Task.submitted_by)
+            .all()
+        )
+    }
+
+
+def serialize_empty_activity(user: User, activity_date: date) -> dict:
+    return {
+        "id": None,
+        "userId": user.id,
+        "name": user.name,
+        "email": user.email,
+        "department": user.department,
+        "position": user.position,
+        "date": activity_date.isoformat(),
+        "loginTime": None,
+        "logoutTime": None,
+        "totalSessionDuration": 0,
+        "activeTime": 0,
+        "idleTime": 0,
+        "awayTime": 0,
+        "status": ActivityStatus.OFFLINE.value,
+        "lastSeen": None,
+        "heartbeatCount": 0,
+    }
+
+
+def serialize_activity_snapshot(
+    row: Optional[UserActivity],
+    user: User,
+    activity_date: date,
+    *,
+    tasks_done: int = 0,
+) -> dict:
+    item = serialize_activity(row, user) if row else serialize_empty_activity(user, activity_date)
+    item["productivity"] = compute_productivity(item["activeTime"], item["totalSessionDuration"])
+    item["tasksDone"] = tasks_done or 0
+    return item
 
 
 @router.post("/start-session")
@@ -253,18 +317,60 @@ async def end_session(
 
 @router.get("/my-activity")
 async def my_activity(
+    activity_date: Optional[date] = Query(None, alias="date"),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
     user = ensure_authenticated(current_user)
-    row = get_today_activity(db, user.id)
+    target_date = resolve_activity_date(activity_date)
+    row = get_activity_by_date(db, user.id, target_date)
     if not row:
         return {"success": True, "data": None}
-    return {"success": True, "data": serialize_activity(row, user)}
+    task_counts = get_tasks_done_counts(db, [user.id], target_date)
+    return {
+        "success": True,
+        "data": serialize_activity_snapshot(
+            row,
+            user,
+            target_date,
+            tasks_done=task_counts.get(user.id, 0),
+        ),
+    }
+
+
+@router.get("/users/{user_id}")
+async def user_activity(
+    user_id: int,
+    activity_date: Optional[date] = Query(None, alias="date"),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_faculty),
+):
+    ensure_authenticated(current_user)
+    target_date = resolve_activity_date(activity_date)
+    target_user = (
+        db.query(User)
+        .filter(User.id == user_id, User.is_active == True)
+        .first()
+    )
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    row = get_activity_by_date(db, target_user.id, target_date)
+    task_counts = get_tasks_done_counts(db, [target_user.id], target_date)
+    return {
+        "success": True,
+        "data": serialize_activity_snapshot(
+            row,
+            target_user,
+            target_date,
+            tasks_done=task_counts.get(target_user.id, 0),
+        ),
+    }
 
 
 @router.get("/department")
 async def department_activity(
+    activity_date: Optional[date] = Query(None, alias="date"),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
@@ -273,105 +379,76 @@ async def department_activity(
     if "hod" not in roles and "admin" not in roles:
         raise HTTPException(status_code=403, detail="Only HOD/Admin can view department activity")
 
-    today = utcnow_naive().date()
-    today_start = datetime.combine(today, datetime.min.time())
-    today_end = datetime.combine(today + timedelta(days=1), datetime.min.time())
+    target_date = resolve_activity_date(activity_date)
     users = db.query(User).filter(User.is_active == True, User.department == user.department).all()
     user_ids = [u.id for u in users]
 
     rows = (
         db.query(UserActivity)
-        .filter(UserActivity.date == today, UserActivity.user_id.in_(user_ids))
+        .filter(UserActivity.date == target_date, UserActivity.user_id.in_(user_ids))
         .all()
         if user_ids
         else []
     )
     row_by_user = {r.user_id: r for r in rows}
 
-    active_member_ids = [member_id for member_id in user_ids if member_id in row_by_user]
-    task_counts = {}
-    if active_member_ids:
-        task_counts = {
-            submitted_by: count
-            for submitted_by, count in (
-                db.query(Task.submitted_by, func.count(Task.id))
-                .filter(
-                    Task.submitted_by.in_(active_member_ids),
-                    Task.updated_at >= today_start,
-                    Task.updated_at < today_end,
-                )
-                .group_by(Task.submitted_by)
-                .all()
-            )
-        }
+    task_counts = get_tasks_done_counts(db, user_ids, target_date)
 
     data = []
     for member in users:
         row = row_by_user.get(member.id)
-        if not row:
-            data.append(
-                {
-                    "id": None,
-                    "userId": member.id,
-                    "name": member.name,
-                    "email": member.email,
-                    "department": member.department,
-                    "position": member.position,
-                    "status": ActivityStatus.OFFLINE.value,
-                    "productivity": 0.0,
-                }
+        # Use submitted_by as practical "tasks done" metric for the selected day.
+        data.append(
+            serialize_activity_snapshot(
+                row,
+                member,
+                target_date,
+                tasks_done=task_counts.get(member.id, 0),
             )
-            continue
-
-        item = serialize_activity(row, member)
-        item["productivity"] = compute_productivity(item["activeTime"], item["totalSessionDuration"])
-        # Use submitted_by as practical "tasks done today" metric.
-        item["tasksDone"] = task_counts.get(member.id, 0)
-        data.append(item)
+        )
 
     return {"success": True, "count": len(data), "data": data}
 
 
 @router.get("/all-users")
 async def all_users_activity(
+    activity_date: Optional[date] = Query(None, alias="date"),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_faculty),
 ):
     user = ensure_authenticated(current_user)
 
-    today = utcnow_naive().date()
+    target_date = resolve_activity_date(activity_date)
     users = db.query(User).filter(User.is_active == True).all()
-    rows = db.query(UserActivity).filter(UserActivity.date == today).all()
+    user_ids = [member.id for member in users]
+    rows = (
+        db.query(UserActivity)
+        .filter(UserActivity.date == target_date, UserActivity.user_id.in_(user_ids))
+        .all()
+        if user_ids
+        else []
+    )
     row_by_user = {r.user_id: r for r in rows}
+    task_counts = get_tasks_done_counts(db, user_ids, target_date)
 
     data = []
     for member in users:
         row = row_by_user.get(member.id)
-        if row:
-            item = serialize_activity(row, member)
-            item["productivity"] = compute_productivity(item["activeTime"], item["totalSessionDuration"])
-            data.append(item)
-        else:
-            data.append(
-                {
-                    "id": None,
-                    "userId": member.id,
-                    "name": member.name,
-                    "email": member.email,
-                    "department": member.department,
-                    "position": member.position,
-                    "status": ActivityStatus.OFFLINE.value,
-                    "productivity": 0.0,
-                    "heartbeatCount": 0,
-                }
+        data.append(
+            serialize_activity_snapshot(
+                row,
+                member,
+                target_date,
+                tasks_done=task_counts.get(member.id, 0),
             )
+        )
     return {"success": True, "count": len(data), "data": data}
 
 
 @router.get("/live-stats")
 async def live_stats(
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_faculty),
 ):
     user = ensure_authenticated(current_user)
 
