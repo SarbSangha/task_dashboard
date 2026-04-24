@@ -1162,6 +1162,7 @@ async function tick() {
     forceFreshGoogleSignIn();
     return;
   }
+  
 
   switch (CTX.phase) {
     case P.BOOT: {
