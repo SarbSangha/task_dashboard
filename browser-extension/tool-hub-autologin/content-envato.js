@@ -1,8 +1,9 @@
-const TOOL_SLUG = 'freepik';
-const LOGIN_URL = 'https://www.freepik.com/log-in?client_id=freepik&lang=en';
-const PREPARED_LAUNCH_KEY = 'rmw_freepik_prepared_launch';
-const BLOCKED_NOTICE_KEY = 'rmw_freepik_blocked_notice';
+const TOOL_SLUG = 'envato';
+const LOGIN_URL = 'https://elements.envato.com/sign-in';
+const PREPARED_LAUNCH_KEY = 'rmw_envato_prepared_launch';
+const BLOCKED_NOTICE_KEY = 'rmw_envato_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
+
 const STATE = {
   credential: null,
   requested: false,
@@ -11,17 +12,16 @@ const STATE = {
   lastSubmitAt: 0,
   lastLoginOpenAt: 0,
   loginOpenAttempts: 0,
-  lastThirdPartyClickAt: 0,
+  lastRunAt: 0,
+  lastMutationHandledAt: 0,
   scheduledTimer: null,
   keepAliveTimer: null,
   observer: null,
-  lastRunAt: 0,
-  lastMutationHandledAt: 0,
   settled: false,
   launchChecked: false,
   launchAuthorized: false,
   launchExpiresAt: 0,
-  status: 'Waiting for Freepik login form',
+  status: 'Waiting for Envato login form',
 };
 
 const MIN_RUN_GAP_MS = 900;
@@ -30,12 +30,15 @@ const KEEP_ALIVE_MS = 4000;
 const EMAIL_SELECTORS = [
   'input[type="email"]',
   'input[name="email"]',
+  'input[name="username"]',
   'input[id*="email"]',
   'input[name*="email"]',
   'input[autocomplete="username"]',
   'input[autocomplete="email"]',
   'input[placeholder*="email" i]',
+  'input[placeholder*="username" i]',
   'input[aria-label*="email" i]',
+  'input[aria-label*="username" i]',
 ];
 
 const PASSWORD_SELECTORS = [
@@ -84,19 +87,9 @@ function setStatus(message) {
   STATE.status = message;
   const badge = ensureStatusBadge();
   if (badge) {
-    badge.textContent = `Freepik auto-login\n${message}`;
+    badge.textContent = `Envato auto-login\n${message}`;
   }
-  console.debug('[RMW Freepik Auto Login]', message);
-}
-
-function markerFromValue(value) {
-  let hash = 0;
-  const text = `${value || ''}`;
-  for (let index = 0; index < text.length; index += 1) {
-    hash = ((hash << 5) - hash) + text.charCodeAt(index);
-    hash |= 0;
-  }
-  return `${hash}`;
+  console.debug('[RMW Envato Auto Login]', message);
 }
 
 function readLaunchTicketFromUrl() {
@@ -186,11 +179,6 @@ function buttonText(button) {
     .toLowerCase();
 }
 
-function getCredentialDomain(credential) {
-  const identifier = `${credential?.loginIdentifier || ''}`.trim().toLowerCase();
-  return identifier.includes('@') ? identifier.split('@').pop() : identifier;
-}
-
 function buttonDescriptorText(button) {
   if (!button) return '';
 
@@ -204,12 +192,12 @@ function buttonDescriptorText(button) {
     button.getAttribute?.('href'),
   ];
 
-  button.querySelectorAll('img[alt], [aria-label], [title], [data-provider]').forEach((node) => {
+  button.querySelectorAll?.('img[alt], [aria-label], [title], [data-provider]').forEach((node) => {
     textParts.push(
       node.getAttribute?.('alt'),
       node.getAttribute?.('aria-label'),
       node.getAttribute?.('title'),
-      node.getAttribute?.('data-provider'),
+      node.getAttribute?.('data-provider')
     );
   });
 
@@ -220,52 +208,13 @@ function buttonDescriptorText(button) {
     .toLowerCase();
 }
 
-function isActionLikeElement(element) {
-  if (!element || !isVisible(element)) return false;
-  if (element.matches?.(ACTION_SELECTORS.join(','))) return !isDisabled(element);
-  if (element.tabIndex >= 0) return !isDisabled(element);
-
-  const style = window.getComputedStyle(element);
-  return style.cursor === 'pointer' || typeof element.onclick === 'function';
-}
-
-function findClickableAncestor(element) {
-  let current = element;
-  while (current && current !== document.body) {
-    if (isActionLikeElement(current)) return current;
-    current = current.parentElement;
-  }
-  return isVisible(element) ? element : null;
-}
-
-function getThirdPartyAuthKind(button) {
-  const text = buttonDescriptorText(button);
-  if (text.includes('google')) return 'google';
-  if (text.includes('apple')) return 'apple';
-  if (text.includes('facebook')) return 'facebook';
-
-  if (text.includes('continue as ')) {
-    if (text.includes('@gmail.com') || text.includes('@googlemail.com')) {
-      return 'google';
-    }
-
-    const googleMarker = button.querySelector?.(
-      'img[alt*="google" i], [aria-label*="google" i], [title*="google" i], [data-provider*="google" i]'
-    );
-    if (googleMarker) {
-      return 'google';
-    }
-  }
-
-  return '';
-}
-
 function isThirdPartyAuthAction(button) {
-  return Boolean(getThirdPartyAuthKind(button));
-}
-
-function collectUniqueElements(elements) {
-  return Array.from(new Set(elements.filter(Boolean)));
+  const text = buttonDescriptorText(button);
+  return text.includes('google')
+    || text.includes('apple')
+    || text.includes('facebook')
+    || text.includes('social')
+    || text.includes('continue as ');
 }
 
 function findInput(selectors) {
@@ -359,76 +308,29 @@ function findSubmitButton(emailInput, passwordInput) {
   return null;
 }
 
-function findThirdPartyAuthActions() {
-  const primary = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')));
-  const fallbackSeeds = Array.from(document.querySelectorAll('[tabindex], div, li, section, article'));
-  const fallback = fallbackSeeds
-    .filter((element) => {
-      const text = buttonDescriptorText(element);
-      return text.includes('continue as ')
-        || text.includes('google')
-        || text.includes('apple')
-        || text.includes('facebook')
-        || text.includes('@gmail.com')
-        || text.includes('@googlemail.com');
-    })
-    .map((element) => findClickableAncestor(element));
-
-  return collectUniqueElements([...primary, ...fallback])
-    .filter((button) => isActionLikeElement(button) && Boolean(getThirdPartyAuthKind(button)));
-}
-
-function findThirdPartyAuthAction(kind) {
-  const expectedKind = `${kind || ''}`.trim().toLowerCase();
-  return findThirdPartyAuthActions().find((button) => getThirdPartyAuthKind(button) === expectedKind) || null;
-}
-
-function getPreferredThirdPartyKind(credential) {
-  const domain = getCredentialDomain(credential);
-  if (domain === 'gmail.com' || domain === 'googlemail.com') {
-    return 'google';
-  }
-  return '';
-}
-
-function attemptThirdPartyFlow(kind) {
-  const action = findThirdPartyAuthAction(kind);
-  if (!action) return false;
-  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS)) return false;
-
-  const now = Date.now();
-  if (now - STATE.lastThirdPartyClickAt > 3500) {
-    STATE.lastThirdPartyClickAt = now;
-    setStatus(`Opening ${kind} sign-in`);
-    window.setTimeout(() => action.click(), 250);
-  }
+function pressEnter(input) {
+  if (!input) return false;
+  ['keydown', 'keypress', 'keyup'].forEach((eventName) => {
+    try {
+      input.dispatchEvent(new KeyboardEvent(eventName, {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+  });
   return true;
 }
 
-function attemptPreferredThirdPartyFlow(credential) {
-  const googleAction = findThirdPartyAuthAction('google');
-  if (!googleAction) {
-    return false;
+function submitCurrentStep(button, fallbackInput) {
+  if (button) {
+    button.click();
+    return true;
   }
-
-  const preferredKind = getPreferredThirdPartyKind(credential);
-  if (preferredKind === 'google') {
-    return attemptThirdPartyFlow('google');
-  }
-
-  const descriptor = buttonDescriptorText(googleAction);
-  const identifier = `${credential?.loginIdentifier || ''}`.trim().toLowerCase();
-  const localPart = identifier.includes('@') ? identifier.split('@')[0] : identifier;
-  const matchesAccount = Boolean(
-    identifier
-    && (descriptor.includes(identifier) || (localPart && descriptor.includes(localPart)))
-  );
-
-  if (!matchesAccount) {
-    return false;
-  }
-
-  return attemptThirdPartyFlow('google');
+  return pressEnter(fallbackInput);
 }
 
 function findLandingLoginAction() {
@@ -436,6 +338,8 @@ function findLandingLoginAction() {
     .filter((element) => !isDisabled(element) && isVisible(element));
 
   return candidates.find((element) => {
+    if (isThirdPartyAuthAction(element)) return false;
+
     const text = buttonText(element);
     if (
       text.includes('log in')
@@ -448,15 +352,27 @@ function findLandingLoginAction() {
     }
 
     const href = `${element.getAttribute?.('href') || ''}`.toLowerCase();
-    return href.includes('/log-in') || href.includes('/login');
+    return href.includes('/sign-in') || href.includes('/login');
   }) || null;
 }
 
 function isLoginPage() {
-  return window.location.pathname.includes('/log-in')
+  const path = window.location.pathname.toLowerCase();
+  return path.includes('/sign-in')
+    || path.includes('/login')
     || Boolean(findInput(EMAIL_SELECTORS))
     || Boolean(findInput(PASSWORD_SELECTORS))
     || Boolean(findLandingLoginAction());
+}
+
+function isVerificationPage() {
+  const text = `${document.body?.innerText || ''}`.toLowerCase();
+  return text.includes('passcode')
+    || text.includes('authenticate')
+    || text.includes('sign in verification')
+    || text.includes('two-factor')
+    || text.includes('2fa')
+    || text.includes('verification code');
 }
 
 async function loadLaunchState() {
@@ -533,7 +449,7 @@ async function ensureFreshLaunchSession() {
   await clearToolSession({ preserveLaunch: true });
   window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
-  setStatus('Preparing fresh Freepik session');
+  setStatus('Preparing fresh Envato session');
 
   if (window.location.href !== LOGIN_URL) {
     window.location.replace(LOGIN_URL);
@@ -577,9 +493,6 @@ function requestCredential() {
           clearStoredLaunchTicket();
         }
         setStatus(response?.error || 'Credential unavailable');
-        if ((response?.error || '').includes('http=404')) {
-          STATE.settled = true;
-        }
         return;
       }
 
@@ -610,6 +523,14 @@ function attemptLandingLogin() {
   return true;
 }
 
+function looksSignedInAfterSubmit() {
+  if (!STATE.lastSubmitAt) return false;
+  if (Date.now() - STATE.lastSubmitAt < 1500) return false;
+  if (isLoginPage()) return false;
+  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS)) return false;
+  return true;
+}
+
 function attemptFill() {
   if (STATE.settled) return;
   if (!STATE.launchChecked) {
@@ -625,13 +546,29 @@ function attemptFill() {
     return;
   }
 
+  if (isVerificationPage()) {
+    setStatus('Envato requires verification. Complete it manually.');
+    STATE.settled = true;
+    return;
+  }
+
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
+
+  if (looksSignedInAfterSubmit()) {
+    setStatus('Signed in successfully');
+    STATE.settled = true;
+    return;
+  }
+
   if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
     if (emailInput || passwordInput || findLandingLoginAction()) {
       requestCredential();
     }
-    attemptLandingLogin();
+
+    if (!emailInput && !passwordInput && !attemptLandingLogin()) {
+      setStatus('Waiting for Envato login field');
+    }
     return;
   }
 
@@ -646,8 +583,9 @@ function attemptFill() {
   }
 
   if (!emailInput && !passwordInput) {
-    attemptLandingLogin();
-    setStatus('Waiting for Freepik login field');
+    if (!attemptLandingLogin()) {
+      setStatus('Waiting for Envato login field');
+    }
     return;
   }
 
@@ -659,15 +597,17 @@ function attemptFill() {
 
   const now = Date.now();
   const submitButton = findSubmitButton(emailInput, passwordInput);
-  if (!submitButton) {
-    setStatus('Credential filled, sign-in button not found');
+  if (!submitButton && !passwordInput) {
+    setStatus('Credential filled, waiting for password step');
     return;
   }
 
   if (now - STATE.lastSubmitAt > 3000) {
     STATE.lastSubmitAt = now;
     setStatus('Credential filled, signing in');
-    window.setTimeout(() => submitButton.click(), 350);
+    window.setTimeout(() => {
+      submitCurrentStep(submitButton, passwordInput || emailInput);
+    }, 350);
     return;
   }
 

@@ -28,10 +28,13 @@ VALID_SCOPES = {"company", "user"}
 VALID_LAUNCH_MODES = {"external_link", "manual_credential", "sso", "api_proxy", "automation", "extension_autofill"}
 HOSTNAME_EQUIVALENT_GROUPS = (
     {"chatgpt.com", "chat.openai.com", "auth.openai.com", "openai.com"},
+    {"envato.com", "elements.envato.com", "market.envato.com"},
     {"freepik.com"},
+    {"higgsfield.ai", "app.higgsfield.ai", "beta.higgsfield.ai"},
     {"kling.ai", "klingai.com", "app.klingai.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "envato", "freepik", "higgsfield", "kling-ai", "klingai", "flow"}
 
 
 class ToolCreatePayload(BaseModel):
@@ -238,7 +241,9 @@ def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optiona
                 and_(ITPortalToolCredential.scope == "company", ITPortalToolCredential.user_id.is_(None)),
             ),
         )
-        .order_by(ITPortalToolCredential.scope.desc(), ITPortalToolCredential.updated_at.desc())
+        # Prefer the freshest applicable credential so a newly updated company
+        # password does not get hidden behind an older user-specific override.
+        .order_by(ITPortalToolCredential.updated_at.desc(), ITPortalToolCredential.scope.desc())
         .first()
     )
 
@@ -280,8 +285,17 @@ def _expand_equivalent_hostnames(hostname: str) -> set[str]:
     return expanded
 
 
-def _validate_extension_autofill_target(launch_mode: str, website_url: Optional[str], login_url: Optional[str]) -> None:
+def _validate_extension_autofill_target(
+    launch_mode: str,
+    website_url: Optional[str],
+    login_url: Optional[str],
+    tool_slug: Optional[str] = None,
+) -> None:
     if launch_mode != "extension_autofill":
+        return
+
+    normalized_slug = _slugify(tool_slug or "")
+    if normalized_slug in SUPPORTED_EXTENSION_AUTOFILL_SLUGS:
         return
 
     candidate_urls = [website_url, login_url]
@@ -292,7 +306,7 @@ def _validate_extension_autofill_target(launch_mode: str, website_url: Optional[
 
     raise HTTPException(
         status_code=400,
-        detail="Extension auto-fill currently supports ChatGPT/OpenAI, Freepik, and Kling AI. Use Manual credential or Auto-login form submit for other tools.",
+        detail="Extension auto-fill currently supports ChatGPT/OpenAI, Envato, Freepik, Higgsfield, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
     )
 
 
@@ -487,7 +501,7 @@ async def create_tool(
     website_url = _validate_url(payload.website_url, "website_url")
     login_url = _validate_url(payload.login_url, "login_url")
     launch_mode = _validate_launch_mode(payload.launch_mode)
-    _validate_extension_autofill_target(launch_mode, website_url, login_url)
+    _validate_extension_autofill_target(launch_mode, website_url, login_url, slug)
 
     tool = ITPortalTool(
         name=payload.name.strip(),
@@ -548,7 +562,7 @@ async def update_tool(
         tool.status = payload.status.strip().lower() or "active"
     if payload.is_active is not None:
         tool.is_active = payload.is_active
-    _validate_extension_autofill_target(tool.launch_mode, tool.website_url, tool.login_url)
+    _validate_extension_autofill_target(tool.launch_mode, tool.website_url, tool.login_url, tool.slug)
     tool.updated_by = current_user.id
     tool.updated_at = datetime.utcnow()
 

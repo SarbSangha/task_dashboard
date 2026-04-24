@@ -1,7 +1,7 @@
-const TOOL_SLUG = 'freepik';
-const LOGIN_URL = 'https://www.freepik.com/log-in?client_id=freepik&lang=en';
-const PREPARED_LAUNCH_KEY = 'rmw_freepik_prepared_launch';
-const BLOCKED_NOTICE_KEY = 'rmw_freepik_blocked_notice';
+const TOOL_SLUG = 'higgsfield';
+const LOGIN_URL = 'https://higgsfield.ai/auth/login';
+const PREPARED_LAUNCH_KEY = 'rmw_higgsfield_prepared_launch';
+const BLOCKED_NOTICE_KEY = 'rmw_higgsfield_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
 const STATE = {
   credential: null,
@@ -11,7 +11,6 @@ const STATE = {
   lastSubmitAt: 0,
   lastLoginOpenAt: 0,
   loginOpenAttempts: 0,
-  lastThirdPartyClickAt: 0,
   scheduledTimer: null,
   keepAliveTimer: null,
   observer: null,
@@ -21,7 +20,7 @@ const STATE = {
   launchChecked: false,
   launchAuthorized: false,
   launchExpiresAt: 0,
-  status: 'Waiting for Freepik login form',
+  status: 'Waiting for Higgsfield login form',
 };
 
 const MIN_RUN_GAP_MS = 900;
@@ -56,11 +55,11 @@ const ACTION_SELECTORS = [
 ];
 
 function ensureStatusBadge() {
-  const existing = document.getElementById('rmw-autologin-status');
+  const existing = document.getElementById('rmw-higgsfield-autologin-status');
   if (existing) return existing;
 
   const badge = document.createElement('div');
-  badge.id = 'rmw-autologin-status';
+  badge.id = 'rmw-higgsfield-autologin-status';
   badge.style.position = 'fixed';
   badge.style.top = '12px';
   badge.style.right = '12px';
@@ -84,19 +83,9 @@ function setStatus(message) {
   STATE.status = message;
   const badge = ensureStatusBadge();
   if (badge) {
-    badge.textContent = `Freepik auto-login\n${message}`;
+    badge.textContent = `Higgsfield auto-login\n${message}`;
   }
-  console.debug('[RMW Freepik Auto Login]', message);
-}
-
-function markerFromValue(value) {
-  let hash = 0;
-  const text = `${value || ''}`;
-  for (let index = 0; index < text.length; index += 1) {
-    hash = ((hash << 5) - hash) + text.charCodeAt(index);
-    hash |= 0;
-  }
-  return `${hash}`;
+  console.debug('[RMW Higgsfield Auto Login]', message);
 }
 
 function readLaunchTicketFromUrl() {
@@ -186,88 +175,6 @@ function buttonText(button) {
     .toLowerCase();
 }
 
-function getCredentialDomain(credential) {
-  const identifier = `${credential?.loginIdentifier || ''}`.trim().toLowerCase();
-  return identifier.includes('@') ? identifier.split('@').pop() : identifier;
-}
-
-function buttonDescriptorText(button) {
-  if (!button) return '';
-
-  const textParts = [
-    button.innerText,
-    button.textContent,
-    button.value,
-    button.getAttribute?.('aria-label'),
-    button.getAttribute?.('title'),
-    button.getAttribute?.('data-provider'),
-    button.getAttribute?.('href'),
-  ];
-
-  button.querySelectorAll('img[alt], [aria-label], [title], [data-provider]').forEach((node) => {
-    textParts.push(
-      node.getAttribute?.('alt'),
-      node.getAttribute?.('aria-label'),
-      node.getAttribute?.('title'),
-      node.getAttribute?.('data-provider'),
-    );
-  });
-
-  return textParts
-    .filter(Boolean)
-    .join(' ')
-    .trim()
-    .toLowerCase();
-}
-
-function isActionLikeElement(element) {
-  if (!element || !isVisible(element)) return false;
-  if (element.matches?.(ACTION_SELECTORS.join(','))) return !isDisabled(element);
-  if (element.tabIndex >= 0) return !isDisabled(element);
-
-  const style = window.getComputedStyle(element);
-  return style.cursor === 'pointer' || typeof element.onclick === 'function';
-}
-
-function findClickableAncestor(element) {
-  let current = element;
-  while (current && current !== document.body) {
-    if (isActionLikeElement(current)) return current;
-    current = current.parentElement;
-  }
-  return isVisible(element) ? element : null;
-}
-
-function getThirdPartyAuthKind(button) {
-  const text = buttonDescriptorText(button);
-  if (text.includes('google')) return 'google';
-  if (text.includes('apple')) return 'apple';
-  if (text.includes('facebook')) return 'facebook';
-
-  if (text.includes('continue as ')) {
-    if (text.includes('@gmail.com') || text.includes('@googlemail.com')) {
-      return 'google';
-    }
-
-    const googleMarker = button.querySelector?.(
-      'img[alt*="google" i], [aria-label*="google" i], [title*="google" i], [data-provider*="google" i]'
-    );
-    if (googleMarker) {
-      return 'google';
-    }
-  }
-
-  return '';
-}
-
-function isThirdPartyAuthAction(button) {
-  return Boolean(getThirdPartyAuthKind(button));
-}
-
-function collectUniqueElements(elements) {
-  return Array.from(new Set(elements.filter(Boolean)));
-}
-
 function findInput(selectors) {
   for (const selector of selectors) {
     const inputs = Array.from(document.querySelectorAll(selector));
@@ -333,7 +240,7 @@ function findStepContainer(...inputs) {
 
 function collectActionCandidates(root) {
   return Array.from((root || document).querySelectorAll(ACTION_SELECTORS.join(',')))
-    .filter((button) => !isDisabled(button) && isVisible(button) && !isThirdPartyAuthAction(button));
+    .filter((button) => !isDisabled(button) && isVisible(button));
 }
 
 function findSubmitButton(emailInput, passwordInput) {
@@ -359,104 +266,47 @@ function findSubmitButton(emailInput, passwordInput) {
   return null;
 }
 
-function findThirdPartyAuthActions() {
-  const primary = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')));
-  const fallbackSeeds = Array.from(document.querySelectorAll('[tabindex], div, li, section, article'));
-  const fallback = fallbackSeeds
-    .filter((element) => {
-      const text = buttonDescriptorText(element);
-      return text.includes('continue as ')
-        || text.includes('google')
-        || text.includes('apple')
-        || text.includes('facebook')
-        || text.includes('@gmail.com')
-        || text.includes('@googlemail.com');
-    })
-    .map((element) => findClickableAncestor(element));
-
-  return collectUniqueElements([...primary, ...fallback])
-    .filter((button) => isActionLikeElement(button) && Boolean(getThirdPartyAuthKind(button)));
-}
-
-function findThirdPartyAuthAction(kind) {
-  const expectedKind = `${kind || ''}`.trim().toLowerCase();
-  return findThirdPartyAuthActions().find((button) => getThirdPartyAuthKind(button) === expectedKind) || null;
-}
-
-function getPreferredThirdPartyKind(credential) {
-  const domain = getCredentialDomain(credential);
-  if (domain === 'gmail.com' || domain === 'googlemail.com') {
-    return 'google';
-  }
-  return '';
-}
-
-function attemptThirdPartyFlow(kind) {
-  const action = findThirdPartyAuthAction(kind);
-  if (!action) return false;
-  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS)) return false;
-
-  const now = Date.now();
-  if (now - STATE.lastThirdPartyClickAt > 3500) {
-    STATE.lastThirdPartyClickAt = now;
-    setStatus(`Opening ${kind} sign-in`);
-    window.setTimeout(() => action.click(), 250);
-  }
-  return true;
-}
-
-function attemptPreferredThirdPartyFlow(credential) {
-  const googleAction = findThirdPartyAuthAction('google');
-  if (!googleAction) {
-    return false;
-  }
-
-  const preferredKind = getPreferredThirdPartyKind(credential);
-  if (preferredKind === 'google') {
-    return attemptThirdPartyFlow('google');
-  }
-
-  const descriptor = buttonDescriptorText(googleAction);
-  const identifier = `${credential?.loginIdentifier || ''}`.trim().toLowerCase();
-  const localPart = identifier.includes('@') ? identifier.split('@')[0] : identifier;
-  const matchesAccount = Boolean(
-    identifier
-    && (descriptor.includes(identifier) || (localPart && descriptor.includes(localPart)))
-  );
-
-  if (!matchesAccount) {
-    return false;
-  }
-
-  return attemptThirdPartyFlow('google');
-}
-
-function findLandingLoginAction() {
+function findEmailEntryAction() {
   const candidates = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')))
     .filter((element) => !isDisabled(element) && isVisible(element));
 
   return candidates.find((element) => {
     const text = buttonText(element);
     if (
-      text.includes('log in')
-      || text.includes('login')
-      || text.includes('sign in')
-      || text.includes('continue with email')
+      text.includes('continue with email')
+      || text.includes('sign in with email')
+      || text.includes('log in with email')
       || text === 'email'
     ) {
       return true;
     }
 
     const href = `${element.getAttribute?.('href') || ''}`.toLowerCase();
-    return href.includes('/log-in') || href.includes('/login');
+    return href.includes('/auth/login') || href.includes('/auth/email/sign-in');
+  }) || null;
+}
+
+function findPrimaryLoginAction() {
+  const candidates = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')))
+    .filter((element) => !isDisabled(element) && isVisible(element));
+
+  return candidates.find((element) => {
+    const text = buttonText(element);
+    if (text === 'login' || text === 'log in' || text === 'sign in') {
+      return true;
+    }
+
+    const href = `${element.getAttribute?.('href') || ''}`.toLowerCase();
+    return href.includes('/auth/login') || href.includes('/login') || href.includes('/sign-in');
   }) || null;
 }
 
 function isLoginPage() {
-  return window.location.pathname.includes('/log-in')
+  return window.location.pathname.startsWith('/auth')
     || Boolean(findInput(EMAIL_SELECTORS))
     || Boolean(findInput(PASSWORD_SELECTORS))
-    || Boolean(findLandingLoginAction());
+    || Boolean(findPrimaryLoginAction())
+    || Boolean(findEmailEntryAction());
 }
 
 async function loadLaunchState() {
@@ -533,7 +383,17 @@ async function ensureFreshLaunchSession() {
   await clearToolSession({ preserveLaunch: true });
   window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
-  setStatus('Preparing fresh Freepik session');
+  setStatus('Preparing fresh Higgsfield session');
+
+  if (
+    findInput(EMAIL_SELECTORS)
+    || findInput(PASSWORD_SELECTORS)
+    || findPrimaryLoginAction()
+    || findEmailEntryAction()
+  ) {
+    window.location.reload();
+    return false;
+  }
 
   if (window.location.href !== LOGIN_URL) {
     window.location.replace(LOGIN_URL);
@@ -591,23 +451,44 @@ function requestCredential() {
   );
 }
 
-function attemptLandingLogin() {
+function attemptOpenEmailLogin() {
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
   if (emailInput || passwordInput) return false;
-  if (STATE.loginOpenAttempts >= 2) return false;
-
-  const action = findLandingLoginAction();
-  if (!action) return false;
+  if (STATE.loginOpenAttempts >= 3) return false;
 
   const now = Date.now();
-  if (now - STATE.lastLoginOpenAt > 3500) {
+  const emailAction = findEmailEntryAction();
+  if (emailAction) {
+    if (now - STATE.lastLoginOpenAt > 3500) {
+      STATE.lastLoginOpenAt = now;
+      STATE.loginOpenAttempts += 1;
+      setStatus('Opening Higgsfield email login');
+      window.setTimeout(() => emailAction.click(), 250);
+    }
+    return true;
+  }
+
+  const loginAction = findPrimaryLoginAction();
+  if (loginAction) {
+    if (now - STATE.lastLoginOpenAt > 3500) {
+      STATE.lastLoginOpenAt = now;
+      STATE.loginOpenAttempts += 1;
+      setStatus('Opening Higgsfield login');
+      window.setTimeout(() => loginAction.click(), 250);
+    }
+    return true;
+  }
+
+  if (!window.location.pathname.startsWith('/auth') && now - STATE.lastLoginOpenAt > 3500) {
     STATE.lastLoginOpenAt = now;
     STATE.loginOpenAttempts += 1;
-    setStatus('Opening login prompt');
-    window.setTimeout(() => action.click(), 250);
+    setStatus('Redirecting to Higgsfield login');
+    window.location.replace(LOGIN_URL);
+    return true;
   }
-  return true;
+
+  return false;
 }
 
 function attemptFill() {
@@ -628,10 +509,10 @@ function attemptFill() {
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
   if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
-    if (emailInput || passwordInput || findLandingLoginAction()) {
+    if (emailInput || passwordInput || findEmailEntryAction() || window.location.pathname.startsWith('/auth')) {
       requestCredential();
     }
-    attemptLandingLogin();
+    attemptOpenEmailLogin();
     return;
   }
 
@@ -646,8 +527,8 @@ function attemptFill() {
   }
 
   if (!emailInput && !passwordInput) {
-    attemptLandingLogin();
-    setStatus('Waiting for Freepik login field');
+    attemptOpenEmailLogin();
+    setStatus('Waiting for Higgsfield login field');
     return;
   }
 

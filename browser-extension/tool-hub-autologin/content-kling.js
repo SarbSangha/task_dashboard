@@ -1,707 +1,941 @@
-const TOOL_SLUG = 'kling-ai';
-const LOGIN_URL = 'https://kling.ai/app';
-const PREPARED_LAUNCH_KEY = 'rmw_kling_prepared_launch';
-const BLOCKED_NOTICE_KEY = 'rmw_kling_blocked_notice';
-const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
-const STATE = {
-  credential: null,
-  requested: false,
-  requestAttempts: 0,
-  lastRequestAt: 0,
-  lastEmailSubmitAt: 0,
-  lastPasswordSubmitAt: 0,
-  lastLoginOpenAt: 0,
-  lastLandingActionKey: '',
-  loginOpenAttempts: 0,
-  emailStepPending: false,
-  passwordStepPending: false,
-  scheduledTimer: null,
-  keepAliveTimer: null,
-  observer: null,
-  lastRunAt: 0,
-  lastMutationHandledAt: 0,
-  settled: false,
-  launchChecked: false,
-  launchAuthorized: false,
-  launchExpiresAt: 0,
-  status: 'Waiting for Kling login form',
+// ============================================================
+// Kling AI Auto-Login Content Script — v3 Final
+// Fixes: syntax error, landing lock reset, chooser guard,
+//        session clear once, credential cache, redirect loops,
+//        observer drain, double-delay click, speed tuning
+// ============================================================
+
+const TOOL_SLUG               = 'kling-ai';
+const LOGIN_URL               = 'https://kling.ai/app';
+const EXTENSION_TICKET_KEY    = 'rmw_extension_ticket';
+const PREPARED_LAUNCH_KEY     = 'rmw_kling_prepared_launch';
+const BLOCKED_NOTICE_KEY      = 'rmw_kling_blocked_notice';
+const SESSION_CHECKPOINT_KEY  = 'rmw_kling_checkpoint';
+
+// ── Timing constants ──────────────────────────────────────────
+const KEEP_ALIVE_MS          = 1500;   // was 3000
+const MUTATION_DEBOUNCE_MS   = 200;    // was 250
+const SUBMIT_LOCK_MS         = 12000;
+const POST_LOGIN_GRACE_MS    = 7000;   // was 10000
+const EMAIL_STEP_GRACE_MS    = 1800;   // was 3500
+const MIN_RUN_GAP_MS         = 150;    // was 200
+const LAUNCH_RETRY_DELAY_MS  = 400;
+const MAX_LAUNCH_RETRIES     = 6;
+const FIELD_FILL_DELAY_MS    = 60;     // was 80
+const LANDING_CLICK_DELAY_MS = 0;      // was 60 — removed double-delay wrapper
+const LANDING_RETRY_DELAY_MS = 500;    // was 1200
+const EMAIL_CHOOSER_WAIT_MS  = 600;    // was 1500
+const CHECKPOINT_RESUME_MS   = 400;    // was 1200
+const POST_SUBMIT_WAIT_MS    = 300;    // was 700
+
+const AUTHENTICATED_APP_LABELS = [
+  'explore', 'assets', 'generate', 'canvas', 'all tools', 'api', 'omni',
+];
+
+const P = {
+  BOOT         : 'boot',
+  AUTHORIZE    : 'authorize',
+  LOAD_CRED    : 'loadCredential',
+  OPEN_LANDING : 'openLanding',
+  FILL         : 'fill',
+  SUBMIT       : 'submit',
+  WAIT_REDIRECT: 'waitRedirect',
+  DONE         : 'done',
+  BLOCKED      : 'blocked',
 };
-
-const MIN_RUN_GAP_MS = 500;
-const KEEP_ALIVE_MS = 4000;
-
-const EMAIL_SELECTORS = [
-  'input[type="email"]',
-  'input[name="email"]',
-  'input[id*="email"]',
-  'input[name*="email"]',
-  'input[autocomplete="username"]',
-  'input[autocomplete="email"]',
-  'input[placeholder*="email" i]',
-  'input[aria-label*="email" i]',
-];
-
-const PASSWORD_SELECTORS = [
-  'input[type="password"]',
-  'input[name="password"]',
-  'input[id*="password"]',
-  'input[name*="password"]',
-  'input[autocomplete="current-password"]',
-  'input[placeholder*="password" i]',
-  'input[aria-label*="password" i]',
-];
 
 const ACTION_SELECTORS = [
   'button',
+  'input[type="button"]',
   'input[type="submit"]',
   'a[href]',
   '[role="button"]',
 ];
 
-function ensureStatusBadge() {
-  const badge = document.getElementById('rmw-autologin-status');
-  if (badge) badge.remove();
-  return null;
+const EMAIL_SELS = [
+  'input[type="email"]',
+  'input[name="email"]',
+  'input[name*="email" i]',
+  'input[id*="email" i]',
+  'input[placeholder*="email" i]',
+  'input[aria-label*="email" i]',
+  'input[autocomplete="username"]',
+  'input[autocomplete="email"]',
+];
+
+const PASS_SELS = [
+  'input[type="password"]',
+  'input[name="password"]',
+  'input[name*="password" i]',
+  'input[id*="password" i]',
+  'input[placeholder*="password" i]',
+  'input[aria-label*="password" i]',
+  'input[autocomplete="current-password"]',
+];
+
+// ── Checkpoint: survives same-origin reload, cleared on done/fail ──
+function writeCheckpoint(phase, extra = {}) {
+  try {
+    sessionStorage.setItem(SESSION_CHECKPOINT_KEY, JSON.stringify({
+      phase, ts: Date.now(), ...extra,
+    }));
+  } catch {}
+}
+
+function readCheckpoint() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_CHECKPOINT_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (Date.now() - data.ts > 45000) { clearCheckpoint(); return null; }
+    return data;
+  } catch { return null; }
+}
+
+function clearCheckpoint() {
+  try { sessionStorage.removeItem(SESSION_CHECKPOINT_KEY); } catch {}
+}
+function hasSignedInToast() {
+  const text = `${document.body?.innerText || ''}`.toLowerCase();
+  return text.includes('you have signed in');
+}
+// ── CTX ───────────────────────────────────────────────────────
+const CTX = {
+  phase                : P.BOOT,
+  busy                 : false,
+  stopped              : false,
+  timer                : null,
+  keepAlive            : null,
+  observer             : null,
+  credential           : null,
+  submitLockUntil      : 0,
+  submitAt             : 0,
+  submitKind           : '',
+  launchRetries        : 0,
+  lastRunAt            : 0,
+  lastMutationAt       : 0,
+  ticket               : '',
+  authorized           : false,
+  prepared             : false,
+  expiresAt            : 0,
+  lastLandingActionKey : '',
+  landingActionLockUntil: 0,
+  sessionClearDone     : false,  // FIX: guard against repeated session clearing
+};
+
+// ── Status badge ──────────────────────────────────────────────
+function ensureBadge() {
+  let el = document.getElementById('rmw-kling-badge');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'rmw-kling-badge';
+  Object.assign(el.style, {
+    position: 'fixed', top: '10px', right: '10px', zIndex: '2147483647',
+    maxWidth: '300px', padding: '8px 12px', borderRadius: '8px',
+    background: 'rgba(10,15,30,0.90)', color: '#f0f4ff',
+    font: '12px/1.5 system-ui,sans-serif',
+    boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+    pointerEvents: 'none', whiteSpace: 'pre-wrap',
+  });
+  (document.body || document.documentElement).appendChild(el);
+  return el;
 }
 
 function setStatus(message) {
-  if (STATE.status === message) return;
-  STATE.status = message;
-  ensureStatusBadge();
+  console.debug('[RMW Kling]', message);
+  const badge = ensureBadge();
+  if (badge) badge.textContent = `Kling Auto-Login\n${message}`;
 }
 
-function markerFromValue(value) {
-  let hash = 0;
-  const text = `${value || ''}`;
-  for (let index = 0; index < text.length; index += 1) {
-    hash = ((hash << 5) - hash) + text.charCodeAt(index);
-    hash |= 0;
-  }
-  return `${hash}`;
-}
-
-function readLaunchTicketFromUrl() {
-  const searchParams = new URLSearchParams(window.location.search || '');
-  const directQueryTicket = `${searchParams.get('rmw_extension_ticket') || ''}`.trim();
-  if (directQueryTicket) {
-    return directQueryTicket;
-  }
-
-  const hash = `${window.location.hash || ''}`.replace(/^#/, '');
-  if (!hash) return '';
-  const hashParams = new URLSearchParams(hash);
-  return `${hashParams.get('rmw_extension_ticket') || ''}`.trim();
-}
-
-function getStoredLaunchTicket() {
-  try {
-    return `${window.sessionStorage.getItem(EXTENSION_TICKET_KEY) || ''}`.trim();
-  } catch {
-    return '';
-  }
-}
-
-function clearStoredLaunchTicket() {
-  try {
-    window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
-  } catch {}
-}
-
-function storeLaunchTicket(ticket) {
-  try {
-    if (ticket) {
-      window.sessionStorage.setItem(EXTENSION_TICKET_KEY, ticket);
-    } else {
-      window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
-    }
-  } catch {}
-}
-
-function captureLaunchTicketFromUrl() {
-  const ticket = readLaunchTicketFromUrl();
-  if (!ticket) return '';
-
-  storeLaunchTicket(ticket);
-  try {
-    const searchParams = new URLSearchParams(window.location.search || '');
-    searchParams.delete('rmw_extension_ticket');
-    searchParams.delete('rmw_tool_slug');
-    const nextSearch = searchParams.toString();
-    const cleanUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}`;
-    window.history.replaceState(null, '', cleanUrl);
-  } catch {}
-  return ticket;
-}
-
-function sendRuntimeMessage(message) {
+// ── Chrome messaging ──────────────────────────────────────────
+function msg(payload) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (response) => {
+    chrome.runtime.sendMessage(payload, (response) => {
       if (chrome.runtime.lastError) {
         resolve({ ok: false, error: chrome.runtime.lastError.message });
         return;
       }
-      resolve(response || { ok: false, error: 'No response received' });
+      resolve(response || { ok: false, error: 'No response' });
     });
   });
 }
 
-function isVisible(element) {
-  if (!element) return false;
-  const rect = element.getBoundingClientRect();
-  const style = window.getComputedStyle(element);
-  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+// ── Ticket helpers ────────────────────────────────────────────
+function readTicketFromUrl() {
+  try {
+    const sp = new URLSearchParams(location.search || '');
+    const t = `${sp.get('rmw_extension_ticket') || ''}`.trim();
+    if (t) return t;
+    const hash = `${location.hash || ''}`.replace(/^#/, '');
+    if (!hash) return '';
+    return `${new URLSearchParams(hash).get('rmw_extension_ticket') || ''}`.trim();
+  } catch { return ''; }
 }
 
-function isDisabled(element) {
-  if (!element) return true;
-  return Boolean(
-    element.disabled
-    || element.getAttribute('aria-disabled') === 'true'
-    || element.getAttribute('disabled') !== null
+function storeTicket(ticket) {
+  try {
+    ticket
+      ? sessionStorage.setItem(EXTENSION_TICKET_KEY, ticket)
+      : sessionStorage.removeItem(EXTENSION_TICKET_KEY);
+  } catch {}
+}
+
+function loadStoredTicket() {
+  try { return `${sessionStorage.getItem(EXTENSION_TICKET_KEY) || ''}`.trim(); }
+  catch { return ''; }
+}
+
+function clearTicket() {
+  try { sessionStorage.removeItem(EXTENSION_TICKET_KEY); } catch {}
+}
+
+function captureTicket() {
+  const ticket = readTicketFromUrl();
+  if (!ticket) return loadStoredTicket();
+  storeTicket(ticket);
+  try {
+    const sp = new URLSearchParams(location.search || '');
+    sp.delete('rmw_extension_ticket');
+    sp.delete('rmw_tool_slug');
+    const q = sp.toString();
+    history.replaceState(null, '', location.pathname + (q ? `?${q}` : ''));
+  } catch {}
+  return ticket;
+}
+
+// ── FIX: Only ever remove OUR keys — never clear site storage ─
+function clearOurKeys() {
+  const keys = [EXTENSION_TICKET_KEY, PREPARED_LAUNCH_KEY, BLOCKED_NOTICE_KEY];
+  [sessionStorage, localStorage].forEach((s) => {
+    keys.forEach((k) => { try { s.removeItem(k); } catch {} });
+  });
+}
+
+// ── DOM helpers ───────────────────────────────────────────────
+function isVisible(el) {
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  const s = getComputedStyle(el);
+  return r.width > 0 && r.height > 0
+    && s.display !== 'none'
+    && s.visibility !== 'hidden'
+    && s.opacity !== '0';
+}
+
+function isEnabled(el) {
+  return Boolean(el)
+    && !el.disabled
+    && el.getAttribute('aria-disabled') !== 'true'
+    && el.getAttribute('disabled') === null;
+}
+
+function buttonText(el) {
+  return `${el?.innerText || el?.textContent || el?.value || el?.getAttribute?.('aria-label') || ''}`
+    .trim().toLowerCase();
+}
+
+function buttonDescriptorText(el) {
+  if (!el) return '';
+  const parts = [
+    el.innerText, el.textContent, el.value,
+    el.getAttribute?.('aria-label'), el.getAttribute?.('title'),
+    el.getAttribute?.('data-testid'), el.getAttribute?.('href'),
+  ];
+  el.querySelectorAll?.('img[alt],[aria-label],[title]').forEach((n) => {
+    parts.push(n.getAttribute?.('alt'), n.getAttribute?.('aria-label'), n.getAttribute?.('title'));
+  });
+  return parts.filter(Boolean).join(' ').trim().toLowerCase();
+}
+
+function isActionLikeElement(el) {
+  if (!el || !isVisible(el)) return false;
+  if (el.matches?.(ACTION_SELECTORS.join(','))) return isEnabled(el);
+  if (el.tabIndex >= 0) return isEnabled(el);
+  const s = getComputedStyle(el);
+  return s.cursor === 'pointer' || typeof el.onclick === 'function';
+}
+
+function findClickableAncestor(el) {
+  let cur = el;
+  while (cur && cur !== document.body) {
+    if (isActionLikeElement(cur)) return cur;
+    cur = cur.parentElement;
+  }
+  return isVisible(el) ? el : null;
+}
+
+function collectUniqueElements(els) {
+  return Array.from(new Set(els.filter(Boolean)));
+}
+
+function findInput(selectors) {
+  for (const sel of selectors) {
+    const match = Array.from(document.querySelectorAll(sel))
+      .find((el) => isVisible(el) && !el.disabled && !el.readOnly);
+    if (match) return match;
+  }
+  return null;
+}
+
+function valuesMatch(a, b) {
+  return `${a || ''}`.trim() === `${b || ''}`.trim();
+}
+
+// ── React-compatible fill ─────────────────────────────────────
+function fillField(input, value) {
+  if (!input) return;
+  const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  if (desc?.set) desc.set.call(input, value);
+  else input.value = value;
+  input.setAttribute('value', value);
+  ['input', 'change', 'blur'].forEach((e) =>
+    input.dispatchEvent(new Event(e, { bubbles: true }))
   );
 }
 
-function buttonText(button) {
-  return `${button.innerText || button.textContent || button.value || button.getAttribute?.('aria-label') || ''}`
-    .trim()
-    .toLowerCase();
+// ── Single safe click — no multi-event chain ──────────────────
+function safeClick(el) {
+  if (!el || !isVisible(el) || !isEnabled(el)) return false;
+  const anchor = el.closest?.('a[href]') || (el.matches?.('a[href]') ? el : null);
+  const target = anchor || el;
+  if (anchor) {
+    const href = `${anchor.getAttribute('href') || ''}`.trim();
+    const linkTarget = `${anchor.getAttribute('target') || ''}`.trim().toLowerCase();
+    if (href && href !== '#' && !href.toLowerCase().startsWith('javascript:') && linkTarget === '_blank') {
+      try { anchor.setAttribute('target', '_self'); } catch {}
+    }
+  }
+  try { target.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch {}
+  try { target.focus({ preventScroll: true }); } catch {}
+  target.click();
+  return true;
 }
 
-function isThirdPartyAuthAction(button) {
-  const text = buttonText(button);
-  return text.includes('google')
-    || text.includes('apple')
-    || text.includes('facebook')
-    || text.includes('continue as ');
+// ── Button detection helpers ──────────────────────────────────
+function isThirdPartyAuthAction(el) {
+  const text = buttonDescriptorText(el) || buttonText(el);
+  return text.includes('google') || text.includes('apple')
+    || text.includes('facebook') || text.includes('continue as ');
 }
 
-function isEmailAuthAction(button) {
-  const text = buttonText(button);
+function isEmailAuthAction(el) {
+  const text = buttonDescriptorText(el) || buttonText(el);
   return text.includes('sign in with email')
     || text.includes('continue with email')
     || text.includes('use email')
     || text === 'email';
 }
 
-function landingActionKey(action) {
-  if (!action) return '';
+function landingActionKey(el) {
+  if (!el) return '';
   return [
-    buttonText(action),
-    `${action.getAttribute?.('href') || ''}`.trim().toLowerCase(),
-    `${action.getAttribute?.('data-testid') || ''}`.trim().toLowerCase(),
+    buttonText(el),
+    `${el.getAttribute?.('href') || ''}`.trim().toLowerCase(),
+    `${el.getAttribute?.('data-testid') || ''}`.trim().toLowerCase(),
   ].join('|');
 }
 
-function findInput(selectors) {
-  for (const selector of selectors) {
-    const inputs = Array.from(document.querySelectorAll(selector));
-    const match = inputs.find((input) => !input.disabled && !input.readOnly && isVisible(input));
-    if (match) return match;
-  }
-  return null;
+function findLandingCandidates() {
+  const primary = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')));
+  const fallback = Array.from(document.querySelectorAll('[tabindex],div,span,li,section,article'))
+    .filter((el) => {
+      const text = buttonDescriptorText(el);
+      return text.includes('sign in') || text.includes('log in') || text.includes('login')
+        || text.includes('sign in with email') || text.includes('continue with email')
+        || text.includes('use email') || text.includes('experience now') || text.includes('create now');
+    })
+    .map((el) => findClickableAncestor(el));
+  return collectUniqueElements([...primary, ...fallback]).filter((el) => isActionLikeElement(el));
 }
 
-function clearPageStorage() {
-  try {
-    window.localStorage.clear();
-  } catch {}
-  try {
-    const preparedLaunch = window.sessionStorage.getItem(PREPARED_LAUNCH_KEY);
-    const blockedNotice = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY);
-    const extensionTicket = window.sessionStorage.getItem(EXTENSION_TICKET_KEY);
-    window.sessionStorage.clear();
-    if (preparedLaunch) {
-      window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, preparedLaunch);
-    }
-    if (blockedNotice) {
-      window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, blockedNotice);
-    }
-    if (extensionTicket) {
-      window.sessionStorage.setItem(EXTENSION_TICKET_KEY, extensionTicket);
-    }
-  } catch {}
+function findEmailChooserButton() {
+  return findLandingCandidates().find((el) => isEmailAuthAction(el)) || null;
 }
 
-function setInputValue(input, value) {
-  const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-  if (descriptor?.set) descriptor.set.call(input, value);
-  else input.value = value;
-
-  input.setAttribute('value', value);
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  input.dispatchEvent(new Event('change', { bubbles: true }));
-  input.dispatchEvent(new Event('blur', { bubbles: true }));
-}
-
-function valuesMatch(currentValue, expectedValue) {
-  return `${currentValue || ''}`.trim() === `${expectedValue || ''}`.trim();
-}
-
-function findStepContainer(input) {
-  if (!input) return [document];
-
-  const containers = [];
-  let current = input.parentElement;
-
-  while (current && current !== document.body) {
-    containers.push(current);
-    if (
-      current.matches?.('form, [role="dialog"], [aria-modal="true"], main, section, article')
-      || current.getAttribute?.('data-testid')
-    ) {
-      break;
-    }
-    current = current.parentElement;
-  }
-
-  containers.push(document);
-  return containers;
-}
-
-function collectActionCandidates(root) {
-  return Array.from((root || document).querySelectorAll(ACTION_SELECTORS.join(',')))
-    .filter((button) => !isDisabled(button) && isVisible(button) && !isThirdPartyAuthAction(button));
-}
-
-function findSubmitButton(kind, input = null) {
-  const words = kind === 'password'
-    ? ['continue', 'log in', 'login', 'sign in', 'submit']
-    : ['continue', 'next', 'use email', 'email', 'submit', 'sign in'];
-
-  for (const root of findStepContainer(input)) {
-    const candidates = collectActionCandidates(root);
-    if (!candidates.length) continue;
-
-    const exactMatch = candidates.find((button) => {
-      const text = buttonText(button);
-      return text === 'continue'
-        || text === 'next'
-        || text === 'log in'
-        || text === 'login'
-        || text === 'sign in';
-    });
-    if (exactMatch) return exactMatch;
-
-    const wordMatch = candidates.find((button) => words.some((word) => buttonText(button).includes(word)));
-    if (wordMatch) return wordMatch;
-
-    const submitMatch = candidates.find((button) => button.type === 'submit');
-    if (submitMatch) return submitMatch;
-  }
-
-  return null;
-}
-
-function findLandingLoginAction() {
-  const candidates = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')))
-    .filter((element) => !isDisabled(element) && isVisible(element));
-
-  const emailAction = candidates.find((element) => isEmailAuthAction(element));
-  if (emailAction) return emailAction;
-
-  const authAction = candidates.find((element) => {
-    if (isThirdPartyAuthAction(element)) return false;
-    const text = buttonText(element);
-    if (
-      text.includes('log in')
-      || text.includes('login')
-      || text.includes('sign in')
-      || text.includes('experience now')
-      || text.includes('create now')
-    ) {
-      return true;
-    }
-
-    const href = `${element.getAttribute?.('href') || ''}`.toLowerCase();
-    return href.includes('/login')
-      || href.includes('/log-in')
-      || href.includes('/sign-in')
-      || href.includes('/signin')
-      || href.includes('/auth')
-      || href.includes('/app');
+// FIX: No longer matches generic /app hrefs — those are nav links, not login buttons
+function findLandingEntryButton() {
+  const candidates = findLandingCandidates();
+  const signInButton = candidates.find((el) => {
+    if (isThirdPartyAuthAction(el) || isEmailAuthAction(el)) return false;
+    const text = buttonDescriptorText(el) || buttonText(el);
+    return text === 'sign in' || text === 'login' || text === 'log in'
+      || text.includes('sign in') || text.includes('log in') || text.includes('login');
   });
-
-  return authAction || null;
+  if (signInButton) return signInButton;
+  return candidates.find((el) => {
+    if (isThirdPartyAuthAction(el) || isEmailAuthAction(el)) return false;
+    const text = buttonDescriptorText(el) || buttonText(el);
+    if (text.includes('experience now') || text.includes('create now') || text.includes('get started')) return true;
+    const href = `${el.getAttribute?.('href') || ''}`.trim().toLowerCase();
+    // FIX: removed href.includes('/app') — matched sidebar nav links and caused redirect loops
+    return href.includes('/login') || href.includes('/sign-in')
+      || href.includes('/signin') || href.includes('/auth');
+  }) || null;
 }
 
-function isLoginPage() {
-  return window.location.pathname.includes('/login')
-    || window.location.pathname.includes('/sign-in')
-    || Boolean(findInput(EMAIL_SELECTORS))
-    || Boolean(findInput(PASSWORD_SELECTORS))
-    || Boolean(findLandingLoginAction());
+function hasLoginForm() {
+  return Boolean(findInput(EMAIL_SELS) || findInput(PASS_SELS));
 }
 
-async function loadLaunchState() {
-  const directTicket = captureLaunchTicketFromUrl() || getStoredLaunchTicket();
-  if (directTicket) {
-    const activation = await sendRuntimeMessage({
+function hasVisibleLoginSurface() {
+  return Boolean(hasLoginForm() || findEmailChooserButton() || findLandingEntryButton());
+}
+
+// FIX: Never redirect if already on /app — prevents reload during transient render
+function shouldRedirectToApp() {
+  if (location.pathname.startsWith('/app')) return false;
+  return !hasVisibleLoginSurface();
+}
+
+function collectVisibleTextSnapshot() {
+  return collectUniqueElements(
+    ['nav','aside','main','header','a[href]','button','[role="button"]','[tabindex]']
+      .flatMap((s) => Array.from(document.querySelectorAll(s)))
+  )
+    .filter((el) => isVisible(el))
+    .map((el) => buttonDescriptorText(el))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function isAuthenticated() {
+  if (hasSignedInToast()) return true;
+
+  if (!location.pathname.startsWith('/app')) return false;
+  if (hasVisibleLoginSurface()) return false;
+
+  const visibleText = collectVisibleTextSnapshot();
+  const matched = AUTHENTICATED_APP_LABELS.filter((label) => visibleText.includes(label));
+  return matched.length >= 3;
+}
+
+function collectScopedActions(root) {
+  const primary = Array.from((root || document).querySelectorAll(ACTION_SELECTORS.join(',')));
+  const fallback = Array.from((root || document).querySelectorAll('[tabindex],div,span,li,section,article'))
+    .map((el) => findClickableAncestor(el));
+  return collectUniqueElements([...primary, ...fallback]).filter((el) => isActionLikeElement(el));
+}
+
+function findSignInButton(emailInput, passInput) {
+  const roots = [];
+  let cur = (passInput || emailInput)?.parentElement;
+  while (cur && cur !== document.body) {
+    roots.push(cur);
+    if (cur.matches?.('form,[role="dialog"],[aria-modal="true"],main,section,article')) break;
+    cur = cur.parentElement;
+  }
+  roots.push(document);
+
+  for (const root of roots) {
+    const buttons = collectScopedActions(root)
+      .filter((el) => !isThirdPartyAuthAction(el) && !isEmailAuthAction(el));
+
+    const exact = buttons.find((el) => {
+      const t = buttonDescriptorText(el) || buttonText(el);
+      return t === 'sign in' || t === 'log in' || t === 'login'
+        || t === 'continue' || t === 'next' || t === 'submit';
+    });
+    if (exact) return exact;
+
+    const partial = buttons.find((el) => {
+      const t = buttonDescriptorText(el) || buttonText(el);
+      return (t.includes('sign in') || t.includes('log in') || t.includes('continue') || t.includes('next'))
+        && !t.includes('google') && !t.includes('apple') && !t.includes('email');
+    });
+    if (partial) return partial;
+
+    const submit = buttons.find((el) => el.type === 'submit');
+    if (submit) return submit;
+  }
+  return null;
+}
+
+// ── Authorization ─────────────────────────────────────────────
+async function checkAuthorization() {
+  const storedTicket = loadStoredTicket();
+  if (storedTicket) {
+    const activation = await msg({
       type: 'TOOL_HUB_ACTIVATE_LAUNCH',
       toolSlug: TOOL_SLUG,
-      hostname: window.location.hostname,
-      pageUrl: window.location.href,
-      extensionTicket: directTicket,
+      hostname: location.hostname,
+      pageUrl: location.href,
+      extensionTicket: storedTicket,
     });
-
     if (activation?.ok && activation.authorized) {
-      clearStoredLaunchTicket();
-      STATE.launchChecked = true;
-      STATE.launchAuthorized = true;
-      STATE.launchExpiresAt = Number(activation.expiresAt || 0);
+      clearTicket();
+      return {
+        authorized: true,
+        prepared: Boolean(activation.prepared),
+        expiresAt: Number(activation.expiresAt || 0),
+      };
+    }
+  }
+  const response = await msg({
+    type: 'TOOL_HUB_GET_LAUNCH_STATE',
+    toolSlug: TOOL_SLUG,
+    hostname: location.hostname,
+    pageUrl: location.href,
+  });
+  return {
+    authorized: Boolean(response?.ok && response.authorized),
+    prepared: Boolean(response?.ok && response.authorized && response.prepared),
+    expiresAt: Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0),
+  };
+}
+
+// ── Credential: fetched once, cache cleared with session ──────
+let credFetchPromise = null;
+
+function clearCredentialCache() {
+  credFetchPromise = null;
+  CTX.credential = null;
+}
+
+async function loadCredential() {
+  if (CTX.credential) return CTX.credential;
+  if (credFetchPromise) return credFetchPromise;
+  credFetchPromise = msg({
+    type: 'TOOL_HUB_GET_CREDENTIAL',
+    toolSlug: TOOL_SLUG,
+    hostname: location.hostname,
+    pageUrl: location.href,
+    extensionTicket: loadStoredTicket(),
+  }).then((response) => {
+    credFetchPromise = null;
+    if (!response?.ok) throw new Error(response?.error || 'Credential unavailable');
+    CTX.credential = response.data?.credential || null;
+    return CTX.credential;
+  }).catch((error) => {
+    credFetchPromise = null;
+    throw error;
+  });
+  return credFetchPromise;
+}
+
+// FIX: clearToolSessionSafe runs ONCE per launch (sessionClearDone guard)
+// and also clears credential cache so stale creds are never reused
+async function clearToolSessionSafe(options = {}) {
+  clearOurKeys();
+  if (!options.preserveLaunch) {
+    try { sessionStorage.removeItem(PREPARED_LAUNCH_KEY); } catch {}
+    try { localStorage.removeItem(PREPARED_LAUNCH_KEY); } catch {}
+  }
+  clearCredentialCache();
+  CTX.sessionClearDone = true;
+  await msg({
+    type: 'TOOL_HUB_CLEAR_TOOL_SESSION',
+    toolSlug: TOOL_SLUG,
+    preserveLaunch: Boolean(options.preserveLaunch),
+  });
+}
+
+async function markFreshSessionPrepared() {
+  const response = await msg({ type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED', toolSlug: TOOL_SLUG });
+  if (response?.ok) CTX.prepared = true;
+  return Boolean(response?.ok);
+}
+
+// ── Stop ──────────────────────────────────────────────────────
+function stop(message, phase = P.DONE) {
+  CTX.phase = phase;
+  CTX.stopped = true;
+  if (CTX.timer)    { clearTimeout(CTX.timer);    CTX.timer = null; }
+  if (CTX.keepAlive){ clearInterval(CTX.keepAlive); CTX.keepAlive = null; }
+  if (CTX.observer) { CTX.observer.disconnect();  CTX.observer = null; } // FIX: stops mutation drain
+  clearTicket();
+  clearCheckpoint();
+  setStatus(message);
+}
+
+function wake(delay = 0) {
+  if (CTX.stopped || CTX.timer) return;
+  CTX.timer = setTimeout(run, Math.max(0, delay));
+}
+
+// FIX: Removed inner setTimeout wrapper — click fires immediately,
+// no stacked latency on top of wake(delayAfterClick)
+function clickLandingAction(button, nextPhase, delayAfterClick) {
+  if (!button) return false;
+  const actionKey = landingActionKey(button);
+  const now = Date.now();
+  const sameActionPending = actionKey
+    && actionKey === CTX.lastLandingActionKey
+    && CTX.landingActionLockUntil > now;
+
+  if (sameActionPending) {
+    setStatus('Waiting for Kling login screen…');
+    wake(Math.max(100, CTX.landingActionLockUntil - now));
+    return true;
+  }
+
+  CTX.lastLandingActionKey   = actionKey;
+  CTX.landingActionLockUntil = now + delayAfterClick;
+  if (!CTX.stopped) safeClick(button);  // immediate — no setTimeout wrapper
+  CTX.phase = nextPhase;
+  wake(delayAfterClick);
+  return true;
+}
+
+// ── Runner ────────────────────────────────────────────────────
+async function run() {
+  CTX.timer = null;
+  if (CTX.stopped || CTX.busy) return;
+  const now = Date.now();
+  if (now - CTX.lastRunAt < MIN_RUN_GAP_MS) {
+    wake(MIN_RUN_GAP_MS - (now - CTX.lastRunAt));
+    return;
+  }
+  CTX.lastRunAt = now;
+  CTX.busy = true;
+  try { await tick(); }
+  catch (error) { setStatus(`Error: ${error?.message || 'Unknown'}`); wake(2000); }
+  finally { CTX.busy = false; }
+}
+
+async function tick() {
+  if (isAuthenticated()) {
+    stop('✓ Signed in successfully', P.DONE);
+    return;
+  }
+
+  switch (CTX.phase) {
+
+    // ── BOOT ──────────────────────────────────────────────────
+    case P.BOOT: {
+      CTX.ticket = captureTicket();
+      const checkpoint = readCheckpoint();
+      if (checkpoint?.phase === P.WAIT_REDIRECT) {
+        setStatus('Resuming after login redirect…');
+        CTX.submitAt       = checkpoint.submitAt || Date.now();
+        CTX.submitLockUntil = Date.now() + SUBMIT_LOCK_MS;
+        CTX.submitKind     = checkpoint.submitKind || 'password';
+        CTX.phase = P.WAIT_REDIRECT;
+        wake(CHECKPOINT_RESUME_MS);  // 400ms — page already loaded
+        return;
+      }
+      CTX.phase = P.AUTHORIZE;
+      wake(0);
       return;
     }
 
-    clearStoredLaunchTicket();
-  }
+    // ── AUTHORIZE ─────────────────────────────────────────────
+    case P.AUTHORIZE: {
+      setStatus('Checking dashboard authorization…');
+      let auth;
+      try { auth = await checkAuthorization(); }
+      catch { auth = { authorized: false, prepared: false, expiresAt: 0 }; }
 
-  const response = await sendRuntimeMessage({
-    type: 'TOOL_HUB_GET_LAUNCH_STATE',
-    toolSlug: TOOL_SLUG,
-    hostname: window.location.hostname,
-    pageUrl: window.location.href,
-  });
+      CTX.authorized = Boolean(auth.authorized);
+      CTX.prepared   = Boolean(auth.prepared);
+      CTX.expiresAt  = Number(auth.expiresAt || 0);
 
-  STATE.launchChecked = true;
-  STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
-  STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
-}
-
-async function clearToolSession() {
-  clearPageStorage();
-  await sendRuntimeMessage({
-    type: 'TOOL_HUB_CLEAR_TOOL_SESSION',
-    toolSlug: TOOL_SLUG,
-  });
-}
-
-async function enforceDashboardOnlyAccess() {
-  const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
-  if (!isLoginPage()) {
-    await clearToolSession();
-    window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
-    window.location.replace(LOGIN_URL);
-    return false;
-  }
-
-  if (!alreadyNotified) {
-    window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
-  }
-
-  setStatus('Launch this tool from the dashboard first');
-  STATE.settled = true;
-  return false;
-}
-
-async function ensureFreshLaunchSession() {
-  const launchKey = `${STATE.launchExpiresAt || 0}`;
-  if (!launchKey || launchKey === '0') {
-    return false;
-  }
-
-  if (window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) === launchKey) {
-    return true;
-  }
-
-  await clearToolSession();
-  window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
-  window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
-  setStatus('Preparing fresh Kling session');
-
-  if (window.location.origin + window.location.pathname !== new URL(LOGIN_URL).origin + new URL(LOGIN_URL).pathname) {
-    window.location.replace(LOGIN_URL);
-    return false;
-  }
-
-  window.location.reload();
-  return false;
-}
-
-function requestCredential() {
-  const now = Date.now();
-  if (STATE.requested) return;
-  if (STATE.requestAttempts >= 4) return;
-  if (now - STATE.lastRequestAt < 2000) return;
-
-  STATE.requested = true;
-  STATE.lastRequestAt = now;
-  STATE.requestAttempts += 1;
-  setStatus(`Fetching credential (attempt ${STATE.requestAttempts})`);
-
-  chrome.runtime.sendMessage(
-    {
-      type: 'TOOL_HUB_GET_CREDENTIAL',
-      toolSlug: TOOL_SLUG,
-      hostname: window.location.hostname,
-      pageUrl: window.location.href,
-      extensionTicket: getStoredLaunchTicket(),
-    },
-    (response) => {
-      STATE.requested = false;
-
-      if (chrome.runtime.lastError) {
-        setStatus(`Extension error: ${chrome.runtime.lastError.message}`);
-        STATE.settled = true;
+      if (!CTX.authorized) {
+        CTX.launchRetries += 1;
+        if (CTX.launchRetries > MAX_LAUNCH_RETRIES) {
+          stop('Open this tool from the dashboard first.', P.BLOCKED);
+          return;
+        }
+        setStatus(`Waiting for dashboard launch (${CTX.launchRetries}/${MAX_LAUNCH_RETRIES})…`);
+        wake(LAUNCH_RETRY_DELAY_MS);
         return;
       }
 
-      if (!response?.ok) {
-        if ((response?.error || '').toLowerCase().includes('launch this tool from the dashboard first')) {
-          clearStoredLaunchTicket();
+      CTX.launchRetries = 0;
+
+      // FIX: sessionClearDone guard — only clears cookies on FIRST launch prep
+      if (CTX.expiresAt && !CTX.prepared && !CTX.sessionClearDone) {
+        setStatus('Preparing fresh Kling session…');
+        await clearToolSessionSafe({ preserveLaunch: true });
+        await markFreshSessionPrepared();
+        if (shouldRedirectToApp()) {
+          location.replace(LOGIN_URL);
+          return;
         }
-        setStatus(response?.error || 'Credential unavailable');
-        if ((response?.error || '').includes('http=404')) {
-          STATE.settled = true;
-        }
+      }
+
+      if (shouldRedirectToApp()) {
+        setStatus('Redirecting to Kling app…');
+        location.replace(LOGIN_URL);
         return;
       }
 
-      clearStoredLaunchTicket();
-      STATE.credential = response.data?.credential || null;
-      setStatus(STATE.credential ? 'Credential loaded' : 'Credential missing');
-      scheduleAttempt(150);
-    }
-  );
-}
-
-function attemptEmailStep(credential) {
-  const input = findInput(EMAIL_SELECTORS);
-  if (!input) return false;
-
-  if (STATE.passwordStepPending || findInput(PASSWORD_SELECTORS)) {
-    STATE.emailStepPending = false;
-  }
-
-  if (input.value !== credential.loginIdentifier) {
-    input.focus();
-    setInputValue(input, credential.loginIdentifier);
-  }
-
-  if (STATE.emailStepPending) {
-    setStatus('Email filled, waiting for password step');
-    return true;
-  }
-
-  const now = Date.now();
-  if (input.value && now - STATE.lastEmailSubmitAt > 2500) {
-    const submitButton = findSubmitButton('email', input);
-    if (!submitButton) {
-      setStatus('Email filled, continue button not found');
-      return true;
+      CTX.phase = P.LOAD_CRED;
+      wake(0);
+      return;
     }
 
-    STATE.lastEmailSubmitAt = now;
-    STATE.emailStepPending = true;
-    setStatus('Email filled, continuing');
-    window.setTimeout(() => submitButton.click(), 300);
-  } else if (input.value) {
-    setStatus('Email filled');
-  }
-
-  return true;
-}
-
-function attemptPasswordStep(credential) {
-  const input = findInput(PASSWORD_SELECTORS);
-  if (!input) return false;
-
-  STATE.emailStepPending = false;
-  if (input.value !== credential.password) {
-    input.focus();
-    setInputValue(input, credential.password);
-  }
-
-  if (STATE.passwordStepPending) {
-    setStatus('Password filled, waiting for sign-in');
-    return true;
-  }
-
-  const now = Date.now();
-  if (input.value && now - STATE.lastPasswordSubmitAt > 2500) {
-    const submitButton = findSubmitButton('password', input);
-    if (!submitButton) {
-      setStatus('Password filled, sign-in button not found');
-      return true;
+    // ── LOAD_CRED ─────────────────────────────────────────────
+    case P.LOAD_CRED: {
+      setStatus('Fetching credentials…');
+      try {
+        const credential = await loadCredential();
+        if (!credential?.loginIdentifier || !credential?.password) {
+          setStatus('Credential missing. Check the dashboard.');
+          wake(3000);
+          return;
+        }
+      } catch (error) {
+        const message = error?.message || 'Unavailable';
+        if (message.toLowerCase().includes('open this tool from the dashboard first')) {
+          CTX.authorized = false;
+          CTX.prepared   = false;
+          CTX.expiresAt  = 0;
+          CTX.phase = P.AUTHORIZE;
+          setStatus('Launch expired. Re-checking authorization…');
+          wake(LAUNCH_RETRY_DELAY_MS);
+          return;
+        }
+        setStatus(`Credential error: ${message}`);
+        wake(3000);
+        return;
+      }
+      CTX.phase = P.OPEN_LANDING;
+      wake(0);
+      return;
     }
 
-    STATE.lastPasswordSubmitAt = now;
-    STATE.passwordStepPending = true;
-    setStatus('Password filled, signing in');
-    window.setTimeout(() => submitButton.click(), 350);
-  } else if (input.value) {
-    setStatus('Password filled');
-  }
+    // ── OPEN_LANDING ──────────────────────────────────────────
+    case P.OPEN_LANDING: {
+      if (hasLoginForm()) {
+        CTX.phase = P.FILL;
+        wake(0);
+        return;
+      }
 
-  return true;
-}
+      const emailButton = findEmailChooserButton();
+      if (emailButton) {
+        setStatus('Opening email sign-in…');
+        clickLandingAction(emailButton, P.FILL, EMAIL_CHOOSER_WAIT_MS);  // 600ms
+        return;
+      }
 
-function attemptCombinedCredentialStep(credential) {
-  const emailInput = findInput(EMAIL_SELECTORS);
-  const passwordInput = findInput(PASSWORD_SELECTORS);
-  if (!emailInput || !passwordInput) return false;
+      const signInButton = findLandingEntryButton();
+      if (signInButton) {
+        setStatus('Opening Kling sign-in…');
+        clickLandingAction(signInButton, P.OPEN_LANDING, LANDING_RETRY_DELAY_MS);  // 500ms
+        return;
+      }
 
-  STATE.emailStepPending = false;
+      if (shouldRedirectToApp()) {
+        setStatus('Redirecting to Kling app…');
+        location.replace(LOGIN_URL);
+        return;
+      }
 
-  if (!valuesMatch(emailInput.value, credential.loginIdentifier)) {
-    emailInput.focus();
-    setInputValue(emailInput, credential.loginIdentifier);
-  }
-
-  if (!valuesMatch(passwordInput.value, credential.password)) {
-    passwordInput.focus();
-    setInputValue(passwordInput, credential.password);
-  }
-
-  const emailReady = valuesMatch(emailInput.value, credential.loginIdentifier);
-  const passwordReady = valuesMatch(passwordInput.value, credential.password);
-  if (!emailReady || !passwordReady) {
-    setStatus('Filling Kling credentials');
-    return true;
-  }
-
-  const now = Date.now();
-  const submitButton = findSubmitButton('password', passwordInput);
-  if (!submitButton) {
-    setStatus('Credential filled, sign-in button not found');
-    return true;
-  }
-
-  if (isDisabled(submitButton)) {
-    setStatus('Credential filled, waiting for sign-in button');
-    return true;
-  }
-
-  if (STATE.passwordStepPending) {
-    setStatus('Credential filled, waiting for sign-in');
-    return true;
-  }
-
-  if (now - STATE.lastPasswordSubmitAt > 1800) {
-    STATE.lastPasswordSubmitAt = now;
-    STATE.passwordStepPending = true;
-    setStatus('Credential filled, signing in');
-    window.setTimeout(() => submitButton.click(), 180);
-    return true;
-  }
-
-  setStatus('Credential filled');
-  return true;
-}
-
-function attemptLandingLogin() {
-  const emailInput = findInput(EMAIL_SELECTORS);
-  const passwordInput = findInput(PASSWORD_SELECTORS);
-  if (emailInput || passwordInput) return false;
-  if (STATE.loginOpenAttempts >= 8) return false;
-
-  const action = findLandingLoginAction();
-  if (!action) return false;
-
-  const now = Date.now();
-  const actionKey = landingActionKey(action);
-  const isNewAction = actionKey && actionKey !== STATE.lastLandingActionKey;
-  const cooldownMs = isEmailAuthAction(action) ? 250 : 900;
-  if (isNewAction || now - STATE.lastLoginOpenAt > cooldownMs) {
-    STATE.lastLoginOpenAt = now;
-    STATE.lastLandingActionKey = actionKey;
-    STATE.loginOpenAttempts += 1;
-    setStatus(isEmailAuthAction(action) ? 'Opening email sign-in' : 'Opening login prompt');
-    window.setTimeout(() => action.click(), isEmailAuthAction(action) ? 80 : 160);
-  }
-  return true;
-}
-
-function attemptFill() {
-  if (STATE.settled) return;
-  if (!STATE.launchChecked) {
-    setStatus('Checking dashboard launch');
-    return;
-  }
-  if (!STATE.launchAuthorized) {
-    scheduleAsyncStep(enforceDashboardOnlyAccess);
-    return;
-  }
-  if (STATE.launchExpiresAt && window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) !== `${STATE.launchExpiresAt}`) {
-    scheduleAsyncStep(ensureFreshLaunchSession);
-    return;
-  }
-
-  const credential = STATE.credential;
-  if (!credential?.loginIdentifier || !credential?.password) {
-    if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS) || findLandingLoginAction()) {
-      requestCredential();
+      setStatus('Waiting for Kling login screen…');
+      wake(400);
+      return;
     }
-    attemptLandingLogin();
-    return;
+
+    // ── FILL ──────────────────────────────────────────────────
+    case P.FILL: {
+      const emailInput = findInput(EMAIL_SELS);
+      const passInput  = findInput(PASS_SELS);
+
+      if (!emailInput && !passInput) {
+        CTX.phase = P.OPEN_LANDING;
+        wake(200);
+        return;
+      }
+
+      if (!CTX.credential?.loginIdentifier || !CTX.credential?.password) {
+        CTX.phase = P.LOAD_CRED;
+        wake(0);
+        return;
+      }
+
+      if (emailInput && !valuesMatch(emailInput.value, CTX.credential.loginIdentifier)) {
+        emailInput.focus();
+        fillField(emailInput, CTX.credential.loginIdentifier);
+      }
+
+      if (passInput && !valuesMatch(passInput.value, CTX.credential.password)) {
+        passInput.focus();
+        fillField(passInput, CTX.credential.password);
+      }
+
+      setStatus('Fields filled. Looking for Sign In…');
+      CTX.phase = P.SUBMIT;
+      wake(FIELD_FILL_DELAY_MS);
+      return;
+    }
+
+    // ── SUBMIT ────────────────────────────────────────────────
+    case P.SUBMIT: {
+      if (Date.now() < CTX.submitLockUntil) {
+        setStatus('Waiting for sign-in response…');
+        wake(500);
+        return;
+      }
+
+      const emailInput = findInput(EMAIL_SELS);
+      const passInput  = findInput(PASS_SELS);
+
+      if (emailInput && !valuesMatch(emailInput.value, CTX.credential?.loginIdentifier)) {
+        CTX.phase = P.FILL; wake(0); return;
+      }
+      if (passInput && !valuesMatch(passInput.value, CTX.credential?.password)) {
+        CTX.phase = P.FILL; wake(0); return;
+      }
+
+      const signInButton = findSignInButton(emailInput, passInput);
+      if (!signInButton) {
+        setStatus('Sign In button not found. Retrying…');
+        wake(400);
+        return;
+      }
+
+      const nextSubmitKind = emailInput && !passInput ? 'email' : (passInput ? 'password' : 'unknown');
+      setStatus(nextSubmitKind === 'email' ? 'Continuing to password step…' : 'Clicking Sign In…');
+
+      writeCheckpoint(P.WAIT_REDIRECT, { submitAt: Date.now(), submitKind: nextSubmitKind });
+
+      if (safeClick(signInButton)) {
+        CTX.submitAt       = Date.now();
+        CTX.submitKind     = nextSubmitKind;
+        CTX.submitLockUntil = Date.now() + SUBMIT_LOCK_MS;
+        CTX.phase = P.WAIT_REDIRECT;
+        wake(POST_SUBMIT_WAIT_MS);  // 300ms — was 700ms
+      } else {
+        clearCheckpoint();
+        wake(300);
+      }
+      return;
+    }
+
+    // ── WAIT_REDIRECT ─────────────────────────────────────────
+    case P.WAIT_REDIRECT: {
+      const elapsed = Date.now() - CTX.submitAt;
+
+      if (isAuthenticated()) {
+        stop('✓ Signed in successfully', P.DONE);
+        return;
+      }
+
+      if (hasSignedInToast()) {
+        setStatus('Kling accepted login — waiting for app...');
+        CTX.submitLockUntil = Date.now() + 3000;
+
+        if (!location.pathname.startsWith('/app')) {
+          location.replace(LOGIN_URL);
+          return;
+        }
+
+        return;
+      }
+
+      // FIX: chooser check guarded with elapsed > 1500ms to avoid
+      // premature re-entry while SPA transition is still in progress
+      if (location.pathname.startsWith('/app') && findEmailChooserButton() && elapsed > 1500) {
+        setStatus('Kling reloaded chooser — re-entering…');
+        CTX.submitLockUntil        = 0;
+        CTX.lastLandingActionKey   = '';   // FIX BUG2 — reset lock so click fires
+        CTX.landingActionLockUntil = 0;   // FIX BUG2
+        clearCheckpoint();
+        CTX.phase = P.OPEN_LANDING;
+        wake(0);
+        return;
+      }
+
+      // Ended up on public kling.ai after login — redirect back to app
+      if (!location.pathname.startsWith('/app')) {
+        setStatus('Post-login redirect to public page — going to app…');
+        location.replace(LOGIN_URL);
+        return;
+      }
+
+      // Email-only step: password field appeared — fill it
+      if (CTX.submitKind === 'email' && findInput(PASS_SELS)) {
+        CTX.submitLockUntil = 0;
+        clearCheckpoint();
+        CTX.phase = P.FILL;
+        wake(0);
+        return;
+      }
+
+      // Error detection after 3 seconds
+      if (elapsed > 3000 && hasLoginForm()) {
+        const bodyText = `${document.body?.innerText || ''}`.toLowerCase();
+        const hasError = [
+          'incorrect password', 'invalid password', 'wrong password',
+          'invalid email', 'account not found', 'try again', 'password is incorrect',
+        ].some((t) => bodyText.includes(t));
+        if (hasError) {
+          stop('Login failed. Check credentials in the dashboard.', P.BLOCKED);
+          return;
+        }
+      }
+
+      // Email step grace timeout (1800ms)
+      if (CTX.submitKind === 'email' && elapsed > EMAIL_STEP_GRACE_MS) {
+        CTX.submitLockUntil = 0;
+        clearCheckpoint();
+        CTX.phase = P.FILL;
+        wake(0);
+        return;
+      }
+
+      // Grace period expired
+      if (elapsed > POST_LOGIN_GRACE_MS) {
+        if (hasLoginForm() || findEmailChooserButton()) {
+          setStatus('Session not held — re-entering…');
+          CTX.submitLockUntil        = 0;
+          CTX.lastLandingActionKey   = '';   // FIX BUG4
+          CTX.landingActionLockUntil = 0;   // FIX BUG4
+          clearCheckpoint();
+          CTX.phase = hasLoginForm() ? P.FILL : P.OPEN_LANDING;
+          wake(0);
+          return;
+        }
+        if (elapsed > POST_LOGIN_GRACE_MS * 1.5) {
+          setStatus('Login timed out. Retrying…');
+          CTX.submitLockUntil = 0;
+          clearCheckpoint();
+          CTX.phase = P.FILL;
+          wake(0);
+          return;
+        }
+      }
+
+      const remaining = Math.max(1, Math.round((POST_LOGIN_GRACE_MS - elapsed) / 1000));
+      setStatus(`Waiting for Kling to load… (${remaining}s)`);
+      wake(600);
+      return;
+    }
+
+    // FIX BUG1: missing default case — switch was not closed, causing syntax error
+    case P.DONE:
+    case P.BLOCKED:
+    default:
+      return;
   }
-
-  if (attemptCombinedCredentialStep(credential)) return;
-  if (attemptEmailStep(credential)) return;
-  if (attemptPasswordStep(credential)) return;
-  attemptLandingLogin();
-  setStatus('Waiting for matching Kling field');
 }
 
-function scheduleAsyncStep(task) {
-  if (STATE.settled) return;
-  STATE.settled = true;
-  Promise.resolve()
-    .then(task)
-    .catch((error) => {
-      setStatus(`Session check failed: ${error?.message || 'Unknown error'}`);
-    });
-}
-
-function runAttempt() {
-  STATE.scheduledTimer = null;
-
+// ── MutationObserver ──────────────────────────────────────────
+// attributes: false — avoids triggering on Kling canvas/animation attribute changes
+// stop() disconnects observer on DONE/BLOCKED to prevent CPU drain after login
+function onMutation() {
+  if (CTX.stopped) return;
   const now = Date.now();
-  if (now - STATE.lastRunAt < MIN_RUN_GAP_MS) {
-    scheduleAttempt(MIN_RUN_GAP_MS - (now - STATE.lastRunAt));
-    return;
-  }
-
-  STATE.lastRunAt = now;
-
-  try {
-    attemptFill();
-  } catch (error) {
-    STATE.settled = true;
-    setStatus(`Script error: ${error?.message || 'Unknown error'}`);
+  if (now - CTX.lastMutationAt < MUTATION_DEBOUNCE_MS) return;
+  CTX.lastMutationAt = now;
+  if ([P.OPEN_LANDING, P.FILL, P.SUBMIT, P.WAIT_REDIRECT].includes(CTX.phase)) {
+    wake(100);
   }
 }
 
-function scheduleAttempt(delay = 0) {
-  if (STATE.settled) return;
-  if (STATE.scheduledTimer) return;
-  STATE.scheduledTimer = window.setTimeout(runAttempt, Math.max(0, delay));
-}
-
-function handleMutations() {
-  if (STATE.settled) return;
-
-  const now = Date.now();
-  if (now - STATE.lastMutationHandledAt < 1200) return;
-
-  STATE.lastMutationHandledAt = now;
-  scheduleAttempt(200);
-}
-
+// ── Start ─────────────────────────────────────────────────────
 function start() {
-  ensureStatusBadge();
-  captureLaunchTicketFromUrl();
-  STATE.observer = new MutationObserver(() => handleMutations());
-  STATE.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
-  STATE.keepAliveTimer = window.setInterval(() => scheduleAttempt(0), KEEP_ALIVE_MS);
-  loadLaunchState()
-    .catch(() => {
-      STATE.launchChecked = true;
-      STATE.launchAuthorized = false;
-      STATE.launchExpiresAt = 0;
-    })
-    .finally(() => {
-      STATE.settled = false;
-      scheduleAttempt(0);
-    });
+  ensureBadge();
+  CTX.ticket = captureTicket();
+  CTX.observer = new MutationObserver(onMutation);
+  CTX.observer.observe(document.body || document.documentElement, {
+    childList: true, subtree: true, attributes: false,
+  });
+  CTX.keepAlive = setInterval(() => {
+    if (!CTX.stopped && !CTX.busy && !CTX.timer) wake(0);
+  }, KEEP_ALIVE_MS);
+  wake(0);
 }
 
 start();

@@ -1,10 +1,117 @@
 const DEFAULT_API_BASE = 'https://dashboard.ritzmediaworld.in';
 const ACTIVE_TAB_LAUNCHES_STORAGE_KEY = 'activeExtensionTabLaunches';
+const FLOW_HOME_URL = 'https://labs.google/fx';
+const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
+const CREDENTIAL_CONTINUATION_LIMIT = 6;
 const TOOL_SESSION_DOMAINS = {
+  envato: ['envato.com', 'elements.envato.com', 'market.envato.com'],
   freepik: ['freepik.com', 'www.freepik.com'],
+  flow: ['labs.google'],
+  higgsfield: ['higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'],
   'kling-ai': ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   klingai: ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
 };
+const TOOL_OPTIONAL_SESSION_DOMAINS = {
+  flow: ['accounts.google.com', 'google.com', '.google.com'],
+};
+const TOOL_LOGIN_CONTINUATION_HOSTS = {
+  chatgpt: [
+    'chatgpt.com',
+    'chat.openai.com',
+    'auth.openai.com',
+    'accounts.google.com',
+    'login.microsoftonline.com',
+    'login.live.com',
+    'login.microsoft.com',
+  ],
+  envato: [
+    'envato.com',
+    'elements.envato.com',
+    'market.envato.com',
+  ],
+  freepik: [
+    'freepik.com',
+    'www.freepik.com',
+    'accounts.google.com',
+  ],
+  higgsfield: [
+    'higgsfield.ai',
+    'app.higgsfield.ai',
+    'beta.higgsfield.ai',
+  ],
+  flow: [
+    'labs.google',
+    'accounts.google.com',
+  ],
+  'kling-ai': [
+    'kling.ai',
+    'www.kling.ai',
+    'klingai.com',
+    'www.klingai.com',
+    'app.klingai.com',
+  ],
+  klingai: [
+    'kling.ai',
+    'www.kling.ai',
+    'klingai.com',
+    'www.klingai.com',
+    'app.klingai.com',
+  ],
+};
+
+function decodeExtensionTicketPayload(ticket) {
+  const rawTicket = `${ticket || ''}`.trim();
+  if (!rawTicket) return null;
+
+  const [body] = rawTicket.split('.', 1);
+  if (!body) return null;
+
+  try {
+    const normalized = body.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    const decoded = atob(padded);
+    const payload = JSON.parse(decoded);
+    return payload && typeof payload === 'object' ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildLaunchFromExtensionTicket(toolSlug, hostname, extensionTicket) {
+  const payload = decodeExtensionTicketPayload(extensionTicket);
+  const expiresAt = Number(payload?.exp || 0) * 1000;
+  if (!payload || payload.kind !== 'extension_autofill' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    return null;
+  }
+
+  return {
+    toolSlug,
+    hostname,
+    ticket: `${extensionTicket}`.trim(),
+    expiresAt,
+  };
+}
+
+function normalizeFlowLaunchUrl(value) {
+  const raw = `${value || ''}`.trim();
+  if (!raw) return FLOW_DIRECT_ROUTE_URL;
+
+  try {
+    const url = new URL(raw);
+    if (normalizeToolSlug(url.searchParams.get('rmw_tool_slug')) !== 'flow') {
+      url.searchParams.set('rmw_tool_slug', 'flow');
+    }
+    if (url.origin === 'https://labs.google' && /^\/fx\/?$/.test(url.pathname)) {
+      url.pathname = '/fx/tools/flow';
+    }
+    if (url.origin === 'https://labs.google' && url.href === FLOW_HOME_URL) {
+      return FLOW_DIRECT_ROUTE_URL;
+    }
+    return url.toString();
+  } catch {
+    return FLOW_DIRECT_ROUTE_URL;
+  }
+}
 
 function normalizeToolSlug(value) {
   return `${value || ''}`.trim().toLowerCase();
@@ -20,6 +127,130 @@ function normalizeHostname(value) {
   } catch {
     return raw.replace(/^www\./, '').split('/')[0];
   }
+}
+
+function normalizeApiBase(value) {
+  const raw = `${value || ''}`.trim();
+  if (!raw) return '';
+
+  try {
+    const url = new URL(raw);
+    return `${url.origin}`.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function toCookieUrl(value) {
+  const raw = `${value || ''}`.trim();
+  if (!raw) return '';
+
+  try {
+    const url = new URL(raw);
+    if (!/^https?:$/i.test(url.protocol)) {
+      return '';
+    }
+    return `${url.origin}/`;
+  } catch {
+    return '';
+  }
+}
+
+function buildAuthCookieCandidateUrls(apiBase, dashboardUrl) {
+  const seen = new Set();
+  const urls = [];
+
+  [apiBase, dashboardUrl, DEFAULT_API_BASE].forEach((value) => {
+    const nextUrl = toCookieUrl(value);
+    if (!nextUrl || seen.has(nextUrl)) {
+      return;
+    }
+    seen.add(nextUrl);
+    urls.push(nextUrl);
+  });
+
+  return urls;
+}
+
+async function readSessionTokenFromCookies(apiBase, dashboardUrl) {
+  const candidateUrls = buildAuthCookieCandidateUrls(apiBase, dashboardUrl);
+
+  for (const url of candidateUrls) {
+    try {
+      const cookie = await chrome.cookies.get({
+        url,
+        name: 'session_id',
+      });
+      const value = `${cookie?.value || ''}`.trim();
+      if (value) {
+        return value;
+      }
+    } catch {
+      // Ignore cookie lookup failures and continue through other candidate origins.
+    }
+  }
+
+  return '';
+}
+
+async function syncAuthContext(message = {}) {
+  const apiBase = normalizeApiBase(message.apiBase) || DEFAULT_API_BASE;
+  const dashboardUrl = `${message.dashboardUrl || ''}`.trim();
+  let sessionToken = `${message.sessionToken || ''}`.trim();
+
+  if (!sessionToken) {
+    sessionToken = await readSessionTokenFromCookies(apiBase, dashboardUrl);
+  }
+
+  const stored = await chrome.storage.local.get(['apiBase', 'sessionToken', 'sessionTokenSyncedAt']);
+  const nextValues = {};
+  const removeKeys = [];
+
+  if (`${stored.apiBase || ''}`.trim() !== apiBase) {
+    nextValues.apiBase = apiBase;
+  }
+
+  if (sessionToken) {
+    if (`${stored.sessionToken || ''}`.trim() !== sessionToken) {
+      nextValues.sessionToken = sessionToken;
+    }
+    nextValues.sessionTokenSyncedAt = Date.now();
+  } else if (`${stored.sessionToken || ''}`.trim()) {
+    removeKeys.push('sessionToken');
+    removeKeys.push('sessionTokenSyncedAt');
+  }
+
+  if (removeKeys.length > 0) {
+    await chrome.storage.local.remove(removeKeys);
+  }
+
+  if (Object.keys(nextValues).length > 0) {
+    await chrome.storage.local.set(nextValues);
+  }
+
+  return {
+    apiBase,
+    sessionToken,
+  };
+}
+
+function hostnameFromPageUrl(value) {
+  const raw = `${value || ''}`.trim();
+  if (!raw) return '';
+
+  try {
+    return normalizeHostname(new URL(raw).hostname);
+  } catch {
+    return '';
+  }
+}
+
+function isLoginContinuationPage(toolSlug, pageUrl, hostname) {
+  const allowedHosts = TOOL_LOGIN_CONTINUATION_HOSTS[normalizeToolSlug(toolSlug)] || [];
+  if (!allowedHosts.length) return false;
+
+  const pageHost = hostnameFromPageUrl(pageUrl) || normalizeHostname(hostname);
+  return Boolean(pageHost && allowedHosts.includes(pageHost));
 }
 
 function resolvePendingLaunchKey(launches, toolSlug, hostname) {
@@ -128,31 +359,93 @@ async function getActiveLaunch(tabId, toolSlug) {
   return item;
 }
 
-async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug) {
+async function getRecentContinuationLaunch(toolSlug, hostname, pageUrl) {
+  if (!isLoginContinuationPage(toolSlug, pageUrl, hostname)) {
+    return null;
+  }
+
+  const now = Date.now();
+  const launchMap = await getActiveLaunchMap();
+  const matches = Object.values(launchMap)
+    .filter((item) => item
+      && normalizeToolSlug(item.toolSlug) === normalizeToolSlug(toolSlug)
+      && `${item.ticket || ''}`.trim()
+      && Number(item.expiresAt || 0) > now
+    )
+    .sort((left, right) => Number(right.activatedAt || 0) - Number(left.activatedAt || 0));
+
+  if (!matches.length) {
+    return null;
+  }
+
+  const freshest = matches[0];
+  const freshestAgeMs = now - Number(freshest.activatedAt || 0);
+  if (freshestAgeMs > 15 * 60 * 1000) {
+    return null;
+  }
+
+  return freshest;
+}
+
+async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug, hostname = '', pageUrl = '') {
   const primaryLaunch = await getActiveLaunch(primaryTabId, toolSlug);
   if (primaryLaunch?.ticket) {
     return primaryLaunch;
   }
 
-  if (!fallbackTabId || fallbackTabId === primaryTabId) {
+  if (fallbackTabId && fallbackTabId !== primaryTabId) {
+    const fallbackLaunch = await getActiveLaunch(fallbackTabId, toolSlug);
+    if (fallbackLaunch?.ticket) {
+      if (primaryTabId) {
+        await setActiveLaunch(primaryTabId, fallbackLaunch);
+      }
+      return fallbackLaunch;
+    }
+  }
+
+  const continuationLaunch = await getRecentContinuationLaunch(toolSlug, hostname, pageUrl);
+  if (continuationLaunch?.ticket && primaryTabId) {
+    await setActiveLaunch(primaryTabId, continuationLaunch);
+  }
+  return continuationLaunch;
+}
+
+async function activatePendingLaunchForTab(tabId, toolSlug, hostname, pageUrl) {
+  if (!tabId) return null;
+
+  const resolvedHostname = hostnameFromPageUrl(pageUrl) || normalizeHostname(hostname);
+  const storedLaunch = await getPendingLaunch(toolSlug, resolvedHostname);
+  if (!storedLaunch?.ticket) {
     return null;
   }
 
-  return getActiveLaunch(fallbackTabId, toolSlug);
+  await consumePendingLaunch(toolSlug, resolvedHostname);
+  const launch = {
+    toolSlug: normalizeToolSlug(toolSlug) || normalizeToolSlug(storedLaunch.toolSlug),
+    hostname: resolvedHostname || normalizeHostname(storedLaunch.hostname),
+    ticket: `${storedLaunch.ticket}`.trim(),
+    expiresAt: Number(storedLaunch.expiresAt || 0),
+  };
+  await setActiveLaunch(tabId, launch);
+  return launch;
 }
 
 async function setActiveLaunch(tabId, launch) {
   if (!tabId || !launch?.ticket || !launch?.expiresAt) return;
   const launchMap = await getActiveLaunchMap();
   const existingLaunch = launchMap[`${tabId}`] || {};
+  const nextTicket = `${launch.ticket}`.trim();
+  const sameTicket = `${existingLaunch.ticket || ''}`.trim() === nextTicket;
   launchMap[`${tabId}`] = {
     toolSlug: normalizeToolSlug(launch.toolSlug),
-    ticket: `${launch.ticket}`.trim(),
+    ticket: nextTicket,
     expiresAt: Number(launch.expiresAt || 0),
     hostname: normalizeHostname(launch.hostname),
     activatedAt: Date.now(),
-    directCredentialIssuedAt: Number(existingLaunch.directCredentialIssuedAt || 0),
-    inheritedCredentialIssuedAt: Number(existingLaunch.inheritedCredentialIssuedAt || 0),
+    freshSessionPreparedAt: sameTicket ? Number(existingLaunch.freshSessionPreparedAt || 0) : 0,
+    directCredentialIssuedAt: sameTicket ? Number(existingLaunch.directCredentialIssuedAt || 0) : 0,
+    inheritedCredentialIssuedAt: sameTicket ? Number(existingLaunch.inheritedCredentialIssuedAt || 0) : 0,
+    credentialContinuationCount: sameTicket ? Number(existingLaunch.credentialContinuationCount || 0) : 0,
   };
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
 }
@@ -170,7 +463,23 @@ async function clearActiveLaunch(tabId, toolSlug = '') {
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
 }
 
-async function markCredentialIssued(tabId, mode = 'direct') {
+async function markFreshSessionPrepared(tabId, toolSlug = '') {
+  if (!tabId) return false;
+  const launchMap = await getActiveLaunchMap();
+  const key = `${tabId}`;
+  const current = launchMap[key];
+  if (!current) return false;
+  if (toolSlug && normalizeToolSlug(current.toolSlug) !== normalizeToolSlug(toolSlug)) {
+    return false;
+  }
+
+  current.freshSessionPreparedAt = Date.now();
+  launchMap[key] = current;
+  await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+  return true;
+}
+
+async function markCredentialIssued(tabId, mode = 'direct', isContinuation = false) {
   if (!tabId) return;
   const launchMap = await getActiveLaunchMap();
   const key = `${tabId}`;
@@ -181,6 +490,10 @@ async function markCredentialIssued(tabId, mode = 'direct') {
     current.inheritedCredentialIssuedAt = Date.now();
   } else {
     current.directCredentialIssuedAt = Date.now();
+  }
+
+  if (isContinuation) {
+    current.credentialContinuationCount = Number(current.credentialContinuationCount || 0) + 1;
   }
 
   launchMap[key] = current;
@@ -198,24 +511,38 @@ async function activateLaunchForTab(tabId, toolSlug, hostname, extensionTicket) 
   }
 
   const storedLaunch = await getPendingLaunch(toolSlug, hostname);
-  if (!storedLaunch?.ticket || `${storedLaunch.ticket}`.trim() !== `${extensionTicket}`.trim()) {
+  if (storedLaunch?.ticket && `${storedLaunch.ticket}`.trim() === `${extensionTicket}`.trim()) {
+    await consumePendingLaunch(toolSlug, hostname);
+    const launch = {
+      toolSlug,
+      hostname,
+      ticket: extensionTicket,
+      expiresAt: Number(storedLaunch.expiresAt || 0),
+    };
+    await setActiveLaunch(tabId, launch);
+    return launch;
+  }
+
+  const directTicketLaunch = buildLaunchFromExtensionTicket(toolSlug, hostname, extensionTicket);
+  if (!directTicketLaunch) {
     throw new Error('Open this tool from the dashboard first.');
   }
 
-  await consumePendingLaunch(toolSlug, hostname);
-  const launch = {
-    toolSlug,
-    hostname,
-    ticket: extensionTicket,
-    expiresAt: Number(storedLaunch.expiresAt || 0),
-  };
-  await setActiveLaunch(tabId, launch);
-  return launch;
+  await setActiveLaunch(tabId, directTicketLaunch);
+  return directTicketLaunch;
 }
 
-async function clearToolSession(toolSlug) {
+function getToolSessionDomains(toolSlug, options = {}) {
   const normalizedSlug = normalizeToolSlug(toolSlug);
-  const domains = TOOL_SESSION_DOMAINS[normalizedSlug] || [];
+  const domains = [...(TOOL_SESSION_DOMAINS[normalizedSlug] || [])];
+  if (options.includeGoogle) {
+    domains.push(...(TOOL_OPTIONAL_SESSION_DOMAINS[normalizedSlug] || []));
+  }
+  return Array.from(new Set(domains.filter(Boolean)));
+}
+
+async function clearToolSession(toolSlug, options = {}) {
+  const domains = getToolSessionDomains(toolSlug, options);
   let removed = 0;
 
   for (const domain of domains) {
@@ -238,11 +565,73 @@ async function clearToolSession(toolSlug) {
   return { removed };
 }
 
+async function openFlowIsolatedWindow(launchUrl) {
+  const url = normalizeFlowLaunchUrl(launchUrl);
+  if (!url) {
+    throw new Error('Flow launch URL is missing.');
+  }
+
+  const incognitoAllowed = await chrome.extension.isAllowedIncognitoAccess();
+  if (!incognitoAllowed) {
+    throw new Error('Enable "Allow in Incognito" for this extension, then launch Flow again.');
+  }
+
+  const createdWindow = await chrome.windows.create({
+    url,
+    incognito: true,
+    focused: true,
+  });
+
+  return {
+    windowId: Number(createdWindow?.id || 0),
+    incognito: Boolean(createdWindow?.incognito),
+  };
+}
+
+async function cleanupToolSessionForClosedTab(tabId) {
+  if (!tabId) return;
+
+  const launchMap = await getActiveLaunchMap();
+  const closedLaunch = launchMap[`${tabId}`];
+  const normalizedSlug = normalizeToolSlug(closedLaunch?.toolSlug);
+
+  if (!closedLaunch) {
+    return;
+  }
+
+  const shouldClearSessionOnClose = normalizedSlug === 'flow';
+    if (shouldClearSessionOnClose) {
+      const hasOtherToolTabs = Object.entries(launchMap).some(([key, item]) => {
+        if (key === `${tabId}`) return false;
+        return normalizeToolSlug(item?.toolSlug) === normalizedSlug;
+      });
+
+      if (!hasOtherToolTabs) {
+        await clearToolSession(normalizedSlug, { includeGoogle: true });
+      }
+    }
+
+  await clearActiveLaunch(tabId);
+}
+
 async function getSettings() {
   const stored = await chrome.storage.local.get(['apiBase', 'sessionToken']);
+  const apiBase = (stored.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '');
+  let sessionToken = (stored.sessionToken || '').trim();
+
+  if (!sessionToken) {
+    sessionToken = await readSessionTokenFromCookies(apiBase, apiBase);
+    if (sessionToken) {
+      await chrome.storage.local.set({
+        sessionToken,
+        sessionTokenSyncedAt: Date.now(),
+      });
+    }
+  }
+
   return {
-    apiBase: (stored.apiBase || DEFAULT_API_BASE).replace(/\/+$/, ''),
-    sessionToken: (stored.sessionToken || '').trim(),
+    apiBase,
+    sessionToken,
   };
 }
 
@@ -259,11 +648,15 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
     throw new Error('Open this tool from the dashboard first.');
   }
 
-  if (launchMode === 'direct' && Number(activeLaunch?.directCredentialIssuedAt || 0) > 0) {
+  const isContinuation = isLoginContinuationPage(message.toolSlug, message.pageUrl, message.hostname);
+  const continuationAllowed = isContinuation
+    && Number(activeLaunch?.credentialContinuationCount || 0) < CREDENTIAL_CONTINUATION_LIMIT;
+
+  if (launchMode === 'direct' && Number(activeLaunch?.directCredentialIssuedAt || 0) > 0 && !continuationAllowed) {
     throw new Error('Open this tool from the dashboard first.');
   }
 
-  if (launchMode === 'inherited' && Number(activeLaunch?.inheritedCredentialIssuedAt || 0) > 0) {
+  if (launchMode === 'inherited' && Number(activeLaunch?.inheritedCredentialIssuedAt || 0) > 0 && !continuationAllowed) {
     throw new Error('Open this tool from the dashboard first.');
   }
 
@@ -299,9 +692,9 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   }
 
   if (launchMode === 'direct' && tabId) {
-    await markCredentialIssued(tabId, 'direct');
+    await markCredentialIssued(tabId, 'direct', isContinuation);
   } else if (launchMode === 'inherited' && openerTabId) {
-    await markCredentialIssued(openerTabId, 'inherited');
+    await markCredentialIssued(openerTabId, 'inherited', isContinuation);
   }
 
   return data;
@@ -322,19 +715,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ok: true,
         authorized: true,
         expiresAt: Number(launch?.expiresAt || 0),
+        prepared: Boolean(launch?.freshSessionPreparedAt),
       }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
 
   if (message?.type === 'TOOL_HUB_GET_LAUNCH_STATE') {
-    getAuthorizedLaunchForTabs(senderTabId, senderOpenerTabId, message.toolSlug)
+    getAuthorizedLaunchForTabs(
+      senderTabId,
+      senderOpenerTabId,
+      message.toolSlug,
+      message.hostname,
+      message.pageUrl
+    )
+      .then(async (launch) => {
+        if (launch?.ticket) {
+          return launch;
+        }
+
+        return activatePendingLaunchForTab(
+          senderTabId,
+          message.toolSlug,
+          message.hostname,
+          message.pageUrl
+        );
+      })
       .then((launch) => sendResponse({
         ok: true,
         authorized: Boolean(launch?.ticket),
         expiresAt: Number(launch?.expiresAt || 0),
+        prepared: Boolean(launch?.freshSessionPreparedAt),
         remainingUses: Number(launch?.remainingUses || 0),
         remembered: false,
+        toolSlug: normalizeToolSlug(launch?.toolSlug),
+        hostname: normalizeHostname(launch?.hostname),
       }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -352,12 +767,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED') {
+    markFreshSessionPrepared(senderTabId, message.toolSlug)
+      .then((ok) => sendResponse({ ok }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'TOOL_HUB_CLEAR_TOOL_SESSION') {
-    clearToolSession(message.toolSlug)
+    clearToolSession(message.toolSlug, { includeGoogle: Boolean(message.includeGoogle) })
       .then(async (result) => {
-        await clearActiveLaunch(senderTabId, message.toolSlug);
+        if (!message.preserveLaunch) {
+          await clearActiveLaunch(senderTabId, message.toolSlug);
+        }
         sendResponse({ ok: true, ...result });
       })
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_SYNC_AUTH_CONTEXT') {
+    syncAuthContext(message)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_OPEN_FLOW_ISOLATED_WINDOW') {
+    if (normalizeToolSlug(message.toolSlug) !== 'flow') {
+      sendResponse({ ok: false, error: 'Isolated window launch is only configured for Flow.' });
+      return true;
+    }
+
+    openFlowIsolatedWindow(message.launchUrl)
+      .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -376,5 +819,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.storage.local.remove('rememberedToolLaunches').catch(() => {});
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  clearActiveLaunch(tabId).catch(() => {});
+  cleanupToolSessionForClosedTab(tabId).catch(() => {});
 });

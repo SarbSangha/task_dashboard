@@ -6,6 +6,10 @@ const EXTENSION_LAUNCH_EVENT = 'rmw:tool-hub-extension-launch';
 const EXTENSION_LAUNCH_STORED_EVENT = 'rmw:tool-hub-extension-launch-stored';
 const EXTENSION_LAUNCH_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_LAUNCH';
 const EXTENSION_LAUNCH_STORED_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_LAUNCH_STORED';
+const EXTENSION_WINDOW_LAUNCH_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_WINDOW_LAUNCH';
+const EXTENSION_WINDOW_LAUNCH_RESULT_EVENT = 'rmw:tool-hub-extension-window-launch-result';
+const EXTENSION_WINDOW_LAUNCH_RESULT_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_WINDOW_LAUNCH_RESULT';
+const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 
 const Icons = {
   Search: () => (
@@ -70,7 +74,7 @@ const EMPTY_TOOL_FORM = {
 const EMPTY_CREDENTIAL_FORM = {
   toolId: '',
   scope: 'company',
-  user_id: '',
+  user_ids: [],
   login_identifier: '',
   password: '',
   notes: '',
@@ -88,7 +92,7 @@ const copyToClipboard = async (value) => {
 const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
   const normalizedSlug = `${toolSlug || ''}`.trim().toLowerCase();
   if (!normalizedSlug) {
-    resolve();
+    resolve({ ok: false, stored: false, error: 'Missing tool slug for extension launch.' });
     return;
   }
 
@@ -98,16 +102,16 @@ const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
     window.removeEventListener('message', handleMessage);
     window.clearTimeout(timerId);
   };
-  const finish = () => {
+  const finish = (result) => {
     if (settled) return;
     settled = true;
     cleanup();
-    resolve();
+    resolve(result);
   };
   const handleStored = (event) => {
     const storedSlug = `${event.detail?.toolSlug || ''}`.trim().toLowerCase();
     if (storedSlug === normalizedSlug) {
-      finish();
+      finish({ ok: true, stored: true, error: '' });
     }
   };
   const handleMessage = (event) => {
@@ -117,13 +121,74 @@ const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
     if (event.data?.type !== EXTENSION_LAUNCH_STORED_MESSAGE_TYPE) return;
     const storedSlug = `${event.data?.toolSlug || ''}`.trim().toLowerCase();
     if (storedSlug === normalizedSlug) {
-      finish();
+      finish({ ok: true, stored: true, error: '' });
     }
   };
-  const timerId = window.setTimeout(finish, 600);
+  const timerId = window.setTimeout(() => {
+    finish({
+      ok: false,
+      stored: false,
+      error: 'Extension bridge did not respond on this dashboard URL. Reload the extension and open the dashboard on a supported domain.',
+    });
+  }, 2500);
 
   window.addEventListener(EXTENSION_LAUNCH_STORED_EVENT, handleStored);
   window.addEventListener('message', handleMessage);
+});
+
+const openFlowInIsolatedWindow = (launchDetail) => new Promise((resolve) => {
+  const normalizedSlug = `${launchDetail?.toolSlug || ''}`.trim().toLowerCase();
+  if (normalizedSlug !== 'flow') {
+    resolve({ ok: false, error: 'Flow isolated launch is only available for Flow.' });
+    return;
+  }
+
+  let settled = false;
+  const cleanup = () => {
+    window.removeEventListener(EXTENSION_WINDOW_LAUNCH_RESULT_EVENT, handleResult);
+    window.removeEventListener('message', handleMessage);
+    window.clearTimeout(timerId);
+  };
+  const finish = (result) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    resolve(result);
+  };
+  const handleResult = (event) => {
+    const resultSlug = `${event.detail?.toolSlug || ''}`.trim().toLowerCase();
+    if (resultSlug !== normalizedSlug) return;
+    finish({
+      ok: Boolean(event.detail?.ok),
+      error: `${event.detail?.error || ''}`.trim(),
+    });
+  };
+  const handleMessage = (event) => {
+    if (event.source !== window) return;
+    if (event.origin !== window.location.origin) return;
+    if (event.data?.source !== 'rmw-tool-hub-extension') return;
+    if (event.data?.type !== EXTENSION_WINDOW_LAUNCH_RESULT_MESSAGE_TYPE) return;
+    const resultSlug = `${event.data?.toolSlug || ''}`.trim().toLowerCase();
+    if (resultSlug !== normalizedSlug) return;
+    finish({
+      ok: Boolean(event.data?.ok),
+      error: `${event.data?.error || ''}`.trim(),
+    });
+  };
+  const timerId = window.setTimeout(() => {
+    finish({
+      ok: false,
+      error: 'Flow isolated launch timed out. Check whether the extension is loaded and allowed in incognito.',
+    });
+  }, 5000);
+
+  window.addEventListener(EXTENSION_WINDOW_LAUNCH_RESULT_EVENT, handleResult);
+  window.addEventListener('message', handleMessage);
+  window.postMessage({
+    source: 'rmw-tool-hub-page',
+    type: EXTENSION_WINDOW_LAUNCH_MESSAGE_TYPE,
+    ...launchDetail,
+  }, window.location.origin);
 });
 
 const buildExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug) => {
@@ -147,6 +212,12 @@ const buildExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug) => {
   }
 };
 
+const resolveExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug) => {
+  const normalizedSlug = `${toolSlug || ''}`.trim().toLowerCase();
+  const nextLaunchUrl = normalizedSlug === 'flow' ? FLOW_DIRECT_ROUTE_URL : launchUrl;
+  return buildExtensionLaunchUrl(nextLaunchUrl, extensionTicket, toolSlug);
+};
+
 export default function Tools() {
   const [tools, setTools] = useState([]);
   const [users, setUsers] = useState([]);
@@ -158,6 +229,7 @@ export default function Tools() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedTool, setSelectedTool] = useState(null);
+  const [launchingToolId, setLaunchingToolId] = useState('');
   const [editToolId, setEditToolId] = useState('');
   const [toolForm, setToolForm] = useState(EMPTY_TOOL_FORM);
   const [credentialForm, setCredentialForm] = useState(EMPTY_CREDENTIAL_FORM);
@@ -199,6 +271,14 @@ export default function Tools() {
   const categories = useMemo(() => {
     return ['All', ...new Set(tools.map((tool) => tool.category || 'General'))];
   }, [tools]);
+
+  const sortedUsers = useMemo(() => {
+    return [...users].sort((left, right) => {
+      const leftLabel = `${left?.name || ''} ${left?.email || ''}`.trim().toLowerCase();
+      const rightLabel = `${right?.name || ''} ${right?.email || ''}`.trim().toLowerCase();
+      return leftLabel.localeCompare(rightLabel);
+    });
+  }, [users]);
 
   const filteredTools = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -293,15 +373,56 @@ export default function Tools() {
     setError('');
     setNotice('');
     try {
-      await itToolsAPI.upsertCredential(toolId, {
-        scope: credentialForm.scope,
-        user_id: credentialForm.scope === 'user' ? Number(credentialForm.user_id) : null,
-        login_identifier: credentialForm.login_identifier,
-        password: credentialForm.password,
-        notes: credentialForm.notes,
-      });
-      setCredentialForm({ ...EMPTY_CREDENTIAL_FORM, toolId: `${toolId}` });
-      setNotice('Credential saved securely.');
+      if (credentialForm.scope === 'user') {
+        const selectedUserIds = [...new Set((credentialForm.user_ids || [])
+          .map((value) => Number(value))
+          .filter(Boolean))];
+
+        if (!selectedUserIds.length) {
+          setError('Choose at least one user before saving credentials.');
+          return;
+        }
+
+        const results = await Promise.allSettled(
+          selectedUserIds.map((userId) => itToolsAPI.upsertCredential(toolId, {
+            scope: 'user',
+            user_id: userId,
+            login_identifier: credentialForm.login_identifier,
+            password: credentialForm.password,
+            notes: credentialForm.notes,
+          }))
+        );
+
+        const failedResults = results.filter((result) => result.status === 'rejected');
+        const successCount = results.length - failedResults.length;
+
+        if (!successCount) {
+          throw failedResults[0]?.reason;
+        }
+
+        if (failedResults.length) {
+          const firstFailure = failedResults[0]?.reason;
+          setError(firstFailure?.response?.data?.detail || 'Some user assignments could not be saved.');
+          setNotice(`Credential saved for ${successCount} user${successCount === 1 ? '' : 's'}.`);
+        } else {
+          setCredentialForm({
+            ...EMPTY_CREDENTIAL_FORM,
+            toolId: `${toolId}`,
+            scope: 'user',
+          });
+          setNotice(`Credential saved for ${successCount} user${successCount === 1 ? '' : 's'}.`);
+        }
+      } else {
+        await itToolsAPI.upsertCredential(toolId, {
+          scope: credentialForm.scope,
+          user_id: null,
+          login_identifier: credentialForm.login_identifier,
+          password: credentialForm.password,
+          notes: credentialForm.notes,
+        });
+        setCredentialForm({ ...EMPTY_CREDENTIAL_FORM, toolId: `${toolId}` });
+        setNotice('Credential saved securely.');
+      }
       await loadTools();
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to save credential.');
@@ -311,6 +432,12 @@ export default function Tools() {
   };
 
   const handleLaunchTool = async (tool) => {
+    const nextToolId = `${tool?.id || ''}`;
+    if (!nextToolId || launchingToolId === nextToolId) {
+      return;
+    }
+
+    setLaunchingToolId(nextToolId);
     setSelectedTool(tool);
     setLaunchResult(null);
     setError('');
@@ -334,14 +461,29 @@ export default function Tools() {
           type: EXTENSION_LAUNCH_MESSAGE_TYPE,
           ...launchDetail,
         }, window.location.origin);
-        await waitForExtensionLaunchStored(response.tool.slug);
-        launchUrl = buildExtensionLaunchUrl(response.launchUrl, response.extensionTicket, response.tool.slug);
+        const launchStored = await waitForExtensionLaunchStored(response.tool.slug);
+        if (!launchStored.ok) {
+          throw new Error(launchStored.error || 'Extension launch bridge did not respond.');
+        }
+        launchUrl = resolveExtensionLaunchUrl(response.launchUrl, response.extensionTicket, response.tool.slug);
+        if (`${response.tool.slug}`.trim().toLowerCase() === 'flow') {
+          const isolatedResult = await openFlowInIsolatedWindow({
+            toolSlug: response.tool.slug,
+            launchUrl,
+          });
+          if (!isolatedResult.ok) {
+            throw new Error(isolatedResult.error || 'Unable to open Flow in an isolated window.');
+          }
+          return;
+        }
       }
       if (launchUrl) {
         window.open(launchUrl, '_blank', 'noopener,noreferrer');
       }
     } catch (err) {
-      setError(err?.response?.data?.detail || 'Unable to launch tool.');
+      setError(err?.response?.data?.detail || err?.message || 'Unable to launch tool.');
+    } finally {
+      setLaunchingToolId('');
     }
   };
 
@@ -409,14 +551,14 @@ export default function Tools() {
                   <option value="external_link">External link</option>
                   <option value="sso">SSO</option>
                   <option value="api_proxy">API proxy</option>
-                  <option value="extension_autofill">Extension auto-fill (ChatGPT/OpenAI, Freepik, Kling AI)</option>
+                  <option value="extension_autofill">Extension auto-fill (ChatGPT/OpenAI, Envato, Freepik, Higgsfield, Kling AI, Flow)</option>
                   <option value="automation">Auto-login form submit</option>
                 </select>
               </div>
               {toolForm.launch_mode === 'extension_autofill' && (
                 <p className="it-card-copy">
-                  The current browser extension build supports ChatGPT/OpenAI, Freepik, and Kling AI login flows. For other tools,
-                  use Manual credential or Auto-login form submit.
+                  The current browser extension build supports ChatGPT/OpenAI, Envato, Freepik, Higgsfield, Kling AI, and a starter Flow
+                  extension scaffold. For other tools, use Manual credential or Auto-login form submit.
                 </p>
               )}
               {toolForm.launch_mode === 'automation' && (
@@ -478,17 +620,70 @@ export default function Tools() {
                     <option key={tool.id} value={tool.id}>{tool.name}</option>
                   ))}
                 </select>
-                <select value={credentialForm.scope} onChange={(e) => setCredentialForm({ ...credentialForm, scope: e.target.value })}>
+                <select
+                  value={credentialForm.scope}
+                  onChange={(e) => setCredentialForm({
+                    ...credentialForm,
+                    scope: e.target.value,
+                    user_ids: e.target.value === 'user' ? credentialForm.user_ids : [],
+                  })}
+                >
                   <option value="company">Company credential</option>
                   <option value="user">Specific user</option>
                 </select>
                 {credentialForm.scope === 'user' && (
-                  <select className="it-span-2" value={credentialForm.user_id} onChange={(e) => setCredentialForm({ ...credentialForm, user_id: e.target.value })} required>
-                    <option value="">Choose user</option>
-                    {users.map((user) => (
-                      <option key={user.id} value={user.id}>{user.name} ({user.email})</option>
-                    ))}
-                  </select>
+                  <div className="it-span-2 it-user-picker">
+                    <div className="it-user-picker-header">
+                      <span>Assign to users</span>
+                      <span>{credentialForm.user_ids.length} selected</span>
+                    </div>
+                    <div className="it-user-picker-actions">
+                      <button
+                        type="button"
+                        className="it-link-btn"
+                        onClick={() => setCredentialForm((current) => ({
+                          ...current,
+                          user_ids: sortedUsers.map((user) => `${user.id}`),
+                        }))}
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        className="it-link-btn"
+                        onClick={() => setCredentialForm((current) => ({
+                          ...current,
+                          user_ids: [],
+                        }))}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="it-user-checklist" role="group" aria-label="Select users for this credential">
+                      {sortedUsers.map((user) => {
+                        const userId = `${user.id}`;
+                        const checked = credentialForm.user_ids.includes(userId);
+                        return (
+                          <label key={user.id} className={`it-user-checklist-item ${checked ? 'is-selected' : ''}`}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => setCredentialForm((current) => ({
+                                ...current,
+                                user_ids: e.target.checked
+                                  ? [...current.user_ids, userId]
+                                  : current.user_ids.filter((value) => value !== userId),
+                              }))}
+                            />
+                            <span className="it-user-checklist-copy">
+                              <strong>{user.name || user.email}</strong>
+                              <small>{user.email}</small>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
                 <input value={credentialForm.login_identifier} onChange={(e) => setCredentialForm({ ...credentialForm, login_identifier: e.target.value })} placeholder="Username / email" autoComplete="off" spellCheck={false} />
                 <input type="password" value={credentialForm.password} onChange={(e) => setCredentialForm({ ...credentialForm, password: e.target.value })} placeholder="Password" autoComplete="new-password" />
@@ -560,7 +755,13 @@ export default function Tools() {
             filteredTools.map((tool) => {
               const CardIcon = IconComponent(tool.icon);
               return (
-                <button key={tool.id} type="button" className="tool-card" onClick={() => handleLaunchTool(tool)}>
+                <button
+                  key={tool.id}
+                  type="button"
+                  className="tool-card"
+                  onClick={() => handleLaunchTool(tool)}
+                  disabled={launchingToolId === `${tool.id}`}
+                >
                   <div className="tool-header">
                     <div className="tool-icon"><CardIcon /></div>
                     <div className="status-badge">

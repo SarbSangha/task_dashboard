@@ -264,6 +264,112 @@ body {
   grid-column: 1 / -1;
 }
 
+.it-user-picker {
+  border: 1px solid rgba(89, 105, 144, 0.35);
+  background: linear-gradient(180deg, rgba(16, 24, 39, 0.94), rgba(12, 19, 33, 0.98));
+  border-radius: 14px;
+  padding: 0.9rem 0.95rem;
+}
+
+.it-user-picker-header,
+.it-user-picker-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.it-user-picker-header {
+  color: #cbd5e1;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.it-user-picker-actions {
+  margin-top: 0.65rem;
+  justify-content: flex-start;
+}
+
+.it-link-btn {
+  border: none;
+  background: none;
+  color: #93c5fd;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.it-link-btn:hover {
+  color: #bfdbfe;
+  text-decoration: underline;
+}
+
+.it-user-checklist {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.it-user-checklist-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.8rem 0.85rem;
+  border: 1px solid rgba(89, 105, 144, 0.28);
+  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.42);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.it-user-checklist-item:hover {
+  border-color: rgba(125, 211, 252, 0.35);
+  background: rgba(30, 41, 59, 0.6);
+  transform: translateY(-1px);
+}
+
+.it-user-checklist-item.is-selected {
+  border-color: rgba(59, 130, 246, 0.6);
+  background: rgba(30, 64, 175, 0.2);
+}
+
+.it-user-checklist input[type="checkbox"] {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  border-radius: 4px;
+  appearance: auto;
+  box-shadow: none;
+  accent-color: #3b82f6;
+}
+
+.it-user-checklist-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.it-user-checklist-copy strong {
+  color: #f8fafc;
+  font-size: 0.9rem;
+  line-height: 1.3;
+}
+
+.it-user-checklist-copy small {
+  color: #8fa1bf;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
 .it-primary-btn,
 .credential-fields button {
   border: none;

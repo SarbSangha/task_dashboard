@@ -1,8 +1,13 @@
 const SESSION_TOKEN_STORAGE_KEY = 'rmw_session_token_v1';
 const EXTENSION_LAUNCH_EVENT = 'rmw:tool-hub-extension-launch';
 const EXTENSION_LAUNCH_STORED_EVENT = 'rmw:tool-hub-extension-launch-stored';
+const EXTENSION_WINDOW_LAUNCH_EVENT = 'rmw:tool-hub-extension-window-launch';
+const EXTENSION_WINDOW_LAUNCH_RESULT_EVENT = 'rmw:tool-hub-extension-window-launch-result';
 const EXTENSION_LAUNCH_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_LAUNCH';
 const EXTENSION_LAUNCH_STORED_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_LAUNCH_STORED';
+const EXTENSION_WINDOW_LAUNCH_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_WINDOW_LAUNCH';
+const EXTENSION_WINDOW_LAUNCH_RESULT_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_WINDOW_LAUNCH_RESULT';
+const EXTENSION_AUTH_SYNC_MESSAGE_TYPE = 'TOOL_HUB_SYNC_AUTH_CONTEXT';
 const MAX_LAUNCH_USES = 3;
 
 function normalizeToolSlug(value) {
@@ -65,12 +70,69 @@ function emitLaunchStored(toolSlug) {
   }, window.location.origin);
 }
 
+function emitWindowLaunchResult(detail) {
+  const payload = {
+    toolSlug: normalizeToolSlug(detail?.toolSlug),
+    ok: Boolean(detail?.ok),
+    error: `${detail?.error || ''}`.trim(),
+  };
+
+  window.dispatchEvent(new CustomEvent(EXTENSION_WINDOW_LAUNCH_RESULT_EVENT, {
+    detail: payload,
+  }));
+  window.postMessage({
+    source: 'rmw-tool-hub-extension',
+    type: EXTENSION_WINDOW_LAUNCH_RESULT_MESSAGE_TYPE,
+    ...payload,
+  }, window.location.origin);
+}
+
 function handleLaunchDetail(detail) {
-  savePendingLaunch(detail)
+  Promise.resolve()
+    .then(() => syncSessionToken())
+    .catch(() => {})
+    .then(() => savePendingLaunch(detail))
     .then(() => {
       emitLaunchStored(detail?.toolSlug);
     })
     .catch(() => {});
+}
+
+function requestFlowIsolatedWindow(detail) {
+  const toolSlug = normalizeToolSlug(detail?.toolSlug);
+  const launchUrl = `${detail?.launchUrl || ''}`.trim();
+  if (toolSlug !== 'flow' || !launchUrl) {
+    emitWindowLaunchResult({
+      toolSlug,
+      ok: false,
+      error: 'Flow launch details are incomplete.',
+    });
+    return;
+  }
+
+  chrome.runtime.sendMessage(
+    {
+      type: 'TOOL_HUB_OPEN_FLOW_ISOLATED_WINDOW',
+      toolSlug,
+      launchUrl,
+    },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        emitWindowLaunchResult({
+          toolSlug,
+          ok: false,
+          error: chrome.runtime.lastError.message,
+        });
+        return;
+      }
+
+      emitWindowLaunchResult({
+        toolSlug,
+        ok: Boolean(response?.ok),
+        error: response?.ok ? '' : (response?.error || 'Unable to open Flow in an isolated window.'),
+      });
+    }
+  );
 }
 
 function readStoredToken() {
@@ -97,37 +159,27 @@ function safelyReadStorage(storage) {
   }
 }
 
+function sendRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(response || {});
+    });
+  });
+}
+
 async function syncSessionToken() {
   const sessionToken = readStoredToken();
   const apiBase = resolveApiBaseFromDashboard();
-
-  const stored = await chrome.storage.local.get(['sessionToken', 'apiBase']);
-  const nextValues = {};
-  const removeKeys = [];
-
-  if (sessionToken && `${stored.sessionToken || ''}`.trim() !== sessionToken) {
-    nextValues.sessionToken = sessionToken;
-    nextValues.sessionTokenSyncedAt = Date.now();
-  }
-  if (!sessionToken && `${stored.sessionToken || ''}`.trim()) {
-    removeKeys.push('sessionToken');
-    removeKeys.push('sessionTokenSyncedAt');
-  }
-
-  if (`${stored.apiBase || ''}`.trim() !== apiBase) {
-    nextValues.apiBase = apiBase;
-  }
-
-  if (Object.keys(nextValues).length === 0 && removeKeys.length === 0) {
-    return;
-  }
-
-  if (removeKeys.length > 0) {
-    await chrome.storage.local.remove(removeKeys);
-  }
-  if (Object.keys(nextValues).length > 0) {
-    await chrome.storage.local.set(nextValues);
-  }
+  await sendRuntimeMessage({
+    type: EXTENSION_AUTH_SYNC_MESSAGE_TYPE,
+    sessionToken,
+    apiBase,
+    dashboardUrl: window.location.href,
+  });
 }
 
 function queueSync() {
@@ -141,12 +193,20 @@ window.addEventListener('focus', queueSync);
 window.addEventListener(EXTENSION_LAUNCH_EVENT, (event) => {
   handleLaunchDetail(event.detail);
 });
+window.addEventListener(EXTENSION_WINDOW_LAUNCH_EVENT, (event) => {
+  requestFlowIsolatedWindow(event.detail);
+});
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   if (event.origin !== window.location.origin) return;
   if (event.data?.source !== 'rmw-tool-hub-page') return;
-  if (event.data?.type !== EXTENSION_LAUNCH_MESSAGE_TYPE) return;
-  handleLaunchDetail(event.data);
+  if (event.data?.type === EXTENSION_LAUNCH_MESSAGE_TYPE) {
+    handleLaunchDetail(event.data);
+    return;
+  }
+  if (event.data?.type === EXTENSION_WINDOW_LAUNCH_MESSAGE_TYPE) {
+    requestFlowIsolatedWindow(event.data);
+  }
 });
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {

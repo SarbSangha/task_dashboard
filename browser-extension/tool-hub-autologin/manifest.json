@@ -2,18 +2,43 @@
   "manifest_version": 3,
   "name": "RMW Tool Hub Auto Login",
   "description": "Auto-fills approved company tool credentials from the RMW Tool Hub.",
-  "version": "0.1.2",
+  "version": "0.1.5",
+  "incognito": "split",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": ["storage", "cookies"],
   "host_permissions": [
-    "http://localhost:8000/*",
-    "http://127.0.0.1:8000/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "http://192.168.1.15/*",
+    "https://localhost/*",
+    "https://127.0.0.1/*",
     "https://dashboard.ritzmediaworld.in/*",
+    "http://dashboard.ritzmediaworld.in/*",
+    "https://192.168.1.15/*",
+    "https://envato.com/*",
+    "https://www.envato.com/*",
+    "https://elements.envato.com/*",
+    "https://market.envato.com/*",
     "https://freepik.com/*",
     "https://*.freepik.com/*",
+    "https://higgsfield.ai/*",
+    "https://*.higgsfield.ai/*",
+    "https://google.com/*",
+    "https://*.google.com/*",
+    "https://labs.google/*",
     "https://kling.ai/*",
     "https://*.kling.ai/*",
     "https://klingai.com/*",
     "https://*.klingai.com/*",
+    "https://accounts.google.com/*",
+    "https://login.microsoftonline.com/*",
+    "https://login.live.com/*",
+    "https://login.microsoft.com/*",
     "https://*.onrender.com/*",
     "https://*.workers.dev/*"
   ],
@@ -24,8 +49,15 @@
     {
       "matches": [
         "https://dashboard.ritzmediaworld.in/*",
-        "http://localhost:5173/*",
-        "http://127.0.0.1:5173/*"
+        "http://dashboard.ritzmediaworld.in/*",
+        "https://*.onrender.com/*",
+        "https://*.workers.dev/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "http://192.168.1.15/*",
+        "https://localhost/*",
+        "https://127.0.0.1/*",
+        "https://192.168.1.15/*"
       ],
       "js": ["content-dashboard.js"],
       "run_at": "document_idle"
@@ -34,7 +66,8 @@
       "matches": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
-        "https://auth.openai.com/*"
+        "https://auth.openai.com/*",
+        "https://accounts.google.com/*"
       ],
       "js": ["content-chatgpt.js"],
       "run_at": "document_idle",
@@ -43,10 +76,28 @@
     },
     {
       "matches": [
+        "https://envato.com/*",
+        "https://www.envato.com/*",
+        "https://elements.envato.com/*",
+        "https://market.envato.com/*"
+      ],
+      "js": ["content-envato.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://www.freepik.com/*",
         "https://freepik.com/*"
       ],
       "js": ["content-freepik.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://higgsfield.ai/*",
+        "https://*.higgsfield.ai/*"
+      ],
+      "js": ["content-higgsfield.js"],
       "run_at": "document_idle"
     },
     {
@@ -61,14 +112,37 @@
     },
     {
       "matches": [
+        "https://labs.google/*"
+      ],
+      "js": ["content-flow.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://accounts.google.com/*"
       ],
       "js": ["content-google.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    },
+    {
+      "matches": [
+        "https://login.microsoftonline.com/*",
+        "https://login.live.com/*",
+        "https://login.microsoft.com/*"
+      ],
+      "js": ["content-microsoft.js"],
       "run_at": "document_idle"
     }
   ],
   "action": {
     "default_title": "Tool Hub Auto Login",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    },
     "default_popup": "popup.html"
   }
 }
