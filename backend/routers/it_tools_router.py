@@ -22,7 +22,7 @@ from database_config import get_operational_db
 from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, User
 from services.otp_mail_service import fetch_otp_from_gmail
 from utils.credential_crypto import decrypt_secret, encrypt_secret
-from utils.permissions import has_any_role, require_admin, require_user
+from utils.permissions import get_current_user, has_any_role, require_admin, require_user
 
 
 router = APIRouter(prefix="/api/it-tools", tags=["IT Tools"])
@@ -241,21 +241,76 @@ def _add_audit(
 
 
 def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
+    user_specific_credential = (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.tool_id == tool_id,
+            ITPortalToolCredential.is_active == True,
+            ITPortalToolCredential.scope == "user",
+            ITPortalToolCredential.user_id == user_id,
+        )
+        .order_by(ITPortalToolCredential.updated_at.desc(), ITPortalToolCredential.created_at.desc())
+        .first()
+    )
+    if user_specific_credential:
+        return user_specific_credential
+
     return (
         db.query(ITPortalToolCredential)
         .filter(
             ITPortalToolCredential.tool_id == tool_id,
             ITPortalToolCredential.is_active == True,
-            or_(
-                and_(ITPortalToolCredential.scope == "user", ITPortalToolCredential.user_id == user_id),
-                and_(ITPortalToolCredential.scope == "company", ITPortalToolCredential.user_id.is_(None)),
-            ),
+            ITPortalToolCredential.scope == "company",
+            ITPortalToolCredential.user_id.is_(None),
         )
-        # Prefer the freshest applicable credential so a newly updated company
-        # password does not get hidden behind an older user-specific override.
-        .order_by(ITPortalToolCredential.updated_at.desc(), ITPortalToolCredential.scope.desc())
+        .order_by(ITPortalToolCredential.updated_at.desc(), ITPortalToolCredential.created_at.desc())
         .first()
     )
+
+
+def _resolve_tool_credentials_map(db: Session, tool_ids: list[int], user_id: int) -> dict[int, ITPortalToolCredential]:
+    if not tool_ids:
+        return {}
+
+    credentials_by_tool: dict[int, ITPortalToolCredential] = {}
+
+    user_credentials = (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.tool_id.in_(tool_ids),
+            ITPortalToolCredential.is_active == True,
+            ITPortalToolCredential.scope == "user",
+            ITPortalToolCredential.user_id == user_id,
+        )
+        .order_by(
+            ITPortalToolCredential.tool_id.asc(),
+            ITPortalToolCredential.updated_at.desc(),
+            ITPortalToolCredential.created_at.desc(),
+        )
+        .all()
+    )
+    for credential in user_credentials:
+        credentials_by_tool.setdefault(credential.tool_id, credential)
+
+    company_credentials = (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.tool_id.in_(tool_ids),
+            ITPortalToolCredential.is_active == True,
+            ITPortalToolCredential.scope == "company",
+            ITPortalToolCredential.user_id.is_(None),
+        )
+        .order_by(
+            ITPortalToolCredential.tool_id.asc(),
+            ITPortalToolCredential.updated_at.desc(),
+            ITPortalToolCredential.created_at.desc(),
+        )
+        .all()
+    )
+    for credential in company_credentials:
+        credentials_by_tool.setdefault(credential.tool_id, credential)
+
+    return credentials_by_tool
 
 
 def _normalize_hostname(value: Optional[str]) -> str:
@@ -491,7 +546,7 @@ def _render_auto_login_page(tool: ITPortalTool, credential: ITPortalToolCredenti
 
 @router.get("/tools")
 async def list_tools(
-    current_user: User = Depends(require_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db),
 ):
     is_admin = has_any_role(current_user, {"admin"})
@@ -501,10 +556,11 @@ async def list_tools(
         .order_by(ITPortalTool.category.asc(), ITPortalTool.name.asc())
         .all()
     )
+    credentials_by_tool = _resolve_tool_credentials_map(db, [tool.id for tool in tools], current_user.id)
     return {
         "success": True,
         "tools": [
-            _serialize_tool(tool, _resolve_tool_credential(db, tool.id, current_user.id), is_admin=is_admin)
+            _serialize_tool(tool, credentials_by_tool.get(tool.id), is_admin=is_admin)
             for tool in tools
         ],
         "isAdmin": is_admin,
@@ -621,7 +677,7 @@ async def delete_tool(
 @router.post("/extension/credential")
 async def get_extension_credential(
     payload: ExtensionCredentialPayload,
-    current_user: User = Depends(require_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db),
 ):
     tool = _find_extension_tool(db, payload)
@@ -681,7 +737,7 @@ async def get_extension_credential(
 @router.post("/extension/otp")
 async def get_extension_otp(
     payload: OtpRequestPayload,
-    current_user: User = Depends(require_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db),
 ):
     tool = _find_extension_tool(db, payload)
@@ -864,7 +920,7 @@ async def upsert_credential(
 async def launch_tool(
     tool_id: int,
     request: Request,
-    current_user: User = Depends(require_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db),
 ):
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id, ITPortalTool.is_active == True).first()
