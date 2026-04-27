@@ -981,6 +981,31 @@ def ensure_participant(db: Session, task_id: int, user_id: int, role: Participan
     )
 
 
+_PARTICIPATION_PRIORITY = {
+    ParticipantRole.ASSIGNEE: 0,
+    ParticipantRole.CREATOR: 1,
+    ParticipantRole.SPOC: 2,
+    ParticipantRole.HOD: 3,
+    ParticipantRole.APPROVER: 4,
+    ParticipantRole.REVIEWER: 5,
+    ParticipantRole.FACULTY: 6,
+    ParticipantRole.EMPLOYEE: 7,
+    ParticipantRole.OBSERVER: 8,
+}
+
+
+def _select_primary_participation(participations: List[TaskParticipant]) -> Optional[TaskParticipant]:
+    if not participations:
+        return None
+    return min(
+        participations,
+        key=lambda participation: (
+            _PARTICIPATION_PRIORITY.get(participation.role, 999),
+            participation.id or 0,
+        ),
+    )
+
+
 def compute_available_actions(
     task: Task,
     user: User,
@@ -1378,10 +1403,13 @@ def build_task_serialization_context(
     my_participation_by_task = {}
     if current_user:
         for task_id, participants in participants_by_task.items():
+            current_user_participations = []
             for participation, _participant_user in participants:
                 if participation.user_id == current_user.id:
-                    my_participation_by_task[task_id] = participation
-                    break
+                    current_user_participations.append(participation)
+            primary_participation = _select_primary_participation(current_user_participations)
+            if primary_participation:
+                my_participation_by_task[task_id] = primary_participation
 
     return {
         "creators": creators,
@@ -1526,11 +1554,12 @@ def serialize_task_with_context(
         my_participation_by_task = (context or {}).get("my_participation_by_task") or {}
         my_participation = my_participation_by_task.get(task.id) if has_context else None
         if not has_context:
-            my_participation = db.query(TaskParticipant).filter(
+            my_participation_rows = db.query(TaskParticipant).filter(
                 TaskParticipant.task_id == task.id,
                 TaskParticipant.user_id == current_user.id,
                 TaskParticipant.is_active == True,
-            ).first()
+            ).all()
+            my_participation = _select_primary_participation(my_participation_rows)
         task_dict["isRead"] = my_participation.is_read if my_participation else False
         task_dict["myRole"] = my_participation.role.value if my_participation else "creator"
         task_dict["availableActions"] = compute_available_actions(
