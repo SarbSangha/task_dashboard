@@ -1,8 +1,19 @@
 // src/components/auth/Register.jsx - FIXED
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { authAPI } from '../../services/api';
+
+const FALLBACK_DEPARTMENTS = [
+  'CREATIVE',
+  'CONTENT',
+  'CONTENT CREATOR',
+  'CRACK TEAM',
+  'DIGITAL',
+  'GEN AI',
+  'INTERNAL BRANDS',
+];
 
 // ✅ CHANGED: Use const instead of export function
 const Register = () => {
@@ -17,8 +28,36 @@ const Register = () => {
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [departmentOptions, setDepartmentOptions] = useState(FALLBACK_DEPARTMENTS);
   const { register } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadDepartments = async () => {
+      try {
+        const response = await authAPI.getDepartments();
+        if (!mounted) return;
+
+        const mergedDepartments = Array.from(new Set([
+          ...(Array.isArray(response?.departments) ? response.departments : []),
+          ...FALLBACK_DEPARTMENTS,
+        ]));
+
+        setDepartmentOptions(mergedDepartments.sort((left, right) => left.localeCompare(right)));
+      } catch {
+        if (!mounted) return;
+        setDepartmentOptions(FALLBACK_DEPARTMENTS);
+      }
+    };
+
+    void loadDepartments();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -192,12 +231,11 @@ const Register = () => {
                 style={styles.select}
               >
                 <option value="">Select Department</option>
-                <option value="CREATIVE">Creative</option>
-                <option value="CONTENT">Content</option>
-                <option value="CONTENT CREATOR">Content Creator</option>
-                <option value="CRACK TEAM">Crack Team</option>
-                <option value="DIGITAL">Digital</option>
-                <option value="GEN AI">Gen AI</option>
+                {departmentOptions.map((department) => (
+                  <option key={department} value={department}>
+                    {department}
+                  </option>
+                ))}
               </select>
               <small style={styles.hint}>Choose your department</small>
             </div>

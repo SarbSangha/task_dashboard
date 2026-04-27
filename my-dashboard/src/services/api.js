@@ -1289,6 +1289,26 @@ export const itToolsAPI = {
     return response.data;
   },
 
+  getMailboxConfig: async (toolId) => {
+    const response = await api.get(`/api/it-tools/${toolId}/mailbox`);
+    return response.data;
+  },
+
+  upsertMailboxConfig: async (toolId, payload) => {
+    const response = await api.post(`/api/it-tools/${toolId}/mailbox`, payload);
+    return response.data;
+  },
+
+  deleteMailboxConfig: async (toolId) => {
+    const response = await api.delete(`/api/it-tools/${toolId}/mailbox`);
+    return response.data;
+  },
+
+  testMailboxConfig: async (toolId) => {
+    const response = await api.post(`/api/it-tools/${toolId}/mailbox/test`);
+    return response.data;
+  },
+
   upsertCredential: async (toolId, payload) => {
     const response = await api.post(`/api/it-tools/tools/${toolId}/credentials`, payload);
     return response.data;

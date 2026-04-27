@@ -34,6 +34,7 @@ from routers import admin_router
 from routers import groups_router
 from routers import direct_messages_router
 from routers import it_tools_router
+from routers import mailbox_admin_router
 from utils.cache import init_redis, close_redis
 
 # Import auth utilities for system status
@@ -247,6 +248,7 @@ app.include_router(direct_messages_router.router)
 
 # IT Profile / Tool Vault
 app.include_router(it_tools_router.router)
+app.include_router(mailbox_admin_router.router)
 
 
 # ==================== ROOT ENDPOINTS ====================

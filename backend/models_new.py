@@ -606,6 +606,22 @@ class ITPortalToolAudit(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class ITPortalToolMailbox(Base):
+    __tablename__ = "it_portal_tool_mailboxes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tool_id = Column(Integer, ForeignKey("it_portal_tools.id"), nullable=False, unique=True, index=True)
+    email_address = Column(String(255), nullable=False)
+    app_password_encrypted = Column(Text, nullable=False)
+    otp_sender_filter = Column(String(255))
+    otp_subject_pattern = Column(String(255))
+    otp_regex = Column(String(255), nullable=False, default=r"\b(\d{4,8})\b")
+    created_by = Column(Integer, ForeignKey("users.id"))
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # ==================== GROUP CHAT MODELS ====================
 
 class GroupChat(Base):

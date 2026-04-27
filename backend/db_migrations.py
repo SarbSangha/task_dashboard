@@ -223,6 +223,26 @@ def _ensure_postgres_schema(conn) -> None:
             """
         )
     )
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS it_portal_tool_mailboxes (
+                id SERIAL PRIMARY KEY,
+                tool_id INTEGER NOT NULL UNIQUE REFERENCES it_portal_tools(id) ON DELETE CASCADE,
+                email_address VARCHAR(255) NOT NULL,
+                app_password_encrypted TEXT NOT NULL,
+                otp_sender_filter VARCHAR(255),
+                otp_subject_pattern VARCHAR(255),
+                otp_regex VARCHAR(255) NOT NULL DEFAULT '\\b(\\d{4,8})\\b',
+                created_by INTEGER REFERENCES users(id),
+                updated_by INTEGER REFERENCES users(id),
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_mailboxes_tool_id ON it_portal_tool_mailboxes(tool_id)"))
 
 
 def ensure_operational_schema(engine) -> None:
@@ -502,3 +522,27 @@ def ensure_operational_schema(engine) -> None:
             cols = _table_columns(conn, "direct_messages")
             if "attachments_json" not in cols:
                 conn.execute(text("ALTER TABLE direct_messages ADD COLUMN attachments_json JSON"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS it_portal_tool_mailboxes (
+                    id INTEGER PRIMARY KEY,
+                    tool_id INTEGER NOT NULL UNIQUE,
+                    email_address VARCHAR(255) NOT NULL,
+                    app_password_encrypted TEXT NOT NULL,
+                    otp_sender_filter VARCHAR(255),
+                    otp_subject_pattern VARCHAR(255),
+                    otp_regex VARCHAR(255) NOT NULL DEFAULT '\\b(\\d{4,8})\\b',
+                    created_by INTEGER,
+                    updated_by INTEGER,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    FOREIGN KEY(tool_id) REFERENCES it_portal_tools (id),
+                    FOREIGN KEY(created_by) REFERENCES users (id),
+                    FOREIGN KEY(updated_by) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_mailboxes_tool_id ON it_portal_tool_mailboxes(tool_id)"))

@@ -80,6 +80,15 @@ const EMPTY_CREDENTIAL_FORM = {
   notes: '',
 };
 
+const EMPTY_MAILBOX_FORM = {
+  toolId: '',
+  email_address: '',
+  app_password: '',
+  otp_sender_filter: '',
+  otp_subject_pattern: '',
+  otp_regex: '\\b(\\d{4,8})\\b',
+};
+
 const copyToClipboard = async (value) => {
   if (!value) return false;
   if (navigator.clipboard?.writeText) {
@@ -224,6 +233,7 @@ export default function Tools() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [mailboxBusy, setMailboxBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -233,6 +243,8 @@ export default function Tools() {
   const [editToolId, setEditToolId] = useState('');
   const [toolForm, setToolForm] = useState(EMPTY_TOOL_FORM);
   const [credentialForm, setCredentialForm] = useState(EMPTY_CREDENTIAL_FORM);
+  const [mailboxForm, setMailboxForm] = useState(EMPTY_MAILBOX_FORM);
+  const [mailboxMeta, setMailboxMeta] = useState({ exists: false, appPasswordSet: false });
   const [launchResult, setLaunchResult] = useState(null);
 
   const loadTools = async (signal) => {
@@ -313,6 +325,42 @@ export default function Tools() {
       auto_login_password_field: autoLogin.passwordField || 'password',
       description: tool.description || '',
     });
+  };
+
+  const loadMailboxConfig = async (toolId) => {
+    const normalizedToolId = `${toolId || ''}`.trim();
+    if (!normalizedToolId) {
+      setMailboxForm(EMPTY_MAILBOX_FORM);
+      setMailboxMeta({ exists: false, appPasswordSet: false });
+      return;
+    }
+
+    setMailboxBusy(true);
+    setError('');
+    try {
+      const response = await itToolsAPI.getMailboxConfig(normalizedToolId);
+      setMailboxForm({
+        toolId: normalizedToolId,
+        email_address: response.email_address || '',
+        app_password: '',
+        otp_sender_filter: response.otp_sender_filter || '',
+        otp_subject_pattern: response.otp_subject_pattern || '',
+        otp_regex: response.otp_regex || EMPTY_MAILBOX_FORM.otp_regex,
+      });
+      setMailboxMeta({
+        exists: true,
+        appPasswordSet: !!response.app_password_set,
+      });
+    } catch (err) {
+      if (err?.response?.status === 404) {
+        setMailboxForm({ ...EMPTY_MAILBOX_FORM, toolId: normalizedToolId });
+        setMailboxMeta({ exists: false, appPasswordSet: false });
+        return;
+      }
+      setError(err?.response?.data?.detail || 'Unable to load OTP mailbox settings.');
+    } finally {
+      setMailboxBusy(false);
+    }
   };
 
   const handleSaveTool = async (event) => {
@@ -428,6 +476,93 @@ export default function Tools() {
       setError(err?.response?.data?.detail || 'Failed to save credential.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleMailboxToolChange = (toolId) => {
+    setMailboxForm({
+      ...EMPTY_MAILBOX_FORM,
+      toolId: `${toolId || ''}`,
+    });
+    setMailboxMeta({ exists: false, appPasswordSet: false });
+    void loadMailboxConfig(toolId);
+  };
+
+  const handleSaveMailbox = async (event) => {
+    event.preventDefault();
+    const toolId = `${mailboxForm.toolId || ''}`.trim();
+    if (!toolId) {
+      setError('Choose a tool before saving OTP mailbox settings.');
+      return;
+    }
+
+    setMailboxBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await itToolsAPI.upsertMailboxConfig(toolId, {
+        email_address: mailboxForm.email_address,
+        app_password: mailboxForm.app_password || undefined,
+        otp_sender_filter: mailboxForm.otp_sender_filter || undefined,
+        otp_subject_pattern: mailboxForm.otp_subject_pattern || undefined,
+        otp_regex: mailboxForm.otp_regex || EMPTY_MAILBOX_FORM.otp_regex,
+      });
+      await loadMailboxConfig(toolId);
+      setNotice('OTP mailbox settings saved.');
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Failed to save OTP mailbox settings.');
+    } finally {
+      setMailboxBusy(false);
+    }
+  };
+
+  const handleTestMailbox = async () => {
+    const toolId = `${mailboxForm.toolId || ''}`.trim();
+    if (!toolId) {
+      setError('Choose a tool before testing the OTP mailbox.');
+      return;
+    }
+
+    setMailboxBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const response = await itToolsAPI.testMailboxConfig(toolId);
+      if (response.success) {
+        setNotice(response.message || 'OTP mailbox connected successfully.');
+      } else {
+        setError(response.message || 'OTP mailbox test failed.');
+      }
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Failed to test OTP mailbox.');
+    } finally {
+      setMailboxBusy(false);
+    }
+  };
+
+  const handleDeleteMailbox = async () => {
+    const toolId = `${mailboxForm.toolId || ''}`.trim();
+    if (!toolId) {
+      setError('Choose a tool before deleting the OTP mailbox.');
+      return;
+    }
+
+    const tool = tools.find((item) => `${item.id}` === toolId);
+    const confirmed = window.confirm(`Remove OTP mailbox settings for ${tool?.name || 'this tool'}?`);
+    if (!confirmed) return;
+
+    setMailboxBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await itToolsAPI.deleteMailboxConfig(toolId);
+      setMailboxForm({ ...EMPTY_MAILBOX_FORM, toolId });
+      setMailboxMeta({ exists: false, appPasswordSet: false });
+      setNotice('OTP mailbox settings removed.');
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Failed to delete OTP mailbox settings.');
+    } finally {
+      setMailboxBusy(false);
     }
   };
 
@@ -690,6 +825,88 @@ export default function Tools() {
               </div>
               <textarea value={credentialForm.notes} onChange={(e) => setCredentialForm({ ...credentialForm, notes: e.target.value })} placeholder="Internal notes optional" autoComplete="off" />
               <button className="it-primary-btn" type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save Credential'}</button>
+            </form>
+
+            <form className="it-admin-card" onSubmit={handleSaveMailbox} autoComplete="off">
+              <div className="it-admin-card-header">
+                <div>
+                  <h2>OTP Mailbox</h2>
+                  <p className="it-card-copy">Manage the Gmail inbox used for OTP codes so you can swap the tool email quickly whenever access changes.</p>
+                </div>
+                <span>{mailboxMeta.exists ? 'Configured' : 'Optional'}</span>
+              </div>
+              <select
+                value={mailboxForm.toolId}
+                onChange={(e) => handleMailboxToolChange(e.target.value)}
+                disabled={mailboxBusy}
+                required
+              >
+                <option value="">Choose tool</option>
+                {tools.map((tool) => (
+                  <option key={tool.id} value={tool.id}>{tool.name}</option>
+                ))}
+              </select>
+              <div className="it-form-grid">
+                <input
+                  value={mailboxForm.email_address}
+                  onChange={(e) => setMailboxForm({ ...mailboxForm, email_address: e.target.value })}
+                  placeholder="otp-inbox@gmail.com"
+                  autoComplete="email"
+                  required
+                />
+                <input
+                  type="password"
+                  value={mailboxForm.app_password}
+                  onChange={(e) => setMailboxForm({ ...mailboxForm, app_password: e.target.value })}
+                  placeholder={mailboxMeta.appPasswordSet ? 'Leave blank to keep current Gmail app password' : 'Gmail app password'}
+                  autoComplete="new-password"
+                />
+                <input
+                  value={mailboxForm.otp_sender_filter}
+                  onChange={(e) => setMailboxForm({ ...mailboxForm, otp_sender_filter: e.target.value })}
+                  placeholder="Sender filter optional"
+                  autoComplete="off"
+                />
+                <input
+                  value={mailboxForm.otp_subject_pattern}
+                  onChange={(e) => setMailboxForm({ ...mailboxForm, otp_subject_pattern: e.target.value })}
+                  placeholder="Subject filter optional"
+                  autoComplete="off"
+                />
+                <input
+                  className="it-span-2"
+                  value={mailboxForm.otp_regex}
+                  onChange={(e) => setMailboxForm({ ...mailboxForm, otp_regex: e.target.value })}
+                  placeholder="OTP regex with one capture group"
+                  autoComplete="off"
+                />
+              </div>
+              <p className="it-mailbox-summary">
+                {mailboxMeta.exists
+                  ? `Mailbox saved for this tool${mailboxMeta.appPasswordSet ? ' with an app password on file.' : '.'}`
+                  : 'No OTP mailbox saved for this tool yet.'}
+              </p>
+              <div className="it-admin-actions">
+                <button className="it-primary-btn" type="submit" disabled={mailboxBusy}>
+                  {mailboxBusy ? 'Working...' : mailboxMeta.exists ? 'Update Mailbox' : 'Save Mailbox'}
+                </button>
+                <button
+                  className="it-secondary-btn"
+                  type="button"
+                  onClick={handleTestMailbox}
+                  disabled={mailboxBusy || !mailboxMeta.exists || !mailboxForm.toolId}
+                >
+                  Test Connection
+                </button>
+                <button
+                  className="it-danger-btn"
+                  type="button"
+                  onClick={handleDeleteMailbox}
+                  disabled={mailboxBusy || !mailboxMeta.exists || !mailboxForm.toolId}
+                >
+                  Delete Mailbox
+                </button>
+              </div>
             </form>
           </section>
         )}

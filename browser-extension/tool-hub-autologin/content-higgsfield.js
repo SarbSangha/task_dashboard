@@ -8,6 +8,12 @@ const STATE = {
   requested: false,
   requestAttempts: 0,
   lastRequestAt: 0,
+  otpValue: '',
+  otpStageSeen: false,
+  otpSubmittedAt: 0,
+  otpFetching: false,
+  otpRequestAttempts: 0,
+  otpLastRequestAt: 0,
   lastSubmitAt: 0,
   lastLoginOpenAt: 0,
   loginOpenAttempts: 0,
@@ -45,6 +51,23 @@ const PASSWORD_SELECTORS = [
   'input[autocomplete="current-password"]',
   'input[placeholder*="password" i]',
   'input[aria-label*="password" i]',
+];
+
+const OTP_SELECTORS = [
+  'input[name="otp"]',
+  'input[name="code"]',
+  'input[name="token"]',
+  'input[name="verificationCode"]',
+  'input[autocomplete="one-time-code"]',
+  'input[type="number"][maxlength="6"]',
+  'input[type="number"][maxlength="4"]',
+  'input[type="text"][maxlength="6"]',
+  'input[type="text"][maxlength="8"]',
+  'input[placeholder*="code" i]',
+  'input[placeholder*="otp" i]',
+  'input[placeholder*="verification" i]',
+  'input[aria-label*="code" i]',
+  'input[aria-label*="otp" i]',
 ];
 
 const ACTION_SELECTORS = [
@@ -244,7 +267,7 @@ function collectActionCandidates(root) {
 }
 
 function findSubmitButton(emailInput, passwordInput) {
-  const words = ['log in', 'login', 'sign in', 'continue', 'submit'];
+  const words = ['log in', 'login', 'sign in', 'continue', 'submit', 'verify'];
 
   for (const root of findStepContainer(passwordInput, emailInput)) {
     const candidates = collectActionCandidates(root);
@@ -252,7 +275,7 @@ function findSubmitButton(emailInput, passwordInput) {
 
     const exactMatch = candidates.find((button) => {
       const text = buttonText(button);
-      return text === 'log in' || text === 'login' || text === 'sign in' || text === 'continue';
+      return text === 'log in' || text === 'login' || text === 'sign in' || text === 'continue' || text === 'verify';
     });
     if (exactMatch) return exactMatch;
 
@@ -491,6 +514,124 @@ function attemptOpenEmailLogin() {
   return false;
 }
 
+function findOtpInput() {
+  return findInput(OTP_SELECTORS);
+}
+
+function looksLikeAuthenticatedWorkspace() {
+  if (window.location.pathname.startsWith('/auth')) return false;
+  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS) || findOtpInput()) return false;
+  if (findPrimaryLoginAction() || findEmailEntryAction()) return false;
+
+  const workspaceWords = ['explore', 'image', 'video', 'audio', 'collab', 'apps', 'assist', 'community'];
+  const matched = new Set();
+  const candidates = Array.from(document.querySelectorAll('a, button, [role="button"], nav *'));
+  for (const element of candidates) {
+    const text = buttonText(element);
+    if (!text) continue;
+    workspaceWords.forEach((word) => {
+      if (text === word || text.startsWith(`${word} `) || text.includes(` ${word} `)) {
+        matched.add(word);
+      }
+    });
+    if (matched.size >= 4) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function stopAutomation(message, hideBadgeAfterMs = 2500) {
+  STATE.settled = true;
+  if (STATE.scheduledTimer) {
+    window.clearTimeout(STATE.scheduledTimer);
+    STATE.scheduledTimer = null;
+  }
+  if (STATE.keepAliveTimer) {
+    window.clearInterval(STATE.keepAliveTimer);
+    STATE.keepAliveTimer = null;
+  }
+  if (STATE.observer) {
+    STATE.observer.disconnect();
+    STATE.observer = null;
+  }
+
+  setStatus(message);
+
+  if (hideBadgeAfterMs > 0) {
+    window.setTimeout(() => {
+      const badge = document.getElementById('rmw-higgsfield-autologin-status');
+      if (badge) {
+        badge.remove();
+      }
+    }, hideBadgeAfterMs);
+  }
+}
+
+function requestOtp() {
+  const now = Date.now();
+  if (STATE.otpFetching || STATE.otpValue) return;
+  if (STATE.otpRequestAttempts >= 3) {
+    setStatus('OTP fetch failed after 3 attempts');
+    return;
+  }
+  if (now - STATE.otpLastRequestAt < 3000) return;
+
+  STATE.otpFetching = true;
+  STATE.otpLastRequestAt = now;
+  STATE.otpRequestAttempts += 1;
+  setStatus(`Fetching OTP from email (attempt ${STATE.otpRequestAttempts})`);
+
+  sendRuntimeMessage({
+    type: 'TOOL_HUB_FETCH_OTP',
+    toolSlug: TOOL_SLUG,
+    hostname: window.location.hostname,
+    pageUrl: window.location.href,
+    extensionTicket: getStoredLaunchTicket(),
+  }).then((response) => {
+    STATE.otpFetching = false;
+
+    if (!response?.ok || !response.otp) {
+      setStatus(response?.error || 'OTP not received yet');
+      scheduleAttempt(1500);
+      return;
+    }
+
+    STATE.otpValue = `${response.otp}`.trim();
+    scheduleAttempt(100);
+  });
+}
+
+function fillOtp(otpInput, otp) {
+  const normalizedOtp = `${otp || ''}`.trim();
+  if (!otpInput || !normalizedOtp) {
+    return;
+  }
+
+  if (otpInput.value !== normalizedOtp) {
+    otpInput.focus();
+    setInputValue(otpInput, normalizedOtp);
+  }
+
+  const submitButton = findSubmitButton(otpInput, null) || document.querySelector('button[type="submit"]');
+  if (!submitButton) {
+    setStatus('OTP filled, verify button not found');
+    return;
+  }
+
+  const now = Date.now();
+  if (now - STATE.lastSubmitAt > 3000) {
+    STATE.lastSubmitAt = now;
+    STATE.otpSubmittedAt = now;
+    setStatus('OTP filled, verifying');
+    window.setTimeout(() => submitButton.click(), 300);
+    return;
+  }
+
+  setStatus('OTP filled');
+}
+
 function attemptFill() {
   if (STATE.settled) return;
   if (!STATE.launchChecked) {
@@ -506,11 +647,32 @@ function attemptFill() {
     return;
   }
 
+  if (looksLikeAuthenticatedWorkspace()) {
+    stopAutomation('Signed in successfully');
+    return;
+  }
+
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
+  const otpInput = findOtpInput();
+  if (otpInput) {
+    STATE.otpStageSeen = true;
+  }
+  if ((emailInput || passwordInput) && (STATE.otpValue || STATE.otpFetching || STATE.otpRequestAttempts)) {
+    STATE.otpValue = '';
+    STATE.otpFetching = false;
+    STATE.otpRequestAttempts = 0;
+    STATE.otpLastRequestAt = 0;
+    STATE.otpStageSeen = false;
+    STATE.otpSubmittedAt = 0;
+  }
   if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
     if (emailInput || passwordInput || findEmailEntryAction() || window.location.pathname.startsWith('/auth')) {
       requestCredential();
+    }
+    if (otpInput) {
+      requestOtp();
+      return;
     }
     attemptOpenEmailLogin();
     return;
@@ -527,6 +689,17 @@ function attemptFill() {
   }
 
   if (!emailInput && !passwordInput) {
+    if (otpInput) {
+      if (!STATE.otpValue) {
+        requestOtp();
+        setStatus(STATE.otpFetching ? 'Fetching OTP from email' : 'Waiting for OTP code');
+        return;
+      }
+
+      fillOtp(otpInput, STATE.otpValue);
+      return;
+    }
+
     attemptOpenEmailLogin();
     setStatus('Waiting for Higgsfield login field');
     return;

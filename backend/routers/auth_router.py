@@ -1,6 +1,6 @@
 # routers/auth_router.py - Authentication endpoints
 from fastapi import APIRouter, Depends, HTTPException, Response, Cookie, Request, Header
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime
@@ -38,6 +38,11 @@ from auth import (
     verify_reset_token,
     invalidate_reset_token,
     get_request_session_token,
+)
+
+
+KNOWN_DEPARTMENTS = (
+    "INTERNAL BRANDS",
 )
 from utils.cache import cache_response
 from utils.permissions import has_any_role, require_admin
@@ -721,8 +726,17 @@ async def get_users_by_department(
 ):
     """Get all active users in a specific department"""
     try:
+        normalized_department = (department_name or "").strip()
+        if not normalized_department:
+            return {
+                "success": True,
+                "department": "",
+                "users": [],
+                "count": 0
+            }
+
         users_query = db.query(User).filter(
-            User.department == department_name,
+            func.lower(func.trim(User.department)) == normalized_department.lower(),
             User.is_active == True,
             User.is_deleted == False
         )
@@ -736,13 +750,14 @@ async def get_users_by_department(
         
         return {
             "success": True,
-            "department": department_name,
+            "department": normalized_department,
             "users": [
                 {
                     "id": user.id,
                     "name": user.name,
                     "email": user.email,
                     "employeeId": user.employee_id,
+                    "department": user.department,
                     "position": user.position,
                     "roles": user.roles_json or [],
                     "avatar": user.avatar
@@ -778,11 +793,24 @@ async def get_all_departments(
             .all()
         )
 
-        dept_list = [dept[0] for dept in departments if dept[0]]
+        dept_map = {}
+        for department_row in departments:
+            department_value = f"{department_row[0] or ''}".strip()
+            if not department_value:
+                continue
+            dept_map.setdefault(department_value.lower(), department_value)
+
+        for department_value in KNOWN_DEPARTMENTS:
+            normalized_department = f"{department_value or ''}".strip()
+            if not normalized_department:
+                continue
+            dept_map.setdefault(normalized_department.lower(), normalized_department)
+
+        dept_list = sorted(dept_map.values())
 
         return {
             "success": True,
-            "departments": sorted(dept_list),
+            "departments": dept_list,
             "count": len(dept_list)
         }
     except Exception as e:

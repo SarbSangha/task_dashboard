@@ -1,7 +1,9 @@
+import asyncio
 import base64
 import hashlib
 import hmac
 import html
+import imaplib
 import json
 import os
 import re
@@ -17,7 +19,8 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
-from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, User
+from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, User
+from services.otp_mail_service import fetch_otp_from_gmail
 from utils.credential_crypto import decrypt_secret, encrypt_secret
 from utils.permissions import has_any_role, require_admin, require_user
 
@@ -81,6 +84,13 @@ class CredentialUpsertPayload(BaseModel):
 
 
 class ExtensionCredentialPayload(BaseModel):
+    tool_slug: Optional[str] = Field(None, max_length=140)
+    hostname: Optional[str] = Field(None, max_length=255)
+    page_url: Optional[str] = Field(None, max_length=2000)
+    extension_ticket: Optional[str] = Field(None, max_length=4000)
+
+
+class OtpRequestPayload(BaseModel):
     tool_slug: Optional[str] = Field(None, max_length=140)
     hostname: Optional[str] = Field(None, max_length=255)
     page_url: Optional[str] = Field(None, max_length=2000)
@@ -381,6 +391,20 @@ def _extension_ticket_error() -> HTTPException:
     return HTTPException(status_code=403, detail="Launch this tool from the dashboard before auto-fill can run")
 
 
+OTP_POLL_INTERVAL_SEC = 5
+OTP_MAX_WAIT_SEC = 60
+OTP_EMAIL_MAX_AGE_SEC = 120
+OTP_TICKET_TTL_SEC = 600
+_otp_consumed_tickets: dict[str, float] = {}
+
+
+def _cleanup_otp_tickets() -> None:
+    cutoff = time.monotonic() - OTP_TICKET_TTL_SEC
+    stale_tickets = [ticket for ticket, consumed_at in _otp_consumed_tickets.items() if consumed_at < cutoff]
+    for ticket in stale_tickets:
+        del _otp_consumed_tickets[ticket]
+
+
 def _render_auto_login_page(tool: ITPortalTool, credential: ITPortalToolCredential) -> str:
     metadata = tool.metadata_json or {}
     auto_login = metadata.get("autoLogin") or {}
@@ -652,6 +676,105 @@ async def get_extension_credential(
             "password": password,
         },
     }
+
+
+@router.post("/extension/otp")
+async def get_extension_otp(
+    payload: OtpRequestPayload,
+    current_user: User = Depends(require_user),
+    db: Session = Depends(get_operational_db),
+):
+    tool = _find_extension_tool(db, payload)
+    if not tool:
+        raise HTTPException(status_code=404, detail="No matching tool found for this page")
+    if tool.launch_mode != "extension_autofill":
+        raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill")
+
+    extension_ticket = (payload.extension_ticket or "").strip()
+    if not extension_ticket:
+        raise _extension_ticket_error()
+
+    ticket_payload = _decode_ticket(extension_ticket)
+    if ticket_payload.get("kind") != "extension_autofill":
+        raise _extension_ticket_error()
+    if int(ticket_payload.get("userId") or 0) != current_user.id:
+        raise _extension_ticket_error()
+    if int(ticket_payload.get("toolId") or 0) != tool.id:
+        raise _extension_ticket_error()
+
+    _cleanup_otp_tickets()
+    if extension_ticket in _otp_consumed_tickets:
+        raise HTTPException(
+            status_code=409,
+            detail="OTP already fetched for this launch session. Launch the tool again from the dashboard.",
+        )
+
+    mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool.id).first()
+    if not mailbox:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No mailbox configured for tool '{tool.name}'. Ask an admin to add the mailbox in the dashboard.",
+        )
+
+    app_password = decrypt_secret(mailbox.app_password_encrypted)
+    if not app_password:
+        raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
+
+    attempts = max(1, OTP_MAX_WAIT_SEC // OTP_POLL_INTERVAL_SEC)
+    otp = None
+    last_fetch_error = None
+    for attempt_index in range(attempts):
+        try:
+            otp = await asyncio.to_thread(
+                fetch_otp_from_gmail,
+                mailbox.email_address,
+                app_password,
+                mailbox.otp_regex,
+                mailbox.otp_sender_filter,
+                mailbox.otp_subject_pattern,
+                OTP_EMAIL_MAX_AGE_SEC,
+            )
+            last_fetch_error = None
+        except imaplib.IMAP4.error as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Mailbox login failed for {mailbox.email_address}. Update the Gmail app password or enable IMAP. ({exc})",
+            ) from exc
+        except Exception as exc:
+            last_fetch_error = exc
+            otp = None
+
+        if otp:
+            break
+
+        if attempt_index < attempts - 1:
+            await asyncio.sleep(OTP_POLL_INTERVAL_SEC)
+
+    if not otp:
+        if last_fetch_error is not None:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Mailbox fetch failed: {last_fetch_error}",
+            )
+        raise HTTPException(
+            status_code=408,
+            detail="OTP email did not arrive within the timeout window. Check the mailbox filters and try again.",
+        )
+
+    _otp_consumed_tickets[extension_ticket] = time.monotonic()
+    _add_audit(
+        db,
+        actor_id=current_user.id,
+        action="extension_otp_fetched",
+        tool_id=tool.id,
+        details={
+            "hostname": _normalize_hostname(payload.hostname or payload.page_url),
+            "mailbox": mailbox.email_address,
+        },
+    )
+    db.commit()
+
+    return {"success": True, "otp": otp}
 
 
 @router.get("/tools/{tool_id}/credentials")

@@ -700,6 +700,52 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   return data;
 }
 
+async function fetchOtp(message, senderTabId = 0, openerTabId = 0) {
+  const settings = await getSettings();
+  const tabId = message.tabId || senderTabId || 0;
+  const directLaunch = await getActiveLaunch(tabId, message.toolSlug);
+  const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, message.toolSlug);
+  const activeLaunch = directLaunch || inheritedLaunch;
+  const extensionTicket = `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim();
+
+  if (!extensionTicket) {
+    throw new Error('Open this tool from the dashboard first.');
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetch(`${settings.apiBase}/api/it-tools/extension/otp`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify({
+      tool_slug: message.toolSlug,
+      hostname: message.hostname,
+      page_url: message.pageUrl,
+      extension_ticket: extensionTicket || null,
+    }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success || !data.otp) {
+    const parts = [
+      data.detail || data.message || `OTP request failed (${response.status})`,
+      `api=${settings.apiBase}`,
+      `sessionHeader=${settings.sessionToken ? 'yes' : 'no'}`,
+      `http=${response.status}`,
+    ];
+    throw new Error(parts.join(' | '));
+  }
+
+  return data.otp;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const senderTabId = sender?.tab?.id || 0;
   const senderOpenerTabId = sender?.tab?.openerTabId || 0;
@@ -801,6 +847,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     openFlowIsolatedWindow(message.launchUrl)
       .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_FETCH_OTP') {
+    fetchOtp(message, senderTabId, senderOpenerTabId)
+      .then((otp) => sendResponse({ ok: true, otp }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
