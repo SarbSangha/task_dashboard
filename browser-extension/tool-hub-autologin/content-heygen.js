@@ -1,0 +1,851 @@
+const TOOL_SLUG = 'heygen';
+const LOGIN_URL = 'https://www.heygen.com/';
+const AUTH_URL = 'https://auth.heygen.com/';
+const BLOCKED_NOTICE_KEY = 'rmw_heygen_blocked_notice';
+const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
+
+const STATE = {
+  credential: null,
+  requested: false,
+  requestAttempts: 0,
+  lastRequestAt: 0,
+  lastSubmitAt: 0,
+  lastActionAt: 0,
+  loginOpenAttempts: 0,
+  scheduledTimer: null,
+  keepAliveTimer: null,
+  observer: null,
+  lastRunAt: 0,
+  lastMutationHandledAt: 0,
+  settled: false,
+  launchChecked: false,
+  launchAuthorized: false,
+  launchExpiresAt: 0,
+  launchPrepared: false,
+  passwordSavingInFlight: false,
+  passwordSavingSuppressed: false,
+  passwordSavingRestoreTimer: null,
+  status: 'Waiting for HeyGen login form',
+};
+
+const MIN_RUN_GAP_MS = 900;
+const KEEP_ALIVE_MS = 4000;
+const ACTION_THROTTLE_MS = 1200;
+const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
+
+const EMAIL_SELECTORS = [
+  'input[type="email"]',
+  'input[name="email"]',
+  'input[id*="email" i]',
+  'input[name*="email" i]',
+  'input[autocomplete="username"]',
+  'input[autocomplete="email"]',
+  'input[placeholder*="email" i]',
+  'input[aria-label*="email" i]',
+];
+
+const PASSWORD_SELECTORS = [
+  'input[type="password"]',
+  'input[name="password"]',
+  'input[id*="password" i]',
+  'input[name*="password" i]',
+  'input[autocomplete="current-password"]',
+  'input[placeholder*="password" i]',
+  'input[aria-label*="password" i]',
+];
+
+const ACTION_SELECTORS = [
+  'button',
+  'a[href]',
+  'input[type="submit"]',
+  'input[type="button"]',
+  '[role="button"]',
+];
+
+function ensureStatusBadge() {
+  const existing = document.getElementById('rmw-heygen-autologin-status');
+  if (existing) return existing;
+
+  const badge = document.createElement('div');
+  badge.id = 'rmw-heygen-autologin-status';
+  badge.style.position = 'fixed';
+  badge.style.top = '12px';
+  badge.style.right = '12px';
+  badge.style.zIndex = '2147483647';
+  badge.style.maxWidth = '320px';
+  badge.style.padding = '10px 12px';
+  badge.style.borderRadius = '10px';
+  badge.style.background = 'rgba(15, 23, 42, 0.92)';
+  badge.style.color = '#f8fafc';
+  badge.style.font = '12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  badge.style.boxShadow = '0 8px 24px rgba(15, 23, 42, 0.28)';
+  badge.style.pointerEvents = 'none';
+  badge.style.whiteSpace = 'pre-wrap';
+  badge.textContent = STATE.status || 'Starting auto-login';
+  (document.body || document.documentElement).appendChild(badge);
+  return badge;
+}
+
+function setStatus(message) {
+  if (STATE.status === message) return;
+  STATE.status = message;
+  const badge = ensureStatusBadge();
+  if (badge) {
+    badge.textContent = `HeyGen auto-login\n${message}`;
+  }
+  console.debug('[RMW HeyGen Auto Login]', message);
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(response || { ok: false, error: 'No response received' });
+    });
+  });
+}
+
+function readLaunchTicketFromUrl() {
+  const searchParams = new URLSearchParams(window.location.search || '');
+  const directQueryTicket = `${searchParams.get('rmw_extension_ticket') || ''}`.trim();
+  if (directQueryTicket) {
+    return directQueryTicket;
+  }
+
+  const hash = `${window.location.hash || ''}`.replace(/^#/, '');
+  if (!hash) return '';
+  const hashParams = new URLSearchParams(hash);
+  return `${hashParams.get('rmw_extension_ticket') || ''}`.trim();
+}
+
+function getStoredLaunchTicket() {
+  try {
+    return `${window.sessionStorage.getItem(EXTENSION_TICKET_KEY) || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function clearStoredLaunchTicket() {
+  try {
+    window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
+  } catch {}
+}
+
+function storeLaunchTicket(ticket) {
+  try {
+    if (ticket) {
+      window.sessionStorage.setItem(EXTENSION_TICKET_KEY, ticket);
+    } else {
+      window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
+    }
+  } catch {}
+}
+
+function captureLaunchTicketFromHash() {
+  const ticket = readLaunchTicketFromUrl();
+  if (!ticket) return '';
+
+  storeLaunchTicket(ticket);
+  try {
+    const searchParams = new URLSearchParams(window.location.search || '');
+    searchParams.delete('rmw_extension_ticket');
+    searchParams.delete('rmw_tool_slug');
+    const nextSearch = searchParams.toString();
+    const cleanUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}`;
+    window.history.replaceState(null, '', cleanUrl);
+  } catch {}
+  return ticket;
+}
+
+function isVisible(element) {
+  if (!element) return false;
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+}
+
+function isDisabled(element) {
+  if (!element) return true;
+  return Boolean(
+    element.disabled
+    || element.getAttribute('aria-disabled') === 'true'
+    || element.getAttribute('disabled') !== null
+  );
+}
+
+function normalizeText(value) {
+  return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function buttonText(button) {
+  return normalizeText(
+    `${button?.innerText || button?.textContent || button?.value || button?.getAttribute?.('aria-label') || ''}`
+  );
+}
+
+function descriptorText(element) {
+  const parts = [
+    element?.innerText,
+    element?.textContent,
+    element?.value,
+    element?.getAttribute?.('aria-label'),
+    element?.getAttribute?.('title'),
+    element?.getAttribute?.('href'),
+  ];
+  return normalizeText(parts.filter(Boolean).join(' '));
+}
+
+function collectActionCandidates(root = document) {
+  return Array.from(root.querySelectorAll(ACTION_SELECTORS.join(',')))
+    .filter((element) => !isDisabled(element) && isVisible(element));
+}
+
+function findActionByText({ exact = [], partial = [], exclude = [] } = {}) {
+  const exactSet = exact.map(normalizeText);
+  const partialSet = partial.map(normalizeText);
+  const excludeSet = exclude.map(normalizeText);
+  const candidates = collectActionCandidates();
+
+  return candidates.find((element) => {
+    const text = buttonText(element);
+    const descriptor = descriptorText(element);
+    if (!text && !descriptor) return false;
+    if (excludeSet.some((value) => text.includes(value) || descriptor.includes(value))) {
+      return false;
+    }
+    if (exactSet.some((value) => text === value || descriptor === value)) {
+      return true;
+    }
+    return partialSet.some((value) => text.includes(value) || descriptor.includes(value));
+  }) || null;
+}
+
+function findInput(selectors) {
+  for (const selector of selectors) {
+    const inputs = Array.from(document.querySelectorAll(selector));
+    const match = inputs.find((input) => !input.disabled && !input.readOnly && isVisible(input));
+    if (match) return match;
+  }
+  return null;
+}
+
+function clearPageStorage() {
+  try {
+    window.localStorage.clear();
+  } catch {}
+  try {
+    const blockedNotice = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY);
+    const extensionTicket = window.sessionStorage.getItem(EXTENSION_TICKET_KEY);
+    window.sessionStorage.clear();
+    if (blockedNotice) {
+      window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, blockedNotice);
+    }
+    if (extensionTicket) {
+      window.sessionStorage.setItem(EXTENSION_TICKET_KEY, extensionTicket);
+    }
+  } catch {}
+}
+
+function setInputValue(input, value) {
+  const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+  if (descriptor?.set) descriptor.set.call(input, value);
+  else input.value = value;
+
+  input.setAttribute('value', value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  input.dispatchEvent(new Event('blur', { bubbles: true }));
+}
+
+function safeClick(element) {
+  if (!element || isDisabled(element) || !isVisible(element)) return false;
+  try {
+    element.scrollIntoView({ block: 'center', inline: 'nearest' });
+  } catch {}
+  try {
+    element.focus({ preventScroll: true });
+  } catch {}
+
+  try {
+    element.click();
+    return true;
+  } catch {
+    try {
+      element.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function findEmailInput() {
+  return findInput(EMAIL_SELECTORS);
+}
+
+function findPasswordInput() {
+  return findInput(PASSWORD_SELECTORS);
+}
+
+function findHomeSignInAction() {
+  return findActionByText({
+    exact: ['sign in'],
+    partial: ['sign in'],
+    exclude: ['google', 'apple', 'sso', 'email'],
+  });
+}
+
+function findEmailOptionAction() {
+  return findActionByText({
+    exact: ['sign in with email'],
+    partial: ['sign in with email', 'continue with email'],
+  });
+}
+
+function findUsePasswordInsteadAction() {
+  return findActionByText({
+    exact: ['use password instead'],
+    partial: ['use password instead'],
+  });
+}
+
+function findSubmitButton(emailInput, passwordInput) {
+  const candidates = collectActionCandidates();
+  const priorityWords = passwordInput
+    ? ['log in', 'login', 'sign in']
+    : ['continue', 'next', 'log in', 'login', 'sign in'];
+
+  const directMatch = candidates.find((element) => {
+    const text = buttonText(element);
+    return priorityWords.some((word) => text === word);
+  });
+  if (directMatch) return directMatch;
+
+  const partialMatch = candidates.find((element) => {
+    const text = buttonText(element);
+    return priorityWords.some((word) => text.includes(word));
+  });
+  if (partialMatch) return partialMatch;
+
+  return candidates.find((element) => element.type === 'submit') || null;
+}
+
+function onAuthHost() {
+  return window.location.hostname === 'auth.heygen.com';
+}
+
+function onHeyGenHost() {
+  return window.location.hostname === 'heygen.com'
+    || window.location.hostname.endsWith('.heygen.com');
+}
+
+function isLandingPage() {
+  const host = window.location.hostname;
+  return host === 'heygen.com' || host === 'www.heygen.com';
+}
+
+function isLoginPage() {
+  return onAuthHost()
+    || Boolean(findEmailInput())
+    || Boolean(findPasswordInput())
+    || Boolean(findEmailOptionAction())
+    || Boolean(findUsePasswordInsteadAction())
+    || (isLandingPage() && Boolean(findHomeSignInAction()));
+}
+
+function looksLikeAuthenticatedWorkspace() {
+  if (!onHeyGenHost()) return false;
+  if (onAuthHost()) return false;
+  if (findEmailInput() || findPasswordInput() || findEmailOptionAction() || findUsePasswordInsteadAction()) {
+    return false;
+  }
+  if (isLandingPage() && findHomeSignInAction()) {
+    return false;
+  }
+
+  if (window.location.hostname === 'app.heygen.com') {
+    return true;
+  }
+
+  const workspaceWords = ['avatars', 'video', 'videos', 'template', 'templates', 'workspace', 'dashboard', 'create'];
+  const matched = new Set();
+  Array.from(document.querySelectorAll('a, button, nav *, main *')).forEach((element) => {
+    const text = buttonText(element);
+    if (!text) return;
+    workspaceWords.forEach((word) => {
+      if (text === word || text.startsWith(`${word} `) || text.includes(` ${word} `)) {
+        matched.add(word);
+      }
+    });
+  });
+  return matched.size >= 3;
+}
+
+async function ensurePasswordSavingSuppressed() {
+  if (STATE.passwordSavingSuppressed) return true;
+
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+    suppressed: true,
+  });
+
+  if (!response?.ok) {
+    setStatus(response?.error || 'Could not suppress Chrome password prompt');
+    return false;
+  }
+
+  STATE.passwordSavingSuppressed = true;
+  return true;
+}
+
+function requestPasswordSavingSuppression() {
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingInFlight) {
+    return;
+  }
+
+  STATE.passwordSavingInFlight = true;
+  setStatus('Disabling Chrome password-save prompt...');
+
+  ensurePasswordSavingSuppressed()
+    .then((ok) => {
+      if (!ok) {
+        STATE.passwordSavingInFlight = false;
+        STATE.settled = true;
+        setStatus('Blocked: Chrome password-save prompt could not be disabled.');
+        return;
+      }
+
+      STATE.passwordSavingInFlight = false;
+      scheduleAttempt(50);
+    })
+    .catch((error) => {
+      STATE.passwordSavingInFlight = false;
+      STATE.settled = true;
+      setStatus(`Blocked: ${error?.message || 'Could not disable Chrome password-save prompt.'}`);
+    });
+}
+
+function releasePasswordSavingSuppressed(delay = 0) {
+  if (STATE.passwordSavingRestoreTimer) {
+    window.clearTimeout(STATE.passwordSavingRestoreTimer);
+    STATE.passwordSavingRestoreTimer = null;
+  }
+
+  STATE.passwordSavingRestoreTimer = window.setTimeout(() => {
+    sendRuntimeMessage({
+      type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+      suppressed: false,
+    });
+    STATE.passwordSavingSuppressed = false;
+    STATE.passwordSavingRestoreTimer = null;
+  }, Math.max(0, delay));
+}
+
+async function loadLaunchState() {
+  const directTicket = captureLaunchTicketFromHash() || getStoredLaunchTicket();
+  if (directTicket) {
+    const activation = await sendRuntimeMessage({
+      type: 'TOOL_HUB_ACTIVATE_LAUNCH',
+      toolSlug: TOOL_SLUG,
+      hostname: window.location.hostname,
+      pageUrl: window.location.href,
+      extensionTicket: directTicket,
+    });
+
+    if (activation?.ok && activation.authorized) {
+      clearStoredLaunchTicket();
+      STATE.launchChecked = true;
+      STATE.launchAuthorized = true;
+      STATE.launchExpiresAt = Number(activation.expiresAt || 0);
+      STATE.launchPrepared = Boolean(activation.prepared);
+      return;
+    }
+
+    clearStoredLaunchTicket();
+  }
+
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_GET_LAUNCH_STATE',
+    toolSlug: TOOL_SLUG,
+    hostname: window.location.hostname,
+    pageUrl: window.location.href,
+  });
+
+  STATE.launchChecked = true;
+  STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
+  STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
+  STATE.launchPrepared = Boolean(response?.ok && response.authorized && response.prepared);
+}
+
+async function clearToolSession(options = {}) {
+  clearPageStorage();
+  await sendRuntimeMessage({
+    type: 'TOOL_HUB_CLEAR_TOOL_SESSION',
+    toolSlug: TOOL_SLUG,
+    preserveLaunch: Boolean(options.preserveLaunch),
+  });
+}
+
+async function enforceDashboardOnlyAccess() {
+  const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
+  releasePasswordSavingSuppressed(0);
+
+  if (!isLoginPage()) {
+    await clearToolSession();
+    window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
+    window.location.replace(LOGIN_URL);
+    return false;
+  }
+
+  if (!alreadyNotified) {
+    window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
+  }
+
+  setStatus('Launch this tool from the dashboard first');
+  STATE.settled = true;
+  return false;
+}
+
+async function ensureFreshLaunchSession() {
+  if (!STATE.launchExpiresAt) {
+    return false;
+  }
+
+  if (STATE.launchPrepared) {
+    return true;
+  }
+
+  await clearToolSession({ preserveLaunch: true });
+  const preparedResponse = await sendRuntimeMessage({
+    type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED',
+    toolSlug: TOOL_SLUG,
+  });
+  if (preparedResponse?.ok) {
+    STATE.launchPrepared = true;
+  }
+  window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
+  setStatus('Preparing fresh HeyGen session');
+
+  if (!onAuthHost()) {
+    window.location.replace(AUTH_URL);
+    return false;
+  }
+
+  return true;
+}
+
+function requestCredential() {
+  const now = Date.now();
+  if (STATE.requested) return;
+  if (STATE.requestAttempts >= 4) return;
+  if (now - STATE.lastRequestAt < 2000) return;
+
+  STATE.requested = true;
+  STATE.lastRequestAt = now;
+  STATE.requestAttempts += 1;
+  setStatus(`Fetching credential (attempt ${STATE.requestAttempts})`);
+
+  chrome.runtime.sendMessage(
+    {
+      type: 'TOOL_HUB_GET_CREDENTIAL',
+      toolSlug: TOOL_SLUG,
+      hostname: window.location.hostname,
+      pageUrl: window.location.href,
+      extensionTicket: getStoredLaunchTicket(),
+    },
+    (response) => {
+      STATE.requested = false;
+
+      if (chrome.runtime.lastError) {
+        setStatus(`Extension error: ${chrome.runtime.lastError.message}`);
+        STATE.settled = true;
+        return;
+      }
+
+      if (!response?.ok) {
+        if ((response?.error || '').toLowerCase().includes('launch this tool from the dashboard first')) {
+          clearStoredLaunchTicket();
+        }
+        setStatus(response?.error || 'Credential unavailable');
+        return;
+      }
+
+      clearStoredLaunchTicket();
+      STATE.credential = response.data?.credential || null;
+      setStatus(STATE.credential ? 'Credential loaded' : 'Credential missing');
+      scheduleAttempt(150);
+    }
+  );
+}
+
+function canActNow() {
+  return Date.now() - STATE.lastActionAt > ACTION_THROTTLE_MS;
+}
+
+function markActionTaken() {
+  STATE.lastActionAt = Date.now();
+}
+
+function attemptOpenHeyGenLogin() {
+  const emailInput = findEmailInput();
+  const passwordInput = findPasswordInput();
+  if (emailInput || passwordInput) return false;
+
+  const emailOption = findEmailOptionAction();
+  if (emailOption) {
+    if (canActNow()) {
+      markActionTaken();
+      STATE.loginOpenAttempts += 1;
+      setStatus('Opening HeyGen email sign-in');
+      window.setTimeout(() => safeClick(emailOption), 250);
+      scheduleAttempt(500);
+    }
+    return true;
+  }
+
+  const homeSignIn = findHomeSignInAction();
+  if (homeSignIn) {
+    if (canActNow()) {
+      markActionTaken();
+      STATE.loginOpenAttempts += 1;
+      setStatus('Opening HeyGen sign-in');
+      window.setTimeout(() => safeClick(homeSignIn), 250);
+      scheduleAttempt(500);
+    }
+    return true;
+  }
+
+  if (!onAuthHost() && !isLandingPage() && canActNow()) {
+    markActionTaken();
+    STATE.loginOpenAttempts += 1;
+    setStatus('Redirecting to HeyGen sign-in');
+    window.location.replace(LOGIN_URL);
+    return true;
+  }
+
+  if (isLandingPage() && canActNow()) {
+    markActionTaken();
+    STATE.loginOpenAttempts += 1;
+    setStatus('Redirecting to HeyGen sign-in');
+    window.location.replace(AUTH_URL);
+    return true;
+  }
+
+  return false;
+}
+
+function attemptSwitchToPassword(emailInput) {
+  const usePasswordAction = findUsePasswordInsteadAction();
+  if (!usePasswordAction) return false;
+
+  if (!STATE.credential?.loginIdentifier) {
+    requestCredential();
+    setStatus('Waiting for HeyGen email credential');
+    return true;
+  }
+
+  if (emailInput && emailInput.value !== STATE.credential.loginIdentifier) {
+    emailInput.focus();
+    setInputValue(emailInput, STATE.credential.loginIdentifier);
+  }
+
+  if (canActNow()) {
+    markActionTaken();
+    setStatus('Switching HeyGen to password login');
+    requestPasswordSavingSuppression();
+    window.setTimeout(() => safeClick(usePasswordAction), 250);
+    scheduleAttempt(500);
+  }
+
+  return true;
+}
+
+function stopAutomation(message, hideBadgeAfterMs = 2500) {
+  STATE.settled = true;
+  if (STATE.scheduledTimer) {
+    window.clearTimeout(STATE.scheduledTimer);
+    STATE.scheduledTimer = null;
+  }
+  if (STATE.keepAliveTimer) {
+    window.clearInterval(STATE.keepAliveTimer);
+    STATE.keepAliveTimer = null;
+  }
+  if (STATE.observer) {
+    STATE.observer.disconnect();
+    STATE.observer = null;
+  }
+
+  setStatus(message);
+  releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
+
+  if (hideBadgeAfterMs > 0) {
+    window.setTimeout(() => {
+      const badge = document.getElementById('rmw-heygen-autologin-status');
+      if (badge) {
+        badge.remove();
+      }
+    }, hideBadgeAfterMs);
+  }
+}
+
+function attemptFill() {
+  if (STATE.settled) return;
+  if (!STATE.launchChecked) {
+    setStatus('Checking dashboard launch');
+    return;
+  }
+  if (!STATE.launchAuthorized) {
+    scheduleAsyncStep(enforceDashboardOnlyAccess);
+    return;
+  }
+  if (STATE.launchExpiresAt && !STATE.launchPrepared) {
+    scheduleAsyncStep(ensureFreshLaunchSession);
+    return;
+  }
+
+  if (looksLikeAuthenticatedWorkspace()) {
+    stopAutomation('Signed in successfully');
+    return;
+  }
+
+  const emailInput = findEmailInput();
+  const passwordInput = findPasswordInput();
+
+  if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
+    if (emailInput || passwordInput || findEmailOptionAction() || findUsePasswordInsteadAction() || onAuthHost()) {
+      requestCredential();
+    }
+    attemptOpenHeyGenLogin();
+    return;
+  }
+
+  if (!passwordInput && attemptSwitchToPassword(emailInput)) {
+    return;
+  }
+
+  if (emailInput && !passwordInput) {
+    requestPasswordSavingSuppression();
+    setStatus('Waiting for HeyGen password login');
+    return;
+  }
+
+  if (!emailInput && !passwordInput) {
+    attemptOpenHeyGenLogin();
+    setStatus('Waiting for HeyGen login field');
+    return;
+  }
+
+  if (emailInput && emailInput.value !== STATE.credential.loginIdentifier) {
+    emailInput.focus();
+    setInputValue(emailInput, STATE.credential.loginIdentifier);
+  }
+
+  if (passwordInput) {
+    if (!STATE.passwordSavingSuppressed) {
+      requestPasswordSavingSuppression();
+      return;
+    }
+    if (passwordInput.value !== STATE.credential.password) {
+      passwordInput.focus();
+      setInputValue(passwordInput, STATE.credential.password);
+    }
+  }
+
+  const readyForSubmit = (!emailInput || emailInput.value) && (!passwordInput || passwordInput.value);
+  if (!readyForSubmit) {
+    setStatus('Waiting for credential fields');
+    return;
+  }
+
+  const submitButton = findSubmitButton(emailInput, passwordInput);
+  if (!submitButton) {
+    setStatus(passwordInput ? 'Credential filled, log in button not found' : 'Email filled, waiting for password login option');
+    return;
+  }
+
+  const now = Date.now();
+  if (now - STATE.lastSubmitAt > 3000) {
+    STATE.lastSubmitAt = now;
+    setStatus(passwordInput ? 'Credential filled, logging in' : 'Email filled, continuing');
+    window.setTimeout(() => safeClick(submitButton), 300);
+    return;
+  }
+
+  setStatus(passwordInput ? 'Credential filled' : 'Email filled');
+}
+
+function scheduleAsyncStep(task) {
+  if (STATE.settled) return;
+  STATE.settled = true;
+  Promise.resolve()
+    .then(task)
+    .catch((error) => {
+      setStatus(`Session check failed: ${error?.message || 'Unknown error'}`);
+      releasePasswordSavingSuppressed(0);
+    });
+}
+
+function runAttempt() {
+  STATE.scheduledTimer = null;
+
+  const now = Date.now();
+  if (now - STATE.lastRunAt < MIN_RUN_GAP_MS) {
+    scheduleAttempt(MIN_RUN_GAP_MS - (now - STATE.lastRunAt));
+    return;
+  }
+
+  STATE.lastRunAt = now;
+
+  try {
+    attemptFill();
+  } catch (error) {
+    STATE.settled = true;
+    setStatus(`Script error: ${error?.message || 'Unknown error'}`);
+    releasePasswordSavingSuppressed(0);
+  }
+}
+
+function scheduleAttempt(delay = 0) {
+  if (STATE.settled) return;
+  if (STATE.scheduledTimer) return;
+  STATE.scheduledTimer = window.setTimeout(runAttempt, Math.max(0, delay));
+}
+
+function handleMutations() {
+  if (STATE.settled) return;
+
+  const now = Date.now();
+  if (now - STATE.lastMutationHandledAt < 1200) return;
+
+  STATE.lastMutationHandledAt = now;
+  scheduleAttempt(200);
+}
+
+function start() {
+  ensureStatusBadge();
+  captureLaunchTicketFromHash();
+  STATE.observer = new MutationObserver(() => handleMutations());
+  STATE.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  STATE.keepAliveTimer = window.setInterval(() => scheduleAttempt(0), KEEP_ALIVE_MS);
+  loadLaunchState()
+    .catch(() => {
+      STATE.launchChecked = true;
+      STATE.launchAuthorized = false;
+      STATE.launchExpiresAt = 0;
+    })
+    .finally(() => {
+      STATE.settled = false;
+      scheduleAttempt(0);
+    });
+}
+
+start();

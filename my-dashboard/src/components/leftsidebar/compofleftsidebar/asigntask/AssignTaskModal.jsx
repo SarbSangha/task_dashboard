@@ -127,6 +127,45 @@ const isMeaningfulWorkflowStage = (stage) => {
   return Boolean(description || stage?.approvalRequired || assigneeIds.length || (title && !defaultStageTitle));
 };
 
+const createInitialSubmitUploadState = () => ({
+  active: false,
+  phase: '',
+  fileCount: 0,
+  uploadedBytes: 0,
+  totalBytes: 0,
+  percent: 0,
+  currentFileName: '',
+  currentFileIndex: 0,
+  currentFileUploadedBytes: 0,
+  currentFileTotalBytes: 0,
+  currentFilePercent: 0,
+});
+
+const getUploadBytesTotal = (files = []) =>
+  files.reduce((sum, file) => sum + Math.max(Number(file?.size) || 0, 0), 0);
+
+const toUploadPercent = (loaded = 0, total = 0) => {
+  if (!total) return 0;
+  return Math.min(100, Math.round((loaded * 100) / total));
+};
+
+const formatUploadSize = (bytes = 0) => {
+  const safeBytes = Number.isFinite(bytes) ? Math.max(bytes, 0) : 0;
+  if (safeBytes < 1024) return `${safeBytes} B`;
+
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = safeBytes / 1024;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const decimals = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+};
+
 const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMinimizedChange, onActivate }, ref) => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -158,6 +197,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  const [submitUploadState, setSubmitUploadState] = useState(createInitialSubmitUploadState);
   const [currentDraftId, setCurrentDraftId] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
@@ -666,6 +706,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     }
 
     setIsSaving(true);
+    setSubmitUploadState(createInitialSubmitUploadState());
 
     try {
       // Save to localStorage with original field names
@@ -803,8 +844,60 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       );
       let uploadedAttachments = [];
       if (filesToUpload.length > 0) {
-        const uploadRes = await fileAPI.uploadFiles(filesToUpload);
+        const totalBytes = getUploadBytesTotal(filesToUpload);
+        setSubmitUploadState({
+          active: true,
+          phase: 'Uploading attachments...',
+          fileCount: filesToUpload.length,
+          uploadedBytes: 0,
+          totalBytes,
+          percent: 0,
+          currentFileName: filesToUpload[0]?.name || '',
+          currentFileIndex: filesToUpload[0] ? 1 : 0,
+          currentFileUploadedBytes: 0,
+          currentFileTotalBytes: Math.max(Number(filesToUpload[0]?.size) || 0, 0),
+          currentFilePercent: 0,
+        });
+        const uploadRes = await fileAPI.uploadFiles(filesToUpload, {
+          onProgress: (_percent, metrics = {}) => {
+            const safeTotalBytes = Math.max(Number(metrics?.total) || totalBytes || 0, 0);
+            const uploadedBytes = safeTotalBytes
+              ? Math.min(Math.max(Number(metrics?.loaded) || 0, 0), safeTotalBytes)
+              : 0;
+            setSubmitUploadState((current) => ({
+              ...current,
+              active: true,
+              phase: 'Uploading attachments...',
+              fileCount: filesToUpload.length,
+              uploadedBytes,
+              totalBytes: safeTotalBytes || totalBytes,
+              percent: toUploadPercent(uploadedBytes, safeTotalBytes || totalBytes),
+            }));
+          },
+          onFileProgress: ({ fileIndex, file, loaded, total, percent }) => {
+            setSubmitUploadState((current) => ({
+              ...current,
+              active: true,
+              phase: 'Uploading attachments...',
+              fileCount: filesToUpload.length,
+              currentFileName: file?.name || current.currentFileName,
+              currentFileIndex: Number(fileIndex) + 1,
+              currentFileUploadedBytes: Math.max(Number(loaded) || 0, 0),
+              currentFileTotalBytes: Math.max(Number(total) || 0, 0),
+              currentFilePercent: Math.max(Number(percent) || 0, 0),
+            }));
+          },
+        });
         uploadedAttachments = uploadRes?.data || [];
+        setSubmitUploadState((current) => ({
+          ...current,
+          active: true,
+          phase: isTaskEditMode ? 'Updating task details...' : isDraftEdit ? 'Sending task details...' : 'Creating task details...',
+          uploadedBytes: current.totalBytes,
+          percent: current.totalBytes ? 100 : current.percent,
+          currentFileUploadedBytes: current.currentFileTotalBytes,
+          currentFilePercent: current.currentFileTotalBytes ? 100 : current.currentFilePercent,
+        }));
       }
       const finalAttachments = [...existingAttachmentMeta, ...uploadedAttachments];
 
@@ -908,6 +1001,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       showMessage(errorMsg, 'error');
     } finally {
       setIsSaving(false);
+      setSubmitUploadState(createInitialSubmitUploadState());
     }
   };
 
@@ -1712,6 +1806,33 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
             />
           </div>
 
+          {submitUploadState.active && (
+            <div className="assign-row">
+              <div className="assign-upload-status" role="status" aria-live="polite">
+                <div className="assign-upload-status-header">
+                  <div className="assign-upload-status-copy">
+                    <strong>{submitUploadState.phase || 'Uploading attachments...'}</strong>
+                    <span>
+                      {formatUploadSize(submitUploadState.uploadedBytes)} of {formatUploadSize(submitUploadState.totalBytes)} transferred
+                    </span>
+                  </div>
+                  <div className="assign-upload-status-percent">{submitUploadState.percent}%</div>
+                </div>
+                <div className="assign-upload-status-bar" aria-hidden="true">
+                  <span style={{ width: `${submitUploadState.percent}%` }} />
+                </div>
+                <div className="assign-upload-status-file">
+                  <span>{submitUploadState.currentFileName || 'Preparing upload...'}</span>
+                  <small>
+                    {submitUploadState.currentFileIndex > 0 ? `File ${submitUploadState.currentFileIndex} of ${submitUploadState.fileCount} • ` : ''}
+                    {formatUploadSize(submitUploadState.currentFileUploadedBytes)} of {formatUploadSize(submitUploadState.currentFileTotalBytes)}
+                    {submitUploadState.currentFileTotalBytes ? ` • ${submitUploadState.currentFilePercent}%` : ''}
+                  </small>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Links */}
           <div className="assign-row">
             <TaskForm 
@@ -1729,7 +1850,9 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               disabled={isSaving}
             >
               {isSaving
-                ? (isTaskEditMode ? 'UPDATING...' : isDraftEdit ? 'SENDING...' : 'CREATING...')
+                ? submitUploadState.active
+                  ? `${submitUploadState.phase || 'UPLOADING...'} ${submitUploadState.percent}%`
+                  : (isTaskEditMode ? 'UPDATING...' : isDraftEdit ? 'SENDING...' : 'CREATING...')
                 : (isTaskEditMode ? 'UPDATE TASK' : isDraftEdit ? 'SEND TASK' : 'CREATE TASK')}
             </button>
             

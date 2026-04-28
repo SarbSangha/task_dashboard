@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "RMW Tool Hub Auto Login",
   "description": "Auto-fills approved company tool credentials from the RMW Tool Hub.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "incognito": "split",
   "icons": {
     "16": "icons/icon16.png",
@@ -10,7 +10,7 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["storage", "cookies"],
+  "permissions": ["storage", "cookies", "privacy"],
   "host_permissions": [
     "http://localhost/*",
     "http://127.0.0.1/*",
@@ -28,6 +28,8 @@
     "https://*.freepik.com/*",
     "https://higgsfield.ai/*",
     "https://*.higgsfield.ai/*",
+    "https://heygen.com/*",
+    "https://*.heygen.com/*",
     "https://google.com/*",
     "https://*.google.com/*",
     "https://labs.google/*",
@@ -98,6 +100,14 @@
         "https://*.higgsfield.ai/*"
       ],
       "js": ["content-higgsfield.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://heygen.com/*",
+        "https://*.heygen.com/*"
+      ],
+      "js": ["content-heygen.js"],
       "run_at": "document_idle"
     },
     {

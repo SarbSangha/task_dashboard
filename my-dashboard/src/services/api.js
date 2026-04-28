@@ -6,6 +6,8 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const SESSION_TOKEN_STORAGE_KEY = 'rmw_session_token_v1';
 const SESSION_TOKEN_REMEMBER_KEY = 'rmw_session_token_remember_v1';
 const REQUEST_TIMEOUT_MS = 15000;
+const AUTH_REQUEST_TIMEOUT_MS = 30000;
+const BACKGROUND_REQUEST_TIMEOUT_MS = 8000;
 const PRESIGN_TIMEOUT_MS = 30000;
 const DIRECT_UPLOAD_CONCURRENCY = 2;
 const DIRECT_UPLOAD_PART_CONCURRENCY = 3;
@@ -202,6 +204,8 @@ const withUploadRetry = async (fn, retryCount = DIRECT_UPLOAD_RETRY_COUNT) => {
 };
 
 const shouldUseLegacyUploadFallback = (files, error, options = {}) => {
+  const isLocalApi = /localhost|127\.0\.0\.1/i.test(API_URL);
+  if (options.allowLegacyFallback !== true && !isLocalApi) return false;
   if (options.allowLegacyFallback === false) return false;
   if (isRequestCanceled(error)) return false;
   const status = error?.response?.status;
@@ -420,6 +424,8 @@ export const authAPI = {
       email,
       password,
       remember_me: rememberMe
+    }, {
+      timeout: AUTH_REQUEST_TIMEOUT_MS,
     });
     if (response.data?.sessionToken) {
       storeSessionToken(response.data.sessionToken, rememberMe);
@@ -437,7 +443,9 @@ export const authAPI = {
   },
 
   getCurrentUser: async () => {
-    const response = await api.get('/api/auth/me');
+    const response = await api.get('/api/auth/me', {
+      timeout: AUTH_REQUEST_TIMEOUT_MS,
+    });
     return response.data;
   },
 
@@ -575,17 +583,23 @@ export const authAPI = {
 
 export const activityAPI = {
   startSession: async () => {
-    const response = await api.post('/api/activity/start-session');
+    const response = await api.post('/api/activity/start-session', undefined, {
+      timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+    });
     return response.data;
   },
 
   heartbeat: async (payload) => {
-    const response = await api.post('/api/activity/heartbeat', payload);
+    const response = await api.post('/api/activity/heartbeat', payload, {
+      timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+    });
     return response.data;
   },
 
   updateStatus: async (payload) => {
-    const response = await api.post('/api/activity/update-status', payload);
+    const response = await api.post('/api/activity/update-status', payload, {
+      timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+    });
     return response.data;
   },
 
@@ -732,7 +746,10 @@ export const taskAPI = {
   },
 
   getInboxUnreadCount: async (requestConfig = {}) => {
-    const response = await api.get('/api/tasks/inbox/unread-count', requestConfig);
+    const response = await api.get(
+      '/api/tasks/inbox/unread-count',
+      mergeRequestConfig({ timeout: BACKGROUND_REQUEST_TIMEOUT_MS }, requestConfig)
+    );
     return response.data;
   },
   
@@ -759,8 +776,8 @@ export const taskAPI = {
     return response.data;
   },
 
-  getTaskAssets: async (filters = {}) => {
-    const response = await api.get('/api/tasks/assets', { params: filters });
+  getTaskAssets: async (filters = {}, requestConfig = {}) => {
+    const response = await api.get('/api/tasks/assets', mergeRequestConfig({ params: filters }, requestConfig));
     return response.data;
   },
 
@@ -907,7 +924,10 @@ export const taskAPI = {
   },
 
   getOutboxUnreadCount: async (requestConfig = {}) => {
-    const response = await api.get('/api/tasks/notifications/outbox-unread', requestConfig);
+    const response = await api.get(
+      '/api/tasks/notifications/outbox-unread',
+      mergeRequestConfig({ timeout: BACKGROUND_REQUEST_TIMEOUT_MS }, requestConfig)
+    );
     return response.data;
   },
 
@@ -929,7 +949,9 @@ export const groupAPI = {
   },
 
   listGroups: async () => {
-    const response = await api.get('/api/groups');
+    const response = await api.get('/api/groups', {
+      timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+    });
     return response.data;
   },
 
@@ -1285,6 +1307,11 @@ export const itToolsAPI = {
   },
 
   listCredentials: async (toolId) => {
+    const response = await api.get(`/api/it-tools/tools/${toolId}/credentials`);
+    return response.data;
+  },
+
+  getToolCredentials: async (toolId) => {
     const response = await api.get(`/api/it-tools/tools/${toolId}/credentials`);
     return response.data;
   },

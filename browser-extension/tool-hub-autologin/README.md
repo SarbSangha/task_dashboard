@@ -1,10 +1,10 @@
 # RMW Tool Hub Auto Login Extension
 
-This Chrome extension is the company auto-fill layer for complex login pages such as ChatGPT/OpenAI, Freepik, Higgsfield, Kling AI, and custom tool scaffolds like Flow.
+This Chrome extension is the company auto-fill layer for complex login pages such as ChatGPT/OpenAI, Freepik, Higgsfield, HeyGen, Kling AI, and custom tool scaffolds like Flow.
 
 ## What It Does
 
-- Runs on `chatgpt.com`, `chat.openai.com`, `auth.openai.com`, Google/Microsoft login pages used by ChatGPT, Envato domains such as `elements.envato.com`, `freepik.com`, Higgsfield domains such as `higgsfield.ai`, and Kling AI domains such as `kling.ai`.
+- Runs on `chatgpt.com`, `chat.openai.com`, `auth.openai.com`, Google/Microsoft login pages used by ChatGPT, Envato domains such as `elements.envato.com`, `freepik.com`, Higgsfield domains such as `higgsfield.ai`, HeyGen domains such as `heygen.com` and `auth.heygen.com`, and Kling AI domains such as `kling.ai`.
 - Includes a starter `flow` scaffold in the codebase so the dashboard can use `Extension auto-fill` for that tool while the site-specific selectors and host matches are being customized.
 - Syncs the dashboard session token automatically when the dashboard is open in another tab.
 - Requests the assigned tool credential from the Tool Hub backend only after a login field is detected.
@@ -20,7 +20,7 @@ This Chrome extension is the company auto-fill layer for complex login pages suc
 
 The dashboard user must be logged in, and the tool must be configured in Tool Hub:
 
-- Tool slug: `chatgpt`, `envato`, `freepik`, `higgsfield`, `kling-ai`, or `flow` if the extension is using slug matching.
+- Tool slug: `chatgpt`, `envato`, `freepik`, `higgsfield`, `heygen`, `kling-ai`, or `flow` if the extension is using slug matching.
 - Launch mode: `Extension auto-fill`.
 - Credential: company or user-specific username/password.
 

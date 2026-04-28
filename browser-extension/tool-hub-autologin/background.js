@@ -1,5 +1,6 @@
 const DEFAULT_API_BASE = 'https://dashboard.ritzmediaworld.in';
 const ACTIVE_TAB_LAUNCHES_STORAGE_KEY = 'activeExtensionTabLaunches';
+const PASSWORD_SAVING_STATE_STORAGE_KEY = 'passwordSavingSuppressionState';
 const FLOW_HOME_URL = 'https://labs.google/fx';
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
@@ -8,6 +9,7 @@ const TOOL_SESSION_DOMAINS = {
   freepik: ['freepik.com', 'www.freepik.com'],
   flow: ['labs.google'],
   higgsfield: ['higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'],
+  heygen: ['heygen.com', 'auth.heygen.com', 'app.heygen.com'],
   'kling-ai': ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   klingai: ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
 };
@@ -38,6 +40,11 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'higgsfield.ai',
     'app.higgsfield.ai',
     'beta.higgsfield.ai',
+  ],
+  heygen: [
+    'heygen.com',
+    'auth.heygen.com',
+    'app.heygen.com',
   ],
   flow: [
     'labs.google',
@@ -443,6 +450,7 @@ async function setActiveLaunch(tabId, launch) {
     hostname: normalizeHostname(launch.hostname),
     activatedAt: Date.now(),
     freshSessionPreparedAt: sameTicket ? Number(existingLaunch.freshSessionPreparedAt || 0) : 0,
+    authTransitionAt: sameTicket ? Number(existingLaunch.authTransitionAt || 0) : 0,
     directCredentialIssuedAt: sameTicket ? Number(existingLaunch.directCredentialIssuedAt || 0) : 0,
     inheritedCredentialIssuedAt: sameTicket ? Number(existingLaunch.inheritedCredentialIssuedAt || 0) : 0,
     credentialContinuationCount: sameTicket ? Number(existingLaunch.credentialContinuationCount || 0) : 0,
@@ -474,6 +482,22 @@ async function markFreshSessionPrepared(tabId, toolSlug = '') {
   }
 
   current.freshSessionPreparedAt = Date.now();
+  launchMap[key] = current;
+  await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+  return true;
+}
+
+async function markAuthTransition(tabId, toolSlug = '') {
+  if (!tabId) return false;
+  const launchMap = await getActiveLaunchMap();
+  const key = `${tabId}`;
+  const current = launchMap[key];
+  if (!current) return false;
+  if (toolSlug && normalizeToolSlug(current.toolSlug) !== normalizeToolSlug(toolSlug)) {
+    return false;
+  }
+
+  current.authTransitionAt = Date.now();
   launchMap[key] = current;
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
   return true;
@@ -563,6 +587,103 @@ async function clearToolSession(toolSlug, options = {}) {
   }
 
   return { removed };
+}
+
+function getPasswordSavingEnabledDetails() {
+  return new Promise((resolve, reject) => {
+    if (!chrome.privacy?.services?.passwordSavingEnabled) {
+      reject(new Error('Chrome password-saving control is unavailable.'));
+      return;
+    }
+
+    chrome.privacy.services.passwordSavingEnabled.get({}, (details) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(details || {});
+    });
+  });
+}
+
+function setPasswordSavingEnabled(value) {
+  return new Promise((resolve, reject) => {
+    if (!chrome.privacy?.services?.passwordSavingEnabled) {
+      reject(new Error('Chrome password-saving control is unavailable.'));
+      return;
+    }
+
+    chrome.privacy.services.passwordSavingEnabled.set({ value }, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function getPasswordSavingSuppressionState() {
+  const stored = await chrome.storage.local.get([PASSWORD_SAVING_STATE_STORAGE_KEY]);
+  const state = stored[PASSWORD_SAVING_STATE_STORAGE_KEY] || {};
+  return {
+    tabIds: Array.isArray(state.tabIds) ? state.tabIds.map((tabId) => Number(tabId)).filter((tabId) => Number.isFinite(tabId) && tabId > 0) : [],
+    previousValue: typeof state.previousValue === 'boolean' ? state.previousValue : true,
+  };
+}
+
+async function savePasswordSavingSuppressionState(state) {
+  await chrome.storage.local.set({
+    [PASSWORD_SAVING_STATE_STORAGE_KEY]: {
+      tabIds: Array.from(new Set((state.tabIds || []).map((tabId) => Number(tabId)).filter((tabId) => Number.isFinite(tabId) && tabId > 0))),
+      previousValue: typeof state.previousValue === 'boolean' ? state.previousValue : true,
+    },
+  });
+}
+
+async function setPasswordSavingSuppressedForTab(tabId, suppressed) {
+  if (!tabId) {
+    throw new Error('Active tab required.');
+  }
+
+  let state = await getPasswordSavingSuppressionState();
+  const activeTabIds = new Set(state.tabIds);
+
+  if (suppressed) {
+    if (activeTabIds.has(tabId)) {
+      return { suppressed: true };
+    }
+
+    if (!activeTabIds.size) {
+      const details = await getPasswordSavingEnabledDetails();
+      const levelOfControl = `${details.levelOfControl || ''}`.trim();
+      if (!['controllable_by_this_extension', 'controlled_by_this_extension'].includes(levelOfControl)) {
+        throw new Error('Chrome does not allow this extension to control the password-save prompt.');
+      }
+
+      state.previousValue = Boolean(details.value);
+      await setPasswordSavingEnabled(false);
+    }
+
+    activeTabIds.add(tabId);
+    state.tabIds = Array.from(activeTabIds);
+    await savePasswordSavingSuppressionState(state);
+    return { suppressed: true };
+  }
+
+  if (!activeTabIds.has(tabId)) {
+    return { suppressed: false };
+  }
+
+  activeTabIds.delete(tabId);
+  state.tabIds = Array.from(activeTabIds);
+
+  if (!activeTabIds.size) {
+    await setPasswordSavingEnabled(Boolean(state.previousValue));
+  }
+
+  await savePasswordSavingSuppressionState(state);
+  return { suppressed: false };
 }
 
 async function openFlowIsolatedWindow(launchUrl) {
@@ -792,6 +913,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         authorized: Boolean(launch?.ticket),
         expiresAt: Number(launch?.expiresAt || 0),
         prepared: Boolean(launch?.freshSessionPreparedAt),
+        authTransitionAt: Number(launch?.authTransitionAt || 0),
         remainingUses: Number(launch?.remainingUses || 0),
         remembered: false,
         toolSlug: normalizeToolSlug(launch?.toolSlug),
@@ -820,6 +942,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === 'TOOL_HUB_MARK_AUTH_TRANSITION') {
+    markAuthTransition(senderTabId, message.toolSlug)
+      .then((ok) => sendResponse({ ok }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'TOOL_HUB_CLEAR_TOOL_SESSION') {
     clearToolSession(message.toolSlug, { includeGoogle: Boolean(message.includeGoogle) })
       .then(async (result) => {
@@ -828,6 +957,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         sendResponse({ ok: true, ...result });
       })
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED') {
+    setPasswordSavingSuppressedForTab(senderTabId, Boolean(message.suppressed))
+      .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -872,5 +1008,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.storage.local.remove('rememberedToolLaunches').catch(() => {});
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  setPasswordSavingSuppressedForTab(tabId, false).catch(() => {});
   cleanupToolSessionForClosedTab(tabId).catch(() => {});
 });

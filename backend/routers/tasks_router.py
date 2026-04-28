@@ -1,8 +1,10 @@
 from collections import defaultdict
+import base64
+import json
 
 from fastapi import HTTPException, Depends, Query, Cookie, Header, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, load_only
-from sqlalchemy import or_, and_, func, case, inspect
+from sqlalchemy import or_, and_, func, case, inspect, cast, Text as SQLText
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional, List, Set, Dict
 from pydantic import BaseModel, Field
@@ -1631,29 +1633,41 @@ def _detect_asset_media_type(item: dict) -> str:
 
 
 def _build_task_assets(task: Task, creator: Optional[User], submitter: Optional[User]) -> List[dict]:
-    meta = task.metadata_json or {}
-    task_title = task.title or "Untitled task"
-    task_number = task.task_number or "N/A"
-    task_description = task.description or ""
-    task_result_text = task.result_text or ""
+    def value(record, key, default=None):
+        if record is None:
+            return default
+        if isinstance(record, dict):
+            return record.get(key, default)
+        return getattr(record, key, default)
+
+    meta = value(task, "metadata_json", {}) or {}
+    task_title = value(task, "title", "Untitled task") or "Untitled task"
+    task_number = value(task, "task_number", "N/A") or "N/A"
+    task_description = value(task, "description", "") or ""
+    task_result_text = value(task, "result_text", "") or ""
     task_reference = meta.get("reference") or ""
     customer_name = meta.get("customerName") or ""
-    project_name = task.project_name or ""
-    priority = task.priority.value if task.priority else "medium"
-    created_at = serialize_utc_datetime(task.created_at)
-    updated_at = serialize_utc_datetime(task.updated_at)
-    created_by_name = creator.name if creator else None
-    created_by_department = creator.department if creator else None
-    submitted_by_name = submitter.name if submitter else None
+    project_name = value(task, "project_name", "") or ""
+    priority_value = value(task, "priority")
+    priority = priority_value.value if priority_value else "medium"
+    created_at = serialize_utc_datetime(value(task, "created_at"))
+    updated_at = serialize_utc_datetime(value(task, "updated_at"))
+    created_by_id = value(creator, "id")
+    created_by_name = value(creator, "name")
+    created_by_department = value(creator, "department")
+    submitted_by_id = value(submitter, "id")
+    submitted_by_name = value(submitter, "name")
+    submitted_by_department = value(submitter, "department")
 
     assets = []
 
-    def append_asset(raw_asset: dict, stage: str):
+    def append_asset(raw_asset: dict, stage: str, uploader: Optional[User] = None):
         item = raw_asset or {}
         filename = item.get("filename") or item.get("originalName") or item.get("url") or "Untitled"
+        uploader_record = uploader or creator
         asset = {
-            "id": f"{task.id}-{stage}-{item.get('path') or item.get('url') or item.get('filename') or len(assets)}",
-            "taskId": task.id,
+            "id": f"{value(task, 'id')}-{stage}-{item.get('path') or item.get('url') or item.get('filename') or len(assets)}",
+            "taskId": value(task, "id"),
             "taskTitle": task_title,
             "taskNumber": task_number,
             "taskDescription": task_description,
@@ -1672,11 +1686,17 @@ def _build_task_assets(task: Task, creator: Optional[User], submitter: Optional[
             "updatedAt": updated_at,
             "priority": priority,
             "projectName": project_name,
+            "createdById": created_by_id,
             "createdByName": created_by_name,
             "createdByDepartment": created_by_department,
-            "fromDepartment": task.from_department,
-            "toDepartment": task.to_department,
+            "uploadedById": value(uploader_record, "id"),
+            "uploadedByName": value(uploader_record, "name"),
+            "uploadedByDepartment": value(uploader_record, "department"),
+            "fromDepartment": value(task, "from_department"),
+            "toDepartment": value(task, "to_department"),
+            "submittedById": submitted_by_id,
             "submittedByName": submitted_by_name,
+            "submittedByDepartment": submitted_by_department,
         }
         asset["mediaType"] = _detect_asset_media_type(asset)
         assets.append(asset)
@@ -1685,31 +1705,32 @@ def _build_task_assets(task: Task, creator: Optional[User], submitter: Optional[
     result_attachments = meta.get("resultAttachments") if isinstance(meta.get("resultAttachments"), list) else []
     input_links = meta.get("links") if isinstance(meta.get("links"), list) else []
     result_links = meta.get("resultLinks") if isinstance(meta.get("resultLinks"), list) else []
+    result_uploader = submitter or creator
 
     for attachment in input_attachments:
         if isinstance(attachment, str):
-            append_asset({"url": attachment}, "input")
+            append_asset({"url": attachment}, "input", creator)
         elif isinstance(attachment, dict):
-            append_asset(attachment, "input")
+            append_asset(attachment, "input", creator)
 
     for attachment in result_attachments:
         if isinstance(attachment, str):
-            append_asset({"url": attachment}, "result")
+            append_asset({"url": attachment}, "result", result_uploader)
         elif isinstance(attachment, dict):
-            append_asset(attachment, "result")
+            append_asset(attachment, "result", result_uploader)
 
     for url in input_links:
         if url:
-            append_asset({"url": url, "mimetype": "text/link"}, "input-link")
+            append_asset({"url": url, "mimetype": "text/link"}, "input-link", creator)
 
     for url in result_links:
         if url:
-            append_asset({"url": url, "mimetype": "text/link"}, "result-link")
+            append_asset({"url": url, "mimetype": "text/link"}, "result-link", result_uploader)
 
     if task_description:
-        append_asset({"filename": "Task description", "mimetype": "text/plain"}, "input-text")
+        append_asset({"filename": "Task description", "mimetype": "text/plain"}, "input-text", creator)
     if task_result_text:
-        append_asset({"filename": "Result text", "mimetype": "text/plain"}, "result-text")
+        append_asset({"filename": "Result text", "mimetype": "text/plain"}, "result-text", result_uploader)
 
     return assets
 
@@ -1728,6 +1749,7 @@ def _asset_matches_filters(
         if target and not any(
             f"{value or ''}".strip().lower() == target
             for value in (
+                asset.get("uploadedByDepartment"),
                 asset.get("createdByDepartment"),
                 asset.get("fromDepartment"),
                 asset.get("toDepartment"),
@@ -1771,28 +1793,94 @@ def _task_asset_order_clause(sort_by: str):
     return (Task.updated_at.desc(), Task.id.desc())
 
 
-def _list_assets_from_tasks(
-    db: Session,
+def _build_task_assets_cursor_signature(
     *,
-    offset: int,
-    limit: int,
     media_type: str,
     department: Optional[str],
     query: Optional[str],
     sort_by: str,
-) -> dict:
+) -> str:
+    payload = {
+        "mediaType": media_type,
+        "department": (department or "").strip().lower(),
+        "query": (query or "").strip().lower(),
+        "sort": sort_by,
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _encode_task_assets_cursor(payload: dict) -> str:
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _decode_task_assets_cursor(cursor: Optional[str]) -> Optional[dict]:
+    normalized = f"{cursor or ''}".strip()
+    if not normalized:
+        return None
+    padded = normalized + "=" * (-len(normalized) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+        payload = json.loads(decoded)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid Databank cursor") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid Databank cursor")
+    return payload
+
+
+def _task_assets_visibility_query(
+    db: Session,
+    *,
+    current_user: User,
+    department: Optional[str],
+    query: Optional[str],
+    sort_by: str,
+):
     creator_alias = aliased(User)
     submitter_alias = aliased(User)
-    base_query = (
-        db.query(Task, creator_alias, submitter_alias)
+
+    task_query = (
+        db.query(
+            Task,
+            creator_alias.id.label("creator_user_id"),
+            creator_alias.name.label("creator_user_name"),
+            creator_alias.department.label("creator_user_department"),
+            submitter_alias.id.label("submitter_user_id"),
+            submitter_alias.name.label("submitter_user_name"),
+            submitter_alias.department.label("submitter_user_department"),
+        )
+        .options(
+            load_only(
+                Task.id,
+                Task.task_number,
+                Task.title,
+                Task.description,
+                Task.result_text,
+                Task.project_name,
+                Task.priority,
+                Task.created_at,
+                Task.updated_at,
+                Task.from_department,
+                Task.to_department,
+                Task.metadata_json,
+                Task.creator_id,
+                Task.submitted_by,
+                Task.status,
+            )
+        )
         .join(creator_alias, creator_alias.id == Task.creator_id)
         .outerjoin(submitter_alias, submitter_alias.id == Task.submitted_by)
-        .filter(Task.is_deleted == False)
+        .filter(
+            Task.is_deleted == False,
+            Task.status != TaskStatus.DRAFT,
+        )
+        .distinct()
         .order_by(*_task_asset_order_clause(sort_by))
     )
 
     if department and department != "all_departments":
-        base_query = base_query.filter(
+        task_query = task_query.filter(
             or_(
                 creator_alias.department == department,
                 Task.from_department == department,
@@ -1800,40 +1888,164 @@ def _list_assets_from_tasks(
             )
         )
 
+    normalized_query = f"{query or ''}".strip()
+    if normalized_query:
+        like_q = f"%{normalized_query}%"
+        task_query = task_query.filter(
+            or_(
+                Task.title.ilike(like_q),
+                Task.description.ilike(like_q),
+                Task.result_text.ilike(like_q),
+                Task.task_number.ilike(like_q),
+                Task.project_name.ilike(like_q),
+                creator_alias.name.ilike(like_q),
+                submitter_alias.name.ilike(like_q),
+                cast(Task.metadata_json, SQLText).ilike(like_q),
+            )
+        )
+
+    return task_query
+
+
+def _list_assets_from_tasks(
+    db: Session,
+    *,
+    current_user: User,
+    offset: int,
+    limit: int,
+    media_type: str,
+    department: Optional[str],
+    query: Optional[str],
+    sort_by: str,
+    cursor: Optional[str] = None,
+    include_totals: bool = False,
+) -> dict:
+    base_query = _task_assets_visibility_query(
+        db,
+        current_user=current_user,
+        department=department,
+        query=query,
+        sort_by=sort_by,
+    )
+
+    cursor_payload = _decode_task_assets_cursor(cursor)
+    expected_signature = _build_task_assets_cursor_signature(
+        media_type=media_type,
+        department=department,
+        query=query,
+        sort_by=sort_by,
+    )
+
+    use_cursor = bool(cursor_payload)
     page_assets = []
     matched_assets = 0
-    task_offset = 0
     chunk_size = max(limit, 40)
     has_more = False
+    next_cursor = None
 
-    while True:
-        rows = base_query.offset(task_offset).limit(chunk_size).all()
-        if not rows:
-            break
+    if use_cursor:
+        if cursor_payload.get("signature") != expected_signature:
+            raise HTTPException(status_code=400, detail="Databank cursor does not match the current filters")
 
-        task_offset += len(rows)
-        for task, creator, submitter in rows:
-            for asset in _build_task_assets(task, creator, submitter):
-                if not _asset_matches_filters(asset, media_type, department, query):
-                    continue
+        task_offset = max(int(cursor_payload.get("taskOffset") or 0), 0)
+        resume_asset_index = max(int(cursor_payload.get("assetIndex") or 0), 0)
 
-                if matched_assets < offset:
-                    matched_assets += 1
-                    continue
-
-                if len(page_assets) < limit:
-                    page_assets.append(asset)
-                    matched_assets += 1
-                    continue
-
-                has_more = True
+        while True:
+            rows = base_query.offset(task_offset).limit(chunk_size).all()
+            if not rows:
                 break
+
+            for row_index, row in enumerate(rows):
+                task, creator_user_id, creator_user_name, creator_user_department, submitter_user_id, submitter_user_name, submitter_user_department = row
+                creator = {
+                    "id": creator_user_id,
+                    "name": creator_user_name,
+                    "department": creator_user_department,
+                } if creator_user_id else None
+                submitter = {
+                    "id": submitter_user_id,
+                    "name": submitter_user_name,
+                    "department": submitter_user_department,
+                } if submitter_user_id else None
+                absolute_task_offset = task_offset + row_index
+                matching_assets = [
+                    asset
+                    for asset in _build_task_assets(task, creator, submitter)
+                    if _asset_matches_filters(asset, media_type, department, query)
+                ]
+                start_index = resume_asset_index if row_index == 0 else 0
+
+                for asset_index in range(start_index, len(matching_assets)):
+                    if len(page_assets) < limit:
+                        page_assets.append(matching_assets[asset_index])
+                        continue
+
+                    has_more = True
+                    next_cursor = _encode_task_assets_cursor({
+                        "signature": expected_signature,
+                        "taskOffset": absolute_task_offset,
+                        "assetIndex": asset_index,
+                    })
+                    break
+
+                if has_more:
+                    break
 
             if has_more:
                 break
 
-        if has_more:
-            break
+            task_offset += len(rows)
+            resume_asset_index = 0
+    else:
+        task_offset = 0
+
+        while True:
+            rows = base_query.offset(task_offset).limit(chunk_size).all()
+            if not rows:
+                break
+
+            batch_start_offset = task_offset
+            task_offset += len(rows)
+            for row_index, row in enumerate(rows):
+                task, creator_user_id, creator_user_name, creator_user_department, submitter_user_id, submitter_user_name, submitter_user_department = row
+                creator = {
+                    "id": creator_user_id,
+                    "name": creator_user_name,
+                    "department": creator_user_department,
+                } if creator_user_id else None
+                submitter = {
+                    "id": submitter_user_id,
+                    "name": submitter_user_name,
+                    "department": submitter_user_department,
+                } if submitter_user_id else None
+                absolute_task_offset = batch_start_offset + row_index
+                matching_assets = _build_task_assets(task, creator, submitter)
+                for asset_index, asset in enumerate(matching_assets):
+                    if not _asset_matches_filters(asset, media_type, department, query):
+                        continue
+
+                    if matched_assets < offset:
+                        matched_assets += 1
+                        continue
+
+                    if len(page_assets) < limit:
+                        page_assets.append(asset)
+                        matched_assets += 1
+                        continue
+
+                    has_more = True
+                    next_cursor = _encode_task_assets_cursor({
+                        "signature": expected_signature,
+                        "taskOffset": absolute_task_offset,
+                        "assetIndex": asset_index,
+                    })
+                    break
+
+                if has_more:
+                    break
+
+            if has_more:
+                break
 
     return {
         "data": page_assets,
@@ -1841,8 +2053,54 @@ def _list_assets_from_tasks(
         "offset": offset,
         "limit": limit,
         "hasMore": has_more,
+        "nextCursor": next_cursor,
         "nextOffset": offset + len(page_assets) if has_more else None,
+        "totalMatchingReferences": _count_matching_task_assets(
+            base_query,
+            media_type=media_type,
+            department=department,
+            query=query,
+        ) if include_totals else None,
     }
+
+
+def _count_matching_task_assets(
+    base_query,
+    *,
+    media_type: str,
+    department: Optional[str],
+    query: Optional[str],
+) -> int:
+    total_matches = 0
+    task_offset = 0
+    chunk_size = 200
+
+    while True:
+        rows = base_query.offset(task_offset).limit(chunk_size).all()
+        if not rows:
+            break
+
+        task_offset += len(rows)
+        for row in rows:
+            task, creator_user_id, creator_user_name, creator_user_department, submitter_user_id, submitter_user_name, submitter_user_department = row
+            creator = {
+                "id": creator_user_id,
+                "name": creator_user_name,
+                "department": creator_user_department,
+            } if creator_user_id else None
+            submitter = {
+                "id": submitter_user_id,
+                "name": submitter_user_name,
+                "department": submitter_user_department,
+            } if submitter_user_id else None
+
+            total_matches += sum(
+                1
+                for asset in _build_task_assets(task, creator, submitter)
+                if _asset_matches_filters(asset, media_type, department, query)
+            )
+
+    return total_matches
 
 
 async def validate_project_id(
@@ -3162,11 +3420,14 @@ async def get_task_assets(
     department: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
     sort: str = Query("latest"),
+    cursor: Optional[str] = Query(None),
+    include_totals: bool = Query(False),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    started_at = perf_counter()
 
     normalized_media_type = (media_type or "all").strip().lower()
     if normalized_media_type not in ASSET_MEDIA_TYPES:
@@ -3180,14 +3441,18 @@ async def get_task_assets(
 
     asset_payload = _list_assets_from_tasks(
         db,
+        current_user=current_user,
         offset=offset,
         limit=limit,
         media_type=normalized_media_type,
         department=normalized_department,
         query=q,
         sort_by=normalized_sort,
+        cursor=cursor,
+        include_totals=include_totals,
     )
-    return {"success": True, **asset_payload}
+    latency_ms = round((perf_counter() - started_at) * 1000, 2)
+    return {"success": True, **asset_payload, "latencyMs": latency_ms}
 
 
 @cache_response(ttl=30, vary_by_user=True, namespace="tasks_unread")

@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from datetime import datetime
 import os
+import re
 from sqlalchemy import text
 
 # FIXED: Use relative imports or backend prefix
@@ -63,6 +64,15 @@ def _allowed_origins() -> list[str]:
         if origin and origin not in merged:
             merged.append(origin)
     return merged
+
+
+def _origin_allowed(origin: str) -> bool:
+    normalized = (origin or "").strip()
+    if not normalized:
+        return False
+    if normalized in _allowed_origins():
+        return True
+    return bool(re.fullmatch(r"https://.*\.onrender\.com", normalized))
 
 
 def _mask_db_url(url: str) -> str:
@@ -195,6 +205,17 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Set-Cookie"],
 )
+
+
+@app.middleware("http")
+async def ensure_cors_headers_on_error_responses(request: Request, call_next):
+    response = await call_next(request)
+    origin = (request.headers.get("origin") or "").strip()
+    if origin and _origin_allowed(origin) and "access-control-allow-origin" not in response.headers:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 # ==================== EXCEPTION HANDLERS ====================

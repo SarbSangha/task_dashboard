@@ -204,7 +204,9 @@ async def list_group_users(
 
 
 @router.get("")
+@cache_response(ttl=30, vary_by_user=True, namespace="groups_mine")
 async def list_my_groups(
+    request: Request,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):

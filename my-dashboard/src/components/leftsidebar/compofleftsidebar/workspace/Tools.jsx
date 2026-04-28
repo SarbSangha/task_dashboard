@@ -246,6 +246,47 @@ export default function Tools() {
   const [mailboxForm, setMailboxForm] = useState(EMPTY_MAILBOX_FORM);
   const [mailboxMeta, setMailboxMeta] = useState({ exists: false, appPasswordSet: false });
   const [launchResult, setLaunchResult] = useState(null);
+  const [toolCredentialsByToolId, setToolCredentialsByToolId] = useState({});
+  const [assignmentLoading, setAssignmentLoading] = useState(false);
+  const [assignmentSavingKey, setAssignmentSavingKey] = useState('');
+
+  const loadToolCredentials = async (toolList, signal) => {
+    if (signal?.aborted) return;
+    if (!toolList.length) {
+      setToolCredentialsByToolId({});
+      return;
+    }
+
+    setAssignmentLoading(true);
+    try {
+      const results = await Promise.all(
+        toolList.map(async (tool) => {
+          try {
+            const response = await itToolsAPI.getToolCredentials(tool.id);
+            return [`${tool.id}`, response.credentials || []];
+          } catch {
+            return [`${tool.id}`, []];
+          }
+        })
+      );
+
+      if (!signal?.aborted) {
+        setToolCredentialsByToolId(Object.fromEntries(results));
+      }
+    } finally {
+      if (!signal?.aborted) {
+        setAssignmentLoading(false);
+      }
+    }
+  };
+
+  const refreshToolCredentialCache = async (toolId) => {
+    const response = await itToolsAPI.getToolCredentials(toolId);
+    setToolCredentialsByToolId((current) => ({
+      ...current,
+      [`${toolId}`]: response.credentials || [],
+    }));
+  };
 
   const loadTools = async (signal) => {
     if (signal?.aborted) return;
@@ -254,12 +295,17 @@ export default function Tools() {
     try {
       const response = await itToolsAPI.listTools({ signal });
       if (signal?.aborted) return;
-      setTools(response.tools || []);
+      const nextTools = response.tools || [];
+      setTools(nextTools);
       setIsAdmin(!!response.isAdmin);
       if (response.isAdmin) {
         const userResponse = await authAPI.getAdminAllUsers({ signal });
         if (signal?.aborted) return;
         setUsers((userResponse.users || []).filter((user) => !user.isDeleted));
+        await loadToolCredentials(nextTools, signal);
+      } else if (!signal?.aborted) {
+        setUsers([]);
+        setToolCredentialsByToolId({});
       }
     } catch (err) {
       if (isRequestCanceled(err) || signal?.aborted) return;
@@ -303,6 +349,101 @@ export default function Tools() {
       return matchesSearch && matchesCategory;
     });
   }, [searchQuery, selectedCategory, tools]);
+
+  const credentialDirectory = useMemo(() => {
+    return tools.reduce((accumulator, tool) => {
+      const summaries = toolCredentialsByToolId[`${tool.id}`] || [];
+      const directory = {
+        company: null,
+        users: {},
+      };
+
+      summaries.forEach((summary) => {
+        if (summary.scope === 'company' && !directory.company) {
+          directory.company = summary;
+          return;
+        }
+        if (summary.scope === 'user' && summary.userId && !directory.users[summary.userId]) {
+          directory.users[summary.userId] = summary;
+        }
+      });
+
+      accumulator[tool.id] = directory;
+      return accumulator;
+    }, {});
+  }, [toolCredentialsByToolId, tools]);
+
+  const hasStoredUsableCredentialSummary = (summary) => {
+    return Boolean(summary && (summary.hasApiKey || (summary.hasLoginIdentifier && summary.hasPassword)));
+  };
+
+  const hasActiveUsableCredentialSummary = (summary) => {
+    return Boolean(summary?.isActive) && hasStoredUsableCredentialSummary(summary);
+  };
+
+  const isUserAssignedToTool = (toolId, userId) => {
+    const directory = credentialDirectory[toolId] || { company: null, users: {} };
+    const userCredential = directory.users[userId];
+    const companyCredential = directory.company;
+
+    if (userCredential) {
+      if (!userCredential.isActive) {
+        return false;
+      }
+      if (hasStoredUsableCredentialSummary(userCredential)) {
+        return true;
+      }
+      return hasActiveUsableCredentialSummary(companyCredential);
+    }
+
+    return hasActiveUsableCredentialSummary(companyCredential);
+  };
+
+  const handleToggleAssignment = async (tool, user) => {
+    const toolId = Number(tool.id);
+    const userId = Number(user.id);
+    const directory = credentialDirectory[toolId] || { company: null, users: {} };
+    const userCredential = directory.users[userId];
+    const companyCredential = directory.company;
+    const currentlyAssigned = isUserAssignedToTool(toolId, userId);
+    const hasSourceCredential = hasStoredUsableCredentialSummary(userCredential) || hasActiveUsableCredentialSummary(companyCredential);
+
+    if (!currentlyAssigned && !hasSourceCredential) {
+      setSelectedTool(tool);
+      setCredentialForm({
+        ...EMPTY_CREDENTIAL_FORM,
+        toolId: `${toolId}`,
+        scope: 'user',
+        user_ids: [`${userId}`],
+      });
+      setError('');
+      setNotice(`No credential source is ready for ${tool.name} yet. The password form is now set to Specific user for ${user.name || user.email}. Switch it to Company credential only if this login should be shared more broadly.`);
+      window.requestAnimationFrame(() => {
+        const credentialFormElement = document.querySelector('[data-tool-credential-form="true"]');
+        credentialFormElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      return;
+    }
+
+    setAssignmentSavingKey(`${toolId}:${userId}`);
+    setError('');
+    setNotice('');
+    try {
+      await itToolsAPI.upsertCredential(toolId, {
+        scope: 'user',
+        user_id: userId,
+        is_active: !currentlyAssigned,
+      });
+      await refreshToolCredentialCache(toolId);
+      setNotice(`${tool.name} access ${currentlyAssigned ? 'removed from' : 'granted to'} ${user.name || user.email}.`);
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Failed to update tool access.');
+    } finally {
+      setAssignmentSavingKey('');
+    }
+  };
+
+  const assignmentColumns = useMemo(() => filteredTools, [filteredTools]);
 
   const handleEditToolChange = (toolId) => {
     setEditToolId(toolId);
@@ -469,7 +610,7 @@ export default function Tools() {
           notes: credentialForm.notes,
         });
         setCredentialForm({ ...EMPTY_CREDENTIAL_FORM, toolId: `${toolId}` });
-        setNotice('Credential saved securely.');
+        setNotice('Company credential saved securely. It is now available at company level, and you can revoke or restore individual users from the matrix if needed.');
       }
       await loadTools();
     } catch (err) {
@@ -686,13 +827,13 @@ export default function Tools() {
                   <option value="external_link">External link</option>
                   <option value="sso">SSO</option>
                   <option value="api_proxy">API proxy</option>
-                  <option value="extension_autofill">Extension auto-fill (ChatGPT/OpenAI, Envato, Freepik, Higgsfield, Kling AI, Flow)</option>
+                  <option value="extension_autofill">Extension auto-fill (ChatGPT/OpenAI, Envato, Freepik, Higgsfield, HeyGen, Kling AI, Flow)</option>
                   <option value="automation">Auto-login form submit</option>
                 </select>
               </div>
               {toolForm.launch_mode === 'extension_autofill' && (
                 <p className="it-card-copy">
-                  The current browser extension build supports ChatGPT/OpenAI, Envato, Freepik, Higgsfield, Kling AI, and a starter Flow
+                  The current browser extension build supports ChatGPT/OpenAI, Envato, Freepik, Higgsfield, HeyGen, Kling AI, and a starter Flow
                   extension scaffold. For other tools, use Manual credential or Auto-login form submit.
                 </p>
               )}
@@ -736,7 +877,7 @@ export default function Tools() {
               </div>
             </form>
 
-            <form className="it-admin-card" onSubmit={handleSaveCredential} autoComplete="off">
+            <form className="it-admin-card" onSubmit={handleSaveCredential} autoComplete="off" data-tool-credential-form="true">
               <div className="it-admin-card-header">
                 <div>
                   <h2>Add Password</h2>
@@ -908,6 +1049,97 @@ export default function Tools() {
                 </button>
               </div>
             </form>
+          </section>
+        )}
+
+        {isAdmin && (
+          <section className="it-assignment-card">
+            <div className="it-admin-card-header">
+              <div>
+                <h2>Tool Access Matrix</h2>
+                <p className="it-card-copy">
+                  See which users can open each tool and use the tick marks to grant or remove access quickly.
+                </p>
+              </div>
+              <span>{assignmentColumns.length} tools visible</span>
+            </div>
+            <div className="it-assignment-summary">
+              <p>
+                Company credentials give default access. Unticking a cell creates a user-level block. Ticking a blocked cell restores access.
+              </p>
+            </div>
+            <div className="it-assignment-table-wrap">
+              <table className="it-assignment-table">
+                <thead>
+                  <tr>
+                    <th className="it-user-column">User</th>
+                    {assignmentColumns.map((tool) => {
+                      const companyCredential = credentialDirectory[tool.id]?.company;
+                      const companyReady = hasActiveUsableCredentialSummary(companyCredential);
+                      return (
+                        <th key={tool.id} className="it-tool-column">
+                          <div className="it-tool-column-copy">
+                            <strong>{tool.name}</strong>
+                            <small>{tool.category}</small>
+                            <span className={`it-company-badge ${companyReady ? 'is-ready' : 'is-missing'}`}>
+                              {companyReady ? 'Company ready' : 'Needs credential'}
+                            </span>
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {assignmentLoading ? (
+                    <tr>
+                      <td className="it-assignment-empty" colSpan={Math.max(assignmentColumns.length + 1, 2)}>
+                        Loading tool assignments...
+                      </td>
+                    </tr>
+                  ) : !sortedUsers.length ? (
+                    <tr>
+                      <td className="it-assignment-empty" colSpan={Math.max(assignmentColumns.length + 1, 2)}>
+                        No active users found.
+                      </td>
+                    </tr>
+                  ) : !assignmentColumns.length ? (
+                    <tr>
+                      <td className="it-assignment-empty" colSpan={2}>
+                        No tools match the current filters.
+                      </td>
+                    </tr>
+                  ) : (
+                    sortedUsers.map((user) => (
+                      <tr key={user.id}>
+                        <td className="it-user-cell">
+                          <strong>{user.name || user.email}</strong>
+                          <small>{user.email}</small>
+                        </td>
+                        {assignmentColumns.map((tool) => {
+                          const checked = isUserAssignedToTool(tool.id, user.id);
+                          const savingKey = `${tool.id}:${user.id}`;
+                          return (
+                            <td key={`${tool.id}:${user.id}`} className="it-assignment-cell">
+                              <button
+                                type="button"
+                                className={`it-assignment-toggle ${checked ? 'is-checked' : ''}`}
+                                onClick={() => handleToggleAssignment(tool, user)}
+                                disabled={assignmentSavingKey === savingKey}
+                                aria-pressed={checked}
+                                title={`${checked ? 'Remove' : 'Grant'} ${tool.name} access for ${user.name || user.email}`}
+                              >
+                                {assignmentSavingKey === savingKey ? '...' : checked ? '✓' : ''}
+                              </button>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </section>
         )}
 

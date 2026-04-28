@@ -7,6 +7,7 @@ import './TrendingsPanel.css';
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
 const ALL_DEPARTMENTS = 'all_departments';
 const PAGE_SIZE = 60;
+const DATABANK_REQUEST_TIMEOUT_MS = 60000;
 
 const getSourceExtension = (asset) => {
   const source = `${asset?.url || asset?.filename || asset?.originalName || ''}`.toLowerCase();
@@ -38,8 +39,9 @@ const buildDirectoryTree = (rows = []) => {
   const uploaderMap = new Map();
 
   rows.forEach((asset) => {
-    const uploaderName = (asset.createdByName || asset.submittedByName || 'Unknown uploader').trim() || 'Unknown uploader';
-    const uploaderKey = uploaderName.toLowerCase();
+    const uploaderName = (asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader').trim() || 'Unknown uploader';
+    const uploaderIdentity = asset.uploadedById || asset.createdById || asset.submittedById || uploaderName.toLowerCase();
+    const uploaderKey = `${uploaderIdentity}`;
     const dateKey = getDateFolderKey(asset);
     const projectName = (asset.projectName || 'Unassigned Project').trim() || 'Unassigned Project';
     const projectKey = projectName.toLowerCase();
@@ -107,6 +109,10 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [nextOffset, setNextOffset] = useState(null);
+  const [totalMatchingReferences, setTotalMatchingReferences] = useState(null);
+  const [lastLatencyMs, setLastLatencyMs] = useState(null);
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
@@ -188,22 +194,34 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       setLoading(true);
       setLoadError('');
       try {
-        const res = await taskAPI.getTaskAssets({
-          offset: 0,
-          limit: PAGE_SIZE,
-          media_type: filter,
-          department: departmentFilter === ALL_DEPARTMENTS ? undefined : departmentFilter,
-          q: search || undefined,
-          sort: sortBy,
-        });
+        const res = await taskAPI.getTaskAssets(
+          {
+            offset: 0,
+            limit: PAGE_SIZE,
+            media_type: filter,
+            department: departmentFilter === ALL_DEPARTMENTS ? undefined : departmentFilter,
+            q: search || undefined,
+            sort: sortBy,
+            include_totals: true,
+          },
+          { timeout: DATABANK_REQUEST_TIMEOUT_MS }
+        );
         if (cancelled) return;
         setAssets(Array.isArray(res?.data) ? res.data : []);
         setHasMore(Boolean(res?.hasMore));
+        setNextCursor(res?.nextCursor || null);
+        setNextOffset(Number.isFinite(res?.nextOffset) ? res.nextOffset : null);
+        setTotalMatchingReferences(Number.isFinite(res?.totalMatchingReferences) ? res.totalMatchingReferences : null);
+        setLastLatencyMs(Number.isFinite(res?.latencyMs) ? res.latencyMs : null);
       } catch (error) {
         console.error('Failed to load trendings:', error);
         if (cancelled) return;
         setAssets([]);
         setHasMore(false);
+        setNextCursor(null);
+        setNextOffset(null);
+        setTotalMatchingReferences(null);
+        setLastLatencyMs(null);
         setLoadError('Could not load databank assets right now.');
       } finally {
         if (!cancelled) setLoading(false);
@@ -216,23 +234,33 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   }, [isOpen, filter, departmentFilter, search, sortBy]);
 
   const loadMoreAssets = async () => {
-    if (loadingMore || loading || !hasMore) return;
+    if (loadingMore || loading || !hasMore || (!nextCursor && nextOffset == null)) return;
     setLoadingMore(true);
     setLoadError('');
     try {
-      const res = await taskAPI.getTaskAssets({
-        offset: assets.length,
-        limit: PAGE_SIZE,
-        media_type: filter,
-        department: departmentFilter === ALL_DEPARTMENTS ? undefined : departmentFilter,
-        q: search || undefined,
-        sort: sortBy,
-      });
+      const res = await taskAPI.getTaskAssets(
+        {
+          offset: nextCursor ? undefined : nextOffset ?? undefined,
+          limit: PAGE_SIZE,
+          media_type: filter,
+          department: departmentFilter === ALL_DEPARTMENTS ? undefined : departmentFilter,
+          q: search || undefined,
+          sort: sortBy,
+          cursor: nextCursor || undefined,
+        },
+        { timeout: DATABANK_REQUEST_TIMEOUT_MS }
+      );
       const nextRows = Array.isArray(res?.data) ? res.data : [];
       setAssets((prev) =>
         Array.from(new Map([...prev, ...nextRows].map((asset) => [asset.id, asset])).values())
       );
       setHasMore(Boolean(res?.hasMore));
+      setNextCursor(res?.nextCursor || null);
+      setNextOffset(Number.isFinite(res?.nextOffset) ? res.nextOffset : null);
+      setTotalMatchingReferences((current) => (
+        Number.isFinite(res?.totalMatchingReferences) ? res.totalMatchingReferences : current
+      ));
+      setLastLatencyMs((current) => (Number.isFinite(res?.latencyMs) ? res.latencyMs : current));
     } catch (error) {
       console.error('Failed to load more trendings assets:', error);
       setLoadError('Could not load more databank assets right now.');
@@ -242,34 +270,28 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   };
 
   const metrics = useMemo(() => {
-    const now = new Date();
-    const weekAgo = new Date(now);
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    const twoWeeksAgo = new Date(now);
-    twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
-
-    const thisWeek = assets.filter((x) => x.updatedAt && new Date(x.updatedAt) >= weekAgo).length;
-    const prevWeek = assets.filter(
-      (x) => x.updatedAt && new Date(x.updatedAt) >= twoWeeksAgo && new Date(x.updatedAt) < weekAgo
-    ).length;
-    const growth = prevWeek > 0 ? Math.round(((thisWeek - prevWeek) / prevWeek) * 100) : (thisWeek > 0 ? 100 : 0);
-
     const groupedByTask = assets.reduce((acc, item) => {
       acc[item.taskId] = (acc[item.taskId] || 0) + 1;
       return acc;
     }, {});
-    const bestInClass = Object.keys(groupedByTask).length
-      ? Object.values(groupedByTask).filter((count) => count >= 3).length
-      : 0;
+    const uniqueProjectCount = new Set(
+      assets
+        .map((item) => `${item.projectName || ''}`.trim())
+        .filter(Boolean)
+    ).size;
 
     return {
-      totalReferences: assets.length,
-      bestInClass,
-      weeklyGrowth: growth,
+      loadedReferences: assets.length,
+      loadedTasks: Object.keys(groupedByTask).length,
+      loadedProjects: uniqueProjectCount,
     };
   }, [assets]);
 
   const filteredAssets = useMemo(() => assets, [assets]);
+  const canLoadMore = hasMore && (Boolean(nextCursor) || nextOffset != null);
+  const loadedSummaryText = totalMatchingReferences != null
+    ? `Showing ${filteredAssets.length} of ${totalMatchingReferences} references`
+    : `Showing ${filteredAssets.length} references`;
 
   const directoryTree = useMemo(() => buildDirectoryTree(filteredAssets), [filteredAssets]);
 
@@ -482,22 +504,22 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
             <div className="trendings-metrics">
               <div className="metric-card">
                 <div className="metric-title">Loaded References</div>
-                <div className="metric-value">{metrics.totalReferences}</div>
+                <div className="metric-value">{metrics.loadedReferences}</div>
+                <div className="metric-subvalue">{loadedSummaryText}</div>
               </div>
               <div className="metric-card">
-                <div className="metric-title">Best in Class</div>
-                <div className="metric-value">{metrics.bestInClass}</div>
+                <div className="metric-title">Loaded Tasks</div>
+                <div className="metric-value">{metrics.loadedTasks}</div>
               </div>
               <div className="metric-card">
-                <div className="metric-title">Weekly Growth</div>
-                <div className="metric-value">
-                  {metrics.weeklyGrowth >= 0 ? `+${metrics.weeklyGrowth}%` : `${metrics.weeklyGrowth}%`}
-                </div>
+                <div className="metric-title">Loaded Projects</div>
+                <div className="metric-value">{metrics.loadedProjects}</div>
               </div>
             </div>
 
             <div className="trendings-footnote">
-              Fast databank mode is active. The latest matching assets load first, and you can load more without blocking the panel.
+              Fast databank mode is active. These counts reflect the currently loaded matching assets, and load more continues from the last cursor instead of restarting from the beginning.
+              {lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}
             </div>
 
             <div className="trendings-filter-row">
@@ -798,7 +820,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                       </div>
                     ))}
                   </div>
-                  {hasMore && (
+                  {canLoadMore && (
                     <div className="trendings-load-more-wrap">
                       <button
                         type="button"
@@ -846,6 +868,8 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
               <p><strong>Task:</strong> {infoAsset.taskTitle}</p>
               <p><strong>Task ID:</strong> {infoAsset.taskNumber}</p>
               <p><strong>Project:</strong> {infoAsset.projectName || '-'}</p>
+              <p><strong>Uploaded By:</strong> {infoAsset.uploadedByName || infoAsset.createdByName || infoAsset.submittedByName || 'Unknown'}</p>
+              <p><strong>Uploader Dept:</strong> {infoAsset.uploadedByDepartment || infoAsset.createdByDepartment || infoAsset.submittedByDepartment || '-'}</p>
               <p><strong>Created By:</strong> {infoAsset.createdByName || 'Unknown'}</p>
               <p><strong>Creator Dept:</strong> {infoAsset.createdByDepartment || '-'}</p>
               <p><strong>Submitted Result By:</strong> {infoAsset.submittedByName || 'Not submitted yet'}</p>

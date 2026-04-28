@@ -34,10 +34,11 @@ HOSTNAME_EQUIVALENT_GROUPS = (
     {"envato.com", "elements.envato.com", "market.envato.com"},
     {"freepik.com"},
     {"higgsfield.ai", "app.higgsfield.ai", "beta.higgsfield.ai"},
+    {"heygen.com", "www.heygen.com", "auth.heygen.com", "app.heygen.com"},
     {"kling.ai", "klingai.com", "app.klingai.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
-SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "envato", "freepik", "higgsfield", "kling-ai", "klingai", "flow"}
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "envato", "freepik", "higgsfield", "heygen", "kling-ai", "klingai", "flow"}
 
 
 class ToolCreatePayload(BaseModel):
@@ -240,21 +241,33 @@ def _add_audit(
     )
 
 
-def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
-    user_specific_credential = (
+def _credential_has_secret_material(credential: Optional[ITPortalToolCredential]) -> bool:
+    return bool(
+        credential
+        and (
+            (
+                credential.login_identifier_encrypted
+                and credential.password_encrypted
+            )
+            or credential.api_key_encrypted
+        )
+    )
+
+
+def _latest_user_credential_record(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
+    return (
         db.query(ITPortalToolCredential)
         .filter(
             ITPortalToolCredential.tool_id == tool_id,
-            ITPortalToolCredential.is_active == True,
             ITPortalToolCredential.scope == "user",
             ITPortalToolCredential.user_id == user_id,
         )
         .order_by(ITPortalToolCredential.updated_at.desc(), ITPortalToolCredential.created_at.desc())
         .first()
     )
-    if user_specific_credential:
-        return user_specific_credential
 
+
+def _latest_company_credential_record(db: Session, tool_id: int) -> Optional[ITPortalToolCredential]:
     return (
         db.query(ITPortalToolCredential)
         .filter(
@@ -268,17 +281,18 @@ def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optiona
     )
 
 
-def _resolve_tool_credentials_map(db: Session, tool_ids: list[int], user_id: int) -> dict[int, ITPortalToolCredential]:
+def _resolve_user_tool_overrides_map(
+    db: Session,
+    tool_ids: list[int],
+    user_id: int,
+) -> dict[int, ITPortalToolCredential]:
     if not tool_ids:
         return {}
 
-    credentials_by_tool: dict[int, ITPortalToolCredential] = {}
-
-    user_credentials = (
+    overrides = (
         db.query(ITPortalToolCredential)
         .filter(
             ITPortalToolCredential.tool_id.in_(tool_ids),
-            ITPortalToolCredential.is_active == True,
             ITPortalToolCredential.scope == "user",
             ITPortalToolCredential.user_id == user_id,
         )
@@ -289,8 +303,34 @@ def _resolve_tool_credentials_map(db: Session, tool_ids: list[int], user_id: int
         )
         .all()
     )
-    for credential in user_credentials:
-        credentials_by_tool.setdefault(credential.tool_id, credential)
+
+    latest_overrides: dict[int, ITPortalToolCredential] = {}
+    for credential in overrides:
+        latest_overrides.setdefault(credential.tool_id, credential)
+    return latest_overrides
+
+
+def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
+    user_specific_credential = _latest_user_credential_record(db, tool_id, user_id)
+    company_credential = _latest_company_credential_record(db, tool_id)
+
+    if user_specific_credential:
+        if not user_specific_credential.is_active:
+            return None
+        if _credential_has_secret_material(user_specific_credential):
+            return user_specific_credential
+
+    if _credential_has_secret_material(company_credential):
+        return company_credential
+    return None
+
+
+def _resolve_tool_credentials_map(db: Session, tool_ids: list[int], user_id: int) -> dict[int, ITPortalToolCredential]:
+    if not tool_ids:
+        return {}
+
+    credentials_by_tool: dict[int, ITPortalToolCredential] = {}
+    latest_user_credentials = _resolve_user_tool_overrides_map(db, tool_ids, user_id)
 
     company_credentials = (
         db.query(ITPortalToolCredential)
@@ -307,8 +347,22 @@ def _resolve_tool_credentials_map(db: Session, tool_ids: list[int], user_id: int
         )
         .all()
     )
+    latest_company_credentials: dict[int, ITPortalToolCredential] = {}
     for credential in company_credentials:
-        credentials_by_tool.setdefault(credential.tool_id, credential)
+        latest_company_credentials.setdefault(credential.tool_id, credential)
+
+    for tool_id in tool_ids:
+        user_credential = latest_user_credentials.get(tool_id)
+        if user_credential:
+            if not user_credential.is_active:
+                continue
+            if _credential_has_secret_material(user_credential):
+                credentials_by_tool[tool_id] = user_credential
+                continue
+
+        company_credential = latest_company_credentials.get(tool_id)
+        if _credential_has_secret_material(company_credential):
+            credentials_by_tool[tool_id] = company_credential
 
     return credentials_by_tool
 
@@ -371,7 +425,7 @@ def _validate_extension_autofill_target(
 
     raise HTTPException(
         status_code=400,
-        detail="Extension auto-fill currently supports ChatGPT/OpenAI, Envato, Freepik, Higgsfield, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
+        detail="Extension auto-fill currently supports ChatGPT/OpenAI, Envato, Freepik, Higgsfield, HeyGen, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
     )
 
 
@@ -557,6 +611,9 @@ async def list_tools(
         .all()
     )
     credentials_by_tool = _resolve_tool_credentials_map(db, [tool.id for tool in tools], current_user.id)
+    if not is_admin:
+        tools = [tool for tool in tools if tool.id in credentials_by_tool]
+
     return {
         "success": True,
         "tools": [
@@ -697,7 +754,7 @@ async def get_extension_credential(
 
     credential = _resolve_tool_credential(db, tool.id, current_user.id)
     if not credential:
-        raise HTTPException(status_code=404, detail="No assigned credential found for this tool")
+        raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
 
     login_identifier = decrypt_secret(credential.login_identifier_encrypted)
     password = decrypt_secret(credential.password_encrypted)
@@ -928,22 +985,22 @@ async def launch_tool(
         raise HTTPException(status_code=404, detail="Tool not found")
 
     credential = _resolve_tool_credential(db, tool.id, current_user.id)
+    if not credential:
+        raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
+
     revealed = None
-    if credential:
-        revealed = {
-            "scope": credential.scope,
-            "loginIdentifier": decrypt_secret(credential.login_identifier_encrypted),
-            "password": None if tool.launch_mode in {"automation", "extension_autofill"} else decrypt_secret(credential.password_encrypted),
-            "apiKey": decrypt_secret(credential.api_key_encrypted),
-            "notes": credential.notes,
-        }
+    revealed = {
+        "scope": credential.scope,
+        "loginIdentifier": decrypt_secret(credential.login_identifier_encrypted),
+        "password": None if tool.launch_mode in {"automation", "extension_autofill"} else decrypt_secret(credential.password_encrypted),
+        "apiKey": decrypt_secret(credential.api_key_encrypted),
+        "notes": credential.notes,
+    }
 
     launch_url = tool.login_url or tool.website_url
     extension_ticket = None
     extension_ticket_expires_at = None
     if tool.launch_mode == "automation":
-        if not credential:
-            raise HTTPException(status_code=400, detail="Auto-login requires an assigned credential")
         ticket = _sign_ticket(
             {
                 "kind": "automation_launch",
@@ -954,8 +1011,6 @@ async def launch_tool(
         )
         launch_url = _automation_launch_url(request, ticket)
     elif tool.launch_mode == "extension_autofill":
-        if not credential:
-            raise HTTPException(status_code=400, detail="Extension auto-fill requires an assigned credential")
         extension_ticket_expires_at = int(time.time()) + 180
         extension_ticket = _sign_ticket(
             {
@@ -1010,7 +1065,7 @@ async def launch_with_ticket(
 
     credential = _resolve_tool_credential(db, tool.id, user_id)
     if not credential:
-        raise HTTPException(status_code=400, detail="Auto-login requires an assigned credential")
+        raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
 
     _add_audit(
         db,

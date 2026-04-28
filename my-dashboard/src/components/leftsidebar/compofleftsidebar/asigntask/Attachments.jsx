@@ -12,6 +12,25 @@ export default function AttachmentBox({ attachments = [], onChange, disabled = f
   const [files, setFiles] = useState(attachments);
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
+  const [uploadedBytes, setUploadedBytes] = useState(0);
+  const [totalBytes, setTotalBytes] = useState(0);
+
+  const formatUploadSize = (bytes = 0) => {
+    const safeBytes = Number.isFinite(bytes) ? Math.max(bytes, 0) : 0;
+    if (safeBytes < 1024) return `${safeBytes} B`;
+
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let value = safeBytes / 1024;
+    let unitIndex = 0;
+
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+
+    const decimals = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+    return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+  };
 
   // Sync with parent when attachments prop changes
   useEffect(() => {
@@ -69,9 +88,14 @@ export default function AttachmentBox({ attachments = [], onChange, disabled = f
 
     try {
       setUploading(true);
+      const pendingTotalBytes = filesToUpload.reduce((sum, file) => sum + Math.max(Number(file?.size) || 0, 0), 0);
+      setUploadedBytes(0);
+      setTotalBytes(pendingTotalBytes);
       const response = await fileAPI.uploadFiles(filesToUpload, {
-        onProgress: (percent) => {
+        onProgress: (percent, metrics = {}) => {
           setProgress(percent);
+          setUploadedBytes(Math.max(Number(metrics?.loaded) || 0, 0));
+          setTotalBytes(Math.max(Number(metrics?.total) || pendingTotalBytes, 0));
         },
       });
       const uploadedAttachments = Array.isArray(response?.data) ? response.data : [];
@@ -87,6 +111,8 @@ export default function AttachmentBox({ attachments = [], onChange, disabled = f
     } finally {
       setUploading(false);
       setProgress(0);
+      setUploadedBytes(0);
+      setTotalBytes(0);
     }
   };
 
@@ -163,18 +189,29 @@ export default function AttachmentBox({ attachments = [], onChange, disabled = f
           >
             {uploading ? `Uploading... ${progress}%` : "📤 Upload Files"}
           </button>
+
+          {!uploading && files.some((file) => file instanceof File) && (
+            <div className="attachment-upload-size-note">
+              Pending upload size: {formatUploadSize(files.filter((file) => file instanceof File).reduce((sum, file) => sum + Math.max(Number(file?.size) || 0, 0), 0))}
+            </div>
+          )}
         </>
       )}
 
       {uploading && (
-        <div className="progress-container">
-          <div
-            className="progress-bar"
-            style={{ width: `${progress}%` }}
-          >
-            {progress}%
+        <>
+          <div className="progress-container">
+            <div
+              className="progress-bar"
+              style={{ width: `${progress}%` }}
+            >
+              {progress}%
+            </div>
           </div>
-        </div>
+          <div className="attachment-upload-size-note">
+            {formatUploadSize(uploadedBytes)} of {formatUploadSize(totalBytes)} transferred
+          </div>
+        </>
       )}
     </div>
   );

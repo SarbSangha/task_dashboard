@@ -1,6 +1,5 @@
 const TOOL_SLUG = 'higgsfield';
 const LOGIN_URL = 'https://higgsfield.ai/auth/login';
-const PREPARED_LAUNCH_KEY = 'rmw_higgsfield_prepared_launch';
 const BLOCKED_NOTICE_KEY = 'rmw_higgsfield_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
 const STATE = {
@@ -26,6 +25,11 @@ const STATE = {
   launchChecked: false,
   launchAuthorized: false,
   launchExpiresAt: 0,
+  launchPrepared: false,
+  authTransitionAt: 0,
+  passwordSavingInFlight: false,
+  passwordSavingSuppressed: false,
+  passwordSavingRestoreTimer: null,
   status: 'Waiting for Higgsfield login form',
 };
 
@@ -212,13 +216,9 @@ function clearPageStorage() {
     window.localStorage.clear();
   } catch {}
   try {
-    const preparedLaunch = window.sessionStorage.getItem(PREPARED_LAUNCH_KEY);
     const blockedNotice = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY);
     const extensionTicket = window.sessionStorage.getItem(EXTENSION_TICKET_KEY);
     window.sessionStorage.clear();
-    if (preparedLaunch) {
-      window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, preparedLaunch);
-    }
     if (blockedNotice) {
       window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, blockedNotice);
     }
@@ -237,6 +237,49 @@ function setInputValue(input, value) {
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
   input.dispatchEvent(new Event('blur', { bubbles: true }));
+}
+
+function dispatchEnterKey(input) {
+  if (!input) return false;
+
+  try {
+    input.focus();
+  } catch {}
+
+  const events = ['keydown', 'keypress', 'keyup'];
+  for (const type of events) {
+    try {
+      input.dispatchEvent(new KeyboardEvent(type, {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+  }
+
+  return true;
+}
+
+function submitNearestForm(input) {
+  const form = input?.closest?.('form') || null;
+  if (!form) return false;
+
+  try {
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
+      return true;
+    }
+  } catch {}
+
+  try {
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    return true;
+  } catch {}
+
+  return false;
 }
 
 function findStepContainer(...inputs) {
@@ -348,6 +391,8 @@ async function loadLaunchState() {
       STATE.launchChecked = true;
       STATE.launchAuthorized = true;
       STATE.launchExpiresAt = Number(activation.expiresAt || 0);
+      STATE.launchPrepared = Boolean(activation.prepared);
+      STATE.authTransitionAt = Number(activation.authTransitionAt || 0);
       return;
     }
 
@@ -364,6 +409,17 @@ async function loadLaunchState() {
   STATE.launchChecked = true;
   STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
+  STATE.launchPrepared = Boolean(response?.ok && response.authorized && response.prepared);
+  STATE.authTransitionAt = Number(response?.ok && response.authorized ? response.authTransitionAt || 0 : 0);
+}
+
+function markAuthTransition() {
+  const now = Date.now();
+  STATE.authTransitionAt = now;
+  sendRuntimeMessage({
+    type: 'TOOL_HUB_MARK_AUTH_TRANSITION',
+    toolSlug: TOOL_SLUG,
+  }).catch(() => {});
 }
 
 async function clearToolSession(options = {}) {
@@ -377,6 +433,7 @@ async function clearToolSession(options = {}) {
 
 async function enforceDashboardOnlyAccess() {
   const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
+  releasePasswordSavingSuppressed(0);
   if (!isLoginPage()) {
     await clearToolSession();
     window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
@@ -394,37 +451,31 @@ async function enforceDashboardOnlyAccess() {
 }
 
 async function ensureFreshLaunchSession() {
-  const launchKey = `${STATE.launchExpiresAt || 0}`;
-  if (!launchKey || launchKey === '0') {
+  if (!STATE.launchExpiresAt) {
     return false;
   }
 
-  if (window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) === launchKey) {
+  if (STATE.launchPrepared) {
     return true;
   }
 
   await clearToolSession({ preserveLaunch: true });
-  window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
+  const preparedResponse = await sendRuntimeMessage({
+    type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED',
+    toolSlug: TOOL_SLUG,
+  });
+  if (preparedResponse?.ok) {
+    STATE.launchPrepared = true;
+  }
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
   setStatus('Preparing fresh Higgsfield session');
-
-  if (
-    findInput(EMAIL_SELECTORS)
-    || findInput(PASSWORD_SELECTORS)
-    || findPrimaryLoginAction()
-    || findEmailEntryAction()
-  ) {
-    window.location.reload();
-    return false;
-  }
 
   if (window.location.href !== LOGIN_URL) {
     window.location.replace(LOGIN_URL);
     return false;
   }
 
-  window.location.reload();
-  return false;
+  return true;
 }
 
 function requestCredential() {
@@ -518,10 +569,15 @@ function findOtpInput() {
   return findInput(OTP_SELECTORS);
 }
 
+function onHiggsfieldWorkspaceHost() {
+  return ['higgsfield.ai', 'www.higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'].includes(window.location.hostname);
+}
+
 function looksLikeAuthenticatedWorkspace() {
   if (window.location.pathname.startsWith('/auth')) return false;
   if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS) || findOtpInput()) return false;
   if (findPrimaryLoginAction() || findEmailEntryAction()) return false;
+  if (!onHiggsfieldWorkspaceHost()) return false;
 
   const workspaceWords = ['explore', 'image', 'video', 'audio', 'collab', 'apps', 'assist', 'community'];
   const matched = new Set();
@@ -542,6 +598,66 @@ function looksLikeAuthenticatedWorkspace() {
   return false;
 }
 
+async function ensurePasswordSavingSuppressed() {
+  if (STATE.passwordSavingSuppressed) return true;
+
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+    suppressed: true,
+  });
+
+  if (!response?.ok) {
+    setStatus(response?.error || 'Could not suppress Chrome password prompt');
+    return false;
+  }
+
+  STATE.passwordSavingSuppressed = true;
+  return true;
+}
+
+function requestPasswordSavingSuppression() {
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingInFlight) {
+    return;
+  }
+
+  STATE.passwordSavingInFlight = true;
+  setStatus('Disabling Chrome password-save prompt...');
+
+  ensurePasswordSavingSuppressed()
+    .then((ok) => {
+      if (!ok) {
+        STATE.passwordSavingInFlight = false;
+        STATE.settled = true;
+        setStatus('Blocked: Chrome password-save prompt could not be disabled.');
+        return;
+      }
+
+      STATE.passwordSavingInFlight = false;
+      scheduleAttempt(50);
+    })
+    .catch((error) => {
+      STATE.passwordSavingInFlight = false;
+      STATE.settled = true;
+      setStatus(`Blocked: ${error?.message || 'Could not disable Chrome password-save prompt.'}`);
+    });
+}
+
+function releasePasswordSavingSuppressed(delay = 0) {
+  if (STATE.passwordSavingRestoreTimer) {
+    window.clearTimeout(STATE.passwordSavingRestoreTimer);
+    STATE.passwordSavingRestoreTimer = null;
+  }
+
+  STATE.passwordSavingRestoreTimer = window.setTimeout(() => {
+    sendRuntimeMessage({
+      type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+      suppressed: false,
+    });
+    STATE.passwordSavingSuppressed = false;
+    STATE.passwordSavingRestoreTimer = null;
+  }, Math.max(0, delay));
+}
+
 function stopAutomation(message, hideBadgeAfterMs = 2500) {
   STATE.settled = true;
   if (STATE.scheduledTimer) {
@@ -558,6 +674,7 @@ function stopAutomation(message, hideBadgeAfterMs = 2500) {
   }
 
   setStatus(message);
+  releasePasswordSavingSuppressed(8000);
 
   if (hideBadgeAfterMs > 0) {
     window.setTimeout(() => {
@@ -615,21 +732,33 @@ function fillOtp(otpInput, otp) {
   }
 
   const submitButton = findSubmitButton(otpInput, null) || document.querySelector('button[type="submit"]');
-  if (!submitButton) {
-    setStatus('OTP filled, verify button not found');
-    return;
-  }
-
   const now = Date.now();
-  if (now - STATE.lastSubmitAt > 3000) {
+  if (now - Number(STATE.otpSubmittedAt || 0) > 3000) {
     STATE.lastSubmitAt = now;
     STATE.otpSubmittedAt = now;
-    setStatus('OTP filled, verifying');
-    window.setTimeout(() => submitButton.click(), 300);
+    markAuthTransition();
+
+    if (submitButton) {
+      setStatus('OTP filled, verifying');
+      window.setTimeout(() => submitButton.click(), 300);
+      return;
+    }
+
+    if (submitNearestForm(otpInput)) {
+      setStatus('OTP filled, submitting form');
+      return;
+    }
+
+    if (dispatchEnterKey(otpInput)) {
+      setStatus('OTP filled, submitting with Enter');
+      return;
+    }
+
+    setStatus('OTP filled, verify action not found');
     return;
   }
 
-  setStatus('OTP filled');
+  setStatus('OTP filled, waiting to retry submit');
 }
 
 function attemptFill() {
@@ -642,7 +771,7 @@ function attemptFill() {
     scheduleAsyncStep(enforceDashboardOnlyAccess);
     return;
   }
-  if (STATE.launchExpiresAt && window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) !== `${STATE.launchExpiresAt}`) {
+  if (STATE.launchExpiresAt && !STATE.launchPrepared) {
     scheduleAsyncStep(ensureFreshLaunchSession);
     return;
   }
@@ -655,6 +784,36 @@ function attemptFill() {
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
   const otpInput = findOtpInput();
+  const postSubmitAt = Math.max(
+    Number(STATE.lastSubmitAt || 0),
+    Number(STATE.otpSubmittedAt || 0),
+    Number(STATE.authTransitionAt || 0)
+  );
+  const hasLoginUi = Boolean(
+    emailInput
+    || passwordInput
+    || otpInput
+    || findPrimaryLoginAction()
+    || findEmailEntryAction()
+  );
+
+  if (postSubmitAt && !window.location.pathname.startsWith('/auth') && !hasLoginUi) {
+    stopAutomation('Signed in successfully');
+    return;
+  }
+
+  if (onHiggsfieldWorkspaceHost() && !hasLoginUi) {
+    if (looksLikeAuthenticatedWorkspace()) {
+      stopAutomation('Signed in successfully');
+      return;
+    }
+
+    if (postSubmitAt && Date.now() - postSubmitAt < 20000) {
+      setStatus('Waiting for Higgsfield workspace to finish loading');
+      return;
+    }
+  }
+
   if (otpInput) {
     STATE.otpStageSeen = true;
   }
@@ -666,6 +825,16 @@ function attemptFill() {
     STATE.otpStageSeen = false;
     STATE.otpSubmittedAt = 0;
   }
+
+  if (!hasLoginUi && postSubmitAt && Date.now() - postSubmitAt < 20000) {
+    setStatus(
+      window.location.pathname.startsWith('/auth')
+        ? 'Waiting for Higgsfield verification redirect'
+        : 'Waiting for Higgsfield workspace to finish loading'
+    );
+    return;
+  }
+
   if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
     if (emailInput || passwordInput || findEmailEntryAction() || window.location.pathname.startsWith('/auth')) {
       requestCredential();
@@ -681,6 +850,11 @@ function attemptFill() {
   if (emailInput && emailInput.value !== STATE.credential.loginIdentifier) {
     emailInput.focus();
     setInputValue(emailInput, STATE.credential.loginIdentifier);
+  }
+
+  if (passwordInput && !STATE.passwordSavingSuppressed) {
+    requestPasswordSavingSuppression();
+    return;
   }
 
   if (passwordInput && passwordInput.value !== STATE.credential.password) {
@@ -720,6 +894,7 @@ function attemptFill() {
 
   if (now - STATE.lastSubmitAt > 3000) {
     STATE.lastSubmitAt = now;
+    markAuthTransition();
     setStatus('Credential filled, signing in');
     window.setTimeout(() => submitButton.click(), 350);
     return;
@@ -735,6 +910,7 @@ function scheduleAsyncStep(task) {
     .then(task)
     .catch((error) => {
       setStatus(`Session check failed: ${error?.message || 'Unknown error'}`);
+      releasePasswordSavingSuppressed(0);
     });
 }
 
@@ -754,6 +930,7 @@ function runAttempt() {
   } catch (error) {
     STATE.settled = true;
     setStatus(`Script error: ${error?.message || 'Unknown error'}`);
+    releasePasswordSavingSuppressed(0);
   }
 }
 

@@ -182,6 +182,13 @@
   line-height: 1.1;
 }
 
+.metric-subvalue {
+  margin-top: 8px;
+  color: rgba(219, 231, 255, 0.74);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .trendings-filter-row {
   padding: 14px 20px;
   display: flex;
@@ -636,6 +643,13 @@
   display: flex;
   justify-content: center;
   padding: 18px 0 8px;
+}
+
+.trendings-load-more-meta {
+  margin-top: 12px;
+  text-align: center;
+  color: rgba(219, 231, 255, 0.72);
+  font-size: 13px;
 }
 
 .trendings-load-more-btn {
