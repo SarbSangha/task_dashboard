@@ -3,6 +3,7 @@
 import React, { createContext, useState, useEffect, useContext, useCallback, useRef } from 'react';
 import { activityAPI, authAPI } from '../services/api';
 import useActivityTracker from '../hooks/useActivityTracker';
+import { cleanupWebPushSubscription } from '../utils/webPush';
 
 export const AuthContext = createContext();
 
@@ -206,6 +207,10 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     console.log('👋 Logging out...');
     try {
+      await cleanupWebPushSubscription({
+        removeServerSubscription: true,
+        removeBrowserSubscription: true,
+      }).catch(() => {});
       await activityAPI.endSession({
         status: 'OFFLINE',
         timestamp: new Date().toISOString(),

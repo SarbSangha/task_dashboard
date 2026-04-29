@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import { taskAPI } from '../../../../services/api';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
@@ -61,6 +62,7 @@ const TRACKING_FILTERS = [
 
 const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditTask }) => {
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
   const [selectedTask, setSelectedTask] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
@@ -84,6 +86,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
     submitting: false,
     error: '',
   });
+  const handledRouteTaskIdRef = React.useRef(null);
 
   const {
     data: trackingData,
@@ -98,6 +101,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
   }, [isMinimized, isOpen, onMinimizedChange]);
 
   const tasks = trackingData?.tasks || [];
+  const routeTaskId = Number(searchParams.get('taskId') || 0);
   const isRefreshing = isFetching && !loading;
   const trackingError = error?.response?.data?.detail || error?.message || '';
 
@@ -175,6 +179,21 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
       return tasks.find((task) => task.id === prev.id) || prev;
     });
   }, [tasks]);
+
+  React.useEffect(() => {
+    if (!routeTaskId) {
+      handledRouteTaskIdRef.current = null;
+      return;
+    }
+    if (!isOpen || handledRouteTaskIdRef.current === routeTaskId || !tasks.length) return;
+
+    const matchingTask = tasks.find((task) => Number(task?.id) === routeTaskId);
+    if (!matchingTask) return;
+
+    handledRouteTaskIdRef.current = routeTaskId;
+    setSelectedTask(matchingTask);
+    setWorkflowOpen(true);
+  }, [isOpen, routeTaskId, tasks]);
 
   const handleSubmitComplete = async () => {
     setSubmitTask(null);

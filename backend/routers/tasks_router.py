@@ -14,6 +14,7 @@ import hashlib
 import os
 import re
 from time import perf_counter
+from urllib.parse import urlencode
 
 from database_config import get_operational_db, OperationalSessionLocal
 from models_new import (
@@ -28,6 +29,7 @@ from models_new import (
     TaskNotification,
     TaskView,
     TaskEditLog,
+    WebPushSubscription,
     User,
     TaskStatus,
     TaskWorkflowStatus,
@@ -38,8 +40,16 @@ from models_new import (
 from auth import verify_session_token, get_request_session_token, resolve_session_user
 from task_helpers import TaskHelpers
 from utils.cache import cache_response, invalidate_pattern
-from utils.datetime_utils import serialize_utc_datetime
+from utils.datetime_utils import normalize_deadline_to_utc_naive, serialize_utc_datetime
 from utils.edge_cache import queue_edge_cache_purge
+
+try:
+    from pywebpush import webpush, WebPushException
+except ImportError:  # pragma: no cover - optional until dependency is installed in runtime
+    webpush = None
+
+    class WebPushException(Exception):
+        response = None
 
 TASK_ALL_CACHE_PATTERN = "cache:tasks_all:*"
 TASK_ASSETS_CACHE_PATTERN = "cache:tasks_assets:*"
@@ -99,9 +109,212 @@ class NotificationHub:
                 await socket.send_json(payload)
             except Exception:
                 self.disconnect(user_id, socket)
+        await deliver_web_push_notifications(user_id, payload)
 
 
 notification_hub = NotificationHub()
+
+WEB_PUSH_PUBLIC_KEY_ENV = "WEB_PUSH_PUBLIC_KEY"
+WEB_PUSH_PRIVATE_KEY_ENV = "WEB_PUSH_PRIVATE_KEY"
+WEB_PUSH_SUBJECT_ENV = "WEB_PUSH_SUBJECT"
+WEB_PUSH_DEFAULT_CLICK_URL = "/#/dashboard"
+
+
+def _trim_env(name: str, default: str = "") -> str:
+    return (os.getenv(name) or default).strip()
+
+
+def _web_push_public_key() -> str:
+    return _trim_env(WEB_PUSH_PUBLIC_KEY_ENV)
+
+
+def _web_push_private_key() -> str:
+    return _trim_env(WEB_PUSH_PRIVATE_KEY_ENV)
+
+
+def _web_push_subject() -> str:
+    return _trim_env(WEB_PUSH_SUBJECT_ENV, "mailto:no-reply@example.com")
+
+
+def web_push_enabled() -> bool:
+    return bool(webpush and _web_push_public_key() and _web_push_private_key())
+
+
+def _frontend_origin() -> str:
+    return _trim_env("FRONTEND_URL", "https://dashboard.ritzmediaworld.in").rstrip("/")
+
+
+def _build_dashboard_hash_url(panel: str = "", query: Optional[dict] = None) -> str:
+    base_path = "/#/dashboard"
+    panel_segment = f"/{panel.strip('/')}" if panel else ""
+    query_string = urlencode({key: value for key, value in (query or {}).items() if value not in (None, "")})
+    suffix = f"?{query_string}" if query_string else ""
+    return f"{_frontend_origin()}{base_path}{panel_segment}{suffix}"
+
+
+def _build_notification_click_url(payload: dict) -> str:
+    metadata = payload.get("metadata") or {}
+    event_type = str(payload.get("eventType") or "").strip().lower()
+    task_id = metadata.get("taskId") or payload.get("taskId")
+    group_id = metadata.get("groupId")
+    message_id = metadata.get("messageId")
+    sender_id = metadata.get("senderId")
+
+    if event_type == "group_message" and group_id:
+        return _build_dashboard_hash_url("messages", {
+            "tab": "groups",
+            "groupId": group_id,
+            "messageId": message_id,
+        })
+
+    if event_type == "direct_message" and sender_id:
+        return _build_dashboard_hash_url("messages", {
+            "tab": "direct",
+            "userId": sender_id,
+            "messageId": message_id,
+        })
+
+    if task_id:
+        return _build_dashboard_hash_url("tracking", {"taskId": task_id})
+
+    return _build_dashboard_hash_url()
+
+
+def _coerce_web_push_expiration(value) -> Optional[datetime]:
+    if value in (None, "", 0):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    return datetime.utcfromtimestamp(numeric / 1000.0)
+
+
+def _serialize_web_push_payload(payload: dict) -> str:
+    metadata = dict(payload.get("metadata") or {})
+    notification = {
+        "title": (payload.get("title") or "New update").strip() or "New update",
+        "body": (payload.get("message") or "You have a new notification.").strip() or "You have a new notification.",
+        "tag": "::".join([
+            str(payload.get("eventType") or "event"),
+            str(payload.get("taskId") or ""),
+            str(payload.get("taskNumber") or metadata.get("taskNumber") or ""),
+            str(metadata.get("groupId") or ""),
+            str(metadata.get("messageId") or ""),
+        ]),
+        "url": _build_notification_click_url(payload),
+        "data": {
+            "eventType": payload.get("eventType"),
+            "taskId": payload.get("taskId"),
+            "taskNumber": payload.get("taskNumber"),
+            "projectId": payload.get("projectId"),
+            "metadata": metadata,
+        },
+    }
+    return json.dumps(notification)
+
+
+def _push_failure_reason(exc: Exception) -> tuple[Optional[int], str]:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    body = ""
+    if response is not None:
+        try:
+            body = response.text or ""
+        except Exception:
+            body = ""
+    message = str(exc).strip() or body.strip() or "web push failed"
+    return status_code, message[:500]
+
+
+def _send_single_web_push(subscription: WebPushSubscription, payload_json: str) -> tuple[bool, Optional[int], str]:
+    if not web_push_enabled():
+        return False, None, "web push is not configured"
+
+    try:
+        webpush(
+            subscription_info={
+                "endpoint": subscription.endpoint,
+                "keys": {
+                    "p256dh": subscription.p256dh,
+                    "auth": subscription.auth,
+                },
+            },
+            data=payload_json,
+            vapid_private_key=_web_push_private_key(),
+            vapid_claims={"sub": _web_push_subject()},
+            ttl=30,
+        )
+        return True, None, ""
+    except WebPushException as exc:
+        status_code, reason = _push_failure_reason(exc)
+        return False, status_code, reason
+    except Exception as exc:  # pragma: no cover - defensive runtime guard
+        return False, None, (str(exc).strip() or "web push failed")[:500]
+
+
+async def deliver_web_push_notifications(user_id: int, payload: dict) -> None:
+    if not web_push_enabled():
+        return
+
+    db = OperationalSessionLocal()
+    try:
+        subscriptions = (
+            db.query(WebPushSubscription)
+            .filter(
+                WebPushSubscription.user_id == user_id,
+                WebPushSubscription.is_active == True,
+            )
+            .all()
+        )
+        if not subscriptions:
+            return
+
+        payload_json = _serialize_web_push_payload(payload)
+        now = datetime.utcnow()
+        changed = False
+
+        results = await asyncio.gather(
+            *[
+                asyncio.to_thread(
+                    _send_single_web_push,
+                    subscription,
+                    payload_json,
+                )
+                for subscription in subscriptions
+            ],
+            return_exceptions=True,
+        )
+
+        for subscription, result in zip(subscriptions, results):
+            if isinstance(result, Exception):
+                ok, status_code, reason = False, None, (str(result).strip() or "web push failed")[:500]
+            else:
+                ok, status_code, reason = result
+            if ok:
+                subscription.last_success_at = now
+                subscription.last_failure_at = None
+                subscription.failure_reason = None
+                subscription.is_active = True
+                subscription.updated_at = now
+                changed = True
+                continue
+
+            subscription.last_failure_at = now
+            subscription.failure_reason = reason
+            subscription.updated_at = now
+            if status_code in {404, 410}:
+                subscription.is_active = False
+            changed = True
+
+        if changed:
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 
 class TaskCreate(BaseModel):
@@ -173,6 +386,25 @@ class TaskCommentPayload(BaseModel):
     attachments: List[dict] = Field(default_factory=list)
 
 
+class WebPushSubscriptionKeysPayload(BaseModel):
+    p256dh: str = Field(..., min_length=1)
+    auth: str = Field(..., min_length=1)
+
+
+class WebPushSubscriptionPayload(BaseModel):
+    endpoint: str = Field(..., min_length=1)
+    expirationTime: Optional[float] = None
+    keys: WebPushSubscriptionKeysPayload
+
+
+class WebPushSubscriptionUpsertPayload(BaseModel):
+    subscription: WebPushSubscriptionPayload
+
+
+class WebPushSubscriptionDeletePayload(BaseModel):
+    endpoint: str = Field(..., min_length=1)
+
+
 def _normalize_task_comment_attachments(items: List[dict]) -> List[dict]:
     normalized: List[dict] = []
     for item in items or []:
@@ -230,7 +462,7 @@ def parse_deadline(deadline_str: Optional[str]) -> Optional[datetime]:
         lambda x: datetime.strptime(x, "%Y-%m-%dT%H:%M"),
     ):
         try:
-            return parser(deadline_str)
+            return normalize_deadline_to_utc_naive(parser(deadline_str))
         except Exception:
             continue
     return None
@@ -4692,6 +4924,91 @@ async def delete_notification(
     await invalidate_pattern(TASK_NOTIFICATIONS_CACHE_PATTERN)
     await invalidate_pattern(TASK_OUTBOX_UNREAD_CACHE_PATTERN)
     return {"success": True, "message": "Notification removed"}
+
+
+async def get_web_push_config(
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    return {
+        "success": True,
+        "enabled": web_push_enabled(),
+        "publicKey": _web_push_public_key() if web_push_enabled() else "",
+    }
+
+
+async def subscribe_web_push(
+    payload: WebPushSubscriptionUpsertPayload,
+    request: Request,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not web_push_enabled():
+        raise HTTPException(status_code=503, detail="Web push is not configured on the server")
+
+    subscription_payload = payload.subscription
+    endpoint = subscription_payload.endpoint.strip()
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Subscription endpoint is required")
+
+    now = datetime.utcnow()
+    subscription = (
+        db.query(WebPushSubscription)
+        .filter(WebPushSubscription.endpoint == endpoint)
+        .first()
+    )
+    if not subscription:
+        subscription = WebPushSubscription(
+            user_id=current_user.id,
+            endpoint=endpoint,
+            created_at=now,
+        )
+        db.add(subscription)
+
+    subscription.user_id = current_user.id
+    subscription.p256dh = subscription_payload.keys.p256dh.strip()
+    subscription.auth = subscription_payload.keys.auth.strip()
+    subscription.expiration_time = _coerce_web_push_expiration(subscription_payload.expirationTime)
+    subscription.user_agent = (request.headers.get("user-agent") or "").strip()[:1000]
+    subscription.updated_at = now
+    subscription.is_active = True
+    subscription.failure_reason = None
+    subscription.last_failure_at = None
+
+    db.commit()
+    return {"success": True, "enabled": True}
+
+
+async def unsubscribe_web_push(
+    payload: WebPushSubscriptionDeletePayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    endpoint = payload.endpoint.strip()
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Subscription endpoint is required")
+
+    subscription = (
+        db.query(WebPushSubscription)
+        .filter(
+            WebPushSubscription.user_id == current_user.id,
+            WebPushSubscription.endpoint == endpoint,
+        )
+        .first()
+    )
+    if not subscription:
+        return {"success": True}
+
+    db.delete(subscription)
+    db.commit()
+    return {"success": True}
 
 
 async def debug_current_user(

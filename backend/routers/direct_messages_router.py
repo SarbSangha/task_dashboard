@@ -250,11 +250,13 @@ async def send_direct_message(
         "eventType": "direct_message",
         "title": f"New message from {current_user.name}",
         "message": (text or f"{len(attachments)} attachment{'s' if len(attachments) != 1 else ''}")[:180],
+        "attachments": attachments,
         "metadata": {
             "messageId": message.id,
             "senderId": current_user.id,
             "senderName": current_user.name,
             "recipientId": recipient.id,
+            "messageText": text,
             "attachmentCount": len(attachments),
             "createdAt": message.created_at.isoformat() if message.created_at else None,
         },

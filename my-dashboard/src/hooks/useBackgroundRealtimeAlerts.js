@@ -4,6 +4,7 @@ import { subscribeRealtimeNotifications } from '../services/api';
 
 const RECENT_EVENT_TTL_MS = 15000;
 const SESSION_PERMISSION_KEY = 'rmw_browser_notifications_prompted_v1';
+const ALWAYS_NOTIFY_EVENT_TYPES = new Set(['group_message', 'direct_message']);
 
 const trimText = (value, fallback = '') => `${value || fallback}`.trim();
 
@@ -29,6 +30,7 @@ export default function useBackgroundRealtimeAlerts() {
   const baseTitleRef = useRef('');
   const hiddenAlertCountRef = useRef(0);
   const recentEventsRef = useRef(new Map());
+  const audioContextRef = useRef(null);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -65,6 +67,50 @@ export default function useBackgroundRealtimeAlerts() {
       });
     };
 
+    const playMessageTone = () => {
+      if (typeof window === 'undefined') return;
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+
+      try {
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioContextClass();
+        }
+
+        const ctx = audioContextRef.current;
+        if (!ctx) return;
+        if (ctx.state === 'suspended') {
+          void ctx.resume().catch(() => {});
+        }
+
+        const nowAt = ctx.currentTime;
+        const masterGain = ctx.createGain();
+        masterGain.connect(ctx.destination);
+        masterGain.gain.setValueAtTime(0.0001, nowAt);
+
+        const notes = [
+          { frequency: 880, start: 0, duration: 0.08, gain: 0.05 },
+          { frequency: 1174.66, start: 0.11, duration: 0.12, gain: 0.04 },
+        ];
+
+        notes.forEach((note) => {
+          const oscillator = ctx.createOscillator();
+          const noteGain = ctx.createGain();
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(note.frequency, nowAt + note.start);
+          noteGain.gain.setValueAtTime(0.0001, nowAt + note.start);
+          noteGain.gain.exponentialRampToValueAtTime(note.gain, nowAt + note.start + 0.01);
+          noteGain.gain.exponentialRampToValueAtTime(0.0001, nowAt + note.start + note.duration);
+          oscillator.connect(noteGain);
+          noteGain.connect(masterGain);
+          oscillator.start(nowAt + note.start);
+          oscillator.stop(nowAt + note.start + note.duration + 0.03);
+        });
+      } catch (error) {
+        console.warn('Notification sound failed:', error);
+      }
+    };
+
     const notifyBrowser = (title, body, tag) => {
       if (!('Notification' in window)) return;
       if (Notification.permission !== 'granted') return;
@@ -88,7 +134,10 @@ export default function useBackgroundRealtimeAlerts() {
     const unsubscribe = subscribeRealtimeNotifications({
       onMessage: (payload) => {
         if (!payload?.eventType) return;
-        if (document.visibilityState === 'visible') return;
+
+        const forceBrowserAlert = ALWAYS_NOTIFY_EVENT_TYPES.has(payload.eventType);
+        const isHidden = document.visibilityState !== 'visible';
+        if (!forceBrowserAlert && !isHidden) return;
 
         const now = Date.now();
         pruneRecentEvents(now);
@@ -97,8 +146,13 @@ export default function useBackgroundRealtimeAlerts() {
         if (recentEventsRef.current.has(nextAlert.key)) return;
         recentEventsRef.current.set(nextAlert.key, now);
 
-        hiddenAlertCountRef.current += 1;
-        updateTitle();
+        if (isHidden) {
+          hiddenAlertCountRef.current += 1;
+          updateTitle();
+        }
+        if (forceBrowserAlert) {
+          playMessageTone();
+        }
         notifyBrowser(nextAlert.title, nextAlert.body, nextAlert.key);
       },
     });
@@ -117,6 +171,9 @@ export default function useBackgroundRealtimeAlerts() {
 
   useEffect(() => {
     if (!user || typeof window === 'undefined' || !('Notification' in window)) {
+      return undefined;
+    }
+    if ('serviceWorker' in navigator && 'PushManager' in window) {
       return undefined;
     }
     if (Notification.permission !== 'default') {

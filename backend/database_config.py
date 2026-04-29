@@ -1,10 +1,11 @@
 # database_config.py - Dual Database Configuration (Env-driven, SQLite/PostgreSQL)
 import os
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import NullPool
 from contextlib import contextmanager
 
 
@@ -33,6 +34,31 @@ def _should_load_env_file() -> bool:
     if environment == "production" or _is_truthy(os.getenv("RENDER")):
         return False
     return True
+
+
+def _is_local_runtime() -> bool:
+    environment = (os.getenv("ENVIRONMENT") or "").strip().lower()
+    if environment == "production" or _is_truthy(os.getenv("RENDER")):
+        return False
+    return True
+
+
+def _prefer_local_supabase_transaction_pooler(url: str) -> str:
+    if not url or not _is_local_runtime():
+        return url
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.port != 5432
+        or ("pooler.supabase.com" not in host and "pooler.supabase.co" not in host)
+    ):
+        return url
+
+    # Supabase transaction pooler on 6543 is a better fit for local/dev
+    # scripts and reloaders than session mode on 5432, which has a much lower
+    # effective client cap.
+    replaced_netloc = parsed.netloc[::-1].replace("2345:", "3456:", 1)[::-1]
+    return urlunparse(parsed._replace(netloc=replaced_netloc))
 
 
 def _load_env_file_if_needed(env_path: str | None = None) -> None:
@@ -65,8 +91,8 @@ def _load_env_file_if_needed(env_path: str | None = None) -> None:
 _load_env_file_if_needed()
 
 # ==================== DATABASE URLS ====================
-OPERATIONAL_DB_URL = (os.getenv("DATABASE_URL") or "").strip()
-ARCHIVE_DB_URL = (os.getenv("ARCHIVE_DATABASE_URL") or "").strip()
+OPERATIONAL_DB_URL = _prefer_local_supabase_transaction_pooler((os.getenv("DATABASE_URL") or "").strip())
+ARCHIVE_DB_URL = _prefer_local_supabase_transaction_pooler((os.getenv("ARCHIVE_DATABASE_URL") or "").strip())
 
 if not OPERATIONAL_DB_URL:
     raise RuntimeError("DATABASE_URL is required (PostgreSQL/Supabase).")
@@ -100,8 +126,15 @@ def _pool_settings(url: str) -> dict:
     # pool size. Keep defaults conservative, but allow enough concurrency to
     # handle the dashboard's parallel startup requests without queueing behind
     # only one or two checked-out connections.
-    default_pool_size = 5 if is_supabase_pooler else 10
-    default_max_overflow = 5 if is_supabase_pooler else 20
+    if is_supabase_pooler and _is_local_runtime():
+        # Local dev often runs extra short-lived processes (reload workers,
+        # scripts, shells). Use a tiny default pool so localhost startup does
+        # not exhaust the shared Supabase session-mode client quota.
+        default_pool_size = 1
+        default_max_overflow = 0
+    else:
+        default_pool_size = 5 if is_supabase_pooler else 10
+        default_max_overflow = 5 if is_supabase_pooler else 20
     return {
         "pool_size": max(1, _int_env("DB_POOL_SIZE", default_pool_size)),
         "max_overflow": max(0, _int_env("DB_MAX_OVERFLOW", default_max_overflow)),
@@ -119,11 +152,16 @@ def _create_engine(url: str):
     kwargs = {
         # Keep SQL logging opt-in so profiling can be enabled without code edits.
         "echo": _sql_echo_enabled(),
-        **_pool_settings(normalized),
         # Supabase pooler (PgBouncer) can conflict with psycopg prepared statements.
         # Disable automatic prepare to avoid DuplicatePreparedStatement on startup.
         "connect_args": {"prepare_threshold": None},
     }
+    if _is_supabase_pooler_url(normalized) and _is_local_runtime():
+        # Do not hold open idle DB clients in local dev. This keeps localhost
+        # from exhausting the shared session-mode pooler quota.
+        kwargs["poolclass"] = NullPool
+    else:
+        kwargs.update(_pool_settings(normalized))
     return create_engine(normalized, **kwargs)
 
 

@@ -243,6 +243,56 @@ def _ensure_postgres_schema(conn) -> None:
         )
     )
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_mailboxes_tool_id ON it_portal_tool_mailboxes(tool_id)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS web_push_subscriptions (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                endpoint TEXT NOT NULL,
+                p256dh TEXT NOT NULL,
+                auth TEXT NOT NULL,
+                expiration_time TIMESTAMP,
+                user_agent TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
+                last_success_at TIMESTAMP,
+                last_failure_at TIMESTAMP,
+                failure_reason TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'uq_web_push_subscriptions_endpoint'
+                ) THEN
+                    ALTER TABLE web_push_subscriptions
+                    ADD CONSTRAINT uq_web_push_subscriptions_endpoint UNIQUE (endpoint);
+                END IF;
+            END
+            $$;
+            """
+        )
+    )
+    _pg_add_column_if_missing(conn, "web_push_subscriptions", "expiration_time", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "web_push_subscriptions", "user_agent", "TEXT")
+    _pg_add_column_if_missing(conn, "web_push_subscriptions", "updated_at", "TIMESTAMP DEFAULT NOW()")
+    _pg_add_column_if_missing(conn, "web_push_subscriptions", "last_success_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "web_push_subscriptions", "last_failure_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "web_push_subscriptions", "failure_reason", "TEXT")
+    _pg_add_column_if_missing(conn, "web_push_subscriptions", "is_active", "BOOLEAN DEFAULT TRUE")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_user_id ON web_push_subscriptions(user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_is_active ON web_push_subscriptions(is_active)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_created_at ON web_push_subscriptions(created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_updated_at ON web_push_subscriptions(updated_at)"))
 
 
 def ensure_operational_schema(engine) -> None:
@@ -334,6 +384,49 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE task_notifications ADD COLUMN project_id VARCHAR"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_notifications_task_number ON task_notifications(task_number)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_notifications_project_id ON task_notifications(project_id)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS web_push_subscriptions (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    endpoint TEXT NOT NULL UNIQUE,
+                    p256dh TEXT NOT NULL,
+                    auth TEXT NOT NULL,
+                    expiration_time DATETIME,
+                    user_agent TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    last_success_at DATETIME,
+                    last_failure_at DATETIME,
+                    failure_reason TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    FOREIGN KEY(user_id) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        if _table_exists(conn, "web_push_subscriptions"):
+            push_cols = _table_columns(conn, "web_push_subscriptions")
+            if "expiration_time" not in push_cols:
+                conn.execute(text("ALTER TABLE web_push_subscriptions ADD COLUMN expiration_time DATETIME"))
+            if "user_agent" not in push_cols:
+                conn.execute(text("ALTER TABLE web_push_subscriptions ADD COLUMN user_agent TEXT"))
+            if "updated_at" not in push_cols:
+                conn.execute(text("ALTER TABLE web_push_subscriptions ADD COLUMN updated_at DATETIME"))
+            if "last_success_at" not in push_cols:
+                conn.execute(text("ALTER TABLE web_push_subscriptions ADD COLUMN last_success_at DATETIME"))
+            if "last_failure_at" not in push_cols:
+                conn.execute(text("ALTER TABLE web_push_subscriptions ADD COLUMN last_failure_at DATETIME"))
+            if "failure_reason" not in push_cols:
+                conn.execute(text("ALTER TABLE web_push_subscriptions ADD COLUMN failure_reason TEXT"))
+            if "is_active" not in push_cols:
+                conn.execute(text("ALTER TABLE web_push_subscriptions ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_user_id ON web_push_subscriptions(user_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_is_active ON web_push_subscriptions(is_active)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_created_at ON web_push_subscriptions(created_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_updated_at ON web_push_subscriptions(updated_at)"))
 
         conn.execute(
             text(

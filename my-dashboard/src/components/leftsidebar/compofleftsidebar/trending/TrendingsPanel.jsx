@@ -202,7 +202,6 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
             department: departmentFilter === ALL_DEPARTMENTS ? undefined : departmentFilter,
             q: search || undefined,
             sort: sortBy,
-            include_totals: true,
           },
           { timeout: DATABANK_REQUEST_TIMEOUT_MS }
         );
@@ -211,7 +210,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         setHasMore(Boolean(res?.hasMore));
         setNextCursor(res?.nextCursor || null);
         setNextOffset(Number.isFinite(res?.nextOffset) ? res.nextOffset : null);
-        setTotalMatchingReferences(Number.isFinite(res?.totalMatchingReferences) ? res.totalMatchingReferences : null);
+        setTotalMatchingReferences(null);
         setLastLatencyMs(Number.isFinite(res?.latencyMs) ? res.latencyMs : null);
       } catch (error) {
         console.error('Failed to load trendings:', error);
@@ -293,7 +292,12 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     ? `Showing ${filteredAssets.length} of ${totalMatchingReferences} references`
     : `Showing ${filteredAssets.length} references`;
 
-  const directoryTree = useMemo(() => buildDirectoryTree(filteredAssets), [filteredAssets]);
+  const directoryTree = useMemo(() => {
+    if (!showDirectoryWindow || filteredAssets.length === 0) {
+      return [];
+    }
+    return buildDirectoryTree(filteredAssets);
+  }, [filteredAssets, showDirectoryWindow]);
 
   useEffect(() => {
     const firstUploader = directoryTree[0] || null;
@@ -413,22 +417,11 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     }
 
     if (asset.mediaType === 'video') {
-      return (
-        <video className="trendings-card-video"  muted controls>
-          <source src={previewUrl} />
-        </video>
-      );
+      return <div className="trendings-card-fallback">Video Preview</div>;
     }
 
     if (asset.mediaType === 'music') {
-      return (
-        <div className="trendings-card-audio-wrap">
-          <div className="trendings-card-audio-label">Audio Preview</div>
-          <audio className="trendings-card-audio" controls preload="metadata">
-            <source src={previewUrl} />
-          </audio>
-        </div>
-      );
+      return <div className="trendings-card-fallback">Audio Preview</div>;
     }
 
     return <div className="trendings-card-fallback">Text/Document</div>;

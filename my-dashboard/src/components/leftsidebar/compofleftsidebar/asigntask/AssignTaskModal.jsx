@@ -16,6 +16,7 @@ import {
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { formatDateTimeLocalInputIndia } from '../../../../utils/dateTime';
 
 const TASK_TAG_OPTIONS = [
   'Audio',
@@ -415,7 +416,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
           ? editingTask.selectedUserIds
           : (editingTask.assignedTo || []).map((u) => u.id),
         toDepartment: normalizeDepartmentName(editingTask.toDepartment || 'Gen Ai'),
-        deadline: editingTask.deadline ? new Date(editingTask.deadline).toISOString().slice(0, 16) : '',
+        deadline: editingTask.deadline ? formatDateTimeLocalInputIndia(editingTask.deadline) : '',
         priority: editingTask.priority
           ? editingTask.priority.charAt(0).toUpperCase() + editingTask.priority.slice(1).toLowerCase()
           : 'High',

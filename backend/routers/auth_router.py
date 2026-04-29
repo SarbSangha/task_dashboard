@@ -576,8 +576,8 @@ async def login(
             path="/"
         )
         
-        print(f"✅ Login successful: {user.email}")
-        print(f"🍪 Cookie set: session_id={session_id[:10]}...")
+        print(f"Login successful: {user.email}")
+        print(f"Cookie set: session_id={session_id[:10]}...")
         
         return {
             "success": True,
@@ -589,7 +589,7 @@ async def login(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Login error: {str(e)}")
+        print(f"Login error: {str(e)}")
         traceback.print_exc()
         raise HTTPException(
             status_code=500,

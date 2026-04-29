@@ -20,12 +20,16 @@ const STATE = {
   lastMutationHandledAt: 0,
   launchChecked: false,
   launchAuthorized: false,
+  passwordSavingInFlight: false,
+  passwordSavingSuppressed: false,
+  passwordSavingRestoreTimer: null,
   settled: false,
   status: 'Waiting for Microsoft sign-in',
 };
 
 const MIN_RUN_GAP_MS = 900;
 const KEEP_ALIVE_MS = 3500;
+const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
 const EMAIL_SELECTORS = [
   '#i0116',
   'input[type="email"]',
@@ -124,6 +128,64 @@ function sendRuntimeMessage(message) {
       resolve(response || { ok: false, error: 'No response received' });
     });
   });
+}
+
+async function ensurePasswordSavingSuppressed() {
+  if (STATE.passwordSavingSuppressed) return true;
+
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+    suppressed: true,
+  });
+
+  if (!response?.ok) {
+    setStatus(response?.error || 'Could not suppress Chrome password prompt');
+    return false;
+  }
+
+  STATE.passwordSavingSuppressed = true;
+  return true;
+}
+
+function requestPasswordSavingSuppression() {
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingInFlight) {
+    return;
+  }
+
+  STATE.passwordSavingInFlight = true;
+  setStatus('Disabling Chrome password-save prompt...');
+
+  ensurePasswordSavingSuppressed()
+    .then((ok) => {
+      STATE.passwordSavingInFlight = false;
+      if (!ok) {
+        STATE.settled = true;
+        setStatus('Blocked: Chrome password-save prompt could not be disabled.');
+        return;
+      }
+      scheduleAttempt(50);
+    })
+    .catch((error) => {
+      STATE.passwordSavingInFlight = false;
+      STATE.settled = true;
+      setStatus(`Blocked: ${error?.message || 'Could not disable Chrome password-save prompt.'}`);
+    });
+}
+
+function releasePasswordSavingSuppressed(delay = 0) {
+  if (STATE.passwordSavingRestoreTimer) {
+    window.clearTimeout(STATE.passwordSavingRestoreTimer);
+    STATE.passwordSavingRestoreTimer = null;
+  }
+
+  STATE.passwordSavingRestoreTimer = window.setTimeout(() => {
+    sendRuntimeMessage({
+      type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+      suppressed: false,
+    });
+    STATE.passwordSavingSuppressed = false;
+    STATE.passwordSavingRestoreTimer = null;
+  }, Math.max(0, delay));
 }
 
 function isVisible(element) {
@@ -337,6 +399,11 @@ function attemptPasswordStep(credential) {
   const input = findInput(PASSWORD_SELECTORS);
   if (!input) return false;
 
+  if (!STATE.passwordSavingSuppressed) {
+    requestPasswordSavingSuppression();
+    return true;
+  }
+
   STATE.emailSubmitted = false;
   if (input.value !== credential.password) {
     input.focus();
@@ -359,7 +426,10 @@ function attemptPasswordStep(credential) {
     STATE.lastPasswordSubmitAt = now;
     STATE.passwordSubmitted = true;
     setStatus('Password filled, signing in to Microsoft');
-    window.setTimeout(() => nextButton.click(), 300);
+    window.setTimeout(() => {
+      nextButton.click();
+      releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
+    }, 300);
   }
   return true;
 }
@@ -407,6 +477,7 @@ function runAttempt() {
   } catch (error) {
     STATE.settled = true;
     setStatus(`Script error: ${error?.message || 'Unknown error'}`);
+    releasePasswordSavingSuppressed(0);
   }
 }
 

@@ -3,29 +3,12 @@ const LOGIN_URL = 'https://www.freepik.com/log-in?client_id=freepik&lang=en';
 const PREPARED_LAUNCH_KEY = 'rmw_freepik_prepared_launch';
 const BLOCKED_NOTICE_KEY = 'rmw_freepik_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
-const STATE = {
-  credential: null,
-  requested: false,
-  requestAttempts: 0,
-  lastRequestAt: 0,
-  lastSubmitAt: 0,
-  lastLoginOpenAt: 0,
-  loginOpenAttempts: 0,
-  lastThirdPartyClickAt: 0,
-  scheduledTimer: null,
-  keepAliveTimer: null,
-  observer: null,
-  lastRunAt: 0,
-  lastMutationHandledAt: 0,
-  settled: false,
-  launchChecked: false,
-  launchAuthorized: false,
-  launchExpiresAt: 0,
-  status: 'Waiting for Freepik login form',
-};
 
-const MIN_RUN_GAP_MS = 900;
-const KEEP_ALIVE_MS = 4000;
+const MIN_RUN_GAP_MS = 400;
+const KEEP_ALIVE_MS = 2000;
+const LOGIN_OPEN_COOLDOWN_MS = 2500;
+const SUBMIT_COOLDOWN_MS = 5000;
+const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -50,10 +33,30 @@ const PASSWORD_SELECTORS = [
 
 const ACTION_SELECTORS = [
   'button',
-  'input[type="submit"]',
   'a[href]',
+  'input[type="submit"]',
+  'input[type="button"]',
   '[role="button"]',
-];
+].join(',');
+
+const STATE = {
+  status: 'Waiting for Freepik',
+  credential: null,
+  launchChecked: false,
+  launchAuthorized: false,
+  launchExpiresAt: 0,
+  requestedCredential: false,
+  scheduledTimer: null,
+  keepAliveTimer: null,
+  observer: null,
+  lastRunAt: 0,
+  lastLoginOpenAt: 0,
+  lastSubmitAt: 0,
+  passwordSavingInFlight: false,
+  passwordSavingSuppressed: false,
+  passwordSavingRestoreTimer: null,
+  stopped: false,
+};
 
 function ensureStatusBadge() {
   const existing = document.getElementById('rmw-autologin-status');
@@ -61,20 +64,22 @@ function ensureStatusBadge() {
 
   const badge = document.createElement('div');
   badge.id = 'rmw-autologin-status';
-  badge.style.position = 'fixed';
-  badge.style.top = '12px';
-  badge.style.right = '12px';
-  badge.style.zIndex = '2147483647';
-  badge.style.maxWidth = '320px';
-  badge.style.padding = '10px 12px';
-  badge.style.borderRadius = '10px';
-  badge.style.background = 'rgba(15, 23, 42, 0.92)';
-  badge.style.color = '#f8fafc';
-  badge.style.font = '12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-  badge.style.boxShadow = '0 8px 24px rgba(15, 23, 42, 0.28)';
-  badge.style.pointerEvents = 'none';
-  badge.style.whiteSpace = 'pre-wrap';
-  badge.textContent = STATE.status || 'Starting auto-login';
+  Object.assign(badge.style, {
+    position: 'fixed',
+    top: '12px',
+    right: '12px',
+    zIndex: '2147483647',
+    maxWidth: '320px',
+    padding: '10px 12px',
+    borderRadius: '10px',
+    background: 'rgba(15, 23, 42, 0.92)',
+    color: '#f8fafc',
+    font: '12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    boxShadow: '0 8px 24px rgba(15, 23, 42, 0.28)',
+    pointerEvents: 'none',
+    whiteSpace: 'pre-wrap',
+  });
+  badge.textContent = `Freepik auto-login\n${STATE.status}`;
   (document.body || document.documentElement).appendChild(badge);
   return badge;
 }
@@ -82,74 +87,26 @@ function ensureStatusBadge() {
 function setStatus(message) {
   if (STATE.status === message) return;
   STATE.status = message;
-  const badge = ensureStatusBadge();
-  if (badge) {
-    badge.textContent = `Freepik auto-login\n${message}`;
-  }
+  ensureStatusBadge().textContent = `Freepik auto-login\n${message}`;
   console.debug('[RMW Freepik Auto Login]', message);
 }
 
-function markerFromValue(value) {
-  let hash = 0;
-  const text = `${value || ''}`;
-  for (let index = 0; index < text.length; index += 1) {
-    hash = ((hash << 5) - hash) + text.charCodeAt(index);
-    hash |= 0;
+function stop(message) {
+  STATE.stopped = true;
+  if (STATE.scheduledTimer) {
+    window.clearTimeout(STATE.scheduledTimer);
+    STATE.scheduledTimer = null;
   }
-  return `${hash}`;
-}
-
-function readLaunchTicketFromUrl() {
-  const searchParams = new URLSearchParams(window.location.search || '');
-  const directQueryTicket = `${searchParams.get('rmw_extension_ticket') || ''}`.trim();
-  if (directQueryTicket) {
-    return directQueryTicket;
+  if (STATE.keepAliveTimer) {
+    window.clearInterval(STATE.keepAliveTimer);
+    STATE.keepAliveTimer = null;
   }
-
-  const hash = `${window.location.hash || ''}`.replace(/^#/, '');
-  if (!hash) return '';
-  const hashParams = new URLSearchParams(hash);
-  return `${hashParams.get('rmw_extension_ticket') || ''}`.trim();
-}
-
-function getStoredLaunchTicket() {
-  try {
-    return `${window.sessionStorage.getItem(EXTENSION_TICKET_KEY) || ''}`.trim();
-  } catch {
-    return '';
+  if (STATE.observer) {
+    STATE.observer.disconnect();
+    STATE.observer = null;
   }
-}
-
-function clearStoredLaunchTicket() {
-  try {
-    window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
-  } catch {}
-}
-
-function storeLaunchTicket(ticket) {
-  try {
-    if (ticket) {
-      window.sessionStorage.setItem(EXTENSION_TICKET_KEY, ticket);
-    } else {
-      window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
-    }
-  } catch {}
-}
-
-function captureLaunchTicketFromHash() {
-  const ticket = readLaunchTicketFromUrl();
-  if (!ticket) return '';
-
-  storeLaunchTicket(ticket);
-  try {
-    const searchParams = new URLSearchParams(window.location.search || '');
-    searchParams.delete('rmw_extension_ticket');
-    searchParams.delete('rmw_tool_slug');
-    const nextSearch = searchParams.toString();
-    const cleanUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}`;
-    window.history.replaceState(null, '', cleanUrl);
-  } catch {}
-  return ticket;
+  releasePasswordSavingSuppressed(0);
+  setStatus(message);
 }
 
 function sendRuntimeMessage(message) {
@@ -164,117 +121,168 @@ function sendRuntimeMessage(message) {
   });
 }
 
-function isVisible(element) {
-  if (!element) return false;
-  const rect = element.getBoundingClientRect();
-  const style = window.getComputedStyle(element);
-  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+async function ensurePasswordSavingSuppressed() {
+  if (STATE.passwordSavingSuppressed) return true;
+
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+    suppressed: true,
+  });
+
+  if (!response?.ok) {
+    setStatus(response?.error || 'Could not suppress Chrome password prompt');
+    return false;
+  }
+
+  STATE.passwordSavingSuppressed = true;
+  return true;
 }
 
-function isDisabled(element) {
-  if (!element) return true;
+function requestPasswordSavingSuppression() {
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingInFlight) {
+    return;
+  }
+
+  STATE.passwordSavingInFlight = true;
+  setStatus('Disabling Chrome password-save prompt');
+
+  ensurePasswordSavingSuppressed()
+    .then((ok) => {
+      STATE.passwordSavingInFlight = false;
+      if (!ok) {
+        stop('Blocked: Chrome password-save prompt could not be disabled.');
+        return;
+      }
+      scheduleAttempt(50);
+    })
+    .catch((error) => {
+      STATE.passwordSavingInFlight = false;
+      stop(`Blocked: ${error?.message || 'Could not disable Chrome password-save prompt.'}`);
+    });
+}
+
+function releasePasswordSavingSuppressed(delay = 0) {
+  if (STATE.passwordSavingRestoreTimer) {
+    window.clearTimeout(STATE.passwordSavingRestoreTimer);
+    STATE.passwordSavingRestoreTimer = null;
+  }
+
+  if (!STATE.passwordSavingSuppressed && delay <= 0) {
+    return;
+  }
+
+  STATE.passwordSavingRestoreTimer = window.setTimeout(() => {
+    sendRuntimeMessage({
+      type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+      suppressed: false,
+    });
+    STATE.passwordSavingSuppressed = false;
+    STATE.passwordSavingRestoreTimer = null;
+  }, Math.max(0, delay));
+}
+
+function readLaunchTicketFromUrl() {
+  try {
+    const searchParams = new URLSearchParams(window.location.search || '');
+    const queryTicket = `${searchParams.get('rmw_extension_ticket') || ''}`.trim();
+    if (queryTicket) return queryTicket;
+
+    const hash = `${window.location.hash || ''}`.replace(/^#/, '');
+    return `${new URLSearchParams(hash).get('rmw_extension_ticket') || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function getStoredLaunchTicket() {
+  try {
+    return `${window.sessionStorage.getItem(EXTENSION_TICKET_KEY) || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function storeLaunchTicket(ticket) {
+  try {
+    if (ticket) {
+      window.sessionStorage.setItem(EXTENSION_TICKET_KEY, ticket);
+    } else {
+      window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
+    }
+  } catch {}
+}
+
+function clearStoredLaunchTicket() {
+  try {
+    window.sessionStorage.removeItem(EXTENSION_TICKET_KEY);
+  } catch {}
+}
+
+function captureLaunchTicket() {
+  const ticket = readLaunchTicketFromUrl();
+  if (!ticket) return getStoredLaunchTicket();
+
+  storeLaunchTicket(ticket);
+  try {
+    const searchParams = new URLSearchParams(window.location.search || '');
+    searchParams.delete('rmw_extension_ticket');
+    searchParams.delete('rmw_tool_slug');
+    const nextSearch = searchParams.toString();
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
+    );
+  } catch {}
+  return ticket;
+}
+
+function getPreparedLaunchKey() {
+  try {
+    return `${window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function hasLocalLaunchEvidence() {
   return Boolean(
-    element.disabled
-    || element.getAttribute('aria-disabled') === 'true'
-    || element.getAttribute('disabled') !== null
+    readLaunchTicketFromUrl()
+    || getStoredLaunchTicket()
+    || getPreparedLaunchKey()
   );
 }
 
-function buttonText(button) {
-  return `${button.innerText || button.textContent || button.value || button.getAttribute?.('aria-label') || ''}`
-    .trim()
-    .toLowerCase();
-}
+async function loadLaunchState() {
+  const storedTicket = captureLaunchTicket();
+  if (storedTicket) {
+    const activation = await sendRuntimeMessage({
+      type: 'TOOL_HUB_ACTIVATE_LAUNCH',
+      toolSlug: TOOL_SLUG,
+      hostname: window.location.hostname,
+      pageUrl: window.location.href,
+      extensionTicket: storedTicket,
+    });
 
-function getCredentialDomain(credential) {
-  const identifier = `${credential?.loginIdentifier || ''}`.trim().toLowerCase();
-  return identifier.includes('@') ? identifier.split('@').pop() : identifier;
-}
+    if (activation?.ok && activation.authorized) {
+      clearStoredLaunchTicket();
+      STATE.launchChecked = true;
+      STATE.launchAuthorized = true;
+      STATE.launchExpiresAt = Number(activation.expiresAt || 0);
+      return;
+    }
+  }
 
-function buttonDescriptorText(button) {
-  if (!button) return '';
-
-  const textParts = [
-    button.innerText,
-    button.textContent,
-    button.value,
-    button.getAttribute?.('aria-label'),
-    button.getAttribute?.('title'),
-    button.getAttribute?.('data-provider'),
-    button.getAttribute?.('href'),
-  ];
-
-  button.querySelectorAll('img[alt], [aria-label], [title], [data-provider]').forEach((node) => {
-    textParts.push(
-      node.getAttribute?.('alt'),
-      node.getAttribute?.('aria-label'),
-      node.getAttribute?.('title'),
-      node.getAttribute?.('data-provider'),
-    );
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_GET_LAUNCH_STATE',
+    toolSlug: TOOL_SLUG,
+    hostname: window.location.hostname,
+    pageUrl: window.location.href,
   });
 
-  return textParts
-    .filter(Boolean)
-    .join(' ')
-    .trim()
-    .toLowerCase();
-}
-
-function isActionLikeElement(element) {
-  if (!element || !isVisible(element)) return false;
-  if (element.matches?.(ACTION_SELECTORS.join(','))) return !isDisabled(element);
-  if (element.tabIndex >= 0) return !isDisabled(element);
-
-  const style = window.getComputedStyle(element);
-  return style.cursor === 'pointer' || typeof element.onclick === 'function';
-}
-
-function findClickableAncestor(element) {
-  let current = element;
-  while (current && current !== document.body) {
-    if (isActionLikeElement(current)) return current;
-    current = current.parentElement;
-  }
-  return isVisible(element) ? element : null;
-}
-
-function getThirdPartyAuthKind(button) {
-  const text = buttonDescriptorText(button);
-  if (text.includes('google')) return 'google';
-  if (text.includes('apple')) return 'apple';
-  if (text.includes('facebook')) return 'facebook';
-
-  if (text.includes('continue as ')) {
-    if (text.includes('@gmail.com') || text.includes('@googlemail.com')) {
-      return 'google';
-    }
-
-    const googleMarker = button.querySelector?.(
-      'img[alt*="google" i], [aria-label*="google" i], [title*="google" i], [data-provider*="google" i]'
-    );
-    if (googleMarker) {
-      return 'google';
-    }
-  }
-
-  return '';
-}
-
-function isThirdPartyAuthAction(button) {
-  return Boolean(getThirdPartyAuthKind(button));
-}
-
-function collectUniqueElements(elements) {
-  return Array.from(new Set(elements.filter(Boolean)));
-}
-
-function findInput(selectors) {
-  for (const selector of selectors) {
-    const inputs = Array.from(document.querySelectorAll(selector));
-    const match = inputs.find((input) => !input.disabled && !input.readOnly && isVisible(input));
-    if (match) return match;
-  }
-  return null;
+  STATE.launchChecked = true;
+  STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
+  STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
 }
 
 function clearPageStorage() {
@@ -298,6 +306,223 @@ function clearPageStorage() {
   } catch {}
 }
 
+function isVisible(element) {
+  if (!element) return false;
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  return rect.width > 0
+    && rect.height > 0
+    && style.display !== 'none'
+    && style.visibility !== 'hidden';
+}
+
+function isDisabled(element) {
+  return !element
+    || element.disabled
+    || element.getAttribute('aria-disabled') === 'true'
+    || element.getAttribute('disabled') !== null;
+}
+
+function normalizeText(value) {
+  return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function actionText(element) {
+  return normalizeText(
+    element?.innerText
+      || element?.textContent
+      || element?.value
+      || element?.getAttribute?.('aria-label')
+      || element?.getAttribute?.('title')
+      || ''
+  );
+}
+
+function collectActionCandidates(root = document) {
+  return Array.from(root.querySelectorAll(ACTION_SELECTORS))
+    .filter((element) => isVisible(element) && !isDisabled(element));
+}
+
+function findInput(selectors) {
+  for (const selector of selectors) {
+    const match = Array.from(document.querySelectorAll(selector))
+      .find((element) => isVisible(element) && !element.disabled && !element.readOnly);
+    if (match) return match;
+  }
+  return null;
+}
+
+function findLoginOpenAction() {
+  return collectActionCandidates().find((element) => {
+    const text = actionText(element);
+    const href = normalizeText(element.getAttribute?.('href') || '');
+
+    return text.includes('log in')
+      || text.includes('login')
+      || text.includes('sign in')
+      || text.includes('continue with email')
+      || text === 'email'
+      || href.includes('/log-in')
+      || href.includes('/login');
+  }) || null;
+}
+
+function isLoginPage() {
+  return window.location.pathname.includes('/log-in')
+    || Boolean(findInput(EMAIL_SELECTORS))
+    || Boolean(findInput(PASSWORD_SELECTORS))
+    || Boolean(findLoginOpenAction());
+}
+
+function getFieldRoots(...fields) {
+  const seed = fields.find(Boolean);
+  if (!seed) return [document];
+
+  const roots = [];
+  let current = seed.parentElement;
+  while (current && current !== document.body) {
+    roots.push(current);
+    if (current.matches?.('form, [role="dialog"], [aria-modal="true"], main, section, article')) {
+      break;
+    }
+    current = current.parentElement;
+  }
+  roots.push(document);
+  return Array.from(new Set(roots));
+}
+
+function findSubmitButton(emailInput, passwordInput) {
+  const exactMatches = ['log in', 'login', 'sign in', 'continue'];
+
+  for (const root of getFieldRoots(emailInput, passwordInput)) {
+    const candidates = collectActionCandidates(root);
+
+    const exact = candidates.find((element) => exactMatches.includes(actionText(element)));
+    if (exact) return exact;
+
+    const partial = candidates.find((element) => {
+      const text = actionText(element);
+      return text.includes('log in')
+        || text.includes('login')
+        || text.includes('sign in')
+        || text.includes('continue')
+        || text.includes('submit');
+    });
+    if (partial) return partial;
+
+    const submit = candidates.find((element) => `${element.type || ''}`.toLowerCase() === 'submit');
+    if (submit) return submit;
+  }
+
+  return null;
+}
+
+function findPasswordToggle(passwordInput) {
+  if (!passwordInput) return null;
+
+  const roots = [
+    passwordInput.parentElement,
+    passwordInput.closest('div'),
+    passwordInput.closest('form'),
+  ].filter(Boolean);
+
+  for (const root of roots) {
+    const toggle = Array.from(
+      root.querySelectorAll('button, [role="button"], [aria-label], [title]')
+    ).find((element) => {
+      if (!isVisible(element)) return false;
+      const text = actionText(element);
+      return text.includes('show')
+        || text.includes('hide')
+        || text.includes('password')
+        || text.includes('eye');
+    });
+
+    if (toggle) return toggle;
+  }
+
+  return null;
+}
+
+function lockPasswordVisibility(passwordInput) {
+  if (!passwordInput) return;
+
+  try {
+    passwordInput.type = 'password';
+  } catch {}
+
+  const toggle = findPasswordToggle(passwordInput);
+  if (!toggle) return;
+  if (toggle.dataset.rmwPasswordToggleLocked === '1') return;
+
+  toggle.dataset.rmwPasswordToggleLocked = '1';
+  toggle.setAttribute('aria-disabled', 'true');
+  toggle.setAttribute('tabindex', '-1');
+  if ('disabled' in toggle) {
+    try {
+      toggle.disabled = true;
+    } catch {}
+  }
+  toggle.style.pointerEvents = 'none';
+  toggle.style.opacity = '0.45';
+
+  const blockToggle = (event) => {
+    try {
+      passwordInput.type = 'password';
+    } catch {}
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.stopPropagation();
+  };
+
+  toggle.addEventListener('click', blockToggle, true);
+  toggle.addEventListener('mousedown', blockToggle, true);
+  toggle.addEventListener('pointerdown', blockToggle, true);
+}
+
+function protectPasswordField(passwordInput) {
+  if (!passwordInput) return;
+  if (passwordInput.dataset.rmwPasswordProtected === '1') return;
+
+  passwordInput.dataset.rmwPasswordProtected = '1';
+  passwordInput.setAttribute('autocomplete', 'off');
+  passwordInput.setAttribute('spellcheck', 'false');
+
+  const collapseSelection = () => {
+    try {
+      const length = `${passwordInput.value || ''}`.length;
+      passwordInput.setSelectionRange(length, length);
+    } catch {}
+  };
+
+  const blockEvent = (event) => {
+    collapseSelection();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.stopPropagation();
+  };
+
+  passwordInput.addEventListener('copy', blockEvent, true);
+  passwordInput.addEventListener('cut', blockEvent, true);
+  passwordInput.addEventListener('contextmenu', blockEvent, true);
+  passwordInput.addEventListener('select', collapseSelection, true);
+  passwordInput.addEventListener('mouseup', collapseSelection, true);
+
+  passwordInput.addEventListener('keydown', (event) => {
+    const key = `${event.key || ''}`.toLowerCase();
+    if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'x'].includes(key)) {
+      blockEvent(event);
+      return;
+    }
+
+    if (event.shiftKey && ['arrowleft', 'arrowright', 'home', 'end'].includes(key)) {
+      blockEvent(event);
+    }
+  }, true);
+
+  collapseSelection();
+}
+
 function setInputValue(input, value) {
   const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
   if (descriptor?.set) descriptor.set.call(input, value);
@@ -306,191 +531,64 @@ function setInputValue(input, value) {
   input.setAttribute('value', value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
-  input.dispatchEvent(new Event('blur', { bubbles: true }));
 }
 
-function findStepContainer(...inputs) {
-  const seed = inputs.find(Boolean);
-  if (!seed) return [document];
+function submitNearestForm(input) {
+  const form = input?.closest?.('form');
+  if (!form) return false;
 
-  const containers = [];
-  let current = seed.parentElement;
-
-  while (current && current !== document.body) {
-    containers.push(current);
-    if (
-      current.matches?.('form, [role="dialog"], [aria-modal="true"], main, section, article')
-      || current.getAttribute?.('data-testid')
-    ) {
-      break;
+  try {
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
+      return true;
     }
-    current = current.parentElement;
+  } catch {}
+
+  try {
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    return true;
+  } catch {
+    return false;
   }
-
-  containers.push(document);
-  return containers;
 }
 
-function collectActionCandidates(root) {
-  return Array.from((root || document).querySelectorAll(ACTION_SELECTORS.join(',')))
-    .filter((button) => !isDisabled(button) && isVisible(button) && !isThirdPartyAuthAction(button));
-}
-
-function findSubmitButton(emailInput, passwordInput) {
-  const words = ['log in', 'login', 'sign in', 'continue', 'submit'];
-
-  for (const root of findStepContainer(passwordInput, emailInput)) {
-    const candidates = collectActionCandidates(root);
-    if (!candidates.length) continue;
-
-    const exactMatch = candidates.find((button) => {
-      const text = buttonText(button);
-      return text === 'log in' || text === 'login' || text === 'sign in' || text === 'continue';
-    });
-    if (exactMatch) return exactMatch;
-
-    const wordMatch = candidates.find((button) => words.some((word) => buttonText(button).includes(word)));
-    if (wordMatch) return wordMatch;
-
-    const submitMatch = candidates.find((button) => button.type === 'submit');
-    if (submitMatch) return submitMatch;
-  }
-
-  return null;
-}
-
-function findThirdPartyAuthActions() {
-  const primary = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')));
-  const fallbackSeeds = Array.from(document.querySelectorAll('[tabindex], div, li, section, article'));
-  const fallback = fallbackSeeds
-    .filter((element) => {
-      const text = buttonDescriptorText(element);
-      return text.includes('continue as ')
-        || text.includes('google')
-        || text.includes('apple')
-        || text.includes('facebook')
-        || text.includes('@gmail.com')
-        || text.includes('@googlemail.com');
-    })
-    .map((element) => findClickableAncestor(element));
-
-  return collectUniqueElements([...primary, ...fallback])
-    .filter((button) => isActionLikeElement(button) && Boolean(getThirdPartyAuthKind(button)));
-}
-
-function findThirdPartyAuthAction(kind) {
-  const expectedKind = `${kind || ''}`.trim().toLowerCase();
-  return findThirdPartyAuthActions().find((button) => getThirdPartyAuthKind(button) === expectedKind) || null;
-}
-
-function getPreferredThirdPartyKind(credential) {
-  const domain = getCredentialDomain(credential);
-  if (domain === 'gmail.com' || domain === 'googlemail.com') {
-    return 'google';
-  }
-  return '';
-}
-
-function attemptThirdPartyFlow(kind) {
-  const action = findThirdPartyAuthAction(kind);
-  if (!action) return false;
-  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS)) return false;
-
-  const now = Date.now();
-  if (now - STATE.lastThirdPartyClickAt > 3500) {
-    STATE.lastThirdPartyClickAt = now;
-    setStatus(`Opening ${kind} sign-in`);
-    window.setTimeout(() => action.click(), 250);
-  }
+function pressEnter(input) {
+  if (!input) return false;
+  ['keydown', 'keypress', 'keyup'].forEach((eventName) => {
+    try {
+      input.dispatchEvent(new KeyboardEvent(eventName, {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+  });
   return true;
 }
 
-function attemptPreferredThirdPartyFlow(credential) {
-  const googleAction = findThirdPartyAuthAction('google');
-  if (!googleAction) {
+function clickElement(element) {
+  if (!element || !isVisible(element) || isDisabled(element)) return false;
+  try {
+    element.scrollIntoView({ block: 'center', inline: 'nearest' });
+  } catch {}
+  try {
+    element.focus({ preventScroll: true });
+  } catch {}
+  try {
+    element.click();
+    return true;
+  } catch {
     return false;
   }
-
-  const preferredKind = getPreferredThirdPartyKind(credential);
-  if (preferredKind === 'google') {
-    return attemptThirdPartyFlow('google');
-  }
-
-  const descriptor = buttonDescriptorText(googleAction);
-  const identifier = `${credential?.loginIdentifier || ''}`.trim().toLowerCase();
-  const localPart = identifier.includes('@') ? identifier.split('@')[0] : identifier;
-  const matchesAccount = Boolean(
-    identifier
-    && (descriptor.includes(identifier) || (localPart && descriptor.includes(localPart)))
-  );
-
-  if (!matchesAccount) {
-    return false;
-  }
-
-  return attemptThirdPartyFlow('google');
 }
 
-function findLandingLoginAction() {
-  const candidates = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')))
-    .filter((element) => !isDisabled(element) && isVisible(element));
-
-  return candidates.find((element) => {
-    const text = buttonText(element);
-    if (
-      text.includes('log in')
-      || text.includes('login')
-      || text.includes('sign in')
-      || text.includes('continue with email')
-      || text === 'email'
-    ) {
-      return true;
-    }
-
-    const href = `${element.getAttribute?.('href') || ''}`.toLowerCase();
-    return href.includes('/log-in') || href.includes('/login');
-  }) || null;
-}
-
-function isLoginPage() {
-  return window.location.pathname.includes('/log-in')
-    || Boolean(findInput(EMAIL_SELECTORS))
-    || Boolean(findInput(PASSWORD_SELECTORS))
-    || Boolean(findLandingLoginAction());
-}
-
-async function loadLaunchState() {
-  const directTicket = captureLaunchTicketFromHash() || getStoredLaunchTicket();
-  if (directTicket) {
-    const activation = await sendRuntimeMessage({
-      type: 'TOOL_HUB_ACTIVATE_LAUNCH',
-      toolSlug: TOOL_SLUG,
-      hostname: window.location.hostname,
-      pageUrl: window.location.href,
-      extensionTicket: directTicket,
-    });
-
-    if (activation?.ok && activation.authorized) {
-      clearStoredLaunchTicket();
-      STATE.launchChecked = true;
-      STATE.launchAuthorized = true;
-      STATE.launchExpiresAt = Number(activation.expiresAt || 0);
-      return;
-    }
-
-    clearStoredLaunchTicket();
-  }
-
-  const response = await sendRuntimeMessage({
-    type: 'TOOL_HUB_GET_LAUNCH_STATE',
-    toolSlug: TOOL_SLUG,
-    hostname: window.location.hostname,
-    pageUrl: window.location.href,
-  });
-
-  STATE.launchChecked = true;
-  STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
-  STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
+function submitLogin(emailInput, passwordInput, submitButton) {
+  if (clickElement(submitButton)) return true;
+  if (submitNearestForm(passwordInput || emailInput)) return true;
+  return pressEnter(passwordInput || emailInput);
 }
 
 async function clearToolSession(options = {}) {
@@ -502,58 +600,11 @@ async function clearToolSession(options = {}) {
   });
 }
 
-async function enforceDashboardOnlyAccess() {
-  const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
-  if (!isLoginPage()) {
-    await clearToolSession();
-    window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
-    window.location.replace(LOGIN_URL);
-    return false;
-  }
-
-  if (!alreadyNotified) {
-    window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
-  }
-
-  setStatus('Launch this tool from the dashboard first');
-  STATE.settled = true;
-  return false;
-}
-
-async function ensureFreshLaunchSession() {
-  const launchKey = `${STATE.launchExpiresAt || 0}`;
-  if (!launchKey || launchKey === '0') {
-    return false;
-  }
-
-  if (window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) === launchKey) {
-    return true;
-  }
-
-  await clearToolSession({ preserveLaunch: true });
-  window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
-  window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
-  setStatus('Preparing fresh Freepik session');
-
-  if (window.location.href !== LOGIN_URL) {
-    window.location.replace(LOGIN_URL);
-    return false;
-  }
-
-  window.location.reload();
-  return false;
-}
-
 function requestCredential() {
-  const now = Date.now();
-  if (STATE.requested) return;
-  if (STATE.requestAttempts >= 4) return;
-  if (now - STATE.lastRequestAt < 2000) return;
+  if (STATE.requestedCredential || STATE.credential) return;
 
-  STATE.requested = true;
-  STATE.lastRequestAt = now;
-  STATE.requestAttempts += 1;
-  setStatus(`Fetching credential (attempt ${STATE.requestAttempts})`);
+  STATE.requestedCredential = true;
+  setStatus('Fetching credential');
 
   chrome.runtime.sendMessage(
     {
@@ -564,128 +615,181 @@ function requestCredential() {
       extensionTicket: getStoredLaunchTicket(),
     },
     (response) => {
-      STATE.requested = false;
+      STATE.requestedCredential = false;
 
       if (chrome.runtime.lastError) {
-        setStatus(`Extension error: ${chrome.runtime.lastError.message}`);
-        STATE.settled = true;
+        stop(`Extension error: ${chrome.runtime.lastError.message}`);
         return;
       }
 
       if (!response?.ok) {
-        if ((response?.error || '').toLowerCase().includes('launch this tool from the dashboard first')) {
-          clearStoredLaunchTicket();
-        }
         setStatus(response?.error || 'Credential unavailable');
-        if ((response?.error || '').includes('http=404')) {
-          STATE.settled = true;
-        }
         return;
       }
 
       clearStoredLaunchTicket();
       STATE.credential = response.data?.credential || null;
-      setStatus(STATE.credential ? 'Credential loaded' : 'Credential missing');
-      scheduleAttempt(150);
+      if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
+        setStatus('Credential missing');
+        return;
+      }
+
+      setStatus('Credential loaded');
+      scheduleAttempt(100);
     }
   );
 }
 
-function attemptLandingLogin() {
-  const emailInput = findInput(EMAIL_SELECTORS);
-  const passwordInput = findInput(PASSWORD_SELECTORS);
-  if (emailInput || passwordInput) return false;
-  if (STATE.loginOpenAttempts >= 2) return false;
-
-  const action = findLandingLoginAction();
-  if (!action) return false;
-
-  const now = Date.now();
-  if (now - STATE.lastLoginOpenAt > 3500) {
-    STATE.lastLoginOpenAt = now;
-    STATE.loginOpenAttempts += 1;
-    setStatus('Opening login prompt');
-    window.setTimeout(() => action.click(), 250);
-  }
-  return true;
+function isReadyForSubmit(emailInput, passwordInput) {
+  if (!emailInput || !passwordInput || !STATE.credential) return false;
+  return emailInput.value === STATE.credential.loginIdentifier
+    && passwordInput.value === STATE.credential.password;
 }
 
-function attemptFill() {
-  if (STATE.settled) return;
+async function enforceDashboardOnlyAccess() {
+  const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
+  if (!isLoginPage()) {
+    await clearToolSession();
+    window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
+    window.location.replace(LOGIN_URL);
+    return;
+  }
+
+  if (!alreadyNotified) {
+    window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
+  }
+
+  stop('Launch this tool from the dashboard first');
+}
+
+async function ensureFreshLaunchSession() {
+  const launchKey = `${STATE.launchExpiresAt || 0}`;
+  if (!launchKey || launchKey === '0') {
+    return;
+  }
+
+  if (window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) === launchKey) {
+    return;
+  }
+
+  await clearToolSession({ preserveLaunch: true });
+  window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
+  window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
+  setStatus('Preparing fresh Freepik session');
+
+  if (window.location.href !== LOGIN_URL) {
+    window.location.replace(LOGIN_URL);
+    return;
+  }
+
+  window.location.reload();
+}
+
+function scheduleAsyncStep(task) {
+  if (STATE.stopped) return;
+  STATE.stopped = true;
+  Promise.resolve()
+    .then(task)
+    .catch((error) => {
+      stop(`Session check failed: ${error?.message || 'Unknown error'}`);
+    });
+}
+
+function attemptFlow() {
+  if (STATE.stopped) return;
+
   if (!STATE.launchChecked) {
     setStatus('Checking dashboard launch');
     return;
   }
+
+  if (!hasLocalLaunchEvidence()) {
+    scheduleAsyncStep(enforceDashboardOnlyAccess);
+    return;
+  }
+
   if (!STATE.launchAuthorized) {
     scheduleAsyncStep(enforceDashboardOnlyAccess);
     return;
   }
-  if (STATE.launchExpiresAt && window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) !== `${STATE.launchExpiresAt}`) {
+
+  if (
+    STATE.launchExpiresAt
+    && window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) !== `${STATE.launchExpiresAt}`
+  ) {
     scheduleAsyncStep(ensureFreshLaunchSession);
     return;
   }
 
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
-  if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
-    if (emailInput || passwordInput || findLandingLoginAction()) {
-      requestCredential();
+
+  if (passwordInput) {
+    lockPasswordVisibility(passwordInput);
+    protectPasswordField(passwordInput);
+  }
+
+  if (!STATE.credential) {
+    requestCredential();
+  }
+
+  if (!emailInput || !passwordInput) {
+    const loginAction = findLoginOpenAction();
+    if (!loginAction) {
+      setStatus('Waiting for Freepik login form');
+      return;
     }
-    attemptLandingLogin();
+
+    if (Date.now() - STATE.lastLoginOpenAt < LOGIN_OPEN_COOLDOWN_MS) {
+      setStatus('Waiting for login form to open');
+      return;
+    }
+
+    STATE.lastLoginOpenAt = Date.now();
+    setStatus('Opening login form');
+    clickElement(loginAction);
     return;
   }
 
-  if (emailInput && emailInput.value !== STATE.credential.loginIdentifier) {
+  if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
+    setStatus('Waiting for credential');
+    return;
+  }
+
+  if (emailInput.value !== STATE.credential.loginIdentifier) {
     emailInput.focus();
     setInputValue(emailInput, STATE.credential.loginIdentifier);
   }
 
-  if (passwordInput && passwordInput.value !== STATE.credential.password) {
+  if (passwordInput.value !== STATE.credential.password) {
+    if (!STATE.passwordSavingSuppressed) {
+      requestPasswordSavingSuppression();
+      return;
+    }
     passwordInput.focus();
     setInputValue(passwordInput, STATE.credential.password);
   }
 
-  if (!emailInput && !passwordInput) {
-    attemptLandingLogin();
-    setStatus('Waiting for Freepik login field');
+  if (!isReadyForSubmit(emailInput, passwordInput)) {
+    setStatus('Filling Freepik login form');
     return;
   }
 
-  const readyForSubmit = (!emailInput || emailInput.value) && (!passwordInput || passwordInput.value);
-  if (!readyForSubmit) {
-    setStatus('Waiting for credential fields');
+  if (Date.now() - STATE.lastSubmitAt < SUBMIT_COOLDOWN_MS) {
+    setStatus('Waiting for Freepik sign-in');
     return;
   }
 
-  const now = Date.now();
   const submitButton = findSubmitButton(emailInput, passwordInput);
-  if (!submitButton) {
-    setStatus('Credential filled, sign-in button not found');
-    return;
-  }
-
-  if (now - STATE.lastSubmitAt > 3000) {
-    STATE.lastSubmitAt = now;
-    setStatus('Credential filled, signing in');
-    window.setTimeout(() => submitButton.click(), 350);
-    return;
-  }
-
-  setStatus('Credential filled');
-}
-
-function scheduleAsyncStep(task) {
-  if (STATE.settled) return;
-  STATE.settled = true;
-  Promise.resolve()
-    .then(task)
-    .catch((error) => {
-      setStatus(`Session check failed: ${error?.message || 'Unknown error'}`);
-    });
+  STATE.lastSubmitAt = Date.now();
+  setStatus('Submitting Freepik login');
+  submitLogin(emailInput, passwordInput, submitButton);
+  releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
 }
 
 function runAttempt() {
   STATE.scheduledTimer = null;
+  if (STATE.stopped) return;
 
   const now = Date.now();
   if (now - STATE.lastRunAt < MIN_RUN_GAP_MS) {
@@ -696,45 +800,43 @@ function runAttempt() {
   STATE.lastRunAt = now;
 
   try {
-    attemptFill();
+    attemptFlow();
   } catch (error) {
-    STATE.settled = true;
-    setStatus(`Script error: ${error?.message || 'Unknown error'}`);
+    stop(`Script error: ${error?.message || 'Unknown error'}`);
   }
 }
 
 function scheduleAttempt(delay = 0) {
-  if (STATE.settled) return;
-  if (STATE.scheduledTimer) return;
+  if (STATE.stopped || STATE.scheduledTimer) return;
   STATE.scheduledTimer = window.setTimeout(runAttempt, Math.max(0, delay));
-}
-
-function handleMutations() {
-  if (STATE.settled) return;
-
-  const now = Date.now();
-  if (now - STATE.lastMutationHandledAt < 1200) return;
-
-  STATE.lastMutationHandledAt = now;
-  scheduleAttempt(200);
 }
 
 function start() {
   ensureStatusBadge();
-  captureLaunchTicketFromHash();
-  STATE.observer = new MutationObserver(() => handleMutations());
-  STATE.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  captureLaunchTicket();
+
+  STATE.observer = new MutationObserver(() => scheduleAttempt(150));
+  STATE.observer.observe(document.body || document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+
   STATE.keepAliveTimer = window.setInterval(() => scheduleAttempt(0), KEEP_ALIVE_MS);
+
   loadLaunchState()
     .catch(() => {
       STATE.launchChecked = true;
       STATE.launchAuthorized = false;
-      STATE.launchExpiresAt = 0;
     })
     .finally(() => {
-      STATE.settled = false;
       scheduleAttempt(0);
     });
+
+  if (window.location.href !== LOGIN_URL && window.location.pathname === '/') {
+    setStatus('Opening Freepik login page');
+    window.location.replace(LOGIN_URL);
+    return;
+  }
 }
 
 start();

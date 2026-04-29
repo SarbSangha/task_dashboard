@@ -9,6 +9,7 @@ from database_config import get_operational_db
 from models_new import Task, User, TaskStatus, Priority, ParticipantRole, TaskParticipant
 from auth import get_request_session_token, resolve_session_user
 from task_helpers import TaskHelpers
+from utils.datetime_utils import normalize_deadline_to_utc_naive
 
 router = APIRouter(prefix="/api/drafts", tags=["Drafts"])
 
@@ -42,10 +43,10 @@ def parse_deadline(deadline_str: Optional[str]) -> Optional[datetime]:
     if not deadline_str:
         return None
     try:
-        return datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+        return normalize_deadline_to_utc_naive(datetime.fromisoformat(deadline_str.replace('Z', '+00:00')))
     except:
         try:
-            return datetime.strptime(deadline_str, "%Y-%m-%dT%H:%M")
+            return normalize_deadline_to_utc_naive(datetime.strptime(deadline_str, "%Y-%m-%dT%H:%M"))
         except:
             return None
 

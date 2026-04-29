@@ -931,6 +931,32 @@ export const taskAPI = {
     return response.data;
   },
 
+  getWebPushConfig: async (requestConfig = {}) => {
+    const response = await api.get(
+      '/api/tasks/notifications/push/config',
+      mergeRequestConfig({ timeout: BACKGROUND_REQUEST_TIMEOUT_MS }, requestConfig)
+    );
+    return response.data;
+  },
+
+  subscribeWebPush: async (subscription, requestConfig = {}) => {
+    const response = await api.post(
+      '/api/tasks/notifications/push/subscribe',
+      { subscription },
+      mergeRequestConfig({ timeout: BACKGROUND_REQUEST_TIMEOUT_MS }, requestConfig)
+    );
+    return response.data;
+  },
+
+  unsubscribeWebPush: async (endpoint, requestConfig = {}) => {
+    const response = await api.post(
+      '/api/tasks/notifications/push/unsubscribe',
+      { endpoint },
+      mergeRequestConfig({ timeout: BACKGROUND_REQUEST_TIMEOUT_MS }, requestConfig)
+    );
+    return response.data;
+  },
+
   markNotificationRead: async (notificationId) => {
     const response = await api.post(`/api/tasks/notifications/${notificationId}/read`);
     return response.data;

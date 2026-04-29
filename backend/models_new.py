@@ -476,6 +476,28 @@ class TaskNotification(Base):
     read_at = Column(DateTime)
 
 
+class WebPushSubscription(Base):
+    """Browser push subscriptions scoped to a single authenticated user."""
+    __tablename__ = "web_push_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("endpoint", name="uq_web_push_subscriptions_endpoint"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    endpoint = Column(Text, nullable=False)
+    p256dh = Column(Text, nullable=False)
+    auth = Column(Text, nullable=False)
+    expiration_time = Column(DateTime)
+    user_agent = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+    last_success_at = Column(DateTime)
+    last_failure_at = Column(DateTime)
+    failure_reason = Column(Text)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+
+
 class TaskView(Base):
     """Seen-by entries per task"""
     __tablename__ = "task_views"

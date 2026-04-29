@@ -1,0 +1,23 @@
+dist folder not found - API only mode
+
+============================================================
+STARTING TASK MANAGEMENT SYSTEM
+============================================================
+
+Initializing operational database...
+Operational database ready: postgresql
+
+Initializing archive database...
+Archive database ready: postgresql
+Default admin bootstrap disabled: DEFAULT_ADMIN_EMAIL is not set.
+
+============================================================
+APPLICATION READY
+============================================================
+
+API Documentation: http://localhost:8000/docs
+Operational DB: postgresql://postgres.bqfpocatqqlxppvcpzot:***@aws-1-ap-south-1.pooler.supabase.com:6543/postgres
+Archive DB: postgresql://postgres.bqfpocatqqlxppvcpzot:***@aws-1-ap-south-1.pooler.supabase.com:6543/postgres
+Frontend: http://localhost:5173
+
+INFO:     127.0.0.1:50154 - "GET /api/health HTTP/1.1" 200 OK

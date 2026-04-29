@@ -20,6 +20,9 @@ const STATE = {
   launchChecked: false,
   launchAuthorized: false,
   toolSlug: '',
+  passwordSavingInFlight: false,
+  passwordSavingSuppressed: false,
+  passwordSavingRestoreTimer: null,
   settled: false,
   status: 'Waiting for Google sign-in',
 };
@@ -30,6 +33,7 @@ const STEP_PENDING_RETRY_MS = 5000;
 const INPUT_SETTLE_MS = 300;
 const NEXT_BUTTON_WAIT_MS = 2500;
 const NEXT_BUTTON_POLL_MS = 120;
+const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
 const EMAIL_SELECTORS = [
   'input[type="email"]',
   'input[id="identifierId"]',
@@ -136,6 +140,64 @@ function sendRuntimeMessage(message) {
       resolve(response || { ok: false, error: 'No response received' });
     });
   });
+}
+
+async function ensurePasswordSavingSuppressed() {
+  if (STATE.passwordSavingSuppressed) return true;
+
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+    suppressed: true,
+  });
+
+  if (!response?.ok) {
+    setStatus(response?.error || 'Could not suppress Chrome password prompt');
+    return false;
+  }
+
+  STATE.passwordSavingSuppressed = true;
+  return true;
+}
+
+function requestPasswordSavingSuppression() {
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingInFlight) {
+    return;
+  }
+
+  STATE.passwordSavingInFlight = true;
+  setStatus('Disabling Chrome password-save prompt...');
+
+  ensurePasswordSavingSuppressed()
+    .then((ok) => {
+      STATE.passwordSavingInFlight = false;
+      if (!ok) {
+        STATE.settled = true;
+        setStatus('Blocked: Chrome password-save prompt could not be disabled.');
+        return;
+      }
+      scheduleAttempt(50);
+    })
+    .catch((error) => {
+      STATE.passwordSavingInFlight = false;
+      STATE.settled = true;
+      setStatus(`Blocked: ${error?.message || 'Could not disable Chrome password-save prompt.'}`);
+    });
+}
+
+function releasePasswordSavingSuppressed(delay = 0) {
+  if (STATE.passwordSavingRestoreTimer) {
+    window.clearTimeout(STATE.passwordSavingRestoreTimer);
+    STATE.passwordSavingRestoreTimer = null;
+  }
+
+  STATE.passwordSavingRestoreTimer = window.setTimeout(() => {
+    sendRuntimeMessage({
+      type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+      suppressed: false,
+    });
+    STATE.passwordSavingSuppressed = false;
+    STATE.passwordSavingRestoreTimer = null;
+  }, Math.max(0, delay));
 }
 
 function isVisible(element) {
@@ -578,6 +640,7 @@ async function submitGooglePasswordStep(credential) {
 
   const passwordValue = `${credential?.password || ''}`;
   if (!passwordValue) return false;
+  if (!STATE.passwordSavingSuppressed) return false;
 
   try {
     input.focus({ preventScroll: true });
@@ -595,7 +658,11 @@ async function submitGooglePasswordStep(credential) {
     setInputValue(input, passwordValue);
     await sleep(200);
   }
-  return submitGoogleNextStep('password', input);
+  const submitted = await submitGoogleNextStep('password', input);
+  if (submitted) {
+    releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
+  }
+  return submitted;
 }
 
 async function loadLaunchState() {
@@ -751,6 +818,11 @@ async function attemptPasswordStep(credential) {
   const input = findGooglePasswordInput();
   if (!input) return false;
 
+  if (!STATE.passwordSavingSuppressed) {
+    requestPasswordSavingSuppression();
+    return true;
+  }
+
   if (isGooglePasswordUrl() || document.querySelector('#passwordNext')) {
     STATE.emailSubmitted = false;
     if (STATE.passwordSubmitted && Date.now() - STATE.lastPasswordSubmitAt < STEP_PENDING_RETRY_MS) {
@@ -866,6 +938,7 @@ async function runAttempt() {
   } catch (error) {
     STATE.settled = true;
     setStatus(`Script error: ${error?.message || 'Unknown error'}`);
+    releasePasswordSavingSuppressed(0);
   }
 }
 

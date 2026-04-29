@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import './GroupMessagePanel.css';
 import { directMessageAPI, fileAPI, groupAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
@@ -18,6 +19,11 @@ import {
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import { GROUP_MESSAGES_KEY, useSendGroupMessage } from '../../../../hooks/useMessages';
 import ChatAttachmentGallery from '../../../common/chat/ChatAttachmentGallery';
+import {
+  formatMonthDayTimeIndia,
+  formatRelativeDayIndia,
+  formatTimeIndiaShort,
+} from '../../../../utils/dateTime';
 
 const GROUP_PANEL_CACHE_TTL_MS = 2 * 60 * 1000;
 const GROUP_MESSAGES_CACHE_TTL_MS = 90 * 1000;
@@ -155,6 +161,30 @@ const replaceMessageById = (rows = [], messageId, nextMessage) => {
 const removeMessageById = (rows = [], messageId) =>
   rows.filter((row) => row?.id !== messageId);
 
+const buildAttachmentCountLabel = (attachments = []) => {
+  const count = Array.isArray(attachments) ? attachments.filter(Boolean).length : 0;
+  if (!count) return '';
+  return `${count} attachment${count === 1 ? '' : 's'}`;
+};
+
+const buildConversationPreview = (message, attachments = []) =>
+  `${message || ''}`.trim() || buildAttachmentCountLabel(attachments);
+
+const upsertDirectConversation = (rows = [], conversation) => {
+  if (!conversation?.user?.id) return rows;
+
+  const nextRows = [
+    conversation,
+    ...rows.filter((entry) => entry?.user?.id !== conversation.user.id),
+  ];
+
+  return nextRows.sort((left, right) => {
+    const leftValue = `${left?.lastMessageAt || ''}`;
+    const rightValue = `${right?.lastMessageAt || ''}`;
+    return rightValue.localeCompare(leftValue);
+  });
+};
+
 const scrollThreadEndIntoView = (threadEndRef) => {
   let firstFrameId = 0;
   let secondFrameId = 0;
@@ -179,6 +209,7 @@ const scrollThreadEndIntoView = (threadEndRef) => {
 const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMinimizedChange, onActivate }) => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const isActive = variant === 'embedded' || isOpen;
   const isActiveRef = useRef(isActive);
   const [activeTab, setActiveTab] = useState('groups');
@@ -190,6 +221,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     cachedAt: 0,
     liveUpdatedAt: 0,
   });
+  const [hasResolvedGroupIndex, setHasResolvedGroupIndex] = useState(false);
   const [messageCacheStatus, setMessageCacheStatus] = useState({
     showingCached: false,
     cachedAt: 0,
@@ -234,6 +266,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     cachedAt: 0,
     liveUpdatedAt: 0,
   });
+  const [hasResolvedDirectIndex, setHasResolvedDirectIndex] = useState(false);
   const [directMessageCacheStatus, setDirectMessageCacheStatus] = useState({
     showingCached: false,
     cachedAt: 0,
@@ -247,6 +280,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const [directComposerDrafts, setDirectComposerDrafts] = useState({});
   const selectedDirectUserIdRef = useRef(null);
   const activeTabRef = useRef(activeTab);
+  const currentUserIdRef = useRef(currentUserId);
+  const directUsersRef = useRef(directUsers);
+  const directConversationsRef = useRef(directConversations);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const realtimeRefreshTimersRef = useRef({
@@ -267,6 +303,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   selectedGroupIdRef.current = selectedGroupId;
   selectedDirectUserIdRef.current = selectedDirectUserId;
   activeTabRef.current = activeTab;
+  currentUserIdRef.current = currentUserId;
+  directUsersRef.current = directUsers;
+  directConversationsRef.current = directConversations;
 
   const updateGroupComposerDraft = (groupId, updater) => {
     if (!groupId) return;
@@ -406,6 +445,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     return items;
   }, [directConversations, directUsers]);
   const isDirectTabActive = activeTab === 'direct';
+  const routeTab = `${searchParams.get('tab') || ''}`.trim().toLowerCase();
+  const routeGroupId = Number(searchParams.get('groupId') || 0);
+  const routeDirectUserId = Number(searchParams.get('userId') || 0);
   const selectedForwardMessages = useMemo(() => {
     if (selectionMode === 'group') {
       const selectedIds = new Set(selectedGroupMessageIds);
@@ -435,27 +477,12 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   );
 
   const buildDayLabel = (value) => {
-    if (!value) return 'Recent';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return 'Recent';
-    const today = new Date();
-    const messageDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const diffDays = Math.round((todayDay.getTime() - messageDay.getTime()) / 86400000);
-    if (diffDays === 0) return 'Today';
-    if (diffDays === 1) return 'Yesterday';
-    return date.toLocaleDateString(undefined, {
-      day: 'numeric',
-      month: 'short',
-      year: messageDay.getFullYear() === todayDay.getFullYear() ? undefined : 'numeric',
-    });
+    return formatRelativeDayIndia(value);
   };
 
   const formatMessageTime = (value) => {
-    if (!value) return '';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const formatted = formatTimeIndiaShort(value);
+    return formatted === 'N/A' ? '' : formatted;
   };
 
   const buildInitials = (value) =>
@@ -471,15 +498,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
 
   const getAttachmentLabel = (attachment) => getAttachmentDisplayName(attachment);
   const formatForwardTimestamp = (value) => {
-    if (!value) return 'Unknown time';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return 'Unknown time';
-    return date.toLocaleString([], {
-      day: 'numeric',
-      month: 'short',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    const formatted = formatMonthDayTimeIndia(value);
+    return formatted === 'N/A' ? 'Unknown time' : formatted;
   };
 
   const messageItems = useMemo(() => {
@@ -531,6 +551,49 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     queryClient.setQueryData(GROUP_MESSAGES_KEY(selectedGroupId), messages);
   }, [cacheKeys, isActive, messages, queryClient, selectedGroupId]);
 
+  useEffect(() => {
+    if (!isActive) return;
+    if (routeTab === 'direct' && activeTab !== 'direct') {
+      setActiveTab('direct');
+      return;
+    }
+    if (routeTab === 'groups' && activeTab !== 'groups') {
+      setActiveTab('groups');
+    }
+  }, [activeTab, isActive, routeTab]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    if (routeTab === 'groups' && routeGroupId > 0) {
+      const matchingGroup = groups.find((group) => Number(group.id) === routeGroupId);
+      if (matchingGroup && selectedGroupId !== matchingGroup.id) {
+        setSelectedGroupId(matchingGroup.id);
+      }
+      return;
+    }
+
+    if (routeTab === 'direct' && routeDirectUserId > 0) {
+      const matchingDirectUser =
+        directUsers.find((directUser) => Number(directUser.id) === routeDirectUserId)
+        || directConversations.find((conversation) => Number(conversation.user?.id) === routeDirectUserId)?.user;
+
+      if (matchingDirectUser && selectedDirectUserId !== matchingDirectUser.id) {
+        setSelectedDirectUserId(matchingDirectUser.id);
+      }
+    }
+  }, [
+    directConversations,
+    directUsers,
+    groups,
+    isActive,
+    routeDirectUserId,
+    routeGroupId,
+    routeTab,
+    selectedDirectUserId,
+    selectedGroupId,
+  ]);
+
   const { mutateAsync: sendGroupMessage } = useSendGroupMessage(selectedGroupId, {
     onOptimisticMessage: (optimisticMessage) => {
       setMessages((prev) => appendMessageById(prev, optimisticMessage));
@@ -570,6 +633,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         const response = await groupAPI.listGroups();
         if (!isActiveRef.current) return;
         const nextGroups = response?.data || [];
+        setHasResolvedGroupIndex(true);
         setGroups(nextGroups);
         setGroupsCacheStatus((prev) => ({
           showingCached: false,
@@ -662,6 +726,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         if (!isActiveRef.current) return;
         const nextUsers = usersResponse?.data || [];
         const nextConversations = conversationsResponse?.data || [];
+        setHasResolvedDirectIndex(true);
         setDirectUsers(nextUsers);
         setDirectConversations(nextConversations);
         setDirectCacheStatus((prev) => ({
@@ -802,16 +867,16 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       else setLoading(true);
 
       try {
-        const usersResponse = await groupAPI.listUsers();
+        const [usersResponse] = await Promise.all([
+          groupAPI.listUsers(),
+          syncGroups({ keepSelected: false, silent: !!cachedGroups }),
+        ]);
         setCurrentUserId(user?.id || null);
         setAllUsers(usersResponse?.data || []);
-        await syncGroups({ keepSelected: false, silent: !!cachedGroups });
       } catch (error) {
         console.error('Failed to load users for groups:', error);
         if (!cachedGroups) {
           setAllUsers([]);
-          setGroups([]);
-          setSelectedGroupId(null);
         }
       } finally {
         if (cachedGroups) setIsRefreshing(false);
@@ -918,12 +983,13 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           scheduleGroupIndexRefresh();
 
           if (selectedGroupIdRef.current === groupId) {
+            const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
             const incomingMessage = {
               id: payload?.metadata?.messageId,
               senderId: payload?.metadata?.senderId || null,
               senderName: payload?.metadata?.senderName || 'Unknown',
-              message: payload?.message || '',
-              attachments: [],
+              message: payload?.metadata?.messageText ?? payload?.message ?? '',
+              attachments,
               createdAt: payload?.metadata?.createdAt || new Date().toISOString(),
             };
 
@@ -942,12 +1008,55 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         if (payload.eventType === 'direct_message') {
           const senderId = Number(payload?.metadata?.senderId);
           if (!senderId) return;
+          const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
+          const incomingMessage = {
+            id: payload?.metadata?.messageId,
+            senderId,
+            senderName: payload?.metadata?.senderName || 'Unknown',
+            recipientId: currentUserIdRef.current || user?.id || null,
+            message: payload?.metadata?.messageText ?? payload?.message ?? '',
+            attachments,
+            createdAt: payload?.metadata?.createdAt || new Date().toISOString(),
+          };
+          const knownDirectUser =
+            directUsersRef.current.find((entry) => entry.id === senderId)
+            || directConversationsRef.current.find((entry) => entry.user?.id === senderId)?.user
+            || {
+              id: senderId,
+              name: payload?.metadata?.senderName || 'Unknown',
+              email: '',
+              department: '',
+              position: '',
+              isAdmin: false,
+            };
 
           if (hasBootstrappedDirectRef.current || activeTabRef.current === 'direct') {
+            setDirectUsers((prev) => (
+              prev.some((entry) => entry.id === knownDirectUser.id)
+                ? prev
+                : [knownDirectUser, ...prev]
+            ));
+            setDirectConversations((prev) => upsertDirectConversation(prev, {
+              user: knownDirectUser,
+              lastMessageAt: incomingMessage.createdAt,
+              lastMessagePreview: buildConversationPreview(incomingMessage.message, attachments).slice(0, 180),
+              lastMessageSenderId: senderId,
+            }));
+            setDirectCacheStatus((prev) => ({
+              showingCached: false,
+              cachedAt: prev.cachedAt,
+              liveUpdatedAt: Date.now(),
+            }));
             scheduleDirectIndexRefresh();
           }
           if (selectedDirectUserIdRef.current === senderId) {
-            scheduleDirectMessagesRefresh(senderId);
+            setDirectMessages((prev) => appendMessageById(prev, incomingMessage));
+            setDirectMessageCacheStatus((prev) => ({
+              showingCached: false,
+              cachedAt: prev.cachedAt,
+              liveUpdatedAt: Date.now(),
+            }));
+            scheduleDirectMessagesRefresh(senderId, 120);
           }
         }
       },
@@ -1404,6 +1513,19 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       });
       const sent = response?.data;
       setDirectMessages((prev) => (sent ? [...prev, sent] : prev));
+      if (sent && selectedDirectUser) {
+        setDirectConversations((prev) => upsertDirectConversation(prev, {
+          user: selectedDirectUser,
+          lastMessageAt: sent.createdAt,
+          lastMessagePreview: buildConversationPreview(sent.message, sent.attachments).slice(0, 180),
+          lastMessageSenderId: sent.senderId,
+        }));
+        setDirectCacheStatus((prev) => ({
+          showingCached: false,
+          cachedAt: prev.cachedAt,
+          liveUpdatedAt: Date.now(),
+        }));
+      }
       setDirectNewMessage('');
       setDirectPendingAttachments([]);
       updateDirectComposerDraft(selectedDirectUserId, createInitialComposerDraft());
@@ -1560,6 +1682,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
 
   const isGroupSelectionActive = selectionMode === 'group';
   const isDirectSelectionActive = selectionMode === 'direct';
+  const showEmptyGroupsState = !loading && !isRefreshing && hasResolvedGroupIndex && groups.length === 0;
+  const showEmptyDirectState = !directLoading && !directRefreshing && hasResolvedDirectIndex && directListItems.length === 0;
 
   const content = (
     <div className={`group-message-root group-message-root--${variant}`}>
@@ -1636,7 +1760,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           </div>
 
           <div className="groups-list">
-            {groups.length === 0 && <div className="group-message-info-card">No groups created yet.</div>}
+            {showEmptyGroupsState && <div className="group-message-info-card">No groups created yet.</div>}
             {groups.map((group) => (
               <button
                 type="button"
@@ -2042,7 +2166,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
 
             <div className="groups-list">
               {directLoading && <div className="group-message-info-card">Loading people...</div>}
-              {!directLoading && directListItems.length === 0 && (
+              {showEmptyDirectState && (
                 <div className="group-message-info-card">No people available for direct chat yet.</div>
               )}
               {!directLoading && directListItems.map((item) => (
