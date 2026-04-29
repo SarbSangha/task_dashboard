@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import os
 import re
+import traceback
 from sqlalchemy import text
 
 # FIXED: Use relative imports or backend prefix
@@ -88,6 +89,10 @@ def _mask_db_url(url: str) -> str:
         user = creds.split(":", 1)[0]
         return f"{scheme}://{user}:***@{tail}"
     return f"{scheme}://***@{tail}"
+
+
+def _ascii_safe_text(value: object) -> str:
+    return f"{value}".encode("ascii", "backslashreplace").decode("ascii")
 
 
 # ==================== LIFESPAN EVENT ====================
@@ -209,7 +214,20 @@ app.add_middleware(
 
 @app.middleware("http")
 async def ensure_cors_headers_on_error_responses(request: Request, call_next):
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        print(f"Unhandled exception: {_ascii_safe_text(exc)}")
+        traceback_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        print(_ascii_safe_text(traceback_text))
+        response = JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": "Internal server error",
+                "detail": str(exc),
+            },
+        )
     origin = (request.headers.get("origin") or "").strip()
     if origin and _origin_allowed(origin) and "access-control-allow-origin" not in response.headers:
         response.headers["Access-Control-Allow-Origin"] = origin
@@ -222,9 +240,9 @@ async def ensure_cors_headers_on_error_responses(request: Request, call_next):
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler"""
-    print(f"Unhandled exception: {str(exc)}")
-    import traceback
-    traceback.print_exc()
+    print(f"Unhandled exception: {_ascii_safe_text(exc)}")
+    traceback_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    print(_ascii_safe_text(traceback_text))
     
     return JSONResponse(
         status_code=500,
@@ -390,3 +408,4 @@ else:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+

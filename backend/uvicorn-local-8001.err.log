@@ -16,3 +16,91 @@ INFO:     connection open
 INFO:     127.0.0.1:53162 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiIwTVhLbVR4Z0N2Z24tV1ZQIn0.afGpdg.jurGus3FsFy5DUXmFgc_Ygc2dvQ" [accepted]
 INFO:     connection open
 INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:59041 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJ6VjdyUzhnT3lxOEl3RXR0In0.afGpBA.xNe8Yz67_hJ5xoi1Ahw7MJLJ2rg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:55794 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:61899 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxLCJub25jZSI6InlCdlZmaVVxTWxwNk9wQzcifQ.afGwVw.PQLsdTHFtua1llEz60YMiKy5wKw" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:64412 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:52170 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:57992 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:59601 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56799 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJvSDlLQ3VwYXNwaFRWNWU0In0.afGyPA.PFOQgcHZbbDfkfkTEcwp-pUfzbY" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51663 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJvSDlLQ3VwYXNwaFRWNWU0In0.afGyPA.PFOQgcHZbbDfkfkTEcwp-pUfzbY" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53124 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:59550 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJvSDlLQ3VwYXNwaFRWNWU0In0.afGyPA.PFOQgcHZbbDfkfkTEcwp-pUfzbY" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:58041 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:61885 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJvSDlLQ3VwYXNwaFRWNWU0In0.afGyPA.PFOQgcHZbbDfkfkTEcwp-pUfzbY" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:50251 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxLCJub25jZSI6IlRhNVFZTV9PSHd6QkIzcG0ifQ.afG3rg.8iH44STcpfpOj2M8mqx3F9r_9Rw" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:56734 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63169 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:55117 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:65219 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:60943 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:57580 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJwZFJsQjBERmp6UGw5c0ZIIn0.afGwOg.HD4K2BBz3909dbGaK5STCUUx_Xg" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:60788 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxLCJub25jZSI6IncxWERBSkp4RGc3VnBib1IifQ.afHCvw.IGkQYpeP8giDVRNPuuk6bVnv8lo" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62066 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxLCJub25jZSI6IncxWERBSkp4RGc3VnBib1IifQ.afHCvw.IGkQYpeP8giDVRNPuuk6bVnv8lo" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:57884 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJxc2swLWN5SDN4TEllRjFhIn0.afHKGw.PTSWuWuI_TfC3pN5CgVp5qjgJVo" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:55881 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJxc2swLWN5SDN4TEllRjFhIn0.afHKGw.PTSWuWuI_TfC3pN5CgVp5qjgJVo" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:55897 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJxc2swLWN5SDN4TEllRjFhIn0.afHKGw.PTSWuWuI_TfC3pN5CgVp5qjgJVo" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:52868 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJxc2swLWN5SDN4TEllRjFhIn0.afHKGw.PTSWuWuI_TfC3pN5CgVp5qjgJVo" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:52888 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJxc2swLWN5SDN4TEllRjFhIn0.afHKGw.PTSWuWuI_TfC3pN5CgVp5qjgJVo" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52110 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxLCJub25jZSI6Ikh0RW9VQVVZcHBYZ0dOaW8ifQ.afHL3A.vIhaJALQAH12_0rjoiXBzBCgp7o" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:52500 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxLCJub25jZSI6Ikh0RW9VQVVZcHBYZ0dOaW8ifQ.afHL3A.vIhaJALQAH12_0rjoiXBzBCgp7o" [accepted]
+INFO:     connection open
+INFO:     connection closed

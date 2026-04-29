@@ -137,7 +137,8 @@ export default function useBackgroundRealtimeAlerts() {
 
         const forceBrowserAlert = ALWAYS_NOTIFY_EVENT_TYPES.has(payload.eventType);
         const isHidden = document.visibilityState !== 'visible';
-        if (!forceBrowserAlert && !isHidden) return;
+        const supportsWebPush = 'serviceWorker' in navigator && 'PushManager' in window;
+        const shouldShowBrowserNotification = !isHidden || !supportsWebPush;
 
         const now = Date.now();
         pruneRecentEvents(now);
@@ -150,10 +151,12 @@ export default function useBackgroundRealtimeAlerts() {
           hiddenAlertCountRef.current += 1;
           updateTitle();
         }
-        if (forceBrowserAlert) {
+        if (forceBrowserAlert && !isHidden) {
           playMessageTone();
         }
-        notifyBrowser(nextAlert.title, nextAlert.body, nextAlert.key);
+        if (shouldShowBrowserNotification) {
+          notifyBrowser(nextAlert.title, nextAlert.body, nextAlert.key);
+        }
       },
     });
 

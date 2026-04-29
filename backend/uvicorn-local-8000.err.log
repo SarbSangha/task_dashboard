@@ -1,0 +1,5 @@
+INFO:     Started server process [7116]
+INFO:     Waiting for application startup.
+Redis unavailable; response caching disabled: Error 22 connecting to localhost:6379. The remote computer refused the network connection.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)

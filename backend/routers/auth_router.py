@@ -60,6 +60,19 @@ _ADMIN_IDS_CACHE: dict = {"ids": [], "exp": 0.0}
 _ADMIN_IDS_TTL = 60.0
 
 
+def _ascii_safe_text(value: object) -> str:
+    return f"{value}".encode("ascii", "backslashreplace").decode("ascii")
+
+
+def _log_exception(prefix: str, exc: Exception) -> None:
+    print(f"{prefix}: {_ascii_safe_text(exc)}")
+    traceback_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    print(_ascii_safe_text(traceback_text))
+
+
+def _safe_log(message: str) -> None:
+    print(_ascii_safe_text(message))
+
 def _allowed_company_domains() -> tuple[str, ...]:
     raw = (os.getenv("ALLOWED_COMPANY_EMAIL_DOMAINS") or "").strip()
     if not raw:
@@ -347,7 +360,7 @@ async def register(
 ):
     """Register a new user"""
     try:
-        print(f"\n📝 REGISTRATION ATTEMPT: {user_data.email}")
+        _safe_log(f"\nREGISTRATION ATTEMPT: {user_data.email}")
 
         if not _is_allowed_company_email(user_data.email):
             raise HTTPException(
@@ -373,7 +386,7 @@ async def register(
                     status_code=400,
                     detail="Email already registered"
                 )
-            print(f"♻️ Re-registering deleted account with fresh identity: {existing_user.email}")
+            _safe_log(f"Re-registering deleted account with fresh identity: {existing_user.email}")
             stale_pending_rows = db.query(UserApprovalRequest).filter(
                 UserApprovalRequest.user_id == existing_user.id,
                 UserApprovalRequest.status == "pending",
@@ -441,7 +454,7 @@ async def register(
             },
         )
         
-        print(f"✅ Registration successful: {new_user.email}")
+        _safe_log(f"Registration successful: {new_user.email}")
         
         return {
             "success": True,
@@ -462,8 +475,7 @@ async def register(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ Registration error: {str(e)}")
-        traceback.print_exc()
+        _log_exception("Registration error", e)
         raise HTTPException(
             status_code=500,
             detail="An error occurred during registration"
@@ -479,7 +491,7 @@ async def login(
 ):
     """Login user and create session"""
     try:
-        print(f"\nLOGIN ATTEMPT: {credentials.email}")
+        _safe_log(f"\nLOGIN ATTEMPT: {credentials.email}")
         
         # Find user
         user = db.query(User).filter(
@@ -576,8 +588,8 @@ async def login(
             path="/"
         )
         
-        print(f"Login successful: {user.email}")
-        print(f"Cookie set: session_id={session_id[:10]}...")
+        _safe_log(f"Login successful: {user.email}")
+        _safe_log(f"Cookie set: session_id={session_id[:10]}...")
         
         return {
             "success": True,
@@ -589,8 +601,7 @@ async def login(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Login error: {str(e)}")
-        traceback.print_exc()
+        _log_exception("Login error", e)
         raise HTTPException(
             status_code=500,
             detail="An error occurred during login"
@@ -618,7 +629,7 @@ async def get_current_user_profile(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error getting current user: {str(e)}")
+        _log_exception("Error getting current user", e)
         raise HTTPException(status_code=401, detail="Invalid session")
 
 
@@ -767,7 +778,7 @@ async def get_users_by_department(
             "count": len(users)
         }
     except Exception as e:
-        print(f"❌ Error fetching users for department {department_name}: {str(e)}")
+        _safe_log(f"Error fetching users for department {department_name}: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail="Failed to fetch department users"
@@ -1122,7 +1133,7 @@ def forgot_password(
     if user:
         token = create_reset_token(request.email)
         reset_link = f"http://localhost:5173/reset-password?token={token}"
-        print(f"🔐 Password reset link: {reset_link}")
+        _safe_log(f"Password reset link: {reset_link}")
     
     return {"message": "If that email exists, we sent a password reset link"}
 
@@ -1146,3 +1157,4 @@ def reset_password(
     invalidate_reset_token(request.token)
     
     return {"message": "Password reset successfully"}
+
