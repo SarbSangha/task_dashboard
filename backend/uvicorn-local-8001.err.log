@@ -3,3 +3,16 @@ INFO:     Waiting for application startup.
 Redis unavailable; response caching disabled: Error 22 connecting to localhost:6379. The remote computer refused the network connection.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+INFO:     127.0.0.1:62821 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxLCJub25jZSI6Ik9IdFpNR2pRUnFnMlgtblcifQ.afGo3Q.rUPen0Z9mKcScyWwMmMrdD91RlE" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:57571 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxLCJub25jZSI6Ik9IdFpNR2pRUnFnMlgtblcifQ.afGo3Q.rUPen0Z9mKcScyWwMmMrdD91RlE" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:61559 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJ6VjdyUzhnT3lxOEl3RXR0In0.afGpBA.xNe8Yz67_hJ5xoi1Ahw7MJLJ2rg" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:55560 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiJ6VjdyUzhnT3lxOEl3RXR0In0.afGpBA.xNe8Yz67_hJ5xoi1Ahw7MJLJ2rg" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:53162 - "WebSocket /api/tasks/ws/notifications?session_token=eyJ1c2VyX2lkIjoxMSwibm9uY2UiOiIwTVhLbVR4Z0N2Z24tV1ZQIn0.afGpdg.jurGus3FsFy5DUXmFgc_Ygc2dvQ" [accepted]
+INFO:     connection open
+INFO:     connection closed
