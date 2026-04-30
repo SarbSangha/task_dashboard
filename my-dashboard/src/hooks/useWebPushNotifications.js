@@ -8,12 +8,33 @@ import {
 } from '../utils/webPush';
 
 const PERMISSION_PROMPTED_KEY = 'rmw_web_push_prompted_v1';
+const PUBLIC_KEY_STORAGE_KEY = 'rmw_web_push_public_key_v1';
 
 const urlBase64ToUint8Array = (base64String) => {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
   const rawData = window.atob(base64);
   return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
+};
+
+const readStoredPublicKey = () => {
+  try {
+    return window.localStorage.getItem(PUBLIC_KEY_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+};
+
+const writeStoredPublicKey = (value) => {
+  try {
+    if (value) {
+      window.localStorage.setItem(PUBLIC_KEY_STORAGE_KEY, value);
+    } else {
+      window.localStorage.removeItem(PUBLIC_KEY_STORAGE_KEY);
+    }
+  } catch {
+    // no-op
+  }
 };
 
 export default function useWebPushNotifications() {
@@ -61,6 +82,26 @@ export default function useWebPushNotifications() {
         if (cancelled) return;
 
         let subscription = await registration.pushManager.getSubscription();
+        const storedPublicKey = readStoredPublicKey();
+        const shouldRefreshSubscription =
+          !!subscription
+          && !!storedPublicKey
+          && storedPublicKey !== config.publicKey;
+
+        if (shouldRefreshSubscription) {
+          const staleEndpoint = subscription.endpoint || '';
+          if (staleEndpoint) {
+            try {
+              await taskAPI.unsubscribeWebPush(staleEndpoint);
+            } catch {
+              // Best effort cleanup for rotated VAPID keys.
+            }
+          }
+          await subscription.unsubscribe().catch(() => {});
+          subscription = null;
+          endpointRef.current = '';
+        }
+
         if (!subscription) {
           if (Notification.permission !== 'granted') {
             if (!cancelled) {
@@ -91,6 +132,7 @@ export default function useWebPushNotifications() {
         await taskAPI.subscribeWebPush(serialized);
         endpointRef.current = subscription.endpoint || serialized.endpoint || '';
         userIdRef.current = user.id;
+        writeStoredPublicKey(config.publicKey);
         if (!cancelled) {
           setStatus({
             code: 'active',
@@ -171,6 +213,7 @@ export default function useWebPushNotifications() {
         removeServerSubscription: false,
         removeBrowserSubscription: true,
       });
+      writeStoredPublicKey('');
       endpointRef.current = '';
       userIdRef.current = null;
       setStatus({
@@ -222,3 +265,4 @@ export default function useWebPushNotifications() {
 
   return status;
 }
+
