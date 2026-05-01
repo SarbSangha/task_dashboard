@@ -73,6 +73,10 @@ const PASS_SELS = [
   'input[autocomplete="current-password"]',
 ];
 
+const PASSWORD_REVEAL_ACTION_HINTS = ['show', 'hide', 'view', 'reveal', 'toggle'];
+const PASSWORD_REVEAL_SUBJECT_HINTS = ['password', 'passcode'];
+const PASSWORD_REVEAL_ICON_HINTS = ['eye', 'visibility', 'visible'];
+
 // ── Checkpoint: survives same-origin reload, cleared on done/fail ──
 function writeCheckpoint(phase, extra = {}) {
   try {
@@ -121,6 +125,7 @@ const CTX = {
   lastLandingActionKey : '',
   landingActionLockUntil: 0,
   sessionClearDone     : false,  // FIX: guard against repeated session clearing
+  blockedRevealControl : null,
 };
 
 // ── Status badge ──────────────────────────────────────────────
@@ -279,6 +284,162 @@ function findInput(selectors) {
 
 function valuesMatch(a, b) {
   return `${a || ''}`.trim() === `${b || ''}`.trim();
+}
+
+function normalizeSpace(value) {
+  return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function controlHintText(el) {
+  if (!el) return '';
+  const parts = [
+    buttonDescriptorText(el),
+    el.getAttribute?.('name'),
+    el.getAttribute?.('id'),
+    el.getAttribute?.('class'),
+    el.getAttribute?.('data-testid'),
+    el.getAttribute?.('data-icon'),
+    el.getAttribute?.('aria-controls'),
+  ];
+  return normalizeSpace(parts.filter(Boolean).join(' '));
+}
+
+function collectPasswordFieldScopes(passInput) {
+  const scopes = [];
+  let cur = passInput?.parentElement || null;
+  let depth = 0;
+  while (cur && cur !== document.body && depth < 4) {
+    scopes.push(cur);
+    cur = cur.parentElement;
+    depth += 1;
+  }
+  return collectUniqueElements(scopes);
+}
+
+function blockRevealControlEvent(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+}
+
+function disablePasswordRevealControl(el) {
+  if (!el || el.dataset?.rmwKlingPasswordRevealDisabled === 'true') return;
+  el.dataset.rmwKlingPasswordRevealDisabled = 'true';
+  el.setAttribute('aria-disabled', 'true');
+  el.setAttribute('tabindex', '-1');
+
+  if ('disabled' in el) {
+    try { el.disabled = true; } catch {}
+  }
+
+  ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'keydown', 'keyup']
+    .forEach((eventName) => el.addEventListener(eventName, blockRevealControlEvent, true));
+
+  el.style.setProperty('pointer-events', 'none', 'important');
+  el.style.setProperty('cursor', 'not-allowed', 'important');
+  el.style.setProperty('opacity', '0.6', 'important');
+}
+
+function verticalOverlapAmount(aRect, bRect) {
+  return Math.max(0, Math.min(aRect.bottom, bRect.bottom) - Math.max(aRect.top, bRect.top));
+}
+
+function isNearPasswordInput(passInput, candidate) {
+  if (!passInput || !candidate || !isVisible(candidate)) return false;
+
+  const passRect = passInput.getBoundingClientRect();
+  const candidateRect = candidate.getBoundingClientRect();
+  const verticalOverlap = verticalOverlapAmount(passRect, candidateRect);
+  const horizontalGap = candidateRect.left - passRect.right;
+  const candidateCenterX = candidateRect.left + (candidateRect.width / 2);
+
+  return verticalOverlap >= Math.min(passRect.height, candidateRect.height) * 0.4
+    && candidateCenterX >= passRect.right - 40
+    && horizontalGap <= 80;
+}
+
+function findPasswordRevealCandidates(passInput) {
+  const scopes = collectPasswordFieldScopes(passInput);
+  const rawCandidates = scopes.flatMap((scope) =>
+    Array.from(scope.querySelectorAll('button,[role="button"],[tabindex],svg,img,span,div'))
+      .map((el) => findClickableAncestor(el) || el)
+  );
+
+  return collectUniqueElements(rawCandidates).filter((candidate) => {
+    if (!candidate || candidate === passInput || candidate.contains(passInput) || passInput.contains(candidate)) return false;
+
+    const hints = controlHintText(candidate);
+    const hasSubjectHint = PASSWORD_REVEAL_SUBJECT_HINTS.some((hint) => hints.includes(hint));
+    const hasActionHint = PASSWORD_REVEAL_ACTION_HINTS.some((hint) => hints.includes(hint));
+    const hasIconHint = PASSWORD_REVEAL_ICON_HINTS.some((hint) => hints.includes(hint));
+    const iconChild = candidate.querySelector?.('svg,img');
+    const classHints = normalizeSpace(`${candidate.className || ''}`);
+    const looksLikeEyeIcon = Boolean(iconChild) || /eye|visibility|show|hide|view/.test(classHints);
+
+    return (hasSubjectHint && (hasActionHint || hasIconHint))
+      || (isNearPasswordInput(passInput, candidate) && (hasIconHint || looksLikeEyeIcon));
+  });
+}
+
+function findPasswordRevealControlFromTarget(target, passInput) {
+  if (!target || !passInput) return null;
+
+  const path = typeof target.composedPath === 'function' ? target.composedPath() : [];
+  const pathElements = path.filter((node) => node?.nodeType === Node.ELEMENT_NODE);
+  const ancestors = [];
+  let cur = target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+  while (cur && cur !== document.body) {
+    ancestors.push(cur);
+    cur = cur.parentElement;
+  }
+
+  const candidates = collectUniqueElements([...pathElements, ...ancestors])
+    .map((el) => findClickableAncestor(el) || el);
+
+  return candidates.find((candidate) => findPasswordRevealCandidates(passInput).includes(candidate)) || null;
+}
+
+function enforcePasswordMask(passInput) {
+  if (!passInput) return;
+  try {
+    if (passInput.type !== 'password') {
+      passInput.type = 'password';
+    }
+    if (passInput.getAttribute('type') !== 'password') {
+      passInput.setAttribute('type', 'password');
+    }
+  } catch {}
+}
+
+function handlePasswordRevealAttempt(event) {
+  const passInput = findInput(PASS_SELS);
+  if (!passInput) return;
+
+  const revealControl = findPasswordRevealControlFromTarget(event.target, passInput);
+  if (!revealControl) return;
+
+  disablePasswordRevealControl(revealControl);
+  enforcePasswordMask(passInput);
+  blockRevealControlEvent(event);
+}
+
+function ensurePasswordRevealGuards() {
+  if (document.documentElement?.dataset?.rmwKlingRevealGuardAttached === 'true') return;
+  document.documentElement.dataset.rmwKlingRevealGuardAttached = 'true';
+
+  ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'keydown', 'keyup']
+    .forEach((eventName) => document.addEventListener(eventName, handlePasswordRevealAttempt, true));
+}
+
+function suppressPasswordReveal(passInput) {
+  if (!passInput) return;
+
+  enforcePasswordMask(passInput);
+  ensurePasswordRevealGuards();
+
+  const candidates = findPasswordRevealCandidates(passInput);
+  candidates.forEach((candidate) => disablePasswordRevealControl(candidate));
+  CTX.blockedRevealControl = candidates[0] || null;
 }
 
 // ── React-compatible fill ─────────────────────────────────────
@@ -732,6 +893,8 @@ async function tick() {
       const emailInput = findInput(EMAIL_SELS);
       const passInput  = findInput(PASS_SELS);
 
+      suppressPasswordReveal(passInput);
+
       if (!emailInput && !passInput) {
         CTX.phase = P.OPEN_LANDING;
         wake(200);
@@ -770,6 +933,8 @@ async function tick() {
 
       const emailInput = findInput(EMAIL_SELS);
       const passInput  = findInput(PASS_SELS);
+
+      suppressPasswordReveal(passInput);
 
       if (emailInput && !valuesMatch(emailInput.value, CTX.credential?.loginIdentifier)) {
         CTX.phase = P.FILL; wake(0); return;

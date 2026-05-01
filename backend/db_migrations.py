@@ -103,6 +103,8 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "users", "deleted_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "users", "deleted_by", "INTEGER")
     _pg_add_column_if_missing(conn, "users", "session_revoked_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "backup_codes_encrypted", "TEXT")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "totp_secret_encrypted", "TEXT")
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "task_comments", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "tasks", "workflow_enabled", "BOOLEAN DEFAULT FALSE")
@@ -615,6 +617,13 @@ def ensure_operational_schema(engine) -> None:
             cols = _table_columns(conn, "direct_messages")
             if "attachments_json" not in cols:
                 conn.execute(text("ALTER TABLE direct_messages ADD COLUMN attachments_json JSON"))
+
+        if _table_exists(conn, "it_portal_tool_credentials"):
+            credential_cols = _table_columns(conn, "it_portal_tool_credentials")
+            if "backup_codes_encrypted" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN backup_codes_encrypted TEXT"))
+            if "totp_secret_encrypted" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN totp_secret_encrypted TEXT"))
 
         conn.execute(
             text(

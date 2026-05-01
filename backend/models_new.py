@@ -606,6 +606,8 @@ class ITPortalToolCredential(Base):
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     login_identifier_encrypted = Column(Text)
     password_encrypted = Column(Text)
+    backup_codes_encrypted = Column(Text)
+    totp_secret_encrypted = Column(Text)
     api_key_encrypted = Column(Text)
     notes = Column(Text)
     is_active = Column(Boolean, default=True, index=True)

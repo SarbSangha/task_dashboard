@@ -1,5 +1,6 @@
 const TOOL_SLUG = 'flow';
 const LABS_HOST = 'labs.google';
+const ONE_GOOGLE_HOST = 'one.google.com';
 const LABS_HOME_URL = 'https://labs.google/fx';
 const FLOW_TOOL_URL = 'https://labs.google/fx/tools/flow';
 const LOGIN_URL = FLOW_TOOL_URL;
@@ -9,12 +10,19 @@ const KEEP_ALIVE_MS = 1500;
 const MUTATION_DEBOUNCE_MS = 200;
 const MIN_RUN_GAP_MS = 150;
 const SUBMIT_LOCK_MS = 8000;
+const FLOW_TOOL_PATH_RE = /^\/fx(?:\/[^/]+)?\/tools\/flow\/?$/i;
 const CHECKPOINT_KEY = 'rmw_flow_google_checkpoint';
 const UNAUTHORIZED_RESET_KEY = 'rmw_flow_unauthorized_reset';
 const FORCED_REAUTH_KEY = 'rmw_flow_forced_reauth';
+const FLOW_ENTRY_CLICK_KEY = 'rmw_flow_entry_click';
+const ONE_GOOGLE_REDIRECT_KEY = 'rmw_flow_offer_redirect';
 const PAGE_OPEN_BRIDGE_MESSAGE_TYPE = 'RMW_FLOW_PAGE_OPEN';
 const PAGE_OPEN_BRIDGE_SOURCE = 'rmw-flow-open-bridge';
 const MAX_LAUNCH_RETRIES = 6;
+const FLOW_ENTRY_AUTO_RETRY_WINDOW_MS = 45000;
+const MAX_FLOW_ENTRY_AUTO_RETRIES = 3;
+const ONE_GOOGLE_REDIRECT_RETRY_WINDOW_MS = 45000;
+const MAX_ONE_GOOGLE_REDIRECT_RETRIES = 3;
 const SCREEN_WAIT_MS = 500;
 const LABS_SIGNIN_WAIT_MS = 1800;
 const ACTION_SELECTORS = [
@@ -73,6 +81,7 @@ const CTX = {
   launchRetries: 0,
   prepared: false,
   expiresAt: 0,
+  authTransitionAt: 0,
   sessionClearDone: false,
   pageBridgeInstalled: false,
 };
@@ -192,6 +201,83 @@ function clearForcedReauthAttempt() {
   try {
     window.sessionStorage.removeItem(FORCED_REAUTH_KEY);
   } catch {}
+}
+
+function readRecentAttemptState(key, maxAgeMs) {
+  try {
+    const raw = `${window.sessionStorage.getItem(key) || ''}`.trim();
+    if (!raw) return { count: 0, ts: 0 };
+
+    let ts = 0;
+    let count = 0;
+    if (raw.startsWith('{')) {
+      const parsed = JSON.parse(raw);
+      ts = Number(parsed?.ts || 0);
+      count = Math.max(0, Number(parsed?.count || 0));
+    } else {
+      ts = Number(raw || 0);
+      count = ts ? 1 : 0;
+    }
+
+    if (!ts || (Date.now() - ts) >= maxAgeMs) return { count: 0, ts: 0 };
+    return { count, ts };
+  } catch {
+    return { count: 0, ts: 0 };
+  }
+}
+
+function markRecentAttempt(key, maxAgeMs) {
+  const state = readRecentAttemptState(key, maxAgeMs);
+  const next = {
+    count: Math.max(0, Number(state.count || 0)) + 1,
+    ts: Date.now(),
+  };
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(next));
+  } catch {}
+  return next.count;
+}
+
+function getRecentAttemptCount(key, maxAgeMs) {
+  return readRecentAttemptState(key, maxAgeMs).count;
+}
+
+function clearRecentAttempt(key) {
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {}
+}
+
+function markFlowEntryClickAttempt() {
+  return markRecentAttempt(FLOW_ENTRY_CLICK_KEY, FLOW_ENTRY_AUTO_RETRY_WINDOW_MS);
+}
+
+function getRecentFlowEntryClickAttemptCount() {
+  return getRecentAttemptCount(FLOW_ENTRY_CLICK_KEY, FLOW_ENTRY_AUTO_RETRY_WINDOW_MS);
+}
+
+function hasRecentFlowEntryClickAttempt() {
+  return getRecentFlowEntryClickAttemptCount() > 0;
+}
+
+function clearFlowEntryClickAttempt() {
+  clearRecentAttempt(FLOW_ENTRY_CLICK_KEY);
+}
+
+function markOneGoogleRedirectAttempt() {
+  return markRecentAttempt(ONE_GOOGLE_REDIRECT_KEY, ONE_GOOGLE_REDIRECT_RETRY_WINDOW_MS);
+}
+
+function getRecentOneGoogleRedirectAttemptCount() {
+  return getRecentAttemptCount(ONE_GOOGLE_REDIRECT_KEY, ONE_GOOGLE_REDIRECT_RETRY_WINDOW_MS);
+}
+
+function hasRecentOneGoogleRedirectAttempt() {
+  return getRecentOneGoogleRedirectAttemptCount() > 0;
+}
+
+function clearOneGoogleRedirectAttempt() {
+  clearRecentAttempt(ONE_GOOGLE_REDIRECT_KEY);
 }
 
 function readTicketFromUrl() {
@@ -630,11 +716,9 @@ function buildForcedGoogleIdentifierUrl() {
   }
 
   try {
-    const url = new URL('https://accounts.google.com/Logout');
-    url.searchParams.set('continue', LOGIN_URL);
-    return attachExtensionTicket(url.toString());
+    return attachExtensionTicket(LOGIN_URL);
   } catch {
-    return 'https://accounts.google.com/Logout';
+    return attachExtensionTicket(LOGIN_URL);
   }
 }
 
@@ -694,7 +778,34 @@ function findLabsModalSignInButton() {
   return fallbackCandidates[0] || null;
 }
 
+function hasNavigableActionUrl(element) {
+  const actionUrl = resolveActionUrl(element);
+  return Boolean(actionUrl && !actionUrl.endsWith('#'));
+}
+
+function findFlowEntryButton() {
+  if (!onFlowToolPage() || !isSignedOutFlowRoute()) return null;
+
+  const getStarted = findActionByText({
+    exact: ['get started', 'create with flow'],
+    partial: ['get started', 'start creating', 'create with flow'],
+    exclude: ['overview', 'capabilities', 'partners', 'gallery', 'pricing', 'faq'],
+    filter: (element) => hasNavigableActionUrl(element),
+  });
+  if (getStarted) return getStarted;
+
+  return findActionByText({
+    exact: ['create'],
+    partial: ['create'],
+    exclude: ['overview', 'capabilities', 'partners', 'gallery', 'pricing', 'faq', 'refine', 'compose'],
+    filter: (element) => hasNavigableActionUrl(element) || element.matches?.('button, [role="button"]'),
+  });
+}
+
 function findGoogleSignInButton() {
+  const flowEntryButton = findFlowEntryButton();
+  if (flowEntryButton) return flowEntryButton;
+
   if (onLabsPage()) {
     const modalButton = findLabsModalSignInButton();
     if (modalButton) return modalButton;
@@ -855,20 +966,36 @@ function onLabsHomePage() {
 }
 
 function onFlowToolPage() {
-  return window.location.hostname === LABS_HOST && window.location.pathname.startsWith('/fx/tools/flow');
+  return window.location.hostname === LABS_HOST && FLOW_TOOL_PATH_RE.test(window.location.pathname);
 }
 
 function onGooglePage() {
   return window.location.hostname.includes('accounts.google.com');
 }
 
+function onOneGoogleFlowOfferPage() {
+  if (window.location.hostname !== ONE_GOOGLE_HOST) return false;
+  if (!window.location.pathname.startsWith('/ai')) return false;
+
+  const searchParams = new URLSearchParams(window.location.search || '');
+  const toolSlug = `${searchParams.get('rmw_tool_slug') || ''}`.trim().toLowerCase();
+  const utmSource = `${searchParams.get('utm_source') || ''}`.trim().toLowerCase();
+  const landingPage = `${searchParams.get('g1_landing_page') || ''}`.trim();
+  return toolSlug === TOOL_SLUG || utmSource === TOOL_SLUG || Boolean(landingPage);
+}
+
 function cameFromLabs() {
   return `${document.referrer || ''}`.includes('https://labs.google');
+}
+
+function cameFromGoogle() {
+  return `${document.referrer || ''}`.includes('https://accounts.google.com');
 }
 
 function hasFlowPageContext() {
   return Boolean(
     onLabsPage()
+    || onOneGoogleFlowOfferPage()
     || loadStoredTicket()
     || readCheckpoint()
     || cameFromLabs()
@@ -877,10 +1004,28 @@ function hasFlowPageContext() {
 
 function hasLaunchEvidence() {
   return Boolean(
-    loadStoredTicket()
+    onOneGoogleFlowOfferPage()
+    || loadStoredTicket()
     || readCheckpoint()
     || cameFromLabs()
   );
+}
+
+function redirectOneGoogleOfferToFlow() {
+  const redirectAttempts = getRecentOneGoogleRedirectAttemptCount();
+  if (redirectAttempts >= MAX_ONE_GOOGLE_REDIRECT_RETRIES) {
+    stop('Flow offer page is looping. Click Create with Flow once manually if it stays here.', P.DONE);
+    return false;
+  }
+  const nextAttempt = markOneGoogleRedirectAttempt();
+  const nextUrl = attachExtensionTicket(FLOW_TOOL_URL, CTX.ticket || loadStoredTicket());
+  setStatus(
+    nextAttempt > 1
+      ? `Flow offer page returned again. Redirecting back to Flow (${nextAttempt}/${MAX_ONE_GOOGLE_REDIRECT_RETRIES})...`
+      : 'Redirecting Google AI offer back to Flow...'
+  );
+  window.location.replace(nextUrl);
+  return true;
 }
 
 function hasSignedInGoogleAccount() {
@@ -888,19 +1033,47 @@ function hasSignedInGoogleAccount() {
   return text.includes('you have signed in') || text.includes('welcome to labs.google/fx');
 }
 
+function getPageText() {
+  return `${document.body?.innerText || ''}`.trim().toLowerCase();
+}
+
 function isSignedOutFlowRoute() {
   if (!onFlowToolPage()) return false;
-  const text = `${document.body?.innerText || ''}`.toLowerCase();
-  return text.includes('where the next wave of storytelling happens')
+  const text = getPageText();
+  if (
+    text.includes('where the next wave of storytelling happens')
     || text.includes('sign in to get a sneak peek')
-    || text.includes('without a google ai subscription');
+    || text.includes('without a google ai subscription')
+    || text.includes('flow is an ai creative studio')
+    || text.includes('receive 100 credits free of charge')
+    || text.includes('100 credits free of charge')
+    || text.includes('50 credits daily')
+    || text.includes('explore google ai subscriptions')
+  ) {
+    return true;
+  }
+
+  const marketingSignals = [
+    'overview',
+    'capabilities',
+    'partners',
+    'gallery',
+    'pricing',
+    'start creating',
+    'google ai pro',
+    'google ai ultra',
+    'create with flow',
+  ];
+  const matchedSignals = marketingSignals.filter((signal) => text.includes(signal)).length;
+  return matchedSignals >= 3;
 }
 
 function hasLabsLaunchSurface() {
   if (!onLabsPage()) return false;
 
-  const body = `${document.body?.innerText || ''}`.toLowerCase();
+  const body = getPageText();
   if (onFlowToolPage()) {
+    if (body.length < 80) return false;
     return !isSignedOutFlowRoute();
   }
   if (body.includes('project genie') && body.includes('flow') && body.includes('musicfx')) {
@@ -918,6 +1091,7 @@ function hasLabsLaunchSurface() {
 
 function isAuthenticated() {
   if (!onLabsPage()) return false;
+  if (!document.body || document.readyState === 'loading') return false;
   if (findGoogleSignInButton()) return false;
   return hasLabsLaunchSurface();
 }
@@ -933,11 +1107,11 @@ async function checkAuthorization() {
       extensionTicket: storedTicket,
     });
     if (activation?.ok && activation.authorized) {
-      clearTicket();
       return {
         authorized: true,
         prepared: Boolean(activation.prepared),
         expiresAt: Number(activation.expiresAt || 0),
+        authTransitionAt: Number(activation.authTransitionAt || 0),
       };
     }
   }
@@ -953,7 +1127,21 @@ async function checkAuthorization() {
     authorized: Boolean(response?.ok && response.authorized),
     prepared: Boolean(response?.ok && response.authorized && response.prepared),
     expiresAt: Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0),
+    authTransitionAt: Number(response?.ok && response.authorized ? response.authTransitionAt || 0 : 0),
   };
+}
+
+async function refreshAuthorizationState() {
+  try {
+    const auth = await checkAuthorization();
+    CTX.prepared = Boolean(auth.prepared);
+    CTX.expiresAt = Number(auth.expiresAt || 0);
+    CTX.authTransitionAt = Number(auth.authTransitionAt || 0);
+    return auth;
+  } catch {
+    CTX.authTransitionAt = 0;
+    return { authorized: false, prepared: false, expiresAt: 0, authTransitionAt: 0 };
+  }
 }
 
 let credFetchPromise = null;
@@ -1063,6 +1251,8 @@ function stop(message, phase = P.DONE) {
   clearCheckpoint();
   clearUnauthorizedResetAttempt();
   clearForcedReauthAttempt();
+  clearFlowEntryClickAttempt();
+  clearOneGoogleRedirectAttempt();
   clearTicket();
   setStatus(message);
 }
@@ -1084,11 +1274,18 @@ function stopSilently(phase = P.BLOCKED) {
   }
   clearCheckpoint();
   clearForcedReauthAttempt();
+  clearFlowEntryClickAttempt();
+  clearOneGoogleRedirectAttempt();
   clearTicket();
 }
 
 function canTreatCurrentSessionAsSuccess() {
-  return CTX.phase === P.WAIT_REDIRECT;
+  return CTX.phase === P.WAIT_REDIRECT || cameFromGoogle() || hasRecentAuthTransition();
+}
+
+function hasRecentAuthTransition(maxAgeMs = 120000) {
+  return Number(CTX.authTransitionAt || 0) > 0
+    && (Date.now() - Number(CTX.authTransitionAt || 0)) < maxAgeMs;
 }
 
 function forceFreshGoogleSignIn() {
@@ -1108,6 +1305,13 @@ function forceFreshGoogleSignIn() {
 async function handleUnauthorizedAuthenticatedVisit() {
   if (!onLabsPage()) {
     stopSilently(P.BLOCKED);
+    return;
+  }
+
+  if (onFlowToolPage() && isSignedOutFlowRoute()) {
+    setStatus('Flow is still on the public entry page. Continuing sign-in...');
+    CTX.phase = P.OPEN_GOOGLE;
+    wake(0);
     return;
   }
 
@@ -1152,6 +1356,15 @@ async function run() {
 async function tick() {
   if (isAuthenticated()) {
     if (!hasLaunchEvidence()) {
+      const auth = await refreshAuthorizationState();
+      if (auth.authorized) {
+        if (canTreatCurrentSessionAsSuccess()) {
+          stop('Signed in successfully', P.DONE);
+          return;
+        }
+        forceFreshGoogleSignIn();
+        return;
+      }
       await handleUnauthorizedAuthenticatedVisit();
       return;
     }
@@ -1199,6 +1412,7 @@ async function tick() {
 
       CTX.prepared = Boolean(auth.prepared);
       CTX.expiresAt = Number(auth.expiresAt || 0);
+      CTX.authTransitionAt = Number(auth.authTransitionAt || 0);
 
       if (!auth.authorized && !flowPageContext) {
         stopSilently(P.BLOCKED);
@@ -1284,6 +1498,11 @@ async function tick() {
     }
 
     case P.OPEN_GOOGLE: {
+      if (onOneGoogleFlowOfferPage()) {
+        redirectOneGoogleOfferToFlow();
+        return;
+      }
+
       if (onLabsHomePage()) {
         setStatus('Opening Flow tool...');
         window.location.replace(attachExtensionTicket(FLOW_TOOL_URL));
@@ -1312,18 +1531,47 @@ async function tick() {
       }
 
       const signInButton = findGoogleSignInButton();
+      const isFlowEntry = onFlowToolPage() && isSignedOutFlowRoute();
       if (!signInButton) {
+        if (isFlowEntry) {
+          setStatus('Waiting for Flow entry button...');
+          wake(SCREEN_WAIT_MS);
+          return;
+        }
         setStatus('Waiting for Labs sign-in button...');
         wake(SCREEN_WAIT_MS);
         return;
       }
 
-      setStatus('Clicking Labs sign-in...');
+      setStatus(isFlowEntry ? 'Opening Flow entry...' : 'Clicking Labs sign-in...');
       console.debug('[RMW Flow Google] Labs sign-in target', signInButton, signInButton?.outerHTML || '');
       maybeForceGoogleAccountSelection(signInButton);
+
+      if (isFlowEntry && safeClick(signInButton)) {
+        markFlowEntryClickAttempt();
+        const submittedAt = Date.now();
+        const submitLockUntil = submittedAt + SUBMIT_LOCK_MS;
+        writeCheckpoint({
+          phase: P.WAIT_REDIRECT,
+          submitAt: submittedAt,
+          submitLockUntil,
+        });
+        CTX.submitAt = submittedAt;
+        CTX.submitLockUntil = submitLockUntil;
+        CTX.phase = P.WAIT_REDIRECT;
+        wake(LABS_SIGNIN_WAIT_MS);
+        return;
+      }
+
+      if (isFlowEntry) {
+        setStatus('Flow entry button not clickable yet...');
+        wake(SCREEN_WAIT_MS);
+        return;
+      }
+
       const signInUrl = attachExtensionTicket(resolveActionUrl(signInButton));
       if (signInUrl) {
-        setStatus('Opening Labs sign-in...');
+        setStatus(isFlowEntry ? 'Opening Flow destination...' : 'Opening Labs sign-in...');
         writeCheckpoint({ phase: P.CHOOSER });
         window.location.assign(signInUrl);
         return;
@@ -1341,6 +1589,22 @@ async function tick() {
     }
 
     case P.CHOOSER: {
+      if (onFlowToolPage() && isSignedOutFlowRoute()) {
+        const flowEntryAttempts = getRecentFlowEntryClickAttemptCount();
+        if (flowEntryAttempts >= MAX_FLOW_ENTRY_AUTO_RETRIES) {
+          stop('Flow returned to the landing page after sign-in. Click Create with Flow once manually.', P.DONE);
+          return;
+        }
+        setStatus(
+          flowEntryAttempts > 0
+            ? `Flow returned to landing page after sign-in. Retrying Create with Flow (${flowEntryAttempts + 1}/${MAX_FLOW_ENTRY_AUTO_RETRIES})...`
+            : 'Flow returned to landing page. Continuing sign-in...'
+        );
+        CTX.phase = P.OPEN_GOOGLE;
+        wake(flowEntryAttempts > 0 ? 1200 : 0);
+        return;
+      }
+
       if (findPasswordInput()) {
         CTX.phase = P.PASSWORD;
         wake(0);
@@ -1531,6 +1795,25 @@ async function tick() {
     case P.WAIT_REDIRECT: {
       const elapsed = Date.now() - CTX.submitAt;
 
+      if (onFlowToolPage() && isSignedOutFlowRoute()) {
+        const auth = await refreshAuthorizationState();
+        if (auth.authorized && hasRecentAuthTransition()) {
+          const flowEntryAttempts = getRecentFlowEntryClickAttemptCount();
+          if (flowEntryAttempts >= MAX_FLOW_ENTRY_AUTO_RETRIES) {
+            stop('Flow returned to the landing page after sign-in. Click Create with Flow once manually.', P.DONE);
+            return;
+          }
+          setStatus(
+            flowEntryAttempts > 0
+              ? `Google accepted sign-in. Retrying Flow entry (${flowEntryAttempts + 1}/${MAX_FLOW_ENTRY_AUTO_RETRIES})...`
+              : 'Google accepted sign-in. Re-entering Flow...'
+          );
+          CTX.phase = P.OPEN_GOOGLE;
+          wake(flowEntryAttempts > 0 ? 1200 : 0);
+          return;
+        }
+      }
+
       if (isAuthenticated()) {
         stop('Signed in successfully', P.DONE);
         return;
@@ -1619,6 +1902,10 @@ function start() {
   if (onGooglePage()) return;
   ensureBadge();
   setStatus('Booting Flow auto-login');
+  if (onOneGoogleFlowOfferPage()) {
+    redirectOneGoogleOfferToFlow();
+    return;
+  }
   if (onLabsHomePage() && hasLaunchEvidence()) {
     setStatus('Opening Flow tool...');
     window.location.replace(attachExtensionTicket(FLOW_TOOL_URL, CTX.ticket || loadStoredTicket()));

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from database_config import get_operational_db
 from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, User
 from services.otp_mail_service import fetch_otp_from_gmail
+from services.totp_service import generate_totp_code, parse_totp_config
 from utils.credential_crypto import decrypt_secret, encrypt_secret
 from utils.permissions import get_current_user, has_any_role, require_admin, require_user
 
@@ -29,6 +30,7 @@ router = APIRouter(prefix="/api/it-tools", tags=["IT Tools"])
 
 VALID_SCOPES = {"company", "user"}
 VALID_LAUNCH_MODES = {"external_link", "manual_credential", "sso", "api_proxy", "automation", "extension_autofill"}
+EXTENSION_AUTOFILL_TICKET_TTL_SEC = 20 * 60
 HOSTNAME_EQUIVALENT_GROUPS = (
     {"chatgpt.com", "chat.openai.com", "auth.openai.com", "openai.com"},
     {"envato.com", "elements.envato.com", "market.envato.com"},
@@ -79,6 +81,8 @@ class CredentialUpsertPayload(BaseModel):
     user_id: Optional[int] = None
     login_identifier: Optional[str] = None
     password: Optional[str] = None
+    backup_codes: Optional[str] = None
+    totp_secret: Optional[str] = None
     api_key: Optional[str] = None
     notes: Optional[str] = None
     is_active: bool = True
@@ -101,6 +105,13 @@ class OtpRequestPayload(BaseModel):
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
     return slug or "tool"
+
+
+def _canonical_tool_slug(value: str) -> str:
+    slug = _slugify(value or "")
+    if slug == "chat-gpt":
+        return "chatgpt"
+    return slug
 
 
 def _validate_url(value: Optional[str], field_name: str) -> Optional[str]:
@@ -211,12 +222,78 @@ def _serialize_credential_summary(credential: ITPortalToolCredential) -> dict:
         "userId": credential.user_id,
         "hasLoginIdentifier": bool(credential.login_identifier_encrypted),
         "hasPassword": bool(credential.password_encrypted),
+        "hasBackupCodes": bool(credential.backup_codes_encrypted),
+        "hasTotpSecret": bool(credential.totp_secret_encrypted),
         "hasApiKey": bool(credential.api_key_encrypted),
         "notes": credential.notes,
         "isActive": bool(credential.is_active),
         "createdAt": credential.created_at.isoformat() if credential.created_at else None,
         "updatedAt": credential.updated_at.isoformat() if credential.updated_at else None,
     }
+
+
+def _normalize_backup_codes(value: Optional[str]) -> list[str]:
+    if value is None:
+        return []
+
+    normalized_codes: list[str] = []
+    seen_codes: set[str] = set()
+    for raw_part in re.split(r"[\r\n,;]+", value):
+        digits_only = re.sub(r"\D", "", (raw_part or "").strip())
+        if not digits_only:
+            continue
+        if len(digits_only) != 8:
+            raise HTTPException(
+                status_code=400,
+                detail="Each backup code must contain exactly 8 digits.",
+            )
+        if digits_only in seen_codes:
+            continue
+        seen_codes.add(digits_only)
+        normalized_codes.append(digits_only)
+    return normalized_codes
+
+
+def _decode_backup_codes(credential: Optional[ITPortalToolCredential]) -> list[str]:
+    encrypted_value = getattr(credential, "backup_codes_encrypted", None)
+    if not encrypted_value:
+        return []
+
+    decrypted_value = decrypt_secret(encrypted_value) or ""
+    if not decrypted_value:
+        return []
+
+    try:
+        parsed_value = json.loads(decrypted_value)
+    except json.JSONDecodeError:
+        parsed_value = None
+
+    if isinstance(parsed_value, list):
+        normalized_codes: list[str] = []
+        seen_codes: set[str] = set()
+        for item in parsed_value:
+            digits_only = re.sub(r"\D", "", f"{item or ''}")
+            if len(digits_only) != 8 or digits_only in seen_codes:
+                continue
+            seen_codes.add(digits_only)
+            normalized_codes.append(digits_only)
+        return normalized_codes
+
+    return _normalize_backup_codes(decrypted_value)
+
+
+def _normalize_totp_secret(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+
+    normalized = f"{value or ''}".strip()
+    if not normalized:
+        return ""
+
+    config = parse_totp_config(normalized)
+    if normalized.lower().startswith("otpauth://"):
+        return normalized
+    return config.secret
 
 
 def _add_audit(
@@ -323,6 +400,50 @@ def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optiona
     if _credential_has_secret_material(company_credential):
         return company_credential
     return None
+
+
+def _normalize_login_identifier(value: Optional[str]) -> str:
+    return (value or "").strip().lower()
+
+
+def _resolve_chatgpt_totp_fallback(
+    db: Session,
+    *,
+    tool: ITPortalTool,
+    credential: ITPortalToolCredential,
+    user_id: int,
+) -> tuple[Optional[ITPortalTool], Optional[ITPortalToolCredential]]:
+    if _canonical_tool_slug(tool.slug or "") != "chatgpt":
+        return None, None
+
+    current_login_identifier = _normalize_login_identifier(
+        decrypt_secret(credential.login_identifier_encrypted)
+    )
+    if not current_login_identifier:
+        return None, None
+
+    flow_tool = (
+        db.query(ITPortalTool)
+        .filter(
+            ITPortalTool.is_active == True,
+            ITPortalTool.slug == "flow",
+        )
+        .first()
+    )
+    if not flow_tool:
+        return None, None
+
+    flow_credential = _resolve_tool_credential(db, flow_tool.id, user_id)
+    if not flow_credential or not flow_credential.totp_secret_encrypted:
+        return None, None
+
+    flow_login_identifier = _normalize_login_identifier(
+        decrypt_secret(flow_credential.login_identifier_encrypted)
+    )
+    if not flow_login_identifier or flow_login_identifier != current_login_identifier:
+        return None, None
+
+    return flow_tool, flow_credential
 
 
 def _resolve_tool_credentials_map(db: Session, tool_ids: list[int], user_id: int) -> dict[int, ITPortalToolCredential]:
@@ -787,6 +908,7 @@ async def get_extension_credential(
             "scope": credential.scope,
             "loginIdentifier": login_identifier,
             "password": password,
+            "backupCodes": _decode_backup_codes(credential),
         },
     }
 
@@ -890,6 +1012,85 @@ async def get_extension_otp(
     return {"success": True, "otp": otp}
 
 
+@router.post("/extension/totp")
+async def get_extension_totp(
+    payload: OtpRequestPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db),
+):
+    tool = _find_extension_tool(db, payload)
+    if not tool:
+        raise HTTPException(status_code=404, detail="No matching tool found for this page")
+    if tool.launch_mode != "extension_autofill":
+        raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill")
+
+    extension_ticket = (payload.extension_ticket or "").strip()
+    if not extension_ticket:
+        raise _extension_ticket_error()
+
+    ticket_payload = _decode_ticket(extension_ticket)
+    if ticket_payload.get("kind") != "extension_autofill":
+        raise _extension_ticket_error()
+    if int(ticket_payload.get("userId") or 0) != current_user.id:
+        raise _extension_ticket_error()
+    if int(ticket_payload.get("toolId") or 0) != tool.id:
+        raise _extension_ticket_error()
+
+    credential = _resolve_tool_credential(db, tool.id, current_user.id)
+    if not credential:
+        raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
+
+    totp_tool = tool
+    totp_credential = credential
+    encrypted_totp_secret = credential.totp_secret_encrypted
+    if not encrypted_totp_secret:
+        fallback_tool, fallback_credential = _resolve_chatgpt_totp_fallback(
+            db,
+            tool=tool,
+            credential=credential,
+            user_id=current_user.id,
+        )
+        if fallback_tool and fallback_credential:
+            totp_tool = fallback_tool
+            totp_credential = fallback_credential
+            encrypted_totp_secret = fallback_credential.totp_secret_encrypted
+
+    if not encrypted_totp_secret:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No TOTP secret configured for tool '{tool.name}'. Ask an admin to add it in the dashboard.",
+        )
+
+    raw_totp_secret = decrypt_secret(encrypted_totp_secret)
+    if not raw_totp_secret:
+        raise HTTPException(status_code=500, detail="TOTP secret could not be decrypted")
+
+    try:
+        totp_config = parse_totp_config(raw_totp_secret)
+        otp, expires_in_sec = generate_totp_code(totp_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Stored TOTP configuration is invalid: {exc}") from exc
+
+    _add_audit(
+        db,
+        actor_id=current_user.id,
+        action="extension_totp_generated",
+        tool_id=tool.id,
+        credential_id=totp_credential.id,
+        target_user_id=totp_credential.user_id,
+        details={
+            "hostname": _normalize_hostname(payload.hostname or payload.page_url),
+            "credentialScope": totp_credential.scope,
+            "expiresInSec": expires_in_sec,
+            "totpSourceToolSlug": totp_tool.slug,
+            "totpSourceToolName": totp_tool.name,
+        },
+    )
+    db.commit()
+
+    return {"success": True, "otp": otp, "expiresInSec": expires_in_sec}
+
+
 @router.get("/tools/{tool_id}/credentials")
 async def list_credentials(
     tool_id: int,
@@ -950,6 +1151,20 @@ async def upsert_credential(
         credential.login_identifier_encrypted = encrypt_secret(payload.login_identifier)
     if payload.password is not None:
         credential.password_encrypted = encrypt_secret(payload.password)
+    if payload.backup_codes is not None:
+        backup_codes = _normalize_backup_codes(payload.backup_codes)
+        credential.backup_codes_encrypted = (
+            encrypt_secret(json.dumps(backup_codes))
+            if backup_codes
+            else None
+        )
+    if payload.totp_secret is not None:
+        normalized_totp_secret = _normalize_totp_secret(payload.totp_secret)
+        credential.totp_secret_encrypted = (
+            encrypt_secret(normalized_totp_secret)
+            if normalized_totp_secret
+            else None
+        )
     if payload.api_key is not None:
         credential.api_key_encrypted = encrypt_secret(payload.api_key)
     if payload.notes is not None:
@@ -993,6 +1208,7 @@ async def launch_tool(
         "scope": credential.scope,
         "loginIdentifier": decrypt_secret(credential.login_identifier_encrypted),
         "password": None if tool.launch_mode in {"automation", "extension_autofill"} else decrypt_secret(credential.password_encrypted),
+        "backupCodes": _decode_backup_codes(credential),
         "apiKey": decrypt_secret(credential.api_key_encrypted),
         "notes": credential.notes,
     }
@@ -1011,7 +1227,7 @@ async def launch_tool(
         )
         launch_url = _automation_launch_url(request, ticket)
     elif tool.launch_mode == "extension_autofill":
-        extension_ticket_expires_at = int(time.time()) + 180
+        extension_ticket_expires_at = int(time.time()) + EXTENSION_AUTOFILL_TICKET_TTL_SEC
         extension_ticket = _sign_ticket(
             {
                 "kind": "extension_autofill",

@@ -37,6 +37,31 @@ const writeStoredPublicKey = (value) => {
   }
 };
 
+const getReadyWebPushRegistration = async () => {
+  const registration = await navigator.serviceWorker.register(WEB_PUSH_SERVICE_WORKER_URL);
+  const readyRegistration = await navigator.serviceWorker.ready;
+  const activeRegistration = readyRegistration || registration;
+
+  if (activeRegistration) {
+    try {
+      await activeRegistration.update();
+    } catch {
+      // Best-effort refresh in case the worker script changed.
+    }
+    return activeRegistration;
+  }
+
+  const fallbackRegistration = await navigator.serviceWorker.getRegistration();
+  if (fallbackRegistration) {
+    return fallbackRegistration;
+  }
+
+  if (!registration) {
+    throw new Error('Push service worker is not ready yet.');
+  }
+  return registration;
+};
+
 export default function useWebPushNotifications() {
   const { user } = useAuth();
   const endpointRef = useRef('');
@@ -78,7 +103,7 @@ export default function useWebPushNotifications() {
           return;
         }
 
-        const registration = await navigator.serviceWorker.register(WEB_PUSH_SERVICE_WORKER_URL);
+        const registration = await getReadyWebPushRegistration();
         if (cancelled) return;
 
         let subscription = await registration.pushManager.getSubscription();

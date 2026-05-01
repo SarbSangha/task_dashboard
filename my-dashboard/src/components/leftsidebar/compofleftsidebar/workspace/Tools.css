@@ -370,6 +370,28 @@ body {
   word-break: break-word;
 }
 
+.it-secret-support-field {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.it-secret-support-field label {
+  color: #dbe7ff;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.it-secret-support-field textarea {
+  margin-top: 0;
+  min-height: 120px;
+}
+
+.it-secret-support-field small {
+  color: #8fa1bf;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
 .it-primary-btn,
 .credential-fields button {
   border: none;

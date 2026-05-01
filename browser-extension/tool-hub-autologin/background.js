@@ -6,7 +6,7 @@ const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
 const TOOL_SESSION_DOMAINS = {
   envato: ['envato.com', 'elements.envato.com', 'market.envato.com'],
-  freepik: ['freepik.com', 'www.freepik.com'],
+  freepik: ['freepik.com', 'www.freepik.com', 'magnific.com', 'www.magnific.com'],
   flow: ['labs.google'],
   higgsfield: ['higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'],
   heygen: ['heygen.com', 'auth.heygen.com', 'app.heygen.com'],
@@ -34,6 +34,8 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
   freepik: [
     'freepik.com',
     'www.freepik.com',
+    'magnific.com',
+    'www.magnific.com',
     'accounts.google.com',
   ],
   higgsfield: [
@@ -121,7 +123,9 @@ function normalizeFlowLaunchUrl(value) {
 }
 
 function normalizeToolSlug(value) {
-  return `${value || ''}`.trim().toLowerCase();
+  const normalized = `${value || ''}`.trim().toLowerCase();
+  if (normalized === 'chat-gpt') return 'chatgpt';
+  return normalized;
 }
 
 function normalizeHostname(value) {
@@ -686,15 +690,25 @@ async function setPasswordSavingSuppressedForTab(tabId, suppressed) {
   return { suppressed: false };
 }
 
-async function openFlowIsolatedWindow(launchUrl) {
-  const url = normalizeFlowLaunchUrl(launchUrl);
+function getIsolatedLaunchUrl(toolSlug, launchUrl) {
+  const normalizedSlug = normalizeToolSlug(toolSlug);
+  if (normalizedSlug === 'flow') {
+    return normalizeFlowLaunchUrl(launchUrl);
+  }
+  return `${launchUrl || ''}`.trim();
+}
+
+async function openToolIsolatedWindow(toolSlug, launchUrl) {
+  const normalizedSlug = normalizeToolSlug(toolSlug);
+  const toolName = normalizedSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
+  const url = getIsolatedLaunchUrl(normalizedSlug, launchUrl);
   if (!url) {
-    throw new Error('Flow launch URL is missing.');
+    throw new Error(`${toolName} launch URL is missing.`);
   }
 
   const incognitoAllowed = await chrome.extension.isAllowedIncognitoAccess();
   if (!incognitoAllowed) {
-    throw new Error('Enable "Allow in Incognito" for this extension, then launch Flow again.');
+    throw new Error(`Enable "Allow in Incognito" for this extension, then launch ${toolName} again.`);
   }
 
   const createdWindow = await chrome.windows.create({
@@ -867,6 +881,220 @@ async function fetchOtp(message, senderTabId = 0, openerTabId = 0) {
   return data.otp;
 }
 
+function buildApiErrorMessage(data, response, fallbackLabel, settings) {
+  const parts = [
+    data.detail || data.message || `${fallbackLabel} (${response.status})`,
+    `api=${settings.apiBase}`,
+    `sessionHeader=${settings.sessionToken ? 'yes' : 'no'}`,
+    `http=${response.status}`,
+  ];
+  return parts.join(' | ');
+}
+
+async function postTotpRequest(settings, payload) {
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetch(`${settings.apiBase}/api/it-tools/extension/totp`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success || !data.otp) {
+    throw new Error(buildApiErrorMessage(data, response, 'TOTP request failed', settings));
+  }
+
+  return {
+    otp: `${data.otp}`.trim(),
+    expiresInSec: Number(data.expiresInSec || 0),
+  };
+}
+
+async function postCredentialRequest(settings, payload) {
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetch(`${settings.apiBase}/api/it-tools/extension/credential`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    throw new Error(buildApiErrorMessage(data, response, 'Credential request failed', settings));
+  }
+
+  return data;
+}
+
+async function getToolsForCurrentUser(settings) {
+  const headers = {};
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetch(`${settings.apiBase}/api/it-tools/tools`, {
+    method: 'GET',
+    credentials: 'include',
+    headers,
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success || !Array.isArray(data.tools)) {
+    throw new Error(buildApiErrorMessage(data, response, 'Tool list request failed', settings));
+  }
+
+  return data.tools;
+}
+
+async function launchExtensionTool(settings, toolId) {
+  const headers = {};
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetch(`${settings.apiBase}/api/it-tools/tools/${toolId}/launch`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success || !data.extensionAutoFill || !data.extensionTicket) {
+    throw new Error(buildApiErrorMessage(data, response, 'Tool launch request failed', settings));
+  }
+
+  return data;
+}
+
+function isMissingTotpSecretErrorMessage(errorMessage) {
+  const normalized = `${errorMessage || ''}`.trim();
+  return normalized.includes('No TOTP secret configured') || normalized.includes('http=404');
+}
+
+function normalizeLoginIdentifier(value) {
+  return `${value || ''}`.trim().toLowerCase();
+}
+
+async function findFlowTotpFallbackLaunch(openerTabId = 0, hostname = '', pageUrl = '') {
+  const openerLaunch = await getActiveLaunch(openerTabId, 'flow');
+  if (openerLaunch?.ticket) {
+    return openerLaunch;
+  }
+
+  const recentLaunch = await getRecentContinuationLaunch('flow', hostname, pageUrl);
+  if (recentLaunch?.ticket) {
+    return recentLaunch;
+  }
+
+  return null;
+}
+
+async function createFlowTotpFallbackLaunch(settings) {
+  const tools = await getToolsForCurrentUser(settings);
+  const flowTool = tools.find((tool) => normalizeToolSlug(tool?.slug) === 'flow');
+  if (!flowTool?.id) {
+    return null;
+  }
+
+  const launchResponse = await launchExtensionTool(settings, flowTool.id);
+  const extensionTicket = `${launchResponse.extensionTicket || ''}`.trim();
+  const expiresAtSec = Number(launchResponse.extensionTicketExpiresAt || 0);
+  if (!extensionTicket || !expiresAtSec) {
+    return null;
+  }
+
+  return {
+    toolSlug: 'flow',
+    ticket: extensionTicket,
+    expiresAt: expiresAtSec * 1000,
+    hostname: normalizeHostname(flowTool.websiteUrl || flowTool.loginUrl || ''),
+  };
+}
+
+async function tryFetchChatgptTotpFromFlow(settings, message, openerTabId = 0) {
+  if (normalizeToolSlug(message.toolSlug) !== 'chatgpt') {
+    return null;
+  }
+
+  const flowLaunch = await findFlowTotpFallbackLaunch(openerTabId, message.hostname, message.pageUrl)
+    || await createFlowTotpFallbackLaunch(settings);
+  if (!flowLaunch?.ticket) {
+    return null;
+  }
+
+  const expectedLoginIdentifier = normalizeLoginIdentifier(message.loginIdentifier);
+  if (expectedLoginIdentifier) {
+    try {
+      const flowCredential = await postCredentialRequest(settings, {
+        tool_slug: 'flow',
+        hostname: message.hostname,
+        page_url: message.pageUrl,
+        extension_ticket: flowLaunch.ticket,
+      });
+      const flowLoginIdentifier = normalizeLoginIdentifier(flowCredential?.credential?.loginIdentifier);
+      if (!flowLoginIdentifier || flowLoginIdentifier !== expectedLoginIdentifier) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return postTotpRequest(settings, {
+    tool_slug: 'flow',
+    hostname: message.hostname,
+    page_url: message.pageUrl,
+    extension_ticket: flowLaunch.ticket,
+  });
+}
+
+async function fetchTotp(message, senderTabId = 0, openerTabId = 0) {
+  const settings = await getSettings();
+  const tabId = message.tabId || senderTabId || 0;
+  const directLaunch = await getActiveLaunch(tabId, message.toolSlug);
+  const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, message.toolSlug);
+  const activeLaunch = directLaunch || inheritedLaunch;
+  const extensionTicket = `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim();
+
+  if (!extensionTicket) {
+    throw new Error('Open this tool from the dashboard first.');
+  }
+
+  try {
+    return await postTotpRequest(settings, {
+      tool_slug: message.toolSlug,
+      hostname: message.hostname,
+      page_url: message.pageUrl,
+      extension_ticket: extensionTicket || null,
+    });
+  } catch (error) {
+    const errorMessage = `${error?.message || error || ''}`;
+    if (isMissingTotpSecretErrorMessage(errorMessage)) {
+      const fallbackResult = await tryFetchChatgptTotpFromFlow(settings, message, openerTabId);
+      if (fallbackResult?.otp) {
+        return fallbackResult;
+      }
+    }
+    throw error;
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const senderTabId = sender?.tab?.id || 0;
   const senderOpenerTabId = sender?.tab?.openerTabId || 0;
@@ -883,6 +1111,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         authorized: true,
         expiresAt: Number(launch?.expiresAt || 0),
         prepared: Boolean(launch?.freshSessionPreparedAt),
+        authTransitionAt: Number(launch?.authTransitionAt || 0),
       }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -976,12 +1205,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'TOOL_HUB_OPEN_FLOW_ISOLATED_WINDOW') {
-    if (normalizeToolSlug(message.toolSlug) !== 'flow') {
-      sendResponse({ ok: false, error: 'Isolated window launch is only configured for Flow.' });
+    if (!['flow', 'chatgpt'].includes(normalizeToolSlug(message.toolSlug))) {
+      sendResponse({ ok: false, error: 'Isolated window launch is only configured for Flow and ChatGPT.' });
       return true;
     }
 
-    openFlowIsolatedWindow(message.launchUrl)
+    openToolIsolatedWindow(message.toolSlug, message.launchUrl)
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -990,6 +1219,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'TOOL_HUB_FETCH_OTP') {
     fetchOtp(message, senderTabId, senderOpenerTabId)
       .then((otp) => sendResponse({ ok: true, otp }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_FETCH_TOTP') {
+    fetchTotp(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

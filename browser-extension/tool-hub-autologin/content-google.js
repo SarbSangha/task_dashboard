@@ -1,6 +1,7 @@
 (() => {
 const LOGIN_FLOW_STORAGE_KEY = 'rmw_chatgpt_login_flow_hints_v1';
 const LOGIN_FLOW_HINT_TTL_MS = 45 * 24 * 60 * 60 * 1000;
+const FLOW_EXTENSION_TICKET_STORAGE_KEY = 'rmw_flow_google_extension_ticket';
 const STATE = {
   credential: null,
   requested: false,
@@ -10,8 +11,15 @@ const STATE = {
   lastEmailSubmitAt: 0,
   lastPasswordFilledAt: 0,
   lastPasswordSubmitAt: 0,
+  lastTotpFilledAt: 0,
+  lastTotpSubmitAt: 0,
+  lastBackupCodeFilledAt: 0,
+  lastBackupCodeSubmitAt: 0,
   emailSubmitted: false,
   passwordSubmitted: false,
+  totpSubmitted: false,
+  backupCodeSubmitted: false,
+  backupCodeIndex: 0,
   scheduledTimer: null,
   keepAliveTimer: null,
   observer: null,
@@ -22,7 +30,16 @@ const STATE = {
   toolSlug: '',
   passwordSavingInFlight: false,
   passwordSavingSuppressed: false,
+  passwordSavingBypass: false,
   passwordSavingRestoreTimer: null,
+  totpValue: '',
+  totpFetching: false,
+  totpRequestAttempts: 0,
+  totpLastRequestAt: 0,
+  totpFetchedAt: 0,
+  totpExpiresInSec: 0,
+  totpUnavailable: false,
+  authTransitionMarkedAt: 0,
   settled: false,
   status: 'Waiting for Google sign-in',
 };
@@ -51,6 +68,17 @@ const PASSWORD_SELECTORS = [
   'input[name="Passwd"]',
   'input[autocomplete="current-password"]',
 ];
+const BACKUP_CODE_INPUT_SELECTORS = [
+  'input[autocomplete="one-time-code"]',
+  'input[inputmode="numeric"]',
+  'input[type="tel"]',
+  'input[type="number"]',
+  'input[name*="code" i]',
+  'input[id*="code" i]',
+  'input[aria-label*="code" i]',
+  'input[placeholder*="code" i]',
+  'input[type="text"]',
+];
 const NEXT_SELECTORS = [
   '#identifierNext button',
   '#passwordNext button',
@@ -58,9 +86,38 @@ const NEXT_SELECTORS = [
   'button',
   '[role="button"]',
 ];
+const ACTION_SELECTORS = [
+  'button',
+  '[role="button"]',
+  'a[href]',
+  'div[tabindex]',
+  'li[tabindex]',
+].join(',');
 
 function normalizeToolSlug(value) {
-  return `${value || ''}`.trim().toLowerCase();
+  const normalized = `${value || ''}`.trim().toLowerCase();
+  if (normalized === 'chat-gpt') return 'chatgpt';
+  return normalized;
+}
+
+function normalizeText(value) {
+  return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function isFlowTool() {
+  return normalizeToolSlug(STATE.toolSlug) === 'flow';
+}
+
+function supportsGoogleAuthenticatorAutomation(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'flow' || normalizedToolSlug === 'chatgpt';
+}
+
+function getToolDisplayName(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  if (normalizedToolSlug === 'flow') return 'Flow';
+  if (normalizedToolSlug === 'chatgpt') return 'ChatGPT';
+  return 'Google';
 }
 
 function getCredentialFlowKey(credential, toolSlug = STATE.toolSlug) {
@@ -143,7 +200,7 @@ function sendRuntimeMessage(message) {
 }
 
 async function ensurePasswordSavingSuppressed() {
-  if (STATE.passwordSavingSuppressed) return true;
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingBypass) return true;
 
   const response = await sendRuntimeMessage({
     type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
@@ -151,16 +208,18 @@ async function ensurePasswordSavingSuppressed() {
   });
 
   if (!response?.ok) {
-    setStatus(response?.error || 'Could not suppress Chrome password prompt');
+    STATE.passwordSavingBypass = true;
+    setStatus(`Warning: ${response?.error || 'Could not suppress Chrome password prompt'} Continuing anyway...`);
     return false;
   }
 
   STATE.passwordSavingSuppressed = true;
+  STATE.passwordSavingBypass = false;
   return true;
 }
 
 function requestPasswordSavingSuppression() {
-  if (STATE.passwordSavingSuppressed || STATE.passwordSavingInFlight) {
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingBypass || STATE.passwordSavingInFlight) {
     return;
   }
 
@@ -171,8 +230,7 @@ function requestPasswordSavingSuppression() {
     .then((ok) => {
       STATE.passwordSavingInFlight = false;
       if (!ok) {
-        STATE.settled = true;
-        setStatus('Blocked: Chrome password-save prompt could not be disabled.');
+        scheduleAttempt(50);
         return;
       }
       scheduleAttempt(50);
@@ -188,6 +246,11 @@ function releasePasswordSavingSuppressed(delay = 0) {
   if (STATE.passwordSavingRestoreTimer) {
     window.clearTimeout(STATE.passwordSavingRestoreTimer);
     STATE.passwordSavingRestoreTimer = null;
+  }
+
+  if (STATE.passwordSavingBypass) {
+    STATE.passwordSavingBypass = false;
+    return;
   }
 
   STATE.passwordSavingRestoreTimer = window.setTimeout(() => {
@@ -318,6 +381,65 @@ function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
 }
 
+function readStoredFlowExtensionTicket() {
+  try {
+    return `${window.sessionStorage.getItem(FLOW_EXTENSION_TICKET_STORAGE_KEY) || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function storeFlowExtensionTicket(ticket) {
+  try {
+    if (ticket) window.sessionStorage.setItem(FLOW_EXTENSION_TICKET_STORAGE_KEY, ticket);
+    else window.sessionStorage.removeItem(FLOW_EXTENSION_TICKET_STORAGE_KEY);
+  } catch {}
+}
+
+function extractExtensionTicketFromValue(value) {
+  const raw = `${value || ''}`.trim();
+  if (!raw) return '';
+
+  try {
+    const url = new URL(raw, window.location.href);
+    const queryTicket = `${url.searchParams.get('rmw_extension_ticket') || ''}`.trim();
+    if (queryTicket) return queryTicket;
+
+    const hash = `${url.hash || ''}`.replace(/^#/, '');
+    return `${new URLSearchParams(hash).get('rmw_extension_ticket') || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function captureFlowExtensionTicket() {
+  try {
+    const url = new URL(window.location.href);
+    const directTicket = `${url.searchParams.get('rmw_extension_ticket') || ''}`.trim()
+      || `${new URLSearchParams((url.hash || '').replace(/^#/, '')).get('rmw_extension_ticket') || ''}`.trim();
+    if (directTicket) {
+      storeFlowExtensionTicket(directTicket);
+      return directTicket;
+    }
+
+    const nestedValues = [
+      url.searchParams.get('continue'),
+      url.searchParams.get('redirect_uri'),
+      url.searchParams.get('app_domain'),
+      document.referrer,
+    ];
+    for (const value of nestedValues) {
+      const nestedTicket = extractExtensionTicketFromValue(value);
+      if (nestedTicket) {
+        storeFlowExtensionTicket(nestedTicket);
+        return nestedTicket;
+      }
+    }
+  } catch {}
+
+  return readStoredFlowExtensionTicket();
+}
+
 function inferToolSlugFromGooglePage() {
   try {
     const url = new URL(window.location.href);
@@ -333,7 +455,25 @@ function inferToolSlugFromGooglePage() {
     if (values.some((value) => value.includes('labs.google'))) {
       return 'flow';
     }
+
+    if (values.some((value) => (
+      value.includes('chatgpt.com')
+      || value.includes('chat.openai.com')
+      || value.includes('auth.openai.com')
+      || value.includes('openai.com')
+    ))) {
+      return 'chatgpt';
+    }
   } catch {}
+
+  const currentPageText = pageText();
+  if (
+    currentPageText.includes('continue to openai')
+    || currentPageText.includes('continue to chatgpt')
+    || currentPageText.includes('to continue to openai')
+  ) {
+    return 'chatgpt';
+  }
 
   return '';
 }
@@ -357,10 +497,287 @@ function isGooglePasswordUrl() {
   }
 }
 
+function getContinuationRequestContext(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  if (normalizedToolSlug === 'chatgpt') {
+    return {
+      hostname: 'chatgpt.com',
+      pageUrl: 'https://chatgpt.com/',
+    };
+  }
+
+  return {
+    hostname: window.location.hostname,
+    pageUrl: window.location.href,
+  };
+}
+
 function buttonText(button) {
   return `${button.innerText || button.textContent || button.value || button.getAttribute?.('aria-label') || ''}`
     .trim()
     .toLowerCase();
+}
+
+function actionText(element) {
+  return normalizeText([
+    element?.innerText,
+    element?.textContent,
+    element?.value,
+    element?.getAttribute?.('aria-label'),
+    element?.getAttribute?.('title'),
+  ].filter(Boolean).join(' '));
+}
+
+function findVisibleActionByText(matchers = []) {
+  const normalizedMatchers = matchers.map(normalizeText).filter(Boolean);
+  if (!normalizedMatchers.length) return null;
+
+  return Array.from(document.querySelectorAll(ACTION_SELECTORS))
+    .find((element) => {
+      if (isDisabled(element) || !isVisible(element)) return false;
+      const label = actionText(element);
+      return normalizedMatchers.some((matcher) => label.includes(matcher));
+    }) || null;
+}
+
+function pageText() {
+  return normalizeText(document.body?.innerText || '');
+}
+
+function isFlowAuthenticatorScreen() {
+  if (!supportsGoogleAuthenticatorAutomation()) return false;
+
+  const text = pageText();
+  return (
+    text.includes('google authenticator app')
+    || text.includes('verification code from the google authenticator app')
+    || text.includes('verification code from google authenticator')
+    || text.includes('get a verification code from the google authenticator app')
+  );
+}
+
+function isFlowBackupCodeScreen() {
+  if (!isFlowTool()) return false;
+
+  const text = pageText();
+  return (
+    text.includes('enter one of your 8-digit backup codes')
+    || text.includes('enter one of your 8 digit backup codes')
+    || text.includes('8-digit backup code')
+    || text.includes('8 digit backup code')
+  );
+}
+
+function getFlowBackupCodes(credential) {
+  const rawCodes = Array.isArray(credential?.backupCodes)
+    ? credential.backupCodes
+    : `${credential?.backupCodes || ''}`.split(/[\r\n,;]+/);
+
+  const normalizedCodes = [];
+  const seenCodes = new Set();
+  rawCodes.forEach((value) => {
+    const digitsOnly = `${value || ''}`.replace(/\D/g, '');
+    if (digitsOnly.length !== 8 || seenCodes.has(digitsOnly)) return;
+    seenCodes.add(digitsOnly);
+    normalizedCodes.push(digitsOnly);
+  });
+  return normalizedCodes;
+}
+
+function resetFlowTotpProgress() {
+  STATE.lastTotpFilledAt = 0;
+  STATE.lastTotpSubmitAt = 0;
+  STATE.totpSubmitted = false;
+  STATE.totpValue = '';
+  STATE.totpFetching = false;
+  STATE.totpRequestAttempts = 0;
+  STATE.totpLastRequestAt = 0;
+  STATE.totpFetchedAt = 0;
+  STATE.totpExpiresInSec = 0;
+  STATE.totpUnavailable = false;
+}
+
+function findFlowAuthenticatorChoiceButton() {
+  if (!supportsGoogleAuthenticatorAutomation()) return null;
+
+  return findVisibleActionByText([
+    'google authenticator',
+    'authenticator app',
+    'verification code from the google authenticator app',
+    'verification code from google authenticator',
+  ]);
+}
+
+function findFlowTotpInput() {
+  if (!supportsGoogleAuthenticatorAutomation()) return null;
+
+  const currentPageText = pageText();
+  if (
+    !currentPageText.includes('authenticator')
+    && !currentPageText.includes('verification code')
+    && !currentPageText.includes('6-digit code')
+    && !currentPageText.includes('6 digit code')
+  ) {
+    return null;
+  }
+  if (isFlowBackupCodeScreen()) {
+    return null;
+  }
+
+  const candidates = Array.from(new Set(
+    BACKUP_CODE_INPUT_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+  ));
+
+  return candidates.find((input) => {
+    if (!input || input.readOnly || isDisabled(input) || !isVisible(input)) return false;
+
+    const descriptor = normalizeText([
+      input.id,
+      input.name,
+      input.type,
+      input.autocomplete,
+      input.inputMode,
+      input.getAttribute('aria-label'),
+      input.getAttribute('placeholder'),
+      input.closest('form, main, section, div')?.innerText,
+    ].filter(Boolean).join(' '));
+
+    if (descriptor.includes('backup code')) {
+      return false;
+    }
+
+    if (descriptor.includes('authenticator')) {
+      return true;
+    }
+
+    if (
+      descriptor.includes('verification code')
+      || descriptor.includes('6-digit code')
+      || descriptor.includes('6 digit code')
+      || descriptor.includes('one-time code')
+      || descriptor.includes('one time code')
+      || descriptor.includes('code')
+    ) {
+      return true;
+    }
+
+    const inputType = `${input.type || ''}`.trim().toLowerCase();
+    return ['tel', 'text', 'number'].includes(inputType);
+  }) || null;
+}
+
+function findFlowTotpSubmitButton(input) {
+  return findNextButton('password', input) || findVisibleActionByText([
+    'next',
+    'continue',
+    'done',
+    'verify',
+    'confirm',
+  ]);
+}
+
+function isFlowTotpValueExpired() {
+  if (!STATE.totpValue || !STATE.totpFetchedAt || !STATE.totpExpiresInSec) return false;
+  const ageMs = Date.now() - STATE.totpFetchedAt;
+  const ttlMs = Math.max(0, (STATE.totpExpiresInSec - 2) * 1000);
+  return ageMs >= ttlMs;
+}
+
+function getCurrentFlowBackupCode(credential) {
+  return getFlowBackupCodes(credential)[STATE.backupCodeIndex] || '';
+}
+
+function moveToNextFlowBackupCode(credential) {
+  const codes = getFlowBackupCodes(credential);
+  if (STATE.backupCodeIndex + 1 >= codes.length) {
+    return false;
+  }
+
+  STATE.backupCodeIndex += 1;
+  STATE.lastBackupCodeFilledAt = 0;
+  STATE.lastBackupCodeSubmitAt = 0;
+  STATE.backupCodeSubmitted = false;
+  return true;
+}
+
+function resetFlowBackupCodeProgress() {
+  STATE.backupCodeIndex = 0;
+  STATE.lastBackupCodeFilledAt = 0;
+  STATE.lastBackupCodeSubmitAt = 0;
+  STATE.backupCodeSubmitted = false;
+}
+
+function findFlowBackupCodeChoiceButton() {
+  if (!isFlowTool()) return null;
+
+  return findVisibleActionByText([
+    'enter one of your 8-digit backup codes',
+    'enter one of your 8 digit backup codes',
+    'backup code',
+    'backup codes',
+  ]);
+}
+
+function findFlowTryAnotherWayButton() {
+  if (!isFlowTool()) return null;
+
+  return findVisibleActionByText([
+    'try another way',
+    'choose another way',
+  ]);
+}
+
+function findFlowBackupCodeInput() {
+  if (!isFlowTool()) return null;
+
+  if (isFlowAuthenticatorScreen()) {
+    return null;
+  }
+
+  const currentPageText = pageText();
+  const candidates = Array.from(new Set(
+    BACKUP_CODE_INPUT_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+  ));
+
+  return candidates.find((input) => {
+    if (!input || input.readOnly || isDisabled(input) || !isVisible(input)) return false;
+
+    const descriptor = normalizeText([
+      input.id,
+      input.name,
+      input.type,
+      input.autocomplete,
+      input.inputMode,
+      input.getAttribute('aria-label'),
+      input.getAttribute('placeholder'),
+      input.closest('form, main, section, div')?.innerText,
+    ].filter(Boolean).join(' '));
+
+    if (descriptor.includes('backup') && descriptor.includes('code')) {
+      return true;
+    }
+
+    if (!isFlowBackupCodeScreen()) {
+      return false;
+    }
+
+    if (descriptor.includes('8-digit') || descriptor.includes('8 digit') || descriptor.includes('code')) {
+      return true;
+    }
+
+    const inputType = `${input.type || ''}`.trim().toLowerCase();
+    return ['tel', 'text', 'number'].includes(inputType);
+  }) || null;
+}
+
+function findFlowBackupCodeSubmitButton(input) {
+  return findNextButton('password', input) || findVisibleActionByText([
+    'next',
+    'continue',
+    'done',
+    'verify',
+    'confirm',
+  ]);
 }
 
 function findStepContainer(input) {
@@ -640,7 +1057,7 @@ async function submitGooglePasswordStep(credential) {
 
   const passwordValue = `${credential?.password || ''}`;
   if (!passwordValue) return false;
-  if (!STATE.passwordSavingSuppressed) return false;
+  if (!STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) return false;
 
   try {
     input.focus({ preventScroll: true });
@@ -665,14 +1082,137 @@ async function submitGooglePasswordStep(credential) {
   return submitted;
 }
 
-async function loadLaunchState() {
-  const inferredToolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+async function submitFlowBackupCodeStep(input) {
+  if (!input) return false;
+
+  const submitButton = findFlowBackupCodeSubmitButton(input);
+  if (submitButton && safeClick(submitButton)) {
+    await sleep(900);
+    return true;
+  }
+
+  if (pressEnter(input)) {
+    await sleep(900);
+    return true;
+  }
+
+  const form = input.closest('form');
+  if (form) {
+    try {
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.submit?.();
+      await sleep(900);
+      return true;
+    } catch {}
+  }
+
+  return false;
+}
+
+async function requestFlowTotp() {
+  if (!supportsGoogleAuthenticatorAutomation() || STATE.totpUnavailable || STATE.totpFetching) return;
+  if (STATE.totpValue && !isFlowTotpValueExpired()) return;
+  if (STATE.totpRequestAttempts >= 4) {
+    setStatus(`${getToolDisplayName()} authenticator code fetch failed after 4 attempts`);
+    return;
+  }
+
+  const now = Date.now();
+  if (now - STATE.totpLastRequestAt < 2000) return;
+
+  STATE.totpFetching = true;
+  STATE.totpLastRequestAt = now;
+  STATE.totpRequestAttempts += 1;
+  setStatus(`Fetching ${getToolDisplayName()} authenticator code (attempt ${STATE.totpRequestAttempts})...`);
+
+  const extensionTicket = captureFlowExtensionTicket();
   const response = await sendRuntimeMessage({
-    type: 'TOOL_HUB_GET_LAUNCH_STATE',
-    toolSlug: inferredToolSlug,
+    type: 'TOOL_HUB_FETCH_TOTP',
+    toolSlug: STATE.toolSlug,
     hostname: window.location.hostname,
     pageUrl: window.location.href,
+    extensionTicket,
+    loginIdentifier: STATE.credential?.loginIdentifier || '',
   });
+
+  STATE.totpFetching = false;
+
+  if (!response?.ok || !response.otp) {
+    const errorMessage = `${response?.error || `${getToolDisplayName()} authenticator code not available`}`;
+    if (
+      errorMessage.includes('No TOTP secret configured')
+      || errorMessage.includes('http=404')
+    ) {
+      STATE.totpUnavailable = true;
+      STATE.totpValue = '';
+      STATE.totpExpiresInSec = 0;
+      STATE.totpFetchedAt = 0;
+      if (isFlowTool()) {
+        setStatus(`No ${getToolDisplayName()} authenticator seed is configured. Falling back to backup codes if available.`);
+      } else {
+        setStatus(`No ${getToolDisplayName()} authenticator seed is configured. Choose another verification method or add it in the dashboard.`);
+      }
+      scheduleAttempt(250);
+      return;
+    }
+
+    STATE.totpValue = '';
+    setStatus(errorMessage);
+    scheduleAttempt(1500);
+    return;
+  }
+
+  STATE.totpUnavailable = false;
+  STATE.totpValue = `${response.otp}`.trim();
+  STATE.totpExpiresInSec = Number(response.expiresInSec || 0);
+  STATE.totpFetchedAt = Date.now();
+  scheduleAttempt(100);
+}
+
+async function submitFlowTotpStep(input) {
+  if (!input) return false;
+
+  const submitButton = findFlowTotpSubmitButton(input);
+  if (submitButton && safeClick(submitButton)) {
+    await sleep(900);
+    return true;
+  }
+
+  if (pressEnter(input)) {
+    await sleep(900);
+    return true;
+  }
+
+  const form = input.closest('form');
+  if (form) {
+    try {
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.submit?.();
+      await sleep(900);
+      return true;
+    } catch {}
+  }
+
+  return false;
+}
+
+async function loadLaunchState() {
+  const inferredToolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  const extensionTicket = inferredToolSlug === 'flow' ? captureFlowExtensionTicket() : '';
+  const response = extensionTicket
+    ? await sendRuntimeMessage({
+        type: 'TOOL_HUB_ACTIVATE_LAUNCH',
+        toolSlug: inferredToolSlug,
+        hostname: window.location.hostname,
+        pageUrl: window.location.href,
+        extensionTicket,
+      })
+    : await sendRuntimeMessage({
+        type: 'TOOL_HUB_GET_LAUNCH_STATE',
+        toolSlug: inferredToolSlug,
+        hostname: window.location.hostname,
+        pageUrl: window.location.href,
+      });
 
   STATE.launchChecked = true;
   STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
@@ -680,6 +1220,10 @@ async function loadLaunchState() {
     STATE.toolSlug = normalizeToolSlug(response.toolSlug);
   } else if (inferredToolSlug) {
     STATE.toolSlug = inferredToolSlug;
+  }
+
+  if (inferredToolSlug === 'flow' && !extensionTicket) {
+    STATE.launchAuthorized = false;
   }
 }
 
@@ -704,13 +1248,16 @@ function requestCredential() {
   STATE.lastRequestAt = now;
   STATE.requestAttempts += 1;
   setStatus(`Fetching credential (attempt ${STATE.requestAttempts})`);
+  const requestContext = getContinuationRequestContext(toolSlug);
+  const extensionTicket = toolSlug === 'flow' ? captureFlowExtensionTicket() : '';
 
   chrome.runtime.sendMessage(
     {
       type: 'TOOL_HUB_GET_CREDENTIAL',
       toolSlug,
-      hostname: window.location.hostname,
-      pageUrl: window.location.href,
+      hostname: requestContext.hostname,
+      pageUrl: requestContext.pageUrl,
+      extensionTicket,
     },
     (response) => {
       STATE.requested = false;
@@ -737,6 +1284,23 @@ function requestCredential() {
   );
 }
 
+async function markAuthTransition() {
+  if (!isFlowTool()) return false;
+  if (STATE.authTransitionMarkedAt && Date.now() - STATE.authTransitionMarkedAt < 15000) {
+    return true;
+  }
+
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_MARK_AUTH_TRANSITION',
+    toolSlug: STATE.toolSlug,
+  });
+  if (response?.ok) {
+    STATE.authTransitionMarkedAt = Date.now();
+    return true;
+  }
+  return false;
+}
+
 async function attemptEmailStep(credential) {
   const input = findGoogleEmailInput();
   if (!input) return false;
@@ -760,7 +1324,7 @@ async function attemptEmailStep(credential) {
     STATE.lastEmailSubmitAt = Date.now();
     STATE.emailSubmitted = true;
     setStatus('Email submitted, waiting for password page');
-    scheduleAttempt(1200);
+    scheduleAttempt(450);
     return true;
   }
 
@@ -818,7 +1382,7 @@ async function attemptPasswordStep(credential) {
   const input = findGooglePasswordInput();
   if (!input) return false;
 
-  if (!STATE.passwordSavingSuppressed) {
+  if (!STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) {
     requestPasswordSavingSuppression();
     return true;
   }
@@ -842,8 +1406,11 @@ async function attemptPasswordStep(credential) {
     STATE.lastPasswordFilledAt = Date.now();
     STATE.lastPasswordSubmitAt = Date.now();
     STATE.passwordSubmitted = true;
+    resetFlowTotpProgress();
+    resetFlowBackupCodeProgress();
+    await markAuthTransition();
     setStatus('Password submitted, signing in');
-    scheduleAttempt(1500);
+    scheduleAttempt(700);
     return true;
   }
 
@@ -897,6 +1464,229 @@ async function attemptPasswordStep(credential) {
   return true;
 }
 
+async function attemptFlowTotpStep() {
+  if (!supportsGoogleAuthenticatorAutomation()) return false;
+
+  const totpInput = findFlowTotpInput();
+  const authenticatorChoiceButton = findFlowAuthenticatorChoiceButton();
+
+  if (!totpInput && !authenticatorChoiceButton) {
+    return false;
+  }
+
+  if (STATE.totpUnavailable) {
+    if (totpInput) {
+      const tryAnotherWayButton = findFlowTryAnotherWayButton();
+      if (tryAnotherWayButton) {
+        setStatus(`${getToolDisplayName()} authenticator seed missing. Returning to other verification methods...`);
+        if (!safeClick(tryAnotherWayButton)) {
+          scheduleAttempt(400);
+          return true;
+        }
+        scheduleAttempt(900);
+        return true;
+      }
+      setStatus(`${getToolDisplayName()} authenticator seed is not configured. Choose another verification method or add it in the dashboard.`);
+      return true;
+    }
+    return false;
+  }
+
+  if (authenticatorChoiceButton && !totpInput) {
+    if (!STATE.totpValue && !STATE.totpFetching && !STATE.totpRequestAttempts) {
+      requestFlowTotp();
+      setStatus(`Checking for a stored ${getToolDisplayName()} authenticator seed...`);
+      return true;
+    }
+    if (STATE.totpFetching) {
+      setStatus(`Checking for a stored ${getToolDisplayName()} authenticator seed...`);
+      return true;
+    }
+    if (!STATE.totpValue) {
+      return false;
+    }
+    setStatus(`Choosing ${getToolDisplayName()} authenticator-app sign-in...`);
+    if (!safeClick(authenticatorChoiceButton)) {
+      setStatus(`${getToolDisplayName()} authenticator option is visible but not clickable yet`);
+      scheduleAttempt(400);
+      return true;
+    }
+    scheduleAttempt(900);
+    return true;
+  }
+
+  if (!totpInput) {
+    return false;
+  }
+
+  if (STATE.totpSubmitted) {
+    if (Date.now() - STATE.lastTotpSubmitAt < STEP_PENDING_RETRY_MS) {
+      setStatus(`Authenticator code submitted, waiting for ${getToolDisplayName()} sign-in`);
+      scheduleAttempt(700);
+      return true;
+    }
+
+    STATE.lastTotpSubmitAt = 0;
+    STATE.totpSubmitted = false;
+    STATE.totpValue = '';
+    STATE.totpFetchedAt = 0;
+    STATE.totpExpiresInSec = 0;
+  }
+
+  if (isFlowTotpValueExpired()) {
+    STATE.totpValue = '';
+    STATE.totpFetchedAt = 0;
+    STATE.totpExpiresInSec = 0;
+  }
+
+  if (!STATE.totpValue) {
+    requestFlowTotp();
+    setStatus(STATE.totpFetching ? `Fetching ${getToolDisplayName()} authenticator code...` : `Waiting for ${getToolDisplayName()} authenticator code...`);
+    return true;
+  }
+
+  if (`${totpInput.value || ''}` !== STATE.totpValue) {
+    totpInput.focus?.();
+    setInputValue(totpInput, STATE.totpValue);
+    totpInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    totpInput.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+    totpInput.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+    STATE.lastTotpFilledAt = Date.now();
+    STATE.totpSubmitted = false;
+    setStatus(`Filling ${getToolDisplayName()} authenticator code...`);
+    scheduleAttempt(INPUT_SETTLE_MS);
+    return true;
+  }
+
+  if (STATE.lastTotpFilledAt > 0) {
+    const settleRemaining = INPUT_SETTLE_MS - (Date.now() - STATE.lastTotpFilledAt);
+    if (settleRemaining > 0) {
+      setStatus(`${getToolDisplayName()} authenticator code filled, waiting to continue`);
+      scheduleAttempt(settleRemaining);
+      return true;
+    }
+  }
+
+  const submitted = await submitFlowTotpStep(totpInput);
+  if (!submitted) {
+    setStatus(`${getToolDisplayName()} authenticator code filled, submit action not ready`);
+    scheduleAttempt(250);
+    return true;
+  }
+
+  STATE.lastTotpSubmitAt = Date.now();
+  STATE.totpSubmitted = true;
+  await markAuthTransition();
+  setStatus(`Authenticator code submitted, completing ${getToolDisplayName()} sign-in`);
+  scheduleAttempt(800);
+  return true;
+}
+
+async function attemptFlowBackupCodeStep(credential) {
+  if (!isFlowTool()) return false;
+
+  const backupCodeInput = findFlowBackupCodeInput();
+  const backupCodeChoiceButton = findFlowBackupCodeChoiceButton();
+  const tryAnotherWayButton = findFlowTryAnotherWayButton();
+  const backupCodes = getFlowBackupCodes(credential);
+
+  if (!backupCodeInput && !backupCodeChoiceButton && !isFlowBackupCodeScreen()) {
+    return false;
+  }
+
+  if (!backupCodes.length) {
+    setStatus('Flow needs backup codes. Add them in the dashboard or enter one manually.');
+    return true;
+  }
+
+  if (backupCodeChoiceButton && !backupCodeInput) {
+    setStatus('Choosing Flow backup-code sign-in...');
+    if (!safeClick(backupCodeChoiceButton)) {
+      setStatus('Flow backup-code option is visible but not clickable yet');
+      scheduleAttempt(400);
+      return true;
+    }
+    scheduleAttempt(900);
+    return true;
+  }
+
+  if (!backupCodeInput && tryAnotherWayButton) {
+    setStatus('Opening alternate Flow verification options...');
+    if (!safeClick(tryAnotherWayButton)) {
+      setStatus('Flow verification menu is not clickable yet');
+      scheduleAttempt(400);
+      return true;
+    }
+    scheduleAttempt(900);
+    return true;
+  }
+
+  if (!backupCodeInput) {
+    setStatus('Waiting for Flow backup-code field');
+    scheduleAttempt(500);
+    return true;
+  }
+
+  if (STATE.backupCodeSubmitted) {
+    if (Date.now() - STATE.lastBackupCodeSubmitAt < STEP_PENDING_RETRY_MS) {
+      setStatus('Backup code submitted, waiting for Flow sign-in');
+      scheduleAttempt(700);
+      return true;
+    }
+
+    if (!moveToNextFlowBackupCode(credential)) {
+      STATE.settled = true;
+      setStatus('All stored Flow backup codes were tried. Update them in the dashboard or enter a code manually.');
+      releasePasswordSavingSuppressed(0);
+      return true;
+    }
+
+    setStatus('Retrying Flow sign-in with the next backup code...');
+  }
+
+  const backupCode = getCurrentFlowBackupCode(credential);
+  if (!backupCode) {
+    setStatus('Flow backup codes are missing. Add them in the dashboard.');
+    return true;
+  }
+
+  if (`${backupCodeInput.value || ''}` !== backupCode) {
+    backupCodeInput.focus?.();
+    setInputValue(backupCodeInput, backupCode);
+    backupCodeInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    backupCodeInput.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+    backupCodeInput.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+    STATE.lastBackupCodeFilledAt = Date.now();
+    STATE.backupCodeSubmitted = false;
+    setStatus('Filling Flow backup code...');
+    scheduleAttempt(INPUT_SETTLE_MS);
+    return true;
+  }
+
+  if (STATE.lastBackupCodeFilledAt > 0) {
+    const settleRemaining = INPUT_SETTLE_MS - (Date.now() - STATE.lastBackupCodeFilledAt);
+    if (settleRemaining > 0) {
+      setStatus('Flow backup code filled, waiting to continue');
+      scheduleAttempt(settleRemaining);
+      return true;
+    }
+  }
+
+  const submitted = await submitFlowBackupCodeStep(backupCodeInput);
+  if (!submitted) {
+    setStatus('Flow backup code filled, submit action not ready');
+    scheduleAttempt(250);
+    return true;
+  }
+
+  STATE.lastBackupCodeSubmitAt = Date.now();
+  STATE.backupCodeSubmitted = true;
+  await markAuthTransition();
+  setStatus('Backup code submitted, completing Flow sign-in');
+  scheduleAttempt(800);
+  return true;
+}
+
 async function attemptFill() {
   if (STATE.settled) return;
   if (!STATE.launchChecked) {
@@ -918,6 +1708,8 @@ async function attemptFill() {
 
   if (await attemptPasswordStep(credential)) return;
   if (await attemptEmailStep(credential)) return;
+  if (await attemptFlowTotpStep()) return;
+  if (await attemptFlowBackupCodeStep(credential)) return;
 
   setStatus('Waiting for Google sign-in fields');
 }
@@ -973,11 +1765,6 @@ function start() {
       STATE.launchAuthorized = false;
     })
     .finally(() => {
-      const activeToolSlug = normalizeToolSlug(STATE.toolSlug);
-      if (activeToolSlug === 'chatgpt') {
-        STATE.settled = true;
-        return;
-      }
       ensureStatusBadge();
       scheduleAttempt(0);
     });

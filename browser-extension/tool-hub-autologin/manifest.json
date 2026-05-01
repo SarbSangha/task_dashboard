@@ -26,6 +26,8 @@
     "https://market.envato.com/*",
     "https://freepik.com/*",
     "https://*.freepik.com/*",
+    "https://magnific.com/*",
+    "https://*.magnific.com/*",
     "https://higgsfield.ai/*",
     "https://*.higgsfield.ai/*",
     "https://heygen.com/*",
@@ -68,8 +70,7 @@
       "matches": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
-        "https://auth.openai.com/*",
-        "https://accounts.google.com/*"
+        "https://auth.openai.com/*"
       ],
       "js": ["content-chatgpt.js"],
       "run_at": "document_idle",
@@ -89,7 +90,10 @@
     {
       "matches": [
         "https://www.freepik.com/*",
-        "https://freepik.com/*"
+        "https://freepik.com/*",
+        "https://www.magnific.com/*",
+        "https://magnific.com/*",
+        "https://*.magnific.com/*"
       ],
       "js": ["content-freepik.js"],
       "run_at": "document_idle"
@@ -122,10 +126,11 @@
     },
     {
       "matches": [
-        "https://labs.google/*"
+        "https://labs.google/*",
+        "https://one.google.com/*"
       ],
       "js": ["content-flow.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     },
     {
       "matches": [

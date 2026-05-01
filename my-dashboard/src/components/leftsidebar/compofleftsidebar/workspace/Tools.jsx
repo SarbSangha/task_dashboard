@@ -77,6 +77,8 @@ const EMPTY_CREDENTIAL_FORM = {
   user_ids: [],
   login_identifier: '',
   password: '',
+  backup_codes: '',
+  totp_secret: '',
   notes: '',
 };
 
@@ -89,6 +91,12 @@ const EMPTY_MAILBOX_FORM = {
   otp_regex: '\\b(\\d{4,8})\\b',
 };
 
+const normalizeToolSlug = (value) => {
+  const normalized = `${value || ''}`.trim().toLowerCase();
+  if (normalized === 'chat-gpt') return 'chatgpt';
+  return normalized;
+};
+
 const copyToClipboard = async (value) => {
   if (!value) return false;
   if (navigator.clipboard?.writeText) {
@@ -99,7 +107,7 @@ const copyToClipboard = async (value) => {
 };
 
 const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
-  const normalizedSlug = `${toolSlug || ''}`.trim().toLowerCase();
+  const normalizedSlug = normalizeToolSlug(toolSlug);
   if (!normalizedSlug) {
     resolve({ ok: false, stored: false, error: 'Missing tool slug for extension launch.' });
     return;
@@ -118,7 +126,7 @@ const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
     resolve(result);
   };
   const handleStored = (event) => {
-    const storedSlug = `${event.detail?.toolSlug || ''}`.trim().toLowerCase();
+    const storedSlug = normalizeToolSlug(event.detail?.toolSlug);
     if (storedSlug === normalizedSlug) {
       finish({ ok: true, stored: true, error: '' });
     }
@@ -128,7 +136,7 @@ const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
     if (event.origin !== window.location.origin) return;
     if (event.data?.source !== 'rmw-tool-hub-extension') return;
     if (event.data?.type !== EXTENSION_LAUNCH_STORED_MESSAGE_TYPE) return;
-    const storedSlug = `${event.data?.toolSlug || ''}`.trim().toLowerCase();
+    const storedSlug = normalizeToolSlug(event.data?.toolSlug);
     if (storedSlug === normalizedSlug) {
       finish({ ok: true, stored: true, error: '' });
     }
@@ -146,9 +154,10 @@ const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
 });
 
 const openFlowInIsolatedWindow = (launchDetail) => new Promise((resolve) => {
-  const normalizedSlug = `${launchDetail?.toolSlug || ''}`.trim().toLowerCase();
-  if (normalizedSlug !== 'flow') {
-    resolve({ ok: false, error: 'Flow isolated launch is only available for Flow.' });
+  const normalizedSlug = normalizeToolSlug(launchDetail?.toolSlug);
+  const toolName = normalizedSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
+  if (!['flow', 'chatgpt'].includes(normalizedSlug)) {
+    resolve({ ok: false, error: 'Isolated launch is only available for Flow and ChatGPT.' });
     return;
   }
 
@@ -165,7 +174,7 @@ const openFlowInIsolatedWindow = (launchDetail) => new Promise((resolve) => {
     resolve(result);
   };
   const handleResult = (event) => {
-    const resultSlug = `${event.detail?.toolSlug || ''}`.trim().toLowerCase();
+    const resultSlug = normalizeToolSlug(event.detail?.toolSlug);
     if (resultSlug !== normalizedSlug) return;
     finish({
       ok: Boolean(event.detail?.ok),
@@ -177,7 +186,7 @@ const openFlowInIsolatedWindow = (launchDetail) => new Promise((resolve) => {
     if (event.origin !== window.location.origin) return;
     if (event.data?.source !== 'rmw-tool-hub-extension') return;
     if (event.data?.type !== EXTENSION_WINDOW_LAUNCH_RESULT_MESSAGE_TYPE) return;
-    const resultSlug = `${event.data?.toolSlug || ''}`.trim().toLowerCase();
+    const resultSlug = normalizeToolSlug(event.data?.toolSlug);
     if (resultSlug !== normalizedSlug) return;
     finish({
       ok: Boolean(event.data?.ok),
@@ -187,7 +196,7 @@ const openFlowInIsolatedWindow = (launchDetail) => new Promise((resolve) => {
   const timerId = window.setTimeout(() => {
     finish({
       ok: false,
-      error: 'Flow isolated launch timed out. Check whether the extension is loaded and allowed in incognito.',
+      error: `${toolName} isolated launch timed out. Check whether the extension is loaded and allowed in incognito.`,
     });
   }, 5000);
 
@@ -205,14 +214,15 @@ const buildExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug) => {
 
   try {
     const url = new URL(launchUrl, window.location.origin);
+    const normalizedToolSlug = normalizeToolSlug(toolSlug);
     url.searchParams.set('rmw_extension_ticket', extensionTicket);
-    if (toolSlug) {
-      url.searchParams.set('rmw_tool_slug', toolSlug);
+    if (normalizedToolSlug) {
+      url.searchParams.set('rmw_tool_slug', normalizedToolSlug);
     }
     const params = new URLSearchParams((url.hash || '').replace(/^#/, ''));
     params.set('rmw_extension_ticket', extensionTicket);
-    if (toolSlug) {
-      params.set('rmw_tool_slug', toolSlug);
+    if (normalizedToolSlug) {
+      params.set('rmw_tool_slug', normalizedToolSlug);
     }
     url.hash = params.toString();
     return url.toString();
@@ -222,9 +232,9 @@ const buildExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug) => {
 };
 
 const resolveExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug) => {
-  const normalizedSlug = `${toolSlug || ''}`.trim().toLowerCase();
+  const normalizedSlug = normalizeToolSlug(toolSlug);
   const nextLaunchUrl = normalizedSlug === 'flow' ? FLOW_DIRECT_ROUTE_URL : launchUrl;
-  return buildExtensionLaunchUrl(nextLaunchUrl, extensionTicket, toolSlug);
+  return buildExtensionLaunchUrl(nextLaunchUrl, extensionTicket, normalizedSlug);
 };
 
 export default function Tools() {
@@ -349,6 +359,17 @@ export default function Tools() {
       return matchesSearch && matchesCategory;
     });
   }, [searchQuery, selectedCategory, tools]);
+
+  const activeCredentialTool = useMemo(() => {
+    const toolId = `${credentialForm.toolId || selectedTool?.id || ''}`.trim();
+    if (!toolId) return null;
+    return tools.find((tool) => `${tool.id}` === toolId) || null;
+  }, [credentialForm.toolId, selectedTool, tools]);
+
+  const activeCredentialToolSlug = normalizeToolSlug(activeCredentialTool?.slug);
+  const showToolTotpSecretField = ['flow', 'chatgpt'].includes(activeCredentialToolSlug);
+  const showFlowBackupCodesField = activeCredentialToolSlug === 'flow';
+  const totpSecretToolLabel = activeCredentialToolSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
 
   const credentialDirectory = useMemo(() => {
     return tools.reduce((accumulator, tool) => {
@@ -558,6 +579,16 @@ export default function Tools() {
       setError('Choose a tool before saving credentials.');
       return;
     }
+    const targetTool = tools.find((tool) => `${tool.id}` === `${toolId}`) || null;
+    const targetToolSlug = normalizeToolSlug(targetTool?.slug);
+    const supportsBackupCodes = targetToolSlug === 'flow';
+    const supportsTotpSecret = ['flow', 'chatgpt'].includes(targetToolSlug);
+    const backupCodesValue = supportsBackupCodes
+      ? credentialForm.backup_codes
+      : undefined;
+    const totpSecretValue = supportsTotpSecret
+      ? credentialForm.totp_secret
+      : undefined;
     setSaving(true);
     setError('');
     setNotice('');
@@ -578,6 +609,8 @@ export default function Tools() {
             user_id: userId,
             login_identifier: credentialForm.login_identifier,
             password: credentialForm.password,
+            backup_codes: backupCodesValue,
+            totp_secret: totpSecretValue,
             notes: credentialForm.notes,
           }))
         );
@@ -607,6 +640,8 @@ export default function Tools() {
           user_id: null,
           login_identifier: credentialForm.login_identifier,
           password: credentialForm.password,
+          backup_codes: backupCodesValue,
+          totp_secret: totpSecretValue,
           notes: credentialForm.notes,
         });
         setCredentialForm({ ...EMPTY_CREDENTIAL_FORM, toolId: `${toolId}` });
@@ -722,8 +757,9 @@ export default function Tools() {
       setLaunchResult(response);
       let launchUrl = response.launchUrl;
       if (response.extensionAutoFill && response.extensionTicket && response.tool?.slug) {
+        const normalizedToolSlug = normalizeToolSlug(response.tool.slug);
         const launchDetail = {
-          toolSlug: response.tool.slug,
+          toolSlug: normalizedToolSlug,
           toolName: response.tool.name,
           ticket: response.extensionTicket,
           expiresAt: Number(response.extensionTicketExpiresAt || 0) * 1000,
@@ -737,18 +773,18 @@ export default function Tools() {
           type: EXTENSION_LAUNCH_MESSAGE_TYPE,
           ...launchDetail,
         }, window.location.origin);
-        const launchStored = await waitForExtensionLaunchStored(response.tool.slug);
+        const launchStored = await waitForExtensionLaunchStored(normalizedToolSlug);
         if (!launchStored.ok) {
           throw new Error(launchStored.error || 'Extension launch bridge did not respond.');
         }
-        launchUrl = resolveExtensionLaunchUrl(response.launchUrl, response.extensionTicket, response.tool.slug);
-        if (`${response.tool.slug}`.trim().toLowerCase() === 'flow') {
+        launchUrl = resolveExtensionLaunchUrl(response.launchUrl, response.extensionTicket, normalizedToolSlug);
+        if (['flow', 'chatgpt'].includes(normalizedToolSlug)) {
           const isolatedResult = await openFlowInIsolatedWindow({
-            toolSlug: response.tool.slug,
+            toolSlug: normalizedToolSlug,
             launchUrl,
           });
           if (!isolatedResult.ok) {
-            throw new Error(isolatedResult.error || 'Unable to open Flow in an isolated window.');
+            throw new Error(isolatedResult.error || `Unable to open ${response.tool.name || response.tool.slug} in an isolated window.`);
           }
           return;
         }
@@ -963,6 +999,34 @@ export default function Tools() {
                 )}
                 <input value={credentialForm.login_identifier} onChange={(e) => setCredentialForm({ ...credentialForm, login_identifier: e.target.value })} placeholder="Username / email" autoComplete="off" spellCheck={false} />
                 <input type="password" value={credentialForm.password} onChange={(e) => setCredentialForm({ ...credentialForm, password: e.target.value })} placeholder="Password" autoComplete="new-password" />
+                {showToolTotpSecretField && (
+                  <div className="it-span-2 it-secret-support-field">
+                    <label htmlFor="flow-totp-secret">{totpSecretToolLabel} authenticator seed</label>
+                    <textarea
+                      id="flow-totp-secret"
+                      value={credentialForm.totp_secret}
+                      onChange={(e) => setCredentialForm({ ...credentialForm, totp_secret: e.target.value })}
+                      placeholder={`Paste the 32-character base32 secret or full otpauth:// URI\nJBSWY3DPEHPK3PXP`}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <small>Optional. Stored encrypted on the backend only. The extension will request only the current 6-digit code during Google authenticator verification and never receive this seed.</small>
+                  </div>
+                )}
+                {showFlowBackupCodesField && (
+                  <div className="it-span-2 it-secret-support-field">
+                    <label htmlFor="flow-backup-codes">Flow backup codes</label>
+                    <textarea
+                      id="flow-backup-codes"
+                      value={credentialForm.backup_codes}
+                      onChange={(e) => setCredentialForm({ ...credentialForm, backup_codes: e.target.value })}
+                      placeholder={`Enter one 8-digit code per line\n12345678\n87654321`}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <small>Optional. Paste one Google 8-digit backup code per line and the Flow extension will try them in order when backup-code sign-in is shown.</small>
+                  </div>
+                )}
               </div>
               <textarea value={credentialForm.notes} onChange={(e) => setCredentialForm({ ...credentialForm, notes: e.target.value })} placeholder="Internal notes optional" autoComplete="off" />
               <button className="it-primary-btn" type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save Credential'}</button>

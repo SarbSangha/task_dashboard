@@ -11,7 +11,9 @@ const EXTENSION_AUTH_SYNC_MESSAGE_TYPE = 'TOOL_HUB_SYNC_AUTH_CONTEXT';
 const MAX_LAUNCH_USES = 3;
 
 function normalizeToolSlug(value) {
-  return `${value || ''}`.trim().toLowerCase();
+  const normalized = `${value || ''}`.trim().toLowerCase();
+  if (normalized === 'chat-gpt') return 'chatgpt';
+  return normalized;
 }
 
 function normalizeHostname(value) {
@@ -101,11 +103,12 @@ function handleLaunchDetail(detail) {
 function requestFlowIsolatedWindow(detail) {
   const toolSlug = normalizeToolSlug(detail?.toolSlug);
   const launchUrl = `${detail?.launchUrl || ''}`.trim();
-  if (toolSlug !== 'flow' || !launchUrl) {
+  if (!['flow', 'chatgpt'].includes(toolSlug) || !launchUrl) {
+    const toolName = toolSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
     emitWindowLaunchResult({
       toolSlug,
       ok: false,
-      error: 'Flow launch details are incomplete.',
+      error: `${toolName} launch details are incomplete.`,
     });
     return;
   }
@@ -129,7 +132,7 @@ function requestFlowIsolatedWindow(detail) {
       emitWindowLaunchResult({
         toolSlug,
         ok: Boolean(response?.ok),
-        error: response?.ok ? '' : (response?.error || 'Unable to open Flow in an isolated window.'),
+        error: response?.ok ? '' : (response?.error || `Unable to open ${toolSlug === 'chatgpt' ? 'ChatGPT' : 'Flow'} in an isolated window.`),
       });
     }
   );

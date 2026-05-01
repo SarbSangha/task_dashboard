@@ -1,5 +1,6 @@
 const TOOL_SLUG = 'freepik';
-const LOGIN_URL = 'https://www.freepik.com/log-in?client_id=freepik&lang=en';
+const LOGIN_URL = 'https://www.magnific.com/log-in?client_id=magnific&lang=en';
+const SIGNUP_URL_PATH_FRAGMENT = '/sign-up';
 const PREPARED_LAUNCH_KEY = 'rmw_freepik_prepared_launch';
 const BLOCKED_NOTICE_KEY = 'rmw_freepik_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
@@ -31,6 +32,10 @@ const PASSWORD_SELECTORS = [
   'input[aria-label*="password" i]',
 ];
 
+const PASSWORD_REVEAL_ACTION_HINTS = ['show', 'hide', 'view', 'reveal', 'toggle'];
+const PASSWORD_REVEAL_SUBJECT_HINTS = ['password', 'passcode'];
+const PASSWORD_REVEAL_ICON_HINTS = ['eye', 'visibility', 'visible'];
+
 const ACTION_SELECTORS = [
   'button',
   'a[href]',
@@ -40,7 +45,7 @@ const ACTION_SELECTORS = [
 ].join(',');
 
 const STATE = {
-  status: 'Waiting for Freepik',
+  status: 'Waiting for Magnific',
   credential: null,
   launchChecked: false,
   launchAuthorized: false,
@@ -55,6 +60,8 @@ const STATE = {
   passwordSavingInFlight: false,
   passwordSavingSuppressed: false,
   passwordSavingRestoreTimer: null,
+  passwordRevealGuardAttached: false,
+  switchingToLoginUntil: 0,
   stopped: false,
 };
 
@@ -79,7 +86,7 @@ function ensureStatusBadge() {
     pointerEvents: 'none',
     whiteSpace: 'pre-wrap',
   });
-  badge.textContent = `Freepik auto-login\n${STATE.status}`;
+  badge.textContent = `Magnific auto-login\n${STATE.status}`;
   (document.body || document.documentElement).appendChild(badge);
   return badge;
 }
@@ -87,8 +94,8 @@ function ensureStatusBadge() {
 function setStatus(message) {
   if (STATE.status === message) return;
   STATE.status = message;
-  ensureStatusBadge().textContent = `Freepik auto-login\n${message}`;
-  console.debug('[RMW Freepik Auto Login]', message);
+  ensureStatusBadge().textContent = `Magnific auto-login\n${message}`;
+  console.debug('[RMW Magnific Auto Login]', message);
 }
 
 function stop(message) {
@@ -239,7 +246,9 @@ function captureLaunchTicket() {
 
 function getPreparedLaunchKey() {
   try {
-    return `${window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) || ''}`.trim();
+    return `${window.sessionStorage.getItem(PREPARED_LAUNCH_KEY)
+      || window.localStorage.getItem(PREPARED_LAUNCH_KEY)
+      || ''}`.trim();
   } catch {
     return '';
   }
@@ -286,11 +295,11 @@ async function loadLaunchState() {
 }
 
 function clearPageStorage() {
+  const preparedLaunch = getPreparedLaunchKey();
   try {
     window.localStorage.clear();
   } catch {}
   try {
-    const preparedLaunch = window.sessionStorage.getItem(PREPARED_LAUNCH_KEY);
     const blockedNotice = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY);
     const extensionTicket = window.sessionStorage.getItem(EXTENSION_TICKET_KEY);
     window.sessionStorage.clear();
@@ -304,6 +313,10 @@ function clearPageStorage() {
       window.sessionStorage.setItem(EXTENSION_TICKET_KEY, extensionTicket);
     }
   } catch {}
+  if (preparedLaunch) {
+    try { window.localStorage.setItem(PREPARED_LAUNCH_KEY, preparedLaunch); } catch {}
+    try { window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, preparedLaunch); } catch {}
+  }
 }
 
 function isVisible(element) {
@@ -338,9 +351,43 @@ function actionText(element) {
   );
 }
 
-function collectActionCandidates(root = document) {
+function controlHintText(element) {
+  return normalizeText([
+    actionText(element),
+    element?.getAttribute?.('name'),
+    element?.getAttribute?.('id'),
+    element?.getAttribute?.('class'),
+    element?.getAttribute?.('data-testid'),
+    element?.getAttribute?.('data-icon'),
+    element?.getAttribute?.('aria-controls'),
+  ].filter(Boolean).join(' '));
+}
+
+function collectActionCandidates(root = document, options = {}) {
+  const includeDisabled = Boolean(options.includeDisabled);
   return Array.from(root.querySelectorAll(ACTION_SELECTORS))
-    .filter((element) => isVisible(element) && !isDisabled(element));
+    .filter((element) => isVisible(element) && (includeDisabled || !isDisabled(element)));
+}
+
+function collectUniqueElements(elements) {
+  return Array.from(new Set(elements.filter(Boolean)));
+}
+
+function isActionLikeElement(element) {
+  if (!element || !isVisible(element) || isDisabled(element)) return false;
+  if (element.matches?.(ACTION_SELECTORS)) return true;
+  if (element.tabIndex >= 0) return true;
+  const style = window.getComputedStyle(element);
+  return style.cursor === 'pointer' || typeof element.onclick === 'function';
+}
+
+function findClickableAncestor(element) {
+  let current = element;
+  while (current && current !== document.body) {
+    if (isActionLikeElement(current)) return current;
+    current = current.parentElement;
+  }
+  return isVisible(element) ? element : null;
 }
 
 function findInput(selectors) {
@@ -353,6 +400,14 @@ function findInput(selectors) {
 }
 
 function findLoginOpenAction() {
+  const continueWithEmail = collectActionCandidates().find((element) => {
+    const text = actionText(element);
+    return text.includes('continue with email')
+      || text.includes('use email')
+      || text === 'email';
+  });
+  if (continueWithEmail) return continueWithEmail;
+
   return collectActionCandidates().find((element) => {
     const text = actionText(element);
     const href = normalizeText(element.getAttribute?.('href') || '');
@@ -360,8 +415,31 @@ function findLoginOpenAction() {
     return text.includes('log in')
       || text.includes('login')
       || text.includes('sign in')
-      || text.includes('continue with email')
-      || text === 'email'
+      || href.includes('/log-in')
+      || href.includes('/login');
+  }) || null;
+}
+
+function findEmailChooserAction() {
+  return collectActionCandidates().find((element) => {
+    const text = actionText(element);
+    return text.includes('continue with email')
+      || text.includes('use email')
+      || text === 'email';
+  }) || null;
+}
+
+function findGenericLoginAction() {
+  return collectActionCandidates().find((element) => {
+    const text = actionText(element);
+    const href = normalizeText(element.getAttribute?.('href') || '');
+    const textLooksLikeLogin = (text === 'log in' || text === 'login' || text === 'sign in' || text.includes('log in'))
+      && !text.includes('google')
+      && !text.includes('apple')
+      && !text.includes('email')
+      && !text.includes('sign up')
+      && !text.includes('create account');
+    return textLooksLikeLogin
       || href.includes('/log-in')
       || href.includes('/login');
   }) || null;
@@ -369,9 +447,14 @@ function findLoginOpenAction() {
 
 function isLoginPage() {
   return window.location.pathname.includes('/log-in')
+    || window.location.pathname.includes('/login')
     || Boolean(findInput(EMAIL_SELECTORS))
     || Boolean(findInput(PASSWORD_SELECTORS))
     || Boolean(findLoginOpenAction());
+}
+
+function onSignUpRoute() {
+  return window.location.pathname.includes(SIGNUP_URL_PATH_FRAGMENT);
 }
 
 function getFieldRoots(...fields) {
@@ -391,25 +474,64 @@ function getFieldRoots(...fields) {
   return Array.from(new Set(roots));
 }
 
-function findSubmitButton(emailInput, passwordInput) {
-  const exactMatches = ['log in', 'login', 'sign in', 'continue'];
+function collectFieldContextText(emailInput, passwordInput, maxRoots = 3) {
+  const scopedRoots = getFieldRoots(emailInput, passwordInput)
+    .filter((root) => root && root !== document);
+  const roots = scopedRoots.length ? scopedRoots : [document];
+  return normalizeText(roots
+    .slice(0, Math.max(1, maxRoots))
+    .map((root) => root?.innerText || root?.textContent || '')
+    .join(' '));
+}
+
+function hasLoginSurfaceClues(emailInput, passwordInput) {
+  const contextText = collectFieldContextText(emailInput, passwordInput, 3);
+  return contextText.includes('forgot my password')
+    || contextText.includes('stay logged in');
+}
+
+function hasSignUpSurfaceClues(emailInput, passwordInput) {
+  const contextText = collectFieldContextText(emailInput, passwordInput, 3);
+  return contextText.includes('create an account');
+}
+
+function findButtonByText(emailInput, passwordInput, matcher, options = {}) {
+  for (const root of getFieldRoots(emailInput, passwordInput)) {
+    const candidates = collectActionCandidates(root, options);
+    const match = candidates.find((element) => matcher(actionText(element), element));
+    if (match) return match;
+  }
+
+  return null;
+}
+
+function findLoginSubmitButton(emailInput, passwordInput, options = {}) {
+  const exactMatches = new Set(['log in', 'login', 'sign in', 'continue']);
+  const exact = findButtonByText(
+    emailInput,
+    passwordInput,
+    (text) => exactMatches.has(text),
+    options
+  );
+  if (exact) return exact;
+
+  const partial = findButtonByText(
+    emailInput,
+    passwordInput,
+    (text) => (
+      (text.includes('log in') || text.includes('login') || text.includes('sign in') || text.includes('continue'))
+      && !text.includes('google')
+      && !text.includes('apple')
+      && !text.includes('email')
+      && !text.includes('sign up')
+      && !text.includes('create account')
+    ),
+    options
+  );
+  if (partial) return partial;
 
   for (const root of getFieldRoots(emailInput, passwordInput)) {
-    const candidates = collectActionCandidates(root);
-
-    const exact = candidates.find((element) => exactMatches.includes(actionText(element)));
-    if (exact) return exact;
-
-    const partial = candidates.find((element) => {
-      const text = actionText(element);
-      return text.includes('log in')
-        || text.includes('login')
-        || text.includes('sign in')
-        || text.includes('continue')
-        || text.includes('submit');
-    });
-    if (partial) return partial;
-
+    const candidates = collectActionCandidates(root, options);
     const submit = candidates.find((element) => `${element.type || ''}`.toLowerCase() === 'submit');
     if (submit) return submit;
   }
@@ -417,67 +539,222 @@ function findSubmitButton(emailInput, passwordInput) {
   return null;
 }
 
-function findPasswordToggle(passwordInput) {
-  if (!passwordInput) return null;
+function findSignUpSubmitButton(emailInput, passwordInput, options = {}) {
+  const exactMatches = new Set(['sign up', 'create account']);
+  const exact = findButtonByText(
+    emailInput,
+    passwordInput,
+    (text) => exactMatches.has(text),
+    options
+  );
+  if (exact) return exact;
 
-  const roots = [
-    passwordInput.parentElement,
-    passwordInput.closest('div'),
-    passwordInput.closest('form'),
-  ].filter(Boolean);
+  return findButtonByText(
+    emailInput,
+    passwordInput,
+    (text) => text.includes('sign up') || text.includes('create account'),
+    options
+  );
+}
 
-  for (const root of roots) {
-    const toggle = Array.from(
-      root.querySelectorAll('button, [role="button"], [aria-label], [title]')
-    ).find((element) => {
-      if (!isVisible(element)) return false;
-      const text = actionText(element);
-      return text.includes('show')
-        || text.includes('hide')
-        || text.includes('password')
-        || text.includes('eye');
+function isSignUpActionText(text) {
+  return text.includes('sign up') || text.includes('create account');
+}
+
+function findExistingAccountAction(emailInput, passwordInput) {
+  if (hasLoginSurfaceClues(emailInput, passwordInput)) return null;
+
+  const currentSubmit = findSignUpSubmitButton(emailInput, passwordInput, { includeDisabled: true });
+  const submitText = actionText(currentSubmit);
+  if (!isSignUpActionText(submitText)) return null;
+
+  const searchRoots = getFieldRoots(emailInput, passwordInput);
+  const actionCandidates = collectUniqueElements([
+    ...searchRoots.flatMap((root) => collectActionCandidates(root)),
+    ...searchRoots.flatMap((root) =>
+      Array.from(root.querySelectorAll('a[href], button, [role="button"], [tabindex], span, div'))
+        .map((element) => findClickableAncestor(element))
+    ),
+  ]);
+
+  return actionCandidates.find((element) => {
+    if (!element || element === currentSubmit) return false;
+
+    const text = actionText(element);
+    const href = normalizeText(element.getAttribute?.('href') || '');
+    if (!text && !href) return false;
+    if (isSignUpActionText(text)) return false;
+
+    return text === 'log in'
+      || text === 'login'
+      || text === 'sign in'
+      || text.includes('already have an account')
+      || (text.includes('log in') && !text.includes('google') && !text.includes('apple'))
+      || href.includes('/log-in')
+      || href.includes('/login');
+  }) || null;
+}
+
+function isSignUpSurface(emailInput, passwordInput) {
+  if (!emailInput || !passwordInput) return false;
+  if (hasLoginSurfaceClues(emailInput, passwordInput)) return false;
+  const submitButton = findSignUpSubmitButton(emailInput, passwordInput, { includeDisabled: true });
+  return isSignUpActionText(actionText(submitButton)) || hasSignUpSurfaceClues(emailInput, passwordInput);
+}
+
+function collectPasswordFieldScopes(passwordInput) {
+  const scopes = [];
+  let current = passwordInput?.parentElement || null;
+  let depth = 0;
+  while (current && current !== document.body && depth < 5) {
+    scopes.push(current);
+    current = current.parentElement;
+    depth += 1;
+  }
+  return Array.from(new Set(scopes));
+}
+
+function verticalOverlapAmount(aRect, bRect) {
+  return Math.max(0, Math.min(aRect.bottom, bRect.bottom) - Math.max(aRect.top, bRect.top));
+}
+
+function isNearPasswordInput(passwordInput, candidate) {
+  if (!passwordInput || !candidate || !isVisible(candidate)) return false;
+
+  const passwordRect = passwordInput.getBoundingClientRect();
+  const candidateRect = candidate.getBoundingClientRect();
+  const verticalOverlap = verticalOverlapAmount(passwordRect, candidateRect);
+  const horizontalGap = candidateRect.left - passwordRect.right;
+  const candidateCenterX = candidateRect.left + (candidateRect.width / 2);
+
+  return verticalOverlap >= Math.min(passwordRect.height, candidateRect.height) * 0.4
+    && candidateCenterX >= passwordRect.right - 40
+    && horizontalGap <= 80;
+}
+
+function isPasswordRowAffordance(passwordInput, candidate) {
+  if (!passwordInput || !candidate || !isVisible(candidate)) return false;
+
+  const passwordRect = passwordInput.getBoundingClientRect();
+  const candidateRect = candidate.getBoundingClientRect();
+  const verticalOverlap = verticalOverlapAmount(passwordRect, candidateRect);
+  const horizontalGap = candidateRect.left - passwordRect.right;
+  const candidateCenterX = candidateRect.left + (candidateRect.width / 2);
+
+  return verticalOverlap >= Math.min(passwordRect.height, candidateRect.height) * 0.35
+    && candidateCenterX >= passwordRect.right - 50
+    && horizontalGap <= 120;
+}
+
+function enforcePasswordMask(passwordInput) {
+  if (!passwordInput) return;
+  try {
+    passwordInput.type = 'password';
+    passwordInput.setAttribute('type', 'password');
+  } catch {}
+}
+
+function blockPasswordToggleEvent(event, passwordInput) {
+  enforcePasswordMask(passwordInput);
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  event.stopPropagation();
+}
+
+function findPasswordToggleCandidates(passwordInput) {
+  const roots = collectPasswordFieldScopes(passwordInput);
+  const rawCandidates = roots.flatMap((root) =>
+    Array.from(root.querySelectorAll('button, [role="button"], [tabindex], [aria-label], [title], svg, img, span, div'))
+  );
+
+  return Array.from(new Set(rawCandidates))
+    .map((element) => element.closest?.('button, [role="button"], [tabindex]') || element)
+    .filter((element) => element && element !== passwordInput && !element.contains(passwordInput) && !passwordInput.contains(element))
+    .filter((element) => {
+      const hints = controlHintText(element);
+      const hasSubjectHint = PASSWORD_REVEAL_SUBJECT_HINTS.some((hint) => hints.includes(hint));
+      const hasActionHint = PASSWORD_REVEAL_ACTION_HINTS.some((hint) => hints.includes(hint));
+      const hasIconHint = PASSWORD_REVEAL_ICON_HINTS.some((hint) => hints.includes(hint));
+      const classHints = normalizeText(`${element.className || ''}`);
+      const hasIconChild = Boolean(element.querySelector?.('svg, img'));
+      const looksLikeEye = hasIconChild || /eye|visibility|show|hide|view/.test(classHints);
+
+      return (hasSubjectHint && (hasActionHint || hasIconHint))
+        || (isNearPasswordInput(passwordInput, element) && (hasIconHint || looksLikeEye))
+        || isPasswordRowAffordance(passwordInput, element);
     });
+}
 
-    if (toggle) return toggle;
+function findPasswordToggleFromTarget(target, passwordInput) {
+  if (!target || !passwordInput) return null;
+
+  const path = typeof target.composedPath === 'function' ? target.composedPath() : [];
+  const pathElements = path.filter((node) => node?.nodeType === Node.ELEMENT_NODE);
+  const ancestors = [];
+  let current = target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+  while (current && current !== document.body) {
+    ancestors.push(current);
+    current = current.parentElement;
   }
 
-  return null;
+  const candidates = Array.from(new Set([...pathElements, ...ancestors]))
+    .map((element) => element.closest?.('button, [role="button"], [tabindex]') || element);
+  const knownToggles = findPasswordToggleCandidates(passwordInput);
+  return candidates.find((element) => knownToggles.includes(element)) || null;
+}
+
+function ensurePasswordRevealGuard() {
+  if (STATE.passwordRevealGuardAttached) return;
+  STATE.passwordRevealGuardAttached = true;
+
+  ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'keydown', 'keyup']
+    .forEach((eventName) => {
+      document.addEventListener(eventName, (event) => {
+        const passwordInput = findInput(PASSWORD_SELECTORS);
+        if (!passwordInput) return;
+        const toggle = findPasswordToggleFromTarget(event.target, passwordInput);
+        if (!toggle) return;
+        blockPasswordToggleEvent(event, passwordInput);
+      }, true);
+    });
 }
 
 function lockPasswordVisibility(passwordInput) {
   if (!passwordInput) return;
+  enforcePasswordMask(passwordInput);
+  ensurePasswordRevealGuard();
 
-  try {
-    passwordInput.type = 'password';
-  } catch {}
+  findPasswordToggleCandidates(passwordInput).forEach((toggle) => {
+    if (!toggle || toggle.dataset.rmwPasswordToggleLocked === '1') return;
 
-  const toggle = findPasswordToggle(passwordInput);
-  if (!toggle) return;
-  if (toggle.dataset.rmwPasswordToggleLocked === '1') return;
+    toggle.dataset.rmwPasswordToggleLocked = '1';
+    toggle.setAttribute('aria-disabled', 'true');
+    toggle.setAttribute('tabindex', '-1');
+    if ('disabled' in toggle) {
+      try {
+        toggle.disabled = true;
+      } catch {}
+    }
+    toggle.style.pointerEvents = 'none';
+    toggle.style.opacity = '0.45';
 
-  toggle.dataset.rmwPasswordToggleLocked = '1';
-  toggle.setAttribute('aria-disabled', 'true');
-  toggle.setAttribute('tabindex', '-1');
-  if ('disabled' in toggle) {
-    try {
-      toggle.disabled = true;
-    } catch {}
-  }
-  toggle.style.pointerEvents = 'none';
-  toggle.style.opacity = '0.45';
+    const blockToggle = (event) => blockPasswordToggleEvent(event, passwordInput);
+    ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'keydown', 'keyup']
+      .forEach((eventName) => toggle.addEventListener(eventName, blockToggle, true));
+  });
+}
 
-  const blockToggle = (event) => {
-    try {
-      passwordInput.type = 'password';
-    } catch {}
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    event.stopPropagation();
-  };
+function isLoginSurface(emailInput, passwordInput) {
+  if (!emailInput || !passwordInput) return false;
+  if (hasLoginSurfaceClues(emailInput, passwordInput)) return true;
+  const submitText = actionText(findLoginSubmitButton(emailInput, passwordInput, { includeDisabled: true }));
+  return submitText === 'log in'
+    || submitText === 'login'
+    || submitText === 'sign in';
+}
 
-  toggle.addEventListener('click', blockToggle, true);
-  toggle.addEventListener('mousedown', blockToggle, true);
-  toggle.addEventListener('pointerdown', blockToggle, true);
+function isEmailChooserSurface() {
+  return Boolean(findEmailChooserAction());
 }
 
 function protectPasswordField(passwordInput) {
@@ -505,6 +782,7 @@ function protectPasswordField(passwordInput) {
   passwordInput.addEventListener('copy', blockEvent, true);
   passwordInput.addEventListener('cut', blockEvent, true);
   passwordInput.addEventListener('contextmenu', blockEvent, true);
+  passwordInput.addEventListener('dragstart', blockEvent, true);
   passwordInput.addEventListener('select', collapseSelection, true);
   passwordInput.addEventListener('mouseup', collapseSelection, true);
 
@@ -578,7 +856,18 @@ function clickElement(element) {
     element.focus({ preventScroll: true });
   } catch {}
   try {
-    element.click();
+    ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((eventName) => {
+      try {
+        element.dispatchEvent(new MouseEvent(eventName, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+        }));
+      } catch {}
+    });
+    if (typeof element.click === 'function') {
+      element.click();
+    }
     return true;
   } catch {
     return false;
@@ -668,14 +957,15 @@ async function ensureFreshLaunchSession() {
     return;
   }
 
-  if (window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) === launchKey) {
+  if (getPreparedLaunchKey() === launchKey) {
     return;
   }
 
   await clearToolSession({ preserveLaunch: true });
   window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
+  try { window.localStorage.setItem(PREPARED_LAUNCH_KEY, launchKey); } catch {}
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
-  setStatus('Preparing fresh Freepik session');
+  setStatus('Preparing fresh Magnific session');
 
   if (window.location.href !== LOGIN_URL) {
     window.location.replace(LOGIN_URL);
@@ -690,6 +980,12 @@ function scheduleAsyncStep(task) {
   STATE.stopped = true;
   Promise.resolve()
     .then(task)
+    .then(() => {
+      if (STATE.stopped) {
+        STATE.stopped = false;
+        scheduleAttempt(200);
+      }
+    })
     .catch((error) => {
       stop(`Session check failed: ${error?.message || 'Unknown error'}`);
     });
@@ -698,13 +994,14 @@ function scheduleAsyncStep(task) {
 function attemptFlow() {
   if (STATE.stopped) return;
 
-  if (!STATE.launchChecked) {
-    setStatus('Checking dashboard launch');
+  if (onSignUpRoute()) {
+    setStatus('Redirecting to Magnific log-in form');
+    window.location.replace(LOGIN_URL);
     return;
   }
 
-  if (!hasLocalLaunchEvidence()) {
-    scheduleAsyncStep(enforceDashboardOnlyAccess);
+  if (!STATE.launchChecked) {
+    setStatus('Checking dashboard launch');
     return;
   }
 
@@ -715,7 +1012,7 @@ function attemptFlow() {
 
   if (
     STATE.launchExpiresAt
-    && window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) !== `${STATE.launchExpiresAt}`
+    && getPreparedLaunchKey() !== `${STATE.launchExpiresAt}`
   ) {
     scheduleAsyncStep(ensureFreshLaunchSession);
     return;
@@ -723,6 +1020,17 @@ function attemptFlow() {
 
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
+  const hasCredentialInputs = Boolean(emailInput && passwordInput);
+  const loginFormVisible = hasCredentialInputs && isLoginSurface(emailInput, passwordInput);
+  const signUpFormVisible = hasCredentialInputs && !loginFormVisible && isSignUpSurface(emailInput, passwordInput);
+  const unknownCredentialSurface = hasCredentialInputs && !loginFormVisible && !signUpFormVisible;
+  const emailChooserVisible = !hasCredentialInputs && isEmailChooserSurface();
+  const emailChooserAction = !hasCredentialInputs ? findEmailChooserAction() : null;
+  const genericLoginAction = !hasCredentialInputs && !emailChooserVisible ? findGenericLoginAction() : null;
+
+  if (loginFormVisible) {
+    STATE.switchingToLoginUntil = 0;
+  }
 
   if (passwordInput) {
     lockPasswordVisibility(passwordInput);
@@ -733,26 +1041,79 @@ function attemptFlow() {
     requestCredential();
   }
 
-  if (!emailInput || !passwordInput) {
-    const loginAction = findLoginOpenAction();
+  if (!hasCredentialInputs) {
+    const loginAction = emailChooserVisible
+      ? (emailChooserAction || findLoginOpenAction())
+      : (genericLoginAction || findLoginOpenAction());
     if (!loginAction) {
-      setStatus('Waiting for Freepik login form');
+      setStatus('Waiting for Magnific login form');
       return;
     }
 
-    if (Date.now() - STATE.lastLoginOpenAt < LOGIN_OPEN_COOLDOWN_MS) {
+    const loginActionText = actionText(loginAction);
+    const chooserDelay = loginActionText.includes('continue with email') || loginActionText.includes('use email')
+      ? 350
+      : LOGIN_OPEN_COOLDOWN_MS;
+    const actionCooldown = loginActionText.includes('continue with email') || loginActionText.includes('use email')
+      ? 700
+      : LOGIN_OPEN_COOLDOWN_MS;
+
+    if (Date.now() - STATE.lastLoginOpenAt < actionCooldown) {
       setStatus('Waiting for login form to open');
+      scheduleAttempt(Math.min(chooserDelay, 400));
       return;
     }
 
     STATE.lastLoginOpenAt = Date.now();
-    setStatus('Opening login form');
+    setStatus(emailChooserAction ? 'Opening email login form' : 'Opening login form');
     clickElement(loginAction);
+    scheduleAttempt(chooserDelay);
     return;
   }
 
   if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
     setStatus('Waiting for credential');
+    return;
+  }
+
+  if (signUpFormVisible) {
+    if (STATE.switchingToLoginUntil > Date.now()) {
+      setStatus('Waiting for Magnific log-in form');
+      scheduleAttempt(400);
+      return;
+    }
+
+    const existingAccountAction = findExistingAccountAction(emailInput, passwordInput);
+    if (existingAccountAction) {
+      STATE.lastSubmitAt = 0;
+      STATE.switchingToLoginUntil = Date.now() + 5000;
+      setStatus('Switching to Magnific log-in form');
+      clickElement(existingAccountAction);
+      scheduleAttempt(400);
+      return;
+    }
+    setStatus('Waiting for Magnific log-in form');
+    scheduleAttempt(400);
+    return;
+  }
+
+  if (STATE.switchingToLoginUntil && STATE.switchingToLoginUntil <= Date.now()) {
+    STATE.switchingToLoginUntil = 0;
+  }
+
+  if (unknownCredentialSurface) {
+    setStatus('Waiting for Magnific form to stabilize');
+    scheduleAttempt(500);
+    return;
+  }
+
+  if (emailInput && !isVisible(emailInput)) {
+    setStatus('Waiting for email field');
+    return;
+  }
+
+  if (passwordInput && !isVisible(passwordInput)) {
+    setStatus('Waiting for password field');
     return;
   }
 
@@ -771,18 +1132,18 @@ function attemptFlow() {
   }
 
   if (!isReadyForSubmit(emailInput, passwordInput)) {
-    setStatus('Filling Freepik login form');
+    setStatus('Filling Magnific login form');
     return;
   }
 
   if (Date.now() - STATE.lastSubmitAt < SUBMIT_COOLDOWN_MS) {
-    setStatus('Waiting for Freepik sign-in');
+    setStatus('Waiting for Magnific sign-in');
     return;
   }
 
-  const submitButton = findSubmitButton(emailInput, passwordInput);
+  const submitButton = findLoginSubmitButton(emailInput, passwordInput);
   STATE.lastSubmitAt = Date.now();
-  setStatus('Submitting Freepik login');
+  setStatus('Submitting Magnific login');
   submitLogin(emailInput, passwordInput, submitButton);
   releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
 }
@@ -815,7 +1176,7 @@ function start() {
   ensureStatusBadge();
   captureLaunchTicket();
 
-  STATE.observer = new MutationObserver(() => scheduleAttempt(150));
+  STATE.observer = new MutationObserver(() => scheduleAttempt(450));
   STATE.observer.observe(document.body || document.documentElement, {
     childList: true,
     subtree: true,
@@ -829,14 +1190,13 @@ function start() {
       STATE.launchAuthorized = false;
     })
     .finally(() => {
+      if (window.location.href !== LOGIN_URL && window.location.pathname === '/') {
+        setStatus('Opening Magnific login page');
+        window.location.replace(LOGIN_URL);
+        return;
+      }
       scheduleAttempt(0);
     });
-
-  if (window.location.href !== LOGIN_URL && window.location.pathname === '/') {
-    setStatus('Opening Freepik login page');
-    window.location.replace(LOGIN_URL);
-    return;
-  }
 }
 
 start();

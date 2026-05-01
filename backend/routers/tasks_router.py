@@ -140,16 +140,12 @@ def web_push_enabled() -> bool:
     return bool(webpush and _web_push_public_key() and _web_push_private_key())
 
 
-def _frontend_origin() -> str:
-    return _trim_env("FRONTEND_URL", "https://dashboard.ritzmediaworld.in").rstrip("/")
-
-
 def _build_dashboard_hash_url(panel: str = "", query: Optional[dict] = None) -> str:
-    base_path = "/#/dashboard"
+    base_path = WEB_PUSH_DEFAULT_CLICK_URL
     panel_segment = f"/{panel.strip('/')}" if panel else ""
     query_string = urlencode({key: value for key, value in (query or {}).items() if value not in (None, "")})
     suffix = f"?{query_string}" if query_string else ""
-    return f"{_frontend_origin()}{base_path}{panel_segment}{suffix}"
+    return f"{base_path}{panel_segment}{suffix}"
 
 
 def _build_notification_click_url(payload: dict) -> str:
