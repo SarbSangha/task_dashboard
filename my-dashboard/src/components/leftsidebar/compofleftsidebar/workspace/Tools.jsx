@@ -497,7 +497,6 @@ export default function Tools() {
   const isUserAssignedToTool = (toolId, userId) => {
     const directory = credentialDirectory[toolId] || { company: null, companyList: [], users: {} };
     const userCredential = directory.users[userId];
-    const companyCredential = directory.company;
     const linkedCompanyCredential = getLinkedCompanyCredentialSummary(directory, userCredential);
     const sharedCredentialAssignmentMode = isSharedCredentialAssignmentMode(toolId);
 
@@ -511,16 +510,13 @@ export default function Tools() {
       if (hasStoredUsableCredentialSummary(userCredential)) {
         return true;
       }
-      if (sharedCredentialAssignmentMode) {
-        return false;
-      }
-      return hasActiveUsableCredentialSummary(companyCredential);
+      return false;
     }
 
     if (sharedCredentialAssignmentMode) {
       return false;
     }
-    return hasActiveUsableCredentialSummary(companyCredential);
+    return false;
   };
 
   const startNewSharedCredential = (toolId = credentialForm.toolId || selectedTool?.id || '') => {
@@ -636,9 +632,15 @@ export default function Tools() {
     const userId = Number(user.id);
     const directory = credentialDirectory[toolId] || { company: null, companyList: [], users: {} };
     const userCredential = directory.users[userId];
+    const linkedCompanyCredential = getLinkedCompanyCredentialSummary(directory, userCredential);
     const normalizedToolSlug = normalizeToolSlug(tool?.slug);
     const currentlyAssigned = isUserAssignedToTool(toolId, userId);
     const activeCompanyCredentials = (directory.companyList || []).filter((summary) => hasActiveUsableCredentialSummary(summary));
+    const hasDirectUserCredential = Boolean(
+      userCredential?.isActive
+      && !linkedCompanyCredential
+      && hasStoredUsableCredentialSummary(userCredential)
+    );
     const hasSourceCredential = hasStoredUsableCredentialSummary(userCredential) || activeCompanyCredentials.length > 0;
 
     if (!currentlyAssigned && !hasSourceCredential) {
@@ -658,7 +660,11 @@ export default function Tools() {
       return;
     }
 
-    if (supportsSharedCompanyCredentialAssignments(normalizedToolSlug) && activeCompanyCredentials.length > 0) {
+    if (
+      supportsSharedCompanyCredentialAssignments(normalizedToolSlug)
+      && activeCompanyCredentials.length > 0
+      && !hasDirectUserCredential
+    ) {
       openSharedCredentialAssignmentPicker(tool, user, activeCompanyCredentials);
       return;
     }

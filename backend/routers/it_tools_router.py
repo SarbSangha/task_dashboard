@@ -118,6 +118,20 @@ def _canonical_tool_slug(value: str) -> str:
     return slug
 
 
+def _validate_tool_name(value: str) -> str:
+    normalized = (value or "").strip()
+    if len(normalized) < 2:
+        raise HTTPException(status_code=400, detail="Tool name must be at least 2 characters long")
+    return normalized
+
+
+def _validate_tool_slug(value: Optional[str], *, fallback_name: str) -> str:
+    slug = _slugify(value or fallback_name)
+    if slug == "tool":
+        raise HTTPException(status_code=400, detail="Tool slug is too generic. Enter a more specific tool name or slug.")
+    return slug
+
+
 def _validate_url(value: Optional[str], field_name: str) -> Optional[str]:
     normalized = (value or "").strip()
     if not normalized:
@@ -410,14 +424,6 @@ def _latest_user_credential_records_for_tool(
     return latest_records
 
 
-def _tool_has_active_linked_assignments(db: Session, tool_id: int) -> bool:
-    latest_records = _latest_user_credential_records_for_tool(db, tool_id)
-    return any(
-        row.is_active and row.linked_credential_id
-        for row in latest_records.values()
-    )
-
-
 def _latest_user_credential_record(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
     return (
         db.query(ITPortalToolCredential)
@@ -466,32 +472,16 @@ def _resolve_user_tool_overrides_map(
 
 
 def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
-    tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
-    canonical_tool_slug = _canonical_tool_slug(tool.slug or "") if tool else ""
     user_specific_credential = _latest_user_credential_record(db, tool_id, user_id)
 
-    if user_specific_credential:
-        if not user_specific_credential.is_active:
-            return None
-        linked_credential = _resolve_linked_company_credential(db, user_specific_credential)
-        if linked_credential:
-            return linked_credential
-        if _credential_has_secret_material(user_specific_credential):
-            return user_specific_credential
-
-    company_credentials = _list_active_company_credential_records(db, tool_id)
-    usable_company_credentials = [
-        credential
-        for credential in company_credentials
-        if _credential_has_secret_material(credential)
-    ]
-    if _tool_supports_shared_company_credential_assignments(canonical_tool_slug):
-        if len(usable_company_credentials) == 1 and not _tool_has_active_linked_assignments(db, tool_id):
-            return usable_company_credentials[0]
+    if not user_specific_credential or not user_specific_credential.is_active:
         return None
 
-    if usable_company_credentials:
-        return usable_company_credentials[0]
+    linked_credential = _resolve_linked_company_credential(db, user_specific_credential)
+    if linked_credential:
+        return linked_credential
+    if _credential_has_secret_material(user_specific_credential):
+        return user_specific_credential
     return None
 
 
@@ -880,7 +870,8 @@ async def create_tool(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    slug = _slugify(payload.slug or payload.name)
+    name = _validate_tool_name(payload.name)
+    slug = _validate_tool_slug(payload.slug, fallback_name=name)
     existing = db.query(ITPortalTool).filter(ITPortalTool.slug == slug).first()
     if existing:
         raise HTTPException(status_code=409, detail="Tool slug already exists")
@@ -891,7 +882,7 @@ async def create_tool(
     _validate_extension_autofill_target(launch_mode, website_url, login_url, slug)
 
     tool = ITPortalTool(
-        name=payload.name.strip(),
+        name=name,
         slug=slug,
         category=(payload.category or "General").strip() or "General",
         description=(payload.description or "").strip() or None,
@@ -925,7 +916,7 @@ async def update_tool(
         raise HTTPException(status_code=404, detail="Tool not found")
 
     if payload.name is not None:
-        tool.name = payload.name.strip()
+        tool.name = _validate_tool_name(payload.name)
     if payload.category is not None:
         tool.category = payload.category.strip() or "General"
     if payload.description is not None:
