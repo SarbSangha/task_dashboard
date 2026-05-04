@@ -140,6 +140,40 @@ def web_push_enabled() -> bool:
     return bool(webpush and _web_push_public_key() and _web_push_private_key())
 
 
+def _web_push_status_payload() -> dict:
+    has_dependency = bool(webpush)
+    has_public_key = bool(_web_push_public_key())
+    has_private_key = bool(_web_push_private_key())
+    enabled = bool(has_dependency and has_public_key and has_private_key)
+
+    if enabled:
+        detail = "Web push is configured on the server."
+    else:
+        reasons: list[str] = []
+        if not has_dependency:
+            reasons.append("the pywebpush runtime dependency is unavailable")
+        if not has_public_key:
+            reasons.append(f"{WEB_PUSH_PUBLIC_KEY_ENV} is missing")
+        if not has_private_key:
+            reasons.append(f"{WEB_PUSH_PRIVATE_KEY_ENV} is missing")
+        if reasons:
+            detail = "Web push is not ready on the server because " + ", ".join(reasons) + "."
+        else:
+            detail = "Web push is not ready on the server."
+
+    return {
+        "success": True,
+        "enabled": enabled,
+        "publicKey": _web_push_public_key() if enabled else "",
+        "detail": detail,
+        "checks": {
+            "dependencyAvailable": has_dependency,
+            "publicKeyPresent": has_public_key,
+            "privateKeyPresent": has_private_key,
+        },
+    }
+
+
 def _build_dashboard_hash_url(panel: str = "", query: Optional[dict] = None) -> str:
     base_path = WEB_PUSH_DEFAULT_CLICK_URL
     panel_segment = f"/{panel.strip('/')}" if panel else ""
@@ -4935,11 +4969,7 @@ async def get_web_push_config(
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    return {
-        "success": True,
-        "enabled": web_push_enabled(),
-        "publicKey": _web_push_public_key() if web_push_enabled() else "",
-    }
+    return _web_push_status_payload()
 
 
 async def subscribe_web_push(

@@ -97,7 +97,7 @@ export default function useWebPushNotifications() {
           if (!cancelled) {
             setStatus({
               code: 'server_disabled',
-              detail: 'Web push is not configured on the server yet.',
+              detail: config?.detail || 'Web push is not configured on the server yet.',
             });
           }
           return;
