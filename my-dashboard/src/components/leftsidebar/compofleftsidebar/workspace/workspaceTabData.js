@@ -342,7 +342,7 @@ export function useWorkspaceCompanyDirectory() {
     return departmentMembers;
   };
 
-  const loadCompanyDirectory = async ({ silent = false, signal } = {}) => {
+  const loadCompanyDirectory = async ({ silent = false, signal, preferredDepartment = '' } = {}) => {
     if (!cacheKey || signal?.aborted) return;
 
     if (silent) setIsRefreshing(true);
@@ -389,9 +389,12 @@ export function useWorkspaceCompanyDirectory() {
       setDepartments(deptList);
       setActivityByUser(activityMap);
 
-      const nextSelectedDepartment = selectedDepartment && deptList.includes(selectedDepartment)
-        ? selectedDepartment
-        : (deptList[0] || '');
+      const normalizedPreferredDepartment = `${preferredDepartment || ''}`.trim();
+      const nextSelectedDepartment = normalizedPreferredDepartment && deptList.includes(normalizedPreferredDepartment)
+        ? normalizedPreferredDepartment
+        : selectedDepartment && deptList.includes(selectedDepartment)
+          ? selectedDepartment
+          : (deptList[0] || '');
 
       setSelectedDepartment(nextSelectedDepartment);
       const cachedSnapshot = getTaskPanelCache(cacheKey, WORKSPACE_REFERENCE_CACHE_TTL_MS);
@@ -528,6 +531,9 @@ export function useWorkspaceCompanyDirectory() {
     activityByUser,
     cacheStatus,
     selectDepartment,
+    refreshCompanyDirectory: async (preferredDepartment = '') => {
+      await loadCompanyDirectory({ silent: false, preferredDepartment });
+    },
   };
 }
 

@@ -13,6 +13,7 @@ const FALLBACK_DEPARTMENTS = [
   'DIGITAL',
   'GEN AI',
   'INTERNAL BRANDS',
+  '3D Visualizer',
 ];
 
 // ✅ CHANGED: Use const instead of export function

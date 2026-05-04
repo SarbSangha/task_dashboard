@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useCustomDialogs } from '../../../../common/CustomDialogs';
 import CacheStatusBanner from '../../../../common/CacheStatusBanner';
 import { WorkspaceSkeleton } from '../../../../ui/WorkspaceSkeleton';
+import { authAPI } from '../../../../../services/api';
 import CompanyMemberPreview from '../CompanyMemberPreview';
 import { useWorkspaceCompanyDirectory } from '../workspaceTabData';
 
@@ -10,6 +11,7 @@ export default function CompanyTab() {
   const {
     loading,
     isRefreshing,
+    isAdmin,
     canViewCompany,
     departments,
     selectedDepartment,
@@ -17,9 +19,32 @@ export default function CompanyTab() {
     activityByUser,
     cacheStatus,
     selectDepartment,
+    refreshCompanyDirectory,
   } = useWorkspaceCompanyDirectory();
   const [openMenuId, setOpenMenuId] = useState(null);
   const [previewMember, setPreviewMember] = useState(null);
+  const [newDepartmentName, setNewDepartmentName] = useState('');
+  const [departmentSaving, setDepartmentSaving] = useState(false);
+
+  const handleAddDepartment = async () => {
+    const name = `${newDepartmentName || ''}`.trim();
+    if (!name) {
+      await showAlert('Enter a department name first.', { title: 'Department Required' });
+      return;
+    }
+
+    setDepartmentSaving(true);
+    try {
+      const response = await authAPI.createDepartment(name);
+      const createdDepartmentName = `${response?.department?.name || name}`.trim();
+      setNewDepartmentName('');
+      await refreshCompanyDirectory(createdDepartmentName);
+    } catch (error) {
+      await showAlert(error?.response?.data?.detail || 'Failed to add department.', { title: 'Unable to Add Department' });
+    } finally {
+      setDepartmentSaving(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -55,6 +80,40 @@ export default function CompanyTab() {
         liveLabel="Company directory is up to date"
         cachedLabel="Showing cached company directory"
       />
+
+      {isAdmin && (
+        <div className="company-department-toolbar">
+          <div className="company-department-create">
+            <div className="company-department-create-copy">
+              <strong>Add Department</strong>
+              <span>Create a new team once and reuse it everywhere.</span>
+            </div>
+            <div className="company-department-create-controls">
+              <input
+                className="company-department-input"
+                value={newDepartmentName}
+                onChange={(event) => setNewDepartmentName(event.target.value)}
+                placeholder="e.g. 3D Visualizer"
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void handleAddDepartment();
+                  }
+                }}
+              />
+              <button
+                className="company-department-submit"
+                onClick={() => {
+                  void handleAddDepartment();
+                }}
+                disabled={departmentSaving}
+              >
+                {departmentSaving ? 'Adding...' : 'Add Department'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '10px', marginBottom: '14px' }}>
         {departments.map((dept) => (

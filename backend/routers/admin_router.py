@@ -3,18 +3,21 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 import asyncio
 
 from database_config import get_operational_db
-from models_new import User, UserApprovalRequest
+from models_new import DepartmentDirectory, User, UserApprovalRequest
 from auth import SESSION_STORE, get_password_hash, invalidate_session, revoke_user_sessions
 from routers.tasks_router import notification_hub
+from utils.cache import invalidate_pattern
 from utils.datetime_utils import serialize_utc_datetime
 from utils.permissions import require_admin
 
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
+AUTH_DEPARTMENTS_CACHE_PATTERN = "cache:auth_departments:*"
 
 
 class RejectPayload(BaseModel):
@@ -32,6 +35,10 @@ class DeleteUserPayload(BaseModel):
 
 class AdminPasswordChangePayload(BaseModel):
     new_password: str = Field(..., min_length=8)
+
+
+class DepartmentCreatePayload(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
 
 
 def _serialize_user(user: User, approval_status: str) -> dict:
@@ -55,6 +62,17 @@ def _serialize_user(user: User, approval_status: str) -> dict:
         "deletedReason": user.deleted_reason,
         "createdAt": serialize_utc_datetime(user.created_at),
         "lastLogin": serialize_utc_datetime(user.last_login),
+    }
+
+
+def _serialize_department(department: DepartmentDirectory, member_count: int = 0) -> dict:
+    return {
+        "id": department.id,
+        "name": department.name,
+        "isActive": bool(department.is_active),
+        "memberCount": int(member_count or 0),
+        "createdAt": serialize_utc_datetime(department.created_at),
+        "updatedAt": serialize_utc_datetime(department.updated_at),
     }
 
 
@@ -476,3 +494,84 @@ async def all_users(
             status = "deleted"
         data.append(_serialize_user(user, status))
     return {"success": True, "count": len(data), "users": data}
+
+
+@router.get("/departments")
+async def list_departments(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    departments = (
+        db.query(DepartmentDirectory)
+        .filter(DepartmentDirectory.is_active == True)
+        .order_by(DepartmentDirectory.name.asc())
+        .all()
+    )
+    normalized_names = [f"{department.name or ''}".strip().lower() for department in departments]
+    member_counts = {}
+    if normalized_names:
+        counts = (
+            db.query(func.lower(func.trim(User.department)).label("department_key"), func.count(User.id))
+            .filter(
+                User.is_deleted == False,
+                User.department != None,
+                func.lower(func.trim(User.department)).in_(normalized_names),
+            )
+            .group_by(func.lower(func.trim(User.department)))
+            .all()
+        )
+        member_counts = {row[0]: int(row[1] or 0) for row in counts}
+
+    return {
+        "success": True,
+        "count": len(departments),
+        "departments": [
+            _serialize_department(
+                department,
+                member_counts.get(f"{department.name or ''}".strip().lower(), 0),
+            )
+            for department in departments
+        ],
+    }
+
+
+@router.post("/departments")
+async def create_department(
+    payload: DepartmentCreatePayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    name = (payload.name or "").strip()
+    if len(name) < 2:
+        raise HTTPException(status_code=400, detail="Department name must be at least 2 characters long")
+
+    existing = (
+        db.query(DepartmentDirectory)
+        .filter(func.lower(func.trim(DepartmentDirectory.name)) == name.lower())
+        .first()
+    )
+    if existing:
+        if existing.is_active:
+            raise HTTPException(status_code=409, detail="Department already exists")
+        existing.name = name
+        existing.is_active = True
+        existing.updated_by = current_user.id
+        existing.updated_at = datetime.utcnow()
+        department = existing
+    else:
+        department = DepartmentDirectory(
+            name=name,
+            is_active=True,
+            created_by=current_user.id,
+            updated_by=current_user.id,
+        )
+        db.add(department)
+
+    db.commit()
+    db.refresh(department)
+    await invalidate_pattern(AUTH_DEPARTMENTS_CACHE_PATTERN)
+    return {
+        "success": True,
+        "message": "Department added successfully",
+        "department": _serialize_department(department, 0),
+    }

@@ -479,6 +479,16 @@ export const authAPI = {
     return response.data;
   },
 
+  getAdminDepartments: async () => {
+    const response = await api.get('/api/admin/departments');
+    return response.data;
+  },
+
+  createDepartment: async (name) => {
+    const response = await api.post('/api/admin/departments', { name });
+    return response.data;
+  },
+
   getEmployeeIdOptions: async () => {
     const response = await api.get('/api/auth/employee-id/options');
     return response.data;

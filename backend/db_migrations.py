@@ -1,5 +1,16 @@
 from sqlalchemy import text
 
+DEFAULT_DEPARTMENT_DIRECTORY = (
+    "CREATIVE",
+    "CONTENT",
+    "CONTENT CREATOR",
+    "CRACK TEAM",
+    "DIGITAL",
+    "GEN AI",
+    "INTERNAL BRANDS",
+    "3D Visualizer",
+)
+
 
 def _table_columns(conn, table_name: str) -> set[str]:
     rows = conn.execute(text(f"PRAGMA table_info('{table_name}')")).mappings().all()
@@ -70,6 +81,28 @@ def _pg_add_column_if_missing(conn, table_name: str, column_name: str, sql_type:
 
 def _quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
+
+
+def _seed_departments(conn) -> None:
+    for department_name in DEFAULT_DEPARTMENT_DIRECTORY:
+        conn.execute(
+            text(
+                """
+                INSERT INTO department_directory (name, is_active, created_at, updated_at)
+                SELECT CAST(:insert_name AS VARCHAR(120)), CAST(:insert_active AS BOOLEAN), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM department_directory
+                    WHERE LOWER(TRIM(name)) = LOWER(TRIM(CAST(:match_name AS TEXT)))
+                )
+                """
+            ),
+            {
+                "insert_name": department_name,
+                "insert_active": True,
+                "match_name": department_name,
+            },
+        )
 
 
 def _migrate_enum_type(conn, old_type: str, new_type: str) -> None:
@@ -250,6 +283,24 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(
         text(
             """
+            CREATE TABLE IF NOT EXISTS department_directory (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(120) NOT NULL UNIQUE,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_by INTEGER REFERENCES users(id),
+                updated_by INTEGER REFERENCES users(id),
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_name ON department_directory(name)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_is_active ON department_directory(is_active)"))
+    _seed_departments(conn)
+    conn.execute(
+        text(
+            """
             CREATE TABLE IF NOT EXISTS web_push_subscriptions (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -337,6 +388,27 @@ def ensure_operational_schema(engine) -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_employee_id ON users(employee_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS department_directory (
+                    id INTEGER PRIMARY KEY,
+                    name VARCHAR(120) NOT NULL UNIQUE,
+                    is_active BOOLEAN NOT NULL DEFAULT 1,
+                    created_by INTEGER,
+                    updated_by INTEGER,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    FOREIGN KEY(created_by) REFERENCES users (id),
+                    FOREIGN KEY(updated_by) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_name ON department_directory(name)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_is_active ON department_directory(is_active)"))
+        _seed_departments(conn)
 
         if _table_exists(conn, "tasks"):
             task_cols = _table_columns(conn, "tasks")

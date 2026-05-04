@@ -12,7 +12,7 @@ import os
 import asyncio
 from urllib.parse import urlparse
 from database_config import get_operational_db
-from models_new import User, UserApprovalRequest
+from models_new import DepartmentDirectory, User, UserApprovalRequest
 from routers.tasks_router import notification_hub
 from schemas import (
     UserCreate, 
@@ -42,7 +42,14 @@ from auth import (
 
 
 KNOWN_DEPARTMENTS = (
+    "CREATIVE",
+    "CONTENT",
+    "CONTENT CREATOR",
+    "CRACK TEAM",
+    "DIGITAL",
+    "GEN AI",
     "INTERNAL BRANDS",
+    "3D Visualizer",
 )
 from utils.cache import cache_response
 from utils.permissions import has_any_role, require_admin
@@ -93,6 +100,43 @@ def _is_allowed_company_email(email: Optional[str]) -> bool:
     if "@" not in value:
         return False
     return any(value.endswith(domain) for domain in _allowed_company_domains())
+
+
+def _department_map_from_sources(db: Session) -> dict[str, str]:
+    dept_map: dict[str, str] = {}
+
+    managed_departments = (
+        db.query(DepartmentDirectory.name)
+        .filter(DepartmentDirectory.is_active == True)
+        .order_by(DepartmentDirectory.name.asc())
+        .all()
+    )
+    for row in managed_departments:
+        department_value = f"{row[0] or ''}".strip()
+        if department_value:
+            dept_map.setdefault(department_value.lower(), department_value)
+
+    user_departments = (
+        db.query(User.department)
+        .distinct()
+        .filter(
+            User.is_active == True,
+            User.is_deleted == False,
+            User.department != None,
+        )
+        .all()
+    )
+    for row in user_departments:
+        department_value = f"{row[0] or ''}".strip()
+        if department_value:
+            dept_map.setdefault(department_value.lower(), department_value)
+
+    for department_value in KNOWN_DEPARTMENTS:
+        normalized_department = f"{department_value or ''}".strip()
+        if normalized_department:
+            dept_map.setdefault(normalized_department.lower(), normalized_department)
+
+    return dept_map
 
 
 def _serialize_user(user: User) -> dict:
@@ -793,30 +837,7 @@ async def get_all_departments(
 ):
     """Get all unique departments"""
     try:
-        departments = (
-            db.query(User.department)
-            .distinct()
-            .filter(
-                User.is_active == True,
-                User.is_deleted == False,
-                User.department != None,
-            )
-            .all()
-        )
-
-        dept_map = {}
-        for department_row in departments:
-            department_value = f"{department_row[0] or ''}".strip()
-            if not department_value:
-                continue
-            dept_map.setdefault(department_value.lower(), department_value)
-
-        for department_value in KNOWN_DEPARTMENTS:
-            normalized_department = f"{department_value or ''}".strip()
-            if not normalized_department:
-                continue
-            dept_map.setdefault(normalized_department.lower(), normalized_department)
-
+        dept_map = _department_map_from_sources(db)
         dept_list = sorted(dept_map.values())
 
         return {
