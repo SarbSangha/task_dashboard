@@ -207,10 +207,11 @@ async def list_direct_messages(
                 and_(DirectMessage.sender_id == other_user_id, DirectMessage.recipient_id == current_user.id),
             )
         )
-        .order_by(DirectMessage.created_at.asc(), DirectMessage.id.asc())
+        .order_by(DirectMessage.created_at.desc(), DirectMessage.id.desc())
         .limit(300)
         .all()
     )
+    rows.reverse()
     return {
         "success": True,
         "conversationWith": _serialize_user(other_user),

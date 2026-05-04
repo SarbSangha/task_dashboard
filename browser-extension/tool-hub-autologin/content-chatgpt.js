@@ -25,6 +25,7 @@ const PHASE = {
   AUTH:             'auth',
   LOAD_CRED:        'load_cred',
   CHATGPT_LANDING:  'chatgpt_landing',
+  CHATGPT_EMAIL_OTP:'chatgpt_email_otp',
   PREFER_PROVIDER:  'prefer_provider',
   CHATGPT_EMAIL:    'chatgpt_email',
   CHATGPT_PASSWORD: 'chatgpt_password',
@@ -79,6 +80,11 @@ const CTX = {
   lastMutationAt:   0,
   landingClicks:    0,
   providerClicks:   0,
+  emailOtpValue:    '',
+  emailOtpFetching: false,
+  emailOtpAttempts: 0,
+  emailOtpUnavailable: false,
+  emailOtpLastRequestAt: 0,
   // settle gate state
   startedAt:        Date.now(),
   cleanTicks:       0,
@@ -125,6 +131,15 @@ const GOOGLE_PASSWORD_SELECTORS = [
   'input[type="password"]',
   'input[name="Passwd"]',
   'input[autocomplete="current-password"]',
+];
+const PASSWORD_GUARD_STYLE_ID = 'rmw-password-guard-style';
+const OTP_CODE_SELECTORS = [
+  'input[autocomplete="one-time-code"]',
+  'input[inputmode="numeric"]',
+  'input[name="code"]',
+  'input[aria-label*="code" i]',
+  'input[placeholder*="code" i]',
+  'input[type="text"]',
 ];
 
 // ── Status badge ──────────────────────────────────────────────
@@ -407,6 +422,18 @@ function isEmailVerificationPage() {
     || (document.body?.innerText || '').toLowerCase().includes('route error');
 }
 
+function findEmailVerificationCodeInput() {
+  const labels = ['enter the verification code', 'temporary chatgpt login code', 'check your inbox', 'resend email'];
+  const pageText = (document.body?.innerText || '').toLowerCase();
+  if (!labels.some((label) => pageText.includes(label))) return null;
+  return findInput(OTP_CODE_SELECTORS);
+}
+
+function findEmailVerificationContinueButton() {
+  const buttons = queryDeep(ACTION_SELECTORS).filter((el) => !isDisabled(el) && isVisible(el));
+  return buttons.find((el) => btnText(el) === 'continue') || null;
+}
+
 // ── Login UI detection ────────────────────────────────────────
 function isLoginUiPresent() {
   // 1. Visible modal/dialog
@@ -524,6 +551,163 @@ function findPasswordInputInModal() {
   const d = findLoginDialog();
   if (d) { const i = findInput(PASSWORD_SELECTORS, d); if (i) return i; }
   return findInput(PASSWORD_SELECTORS);
+}
+
+function ensurePasswordGuardStyle() {
+  if (document.getElementById(PASSWORD_GUARD_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = PASSWORD_GUARD_STYLE_ID;
+  style.textContent = `
+    [data-rmw-password-guard="hidden"] {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+    input[data-rmw-password-copy-guard="true"] {
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      caret-color: transparent !important;
+    }
+  `;
+  (document.head || document.documentElement).appendChild(style);
+}
+
+function describeElement(el) {
+  return [
+    el?.getAttribute?.('aria-label') || '',
+    el?.getAttribute?.('title') || '',
+    el?.getAttribute?.('data-testid') || '',
+    el?.getAttribute?.('name') || '',
+    el?.getAttribute?.('id') || '',
+    typeof el?.className === 'string' ? el.className : '',
+  ].join(' ').trim().toLowerCase();
+}
+
+function looksLikePasswordRevealControl(el) {
+  const descriptor = describeElement(el);
+  if (!descriptor) return false;
+  const mentionsPassword = descriptor.includes('password');
+  const mentionsRevealAction = (
+    descriptor.includes('show')
+    || descriptor.includes('hide')
+    || descriptor.includes('reveal')
+    || descriptor.includes('visibility')
+    || descriptor.includes('toggle')
+  );
+  return mentionsPassword && mentionsRevealAction;
+}
+
+function isInlinePasswordRevealControl(el, input) {
+  if (!el || !input || el === input) return false;
+  if (!isVisible(el)) return false;
+  const rect = el.getBoundingClientRect();
+  const inputRect = input.getBoundingClientRect();
+  if (!rect.width || !rect.height || !inputRect.width || !inputRect.height) return false;
+
+  const verticallyAligned = rect.bottom >= inputRect.top && rect.top <= inputRect.bottom;
+  const horizontallyNearRightEdge = rect.left >= (inputRect.right - 140) && rect.left <= (inputRect.right + 24);
+  const sizeLooksLikeIconButton = rect.width <= 72 && rect.height <= 72;
+  const sameWrapper = (
+    el.parentElement === input.parentElement
+    || el.closest('label, div, section, form') === input.closest('label, div, section, form')
+  );
+
+  return verticallyAligned && horizontallyNearRightEdge && sizeLooksLikeIconButton && sameWrapper;
+}
+
+function findPasswordRevealControls(input) {
+  const roots = [
+    input?.parentElement,
+    input?.closest?.('[role="dialog"],[aria-modal="true"],form,section,main,div'),
+    document,
+  ].filter(Boolean);
+  const seen = new Set();
+  const matches = [];
+  for (const root of roots) {
+    const controls = queryDeep(['button', '[role="button"]', '[aria-label]', '[title]'], root);
+    for (const control of controls) {
+      if (!control || seen.has(control)) continue;
+      seen.add(control);
+      if (!isVisible(control)) continue;
+      if (!looksLikePasswordRevealControl(control) && !isInlinePasswordRevealControl(control, input)) continue;
+      matches.push(control);
+    }
+  }
+  return matches;
+}
+
+function forcePasswordConcealed(input) {
+  if (!input) return;
+  if (input.type !== 'password') {
+    try { input.type = 'password'; } catch {}
+  }
+  input.setAttribute('type', 'password');
+}
+
+function suppressPasswordFieldExposure(input) {
+  if (!input) return;
+  ensurePasswordGuardStyle();
+  forcePasswordConcealed(input);
+
+  if (input.dataset.rmwPasswordCopyGuard !== 'true') {
+    input.dataset.rmwPasswordCopyGuard = 'true';
+    input.setAttribute('autocomplete', 'off');
+    ['copy', 'cut', 'contextmenu', 'dragstart', 'selectstart'].forEach((eventName) => {
+      input.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
+    });
+  }
+
+  if (input.dataset.rmwPasswordRevealObserver !== 'true') {
+    input.dataset.rmwPasswordRevealObserver = 'true';
+    const observer = new MutationObserver(() => {
+      forcePasswordConcealed(input);
+      suppressPasswordFieldExposure(input);
+    });
+    observer.observe(input, {
+      attributes: true,
+      attributeFilter: ['type', 'aria-label', 'class'],
+    });
+
+    const wrapper = input.closest('[role="dialog"],[aria-modal="true"],form,section,main,div') || input.parentElement;
+    if (wrapper) {
+      const subtreeObserver = new MutationObserver(() => {
+        forcePasswordConcealed(input);
+        findPasswordRevealControls(input).forEach((control) => {
+          control.dataset.rmwPasswordGuard = 'hidden';
+          control.setAttribute('aria-hidden', 'true');
+          control.setAttribute('tabindex', '-1');
+        });
+      });
+      subtreeObserver.observe(wrapper, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['aria-label', 'title', 'class', 'style', 'type'],
+      });
+    }
+  }
+
+  findPasswordRevealControls(input).forEach((control) => {
+    control.dataset.rmwPasswordGuard = 'hidden';
+    control.setAttribute('aria-hidden', 'true');
+    control.setAttribute('tabindex', '-1');
+    control.style.pointerEvents = 'none';
+    control.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+    control.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+    control.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+  });
 }
 
 function findContinueBtn(input) {
@@ -882,6 +1066,118 @@ async function loadCred() {
   return credPromise;
 }
 
+async function requestEmailOtp() {
+  if (CTX.emailOtpUnavailable || CTX.emailOtpFetching || CTX.emailOtpValue) return;
+  if (CTX.emailOtpAttempts >= 4) {
+    setStatus('Email verification code fetch failed after 4 attempts.');
+    return;
+  }
+
+  const now = Date.now();
+  if (now - CTX.emailOtpLastRequestAt < 2500) return;
+
+  CTX.emailOtpFetching = true;
+  CTX.emailOtpLastRequestAt = now;
+  CTX.emailOtpAttempts += 1;
+  setStatus(`Fetching email verification code (attempt ${CTX.emailOtpAttempts})...`);
+
+  const requestContext = getCredentialRequestContext();
+  const response = await sendMsg({
+    type: 'TOOL_HUB_FETCH_OTP',
+    toolSlug: TOOL_SLUG,
+    hostname: requestContext.hostname,
+    pageUrl: requestContext.pageUrl,
+    extensionTicket: getStoredTicket(),
+  });
+
+  CTX.emailOtpFetching = false;
+
+  if (!response?.ok || !response.otp) {
+    const errorMessage = `${response?.error || 'Email verification code unavailable'}`;
+    if (errorMessage.includes('OTP already fetched')) {
+      if (CTX.emailOtpValue) {
+        wake(100);
+        return;
+      }
+      setStatus('OTP was already fetched for this launch. Relaunch ChatGPT from the dashboard if the code field was refreshed.');
+      return;
+    }
+    setStatus(errorMessage);
+    wake(2000);
+    return;
+  }
+
+  CTX.emailOtpUnavailable = false;
+  CTX.emailOtpValue = `${response.otp}`.trim();
+  wake(100);
+}
+
+async function handleEmailVerificationStep() {
+  const codeInput = findEmailVerificationCodeInput();
+  if (!codeInput) {
+    setStatus('Waiting for email verification code field...');
+    wake(800);
+    return;
+  }
+
+  if (!CTX.emailOtpValue && !CTX.emailOtpFetching) {
+    await requestEmailOtp();
+    if (!CTX.emailOtpValue) {
+      setStatus('Email verification — waiting for OTP...');
+      wake(1200);
+      return;
+    }
+  }
+
+  if (!CTX.emailOtpValue) {
+    setStatus('Email verification — waiting for OTP...');
+    wake(1200);
+    return;
+  }
+
+  if (`${codeInput.value || ''}`.trim() !== CTX.emailOtpValue) {
+    setStatus('Filling email verification code...');
+    fillField(codeInput, CTX.emailOtpValue);
+    await sleep(FIELD_FILL_DELAY_MS);
+  }
+
+  const continueButton = findEmailVerificationContinueButton();
+  if (Date.now() < CTX.submitLockUntil) {
+    setStatus('Verification code entered — waiting...');
+    wake(700);
+    return;
+  }
+
+  setStatus('Submitting email verification code...');
+  let submitted = false;
+  if (continueButton) {
+    submitted = safeClick(continueButton);
+  }
+  if (!submitted) {
+    submitted = pressEnter(codeInput);
+  }
+  if (!submitted) {
+    const form = codeInput.closest('form');
+    if (form) {
+      try {
+        if (typeof form.requestSubmit === 'function') form.requestSubmit();
+        else form.submit?.();
+        submitted = true;
+      } catch {}
+    }
+  }
+
+  if (submitted) {
+    CTX.submitAt = Date.now();
+    CTX.submitLockUntil = Date.now() + SUBMIT_LOCK_MS;
+    wake(POST_CLICK_SETTLE_MS);
+    return;
+  }
+
+  setStatus('Unable to submit the email verification form automatically.');
+  wake(1000);
+}
+
 // ── Stop / wake / run ─────────────────────────────────────────
 function stop(msg) {
   CTX.stopped = true;
@@ -978,7 +1274,7 @@ async function tick() {
 
     // ── CHATGPT_LANDING ──────────────────────────────────────
     case PHASE.CHATGPT_LANDING: {
-      if (isEmailVerificationPage()) { setStatus('Email verification — waiting...'); wake(1500); return; }
+      if (isEmailVerificationPage()) { CTX.phase = PHASE.CHATGPT_EMAIL_OTP; wake(0); return; }
       if (findEmailInputInModal())   { CTX.phase = PHASE.CHATGPT_EMAIL;    wake(0); return; }
       if (findPasswordInputInModal()){ CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
       if (findLoginDialog() || findThirdPartyButtons().length > 0) { CTX.phase = PHASE.PREFER_PROVIDER; wake(0); return; }
@@ -992,6 +1288,13 @@ async function tick() {
       }
       setStatus('Waiting for login modal...');
       wake(700);
+      break;
+    }
+
+    // ── CHATGPT_EMAIL_OTP ────────────────────────────────────
+    case PHASE.CHATGPT_EMAIL_OTP: {
+      if (!isEmailVerificationPage()) { CTX.phase = PHASE.CHATGPT_LANDING; wake(0); return; }
+      await handleEmailVerificationStep();
       break;
     }
 
@@ -1053,11 +1356,13 @@ async function tick() {
       const cred = CTX.credential;
       const passInput = findPasswordInputInModal();
       if (!passInput) { CTX.phase = PHASE.CHATGPT_LANDING; wake(300); return; }
+      suppressPasswordFieldExposure(passInput);
       if (Date.now() < CTX.submitLockUntil) { setStatus('Sign In clicked — waiting...'); wake(500); return; }
       setStatus('Filling password...');
       passInput.focus();
       await sleep(100);
       fillField(passInput, cred.password);
+      suppressPasswordFieldExposure(passInput);
       await sleep(FIELD_FILL_DELAY_MS);
       saveFlowHint(cred, LOGIN_FLOW.OPENAI_PASSWORD, 'password_field');
       const btn = findContinueBtn(passInput) || findSubmitBtn('password', passInput);

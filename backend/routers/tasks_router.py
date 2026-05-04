@@ -1308,7 +1308,14 @@ def compute_available_actions(
     if is_assignee:
         if task.status in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.ASSIGNED, TaskStatus.NEED_IMPROVEMENT}:
             actions.append("start")
-        if task.status in {TaskStatus.IN_PROGRESS, TaskStatus.NEED_IMPROVEMENT}:
+        if task.status not in {
+            TaskStatus.SUBMITTED,
+            TaskStatus.UNDER_REVIEW,
+            TaskStatus.APPROVED,
+            TaskStatus.REJECTED,
+            TaskStatus.COMPLETED,
+            TaskStatus.CANCELLED,
+        }:
             actions.append("submit")
         if task.status == TaskStatus.NEED_IMPROVEMENT:
             actions.append("edit_result")

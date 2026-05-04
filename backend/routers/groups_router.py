@@ -386,10 +386,11 @@ async def list_group_messages(
         db.query(GroupChatMessage, User)
         .join(User, User.id == GroupChatMessage.sender_id)
         .filter(GroupChatMessage.group_id == group.id)
-        .order_by(GroupChatMessage.created_at.asc(), GroupChatMessage.id.asc())
+        .order_by(GroupChatMessage.created_at.desc(), GroupChatMessage.id.desc())
         .limit(300)
         .all()
     )
+    rows.reverse()
     return {
         "success": True,
         "data": [

@@ -1,5 +1,5 @@
 // src/components/leftsidebar/compofleftsidebar/AssignTaskModal.jsx
-import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import './AssignTaskModal.css';
 import AttachmentBox from './Attachments';
@@ -234,7 +234,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     return match || value;
   };
 
-  const rememberUsers = (users = []) => {
+  const rememberUsers = useCallback((users = []) => {
     if (!Array.isArray(users) || users.length === 0) return;
     setKnownUsersById((prev) => {
       const next = { ...prev };
@@ -244,7 +244,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       });
       return next;
     });
-  };
+  }, []);
 
   // NEW: Load current user and departments on mount
   useEffect(() => {
@@ -568,6 +568,11 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     }));
   };
 
+  const toggleSelfAssignment = () => {
+    if (!user?.id) return;
+    toggleUserSelection(user.id);
+  };
+
   const setWorkflowEnabled = (enabled) => {
     setFormData((prev) => {
       return {
@@ -640,6 +645,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     )),
     [formData.selectedUserIds, knownUsersById]
   );
+  const isSelfAssigned = Boolean(user?.id && formData.selectedUserIds.includes(user.id));
 
   const workflowAssignedStageCount = useMemo(
     () => formData.workflowStages.filter((stage) => Array.isArray(stage.assigneeIds) && stage.assigneeIds.length > 0).length,
@@ -661,6 +667,16 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       })),
     }));
   }, [formData.selectedUserIds, formData.workflowEnabled]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    rememberUsers([{
+      id: user.id,
+      name: user.name || 'You',
+      department: user.department || currentUserDepartment || '',
+      position: user.position || '',
+    }]);
+  }, [currentUserDepartment, rememberUsers, user]);
 
   // Handle attachments update
   const handleAttachmentsChange = (attachments) => {
@@ -1455,6 +1471,20 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                     readOnly
                     disabled
                   />
+                  <label className={`assign-self-toggle ${isTaskEditMode ? 'disabled' : ''}`}>
+                    <input
+                      type="checkbox"
+                      checked={isSelfAssigned}
+                      disabled={isTaskEditMode || !user?.id}
+                      onChange={toggleSelfAssignment}
+                    />
+                    <span>
+                      Assign to myself
+                      <small>
+                        Add yourself to the receiver list so Start and Submit are available on the task.
+                      </small>
+                    </span>
+                  </label>
                 </div>
               </div>
               <div className="assign-card assign-receiver-control-card">
@@ -1886,5 +1916,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     </div>
   );
 });
+
+AssignTaskModal.displayName = 'AssignTaskModal';
 
 export default AssignTaskModal;

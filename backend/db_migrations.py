@@ -105,6 +105,7 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "users", "session_revoked_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "backup_codes_encrypted", "TEXT")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "totp_secret_encrypted", "TEXT")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "linked_credential_id", "INTEGER")
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "task_comments", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "tasks", "workflow_enabled", "BOOLEAN DEFAULT FALSE")
@@ -116,6 +117,7 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "task_comments", "stage_id", "INTEGER")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_linked_credential_id ON it_portal_tool_credentials(linked_credential_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_enabled ON tasks(workflow_enabled)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_status ON tasks(workflow_status)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_current_stage_order ON tasks(current_stage_order)"))
@@ -624,6 +626,9 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN backup_codes_encrypted TEXT"))
             if "totp_secret_encrypted" not in credential_cols:
                 conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN totp_secret_encrypted TEXT"))
+            if "linked_credential_id" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN linked_credential_id INTEGER"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_linked_credential_id ON it_portal_tool_credentials(linked_credential_id)"))
 
         conn.execute(
             text(

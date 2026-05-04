@@ -77,8 +77,11 @@ class ToolUpdatePayload(BaseModel):
 
 
 class CredentialUpsertPayload(BaseModel):
+    credential_id: Optional[int] = None
     scope: str = Field("company")
     user_id: Optional[int] = None
+    linked_credential_id: Optional[int] = None
+    assigned_user_ids: Optional[list[int]] = None
     login_identifier: Optional[str] = None
     password: Optional[str] = None
     backup_codes: Optional[str] = None
@@ -86,6 +89,7 @@ class CredentialUpsertPayload(BaseModel):
     api_key: Optional[str] = None
     notes: Optional[str] = None
     is_active: bool = True
+    create_new: bool = False
 
 
 class ExtensionCredentialPayload(BaseModel):
@@ -220,11 +224,13 @@ def _serialize_credential_summary(credential: ITPortalToolCredential) -> dict:
         "toolId": credential.tool_id,
         "scope": credential.scope,
         "userId": credential.user_id,
+        "linkedCredentialId": credential.linked_credential_id,
         "hasLoginIdentifier": bool(credential.login_identifier_encrypted),
         "hasPassword": bool(credential.password_encrypted),
         "hasBackupCodes": bool(credential.backup_codes_encrypted),
         "hasTotpSecret": bool(credential.totp_secret_encrypted),
         "hasApiKey": bool(credential.api_key_encrypted),
+        "loginIdentifierPreview": decrypt_secret(credential.login_identifier_encrypted) or None,
         "notes": credential.notes,
         "isActive": bool(credential.is_active),
         "createdAt": credential.created_at.isoformat() if credential.created_at else None,
@@ -331,6 +337,87 @@ def _credential_has_secret_material(credential: Optional[ITPortalToolCredential]
     )
 
 
+def _tool_supports_shared_company_credential_assignments(canonical_tool_slug: str) -> bool:
+    return bool(canonical_tool_slug and canonical_tool_slug != "tool")
+
+
+def _list_active_company_credential_records(db: Session, tool_id: int) -> list[ITPortalToolCredential]:
+    return (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.tool_id == tool_id,
+            ITPortalToolCredential.is_active == True,
+            ITPortalToolCredential.scope == "company",
+            ITPortalToolCredential.user_id.is_(None),
+        )
+        .order_by(ITPortalToolCredential.updated_at.desc(), ITPortalToolCredential.created_at.desc())
+        .all()
+    )
+
+
+def _resolve_linked_company_credential(
+    db: Session,
+    credential: Optional[ITPortalToolCredential],
+) -> Optional[ITPortalToolCredential]:
+    linked_credential_id = getattr(credential, "linked_credential_id", None)
+    if not credential or not linked_credential_id:
+        return None
+
+    linked_credential = (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.id == linked_credential_id,
+            ITPortalToolCredential.tool_id == credential.tool_id,
+            ITPortalToolCredential.scope == "company",
+            ITPortalToolCredential.is_active == True,
+        )
+        .first()
+    )
+    if _credential_has_secret_material(linked_credential):
+        return linked_credential
+    return None
+
+
+def _latest_user_credential_records_for_tool(
+    db: Session,
+    tool_id: int,
+    user_ids: Optional[list[int]] = None,
+) -> dict[int, ITPortalToolCredential]:
+    query = (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.tool_id == tool_id,
+            ITPortalToolCredential.scope == "user",
+            ITPortalToolCredential.user_id.isnot(None),
+        )
+    )
+    if user_ids:
+        query = query.filter(ITPortalToolCredential.user_id.in_(user_ids))
+
+    rows = (
+        query.order_by(
+            ITPortalToolCredential.user_id.asc(),
+            ITPortalToolCredential.updated_at.desc(),
+            ITPortalToolCredential.created_at.desc(),
+        )
+        .all()
+    )
+
+    latest_records: dict[int, ITPortalToolCredential] = {}
+    for row in rows:
+        if row.user_id and row.user_id not in latest_records:
+            latest_records[row.user_id] = row
+    return latest_records
+
+
+def _tool_has_active_linked_assignments(db: Session, tool_id: int) -> bool:
+    latest_records = _latest_user_credential_records_for_tool(db, tool_id)
+    return any(
+        row.is_active and row.linked_credential_id
+        for row in latest_records.values()
+    )
+
+
 def _latest_user_credential_record(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
     return (
         db.query(ITPortalToolCredential)
@@ -345,17 +432,8 @@ def _latest_user_credential_record(db: Session, tool_id: int, user_id: int) -> O
 
 
 def _latest_company_credential_record(db: Session, tool_id: int) -> Optional[ITPortalToolCredential]:
-    return (
-        db.query(ITPortalToolCredential)
-        .filter(
-            ITPortalToolCredential.tool_id == tool_id,
-            ITPortalToolCredential.is_active == True,
-            ITPortalToolCredential.scope == "company",
-            ITPortalToolCredential.user_id.is_(None),
-        )
-        .order_by(ITPortalToolCredential.updated_at.desc(), ITPortalToolCredential.created_at.desc())
-        .first()
-    )
+    company_credentials = _list_active_company_credential_records(db, tool_id)
+    return company_credentials[0] if company_credentials else None
 
 
 def _resolve_user_tool_overrides_map(
@@ -388,17 +466,32 @@ def _resolve_user_tool_overrides_map(
 
 
 def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
+    tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
+    canonical_tool_slug = _canonical_tool_slug(tool.slug or "") if tool else ""
     user_specific_credential = _latest_user_credential_record(db, tool_id, user_id)
-    company_credential = _latest_company_credential_record(db, tool_id)
 
     if user_specific_credential:
         if not user_specific_credential.is_active:
             return None
+        linked_credential = _resolve_linked_company_credential(db, user_specific_credential)
+        if linked_credential:
+            return linked_credential
         if _credential_has_secret_material(user_specific_credential):
             return user_specific_credential
 
-    if _credential_has_secret_material(company_credential):
-        return company_credential
+    company_credentials = _list_active_company_credential_records(db, tool_id)
+    usable_company_credentials = [
+        credential
+        for credential in company_credentials
+        if _credential_has_secret_material(credential)
+    ]
+    if _tool_supports_shared_company_credential_assignments(canonical_tool_slug):
+        if len(usable_company_credentials) == 1 and not _tool_has_active_linked_assignments(db, tool_id):
+            return usable_company_credentials[0]
+        return None
+
+    if usable_company_credentials:
+        return usable_company_credentials[0]
     return None
 
 
@@ -434,58 +527,93 @@ def _resolve_chatgpt_totp_fallback(
         return None, None
 
     flow_credential = _resolve_tool_credential(db, flow_tool.id, user_id)
-    if not flow_credential or not flow_credential.totp_secret_encrypted:
-        return None, None
+    if flow_credential and flow_credential.totp_secret_encrypted:
+        flow_login_identifier = _normalize_login_identifier(
+            decrypt_secret(flow_credential.login_identifier_encrypted)
+        )
+        if flow_login_identifier and flow_login_identifier == current_login_identifier:
+            return flow_tool, flow_credential
 
-    flow_login_identifier = _normalize_login_identifier(
-        decrypt_secret(flow_credential.login_identifier_encrypted)
-    )
-    if not flow_login_identifier or flow_login_identifier != current_login_identifier:
-        return None, None
+    # Shared ChatGPT logins can be assigned to different users. If the current user
+    # does not also resolve to the matching Flow credential, fall back to any active
+    # shared Flow credential with the same Google login and an authenticator seed.
+    for company_flow_credential in _list_active_company_credential_records(db, flow_tool.id):
+        if not company_flow_credential.totp_secret_encrypted:
+            continue
+        flow_login_identifier = _normalize_login_identifier(
+            decrypt_secret(company_flow_credential.login_identifier_encrypted)
+        )
+        if flow_login_identifier and flow_login_identifier == current_login_identifier:
+            return flow_tool, company_flow_credential
 
-    return flow_tool, flow_credential
+    return None, None
 
 
 def _resolve_tool_credentials_map(db: Session, tool_ids: list[int], user_id: int) -> dict[int, ITPortalToolCredential]:
     if not tool_ids:
         return {}
-
     credentials_by_tool: dict[int, ITPortalToolCredential] = {}
-    latest_user_credentials = _resolve_user_tool_overrides_map(db, tool_ids, user_id)
-
-    company_credentials = (
-        db.query(ITPortalToolCredential)
-        .filter(
-            ITPortalToolCredential.tool_id.in_(tool_ids),
-            ITPortalToolCredential.is_active == True,
-            ITPortalToolCredential.scope == "company",
-            ITPortalToolCredential.user_id.is_(None),
-        )
-        .order_by(
-            ITPortalToolCredential.tool_id.asc(),
-            ITPortalToolCredential.updated_at.desc(),
-            ITPortalToolCredential.created_at.desc(),
-        )
-        .all()
-    )
-    latest_company_credentials: dict[int, ITPortalToolCredential] = {}
-    for credential in company_credentials:
-        latest_company_credentials.setdefault(credential.tool_id, credential)
-
     for tool_id in tool_ids:
-        user_credential = latest_user_credentials.get(tool_id)
-        if user_credential:
-            if not user_credential.is_active:
-                continue
-            if _credential_has_secret_material(user_credential):
-                credentials_by_tool[tool_id] = user_credential
-                continue
-
-        company_credential = latest_company_credentials.get(tool_id)
-        if _credential_has_secret_material(company_credential):
-            credentials_by_tool[tool_id] = company_credential
-
+        credential = _resolve_tool_credential(db, tool_id, user_id)
+        if credential:
+            credentials_by_tool[tool_id] = credential
     return credentials_by_tool
+
+
+def _apply_shared_credential_assignments(
+    db: Session,
+    *,
+    tool_id: int,
+    credential: ITPortalToolCredential,
+    assigned_user_ids: list[int],
+    actor_id: int,
+) -> None:
+    desired_user_ids = sorted({int(user_id) for user_id in assigned_user_ids if int(user_id) > 0})
+    if desired_user_ids:
+        users = (
+            db.query(User)
+            .filter(User.id.in_(desired_user_ids), User.is_deleted == False)
+            .all()
+        )
+        found_user_ids = {user.id for user in users}
+        missing_user_ids = [user_id for user_id in desired_user_ids if user_id not in found_user_ids]
+        if missing_user_ids:
+            raise HTTPException(status_code=404, detail="One or more selected users could not be found")
+
+    latest_user_records = _latest_user_credential_records_for_tool(db, tool_id)
+    currently_linked_user_ids = {
+        user_id
+        for user_id, row in latest_user_records.items()
+        if row.is_active and row.linked_credential_id == credential.id
+    }
+    desired_user_id_set = set(desired_user_ids)
+    now = datetime.utcnow()
+
+    for user_id in desired_user_ids:
+        current_row = latest_user_records.get(user_id)
+        if current_row and current_row.is_active and current_row.linked_credential_id == credential.id:
+            continue
+
+        db.add(
+            ITPortalToolCredential(
+                tool_id=tool_id,
+                scope="user",
+                user_id=user_id,
+                linked_credential_id=credential.id,
+                is_active=True,
+                created_by=actor_id,
+                updated_by=actor_id,
+                updated_at=now,
+            )
+        )
+
+    for user_id in currently_linked_user_ids - desired_user_id_set:
+        current_row = latest_user_records.get(user_id)
+        if not current_row or not current_row.is_active or current_row.linked_credential_id != credential.id:
+            continue
+        current_row.is_active = False
+        current_row.updated_by = actor_id
+        current_row.updated_at = now
 
 
 def _normalize_hostname(value: Optional[str]) -> str:
@@ -551,19 +679,20 @@ def _validate_extension_autofill_target(
 
 
 def _find_extension_tool(db: Session, payload: ExtensionCredentialPayload) -> Optional[ITPortalTool]:
-    tool_slug = _slugify(payload.tool_slug or "")
+    tool_slug = _canonical_tool_slug(payload.tool_slug or "")
     hostname = _normalize_hostname(payload.hostname or payload.page_url)
 
     query = db.query(ITPortalTool).filter(ITPortalTool.is_active == True)
-    if tool_slug != "tool":
-        tool = query.filter(ITPortalTool.slug == tool_slug).first()
-        if tool:
-            return tool
+    active_tools = query.all()
+    if tool_slug and tool_slug != "tool":
+        for tool in active_tools:
+            if _canonical_tool_slug(tool.slug or "") == tool_slug:
+                return tool
 
     if not hostname:
         return None
 
-    for tool in query.all():
+    for tool in active_tools:
         urls = [tool.website_url, tool.login_url]
         auto_login = (tool.metadata_json or {}).get("autoLogin") or {}
         urls.append(auto_login.get("actionUrl"))
@@ -1106,7 +1235,53 @@ async def list_credentials(
         .order_by(ITPortalToolCredential.scope.asc(), ITPortalToolCredential.updated_at.desc())
         .all()
     )
-    return {"success": True, "credentials": [_serialize_credential_summary(item) for item in credentials]}
+    serialized_credentials = [_serialize_credential_summary(item) for item in credentials]
+
+    canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
+    if _tool_supports_shared_company_credential_assignments(canonical_tool_slug):
+        company_credential_ids = {
+            credential.id
+            for credential in credentials
+            if credential.scope == "company"
+        }
+        latest_user_records = _latest_user_credential_records_for_tool(db, tool_id)
+        assigned_user_ids = sorted({
+            user_id
+            for user_id, row in latest_user_records.items()
+            if row.is_active and row.linked_credential_id in company_credential_ids
+        })
+        users_by_id = {}
+        if assigned_user_ids:
+            users_by_id = {
+                user.id: user
+                for user in db.query(User).filter(User.id.in_(assigned_user_ids)).all()
+            }
+
+        assignments_by_credential_id: dict[int, list[dict]] = {}
+        for user_id, row in latest_user_records.items():
+            linked_credential_id = row.linked_credential_id
+            if not row.is_active or linked_credential_id not in company_credential_ids:
+                continue
+            user = users_by_id.get(user_id)
+            if not user:
+                continue
+            assignments_by_credential_id.setdefault(linked_credential_id, []).append(
+                {
+                    "id": user.id,
+                    "name": user.name,
+                    "email": user.email,
+                }
+            )
+
+        for item in serialized_credentials:
+            assigned_users = assignments_by_credential_id.get(item["id"], [])
+            item["assignedUsers"] = sorted(
+                assigned_users,
+                key=lambda user: f"{user.get('name') or ''} {user.get('email') or ''}".strip().lower(),
+            )
+            item["assignedUserIds"] = [user["id"] for user in item["assignedUsers"]]
+
+    return {"success": True, "credentials": serialized_credentials}
 
 
 @router.post("/tools/{tool_id}/credentials")
@@ -1119,23 +1294,74 @@ async def upsert_credential(
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
+    canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
     scope = _validate_scope(payload)
 
     if scope == "user":
         user = db.query(User).filter(User.id == payload.user_id, User.is_deleted == False).first()
         if not user:
             raise HTTPException(status_code=404, detail="Target user not found")
+    elif payload.linked_credential_id:
+        raise HTTPException(status_code=400, detail="Only user credentials can link to a saved company credential")
 
-    credential = (
-        db.query(ITPortalToolCredential)
-        .filter(
-            ITPortalToolCredential.tool_id == tool_id,
-            ITPortalToolCredential.scope == scope,
-            ITPortalToolCredential.user_id == (payload.user_id if scope == "user" else None),
+    if payload.assigned_user_ids is not None and (
+        scope != "company"
+        or not _tool_supports_shared_company_credential_assignments(canonical_tool_slug)
+    ):
+        raise HTTPException(status_code=400, detail="User assignment lists are only supported for shared company credentials")
+
+    linked_credential = None
+    if payload.linked_credential_id:
+        linked_credential = (
+            db.query(ITPortalToolCredential)
+            .filter(
+                ITPortalToolCredential.id == payload.linked_credential_id,
+                ITPortalToolCredential.tool_id == tool_id,
+                ITPortalToolCredential.scope == "company",
+                ITPortalToolCredential.is_active == True,
+            )
+            .first()
         )
-        .order_by(ITPortalToolCredential.created_at.desc())
-        .first()
+        if not linked_credential:
+            raise HTTPException(status_code=404, detail="Linked shared credential not found")
+
+    creating_new_shared_company_credential = (
+        scope == "company"
+        and _tool_supports_shared_company_credential_assignments(canonical_tool_slug)
+        and not payload.credential_id
+        and payload.create_new
     )
+    if creating_new_shared_company_credential:
+        if not (payload.login_identifier or "").strip() or not (payload.password or "").strip():
+            raise HTTPException(status_code=400, detail="New shared company credentials require both username/email and password")
+
+    credential = None
+    if payload.credential_id:
+        credential = (
+            db.query(ITPortalToolCredential)
+            .filter(
+                ITPortalToolCredential.id == payload.credential_id,
+                ITPortalToolCredential.tool_id == tool_id,
+            )
+            .first()
+        )
+        if not credential:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        if credential.scope != scope:
+            raise HTTPException(status_code=400, detail="Credential scope does not match this update")
+        if scope == "user" and credential.user_id != payload.user_id:
+            raise HTTPException(status_code=400, detail="Credential user does not match this update")
+    elif not (scope == "company" and _tool_supports_shared_company_credential_assignments(canonical_tool_slug) and payload.create_new):
+        credential = (
+            db.query(ITPortalToolCredential)
+            .filter(
+                ITPortalToolCredential.tool_id == tool_id,
+                ITPortalToolCredential.scope == scope,
+                ITPortalToolCredential.user_id == (payload.user_id if scope == "user" else None),
+            )
+            .order_by(ITPortalToolCredential.created_at.desc())
+            .first()
+        )
 
     created = credential is None
     if credential is None:
@@ -1169,11 +1395,23 @@ async def upsert_credential(
         credential.api_key_encrypted = encrypt_secret(payload.api_key)
     if payload.notes is not None:
         credential.notes = payload.notes.strip() or None
+    if scope == "user":
+        credential.linked_credential_id = linked_credential.id if linked_credential else None
+    else:
+        credential.linked_credential_id = None
     credential.is_active = payload.is_active
     credential.updated_by = current_user.id
     credential.updated_at = datetime.utcnow()
 
     db.flush()
+    if scope == "company" and _tool_supports_shared_company_credential_assignments(canonical_tool_slug) and payload.assigned_user_ids is not None:
+        _apply_shared_credential_assignments(
+            db,
+            tool_id=tool_id,
+            credential=credential,
+            assigned_user_ids=payload.assigned_user_ids,
+            actor_id=current_user.id,
+        )
     _add_audit(
         db,
         actor_id=current_user.id,
@@ -1181,7 +1419,11 @@ async def upsert_credential(
         tool_id=tool_id,
         credential_id=credential.id,
         target_user_id=credential.user_id,
-        details={"scope": scope},
+        details={
+            "scope": scope,
+            "linkedCredentialId": credential.linked_credential_id,
+            "assignedUserCount": len(payload.assigned_user_ids or []),
+        },
     )
     db.commit()
     db.refresh(credential)

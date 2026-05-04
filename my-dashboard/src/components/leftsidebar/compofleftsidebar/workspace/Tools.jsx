@@ -73,8 +73,10 @@ const EMPTY_TOOL_FORM = {
 
 const EMPTY_CREDENTIAL_FORM = {
   toolId: '',
+  credential_id: '',
   scope: 'company',
   user_ids: [],
+  assigned_user_ids: [],
   login_identifier: '',
   password: '',
   backup_codes: '',
@@ -95,6 +97,43 @@ const normalizeToolSlug = (value) => {
   const normalized = `${value || ''}`.trim().toLowerCase();
   if (normalized === 'chat-gpt') return 'chatgpt';
   return normalized;
+};
+
+const supportsSharedCompanyCredentialAssignments = (value) => {
+  const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug);
+  return Boolean(normalizedToolSlug && normalizedToolSlug !== 'tool');
+};
+
+const getSharedCredentialLabels = (toolValue) => {
+  const isStringValue = typeof toolValue === 'string';
+  const normalizedToolSlug = normalizeToolSlug(isStringValue ? toolValue : toolValue?.slug);
+  const displayName = isStringValue
+    ? (normalizedToolSlug === 'chatgpt' ? 'ChatGPT' : normalizedToolSlug === 'flow' ? 'Flow' : 'tool')
+    : (toolValue?.name || (normalizedToolSlug === 'chatgpt' ? 'ChatGPT' : normalizedToolSlug === 'flow' ? 'Flow' : 'tool'));
+  if (normalizedToolSlug === 'chatgpt') {
+    return {
+      singular: 'password',
+      plural: 'passwords',
+      addAction: 'Add new ChatGPT password',
+      listTitle: 'Saved ChatGPT passwords',
+      assignTitle: 'Assign this ChatGPT password',
+      dialogTitle: 'Assign ChatGPT Password',
+      emptyState: 'Save the first ChatGPT login to start building user assignments.',
+      saveNotice: 'ChatGPT password saved. You can now see which users are assigned to this login from the saved password list.',
+      updateAction: 'Update ChatGPT Password',
+    };
+  }
+  return {
+    singular: 'credential',
+    plural: 'credentials',
+    addAction: `Add new ${displayName} credential`,
+    listTitle: `Saved ${displayName} credentials`,
+    assignTitle: `Assign this ${displayName} credential`,
+    dialogTitle: `Assign ${displayName} Credential`,
+    emptyState: `Save the first ${displayName} login to start building user assignments.`,
+    saveNotice: `${displayName} credential saved. You can now see which users are assigned to this login from the saved credential list.`,
+    updateAction: `Update ${displayName} Credential`,
+  };
 };
 
 const copyToClipboard = async (value) => {
@@ -259,6 +298,7 @@ export default function Tools() {
   const [toolCredentialsByToolId, setToolCredentialsByToolId] = useState({});
   const [assignmentLoading, setAssignmentLoading] = useState(false);
   const [assignmentSavingKey, setAssignmentSavingKey] = useState('');
+  const [sharedCredentialAssignmentPicker, setSharedCredentialAssignmentPicker] = useState(null);
 
   const loadToolCredentials = async (toolList, signal) => {
     if (signal?.aborted) return;
@@ -370,18 +410,40 @@ export default function Tools() {
   const showToolTotpSecretField = ['flow', 'chatgpt'].includes(activeCredentialToolSlug);
   const showFlowBackupCodesField = activeCredentialToolSlug === 'flow';
   const totpSecretToolLabel = activeCredentialToolSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
+  const activeCredentialToolSummaries = useMemo(() => {
+    const toolId = `${activeCredentialTool?.id || ''}`.trim();
+    if (!toolId) return [];
+    return toolCredentialsByToolId[toolId] || [];
+  }, [activeCredentialTool, toolCredentialsByToolId]);
+  const activeSharedCompanyCredentials = useMemo(() => {
+    if (!supportsSharedCompanyCredentialAssignments(activeCredentialToolSlug)) return [];
+    return activeCredentialToolSummaries.filter((summary) => summary.scope === 'company');
+  }, [activeCredentialToolSlug, activeCredentialToolSummaries]);
+  const selectedSharedCredentialSummary = useMemo(() => {
+    const credentialId = Number(credentialForm.credential_id || 0);
+    if (!credentialId) return null;
+    return activeSharedCompanyCredentials.find((summary) => Number(summary.id) === credentialId) || null;
+  }, [activeSharedCompanyCredentials, credentialForm.credential_id]);
+  const sharedCredentialLabels = useMemo(
+    () => getSharedCredentialLabels(activeCredentialTool || activeCredentialToolSlug),
+    [activeCredentialTool, activeCredentialToolSlug],
+  );
 
   const credentialDirectory = useMemo(() => {
     return tools.reduce((accumulator, tool) => {
       const summaries = toolCredentialsByToolId[`${tool.id}`] || [];
       const directory = {
         company: null,
+        companyList: [],
         users: {},
       };
 
       summaries.forEach((summary) => {
-        if (summary.scope === 'company' && !directory.company) {
-          directory.company = summary;
+        if (summary.scope === 'company') {
+          directory.companyList.push(summary);
+          if (!directory.company) {
+            directory.company = summary;
+          }
           return;
         }
         if (summary.scope === 'user' && summary.userId && !directory.users[summary.userId]) {
@@ -402,32 +464,182 @@ export default function Tools() {
     return Boolean(summary?.isActive) && hasStoredUsableCredentialSummary(summary);
   };
 
+  const getLinkedCompanyCredentialSummary = (directory, userCredential) => {
+    if (!userCredential?.linkedCredentialId) return null;
+    return (directory.companyList || []).find(
+      (summary) => Number(summary.id) === Number(userCredential.linkedCredentialId),
+    ) || null;
+  };
+
+  const getAssignedSharedCredentialSummary = (toolId, userId) => {
+    const tool = tools.find((item) => Number(item.id) === Number(toolId));
+    if (!supportsSharedCompanyCredentialAssignments(tool)) {
+      return null;
+    }
+
+    const directory = credentialDirectory[toolId] || { companyList: [], users: {} };
+    const userCredential = directory.users[userId];
+    return getLinkedCompanyCredentialSummary(directory, userCredential);
+  };
+
+  const isSharedCredentialAssignmentMode = (toolId) => {
+    const tool = tools.find((item) => Number(item.id) === Number(toolId));
+    const normalizedToolSlug = normalizeToolSlug(tool?.slug);
+    if (!supportsSharedCompanyCredentialAssignments(normalizedToolSlug)) {
+      return false;
+    }
+
+    const directory = credentialDirectory[toolId] || { companyList: [] };
+    const companyList = directory.companyList || [];
+    return companyList.length > 1 || companyList.some((summary) => (summary.assignedUserIds || []).length > 0);
+  };
+
   const isUserAssignedToTool = (toolId, userId) => {
-    const directory = credentialDirectory[toolId] || { company: null, users: {} };
+    const directory = credentialDirectory[toolId] || { company: null, companyList: [], users: {} };
     const userCredential = directory.users[userId];
     const companyCredential = directory.company;
+    const linkedCompanyCredential = getLinkedCompanyCredentialSummary(directory, userCredential);
+    const sharedCredentialAssignmentMode = isSharedCredentialAssignmentMode(toolId);
 
     if (userCredential) {
       if (!userCredential.isActive) {
         return false;
       }
+      if (hasActiveUsableCredentialSummary(linkedCompanyCredential)) {
+        return true;
+      }
       if (hasStoredUsableCredentialSummary(userCredential)) {
         return true;
+      }
+      if (sharedCredentialAssignmentMode) {
+        return false;
       }
       return hasActiveUsableCredentialSummary(companyCredential);
     }
 
+    if (sharedCredentialAssignmentMode) {
+      return false;
+    }
     return hasActiveUsableCredentialSummary(companyCredential);
+  };
+
+  const startNewSharedCredential = (toolId = credentialForm.toolId || selectedTool?.id || '') => {
+    setCredentialForm({
+      ...EMPTY_CREDENTIAL_FORM,
+      toolId: `${toolId || ''}`,
+      scope: 'company',
+    });
+  };
+
+  const loadSharedCredentialIntoForm = (summary) => {
+    if (!summary) return;
+    setCredentialForm({
+      ...EMPTY_CREDENTIAL_FORM,
+      toolId: `${summary.toolId || activeCredentialTool?.id || ''}`,
+      credential_id: `${summary.id}`,
+      scope: 'company',
+      assigned_user_ids: (summary.assignedUserIds || []).map((value) => `${value}`),
+      login_identifier: summary.loginIdentifierPreview || '',
+      notes: summary.notes || '',
+    });
+  };
+
+  const openSharedCredentialAssignmentPicker = (tool, user, activeCompanyCredentials) => {
+    const currentAssignment = getAssignedSharedCredentialSummary(tool.id, user.id);
+    const defaultCredentialId = currentAssignment
+      ? `${currentAssignment.id}`
+      : activeCompanyCredentials.length === 1
+        ? `${activeCompanyCredentials[0].id}`
+        : '';
+    setSharedCredentialAssignmentPicker({
+      tool,
+      user,
+      options: activeCompanyCredentials,
+      selectedCredentialId: defaultCredentialId,
+      currentCredentialId: currentAssignment ? `${currentAssignment.id}` : '',
+    });
+  };
+
+  const closeSharedCredentialAssignmentPicker = () => {
+    setSharedCredentialAssignmentPicker(null);
+  };
+
+  const handleConfirmSharedCredentialAssignment = async () => {
+    if (!sharedCredentialAssignmentPicker?.tool || !sharedCredentialAssignmentPicker?.user) {
+      return;
+    }
+
+    const tool = sharedCredentialAssignmentPicker.tool;
+    const user = sharedCredentialAssignmentPicker.user;
+    const toolId = Number(tool.id);
+    const userId = Number(user.id);
+    const credentialId = Number(sharedCredentialAssignmentPicker.selectedCredentialId || 0);
+    const labels = getSharedCredentialLabels(tool);
+
+    if (!credentialId) {
+      setError(`Choose the saved ${tool.name} ${labels.singular} you want to assign.`);
+      return;
+    }
+
+    setAssignmentSavingKey(`${toolId}:${userId}`);
+    setError('');
+    setNotice('');
+    try {
+      await itToolsAPI.upsertCredential(toolId, {
+        scope: 'user',
+        user_id: userId,
+        linked_credential_id: credentialId,
+        is_active: true,
+      });
+      await refreshToolCredentialCache(toolId);
+      const chosenCredential = (sharedCredentialAssignmentPicker.options || []).find((item) => Number(item.id) === credentialId);
+      setNotice(`${tool.name} now uses ${chosenCredential?.loginIdentifierPreview || `${labels.singular} #${credentialId}`} for ${user.name || user.email}.`);
+      closeSharedCredentialAssignmentPicker();
+    } catch (err) {
+      setError(err?.response?.data?.detail || `Failed to assign the ${tool.name} ${labels.singular}.`);
+    } finally {
+      setAssignmentSavingKey('');
+    }
+  };
+
+  const handleRemoveSharedCredentialAssignment = async () => {
+    if (!sharedCredentialAssignmentPicker?.tool || !sharedCredentialAssignmentPicker?.user) {
+      return;
+    }
+
+    const tool = sharedCredentialAssignmentPicker.tool;
+    const user = sharedCredentialAssignmentPicker.user;
+    const toolId = Number(tool.id);
+    const userId = Number(user.id);
+
+    setAssignmentSavingKey(`${toolId}:${userId}`);
+    setError('');
+    setNotice('');
+    try {
+      await itToolsAPI.upsertCredential(toolId, {
+        scope: 'user',
+        user_id: userId,
+        is_active: false,
+      });
+      await refreshToolCredentialCache(toolId);
+      setNotice(`${tool.name} access removed from ${user.name || user.email}.`);
+      closeSharedCredentialAssignmentPicker();
+    } catch (err) {
+      setError(err?.response?.data?.detail || `Failed to remove the ${tool.name} assignment.`);
+    } finally {
+      setAssignmentSavingKey('');
+    }
   };
 
   const handleToggleAssignment = async (tool, user) => {
     const toolId = Number(tool.id);
     const userId = Number(user.id);
-    const directory = credentialDirectory[toolId] || { company: null, users: {} };
+    const directory = credentialDirectory[toolId] || { company: null, companyList: [], users: {} };
     const userCredential = directory.users[userId];
-    const companyCredential = directory.company;
+    const normalizedToolSlug = normalizeToolSlug(tool?.slug);
     const currentlyAssigned = isUserAssignedToTool(toolId, userId);
-    const hasSourceCredential = hasStoredUsableCredentialSummary(userCredential) || hasActiveUsableCredentialSummary(companyCredential);
+    const activeCompanyCredentials = (directory.companyList || []).filter((summary) => hasActiveUsableCredentialSummary(summary));
+    const hasSourceCredential = hasStoredUsableCredentialSummary(userCredential) || activeCompanyCredentials.length > 0;
 
     if (!currentlyAssigned && !hasSourceCredential) {
       setSelectedTool(tool);
@@ -443,6 +655,11 @@ export default function Tools() {
         const credentialFormElement = document.querySelector('[data-tool-credential-form="true"]');
         credentialFormElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
+      return;
+    }
+
+    if (supportsSharedCompanyCredentialAssignments(normalizedToolSlug) && activeCompanyCredentials.length > 0) {
+      openSharedCredentialAssignmentPicker(tool, user, activeCompanyCredentials);
       return;
     }
 
@@ -584,11 +801,30 @@ export default function Tools() {
     const supportsBackupCodes = targetToolSlug === 'flow';
     const supportsTotpSecret = ['flow', 'chatgpt'].includes(targetToolSlug);
     const backupCodesValue = supportsBackupCodes
-      ? credentialForm.backup_codes
+      ? (credentialForm.backup_codes.trim() || undefined)
       : undefined;
     const totpSecretValue = supportsTotpSecret
-      ? credentialForm.totp_secret
+      ? (credentialForm.totp_secret.trim() || undefined)
       : undefined;
+    const credentialIdValue = credentialForm.credential_id
+      ? Number(credentialForm.credential_id)
+      : undefined;
+    const loginIdentifierValue = credentialForm.login_identifier.trim() || undefined;
+    const passwordValue = credentialForm.password || undefined;
+    const assignedUserIdsValue = supportsSharedCompanyCredentialAssignments(targetToolSlug) && credentialForm.scope === 'company'
+      ? [...new Set((credentialForm.assigned_user_ids || [])
+        .map((value) => Number(value))
+        .filter(Boolean))]
+      : undefined;
+    if (
+      supportsSharedCompanyCredentialAssignments(targetToolSlug)
+      && credentialForm.scope === 'company'
+      && !credentialIdValue
+      && (!loginIdentifierValue || !passwordValue)
+    ) {
+      setError(`Enter the ${targetTool?.name || 'tool'} username/email and password before saving a new shared login.`);
+      return;
+    }
     setSaving(true);
     setError('');
     setNotice('');
@@ -607,8 +843,8 @@ export default function Tools() {
           selectedUserIds.map((userId) => itToolsAPI.upsertCredential(toolId, {
             scope: 'user',
             user_id: userId,
-            login_identifier: credentialForm.login_identifier,
-            password: credentialForm.password,
+            login_identifier: loginIdentifierValue,
+            password: passwordValue,
             backup_codes: backupCodesValue,
             totp_secret: totpSecretValue,
             notes: credentialForm.notes,
@@ -636,16 +872,23 @@ export default function Tools() {
         }
       } else {
         await itToolsAPI.upsertCredential(toolId, {
+          credential_id: credentialIdValue,
           scope: credentialForm.scope,
           user_id: null,
-          login_identifier: credentialForm.login_identifier,
-          password: credentialForm.password,
+          login_identifier: loginIdentifierValue,
+          password: passwordValue,
           backup_codes: backupCodesValue,
           totp_secret: totpSecretValue,
           notes: credentialForm.notes,
+          assigned_user_ids: assignedUserIdsValue,
+          create_new: supportsSharedCompanyCredentialAssignments(targetToolSlug) && !credentialIdValue,
         });
         setCredentialForm({ ...EMPTY_CREDENTIAL_FORM, toolId: `${toolId}` });
-        setNotice('Company credential saved securely. It is now available at company level, and you can revoke or restore individual users from the matrix if needed.');
+        setNotice(
+          supportsSharedCompanyCredentialAssignments(targetToolSlug)
+            ? getSharedCredentialLabels(targetTool || targetToolSlug).saveNotice
+            : 'Company credential saved securely. It is now available at company level, and you can revoke or restore individual users from the matrix if needed.',
+        );
       }
       await loadTools();
     } catch (err) {
@@ -924,7 +1167,11 @@ export default function Tools() {
               <div className="it-form-grid">
                 <select
                   value={credentialForm.toolId || selectedTool?.id || ''}
-                  onChange={(e) => setCredentialForm({ ...credentialForm, toolId: e.target.value })}
+                  onChange={(e) => setCredentialForm({
+                    ...EMPTY_CREDENTIAL_FORM,
+                    toolId: e.target.value,
+                    scope: credentialForm.scope,
+                  })}
                   required
                 >
                   <option value="">Choose tool</option>
@@ -935,7 +1182,8 @@ export default function Tools() {
                 <select
                   value={credentialForm.scope}
                   onChange={(e) => setCredentialForm({
-                    ...credentialForm,
+                    ...EMPTY_CREDENTIAL_FORM,
+                    toolId: credentialForm.toolId || selectedTool?.id || '',
                     scope: e.target.value,
                     user_ids: e.target.value === 'user' ? credentialForm.user_ids : [],
                   })}
@@ -943,6 +1191,119 @@ export default function Tools() {
                   <option value="company">Company credential</option>
                   <option value="user">Specific user</option>
                 </select>
+                {supportsSharedCompanyCredentialAssignments(activeCredentialToolSlug) && credentialForm.scope === 'company' && (
+                  <div className="it-span-2 it-chatgpt-credential-library">
+                    <div className="it-user-picker-header">
+                      <span>{sharedCredentialLabels.listTitle}</span>
+                      <span>{activeSharedCompanyCredentials.length} saved</span>
+                    </div>
+                    <p className="it-card-copy">
+                      Save multiple {activeCredentialTool?.name || 'tool'} logins here, then assign each saved login to the right users.
+                    </p>
+                    <div className="it-chatgpt-credential-actions">
+                      <button
+                        type="button"
+                        className="it-secondary-btn"
+                        onClick={() => startNewSharedCredential()}
+                      >
+                        {sharedCredentialLabels.addAction}
+                      </button>
+                    </div>
+                    <div className="it-chatgpt-credential-list">
+                      {activeSharedCompanyCredentials.length ? activeSharedCompanyCredentials.map((summary) => {
+                        const isSelected = Number(summary.id) === Number(credentialForm.credential_id || 0);
+                        const assignedUsers = summary.assignedUsers || [];
+                        return (
+                          <button
+                            key={summary.id}
+                            type="button"
+                            className={`it-chatgpt-credential-card ${isSelected ? 'is-selected' : ''}`}
+                            onClick={() => loadSharedCredentialIntoForm(summary)}
+                          >
+                            <div className="it-chatgpt-credential-card-top">
+                              <strong>{summary.loginIdentifierPreview || `Saved login #${summary.id}`}</strong>
+                              <span>{assignedUsers.length} user{assignedUsers.length === 1 ? '' : 's'}</span>
+                            </div>
+                            <small>{summary.notes || 'No internal note saved for this login yet.'}</small>
+                            <div className="it-chatgpt-assigned-users">
+                              {assignedUsers.length ? assignedUsers.map((assignedUser) => (
+                                <span key={`${summary.id}:${assignedUser.id}`} className="it-chatgpt-user-pill">
+                                  {assignedUser.name || assignedUser.email}
+                                </span>
+                              )) : (
+                                <span className="it-chatgpt-user-pill is-empty">No users assigned</span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      }) : (
+                        <div className="it-chatgpt-empty-state">
+                          {sharedCredentialLabels.emptyState}
+                        </div>
+                      )}
+                    </div>
+                    {selectedSharedCredentialSummary && (
+                      <p className="it-mailbox-summary">
+                        Editing saved login for {selectedSharedCredentialSummary.loginIdentifierPreview || `credential #${selectedSharedCredentialSummary.id}`}.
+                        Leave password and authenticator seed blank if they have not changed.
+                      </p>
+                    )}
+                  </div>
+                )}
+                {supportsSharedCompanyCredentialAssignments(activeCredentialToolSlug) && credentialForm.scope === 'company' && (
+                  <div className="it-span-2 it-user-picker">
+                    <div className="it-user-picker-header">
+                      <span>{sharedCredentialLabels.assignTitle}</span>
+                      <span>{credentialForm.assigned_user_ids.length} selected</span>
+                    </div>
+                    <div className="it-user-picker-actions">
+                      <button
+                        type="button"
+                        className="it-link-btn"
+                        onClick={() => setCredentialForm((current) => ({
+                          ...current,
+                          assigned_user_ids: sortedUsers.map((user) => `${user.id}`),
+                        }))}
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        className="it-link-btn"
+                        onClick={() => setCredentialForm((current) => ({
+                          ...current,
+                          assigned_user_ids: [],
+                        }))}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="it-user-checklist" role="group" aria-label={`Select users for this ${activeCredentialTool?.name || 'tool'} credential`}>
+                      {sortedUsers.map((user) => {
+                        const userId = `${user.id}`;
+                        const checked = credentialForm.assigned_user_ids.includes(userId);
+                        return (
+                          <label key={`shared-company-${activeCredentialToolSlug}-${user.id}`} className={`it-user-checklist-item ${checked ? 'is-selected' : ''}`}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => setCredentialForm((current) => ({
+                                ...current,
+                                assigned_user_ids: e.target.checked
+                                  ? [...current.assigned_user_ids, userId]
+                                  : current.assigned_user_ids.filter((value) => value !== userId),
+                              }))}
+                            />
+                            <span className="it-user-checklist-copy">
+                              <strong>{user.name || user.email}</strong>
+                              <small>{user.email}</small>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 {credentialForm.scope === 'user' && (
                   <div className="it-span-2 it-user-picker">
                     <div className="it-user-picker-header">
@@ -998,7 +1359,7 @@ export default function Tools() {
                   </div>
                 )}
                 <input value={credentialForm.login_identifier} onChange={(e) => setCredentialForm({ ...credentialForm, login_identifier: e.target.value })} placeholder="Username / email" autoComplete="off" spellCheck={false} />
-                <input type="password" value={credentialForm.password} onChange={(e) => setCredentialForm({ ...credentialForm, password: e.target.value })} placeholder="Password" autoComplete="new-password" />
+                <input type="password" value={credentialForm.password} onChange={(e) => setCredentialForm({ ...credentialForm, password: e.target.value })} placeholder={credentialForm.credential_id ? 'Enter a new password only if this one changed' : 'Password'} autoComplete="new-password" />
                 {showToolTotpSecretField && (
                   <div className="it-span-2 it-secret-support-field">
                     <label htmlFor="flow-totp-secret">{totpSecretToolLabel} authenticator seed</label>
@@ -1006,7 +1367,9 @@ export default function Tools() {
                       id="flow-totp-secret"
                       value={credentialForm.totp_secret}
                       onChange={(e) => setCredentialForm({ ...credentialForm, totp_secret: e.target.value })}
-                      placeholder={`Paste the 32-character base32 secret or full otpauth:// URI\nJBSWY3DPEHPK3PXP`}
+                      placeholder={credentialForm.credential_id
+                        ? `Leave blank to keep the current authenticator seed\nPaste a new 32-character base32 secret or full otpauth:// URI only if it changed`
+                        : `Paste the 32-character base32 secret or full otpauth:// URI\nJBSWY3DPEHPK3PXP`}
                       autoComplete="off"
                       spellCheck={false}
                     />
@@ -1029,7 +1392,13 @@ export default function Tools() {
                 )}
               </div>
               <textarea value={credentialForm.notes} onChange={(e) => setCredentialForm({ ...credentialForm, notes: e.target.value })} placeholder="Internal notes optional" autoComplete="off" />
-              <button className="it-primary-btn" type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save Credential'}</button>
+                <button className="it-primary-btn" type="submit" disabled={saving}>
+                {saving
+                  ? 'Saving...'
+                  : supportsSharedCompanyCredentialAssignments(activeCredentialToolSlug) && credentialForm.scope === 'company' && credentialForm.credential_id
+                    ? sharedCredentialLabels.updateAction
+                    : 'Save Credential'}
+              </button>
             </form>
 
             <form className="it-admin-card" onSubmit={handleSaveMailbox} autoComplete="off">
@@ -1129,7 +1498,7 @@ export default function Tools() {
             </div>
             <div className="it-assignment-summary">
               <p>
-                Company credentials give default access. Unticking a cell creates a user-level block. Ticking a blocked cell restores access.
+                Company credentials can now be stored as a shared library for every tool, then assigned safely per user whenever a tool has multiple saved logins or explicit user-level routing.
               </p>
             </div>
             <div className="it-assignment-table-wrap">
@@ -1138,15 +1507,23 @@ export default function Tools() {
                   <tr>
                     <th className="it-user-column">User</th>
                     {assignmentColumns.map((tool) => {
-                      const companyCredential = credentialDirectory[tool.id]?.company;
-                      const companyReady = hasActiveUsableCredentialSummary(companyCredential);
+                      const directory = credentialDirectory[tool.id] || { company: null, companyList: [] };
+                      const companyReady = (directory.companyList || []).some((summary) => hasActiveUsableCredentialSummary(summary));
+                      const normalizedToolSlug = normalizeToolSlug(tool?.slug);
+                      const readyCredentialCount = (directory.companyList || []).filter((summary) => hasActiveUsableCredentialSummary(summary)).length;
                       return (
                         <th key={tool.id} className="it-tool-column">
                           <div className="it-tool-column-copy">
                             <strong>{tool.name}</strong>
                             <small>{tool.category}</small>
                             <span className={`it-company-badge ${companyReady ? 'is-ready' : 'is-missing'}`}>
-                              {companyReady ? 'Company ready' : 'Needs credential'}
+                              {companyReady
+                                ? supportsSharedCompanyCredentialAssignments(normalizedToolSlug)
+                                  ? `${readyCredentialCount} ${getSharedCredentialLabels(tool).singular}${readyCredentialCount === 1 ? '' : 's'} ready`
+                                  : 'Company ready'
+                                : supportsSharedCompanyCredentialAssignments(normalizedToolSlug)
+                                  ? `Needs ${getSharedCredentialLabels(tool).singular}`
+                                  : 'Needs credential'}
                             </span>
                           </div>
                         </th>
@@ -1183,6 +1560,10 @@ export default function Tools() {
                         {assignmentColumns.map((tool) => {
                           const checked = isUserAssignedToTool(tool.id, user.id);
                           const savingKey = `${tool.id}:${user.id}`;
+                          const normalizedToolSlug = normalizeToolSlug(tool?.slug);
+                          const assignedSharedCredential = supportsSharedCompanyCredentialAssignments(normalizedToolSlug)
+                            ? getAssignedSharedCredentialSummary(tool.id, user.id)
+                            : null;
                           return (
                             <td key={`${tool.id}:${user.id}`} className="it-assignment-cell">
                               <button
@@ -1191,10 +1572,18 @@ export default function Tools() {
                                 onClick={() => handleToggleAssignment(tool, user)}
                                 disabled={assignmentSavingKey === savingKey}
                                 aria-pressed={checked}
-                                title={`${checked ? 'Remove' : 'Grant'} ${tool.name} access for ${user.name || user.email}`}
+                                title={supportsSharedCompanyCredentialAssignments(normalizedToolSlug)
+                                  ? `${checked ? 'Change or remove' : 'Choose'} the ${tool.name} ${getSharedCredentialLabels(tool).singular} for ${user.name || user.email}`
+                                  : `${checked ? 'Remove' : 'Grant'} ${tool.name} access for ${user.name || user.email}`}
                               >
                                 {assignmentSavingKey === savingKey ? '...' : checked ? '✓' : ''}
                               </button>
+                              {assignedSharedCredential && (
+                                <div className="it-assignment-meta">
+                                  <strong>{assignedSharedCredential.loginIdentifierPreview || `ID ${assignedSharedCredential.id}`}</strong>
+                                  <small>ID {assignedSharedCredential.id}</small>
+                                </div>
+                              )}
                             </td>
                           );
                         })}
@@ -1203,6 +1592,69 @@ export default function Tools() {
                   )}
                 </tbody>
               </table>
+            </div>
+          </section>
+        )}
+
+        {isAdmin && sharedCredentialAssignmentPicker && (
+          <section className="it-picker-overlay" role="dialog" aria-modal="true" aria-label={`Choose ${sharedCredentialAssignmentPicker.tool?.name || 'tool'} credential`}>
+            <div className="it-picker-card">
+              <div className="it-admin-card-header">
+                <div>
+                  <h2>{getSharedCredentialLabels(sharedCredentialAssignmentPicker.tool).dialogTitle}</h2>
+                  <p className="it-card-copy">
+                    Choose which saved {sharedCredentialAssignmentPicker.tool?.name || 'tool'} login should be used by {sharedCredentialAssignmentPicker.user?.name || sharedCredentialAssignmentPicker.user?.email}.
+                  </p>
+                </div>
+                <span>{sharedCredentialAssignmentPicker.options?.length || 0} saved</span>
+              </div>
+              <div className="it-chatgpt-credential-list">
+                {(sharedCredentialAssignmentPicker.options || []).map((summary) => {
+                  const isSelected = Number(summary.id) === Number(sharedCredentialAssignmentPicker.selectedCredentialId || 0);
+                  return (
+                    <button
+                      key={`picker-${summary.id}`}
+                      type="button"
+                      className={`it-chatgpt-credential-card ${isSelected ? 'is-selected' : ''}`}
+                      onClick={() => setSharedCredentialAssignmentPicker((current) => ({
+                        ...current,
+                        selectedCredentialId: `${summary.id}`,
+                      }))}
+                    >
+                      <div className="it-chatgpt-credential-card-top">
+                        <strong>{summary.loginIdentifierPreview || `Saved login #${summary.id}`}</strong>
+                        <span>ID {summary.id}</span>
+                      </div>
+                      <small>{summary.notes || 'No internal note saved for this login yet.'}</small>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="it-picker-summary">
+                <p>
+                  Current assignment:
+                  {' '}
+                  {sharedCredentialAssignmentPicker.currentCredentialId
+                    ? (() => {
+                      const currentSummary = (sharedCredentialAssignmentPicker.options || []).find(
+                        (item) => Number(item.id) === Number(sharedCredentialAssignmentPicker.currentCredentialId),
+                      );
+                      return currentSummary?.loginIdentifierPreview || `ID ${sharedCredentialAssignmentPicker.currentCredentialId}`;
+                    })()
+                    : 'None'}
+                </p>
+              </div>
+              <div className="it-admin-actions">
+                <button className="it-primary-btn" type="button" onClick={handleConfirmSharedCredentialAssignment} disabled={!sharedCredentialAssignmentPicker.options?.length || assignmentSavingKey === `${sharedCredentialAssignmentPicker.tool?.id}:${sharedCredentialAssignmentPicker.user?.id}`}>
+                  {assignmentSavingKey === `${sharedCredentialAssignmentPicker.tool?.id}:${sharedCredentialAssignmentPicker.user?.id}` ? 'Saving...' : 'Assign Selected Login'}
+                </button>
+                <button className="it-secondary-btn" type="button" onClick={closeSharedCredentialAssignmentPicker} disabled={assignmentSavingKey === `${sharedCredentialAssignmentPicker.tool?.id}:${sharedCredentialAssignmentPicker.user?.id}`}>
+                  Cancel
+                </button>
+                <button className="it-danger-btn" type="button" onClick={handleRemoveSharedCredentialAssignment} disabled={!sharedCredentialAssignmentPicker.currentCredentialId || assignmentSavingKey === `${sharedCredentialAssignmentPicker.tool?.id}:${sharedCredentialAssignmentPicker.user?.id}`}>
+                  Remove Assignment
+                </button>
+              </div>
             </div>
           </section>
         )}

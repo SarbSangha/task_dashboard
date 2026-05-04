@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import './GroupMessagePanel.css';
@@ -87,6 +87,11 @@ const buildAttachmentUploadState = (files = []) => {
     currentFileIndex: firstFile ? 1 : 0,
     currentFileTotalBytes,
   };
+};
+
+const formatUnreadCount = (count = 0) => {
+  if (!count) return '';
+  return count > 99 ? '99+' : `${count}`;
 };
 
 const createInitialComposerDraft = () => ({
@@ -278,6 +283,12 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const [directAttachmentUploadState, setDirectAttachmentUploadState] = useState(createInitialAttachmentUploadState);
   const [directPendingAttachments, setDirectPendingAttachments] = useState([]);
   const [directComposerDrafts, setDirectComposerDrafts] = useState({});
+  const [groupUnreadCounts, setGroupUnreadCounts] = useState({});
+  const [directUnreadCounts, setDirectUnreadCounts] = useState({});
+  const [showGroupComposer, setShowGroupComposer] = useState(false);
+  const panelRef = useRef(null);
+  const panelAnimationRef = useRef(null);
+  const panelFlipRectRef = useRef(null);
   const selectedDirectUserIdRef = useRef(null);
   const activeTabRef = useRef(activeTab);
   const currentUserIdRef = useRef(currentUserId);
@@ -349,10 +360,120 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     setDirectAttachmentUploadState(draft.uploadState || createInitialAttachmentUploadState());
   };
 
+  const incrementGroupUnreadCount = (groupId) => {
+    if (!groupId) return;
+    setGroupUnreadCounts((prev) => ({
+      ...prev,
+      [groupId]: (prev[groupId] || 0) + 1,
+    }));
+  };
+
+  const incrementDirectUnreadCount = (userId) => {
+    if (!userId) return;
+    setDirectUnreadCounts((prev) => ({
+      ...prev,
+      [userId]: (prev[userId] || 0) + 1,
+    }));
+  };
+
+  const clearGroupUnreadCount = (groupId) => {
+    if (!groupId) return;
+    setGroupUnreadCounts((prev) => {
+      if (!prev[groupId]) return prev;
+      const next = { ...prev };
+      delete next[groupId];
+      return next;
+    });
+  };
+
+  const clearDirectUnreadCount = (userId) => {
+    if (!userId) return;
+    setDirectUnreadCounts((prev) => {
+      if (!prev[userId]) return prev;
+      const next = { ...prev };
+      delete next[userId];
+      return next;
+    });
+  };
+
   useEffect(() => {
     if (variant !== 'overlay') return;
     onMinimizedChange?.(isOpen && isMinimized);
   }, [isMinimized, isOpen, onMinimizedChange, variant]);
+
+  useEffect(() => {
+    if (activeTab !== 'groups') {
+      setShowGroupComposer(false);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'groups' && selectedGroupId) {
+      clearGroupUnreadCount(selectedGroupId);
+    }
+  }, [activeTab, selectedGroupId]);
+
+  useEffect(() => {
+    if (activeTab === 'direct' && selectedDirectUserId) {
+      clearDirectUnreadCount(selectedDirectUserId);
+    }
+  }, [activeTab, selectedDirectUserId]);
+
+  useLayoutEffect(() => {
+    const panelNode = panelRef.current;
+    const firstRect = panelFlipRectRef.current;
+    if (!panelNode || !firstRect || isMinimized) return;
+
+    const lastRect = panelNode.getBoundingClientRect();
+    const deltaX = firstRect.left - lastRect.left;
+    const deltaY = firstRect.top - lastRect.top;
+    const scaleX = firstRect.width / Math.max(lastRect.width, 1);
+    const scaleY = firstRect.height / Math.max(lastRect.height, 1);
+
+    panelFlipRectRef.current = null;
+
+    if (
+      Math.abs(deltaX) < 0.5 &&
+      Math.abs(deltaY) < 0.5 &&
+      Math.abs(scaleX - 1) < 0.01 &&
+      Math.abs(scaleY - 1) < 0.01
+    ) {
+      return;
+    }
+
+    panelAnimationRef.current?.cancel();
+    panelAnimationRef.current = panelNode.animate(
+      [
+        {
+          transformOrigin: 'top left',
+          transform: `translate(${deltaX}px, ${deltaY}px) scale(${scaleX}, ${scaleY})`,
+        },
+        {
+          transformOrigin: 'top left',
+          transform: 'translate(0, 0) scale(1, 1)',
+        },
+      ],
+      {
+        duration: 260,
+        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        fill: 'both',
+      }
+    );
+
+    panelAnimationRef.current.addEventListener(
+      'finish',
+      () => {
+        if (panelAnimationRef.current) {
+          panelAnimationRef.current = null;
+        }
+      },
+      { once: true }
+    );
+
+    return () => {
+      panelAnimationRef.current?.cancel();
+    };
+  }, [isMaximized, isMinimized]);
 
   useEffect(() => {
     const previousGroupId = previousSelectedGroupIdRef.current;
@@ -979,8 +1100,13 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         if (payload.eventType === 'group_message') {
           const groupId = Number(payload?.metadata?.groupId);
           if (!groupId) return;
+          const isViewingGroupThread =
+            activeTabRef.current === 'groups' && selectedGroupIdRef.current === groupId;
 
           scheduleGroupIndexRefresh();
+          if (!isViewingGroupThread) {
+            incrementGroupUnreadCount(groupId);
+          }
 
           if (selectedGroupIdRef.current === groupId) {
             const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
@@ -1029,25 +1155,28 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               position: '',
               isAdmin: false,
             };
+          const isViewingDirectThread =
+            activeTabRef.current === 'direct' && selectedDirectUserIdRef.current === senderId;
 
-          if (hasBootstrappedDirectRef.current || activeTabRef.current === 'direct') {
-            setDirectUsers((prev) => (
-              prev.some((entry) => entry.id === knownDirectUser.id)
-                ? prev
-                : [knownDirectUser, ...prev]
-            ));
-            setDirectConversations((prev) => upsertDirectConversation(prev, {
-              user: knownDirectUser,
-              lastMessageAt: incomingMessage.createdAt,
-              lastMessagePreview: buildConversationPreview(incomingMessage.message, attachments).slice(0, 180),
-              lastMessageSenderId: senderId,
-            }));
-            setDirectCacheStatus((prev) => ({
-              showingCached: false,
-              cachedAt: prev.cachedAt,
-              liveUpdatedAt: Date.now(),
-            }));
-            scheduleDirectIndexRefresh();
+          setDirectUsers((prev) => (
+            prev.some((entry) => entry.id === knownDirectUser.id)
+              ? prev
+              : [knownDirectUser, ...prev]
+          ));
+          setDirectConversations((prev) => upsertDirectConversation(prev, {
+            user: knownDirectUser,
+            lastMessageAt: incomingMessage.createdAt,
+            lastMessagePreview: buildConversationPreview(incomingMessage.message, attachments).slice(0, 180),
+            lastMessageSenderId: senderId,
+          }));
+          setDirectCacheStatus((prev) => ({
+            showingCached: false,
+            cachedAt: prev.cachedAt,
+            liveUpdatedAt: Date.now(),
+          }));
+          scheduleDirectIndexRefresh();
+          if (!isViewingDirectThread) {
+            incrementDirectUnreadCount(senderId);
           }
           if (selectedDirectUserIdRef.current === senderId) {
             setDirectMessages((prev) => appendMessageById(prev, incomingMessage));
@@ -1664,16 +1793,57 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     setForwardState((prev) => ({ ...prev, sending: true }));
     try {
       const payload = buildForwardPayload();
-      await Promise.all([
-        ...forwardState.groupIds.map((groupId) => groupAPI.sendMessage(groupId, payload)),
-        ...forwardState.userIds.map((userId) => directMessageAPI.sendMessage(userId, payload)),
-      ]);
-      setFeedback(
-        `Forwarded ${selectedForwardMessages.length} ${selectedForwardMessages.length === 1 ? 'message' : 'messages'} to ${targetCount} ${targetCount === 1 ? 'destination' : 'destinations'}.`
+      const forwardingTargets = [
+        ...forwardState.groupIds.map((groupId) => ({
+          kind: 'group',
+          id: groupId,
+          request: groupAPI.sendMessage(groupId, payload),
+        })),
+        ...forwardState.userIds.map((userId) => ({
+          kind: 'direct',
+          id: userId,
+          request: directMessageAPI.sendMessage(userId, payload),
+        })),
+      ];
+      const settledResults = await Promise.allSettled(
+        forwardingTargets.map((target) => target.request)
       );
-      resetMessageForwarding();
-      syncGroups({ silent: true }).catch(() => {});
-      syncDirectData({ silent: true }).catch(() => {});
+      const failedTargets = [];
+      let successCount = 0;
+
+      settledResults.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          successCount += 1;
+          return;
+        }
+        failedTargets.push(forwardingTargets[index]);
+      });
+
+      if (successCount > 0) {
+        syncGroups({ silent: true }).catch(() => {});
+        syncDirectData({ silent: true }).catch(() => {});
+      }
+
+      if (failedTargets.length === 0) {
+        setFeedback(
+          `Forwarded ${selectedForwardMessages.length} ${selectedForwardMessages.length === 1 ? 'message' : 'messages'} to ${targetCount} ${targetCount === 1 ? 'destination' : 'destinations'}.`
+        );
+        resetMessageForwarding();
+        return;
+      }
+
+      const firstError = settledResults.find((result) => result.status === 'rejected')?.reason;
+      setForwardState((prev) => ({
+        ...prev,
+        sending: false,
+        groupIds: failedTargets.filter((target) => target.kind === 'group').map((target) => target.id),
+        userIds: failedTargets.filter((target) => target.kind === 'direct').map((target) => target.id),
+      }));
+      setFeedback(
+        successCount > 0
+          ? `Forwarded ${selectedForwardMessages.length} ${selectedForwardMessages.length === 1 ? 'message' : 'messages'} to ${successCount} ${successCount === 1 ? 'destination' : 'destinations'}. ${failedTargets.length} ${failedTargets.length === 1 ? 'destination needs' : 'destinations need'} another try.`
+          : firstError?.response?.data?.detail || 'Failed to forward selected messages.'
+      );
     } catch (error) {
       setForwardState((prev) => ({ ...prev, sending: false }));
       setFeedback(error?.response?.data?.detail || 'Failed to forward selected messages.');
@@ -1685,107 +1855,178 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const showEmptyGroupsState = !loading && !isRefreshing && hasResolvedGroupIndex && groups.length === 0;
   const showEmptyDirectState = !directLoading && !directRefreshing && hasResolvedDirectIndex && directListItems.length === 0;
 
+  const refreshCurrentView = () => {
+    (activeTab === 'groups' ? syncGroups({ silent: true }) : syncDirectData({ silent: true })).catch(() => {});
+  };
+
+  const panelStatusBanner = (
+    <CacheStatusBanner
+      showingCached={activeTab === 'groups' ? groupsCacheStatus.showingCached : directCacheStatus.showingCached}
+      isRefreshing={activeTab === 'groups' ? isRefreshing : directRefreshing}
+      cachedAt={activeTab === 'groups' ? groupsCacheStatus.cachedAt : directCacheStatus.cachedAt}
+      liveUpdatedAt={activeTab === 'groups' ? groupsCacheStatus.liveUpdatedAt : directCacheStatus.liveUpdatedAt}
+      refreshingLabel={activeTab === 'groups' ? 'Refreshing latest groups...' : 'Refreshing latest direct chats...'}
+      liveLabel={activeTab === 'groups' ? 'Groups list is up to date' : 'Direct chats are up to date'}
+      cachedLabel={activeTab === 'groups' ? 'Showing cached groups' : 'Showing cached direct chats'}
+      className="cache-status-banner--header"
+    />
+  );
+
+  const messageSystemRail = (
+    <div className="message-system-rail">
+      <div className="message-system-rail-top">
+        <button
+          type="button"
+          className={`message-system-rail-btn ${activeTab === 'groups' ? 'active' : ''}`}
+          onClick={() => setActiveTab('groups')}
+          title="Group chats"
+          aria-label="Show group chats"
+        >
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path
+              d="M8.5 11.25a2.75 2.75 0 1 0 0-5.5 2.75 2.75 0 0 0 0 5.5Zm7 1a2.25 2.25 0 1 0 0-4.5 2.25 2.25 0 0 0 0 4.5Z"
+              fill="currentColor"
+            />
+            <path
+              d="M4.75 17.5a4.5 4.5 0 0 1 7.5-3.33M13.5 17.5c.38-1.74 1.9-3 3.75-3 1.24 0 2.33.56 3.08 1.44"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className={`message-system-rail-btn ${activeTab === 'direct' ? 'active' : ''}`}
+          onClick={() => setActiveTab('direct')}
+          title="Individual chats"
+          aria-label="Show individual chats"
+        >
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M12 12a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5Z" fill="currentColor" />
+            <path
+              d="M6 18a6 6 0 0 1 12 0"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+
   const content = (
     <div className={`group-message-root group-message-root--${variant}`}>
-      <div className="message-system-tabs">
-        <button
-          type="button"
-          className={activeTab === 'groups' ? 'active' : ''}
-          onClick={() => setActiveTab('groups')}
-        >
-          Group Chat
-        </button>
-        <button
-          type="button"
-          className={activeTab === 'direct' ? 'active' : ''}
-          onClick={() => setActiveTab('direct')}
-        >
-          Individual Chat
-        </button>
-      </div>
-      <div className="content-header">
-        <h3>{activeTab === 'groups' ? 'Groups' : 'Individual Chat'}</h3>
-        <button
-          className="add-btn"
-          onClick={() =>
-            (activeTab === 'groups' ? syncGroups({ silent: true }) : syncDirectData({ silent: true })).catch(() => {})
-          }
-        >
-          Refresh
-        </button>
-      </div>
+      {variant !== 'overlay' && (
+        <div className="content-header">
+          <div className="content-header-copy">
+            <span className="content-header-label">Message System</span>
+            <h3>{activeTab === 'groups' ? 'Groups' : 'Individual Chat'}</h3>
+          </div>
+          {panelStatusBanner}
+        </div>
+      )}
 
-      {feedback && <div className="group-message-feedback">{feedback}</div>}
-      <CacheStatusBanner
-        showingCached={activeTab === 'groups' ? groupsCacheStatus.showingCached : directCacheStatus.showingCached}
-        isRefreshing={activeTab === 'groups' ? isRefreshing : directRefreshing}
-        cachedAt={activeTab === 'groups' ? groupsCacheStatus.cachedAt : directCacheStatus.cachedAt}
-        liveUpdatedAt={activeTab === 'groups' ? groupsCacheStatus.liveUpdatedAt : directCacheStatus.liveUpdatedAt}
-        refreshingLabel={activeTab === 'groups' ? 'Refreshing latest groups...' : 'Refreshing latest direct chats...'}
-        liveLabel={activeTab === 'groups' ? 'Groups list is up to date' : 'Direct chats are up to date'}
-        cachedLabel={activeTab === 'groups' ? 'Showing cached groups' : 'Showing cached direct chats'}
-      />
+      <div className="message-system-shell">
+        {messageSystemRail}
+        <div className="message-system-stage">
+          {feedback && <div className="group-message-feedback">{feedback}</div>}
 
-      {activeTab === 'groups' && (
+          {activeTab === 'groups' && (
       <div className="groups-shell">
         <div className="groups-sidebar">
-          <div className="groups-create-card">
-            <div className="groups-create-title">Create Group</div>
-            <input
-              className="groups-input"
-              type="text"
-              placeholder="Group name..."
-              value={groupName}
-              onChange={(event) => setGroupName(event.target.value)}
-            />
-            <div className="groups-user-picker">
-              {loading && <div>Loading employees...</div>}
-              {!loading &&
-                allUsers.map((groupUser) => (
-                  <label key={groupUser.id} className="groups-user-option">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(groupUser.id)}
-                      onChange={() => toggleSelected(groupUser.id)}
-                    />
-                    <span>
-                      {groupUser.name} ({groupUser.department || 'N/A'})
-                    </span>
-                  </label>
-                ))}
+          <div className="message-system-sidebar-header">
+            <div>
+              <div className="message-system-sidebar-eyebrow">Groups</div>
+              <div className="message-system-sidebar-meta">
+                {groups.length} {groups.length === 1 ? 'group' : 'groups'} available
+              </div>
             </div>
-            <button className="add-btn" onClick={createGroup} disabled={!groupName.trim() || selectedIds.length === 0}>
-              + Create Group
-            </button>
+            <div className="message-system-sidebar-actions">
+              <button type="button" className="message-system-sidebar-btn" onClick={refreshCurrentView} title="Refresh groups">
+                ↻
+              </button>
+              <button
+                type="button"
+                className={`message-system-sidebar-btn ${showGroupComposer ? 'active' : ''}`}
+                onClick={() => setShowGroupComposer((prev) => !prev)}
+                title={showGroupComposer ? 'Hide create group' : 'Create group'}
+              >
+                {showGroupComposer ? '−' : '+'}
+              </button>
+            </div>
           </div>
+
+          {showGroupComposer && (
+            <div className="groups-create-card groups-create-card--drawer">
+              <div className="groups-create-title">Create Group</div>
+              <input
+                className="groups-input"
+                type="text"
+                placeholder="Group name..."
+                value={groupName}
+                onChange={(event) => setGroupName(event.target.value)}
+              />
+              <div className="groups-user-picker">
+                {loading && <div>Loading employees...</div>}
+                {!loading &&
+                  allUsers.map((groupUser) => (
+                    <label key={groupUser.id} className="groups-user-option">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(groupUser.id)}
+                        onChange={() => toggleSelected(groupUser.id)}
+                      />
+                      <span>
+                        {groupUser.name} ({groupUser.department || 'N/A'})
+                      </span>
+                    </label>
+                  ))}
+              </div>
+              <button className="add-btn" onClick={createGroup} disabled={!groupName.trim() || selectedIds.length === 0}>
+                Create Channel
+              </button>
+            </div>
+          )}
 
           <div className="groups-list">
             {showEmptyGroupsState && <div className="group-message-info-card">No groups created yet.</div>}
-            {groups.map((group) => (
-              <button
-                type="button"
-                className={`group-thread-card ${selectedGroupId === group.id ? 'active' : ''}`}
-                key={group.id}
-                onClick={() => setSelectedGroupId(group.id)}
-              >
-                <div
-                  className="group-thread-avatar"
-                  style={{ '--group-avatar-hue': `${buildAvatarHue(group.name)}deg` }}
+            {groups.map((group) => {
+              const unreadCount = groupUnreadCounts[group.id] || 0;
+              const hasUnread = unreadCount > 0;
+
+              return (
+                <button
+                  type="button"
+                  className={`group-thread-card ${selectedGroupId === group.id ? 'active' : ''} ${hasUnread ? 'has-unread' : ''}`}
+                  key={group.id}
+                  onClick={() => setSelectedGroupId(group.id)}
                 >
-                  {buildInitials(group.name)}
-                </div>
-                <div className="group-thread-copy">
-                  <div className="group-thread-topline">
-                    <div className="group-thread-name">{group.name}</div>
-                    <div className="group-thread-meta">{group.memberCount} members</div>
+                  <div
+                    className={`group-thread-avatar ${hasUnread ? 'has-unread' : ''}`}
+                    style={{ '--group-avatar-hue': `${buildAvatarHue(group.name)}deg` }}
+                  >
+                    {buildInitials(group.name)}
                   </div>
-                  <div className="group-thread-subline">
-                    <span>Your role: {group.myRole}</span>
-                    <span>{group.members?.slice(0, 2).map((member) => member.name).join(', ')}</span>
+                  <div className="group-thread-copy">
+                    <div className="group-thread-topline">
+                      <div className={`group-thread-name ${hasUnread ? 'has-unread' : ''}`}>{group.name}</div>
+                      <div className="group-thread-topline-side">
+                        {hasUnread && <span className="group-thread-unread-badge">{formatUnreadCount(unreadCount)}</span>}
+                        <div className="group-thread-meta">{group.memberCount} members</div>
+                      </div>
+                    </div>
+                    <div className="group-thread-subline">
+                      <span>Your role: {group.myRole}</span>
+                      <span>{group.members?.slice(0, 2).map((member) => member.name).join(', ')}</span>
+                    </div>
                   </div>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -1793,8 +2034,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           {!selectedGroup && (
             <div className="group-chat-empty">
               <div className="group-chat-empty-icon">#</div>
-              <h4>Select a group to start chatting</h4>
-              <p>Your group conversations will appear here in a WhatsApp-style layout.</p>
+              <h4>Select a channel</h4>
+              <p>Choose a group from the left rail to open the conversation thread.</p>
             </div>
           )}
 
@@ -2140,7 +2381,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                       <path
                         d="M10.66 16.56 20.18 6.75"
                         fill="none"
-                        stroke="#0b1a14"
+                        stroke="#dbeafe"
                         strokeWidth="1.8"
                         strokeLinecap="round"
                         strokeLinejoin="round"
@@ -2157,8 +2398,21 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       {activeTab === 'direct' && (
         <div className="groups-shell">
           <div className="groups-sidebar">
-            <div className="groups-create-card">
-              <div className="groups-create-title">Start Individual Chat</div>
+            <div className="message-system-sidebar-header">
+              <div>
+                <div className="message-system-sidebar-eyebrow">Direct Messages</div>
+                <div className="message-system-sidebar-meta">
+                  {directListItems.length} {directListItems.length === 1 ? 'conversation' : 'conversations'} available
+                </div>
+              </div>
+              <div className="message-system-sidebar-actions">
+                <button type="button" className="message-system-sidebar-btn" onClick={refreshCurrentView} title="Refresh direct chats">
+                  ↻
+                </button>
+              </div>
+            </div>
+            <div className="groups-create-card groups-create-card--helper">
+              <div className="groups-create-title">Quick Start</div>
               <div className="group-message-info-card direct-helper-card">
                 Choose a teammate from the list below to start or continue a one-to-one conversation.
               </div>
@@ -2169,31 +2423,39 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               {showEmptyDirectState && (
                 <div className="group-message-info-card">No people available for direct chat yet.</div>
               )}
-              {!directLoading && directListItems.map((item) => (
-                <button
-                  type="button"
-                  className={`group-thread-card ${selectedDirectUserId === item.id ? 'active' : ''}`}
-                  key={item.id}
-                  onClick={() => setSelectedDirectUserId(item.id)}
-                >
-                  <div
-                    className="group-thread-avatar"
-                    style={{ '--group-avatar-hue': `${buildAvatarHue(item.name)}deg` }}
+              {!directLoading && directListItems.map((item) => {
+                const unreadCount = directUnreadCounts[item.id] || 0;
+                const hasUnread = unreadCount > 0;
+
+                return (
+                  <button
+                    type="button"
+                    className={`group-thread-card ${selectedDirectUserId === item.id ? 'active' : ''} ${hasUnread ? 'has-unread' : ''}`}
+                    key={item.id}
+                    onClick={() => setSelectedDirectUserId(item.id)}
                   >
-                    {buildInitials(item.name)}
-                  </div>
-                  <div className="group-thread-copy">
-                    <div className="group-thread-topline">
-                      <div className="group-thread-name">{item.name}</div>
-                      <div className="group-thread-meta">{item.department || item.position || 'User'}</div>
+                    <div
+                      className={`group-thread-avatar ${hasUnread ? 'has-unread' : ''}`}
+                      style={{ '--group-avatar-hue': `${buildAvatarHue(item.name)}deg` }}
+                    >
+                      {buildInitials(item.name)}
                     </div>
-                    <div className="group-thread-subline">
-                      <span>{item.position || 'Member'}</span>
-                      <span>{item.conversation?.lastMessagePreview || 'Start a conversation'}</span>
+                    <div className="group-thread-copy">
+                      <div className="group-thread-topline">
+                        <div className={`group-thread-name ${hasUnread ? 'has-unread' : ''}`}>{item.name}</div>
+                        <div className="group-thread-topline-side">
+                          {hasUnread && <span className="group-thread-unread-badge">{formatUnreadCount(unreadCount)}</span>}
+                          <div className="group-thread-meta">{item.department || item.position || 'User'}</div>
+                        </div>
+                      </div>
+                      <div className="group-thread-subline">
+                        <span>{item.position || 'Member'}</span>
+                        <span>{item.conversation?.lastMessagePreview || 'Start a conversation'}</span>
+                      </div>
                     </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -2201,8 +2463,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
             {!selectedDirectUser && (
               <div className="group-chat-empty">
                 <div className="group-chat-empty-icon">@</div>
-                <h4>Select a person to start chatting</h4>
-                <p>Your individual one-to-one conversations will appear here.</p>
+                <h4>Select a conversation</h4>
+                <p>Pick a teammate from the sidebar to open your direct message thread.</p>
               </div>
             )}
 
@@ -2456,7 +2718,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                         <path
                           d="M10.66 16.56 20.18 6.75"
                           fill="none"
-                          stroke="#0b1a14"
+                          stroke="#dbeafe"
                           strokeWidth="1.8"
                           strokeLinecap="round"
                           strokeLinejoin="round"
@@ -2470,6 +2732,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           </div>
         </div>
       )}
+        </div>
+      </div>
       {forwardState.open && (
         <div className="message-forward-overlay" onClick={closeForwardModal}>
           <div className="message-forward-modal" onClick={(event) => event.stopPropagation()}>
@@ -2587,6 +2851,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       return;
     }
 
+    if (panelRef.current) {
+      panelFlipRectRef.current = panelRef.current.getBoundingClientRect();
+    }
     setIsMaximized((prev) => !prev);
   };
 
@@ -2599,6 +2866,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       >
         <div
           className={`group-message-panel ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}
+          ref={panelRef}
           style={minimizedWindowStyle || undefined}
           onClick={(event) => event.stopPropagation()}
         >
@@ -2606,9 +2874,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
             className="group-message-modal-header"
             onClick={isMinimized ? () => { onActivate?.(); setIsMinimized(false); } : undefined}
           >
-            <div className="group-message-modal-copy">
-              <h3>Message System</h3>
-              <p>Groups, conversations, and shared attachments</p>
+            <div className="group-message-header-main">
+              <div className="group-message-modal-copy">
+                <span className="group-message-modal-label">Message System</span>
+              </div>
+              {!isMinimized && panelStatusBanner}
             </div>
             <div className="group-message-window-controls">
               {!isMinimized && (

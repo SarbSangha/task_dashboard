@@ -683,6 +683,44 @@ function isFlowTotpValueExpired() {
   return ageMs >= ttlMs;
 }
 
+function isFlowTotpValueNearExpiry() {
+  if (!STATE.totpValue || !STATE.totpFetchedAt || !STATE.totpExpiresInSec) return false;
+  const ageMs = Date.now() - STATE.totpFetchedAt;
+  const remainingMs = Math.max(0, (STATE.totpExpiresInSec * 1000) - ageMs);
+  return remainingMs > 0 && remainingMs <= 8000;
+}
+
+function shouldRetryFlowTotp(input) {
+  if (!input) return false;
+
+  if (`${input.getAttribute('aria-invalid') || ''}`.trim().toLowerCase() === 'true') {
+    return true;
+  }
+
+  const contextText = normalizeText([
+    document.body?.innerText,
+    input.closest('form, main, section, article, div')?.innerText,
+    input.getAttribute('aria-describedby'),
+  ].filter(Boolean).join(' '));
+
+  return [
+    'wrong code',
+    'incorrect code',
+    'invalid code',
+    'try again',
+  ].some((token) => contextText.includes(token));
+}
+
+function resetFlowTotpValue() {
+  STATE.lastTotpFilledAt = 0;
+  STATE.lastTotpSubmitAt = 0;
+  STATE.totpSubmitted = false;
+  STATE.totpValue = '';
+  STATE.totpFetchedAt = 0;
+  STATE.totpExpiresInSec = 0;
+  STATE.totpLastRequestAt = 0;
+}
+
 function getCurrentFlowBackupCode(credential) {
   return getFlowBackupCodes(credential)[STATE.backupCodeIndex] || '';
 }
@@ -1139,10 +1177,7 @@ async function requestFlowTotp() {
 
   if (!response?.ok || !response.otp) {
     const errorMessage = `${response?.error || `${getToolDisplayName()} authenticator code not available`}`;
-    if (
-      errorMessage.includes('No TOTP secret configured')
-      || errorMessage.includes('http=404')
-    ) {
+    if (errorMessage.includes('No TOTP secret configured')) {
       STATE.totpUnavailable = true;
       STATE.totpValue = '';
       STATE.totpExpiresInSec = 0;
@@ -1153,6 +1188,13 @@ async function requestFlowTotp() {
         setStatus(`No ${getToolDisplayName()} authenticator seed is configured. Choose another verification method or add it in the dashboard.`);
       }
       scheduleAttempt(250);
+      return;
+    }
+
+    if (errorMessage.includes('No matching tool found')) {
+      STATE.totpValue = '';
+      setStatus(`${getToolDisplayName()} verification could not be matched to the configured tool. Reload the extension, then launch it again from the dashboard.`);
+      scheduleAttempt(1500);
       return;
     }
 
@@ -1486,7 +1528,7 @@ async function attemptFlowTotpStep() {
         scheduleAttempt(900);
         return true;
       }
-      setStatus(`${getToolDisplayName()} authenticator seed is not configured. Choose another verification method or add it in the dashboard.`);
+      setStatus(`${getToolDisplayName()} authenticator verification is not available right now. Reload the extension, then launch it again from the dashboard if this keeps happening.`);
       return true;
     }
     return false;
@@ -1519,6 +1561,14 @@ async function attemptFlowTotpStep() {
     return false;
   }
 
+  if (shouldRetryFlowTotp(totpInput)) {
+    resetFlowTotpValue();
+    setStatus(`${getToolDisplayName()} authenticator code was rejected. Fetching a fresh code...`);
+    requestFlowTotp();
+    scheduleAttempt(700);
+    return true;
+  }
+
   if (STATE.totpSubmitted) {
     if (Date.now() - STATE.lastTotpSubmitAt < STEP_PENDING_RETRY_MS) {
       setStatus(`Authenticator code submitted, waiting for ${getToolDisplayName()} sign-in`);
@@ -1526,17 +1576,19 @@ async function attemptFlowTotpStep() {
       return true;
     }
 
-    STATE.lastTotpSubmitAt = 0;
-    STATE.totpSubmitted = false;
-    STATE.totpValue = '';
-    STATE.totpFetchedAt = 0;
-    STATE.totpExpiresInSec = 0;
+    resetFlowTotpValue();
   }
 
   if (isFlowTotpValueExpired()) {
-    STATE.totpValue = '';
-    STATE.totpFetchedAt = 0;
-    STATE.totpExpiresInSec = 0;
+    resetFlowTotpValue();
+  }
+
+  if (isFlowTotpValueNearExpiry()) {
+    resetFlowTotpValue();
+    requestFlowTotp();
+    setStatus(`Refreshing ${getToolDisplayName()} authenticator code before it expires...`);
+    scheduleAttempt(500);
+    return true;
   }
 
   if (!STATE.totpValue) {

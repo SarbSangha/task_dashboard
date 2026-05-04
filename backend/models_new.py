@@ -604,6 +604,7 @@ class ITPortalToolCredential(Base):
     tool_id = Column(Integer, ForeignKey("it_portal_tools.id"), nullable=False, index=True)
     scope = Column(String, nullable=False, default="company", index=True)  # company/user
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    linked_credential_id = Column(Integer, ForeignKey("it_portal_tool_credentials.id"), index=True)
     login_identifier_encrypted = Column(Text)
     password_encrypted = Column(Text)
     backup_codes_encrypted = Column(Text)

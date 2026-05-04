@@ -11,6 +11,26 @@
   font-weight: 600;
 }
 
+.cache-status-banner--header {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 12px;
+}
+
+.cache-status-banner--header .cache-status-copy {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.cache-status-banner--header .cache-status-text,
+.cache-status-banner--header .cache-status-side {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .cache-status-banner.cached {
   background: rgba(59, 130, 246, 0.08);
   color: rgba(219, 234, 254, 0.96);
@@ -52,6 +72,15 @@
   .cache-status-banner {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .cache-status-banner--header .cache-status-copy {
+    flex-wrap: wrap;
+  }
+
+  .cache-status-banner--header .cache-status-text,
+  .cache-status-banner--header .cache-status-side {
+    white-space: normal;
   }
 
   .cache-status-side {

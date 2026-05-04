@@ -264,6 +264,25 @@ function isLoginContinuationPage(toolSlug, pageUrl, hostname) {
   return Boolean(pageHost && allowedHosts.includes(pageHost));
 }
 
+function isRecentContinuationReuseAllowed(toolSlug, pageUrl, hostname) {
+  if (!isLoginContinuationPage(toolSlug, pageUrl, hostname)) {
+    return false;
+  }
+
+  if (normalizeToolSlug(toolSlug) !== 'chatgpt') {
+    return true;
+  }
+
+  const pageHost = hostnameFromPageUrl(pageUrl) || normalizeHostname(hostname);
+  return [
+    'auth.openai.com',
+    'accounts.google.com',
+    'login.microsoftonline.com',
+    'login.live.com',
+    'login.microsoft.com',
+  ].includes(pageHost);
+}
+
 function resolvePendingLaunchKey(launches, toolSlug, hostname) {
   const normalizedSlug = normalizeToolSlug(toolSlug);
   if (normalizedSlug && launches[normalizedSlug]?.ticket) {
@@ -371,7 +390,7 @@ async function getActiveLaunch(tabId, toolSlug) {
 }
 
 async function getRecentContinuationLaunch(toolSlug, hostname, pageUrl) {
-  if (!isLoginContinuationPage(toolSlug, pageUrl, hostname)) {
+  if (!isRecentContinuationReuseAllowed(toolSlug, pageUrl, hostname)) {
     return null;
   }
 
@@ -423,6 +442,9 @@ async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug,
 
 async function activatePendingLaunchForTab(tabId, toolSlug, hostname, pageUrl) {
   if (!tabId) return null;
+  if (normalizeToolSlug(toolSlug) === 'chatgpt') {
+    return null;
+  }
 
   const resolvedHostname = hostnameFromPageUrl(pageUrl) || normalizeHostname(hostname);
   const storedLaunch = await getPendingLaunch(toolSlug, resolvedHostname);
