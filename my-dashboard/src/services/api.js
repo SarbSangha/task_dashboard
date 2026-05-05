@@ -1387,6 +1387,11 @@ export const itToolsAPI = {
     return response.data;
   },
 
+  deleteCredential: async (toolId, credentialId) => {
+    const response = await api.delete(`/api/it-tools/tools/${toolId}/credentials/${credentialId}`);
+    return response.data;
+  },
+
   launchTool: async (toolId) => {
     const response = await api.post(`/api/it-tools/tools/${toolId}/launch`);
     return response.data;

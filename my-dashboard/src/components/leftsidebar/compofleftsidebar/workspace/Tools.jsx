@@ -417,7 +417,11 @@ export default function Tools() {
   }, [activeCredentialTool, toolCredentialsByToolId]);
   const activeSharedCompanyCredentials = useMemo(() => {
     if (!supportsSharedCompanyCredentialAssignments(activeCredentialToolSlug)) return [];
-    return activeCredentialToolSummaries.filter((summary) => summary.scope === 'company');
+    return activeCredentialToolSummaries.filter(
+      (summary) => summary.scope === 'company'
+        && Boolean(summary?.isActive)
+        && Boolean(summary?.hasApiKey || (summary?.hasLoginIdentifier && summary?.hasPassword))
+    );
   }, [activeCredentialToolSlug, activeCredentialToolSummaries]);
   const selectedSharedCredentialSummary = useMemo(() => {
     const credentialId = Number(credentialForm.credential_id || 0);
@@ -519,14 +523,6 @@ export default function Tools() {
     return false;
   };
 
-  const startNewSharedCredential = (toolId = credentialForm.toolId || selectedTool?.id || '') => {
-    setCredentialForm({
-      ...EMPTY_CREDENTIAL_FORM,
-      toolId: `${toolId || ''}`,
-      scope: 'company',
-    });
-  };
-
   const loadSharedCredentialIntoForm = (summary) => {
     if (!summary) return;
     setCredentialForm({
@@ -538,6 +534,15 @@ export default function Tools() {
       login_identifier: summary.loginIdentifierPreview || '',
       notes: summary.notes || '',
     });
+  };
+
+  const resetSharedCredentialSelection = () => {
+    const toolId = credentialForm.toolId || selectedTool?.id || activeCredentialTool?.id || '';
+    setCredentialForm((current) => ({
+      ...EMPTY_CREDENTIAL_FORM,
+      toolId: `${toolId || ''}`,
+      scope: current.scope || 'company',
+    }));
   };
 
   const openSharedCredentialAssignmentPicker = (tool, user, activeCompanyCredentials) => {
@@ -790,6 +795,46 @@ export default function Tools() {
       await loadTools();
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to delete tool.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteCredential = async (summary = null) => {
+    const toolId = summary?.toolId || credentialForm.toolId || selectedTool?.id;
+    const credentialId = Number(summary?.id || credentialForm.credential_id || 0);
+    if (!toolId || !credentialId) {
+      return;
+    }
+
+    const targetTool = tools.find((tool) => `${tool.id}` === `${toolId}`) || null;
+    const credentialLabel = summary?.loginIdentifierPreview
+      || selectedSharedCredentialSummary?.loginIdentifierPreview
+      || credentialForm.login_identifier
+      || `credential #${credentialId}`;
+    const confirmed = window.confirm(
+      `Delete ${credentialLabel} from ${targetTool?.name || 'this tool'}? This will also remove any users currently linked to it.`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setSaving(true);
+    setError('');
+    setNotice('');
+    try {
+      await itToolsAPI.deleteCredential(toolId, credentialId);
+      if (Number(credentialForm.credential_id || 0) === credentialId) {
+        setCredentialForm({
+          ...EMPTY_CREDENTIAL_FORM,
+          toolId: `${toolId}`,
+          scope: credentialForm.scope || 'company',
+        });
+      }
+      setNotice(`Credential deleted from ${targetTool?.name || 'the tool library'}.`);
+      await loadTools();
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Failed to delete credential.');
     } finally {
       setSaving(false);
     }
@@ -1235,29 +1280,48 @@ export default function Tools() {
                     <p className="it-card-copy">
                       Save multiple {activeCredentialTool?.name || 'tool'} logins here, then assign each saved login to the right users.
                     </p>
-                    <div className="it-chatgpt-credential-actions">
-                      <button
-                        type="button"
-                        className="it-secondary-btn"
-                        onClick={() => startNewSharedCredential()}
-                      >
-                        {sharedCredentialLabels.addAction}
-                      </button>
-                    </div>
                     <div className="it-chatgpt-credential-list">
                       {activeSharedCompanyCredentials.length ? activeSharedCompanyCredentials.map((summary) => {
                         const isSelected = Number(summary.id) === Number(credentialForm.credential_id || 0);
                         const assignedUsers = summary.assignedUsers || [];
                         return (
-                          <button
+                          <div
                             key={summary.id}
-                            type="button"
                             className={`it-chatgpt-credential-card ${isSelected ? 'is-selected' : ''}`}
+                            role="button"
+                            tabIndex={0}
                             onClick={() => loadSharedCredentialIntoForm(summary)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                loadSharedCredentialIntoForm(summary);
+                              }
+                            }}
                           >
                             <div className="it-chatgpt-credential-card-top">
-                              <strong>{summary.loginIdentifierPreview || `Saved login #${summary.id}`}</strong>
-                              <span>{assignedUsers.length} user{assignedUsers.length === 1 ? '' : 's'}</span>
+                              <div className="it-chatgpt-credential-card-heading">
+                                <strong>{summary.loginIdentifierPreview || `Saved login #${summary.id}`}</strong>
+                                <span>{assignedUsers.length} user{assignedUsers.length === 1 ? '' : 's'}</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="it-chatgpt-credential-delete"
+                                aria-label={`Delete ${summary.loginIdentifierPreview || `credential ${summary.id}`}`}
+                                title="Delete credential"
+                                onKeyDown={(event) => {
+                                  event.stopPropagation();
+                                }}
+                                onKeyUp={(event) => {
+                                  event.stopPropagation();
+                                }}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleDeleteCredential(summary);
+                                }}
+                                disabled={saving}
+                              >
+                                ×
+                              </button>
                             </div>
                             <small>{summary.notes || 'No internal note saved for this login yet.'}</small>
                             <div className="it-chatgpt-assigned-users">
@@ -1269,7 +1333,7 @@ export default function Tools() {
                                 <span className="it-chatgpt-user-pill is-empty">No users assigned</span>
                               )}
                             </div>
-                          </button>
+                          </div>
                         );
                       }) : (
                         <div className="it-chatgpt-empty-state">
@@ -1281,6 +1345,14 @@ export default function Tools() {
                       <p className="it-mailbox-summary">
                         Editing saved login for {selectedSharedCredentialSummary.loginIdentifierPreview || `credential #${selectedSharedCredentialSummary.id}`}.
                         Leave password and authenticator seed blank if they have not changed.
+                        {' '}
+                        <button
+                          type="button"
+                          className="it-inline-action-btn"
+                          onClick={resetSharedCredentialSelection}
+                        >
+                          Create another saved login
+                        </button>
                       </p>
                     )}
                   </div>
@@ -1425,16 +1497,28 @@ export default function Tools() {
                     />
                     <small>Optional. Paste one Google 8-digit backup code per line and the Flow extension will try them in order when backup-code sign-in is shown.</small>
                   </div>
+              )}
+            </div>
+            <textarea value={credentialForm.notes} onChange={(e) => setCredentialForm({ ...credentialForm, notes: e.target.value })} placeholder="Internal notes optional" autoComplete="off" />
+              <div className="it-admin-actions">
+                <button className="it-primary-btn" type="submit" disabled={saving}>
+                  {saving
+                    ? 'Saving...'
+                    : supportsSharedCompanyCredentialAssignments(activeCredentialToolSlug) && credentialForm.scope === 'company' && credentialForm.credential_id
+                      ? sharedCredentialLabels.updateAction
+                      : 'Save Credential'}
+                </button>
+                {credentialForm.credential_id && (
+                  <button
+                    className="it-danger-btn"
+                    type="button"
+                    onClick={handleDeleteCredential}
+                    disabled={saving}
+                  >
+                    Delete Credential
+                  </button>
                 )}
               </div>
-              <textarea value={credentialForm.notes} onChange={(e) => setCredentialForm({ ...credentialForm, notes: e.target.value })} placeholder="Internal notes optional" autoComplete="off" />
-                <button className="it-primary-btn" type="submit" disabled={saving}>
-                {saving
-                  ? 'Saving...'
-                  : supportsSharedCompanyCredentialAssignments(activeCredentialToolSlug) && credentialForm.scope === 'company' && credentialForm.credential_id
-                    ? sharedCredentialLabels.updateAction
-                    : 'Save Credential'}
-              </button>
             </form>
 
             <form className="it-admin-card" onSubmit={handleSaveMailbox} autoComplete="off">

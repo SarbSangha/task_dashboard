@@ -371,10 +371,12 @@ body {
 }
 
 .it-chatgpt-credential-library {
+  min-width: 0;
   border: 1px solid rgba(59, 130, 246, 0.24);
   background: linear-gradient(180deg, rgba(11, 18, 32, 0.92), rgba(7, 12, 24, 0.98));
   border-radius: 16px;
   padding: 0.95rem;
+  overflow: hidden;
 }
 
 .it-chatgpt-credential-actions {
@@ -390,10 +392,14 @@ body {
   display: grid;
   gap: 0.75rem;
   margin-top: 0.9rem;
+  min-width: 0;
 }
 
 .it-chatgpt-credential-card {
+  position: relative;
   width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
   border: 1px solid rgba(89, 105, 144, 0.34);
   border-radius: 14px;
   padding: 0.95rem;
@@ -423,6 +429,13 @@ body {
   gap: 0.75rem;
 }
 
+.it-chatgpt-credential-card-heading {
+  min-width: 0;
+  display: grid;
+  gap: 0.18rem;
+  flex: 1;
+}
+
 .it-chatgpt-credential-card-top strong {
   color: #f8fafc;
   font-size: 0.95rem;
@@ -431,11 +444,51 @@ body {
 }
 
 .it-chatgpt-credential-card-top span {
-  flex-shrink: 0;
   color: #93c5fd;
   font-size: 0.76rem;
   font-weight: 800;
   letter-spacing: 0.02em;
+}
+
+.it-chatgpt-credential-delete {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(248, 113, 113, 0.34);
+  border-radius: 999px;
+  background: rgba(127, 29, 29, 0.22);
+  color: #fecaca;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+
+.it-chatgpt-credential-delete:hover {
+  transform: translateY(-1px);
+  border-color: rgba(252, 165, 165, 0.56);
+  background: rgba(127, 29, 29, 0.42);
+}
+
+.it-inline-action-btn {
+  border: none;
+  background: transparent;
+  color: #93c5fd;
+  font-size: inherit;
+  font-weight: 700;
+  padding: 0;
+  cursor: pointer;
+}
+
+.it-inline-action-btn:hover {
+  color: #bfdbfe;
+  text-decoration: underline;
+}
+
+.it-chatgpt-credential-delete:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .it-chatgpt-credential-card small {
@@ -780,7 +833,7 @@ body {
 .it-picker-overlay {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: 3100;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -790,6 +843,8 @@ body {
 }
 
 .it-picker-card {
+  position: relative;
+  z-index: 3101;
   width: min(720px, 100%);
   max-height: min(84vh, 760px);
   overflow: auto;

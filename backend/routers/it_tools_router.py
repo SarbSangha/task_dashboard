@@ -742,19 +742,54 @@ def _apply_shared_credential_assignments(
         if missing_user_ids:
             raise HTTPException(status_code=404, detail="One or more selected users could not be found")
 
-    latest_user_records = _latest_user_credential_records_for_tool(db, tool_id)
+    active_user_rows = (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.tool_id == tool_id,
+            ITPortalToolCredential.scope == "user",
+            ITPortalToolCredential.user_id.isnot(None),
+            ITPortalToolCredential.is_active == True,
+        )
+        .order_by(
+            ITPortalToolCredential.user_id.asc(),
+            ITPortalToolCredential.updated_at.desc(),
+            ITPortalToolCredential.created_at.desc(),
+        )
+        .all()
+    )
+    active_rows_by_user: dict[int, list[ITPortalToolCredential]] = {}
+    for row in active_user_rows:
+        if row.user_id:
+            active_rows_by_user.setdefault(row.user_id, []).append(row)
+
     currently_linked_user_ids = {
-        user_id
-        for user_id, row in latest_user_records.items()
-        if row.is_active and row.linked_credential_id == credential.id
+        row.user_id
+        for row in active_user_rows
+        if row.user_id and row.linked_credential_id == credential.id
     }
     desired_user_id_set = set(desired_user_ids)
     now = datetime.utcnow()
 
     for user_id in desired_user_ids:
-        current_row = latest_user_records.get(user_id)
-        if current_row and current_row.is_active and current_row.linked_credential_id == credential.id:
+        user_active_rows = active_rows_by_user.get(user_id, [])
+        matching_row = next(
+            (row for row in user_active_rows if row.linked_credential_id == credential.id),
+            None,
+        )
+
+        if matching_row:
+            for row in user_active_rows:
+                if row.id == matching_row.id:
+                    continue
+                row.is_active = False
+                row.updated_by = actor_id
+                row.updated_at = now
             continue
+
+        for row in user_active_rows:
+            row.is_active = False
+            row.updated_by = actor_id
+            row.updated_at = now
 
         db.add(
             ITPortalToolCredential(
@@ -770,12 +805,12 @@ def _apply_shared_credential_assignments(
         )
 
     for user_id in currently_linked_user_ids - desired_user_id_set:
-        current_row = latest_user_records.get(user_id)
-        if not current_row or not current_row.is_active or current_row.linked_credential_id != credential.id:
-            continue
-        current_row.is_active = False
-        current_row.updated_by = actor_id
-        current_row.updated_at = now
+        for row in active_rows_by_user.get(user_id, []):
+            if row.linked_credential_id != credential.id:
+                continue
+            row.is_active = False
+            row.updated_by = actor_id
+            row.updated_at = now
 
 
 def _normalize_hostname(value: Optional[str]) -> str:
@@ -1625,6 +1660,71 @@ async def upsert_credential(
     db.commit()
     db.refresh(credential)
     return {"success": True, "credential": _serialize_credential_summary(credential)}
+
+
+@router.delete("/tools/{tool_id}/credentials/{credential_id}")
+async def delete_credential(
+    tool_id: int,
+    credential_id: int,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+
+    credential = (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.id == credential_id,
+            ITPortalToolCredential.tool_id == tool_id,
+        )
+        .first()
+    )
+    if not credential:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    if not credential.is_active:
+        return {"success": True}
+
+    now = datetime.utcnow()
+    deactivated_link_count = 0
+
+    if credential.scope == "company":
+        linked_user_rows = (
+            db.query(ITPortalToolCredential)
+            .filter(
+                ITPortalToolCredential.tool_id == tool_id,
+                ITPortalToolCredential.scope == "user",
+                ITPortalToolCredential.linked_credential_id == credential.id,
+                ITPortalToolCredential.is_active == True,
+            )
+            .all()
+        )
+        for row in linked_user_rows:
+            row.is_active = False
+            row.updated_by = current_user.id
+            row.updated_at = now
+        deactivated_link_count = len(linked_user_rows)
+
+    credential.is_active = False
+    credential.updated_by = current_user.id
+    credential.updated_at = now
+
+    _add_audit(
+        db,
+        actor_id=current_user.id,
+        action="credential_deleted",
+        tool_id=tool_id,
+        credential_id=credential.id,
+        target_user_id=credential.user_id,
+        details={
+            "scope": credential.scope,
+            "deactivatedLinkedUserCount": deactivated_link_count,
+        },
+    )
+    db.commit()
+    return {"success": True}
 
 
 @router.post("/tools/{tool_id}/launch")
