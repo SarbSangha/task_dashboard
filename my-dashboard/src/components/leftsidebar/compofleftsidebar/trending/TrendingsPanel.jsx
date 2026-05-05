@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { authAPI, taskAPI } from '../../../../services/api';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import { buildFileDownloadUrl, buildFileOpenUrl } from '../../../../utils/fileLinks';
@@ -8,6 +8,61 @@ const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
 const ALL_DEPARTMENTS = 'all_departments';
 const PAGE_SIZE = 60;
 const DATABANK_REQUEST_TIMEOUT_MS = 60000;
+const DIRECTORY_STRUCTURE_STORAGE_KEY = 'rmw.databank.directory.structure';
+const DEFAULT_DIRECTORY_STRUCTURE = ['uploader', 'date', 'project'];
+
+const DIRECTORY_CRITERIA = {
+  uploader: {
+    key: 'uploader',
+    label: 'Uploader',
+    folderLabel: 'Uploader folder',
+    icon: '👤',
+    getNode: (asset) => {
+      const name = (asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader').trim() || 'Unknown uploader';
+      const identity = asset.uploadedById || asset.createdById || asset.submittedById || name.toLowerCase();
+      return {
+        groupKey: `${identity}`,
+        label: name,
+      };
+    },
+    compareNodes: (a, b) => a.label.localeCompare(b.label),
+  },
+  date: {
+    key: 'date',
+    label: 'Date',
+    folderLabel: 'Date folder',
+    icon: '📅',
+    getNode: (asset) => {
+      const dateKey = getDateFolderKey(asset);
+      return {
+        groupKey: dateKey,
+        label: formatDateFolderLabel(dateKey),
+      };
+    },
+    compareNodes: (a, b) => `${b.groupKey}`.localeCompare(`${a.groupKey}`),
+  },
+  project: {
+    key: 'project',
+    label: 'Project',
+    folderLabel: 'Project folder',
+    icon: '📁',
+    getNode: (asset) => {
+      const projectName = (asset.projectName || 'Unassigned Project').trim() || 'Unassigned Project';
+      return {
+        groupKey: projectName.toLowerCase(),
+        label: projectName,
+      };
+    },
+    compareNodes: (a, b) => a.label.localeCompare(b.label),
+  },
+};
+
+const DIRECTORY_STRUCTURE_OPTIONS = [
+  { value: 'uploader', label: 'Uploader' },
+  { value: 'date', label: 'Date' },
+  { value: 'project', label: 'Project' },
+  { value: 'none', label: 'None' },
+];
 
 const getSourceExtension = (asset) => {
   const source = `${asset?.url || asset?.filename || asset?.originalName || ''}`.toLowerCase();
@@ -35,73 +90,74 @@ const formatDateFolderLabel = (key) => {
   });
 };
 
-const buildDirectoryTree = (rows = []) => {
-  const uploaderMap = new Map();
+const normalizeDirectoryStructure = (value) => {
+  const slots = Array.isArray(value) ? value.slice(0, 3) : [];
+  const sanitized = ['none', 'none', 'none'];
+  const seen = new Set();
 
-  rows.forEach((asset) => {
-    const uploaderName = (asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader').trim() || 'Unknown uploader';
-    const uploaderIdentity = asset.uploadedById || asset.createdById || asset.submittedById || uploaderName.toLowerCase();
-    const uploaderKey = `${uploaderIdentity}`;
-    const dateKey = getDateFolderKey(asset);
-    const projectName = (asset.projectName || 'Unassigned Project').trim() || 'Unassigned Project';
-    const projectKey = projectName.toLowerCase();
-
-    let uploaderNode = uploaderMap.get(uploaderKey);
-    if (!uploaderNode) {
-      uploaderNode = {
-        key: uploaderKey,
-        name: uploaderName,
-        assetCount: 0,
-        dates: new Map(),
-      };
-      uploaderMap.set(uploaderKey, uploaderNode);
+  for (let index = 0; index < 3; index += 1) {
+    const rawValue = `${slots[index] || ''}`.trim().toLowerCase();
+    if (!DIRECTORY_CRITERIA[rawValue] || seen.has(rawValue)) {
+      continue;
     }
-    uploaderNode.assetCount += 1;
+    sanitized[index] = rawValue;
+    seen.add(rawValue);
+  }
 
-    let dateNode = uploaderNode.dates.get(dateKey);
-    if (!dateNode) {
-      dateNode = {
-        key: dateKey,
-        label: formatDateFolderLabel(dateKey),
-        assetCount: 0,
-        projects: new Map(),
-      };
-      uploaderNode.dates.set(dateKey, dateNode);
+  if (sanitized.every((item) => item === 'none')) {
+    return [...DEFAULT_DIRECTORY_STRUCTURE];
+  }
+
+  return sanitized;
+};
+
+const loadDirectoryStructurePreference = () => {
+  if (typeof window === 'undefined') {
+    return [...DEFAULT_DIRECTORY_STRUCTURE];
+  }
+  try {
+    const rawValue = window.localStorage.getItem(DIRECTORY_STRUCTURE_STORAGE_KEY);
+    if (!rawValue) {
+      return [...DEFAULT_DIRECTORY_STRUCTURE];
     }
-    dateNode.assetCount += 1;
+    return normalizeDirectoryStructure(JSON.parse(rawValue));
+  } catch (error) {
+    return [...DEFAULT_DIRECTORY_STRUCTURE];
+  }
+};
 
-    let projectNode = dateNode.projects.get(projectKey);
-    if (!projectNode) {
-      projectNode = {
-        key: projectKey,
-        name: projectName,
-        assetCount: 0,
-        assets: [],
-      };
-      dateNode.projects.set(projectKey, projectNode);
-    }
-    projectNode.assetCount += 1;
-    projectNode.assets.push(asset);
-  });
+const buildDirectoryStructureSummary = (criteriaKeys = []) => {
+  if (!criteriaKeys.length) return 'Files';
+  return [
+    ...criteriaKeys.map((criterionKey) => DIRECTORY_CRITERIA[criterionKey]?.folderLabel || criterionKey),
+    'files',
+  ].join(' → ');
+};
 
-  return Array.from(uploaderMap.values())
-    .map((uploader) => ({
-      ...uploader,
-      dates: Array.from(uploader.dates.values())
-        .map((dateNode) => ({
-          ...dateNode,
-          projects: Array.from(dateNode.projects.values())
-            .map((projectNode) => ({
-              ...projectNode,
-              assets: [...projectNode.assets].sort(
-                (a, b) => new Date(getAssetActivityTime(b) || 0) - new Date(getAssetActivityTime(a) || 0)
-              ),
-            }))
-            .sort((a, b) => a.name.localeCompare(b.name)),
-        }))
-        .sort((a, b) => b.key.localeCompare(a.key)),
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+const getDirectoryFilterParamName = (criterionKey) => {
+  if (criterionKey === 'uploader') return 'uploader_key';
+  if (criterionKey === 'date') return 'date_key';
+  if (criterionKey === 'project') return 'project_key';
+  return '';
+};
+
+const buildDirectoryGroupCacheKey = (groupBy, pathFilters = {}) => {
+  const uploaderKey = `${pathFilters.uploader_key || ''}`.trim();
+  const dateKey = `${pathFilters.date_key || ''}`.trim();
+  const projectKey = `${pathFilters.project_key || ''}`.trim();
+  return `${groupBy}|u=${uploaderKey}|d=${dateKey}|p=${projectKey}`;
+};
+
+const buildDirectoryFilePathKey = (pathFilters = {}, criteriaKeys = []) => {
+  const uploaderKey = `${pathFilters.uploader_key || ''}`.trim();
+  const dateKey = `${pathFilters.date_key || ''}`.trim();
+  const projectKey = `${pathFilters.project_key || ''}`.trim();
+  return `${criteriaKeys.join('>')}|u=${uploaderKey}|d=${dateKey}|p=${projectKey}`;
+};
+
+const getMediaFilterLabel = (value) => {
+  if (value === 'all') return 'All Formats';
+  return `${value || ''}`.toUpperCase();
 };
 
 const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
@@ -126,10 +182,22 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const minimizedWindowStyle = useMinimizedWindowStack('trendings-panel', isOpen && isMinimized);
-  const [showDirectoryWindow, setShowDirectoryWindow] = useState(false);
-  const [selectedUploaderKey, setSelectedUploaderKey] = useState('');
-  const [selectedDateKey, setSelectedDateKey] = useState('');
-  const [selectedProjectKey, setSelectedProjectKey] = useState('');
+  const [activeView, setActiveView] = useState('data');
+  const [directoryStructure, setDirectoryStructure] = useState(() => loadDirectoryStructurePreference());
+  const [selectedDirectoryNodes, setSelectedDirectoryNodes] = useState({});
+  const [directoryGroupsByKey, setDirectoryGroupsByKey] = useState({});
+  const [directoryGroupLoadingKeys, setDirectoryGroupLoadingKeys] = useState({});
+  const [directoryFiles, setDirectoryFiles] = useState([]);
+  const [directoryFilesLoading, setDirectoryFilesLoading] = useState(false);
+  const [directoryFilesLoadingMore, setDirectoryFilesLoadingMore] = useState(false);
+  const [directoryFilesHasMore, setDirectoryFilesHasMore] = useState(false);
+  const [directoryFilesNextOffset, setDirectoryFilesNextOffset] = useState(0);
+  const [directoryFilesPathKey, setDirectoryFilesPathKey] = useState('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(DIRECTORY_STRUCTURE_STORAGE_KEY, JSON.stringify(directoryStructure));
+  }, [directoryStructure]);
 
   useEffect(() => {
     onMinimizedChange?.(isOpen && isMinimized);
@@ -187,7 +255,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || activeView === 'directory') return;
     let cancelled = false;
 
     const load = async () => {
@@ -230,9 +298,9 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     return () => {
       cancelled = true;
     };
-  }, [isOpen, filter, departmentFilter, search, sortBy]);
+  }, [isOpen, activeView, filter, departmentFilter, search, sortBy]);
 
-  const loadMoreAssets = async () => {
+  const loadMoreAssets = useCallback(async () => {
     if (loadingMore || loading || !hasMore || (!nextCursor && nextOffset == null)) return;
     setLoadingMore(true);
     setLoadError('');
@@ -266,8 +334,10 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     } finally {
       setLoadingMore(false);
     }
-  };
+  }, [departmentFilter, filter, hasMore, loading, loadingMore, nextCursor, nextOffset, search, sortBy]);
 
+  const filteredAssets = useMemo(() => assets, [assets]);
+  const canLoadMore = hasMore && (Boolean(nextCursor) || nextOffset != null);
   const metrics = useMemo(() => {
     const groupedByTask = assets.reduce((acc, item) => {
       acc[item.taskId] = (acc[item.taskId] || 0) + 1;
@@ -286,77 +356,320 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     };
   }, [assets]);
 
-  const filteredAssets = useMemo(() => assets, [assets]);
-  const canLoadMore = hasMore && (Boolean(nextCursor) || nextOffset != null);
   const loadedSummaryText = totalMatchingReferences != null
     ? `Showing ${filteredAssets.length} of ${totalMatchingReferences} references`
     : `Showing ${filteredAssets.length} references`;
+  const isDirectoryTab = activeView === 'directory';
+  const activeDirectoryCriteria = useMemo(
+    () => directoryStructure.filter((criterionKey) => criterionKey !== 'none'),
+    [directoryStructure]
+  );
+  const directoryStructureSummary = useMemo(
+    () => buildDirectoryStructureSummary(activeDirectoryCriteria),
+    [activeDirectoryCriteria]
+  );
+  const directoryBaseFilters = useMemo(
+    () => ({
+      media_type: filter,
+      department: departmentFilter === ALL_DEPARTMENTS ? undefined : departmentFilter,
+      q: search || undefined,
+      sort: sortBy,
+    }),
+    [departmentFilter, filter, search, sortBy]
+  );
 
-  const directoryTree = useMemo(() => {
-    if (!showDirectoryWindow || filteredAssets.length === 0) {
-      return [];
+  const buildDirectoryPathFilters = useCallback((nodes = selectedDirectoryNodes, maxLevelIndex = activeDirectoryCriteria.length - 1) => {
+    const nextFilters = {};
+    activeDirectoryCriteria.forEach((criterionKey, index) => {
+      if (index > maxLevelIndex) return;
+      const node = nodes[criterionKey];
+      const filterName = getDirectoryFilterParamName(criterionKey);
+      if (!filterName || !node?.groupKey) return;
+      nextFilters[filterName] = node.groupKey;
+    });
+    return nextFilters;
+  }, [activeDirectoryCriteria, selectedDirectoryNodes]);
+
+  const fetchDirectoryGroups = useCallback(async (groupBy, pathFilters = {}) => {
+    const cacheKey = buildDirectoryGroupCacheKey(groupBy, pathFilters);
+    setDirectoryGroupLoadingKeys((current) => ({ ...current, [cacheKey]: true }));
+    try {
+      const response = await taskAPI.getTaskAssetDirectoryGroups(
+        {
+          group_by: groupBy,
+          ...directoryBaseFilters,
+          ...pathFilters,
+        },
+        { timeout: DATABANK_REQUEST_TIMEOUT_MS }
+      );
+      setDirectoryGroupsByKey((current) => ({
+        ...current,
+        [cacheKey]: Array.isArray(response?.items) ? response.items : [],
+      }));
+    } catch (error) {
+      console.error('Failed to load databank directory groups:', error);
+      setLoadError('Could not load databank folders right now.');
+    } finally {
+      setDirectoryGroupLoadingKeys((current) => {
+        const next = { ...current };
+        delete next[cacheKey];
+        return next;
+      });
     }
-    return buildDirectoryTree(filteredAssets);
-  }, [filteredAssets, showDirectoryWindow]);
+  }, [directoryBaseFilters]);
+
+  const loadDirectoryFiles = useCallback(async ({ pathFilters, append = false }) => {
+    const pathKey = buildDirectoryFilePathKey(pathFilters, activeDirectoryCriteria);
+    const requestOffset = append ? directoryFilesNextOffset : 0;
+
+    if (append) {
+      if (directoryFilesLoading || directoryFilesLoadingMore || !directoryFilesHasMore) {
+        return;
+      }
+      setDirectoryFilesLoadingMore(true);
+    } else {
+      setDirectoryFilesLoading(true);
+      setDirectoryFiles([]);
+      setDirectoryFilesHasMore(false);
+      setDirectoryFilesNextOffset(0);
+      setDirectoryFilesPathKey(pathKey);
+    }
+
+    try {
+      const response = await taskAPI.getTaskAssetDirectoryFiles(
+        {
+          offset: requestOffset,
+          limit: PAGE_SIZE,
+          ...directoryBaseFilters,
+          ...pathFilters,
+        },
+        { timeout: DATABANK_REQUEST_TIMEOUT_MS }
+      );
+      const rows = Array.isArray(response?.data) ? response.data : [];
+      setDirectoryFiles((current) => (
+        append
+          ? Array.from(new Map([...current, ...rows].map((asset) => [asset.id, asset])).values())
+          : rows
+      ));
+      setDirectoryFilesHasMore(Boolean(response?.hasMore));
+      setDirectoryFilesNextOffset(Number.isFinite(response?.nextOffset) ? response.nextOffset : 0);
+      setDirectoryFilesPathKey(pathKey);
+    } catch (error) {
+      console.error('Failed to load databank directory files:', error);
+      setLoadError('Could not load databank files right now.');
+    } finally {
+      if (append) setDirectoryFilesLoadingMore(false);
+      else setDirectoryFilesLoading(false);
+    }
+  }, [activeDirectoryCriteria, directoryBaseFilters, directoryFilesHasMore, directoryFilesLoading, directoryFilesLoadingMore, directoryFilesNextOffset]);
 
   useEffect(() => {
-    const firstUploader = directoryTree[0] || null;
-    const chosenUploader =
-      directoryTree.find((item) => item.key === selectedUploaderKey) || firstUploader || null;
-
-    if (!chosenUploader) {
-      setSelectedUploaderKey('');
-      setSelectedDateKey('');
-      setSelectedProjectKey('');
+    if (activeView !== 'directory') {
       return;
     }
 
-    if (chosenUploader.key !== selectedUploaderKey) {
-      setSelectedUploaderKey(chosenUploader.key);
+    setSelectedDirectoryNodes({});
+    setDirectoryGroupsByKey({});
+    setDirectoryGroupLoadingKeys({});
+    setDirectoryFiles([]);
+    setDirectoryFilesLoading(false);
+    setDirectoryFilesLoadingMore(false);
+    setDirectoryFilesHasMore(false);
+    setDirectoryFilesNextOffset(0);
+    setDirectoryFilesPathKey('');
+
+    const topLevelCriterion = activeDirectoryCriteria[0];
+    if (topLevelCriterion) {
+      void fetchDirectoryGroups(topLevelCriterion, {});
     }
+  }, [activeView, activeDirectoryCriteria, directoryBaseFilters, fetchDirectoryGroups]);
 
-    const firstDate = chosenUploader.dates[0] || null;
-    const chosenDate =
-      chosenUploader.dates.find((item) => item.key === selectedDateKey) || firstDate || null;
+  useEffect(() => {
+    if (activeView !== 'directory') return;
 
-    if (!chosenDate) {
-      setSelectedDateKey('');
-      setSelectedProjectKey('');
+    for (let index = 1; index < activeDirectoryCriteria.length; index += 1) {
+      const parentSelected = activeDirectoryCriteria.slice(0, index).every((criterionKey) => selectedDirectoryNodes[criterionKey]);
+      if (!parentSelected) {
+        break;
+      }
+
+      const criterionKey = activeDirectoryCriteria[index];
+      const pathFilters = buildDirectoryPathFilters(selectedDirectoryNodes, index - 1);
+      const cacheKey = buildDirectoryGroupCacheKey(criterionKey, pathFilters);
+      if (!directoryGroupsByKey[cacheKey] && !directoryGroupLoadingKeys[cacheKey]) {
+        void fetchDirectoryGroups(criterionKey, pathFilters);
+      }
+
+      if (!selectedDirectoryNodes[criterionKey]) {
+        break;
+      }
+    }
+  }, [
+    activeView,
+    activeDirectoryCriteria,
+    selectedDirectoryNodes,
+    buildDirectoryPathFilters,
+    directoryGroupsByKey,
+    directoryGroupLoadingKeys,
+    fetchDirectoryGroups,
+  ]);
+
+  useEffect(() => {
+    if (activeView !== 'directory') return;
+
+    const hasFullPath = activeDirectoryCriteria.length > 0
+      && activeDirectoryCriteria.every((criterionKey) => selectedDirectoryNodes[criterionKey]);
+
+    if (!hasFullPath) {
+      setDirectoryFiles([]);
+      setDirectoryFilesHasMore(false);
+      setDirectoryFilesNextOffset(0);
+      setDirectoryFilesPathKey('');
+      setDirectoryFilesLoading(false);
+      setDirectoryFilesLoadingMore(false);
       return;
     }
 
-    if (chosenDate.key !== selectedDateKey) {
-      setSelectedDateKey(chosenDate.key);
+    const pathFilters = buildDirectoryPathFilters(selectedDirectoryNodes);
+    const pathKey = buildDirectoryFilePathKey(pathFilters, activeDirectoryCriteria);
+    if (directoryFilesLoading || directoryFilesLoadingMore) {
+      return;
     }
-
-    const firstProject = chosenDate.projects[0] || null;
-    const chosenProject =
-      chosenDate.projects.find((item) => item.key === selectedProjectKey) || firstProject || null;
-
-    if (!chosenProject) {
-      setSelectedProjectKey('');
+    if (
+      directoryFilesPathKey === pathKey
+      && (directoryFiles.length > 0 || !directoryFilesHasMore)
+    ) {
       return;
     }
 
-    if (chosenProject.key !== selectedProjectKey) {
-      setSelectedProjectKey(chosenProject.key);
+    void loadDirectoryFiles({ pathFilters, append: false });
+  }, [
+    activeView,
+    activeDirectoryCriteria,
+    selectedDirectoryNodes,
+    buildDirectoryPathFilters,
+    directoryFilesPathKey,
+    directoryFilesLoading,
+    directoryFilesLoadingMore,
+    directoryFilesHasMore,
+    directoryFiles.length,
+    loadDirectoryFiles,
+  ]);
+
+  const directoryLevels = useMemo(() => (
+    activeDirectoryCriteria.map((criterionKey, index) => {
+      const parentSelected = index === 0
+        ? true
+        : activeDirectoryCriteria.slice(0, index).every((activeKey) => selectedDirectoryNodes[activeKey]);
+      const pathFilters = parentSelected && index > 0
+        ? buildDirectoryPathFilters(selectedDirectoryNodes, index - 1)
+        : {};
+      const cacheKey = buildDirectoryGroupCacheKey(criterionKey, pathFilters);
+      return {
+        criterionKey,
+        nodes: parentSelected ? (directoryGroupsByKey[cacheKey] || []) : [],
+        selectedNode: selectedDirectoryNodes[criterionKey] || null,
+        isEnabled: parentSelected,
+        isLoading: !!directoryGroupLoadingKeys[cacheKey],
+      };
+    })
+  ), [
+    activeDirectoryCriteria,
+    buildDirectoryPathFilters,
+    directoryGroupsByKey,
+    directoryGroupLoadingKeys,
+    selectedDirectoryNodes,
+  ]);
+
+  const selectedDirectoryPath = useMemo(
+    () => activeDirectoryCriteria.map((criterionKey) => selectedDirectoryNodes[criterionKey]).filter(Boolean),
+    [activeDirectoryCriteria, selectedDirectoryNodes]
+  );
+
+  const directoryGridTemplate = useMemo(() => {
+    const folderColumns = activeDirectoryCriteria.map((criterionKey, index) => (
+      criterionKey === 'project' || index === activeDirectoryCriteria.length - 1
+        ? 'minmax(220px, 1fr)'
+        : 'minmax(180px, 0.85fr)'
+    ));
+    return [...folderColumns, 'minmax(320px, 1.45fr)'].join(' ');
+  }, [activeDirectoryCriteria]);
+
+  const handleDirectoryLevelChange = (slotIndex, nextValue) => {
+    setDirectoryStructure((current) => {
+      const normalizedValue = `${nextValue || 'none'}`.trim().toLowerCase();
+      const next = [...current];
+      const currentValue = next[slotIndex];
+
+      if (normalizedValue === currentValue) {
+        return current;
+      }
+
+      if (normalizedValue === 'none') {
+        const activeCount = next.filter((value) => value !== 'none').length;
+        if (currentValue === 'none' || activeCount <= 1) {
+          return current;
+        }
+        next[slotIndex] = 'none';
+        return normalizeDirectoryStructure(next);
+      }
+
+      const duplicateIndex = next.findIndex((value, index) => index !== slotIndex && value === normalizedValue);
+      next[slotIndex] = normalizedValue;
+      if (duplicateIndex !== -1) {
+        next[duplicateIndex] = currentValue || 'none';
+      }
+      return normalizeDirectoryStructure(next);
+    });
+    setSelectedDirectoryNodes({});
+    setDirectoryGroupsByKey({});
+    setDirectoryGroupLoadingKeys({});
+    setDirectoryFiles([]);
+    setDirectoryFilesLoading(false);
+    setDirectoryFilesLoadingMore(false);
+    setDirectoryFilesHasMore(false);
+    setDirectoryFilesNextOffset(0);
+    setDirectoryFilesPathKey('');
+  };
+
+  const handleDirectoryNodeSelect = (criterionKey, node) => {
+    const criterionIndex = activeDirectoryCriteria.indexOf(criterionKey);
+    setSelectedDirectoryNodes((current) => {
+      const next = {};
+      activeDirectoryCriteria.forEach((activeKey, index) => {
+        if (index < criterionIndex) {
+          if (current[activeKey]) {
+            next[activeKey] = current[activeKey];
+          }
+          return;
+        }
+        if (index === criterionIndex) {
+          next[activeKey] = node;
+        }
+      });
+      return next;
+    });
+  };
+
+  const resetDirectoryToLevel = (criterionIndex) => {
+    setSelectedDirectoryNodes((current) => {
+      const next = {};
+      activeDirectoryCriteria.forEach((criterionKey, index) => {
+        if (index <= criterionIndex && current[criterionKey]) {
+          next[criterionKey] = current[criterionKey];
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleLoadMoreDirectoryFiles = () => {
+    if (!directoryFilesHasMore || directoryFilesLoading || directoryFilesLoadingMore) {
+      return;
     }
-  }, [directoryTree, selectedUploaderKey, selectedDateKey, selectedProjectKey]);
-
-  const selectedUploader = useMemo(
-    () => directoryTree.find((item) => item.key === selectedUploaderKey) || null,
-    [directoryTree, selectedUploaderKey]
-  );
-
-  const selectedDateFolder = useMemo(
-    () => selectedUploader?.dates.find((item) => item.key === selectedDateKey) || null,
-    [selectedUploader, selectedDateKey]
-  );
-
-  const selectedProjectFolder = useMemo(
-    () => selectedDateFolder?.projects.find((item) => item.key === selectedProjectKey) || null,
-    [selectedDateFolder, selectedProjectKey]
-  );
+    const pathFilters = buildDirectoryPathFilters(selectedDirectoryNodes);
+    void loadDirectoryFiles({ pathFilters, append: true });
+  };
 
   const renderPreviewContent = (asset) => {
     if (!asset) return null;
@@ -494,50 +807,86 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
               />
             </div>
 
-            <div className="trendings-metrics">
-              <div className="metric-card">
-                <div className="metric-title">Loaded References</div>
-                <div className="metric-value">{metrics.loadedReferences}</div>
-                <div className="metric-subvalue">{loadedSummaryText}</div>
-              </div>
-              <div className="metric-card">
-                <div className="metric-title">Loaded Tasks</div>
-                <div className="metric-value">{metrics.loadedTasks}</div>
-              </div>
-              <div className="metric-card">
-                <div className="metric-title">Loaded Projects</div>
-                <div className="metric-value">{metrics.loadedProjects}</div>
-              </div>
+            <div className="trendings-view-tabs" role="tablist" aria-label="RMW Data Views">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={!isDirectoryTab}
+                className={`trendings-view-tab ${!isDirectoryTab ? 'active' : ''}`}
+                onClick={() => setActiveView('data')}
+              >
+                Data
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={isDirectoryTab}
+                className={`trendings-view-tab ${isDirectoryTab ? 'active' : ''}`}
+                onClick={() => setActiveView('directory')}
+              >
+                Directory
+              </button>
             </div>
 
-            <div className="trendings-footnote">
-              Fast databank mode is active. These counts reflect the currently loaded matching assets, and load more continues from the last cursor instead of restarting from the beginning.
-              {lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}
-            </div>
+            {!isDirectoryTab ? (
+              <div className="trendings-metrics">
+                <div className="metric-card">
+                  <div className="metric-title">Loaded References</div>
+                  <div className="metric-value">{metrics.loadedReferences}</div>
+                  <div className="metric-subvalue">{loadedSummaryText}</div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-title">Loaded Tasks</div>
+                  <div className="metric-value">{metrics.loadedTasks}</div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-title">Loaded Projects</div>
+                  <div className="metric-value">{metrics.loadedProjects}</div>
+                </div>
+              </div>
+            ) : (
+              <div className="trendings-footnote trendings-directory-footnote">
+                Browse folders first, then load only the files for the selected path. Folder order stays customizable for each user.
+              </div>
+            )}
+
+            {!isDirectoryTab && (
+              <div className="trendings-footnote">
+                Fast databank mode is active. These counts reflect the currently loaded matching assets, and load more continues from the last cursor instead of restarting from the beginning.
+                {lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}
+              </div>
+            )}
 
             <div className="trendings-filter-row">
-              <div className="trendings-filter-group">
-                {MEDIA_FILTERS.map((item) => (
-                  <button
-                    key={item}
-                    className={`trendings-chip ${filter === item ? 'active' : ''}`}
-                    onClick={() => setFilter(item)}
+              <div className="trendings-select-filters">
+                <label className="trendings-filter-select-wrap">
+                  <span className="trendings-filter-select-label">Format</span>
+                  <select
+                    className="trendings-filter-select"
+                    value={filter}
+                    onChange={(event) => setFilter(event.target.value)}
                   >
-                    {item.toUpperCase()}
-                  </button>
-                ))}
-              </div>
-              <div className="trendings-filter-group">
-                {departmentOptions.map((department) => (
-                  <button
-                    key={department}
-                    className={`trendings-chip ${departmentFilter === department ? 'active' : ''}`}
-                    onClick={() => setDepartmentFilter(department)}
-                    title={department === ALL_DEPARTMENTS ? 'All departments' : department}
+                    {MEDIA_FILTERS.map((item) => (
+                      <option key={item} value={item}>
+                        {getMediaFilterLabel(item)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="trendings-filter-select-wrap">
+                  <span className="trendings-filter-select-label">Department</span>
+                  <select
+                    className="trendings-filter-select"
+                    value={departmentFilter}
+                    onChange={(event) => setDepartmentFilter(event.target.value)}
                   >
-                    {department === ALL_DEPARTMENTS ? 'ALL DEPTS' : department}
-                  </button>
-                ))}
+                    {departmentOptions.map((department) => (
+                      <option key={department} value={department}>
+                        {department === ALL_DEPARTMENTS ? 'All Departments' : department}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
               <div className="trendings-sort-group">
                 <button
@@ -552,158 +901,126 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                 >
                   Best Format
                 </button>
-                <button
-                  className={`trendings-sort-btn ${showDirectoryWindow ? 'active' : ''}`}
-                  onClick={() => setShowDirectoryWindow((prev) => !prev)}
-                >
-                  Directory View
-                </button>
               </div>
             </div>
 
             <div className="trendings-content">
               {loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
-              {showDirectoryWindow && (
+              {isDirectoryTab && (
                 <div className="trendings-directory-window">
                   <div className="trendings-directory-header">
-                    <div>
+                    <div className="trendings-directory-header-copy">
                       <h3>Databank Directory</h3>
-                      <p>Uploader folder → date folder → project folder → files</p>
+                      <p>{directoryStructureSummary}</p>
                     </div>
-                    <button
-                      className="trendings-directory-close"
-                      onClick={() => setShowDirectoryWindow(false)}
-                    >
-                      Close
-                    </button>
+                    <div className="trendings-directory-structure">
+                      <div className="trendings-directory-structure-title">Folder Order</div>
+                      <div className="trendings-directory-structure-controls">
+                        {directoryStructure.map((criterionKey, index) => (
+                          <label key={`directory-level-${index}`} className="trendings-directory-structure-field">
+                            <span>Level {index + 1}</span>
+                            <select
+                              value={criterionKey}
+                              onChange={(event) => handleDirectoryLevelChange(index, event.target.value)}
+                            >
+                              {DIRECTORY_STRUCTURE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ))}
+                      </div>
+                      <small>Set a level to None to remove it from the folder path. At least one folder level stays active.</small>
+                    </div>
                   </div>
 
-                  {directoryTree.length === 0 ? (
+                  {!directoryLevels[0]?.nodes?.length && !directoryLevels[0]?.isLoading ? (
                     <div className="trendings-directory-empty">
                       No databank folders match the current search and filters.
                     </div>
                   ) : (
-                    <div className="trendings-directory-grid">
-                      <div className="trendings-directory-column">
-                        <div className="trendings-directory-column-title">Uploader</div>
-                        <div className="trendings-directory-list">
-                          {directoryTree.map((uploader) => (
-                            <button
-                              key={uploader.key}
-                              className={`trendings-directory-item ${selectedUploaderKey === uploader.key ? 'active' : ''}`}
-                              onClick={() => {
-                                setSelectedUploaderKey(uploader.key);
-                                setSelectedDateKey('');
-                                setSelectedProjectKey('');
-                              }}
-                            >
-                              <span className="trendings-directory-icon">👤</span>
-                              <span className="trendings-directory-name">{uploader.name}</span>
-                              <span className="trendings-directory-count">{uploader.assetCount}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="trendings-directory-column">
-                        <div className="trendings-directory-column-title">Date</div>
-                        <div className="trendings-directory-list">
-                          {(selectedUploader?.dates || []).map((dateNode) => (
-                            <button
-                              key={dateNode.key}
-                              className={`trendings-directory-item ${selectedDateKey === dateNode.key ? 'active' : ''}`}
-                              onClick={() => {
-                                setSelectedDateKey(dateNode.key);
-                                setSelectedProjectKey('');
-                              }}
-                            >
-                              <span className="trendings-directory-icon">📅</span>
-                              <span className="trendings-directory-name">{dateNode.label}</span>
-                              <span className="trendings-directory-count">{dateNode.assetCount}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="trendings-directory-column">
-                        <div className="trendings-directory-column-title">Project</div>
-                        <div className="trendings-directory-list">
-                          {(selectedDateFolder?.projects || []).map((projectNode) => (
-                            <button
-                              key={projectNode.key}
-                              className={`trendings-directory-item ${selectedProjectKey === projectNode.key ? 'active' : ''}`}
-                              onClick={() => setSelectedProjectKey(projectNode.key)}
-                            >
-                              <span className="trendings-directory-icon">📁</span>
-                              <span className="trendings-directory-name">{projectNode.name}</span>
-                              <span className="trendings-directory-count">{projectNode.assetCount}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                    <div
+                      className="trendings-directory-grid"
+                      style={{ '--trendings-directory-columns': directoryGridTemplate }}
+                    >
+                      {directoryLevels.map((level, levelIndex) => {
+                        const criterion = DIRECTORY_CRITERIA[level.criterionKey];
+                        const selectedKey = level.selectedNode?.key || '';
+                        return (
+                          <div className="trendings-directory-column" key={level.criterionKey}>
+                            <div className="trendings-directory-column-title">{criterion?.label || level.criterionKey}</div>
+                            <div className="trendings-directory-list">
+                              {level.nodes.map((node) => (
+                                <button
+                                  key={node.key}
+                                  className={`trendings-directory-item ${selectedKey === node.key ? 'active' : ''}`}
+                                  onClick={() => handleDirectoryNodeSelect(level.criterionKey, node)}
+                                >
+                                  <span className="trendings-directory-icon">{criterion?.icon || '📁'}</span>
+                                  <span className="trendings-directory-name">{node.label}</span>
+                                  <span className="trendings-directory-count">{node.assetCount}</span>
+                                </button>
+                              ))}
+                              {level.isLoading && (
+                                <div className="trendings-directory-load-state">
+                                  Loading {criterion?.label?.toLowerCase() || 'folder'} items...
+                                </div>
+                              )}
+                              {level.nodes.length === 0 && (
+                                <div className="trendings-directory-empty">
+                                  {level.isEnabled
+                                    ? levelIndex === 0
+                                      ? `No ${criterion?.label?.toLowerCase() || 'items'} found for the current filters.`
+                                      : `Select a ${activeDirectoryCriteria[levelIndex - 1] || 'folder'} to load ${criterion?.label?.toLowerCase() || 'items'}.`
+                                    : `Select the previous folder to load ${criterion?.label?.toLowerCase() || 'items'}.`}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
 
                       <div className="trendings-directory-column trendings-directory-files">
-                        <div className="trendings-directory-column-title">Files Of That Day</div>
+                        <div className="trendings-directory-column-title">Files In Selected Folder</div>
                         <div className="trendings-directory-path">
                           <button
                             type="button"
                             className="trendings-directory-breadcrumb"
-                            onClick={() => {
-                              setSelectedUploaderKey('');
-                              setSelectedDateKey('');
-                              setSelectedProjectKey('');
-                            }}
+                            onClick={() => setSelectedDirectoryNodes({})}
                           >
                             Databank
                           </button>
-                          <span>/</span>
-                          <button
-                            type="button"
-                            className="trendings-directory-breadcrumb"
-                            onClick={() => {
-                              if (!selectedUploader) return;
-                              setSelectedUploaderKey(selectedUploader.key);
-                              setSelectedDateKey('');
-                              setSelectedProjectKey('');
-                            }}
-                          >
-                            {selectedUploader?.name || 'Uploader'}
-                          </button>
-                          <span>/</span>
-                          <button
-                            type="button"
-                            className="trendings-directory-breadcrumb"
-                            onClick={() => {
-                              if (!selectedDateFolder) return;
-                              setSelectedDateKey(selectedDateFolder.key);
-                              setSelectedProjectKey('');
-                            }}
-                          >
-                            {selectedDateFolder?.label || 'Date'}
-                          </button>
-                          <span>/</span>
-                          <button
-                            type="button"
-                            className="trendings-directory-breadcrumb active"
-                            onClick={() => {
-                              if (!selectedProjectFolder) return;
-                              setSelectedProjectKey(selectedProjectFolder.key);
-                            }}
-                          >
-                            {selectedProjectFolder?.name || 'Project'}
-                          </button>
+                          {selectedDirectoryPath.map((node, index) => (
+                            <React.Fragment key={node.key}>
+                              <span>/</span>
+                              <button
+                                type="button"
+                                className={`trendings-directory-breadcrumb ${index === selectedDirectoryPath.length - 1 ? 'active' : ''}`}
+                                onClick={() => resetDirectoryToLevel(index)}
+                              >
+                                {node.label}
+                              </button>
+                            </React.Fragment>
+                          ))}
                         </div>
                         <div className="trendings-directory-file-list">
-                          {(selectedProjectFolder?.assets || []).map((asset) => (
+                          {directoryFiles.map((asset) => (
                             <div key={asset.id} className="trendings-directory-file-card">
                               <div className="trendings-directory-file-top">
                                 <div className="trendings-directory-file-badges">
                                   <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
                                   <span className="stage-badge">{asset.stage}</span>
                                 </div>
-                                <span className="trendings-directory-file-time">
-                                  {getAssetActivityTime(asset) ? new Date(getAssetActivityTime(asset)).toLocaleString() : '-'}
-                                </span>
+                                <div className="trendings-directory-file-upload-meta">
+                                  <span className="trendings-directory-file-uploader">
+                                    {asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader'}
+                                  </span>
+                                  <span className="trendings-directory-file-time">
+                                    {getAssetActivityTime(asset) ? new Date(getAssetActivityTime(asset)).toLocaleString() : '-'}
+                                  </span>
+                                </div>
                               </div>
                               <div className="trendings-directory-file-name">{asset.filename}</div>
                               <div className="trendings-directory-file-meta">
@@ -744,9 +1061,28 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                               </div>
                             </div>
                           ))}
-                          {(!selectedProjectFolder || (selectedProjectFolder.assets || []).length === 0) && (
+                          {directoryFilesLoading && (
+                            <div className="trendings-directory-load-state">
+                              Loading files for the selected folder...
+                            </div>
+                          )}
+                          {!directoryFilesLoading && directoryFiles.length === 0 && (
                             <div className="trendings-directory-empty">
-                              Select a project folder to see the files inside it.
+                              {selectedDirectoryPath.length === activeDirectoryCriteria.length
+                                ? 'No files found in this folder.'
+                                : 'Select a full folder path to load files here.'}
+                            </div>
+                          )}
+                          {directoryFiles.length > 0 && directoryFilesHasMore && (
+                            <div className="trendings-directory-load-more-wrap">
+                              <button
+                                type="button"
+                                className="trendings-load-more-btn"
+                                onClick={handleLoadMoreDirectoryFiles}
+                                disabled={directoryFilesLoadingMore}
+                              >
+                                {directoryFilesLoadingMore ? 'Loading more...' : 'Load More Files'}
+                              </button>
                             </div>
                           )}
                         </div>
@@ -756,76 +1092,88 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                 </div>
               )}
 
-              {loading ? (
-                <div className="trendings-state">Loading references...</div>
-              ) : filteredAssets.length === 0 ? (
-                <div className="trendings-state">No references found for this filter.</div>
-              ) : (
-                <>
-                  <div className="trendings-grid">
-                    {filteredAssets.map((asset) => (
-                      <div key={asset.id} className="trendings-card">
-                        {(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') && (
-                          <div className="trendings-card-preview" onClick={() => setPreviewAsset(asset)}>
-                            {renderCardPreview(asset)}
-                          </div>
-                        )}
-                        <div className="trendings-card-top">
-                          <div className="trendings-card-top-left">
-                            <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
-                            <span className="stage-badge">{asset.stage}</span>
-                          </div>
-                          <div className="trendings-card-menu-wrap">
-                            <button
-                              className="trendings-card-menu-btn"
-                              onClick={() =>
-                                setOpenMenuAssetId((prev) => (prev === asset.id ? null : asset.id))
-                              }
-                              title="More"
-                            >
-                              ⋮
-                            </button>
-                            {openMenuAssetId === asset.id && (
-                              <div className="trendings-card-menu">
-                                <button
-                                  onClick={() => {
-                                    setInfoAsset(asset);
-                                    setOpenMenuAssetId(null);
-                                  }}
-                                >
-                                  Info
-                                </button>
+              {!isDirectoryTab && (
+                loading ? (
+                  <div className="trendings-state">Loading references...</div>
+                ) : filteredAssets.length === 0 ? (
+                  <div className="trendings-state">No references found for this filter.</div>
+                ) : (
+                  <>
+                    <div className="trendings-grid">
+                      {filteredAssets.map((asset) => (
+                        <div key={asset.id} className="trendings-card">
+                          {(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') && (
+                            <div className="trendings-card-preview" onClick={() => setPreviewAsset(asset)}>
+                              {renderCardPreview(asset)}
+                            </div>
+                          )}
+                          <div className="trendings-card-top">
+                            <div className="trendings-card-top-left">
+                              <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
+                              <span className="stage-badge">{asset.stage}</span>
+                            </div>
+                            <div className="trendings-card-top-right">
+                              <div className="trendings-card-upload-meta">
+                                <span className="trendings-card-uploader">
+                                  {asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader'}
+                                </span>
+                                <span className="trendings-card-upload-time">
+                                  {getAssetActivityTime(asset) ? new Date(getAssetActivityTime(asset)).toLocaleString() : '-'}
+                                </span>
                               </div>
-                            )}
+                              <div className="trendings-card-menu-wrap">
+                                <button
+                                  className="trendings-card-menu-btn"
+                                  onClick={() =>
+                                    setOpenMenuAssetId((prev) => (prev === asset.id ? null : asset.id))
+                                  }
+                                  title="More"
+                                >
+                                  ⋮
+                                </button>
+                                {openMenuAssetId === asset.id && (
+                                  <div className="trendings-card-menu">
+                                    <button
+                                      onClick={() => {
+                                        setInfoAsset(asset);
+                                        setOpenMenuAssetId(null);
+                                      }}
+                                    >
+                                      Info
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           </div>
+                          <h4 className="trendings-title">{asset.filename}</h4>
+                          <p className="trendings-meta">{asset.taskTitle} • {asset.taskNumber}</p>
+                          <p className="trendings-meta">{asset.projectName || 'No project name'}</p>
+                          {!(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') &&
+                            (buildOpenUrl(asset) ? (
+                              <button className="trendings-open-link-btn" onClick={() => setPreviewAsset(asset)}>
+                                Preview
+                              </button>
+                            ) : (
+                              <span className="trendings-no-link">In-app text reference</span>
+                            ))}
                         </div>
-                        <h4 className="trendings-title">{asset.filename}</h4>
-                        <p className="trendings-meta">{asset.taskTitle} • {asset.taskNumber}</p>
-                        <p className="trendings-meta">{asset.projectName || 'No project name'}</p>
-                        {!(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') &&
-                          (buildOpenUrl(asset) ? (
-                            <button className="trendings-open-link-btn" onClick={() => setPreviewAsset(asset)}>
-                              Preview
-                            </button>
-                          ) : (
-                            <span className="trendings-no-link">In-app text reference</span>
-                          ))}
-                      </div>
-                    ))}
-                  </div>
-                  {canLoadMore && (
-                    <div className="trendings-load-more-wrap">
-                      <button
-                        type="button"
-                        className="trendings-load-more-btn"
-                        onClick={loadMoreAssets}
-                        disabled={loadingMore}
-                      >
-                        {loadingMore ? 'Loading more...' : 'Load More'}
-                      </button>
+                      ))}
                     </div>
-                  )}
-                </>
+                    {canLoadMore && (
+                      <div className="trendings-load-more-wrap">
+                        <button
+                          type="button"
+                          className="trendings-load-more-btn"
+                          onClick={loadMoreAssets}
+                          disabled={loadingMore}
+                        >
+                          {loadingMore ? 'Loading more...' : 'Load More'}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )
               )}
             </div>
           </>

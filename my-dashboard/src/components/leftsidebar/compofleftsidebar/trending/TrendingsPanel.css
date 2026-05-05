@@ -142,6 +142,45 @@
   padding: 14px 20px 0;
 }
 
+.trendings-view-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 20px 0;
+  padding: 6px;
+  border: 1px solid rgba(125, 159, 230, 0.24);
+  border-radius: 16px;
+  background: rgba(7, 15, 31, 0.42);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.trendings-view-tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #b9cdef;
+  min-width: 110px;
+  height: 38px;
+  border-radius: 12px;
+  padding: 0 18px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.trendings-view-tab:hover {
+  color: #eef5ff;
+  border-color: rgba(126, 159, 228, 0.24);
+}
+
+.trendings-view-tab.active {
+  background: linear-gradient(135deg, #4a7cf0, #2f64e6);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(45, 100, 230, 0.26);
+}
+
 .trendings-search {
   width: 100%;
   border: 1px solid rgba(145, 171, 230, 0.28);
@@ -205,6 +244,45 @@
   flex-wrap: wrap;
 }
 
+.trendings-select-filters {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.trendings-filter-select-wrap {
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.trendings-filter-select-label {
+  color: #a8c0e8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.trendings-filter-select {
+  min-width: 180px;
+  height: 40px;
+  border: 1px solid rgba(137, 169, 235, 0.32);
+  background: rgba(255, 255, 255, 0.07);
+  color: #e8f1ff;
+  border-radius: 12px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+}
+
+.trendings-filter-select option {
+  color: #111111;
+  background: #ffffff;
+}
+
 .trendings-chip,
 .trendings-sort-btn {
   border: 1px solid rgba(137, 169, 235, 0.35);
@@ -260,6 +338,64 @@
   font-size: 12px;
 }
 
+.trendings-directory-header-copy {
+  min-width: 0;
+}
+
+.trendings-directory-structure {
+  margin-left: auto;
+  display: grid;
+  gap: 10px;
+  min-width: min(100%, 520px);
+}
+
+.trendings-directory-structure-title {
+  color: #e6efff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.trendings-directory-structure-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.trendings-directory-structure-field {
+  display: grid;
+  gap: 6px;
+}
+
+.trendings-directory-structure-field span {
+  color: #a8c0e8;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.trendings-directory-structure-field select {
+  width: 100%;
+  border: 1px solid rgba(126, 159, 228, 0.32);
+  background: rgba(255, 255, 255, 0.07);
+  color: #eaf2ff;
+  border-radius: 10px;
+  padding: 10px 12px;
+  outline: none;
+}
+
+.trendings-directory-structure-field select option {
+  color: #111111;
+  background: #ffffff;
+}
+
+.trendings-directory-structure small {
+  color: #8faad6;
+  font-size: 11px;
+}
+
 .trendings-directory-close {
   border: 1px solid rgba(137, 169, 235, 0.35);
   background: rgba(255, 255, 255, 0.08);
@@ -272,7 +408,7 @@
 
 .trendings-directory-grid {
   display: grid;
-  grid-template-columns: minmax(190px, 0.9fr) minmax(180px, 0.8fr) minmax(220px, 1fr) minmax(320px, 1.5fr);
+  grid-template-columns: var(--trendings-directory-columns, minmax(190px, 0.9fr) minmax(180px, 0.8fr) minmax(220px, 1fr) minmax(320px, 1.5fr));
   min-height: 460px;
 }
 
@@ -394,6 +530,28 @@
   gap: 8px;
 }
 
+.trendings-directory-file-upload-meta {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  min-width: 0;
+  text-align: right;
+}
+
+.trendings-directory-file-uploader,
+.trendings-directory-file-time {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trendings-directory-file-uploader {
+  color: #dbe8ff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .trendings-directory-file-time {
   color: #93acd3;
   font-size: 11px;
@@ -428,6 +586,19 @@
   font-size: 13px;
 }
 
+.trendings-directory-load-state {
+  padding: 10px 4px 2px;
+  color: #8faad6;
+  font-size: 12px;
+  text-align: center;
+}
+
+.trendings-directory-load-more-wrap {
+  padding: 6px 4px 2px;
+  display: flex;
+  justify-content: center;
+}
+
 .trendings-state {
   padding: 30px;
   text-align: center;
@@ -446,6 +617,14 @@
   margin-top: 10px;
   color: #9bb2d8;
   font-size: 12px;
+}
+
+.trendings-directory-footnote {
+  margin: 14px 20px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(118, 155, 231, 0.2);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .trendings-grid {
@@ -524,6 +703,40 @@
   display: flex;
   gap: 10px;
   align-items: center;
+}
+
+.trendings-card-top-right {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.trendings-card-upload-meta {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  min-width: 0;
+  text-align: right;
+}
+
+.trendings-card-uploader,
+.trendings-card-upload-time {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trendings-card-uploader {
+  color: #dbe8ff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.trendings-card-upload-time {
+  color: #9fb5d7;
+  font-size: 11px;
 }
 
 .type-badge,
@@ -823,6 +1036,26 @@
     grid-template-columns: 1fr;
   }
 
+  .trendings-view-tabs {
+    display: flex;
+    margin-right: 20px;
+  }
+
+  .trendings-view-tab {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .trendings-select-filters {
+    width: 100%;
+  }
+
+  .trendings-filter-select-wrap,
+  .trendings-filter-select {
+    width: 100%;
+    min-width: 0;
+  }
+
   .trendings-directory-grid {
     grid-template-columns: 1fr;
   }
@@ -839,5 +1072,15 @@
   .trendings-directory-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .trendings-directory-structure {
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
+  }
+
+  .trendings-directory-structure-controls {
+    grid-template-columns: 1fr;
   }
 }

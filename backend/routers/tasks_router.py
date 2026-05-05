@@ -53,6 +53,8 @@ except ImportError:  # pragma: no cover - optional until dependency is installed
 
 TASK_ALL_CACHE_PATTERN = "cache:tasks_all:*"
 TASK_ASSETS_CACHE_PATTERN = "cache:tasks_assets:*"
+TASK_ASSETS_DIRECTORY_GROUPS_CACHE_PATTERN = "cache:tasks_assets_directory_groups:*"
+TASK_ASSETS_DIRECTORY_FILES_CACHE_PATTERN = "cache:tasks_assets_directory_files:*"
 TASK_UNREAD_CACHE_PATTERN = "cache:tasks_unread:*"
 TASK_INBOX_CACHE_PATTERN = "cache:tasks_inbox:*"
 TASK_OUTBOX_CACHE_PATTERN = "cache:tasks_outbox:*"
@@ -61,6 +63,8 @@ TASK_OUTBOX_UNREAD_CACHE_PATTERN = "cache:tasks_outbox_unread:*"
 EDGE_TASK_CACHE_PATTERNS = (
     "tasks_all:",
     "tasks_assets:",
+    "tasks_assets_directory_groups:",
+    "tasks_assets_directory_files:",
     "tasks_unread:",
     "tasks_inbox:",
     "tasks_outbox:",
@@ -79,8 +83,14 @@ async def invalidate_task_lane_b_cache(*, include_assets: bool = True):
     edge_patterns = list(EDGE_TASK_CACHE_PATTERNS)
     if include_assets:
         await invalidate_pattern(TASK_ASSETS_CACHE_PATTERN)
+        await invalidate_pattern(TASK_ASSETS_DIRECTORY_GROUPS_CACHE_PATTERN)
+        await invalidate_pattern(TASK_ASSETS_DIRECTORY_FILES_CACHE_PATTERN)
     else:
-        edge_patterns = [pattern for pattern in edge_patterns if pattern != "tasks_assets:"]
+        edge_patterns = [
+            pattern
+            for pattern in edge_patterns
+            if pattern not in {"tasks_assets:", "tasks_assets_directory_groups:", "tasks_assets_directory_files:"}
+        ]
     queue_edge_cache_purge(edge_patterns)
 
 
@@ -2047,6 +2057,264 @@ def _asset_matches_filters(
     return any(q in f"{value or ''}".lower() for value in haystacks)
 
 
+DIRECTORY_GROUP_BY_OPTIONS = {"uploader", "date", "project"}
+
+
+def _task_asset_uploader_group(asset: dict) -> dict:
+    label = (
+        f"{asset.get('uploadedByName') or asset.get('createdByName') or asset.get('submittedByName') or 'Unknown uploader'}".strip()
+        or "Unknown uploader"
+    )
+    group_key = (
+        asset.get("uploadedById")
+        or asset.get("createdById")
+        or asset.get("submittedById")
+        or label.lower()
+    )
+    return {
+        "criterion": "uploader",
+        "key": f"uploader:{group_key}",
+        "groupKey": f"{group_key}",
+        "label": label,
+    }
+
+
+def _task_asset_date_group(asset: dict) -> dict:
+    source = asset.get("updatedAt") or asset.get("createdAt")
+    date_key = "unknown-date"
+    if source:
+        try:
+            parsed = datetime.fromisoformat(f"{source}".replace("Z", "+00:00"))
+            date_key = parsed.date().isoformat()
+        except Exception:
+            date_key = "unknown-date"
+
+    if date_key == "unknown-date":
+        label = "Unknown Date"
+    else:
+        try:
+            parsed = datetime.fromisoformat(f"{date_key}T00:00:00")
+            label = f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}"
+        except Exception:
+            label = date_key
+
+    return {
+        "criterion": "date",
+        "key": f"date:{date_key}",
+        "groupKey": date_key,
+        "label": label,
+    }
+
+
+def _task_asset_project_group(asset: dict) -> dict:
+    label = f"{asset.get('projectName') or 'Unassigned Project'}".strip() or "Unassigned Project"
+    group_key = label.lower()
+    return {
+        "criterion": "project",
+        "key": f"project:{group_key}",
+        "groupKey": group_key,
+        "label": label,
+    }
+
+
+def _task_asset_directory_group(asset: dict, criterion: str) -> dict:
+    normalized_criterion = (criterion or "").strip().lower()
+    if normalized_criterion == "uploader":
+        return _task_asset_uploader_group(asset)
+    if normalized_criterion == "date":
+        return _task_asset_date_group(asset)
+    if normalized_criterion == "project":
+        return _task_asset_project_group(asset)
+    raise HTTPException(status_code=400, detail="Invalid directory group criterion")
+
+
+def _asset_matches_directory_path(
+    asset: dict,
+    *,
+    uploader_key: Optional[str] = None,
+    date_key: Optional[str] = None,
+    project_key: Optional[str] = None,
+) -> bool:
+    normalized_uploader_key = f"{uploader_key or ''}".strip()
+    normalized_date_key = f"{date_key or ''}".strip()
+    normalized_project_key = f"{project_key or ''}".strip().lower()
+
+    if normalized_uploader_key:
+        if _task_asset_uploader_group(asset)["groupKey"] != normalized_uploader_key:
+            return False
+    if normalized_date_key:
+        if _task_asset_date_group(asset)["groupKey"] != normalized_date_key:
+            return False
+    if normalized_project_key:
+        if _task_asset_project_group(asset)["groupKey"] != normalized_project_key:
+            return False
+    return True
+
+
+def _sort_directory_group_items(items: List[dict], criterion: str) -> List[dict]:
+    normalized_criterion = (criterion or "").strip().lower()
+    if normalized_criterion == "date":
+        return sorted(items, key=lambda item: f"{item.get('groupKey') or ''}", reverse=True)
+    return sorted(items, key=lambda item: f"{item.get('label') or ''}".lower())
+
+
+def _unpack_task_asset_row(row) -> tuple[Task, Optional[dict], Optional[dict]]:
+    task, creator_user_id, creator_user_name, creator_user_department, submitter_user_id, submitter_user_name, submitter_user_department = row
+    creator = {
+        "id": creator_user_id,
+        "name": creator_user_name,
+        "department": creator_user_department,
+    } if creator_user_id else None
+    submitter = {
+        "id": submitter_user_id,
+        "name": submitter_user_name,
+        "department": submitter_user_department,
+    } if submitter_user_id else None
+    return task, creator, submitter
+
+
+def _iter_matching_task_assets(
+    base_query,
+    *,
+    media_type: str,
+    department: Optional[str],
+    query: Optional[str],
+    uploader_key: Optional[str] = None,
+    date_key: Optional[str] = None,
+    project_key: Optional[str] = None,
+    chunk_size: int = 200,
+):
+    task_offset = 0
+    while True:
+        rows = base_query.offset(task_offset).limit(chunk_size).all()
+        if not rows:
+            break
+
+        task_offset += len(rows)
+        for row in rows:
+            task, creator, submitter = _unpack_task_asset_row(row)
+            for asset in _build_task_assets(task, creator, submitter):
+                if not _asset_matches_filters(asset, media_type, department, query):
+                    continue
+                if not _asset_matches_directory_path(
+                    asset,
+                    uploader_key=uploader_key,
+                    date_key=date_key,
+                    project_key=project_key,
+                ):
+                    continue
+                yield asset
+
+
+def _list_task_asset_directory_groups(
+    db: Session,
+    *,
+    current_user: User,
+    group_by: str,
+    media_type: str,
+    department: Optional[str],
+    query: Optional[str],
+    sort_by: str,
+    uploader_key: Optional[str] = None,
+    date_key: Optional[str] = None,
+    project_key: Optional[str] = None,
+) -> dict:
+    normalized_group_by = (group_by or "").strip().lower()
+    if normalized_group_by not in DIRECTORY_GROUP_BY_OPTIONS:
+        raise HTTPException(status_code=400, detail="Invalid directory group criterion")
+
+    base_query = _task_assets_visibility_query(
+        db,
+        current_user=current_user,
+        department=department,
+        query=query,
+        sort_by=sort_by,
+        apply_sort=False,
+    )
+
+    grouped_items: Dict[str, dict] = {}
+    for asset in _iter_matching_task_assets(
+        base_query,
+        media_type=media_type,
+        department=department,
+        query=query,
+        uploader_key=uploader_key,
+        date_key=date_key,
+        project_key=project_key,
+    ):
+        group = _task_asset_directory_group(asset, normalized_group_by)
+        existing = grouped_items.get(group["key"])
+        if not existing:
+            grouped_items[group["key"]] = {
+                **group,
+                "assetCount": 1,
+            }
+            continue
+        existing["assetCount"] += 1
+
+    items = _sort_directory_group_items(list(grouped_items.values()), normalized_group_by)
+    return {
+        "groupBy": normalized_group_by,
+        "items": items,
+        "count": len(items),
+    }
+
+
+def _list_task_asset_directory_files(
+    db: Session,
+    *,
+    current_user: User,
+    offset: int,
+    limit: int,
+    media_type: str,
+    department: Optional[str],
+    query: Optional[str],
+    sort_by: str,
+    uploader_key: Optional[str] = None,
+    date_key: Optional[str] = None,
+    project_key: Optional[str] = None,
+) -> dict:
+    base_query = _task_assets_visibility_query(
+        db,
+        current_user=current_user,
+        department=department,
+        query=query,
+        sort_by=sort_by,
+    )
+
+    page_assets: List[dict] = []
+    matched_assets = 0
+    has_more = False
+
+    for asset in _iter_matching_task_assets(
+        base_query,
+        media_type=media_type,
+        department=department,
+        query=query,
+        uploader_key=uploader_key,
+        date_key=date_key,
+        project_key=project_key,
+    ):
+        if matched_assets < offset:
+            matched_assets += 1
+            continue
+        if len(page_assets) < limit:
+            page_assets.append(asset)
+            matched_assets += 1
+            continue
+        has_more = True
+        break
+
+    return {
+        "data": page_assets,
+        "count": len(page_assets),
+        "offset": offset,
+        "limit": limit,
+        "hasMore": has_more,
+        "nextOffset": offset + len(page_assets) if has_more else None,
+    }
+
+
 def _task_asset_order_clause(sort_by: str):
     if sort_by == "top":
         return (
@@ -2105,6 +2373,7 @@ def _task_assets_visibility_query(
     department: Optional[str],
     query: Optional[str],
     sort_by: str,
+    apply_sort: bool = True,
 ):
     creator_alias = aliased(User)
     submitter_alias = aliased(User)
@@ -2145,8 +2414,10 @@ def _task_assets_visibility_query(
             Task.status != TaskStatus.DRAFT,
         )
         .distinct()
-        .order_by(*_task_asset_order_clause(sort_by))
     )
+
+    if apply_sort:
+        task_query = task_query.order_by(*_task_asset_order_clause(sort_by))
 
     if department and department != "all_departments":
         task_query = task_query.filter(
@@ -3722,6 +3993,96 @@ async def get_task_assets(
     )
     latency_ms = round((perf_counter() - started_at) * 1000, 2)
     return {"success": True, **asset_payload, "latencyMs": latency_ms}
+
+
+@cache_response(ttl=60, vary_by_user=True, namespace="tasks_assets_directory_groups")
+async def get_task_asset_directory_groups(
+    request: Request,
+    group_by: str = Query(...),
+    media_type: str = Query("all"),
+    department: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    sort: str = Query("latest"),
+    uploader_key: Optional[str] = Query(None),
+    date_key: Optional[str] = Query(None),
+    project_key: Optional[str] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    started_at = perf_counter()
+
+    normalized_media_type = (media_type or "all").strip().lower()
+    if normalized_media_type not in ASSET_MEDIA_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid media type")
+
+    normalized_sort = (sort or "latest").strip().lower()
+    if normalized_sort not in ASSET_SORT_OPTIONS:
+        raise HTTPException(status_code=400, detail="Invalid sort option")
+
+    normalized_department = (department or "").strip() or None
+
+    directory_payload = _list_task_asset_directory_groups(
+        db,
+        current_user=current_user,
+        group_by=group_by,
+        media_type=normalized_media_type,
+        department=normalized_department,
+        query=q,
+        sort_by=normalized_sort,
+        uploader_key=uploader_key,
+        date_key=date_key,
+        project_key=project_key,
+    )
+    latency_ms = round((perf_counter() - started_at) * 1000, 2)
+    return {"success": True, **directory_payload, "latencyMs": latency_ms}
+
+
+@cache_response(ttl=60, vary_by_user=True, namespace="tasks_assets_directory_files")
+async def get_task_asset_directory_files(
+    request: Request,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(60, ge=1, le=120),
+    media_type: str = Query("all"),
+    department: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    sort: str = Query("latest"),
+    uploader_key: Optional[str] = Query(None),
+    date_key: Optional[str] = Query(None),
+    project_key: Optional[str] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    started_at = perf_counter()
+
+    normalized_media_type = (media_type or "all").strip().lower()
+    if normalized_media_type not in ASSET_MEDIA_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid media type")
+
+    normalized_sort = (sort or "latest").strip().lower()
+    if normalized_sort not in ASSET_SORT_OPTIONS:
+        raise HTTPException(status_code=400, detail="Invalid sort option")
+
+    normalized_department = (department or "").strip() or None
+
+    files_payload = _list_task_asset_directory_files(
+        db,
+        current_user=current_user,
+        offset=offset,
+        limit=limit,
+        media_type=normalized_media_type,
+        department=normalized_department,
+        query=q,
+        sort_by=normalized_sort,
+        uploader_key=uploader_key,
+        date_key=date_key,
+        project_key=project_key,
+    )
+    latency_ms = round((perf_counter() - started_at) * 1000, 2)
+    return {"success": True, **files_payload, "latencyMs": latency_ms}
 
 
 @cache_response(ttl=30, vary_by_user=True, namespace="tasks_unread")

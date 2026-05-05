@@ -791,6 +791,16 @@ export const taskAPI = {
     return response.data;
   },
 
+  getTaskAssetDirectoryGroups: async (filters = {}, requestConfig = {}) => {
+    const response = await api.get('/api/tasks/assets/directory/groups', mergeRequestConfig({ params: filters }, requestConfig));
+    return response.data;
+  },
+
+  getTaskAssetDirectoryFiles: async (filters = {}, requestConfig = {}) => {
+    const response = await api.get('/api/tasks/assets/directory/files', mergeRequestConfig({ params: filters }, requestConfig));
+    return response.data;
+  },
+
   validateProjectId: async (projectId) => {
     const response = await api.get('/api/tasks/project-id/validate', {
       params: { project_id: projectId }
