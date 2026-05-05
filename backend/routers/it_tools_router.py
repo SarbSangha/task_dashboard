@@ -316,6 +316,178 @@ def _normalize_totp_secret(value: Optional[str]) -> Optional[str]:
     return config.secret
 
 
+def _decrypt_secret_value(value: Optional[str]) -> Optional[str]:
+    decrypted = decrypt_secret(value) if value else None
+    return decrypted or None
+
+
+def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = f"{value or ''}".strip()
+    return normalized or None
+
+
+def _normalize_optional_secret(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = f"{value}"
+    return normalized if normalized else None
+
+
+def _payload_has_credential_content(payload: CredentialUpsertPayload) -> bool:
+    return any(
+        value is not None
+        for value in (
+            payload.login_identifier,
+            payload.password,
+            payload.backup_codes,
+            payload.totp_secret,
+            payload.api_key,
+        )
+    )
+
+
+def _build_resolved_credential_snapshot(
+    payload: CredentialUpsertPayload,
+    *,
+    source_credential: Optional[ITPortalToolCredential] = None,
+) -> dict:
+    login_identifier = (
+        _normalize_optional_text(payload.login_identifier)
+        if payload.login_identifier is not None
+        else _decrypt_secret_value(getattr(source_credential, "login_identifier_encrypted", None))
+    )
+    password = (
+        _normalize_optional_secret(payload.password)
+        if payload.password is not None
+        else _decrypt_secret_value(getattr(source_credential, "password_encrypted", None))
+    )
+    api_key = (
+        _normalize_optional_text(payload.api_key)
+        if payload.api_key is not None
+        else _decrypt_secret_value(getattr(source_credential, "api_key_encrypted", None))
+    )
+    backup_codes = (
+        _normalize_backup_codes(payload.backup_codes)
+        if payload.backup_codes is not None
+        else _decode_backup_codes(source_credential)
+    )
+    totp_secret = (
+        _normalize_totp_secret(payload.totp_secret)
+        if payload.totp_secret is not None
+        else _decrypt_secret_value(getattr(source_credential, "totp_secret_encrypted", None))
+    )
+    notes = (
+        payload.notes.strip() or None
+        if payload.notes is not None
+        else getattr(source_credential, "notes", None)
+    )
+    return {
+        "login_identifier": login_identifier,
+        "password": password,
+        "api_key": api_key,
+        "backup_codes": backup_codes,
+        "totp_secret": totp_secret,
+        "notes": notes,
+    }
+
+
+def _credential_snapshot_matches(
+    credential: ITPortalToolCredential,
+    snapshot: dict,
+) -> bool:
+    return (
+        _normalize_login_identifier(_decrypt_secret_value(credential.login_identifier_encrypted))
+        == _normalize_login_identifier(snapshot.get("login_identifier"))
+        and _decrypt_secret_value(credential.password_encrypted) == snapshot.get("password")
+        and _decrypt_secret_value(credential.api_key_encrypted) == snapshot.get("api_key")
+        and _decode_backup_codes(credential) == (snapshot.get("backup_codes") or [])
+        and _decrypt_secret_value(credential.totp_secret_encrypted) == snapshot.get("totp_secret")
+    )
+
+
+def _ensure_reusable_company_credential(
+    db: Session,
+    *,
+    tool_id: int,
+    payload: CredentialUpsertPayload,
+    actor_id: int,
+    target_user_id: int,
+    source_credential: Optional[ITPortalToolCredential] = None,
+) -> ITPortalToolCredential:
+    snapshot = _build_resolved_credential_snapshot(payload, source_credential=source_credential)
+    company_credentials = (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.tool_id == tool_id,
+            ITPortalToolCredential.scope == "company",
+            ITPortalToolCredential.user_id.is_(None),
+        )
+        .order_by(ITPortalToolCredential.updated_at.desc(), ITPortalToolCredential.created_at.desc())
+        .all()
+    )
+
+    reusable_credential = next(
+        (item for item in company_credentials if _credential_snapshot_matches(item, snapshot)),
+        None,
+    )
+    created = reusable_credential is None
+    if reusable_credential is None:
+        reusable_credential = ITPortalToolCredential(
+            tool_id=tool_id,
+            scope="company",
+            created_by=actor_id,
+        )
+        db.add(reusable_credential)
+
+    reusable_credential.login_identifier_encrypted = (
+        encrypt_secret(snapshot["login_identifier"])
+        if snapshot["login_identifier"]
+        else None
+    )
+    reusable_credential.password_encrypted = (
+        encrypt_secret(snapshot["password"])
+        if snapshot["password"]
+        else None
+    )
+    reusable_credential.api_key_encrypted = (
+        encrypt_secret(snapshot["api_key"])
+        if snapshot["api_key"]
+        else None
+    )
+    reusable_credential.backup_codes_encrypted = (
+        encrypt_secret(json.dumps(snapshot["backup_codes"]))
+        if snapshot["backup_codes"]
+        else None
+    )
+    reusable_credential.totp_secret_encrypted = (
+        encrypt_secret(snapshot["totp_secret"])
+        if snapshot["totp_secret"]
+        else None
+    )
+    if payload.notes is not None or created:
+        reusable_credential.notes = snapshot["notes"]
+    reusable_credential.is_active = True
+    reusable_credential.updated_by = actor_id
+    reusable_credential.updated_at = datetime.utcnow()
+    db.flush()
+
+    _add_audit(
+        db,
+        actor_id=actor_id,
+        action="credential_created" if created else "credential_updated",
+        tool_id=tool_id,
+        credential_id=reusable_credential.id,
+        target_user_id=target_user_id,
+        details={
+            "scope": "company",
+            "source": "specific_user_save",
+        },
+    )
+    return reusable_credential
+
+
 def _add_audit(
     db: Session,
     *,
@@ -1364,30 +1536,64 @@ async def upsert_credential(
         )
         db.add(credential)
 
-    if payload.login_identifier is not None:
-        credential.login_identifier_encrypted = encrypt_secret(payload.login_identifier)
-    if payload.password is not None:
-        credential.password_encrypted = encrypt_secret(payload.password)
-    if payload.backup_codes is not None:
-        backup_codes = _normalize_backup_codes(payload.backup_codes)
-        credential.backup_codes_encrypted = (
-            encrypt_secret(json.dumps(backup_codes))
-            if backup_codes
-            else None
+    effective_linked_credential = linked_credential
+    if scope == "user" and not effective_linked_credential and _payload_has_credential_content(payload):
+        source_credential = _resolve_linked_company_credential(db, credential) or credential
+        effective_linked_credential = _ensure_reusable_company_credential(
+            db,
+            tool_id=tool_id,
+            payload=payload,
+            actor_id=current_user.id,
+            target_user_id=payload.user_id,
+            source_credential=source_credential,
         )
-    if payload.totp_secret is not None:
-        normalized_totp_secret = _normalize_totp_secret(payload.totp_secret)
-        credential.totp_secret_encrypted = (
-            encrypt_secret(normalized_totp_secret)
-            if normalized_totp_secret
-            else None
-        )
-    if payload.api_key is not None:
-        credential.api_key_encrypted = encrypt_secret(payload.api_key)
-    if payload.notes is not None:
-        credential.notes = payload.notes.strip() or None
+
+    if scope == "user" and effective_linked_credential:
+        credential.login_identifier_encrypted = None
+        credential.password_encrypted = None
+        credential.backup_codes_encrypted = None
+        credential.totp_secret_encrypted = None
+        credential.api_key_encrypted = None
+        credential.notes = None
+    else:
+        if payload.login_identifier is not None:
+            normalized_login_identifier = (payload.login_identifier or "").strip()
+            credential.login_identifier_encrypted = (
+                encrypt_secret(normalized_login_identifier)
+                if normalized_login_identifier
+                else None
+            )
+        if payload.password is not None:
+            credential.password_encrypted = (
+                encrypt_secret(payload.password)
+                if payload.password
+                else None
+            )
+        if payload.backup_codes is not None:
+            backup_codes = _normalize_backup_codes(payload.backup_codes)
+            credential.backup_codes_encrypted = (
+                encrypt_secret(json.dumps(backup_codes))
+                if backup_codes
+                else None
+            )
+        if payload.totp_secret is not None:
+            normalized_totp_secret = _normalize_totp_secret(payload.totp_secret)
+            credential.totp_secret_encrypted = (
+                encrypt_secret(normalized_totp_secret)
+                if normalized_totp_secret
+                else None
+            )
+        if payload.api_key is not None:
+            normalized_api_key = (payload.api_key or "").strip()
+            credential.api_key_encrypted = (
+                encrypt_secret(normalized_api_key)
+                if normalized_api_key
+                else None
+            )
+        if payload.notes is not None:
+            credential.notes = payload.notes.strip() or None
     if scope == "user":
-        credential.linked_credential_id = linked_credential.id if linked_credential else None
+        credential.linked_credential_id = effective_linked_credential.id if effective_linked_credential else None
     else:
         credential.linked_credential_id = None
     credential.is_active = payload.is_active

@@ -643,21 +643,21 @@ export default function Tools() {
     );
     const hasSourceCredential = hasStoredUsableCredentialSummary(userCredential) || activeCompanyCredentials.length > 0;
 
-    if (!currentlyAssigned && !hasSourceCredential) {
-      setSelectedTool(tool);
-      setCredentialForm({
-        ...EMPTY_CREDENTIAL_FORM,
-        toolId: `${toolId}`,
-        scope: 'user',
-        user_ids: [`${userId}`],
-      });
-      setError('');
-      setNotice(`No credential source is ready for ${tool.name} yet. The password form is now set to Specific user for ${user.name || user.email}. Switch it to Company credential only if this login should be shared more broadly.`);
-      window.requestAnimationFrame(() => {
-        const credentialFormElement = document.querySelector('[data-tool-credential-form="true"]');
-        credentialFormElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      });
-      return;
+      if (!currentlyAssigned && !hasSourceCredential) {
+        setSelectedTool(tool);
+        setCredentialForm({
+          ...EMPTY_CREDENTIAL_FORM,
+          toolId: `${toolId}`,
+          scope: 'user',
+          user_ids: [`${userId}`],
+        });
+        setError('');
+        setNotice(`No credential source is ready for ${tool.name} yet. The password form is now set to Specific user for ${user.name || user.email}. When you save it, the credential will also be kept in the company library so you can reuse it later.`);
+        window.requestAnimationFrame(() => {
+          const credentialFormElement = document.querySelector('[data-tool-credential-form="true"]');
+          credentialFormElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return;
     }
 
     if (
@@ -845,20 +845,49 @@ export default function Tools() {
           return;
         }
 
-        const results = await Promise.allSettled(
-          selectedUserIds.map((userId) => itToolsAPI.upsertCredential(toolId, {
-            scope: 'user',
-            user_id: userId,
-            login_identifier: loginIdentifierValue,
-            password: passwordValue,
-            backup_codes: backupCodesValue,
-            totp_secret: totpSecretValue,
-            notes: credentialForm.notes,
-          }))
+        const firstUserId = selectedUserIds[0];
+        const remainingUserIds = selectedUserIds.slice(1);
+        const firstResult = await itToolsAPI.upsertCredential(toolId, {
+          scope: 'user',
+          user_id: firstUserId,
+          login_identifier: loginIdentifierValue,
+          password: passwordValue,
+          backup_codes: backupCodesValue,
+          totp_secret: totpSecretValue,
+          notes: credentialForm.notes,
+        });
+        const linkedCredentialId = Number(firstResult?.credential?.linkedCredentialId || 0);
+        const followUpPayload = (userId) => (
+          linkedCredentialId
+            ? {
+              scope: 'user',
+              user_id: userId,
+              linked_credential_id: linkedCredentialId,
+              is_active: true,
+            }
+            : {
+              scope: 'user',
+              user_id: userId,
+              login_identifier: loginIdentifierValue,
+              password: passwordValue,
+              backup_codes: backupCodesValue,
+              totp_secret: totpSecretValue,
+              notes: credentialForm.notes,
+            }
         );
+
+        const results = [
+          { status: 'fulfilled', value: firstResult },
+          ...await Promise.allSettled(
+            remainingUserIds.map((userId) => itToolsAPI.upsertCredential(toolId, followUpPayload(userId)))
+          ),
+        ];
 
         const failedResults = results.filter((result) => result.status === 'rejected');
         const successCount = results.length - failedResults.length;
+        const saveNotice = linkedCredentialId
+          ? `Credential saved for ${successCount} user${successCount === 1 ? '' : 's'} and added to the company library for reuse.`
+          : `Credential saved for ${successCount} user${successCount === 1 ? '' : 's'}.`;
 
         if (!successCount) {
           throw failedResults[0]?.reason;
@@ -867,14 +896,14 @@ export default function Tools() {
         if (failedResults.length) {
           const firstFailure = failedResults[0]?.reason;
           setError(firstFailure?.response?.data?.detail || 'Some user assignments could not be saved.');
-          setNotice(`Credential saved for ${successCount} user${successCount === 1 ? '' : 's'}.`);
+          setNotice(saveNotice);
         } else {
           setCredentialForm({
             ...EMPTY_CREDENTIAL_FORM,
             toolId: `${toolId}`,
             scope: 'user',
           });
-          setNotice(`Credential saved for ${successCount} user${successCount === 1 ? '' : 's'}.`);
+          setNotice(saveNotice);
         }
       } else {
         await itToolsAPI.upsertCredential(toolId, {
@@ -1362,6 +1391,7 @@ export default function Tools() {
                         );
                       })}
                     </div>
+                    <small>Specific-user saves are also stored in the company credential library, but only the selected users will be linked to this login.</small>
                   </div>
                 )}
                 <input value={credentialForm.login_identifier} onChange={(e) => setCredentialForm({ ...credentialForm, login_identifier: e.target.value })} placeholder="Username / email" autoComplete="off" spellCheck={false} />
