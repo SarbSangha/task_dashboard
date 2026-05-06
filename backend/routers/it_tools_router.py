@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
 from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, User
-from services.otp_mail_service import fetch_otp_from_gmail
+from services.otp_mail_service import fetch_auth_link_from_gmail, fetch_otp_from_gmail
 from services.totp_service import generate_totp_code, parse_totp_config
 from utils.credential_crypto import decrypt_secret, encrypt_secret
 from utils.permissions import get_current_user, has_any_role, require_admin, require_user
@@ -33,14 +33,22 @@ VALID_LAUNCH_MODES = {"external_link", "manual_credential", "sso", "api_proxy", 
 EXTENSION_AUTOFILL_TICKET_TTL_SEC = 20 * 60
 HOSTNAME_EQUIVALENT_GROUPS = (
     {"chatgpt.com", "chat.openai.com", "auth.openai.com", "openai.com"},
+    {"claude.ai"},
     {"envato.com", "elements.envato.com", "market.envato.com"},
     {"freepik.com"},
+    {"grammarly.com"},
     {"higgsfield.ai", "app.higgsfield.ai", "beta.higgsfield.ai"},
     {"heygen.com", "www.heygen.com", "auth.heygen.com", "app.heygen.com"},
     {"kling.ai", "klingai.com", "app.klingai.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
-SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "envato", "freepik", "higgsfield", "heygen", "kling-ai", "klingai", "flow"}
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "claude", "envato", "freepik", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
+PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
+TOOL_CREDENTIAL_LOGIN_METHODS = {
+    "kling": {"email_password", "google"},
+    "kling-ai": {"email_password", "google"},
+    "klingai": {"email_password", "google"},
+}
 
 
 class ToolCreatePayload(BaseModel):
@@ -82,6 +90,7 @@ class CredentialUpsertPayload(BaseModel):
     user_id: Optional[int] = None
     linked_credential_id: Optional[int] = None
     assigned_user_ids: Optional[list[int]] = None
+    login_method: Optional[str] = Field(None, max_length=40)
     login_identifier: Optional[str] = None
     password: Optional[str] = None
     backup_codes: Optional[str] = None
@@ -116,6 +125,22 @@ def _canonical_tool_slug(value: str) -> str:
     if slug == "chat-gpt":
         return "chatgpt"
     return slug
+
+
+def _tool_supports_password_optional_credential(canonical_tool_slug: str) -> bool:
+    return canonical_tool_slug in PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS
+
+
+def _normalize_credential_login_method(canonical_tool_slug: str, value: Optional[str]) -> str:
+    normalized = f"{value or ''}".strip().lower() or "email_password"
+    allowed_values = TOOL_CREDENTIAL_LOGIN_METHODS.get(canonical_tool_slug, {"email_password"})
+    if normalized not in allowed_values:
+        raise HTTPException(status_code=400, detail=f"Unsupported login method '{normalized}' for this tool.")
+    return normalized
+
+
+def _credential_password_is_optional(canonical_tool_slug: str, login_method: str = "email_password") -> bool:
+    return _tool_supports_password_optional_credential(canonical_tool_slug) or login_method == "google"
 
 
 def _validate_tool_name(value: str) -> str:
@@ -239,6 +264,7 @@ def _serialize_credential_summary(credential: ITPortalToolCredential) -> dict:
         "scope": credential.scope,
         "userId": credential.user_id,
         "linkedCredentialId": credential.linked_credential_id,
+        "loginMethod": credential.login_method or "email_password",
         "hasLoginIdentifier": bool(credential.login_identifier_encrypted),
         "hasPassword": bool(credential.password_encrypted),
         "hasBackupCodes": bool(credential.backup_codes_encrypted),
@@ -250,6 +276,108 @@ def _serialize_credential_summary(credential: ITPortalToolCredential) -> dict:
         "createdAt": credential.created_at.isoformat() if credential.created_at else None,
         "updatedAt": credential.updated_at.isoformat() if credential.updated_at else None,
     }
+
+
+def _build_admin_credential_summaries_by_tool(
+    db: Session,
+    tools: list[ITPortalTool],
+) -> dict[str, list[dict]]:
+    tool_ids = [tool.id for tool in tools if tool.id]
+    if not tool_ids:
+        return {}
+
+    credentials = (
+        db.query(ITPortalToolCredential)
+        .filter(ITPortalToolCredential.tool_id.in_(tool_ids))
+        .order_by(
+            ITPortalToolCredential.tool_id.asc(),
+            ITPortalToolCredential.scope.asc(),
+            ITPortalToolCredential.updated_at.desc(),
+            ITPortalToolCredential.created_at.desc(),
+        )
+        .all()
+    )
+
+    summaries_by_tool_id: dict[str, list[dict]] = {f"{tool.id}": [] for tool in tools}
+    tool_by_id = {tool.id: tool for tool in tools}
+    serialized_by_tool_and_credential_id: dict[tuple[int, int], dict] = {}
+    company_credential_ids_by_tool_id: dict[int, set[int]] = {}
+
+    for credential in credentials:
+        serialized = _serialize_credential_summary(credential)
+        tool_key = f"{credential.tool_id}"
+        summaries_by_tool_id.setdefault(tool_key, []).append(serialized)
+        serialized_by_tool_and_credential_id[(credential.tool_id, credential.id)] = serialized
+        if credential.scope == "company":
+            company_credential_ids_by_tool_id.setdefault(credential.tool_id, set()).add(credential.id)
+
+    shareable_tool_ids = [
+        tool_id
+        for tool_id, tool in tool_by_id.items()
+        if _tool_supports_shared_company_credential_assignments(_canonical_tool_slug(tool.slug or ""))
+        and company_credential_ids_by_tool_id.get(tool_id)
+    ]
+    if not shareable_tool_ids:
+        return summaries_by_tool_id
+
+    latest_user_rows: dict[tuple[int, int], ITPortalToolCredential] = {}
+    user_rows = (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.tool_id.in_(shareable_tool_ids),
+            ITPortalToolCredential.scope == "user",
+            ITPortalToolCredential.user_id.isnot(None),
+        )
+        .order_by(
+            ITPortalToolCredential.tool_id.asc(),
+            ITPortalToolCredential.user_id.asc(),
+            ITPortalToolCredential.updated_at.desc(),
+            ITPortalToolCredential.created_at.desc(),
+        )
+        .all()
+    )
+    for row in user_rows:
+        key = (row.tool_id, int(row.user_id or 0))
+        if key not in latest_user_rows:
+            latest_user_rows[key] = row
+
+    assigned_user_ids = sorted({
+        user_id
+        for (tool_id, user_id), row in latest_user_rows.items()
+        if row.is_active and row.linked_credential_id in company_credential_ids_by_tool_id.get(tool_id, set())
+    })
+    users_by_id = {}
+    if assigned_user_ids:
+        users_by_id = {
+            user.id: user
+            for user in db.query(User).filter(User.id.in_(assigned_user_ids)).all()
+        }
+
+    assignments_by_tool_and_credential_id: dict[tuple[int, int], list[dict]] = {}
+    for (tool_id, user_id), row in latest_user_rows.items():
+        linked_credential_id = row.linked_credential_id
+        if not row.is_active or linked_credential_id not in company_credential_ids_by_tool_id.get(tool_id, set()):
+            continue
+        user = users_by_id.get(user_id)
+        if not user:
+            continue
+        assignments_by_tool_and_credential_id.setdefault((tool_id, linked_credential_id), []).append(
+            {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+            }
+        )
+
+    for (tool_id, credential_id), summary in serialized_by_tool_and_credential_id.items():
+        assigned_users = assignments_by_tool_and_credential_id.get((tool_id, credential_id), [])
+        summary["assignedUsers"] = sorted(
+            assigned_users,
+            key=lambda user: f"{user.get('name') or ''} {user.get('email') or ''}".strip().lower(),
+        )
+        summary["assignedUserIds"] = [user["id"] for user in summary["assignedUsers"]]
+
+    return summaries_by_tool_id
 
 
 def _normalize_backup_codes(value: Optional[str]) -> list[str]:
@@ -351,8 +479,17 @@ def _payload_has_credential_content(payload: CredentialUpsertPayload) -> bool:
 def _build_resolved_credential_snapshot(
     payload: CredentialUpsertPayload,
     *,
+    canonical_tool_slug: str,
     source_credential: Optional[ITPortalToolCredential] = None,
 ) -> dict:
+    login_method = (
+        _normalize_credential_login_method(canonical_tool_slug, payload.login_method)
+        if payload.login_method is not None
+        else _normalize_credential_login_method(
+            canonical_tool_slug,
+            getattr(source_credential, "login_method", None),
+        )
+    )
     login_identifier = (
         _normalize_optional_text(payload.login_identifier)
         if payload.login_identifier is not None
@@ -384,6 +521,7 @@ def _build_resolved_credential_snapshot(
         else getattr(source_credential, "notes", None)
     )
     return {
+        "login_method": login_method,
         "login_identifier": login_identifier,
         "password": password,
         "api_key": api_key,
@@ -398,6 +536,8 @@ def _credential_snapshot_matches(
     snapshot: dict,
 ) -> bool:
     return (
+        (credential.login_method or "email_password") == (snapshot.get("login_method") or "email_password")
+        and
         _normalize_login_identifier(_decrypt_secret_value(credential.login_identifier_encrypted))
         == _normalize_login_identifier(snapshot.get("login_identifier"))
         and _decrypt_secret_value(credential.password_encrypted) == snapshot.get("password")
@@ -411,12 +551,17 @@ def _ensure_reusable_company_credential(
     db: Session,
     *,
     tool_id: int,
+    canonical_tool_slug: str,
     payload: CredentialUpsertPayload,
     actor_id: int,
     target_user_id: int,
     source_credential: Optional[ITPortalToolCredential] = None,
 ) -> ITPortalToolCredential:
-    snapshot = _build_resolved_credential_snapshot(payload, source_credential=source_credential)
+    snapshot = _build_resolved_credential_snapshot(
+        payload,
+        canonical_tool_slug=canonical_tool_slug,
+        source_credential=source_credential,
+    )
     company_credentials = (
         db.query(ITPortalToolCredential)
         .filter(
@@ -446,6 +591,7 @@ def _ensure_reusable_company_credential(
         if snapshot["login_identifier"]
         else None
     )
+    reusable_credential.login_method = snapshot["login_method"]
     reusable_credential.password_encrypted = (
         encrypt_secret(snapshot["password"])
         if snapshot["password"]
@@ -510,13 +656,23 @@ def _add_audit(
     )
 
 
-def _credential_has_secret_material(credential: Optional[ITPortalToolCredential]) -> bool:
+def _credential_has_secret_material(
+    credential: Optional[ITPortalToolCredential],
+    canonical_tool_slug: str = "",
+) -> bool:
+    login_method = _normalize_credential_login_method(
+        canonical_tool_slug,
+        getattr(credential, "login_method", None),
+    ) if credential else "email_password"
     return bool(
         credential
         and (
             (
                 credential.login_identifier_encrypted
-                and credential.password_encrypted
+                and (
+                    credential.password_encrypted
+                    or _credential_password_is_optional(canonical_tool_slug, login_method)
+                )
             )
             or credential.api_key_encrypted
         )
@@ -544,6 +700,8 @@ def _list_active_company_credential_records(db: Session, tool_id: int) -> list[I
 def _resolve_linked_company_credential(
     db: Session,
     credential: Optional[ITPortalToolCredential],
+    *,
+    canonical_tool_slug: str = "",
 ) -> Optional[ITPortalToolCredential]:
     linked_credential_id = getattr(credential, "linked_credential_id", None)
     if not credential or not linked_credential_id:
@@ -559,7 +717,7 @@ def _resolve_linked_company_credential(
         )
         .first()
     )
-    if _credential_has_secret_material(linked_credential):
+    if _credential_has_secret_material(linked_credential, canonical_tool_slug):
         return linked_credential
     return None
 
@@ -644,15 +802,21 @@ def _resolve_user_tool_overrides_map(
 
 
 def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
+    tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
+    canonical_tool_slug = _canonical_tool_slug(tool.slug or "") if tool else ""
     user_specific_credential = _latest_user_credential_record(db, tool_id, user_id)
 
     if not user_specific_credential or not user_specific_credential.is_active:
         return None
 
-    linked_credential = _resolve_linked_company_credential(db, user_specific_credential)
+    linked_credential = _resolve_linked_company_credential(
+        db,
+        user_specific_credential,
+        canonical_tool_slug=canonical_tool_slug,
+    )
     if linked_credential:
         return linked_credential
-    if _credential_has_secret_material(user_specific_credential):
+    if _credential_has_secret_material(user_specific_credential, canonical_tool_slug):
         return user_specific_credential
     return None
 
@@ -871,11 +1035,29 @@ def _validate_extension_autofill_target(
 
     raise HTTPException(
         status_code=400,
-        detail="Extension auto-fill currently supports ChatGPT/OpenAI, Envato, Freepik, Higgsfield, HeyGen, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
+        detail="Extension auto-fill currently supports ChatGPT/OpenAI, Claude, Envato, Freepik, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
     )
 
 
 def _find_extension_tool(db: Session, payload: ExtensionCredentialPayload) -> Optional[ITPortalTool]:
+    extension_ticket = f"{payload.extension_ticket or ''}".strip()
+    if extension_ticket:
+        try:
+            ticket_payload = _decode_ticket(extension_ticket)
+        except HTTPException:
+            ticket_payload = {}
+
+        if ticket_payload.get("kind") == "extension_autofill":
+            tool_id = int(ticket_payload.get("toolId") or 0)
+            if tool_id > 0:
+                ticket_tool = (
+                    db.query(ITPortalTool)
+                    .filter(ITPortalTool.id == tool_id, ITPortalTool.is_active == True)
+                    .first()
+                )
+                if ticket_tool:
+                    return ticket_tool
+
     tool_slug = _canonical_tool_slug(payload.tool_slug or "")
     hostname = _normalize_hostname(payload.hostname or payload.page_url)
 
@@ -952,6 +1134,9 @@ OTP_MAX_WAIT_SEC = 60
 OTP_EMAIL_MAX_AGE_SEC = 120
 OTP_TICKET_TTL_SEC = 600
 _otp_consumed_tickets: dict[str, float] = {}
+AUTH_LINK_MAX_WAIT_SEC = 60
+AUTH_LINK_EMAIL_MAX_AGE_SEC = 300
+_auth_link_consumed_tickets: dict[str, float] = {}
 
 
 def _cleanup_otp_tickets() -> None:
@@ -959,6 +1144,13 @@ def _cleanup_otp_tickets() -> None:
     stale_tickets = [ticket for ticket, consumed_at in _otp_consumed_tickets.items() if consumed_at < cutoff]
     for ticket in stale_tickets:
         del _otp_consumed_tickets[ticket]
+
+
+def _cleanup_auth_link_tickets() -> None:
+    cutoff = time.monotonic() - OTP_TICKET_TTL_SEC
+    stale_tickets = [ticket for ticket, consumed_at in _auth_link_consumed_tickets.items() if consumed_at < cutoff]
+    for ticket in stale_tickets:
+        del _auth_link_consumed_tickets[ticket]
 
 
 def _render_auto_login_page(tool: ITPortalTool, credential: ITPortalToolCredential) -> str:
@@ -1061,7 +1253,7 @@ async def list_tools(
     if not is_admin:
         tools = [tool for tool in tools if tool.id in credentials_by_tool]
 
-    return {
+    response = {
         "success": True,
         "tools": [
             _serialize_tool(tool, credentials_by_tool.get(tool.id), is_admin=is_admin)
@@ -1069,6 +1261,9 @@ async def list_tools(
         ],
         "isAdmin": is_admin,
     }
+    if is_admin:
+        response["credentialSummariesByToolId"] = _build_admin_credential_summaries_by_tool(db, tools)
+    return response
 
 
 @router.post("/tools")
@@ -1204,10 +1399,19 @@ async def get_extension_credential(
     if not credential:
         raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
 
+    canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
+    login_method = _normalize_credential_login_method(canonical_tool_slug, credential.login_method)
     login_identifier = decrypt_secret(credential.login_identifier_encrypted)
     password = decrypt_secret(credential.password_encrypted)
-    if not login_identifier or not password:
-        raise HTTPException(status_code=400, detail="Assigned credential is missing username or password")
+    if not login_identifier or (
+        not password and not _credential_password_is_optional(canonical_tool_slug, login_method)
+    ):
+        missing_detail = (
+            "Assigned credential is missing the email address required for this tool"
+            if _credential_password_is_optional(canonical_tool_slug, login_method)
+            else "Assigned credential is missing username or password"
+        )
+        raise HTTPException(status_code=400, detail=missing_detail)
 
     _add_audit(
         db,
@@ -1233,8 +1437,9 @@ async def get_extension_credential(
         },
         "credential": {
             "scope": credential.scope,
+            "loginMethod": login_method,
             "loginIdentifier": login_identifier,
-            "password": password,
+            "password": password or None,
             "backupCodes": _decode_backup_codes(credential),
         },
     }
@@ -1337,6 +1542,106 @@ async def get_extension_otp(
     db.commit()
 
     return {"success": True, "otp": otp}
+
+
+@router.post("/extension/auth-link")
+async def get_extension_auth_link(
+    payload: OtpRequestPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db),
+):
+    tool = _find_extension_tool(db, payload)
+    if not tool:
+        raise HTTPException(status_code=404, detail="No matching tool found for this page")
+    if tool.launch_mode != "extension_autofill":
+        raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill")
+
+    extension_ticket = (payload.extension_ticket or "").strip()
+    if not extension_ticket:
+        raise _extension_ticket_error()
+
+    ticket_payload = _decode_ticket(extension_ticket)
+    if ticket_payload.get("kind") != "extension_autofill":
+        raise _extension_ticket_error()
+    if int(ticket_payload.get("userId") or 0) != current_user.id:
+        raise _extension_ticket_error()
+    if int(ticket_payload.get("toolId") or 0) != tool.id:
+        raise _extension_ticket_error()
+
+    _cleanup_auth_link_tickets()
+    if extension_ticket in _auth_link_consumed_tickets:
+        raise HTTPException(
+            status_code=409,
+            detail="Auth link already fetched for this launch session. Launch the tool again from the dashboard.",
+        )
+
+    mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool.id).first()
+    if not mailbox:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No mailbox configured for tool '{tool.name}'. Ask an admin to add the mailbox in the dashboard.",
+        )
+
+    app_password = decrypt_secret(mailbox.app_password_encrypted)
+    if not app_password:
+        raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
+
+    attempts = max(1, AUTH_LINK_MAX_WAIT_SEC // OTP_POLL_INTERVAL_SEC)
+    auth_link = None
+    last_fetch_error = None
+    for attempt_index in range(attempts):
+        try:
+            auth_link = await asyncio.to_thread(
+                fetch_auth_link_from_gmail,
+                mailbox.email_address,
+                app_password,
+                mailbox.auth_link_pattern,
+                mailbox.auth_link_host,
+                mailbox.otp_sender_filter,
+                mailbox.otp_subject_pattern,
+                AUTH_LINK_EMAIL_MAX_AGE_SEC,
+            )
+            last_fetch_error = None
+        except imaplib.IMAP4.error as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Mailbox login failed for {mailbox.email_address}. Update the Gmail app password or enable IMAP. ({exc})",
+            ) from exc
+        except Exception as exc:
+            last_fetch_error = exc
+            auth_link = None
+
+        if auth_link:
+            break
+
+        if attempt_index < attempts - 1:
+            await asyncio.sleep(OTP_POLL_INTERVAL_SEC)
+
+    if not auth_link:
+        if last_fetch_error is not None:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Mailbox fetch failed: {last_fetch_error}",
+            )
+        raise HTTPException(
+            status_code=408,
+            detail="Auth link email did not arrive within the timeout window. Check the mailbox filters and try again.",
+        )
+
+    _auth_link_consumed_tickets[extension_ticket] = time.monotonic()
+    _add_audit(
+        db,
+        actor_id=current_user.id,
+        action="extension_auth_link_fetched",
+        tool_id=tool.id,
+        details={
+            "hostname": _normalize_hostname(payload.hostname or payload.page_url),
+            "mailbox": mailbox.email_address,
+        },
+    )
+    db.commit()
+
+    return {"success": True, "authLink": auth_link}
 
 
 @router.post("/extension/totp")
@@ -1494,6 +1799,7 @@ async def upsert_credential(
         raise HTTPException(status_code=404, detail="Tool not found")
     canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
     scope = _validate_scope(payload)
+    login_method = _normalize_credential_login_method(canonical_tool_slug, payload.login_method)
 
     if scope == "user":
         user = db.query(User).filter(User.id == payload.user_id, User.is_deleted == False).first()
@@ -1530,8 +1836,21 @@ async def upsert_credential(
         and payload.create_new
     )
     if creating_new_shared_company_credential:
-        if not (payload.login_identifier or "").strip() or not (payload.password or "").strip():
-            raise HTTPException(status_code=400, detail="New shared company credentials require both username/email and password")
+        has_login_identifier = bool((payload.login_identifier or "").strip())
+        has_password = bool((payload.password or "").strip())
+        if not has_login_identifier or (
+            not has_password and not _credential_password_is_optional(canonical_tool_slug, login_method)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "New shared Claude credentials require the sign-in email address."
+                    if canonical_tool_slug == "claude"
+                    else "New shared Kling Google credentials require the Google email address."
+                    if canonical_tool_slug in {"kling", "kling-ai", "klingai"} and login_method == "google"
+                    else "New shared company credentials require both username/email and password"
+                ),
+            )
 
     credential = None
     if payload.credential_id:
@@ -1573,10 +1892,15 @@ async def upsert_credential(
 
     effective_linked_credential = linked_credential
     if scope == "user" and not effective_linked_credential and _payload_has_credential_content(payload):
-        source_credential = _resolve_linked_company_credential(db, credential) or credential
+        source_credential = _resolve_linked_company_credential(
+            db,
+            credential,
+            canonical_tool_slug=canonical_tool_slug,
+        ) or credential
         effective_linked_credential = _ensure_reusable_company_credential(
             db,
             tool_id=tool_id,
+            canonical_tool_slug=canonical_tool_slug,
             payload=payload,
             actor_id=current_user.id,
             target_user_id=payload.user_id,
@@ -1584,6 +1908,10 @@ async def upsert_credential(
         )
 
     if scope == "user" and effective_linked_credential:
+        credential.login_method = _normalize_credential_login_method(
+            canonical_tool_slug,
+            effective_linked_credential.login_method,
+        )
         credential.login_identifier_encrypted = None
         credential.password_encrypted = None
         credential.backup_codes_encrypted = None
@@ -1591,6 +1919,7 @@ async def upsert_credential(
         credential.api_key_encrypted = None
         credential.notes = None
     else:
+        credential.login_method = login_method
         if payload.login_identifier is not None:
             normalized_login_identifier = (payload.login_identifier or "").strip()
             credential.login_identifier_encrypted = (
@@ -1743,8 +2072,11 @@ async def launch_tool(
         raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
 
     revealed = None
+    canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
+    revealed_login_method = _normalize_credential_login_method(canonical_tool_slug, credential.login_method)
     revealed = {
         "scope": credential.scope,
+        "loginMethod": revealed_login_method,
         "loginIdentifier": decrypt_secret(credential.login_identifier_encrypted),
         "password": None if tool.launch_mode in {"automation", "extension_autofill"} else decrypt_secret(credential.password_encrypted),
         "backupCodes": _decode_backup_codes(credential),

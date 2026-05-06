@@ -5,11 +5,14 @@ const FLOW_HOME_URL = 'https://labs.google/fx';
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
 const TOOL_SESSION_DOMAINS = {
+  claude: ['claude.ai', 'www.claude.ai'],
   envato: ['envato.com', 'elements.envato.com', 'market.envato.com'],
   freepik: ['freepik.com', 'www.freepik.com', 'magnific.com', 'www.magnific.com'],
   flow: ['labs.google'],
+  grammarly: ['grammarly.com', 'www.grammarly.com', 'app.grammarly.com'],
   higgsfield: ['higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'],
   heygen: ['heygen.com', 'auth.heygen.com', 'app.heygen.com'],
+  kling: ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   'kling-ai': ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   klingai: ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
 };
@@ -26,6 +29,10 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'login.live.com',
     'login.microsoft.com',
   ],
+  claude: [
+    'claude.ai',
+    'www.claude.ai',
+  ],
   envato: [
     'envato.com',
     'elements.envato.com',
@@ -37,6 +44,11 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'magnific.com',
     'www.magnific.com',
     'accounts.google.com',
+  ],
+  grammarly: [
+    'grammarly.com',
+    'www.grammarly.com',
+    'app.grammarly.com',
   ],
   higgsfield: [
     'higgsfield.ai',
@@ -52,12 +64,21 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'labs.google',
     'accounts.google.com',
   ],
+  kling: [
+    'kling.ai',
+    'www.kling.ai',
+    'klingai.com',
+    'www.klingai.com',
+    'app.klingai.com',
+    'accounts.google.com',
+  ],
   'kling-ai': [
     'kling.ai',
     'www.kling.ai',
     'klingai.com',
     'www.klingai.com',
     'app.klingai.com',
+    'accounts.google.com',
   ],
   klingai: [
     'kling.ai',
@@ -65,6 +86,7 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'klingai.com',
     'www.klingai.com',
     'app.klingai.com',
+    'accounts.google.com',
   ],
 };
 
@@ -269,11 +291,17 @@ function isRecentContinuationReuseAllowed(toolSlug, pageUrl, hostname) {
     return false;
   }
 
-  if (normalizeToolSlug(toolSlug) !== 'chatgpt') {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug);
+  const pageHost = hostnameFromPageUrl(pageUrl) || normalizeHostname(hostname);
+
+  if (['kling', 'kling-ai', 'klingai'].includes(normalizedToolSlug)) {
+    return pageHost === 'accounts.google.com';
+  }
+
+  if (normalizedToolSlug !== 'chatgpt') {
     return true;
   }
 
-  const pageHost = hostnameFromPageUrl(pageUrl) || normalizeHostname(hostname);
   return [
     'auth.openai.com',
     'accounts.google.com',
@@ -394,6 +422,12 @@ async function getRecentContinuationLaunch(toolSlug, hostname, pageUrl) {
     return null;
   }
 
+  const normalizedToolSlug = normalizeToolSlug(toolSlug);
+  const pageHost = hostnameFromPageUrl(pageUrl) || normalizeHostname(hostname);
+  if (['kling', 'kling-ai', 'klingai'].includes(normalizedToolSlug) && pageHost !== 'accounts.google.com') {
+    return null;
+  }
+
   const now = Date.now();
   const launchMap = await getActiveLaunchMap();
   const matches = Object.values(launchMap)
@@ -495,6 +529,11 @@ async function clearActiveLaunch(tabId, toolSlug = '') {
   }
   delete launchMap[key];
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+}
+
+async function revokeActiveLaunch(tabId, toolSlug = '') {
+  await clearActiveLaunch(tabId, toolSlug);
+  return true;
 }
 
 async function markFreshSessionPrepared(tabId, toolSlug = '') {
@@ -903,6 +942,52 @@ async function fetchOtp(message, senderTabId = 0, openerTabId = 0) {
   return data.otp;
 }
 
+async function fetchAuthLink(message, senderTabId = 0, openerTabId = 0) {
+  const settings = await getSettings();
+  const tabId = message.tabId || senderTabId || 0;
+  const directLaunch = await getActiveLaunch(tabId, message.toolSlug);
+  const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, message.toolSlug);
+  const activeLaunch = directLaunch || inheritedLaunch;
+  const extensionTicket = `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim();
+
+  if (!extensionTicket) {
+    throw new Error('Open this tool from the dashboard first.');
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetch(`${settings.apiBase}/api/it-tools/extension/auth-link`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify({
+      tool_slug: message.toolSlug,
+      hostname: message.hostname,
+      page_url: message.pageUrl,
+      extension_ticket: extensionTicket || null,
+    }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success || !data.authLink) {
+    const parts = [
+      data.detail || data.message || `Auth link request failed (${response.status})`,
+      `api=${settings.apiBase}`,
+      `sessionHeader=${settings.sessionToken ? 'yes' : 'no'}`,
+      `http=${response.status}`,
+    ];
+    throw new Error(parts.join(' | '));
+  }
+
+  return data.authLink;
+}
+
 function buildApiErrorMessage(data, response, fallbackLabel, settings) {
   const parts = [
     data.detail || data.message || `${fallbackLabel} (${response.status})`,
@@ -1200,6 +1285,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === 'TOOL_HUB_REVOKE_ACTIVE_LAUNCH') {
+    revokeActiveLaunch(senderTabId, message.toolSlug)
+      .then((ok) => sendResponse({ ok }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'TOOL_HUB_CLEAR_TOOL_SESSION') {
     clearToolSession(message.toolSlug, { includeGoogle: Boolean(message.includeGoogle) })
       .then(async (result) => {
@@ -1241,6 +1333,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'TOOL_HUB_FETCH_OTP') {
     fetchOtp(message, senderTabId, senderOpenerTabId)
       .then((otp) => sendResponse({ ok: true, otp }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_FETCH_AUTH_LINK') {
+    fetchAuthLink(message, senderTabId, senderOpenerTabId)
+      .then((authLink) => sendResponse({ ok: true, authLink }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

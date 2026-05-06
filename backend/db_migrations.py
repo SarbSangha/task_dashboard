@@ -11,6 +11,33 @@ DEFAULT_DEPARTMENT_DIRECTORY = (
     "3D Visualizer",
 )
 
+DEFAULT_TOOL_DIRECTORY = (
+    {
+        "name": "Claude",
+        "slug": "claude",
+        "category": "AI",
+        "description": "Anthropic Claude assistant",
+        "website_url": "https://claude.ai/",
+        "login_url": "https://claude.ai/login",
+        "icon": "Bot",
+        "launch_mode": "extension_autofill",
+        "status": "active",
+        "is_active": True,
+    },
+    {
+        "name": "Grammarly",
+        "slug": "grammarly",
+        "category": "Writing",
+        "description": "AI writing assistant",
+        "website_url": "https://www.grammarly.com/",
+        "login_url": "https://www.grammarly.com/signin",
+        "icon": "Type",
+        "launch_mode": "extension_autofill",
+        "status": "active",
+        "is_active": True,
+    },
+)
+
 
 def _table_columns(conn, table_name: str) -> set[str]:
     rows = conn.execute(text(f"PRAGMA table_info('{table_name}')")).mappings().all()
@@ -18,6 +45,21 @@ def _table_columns(conn, table_name: str) -> set[str]:
 
 
 def _table_exists(conn, table_name: str) -> bool:
+    dialect_name = getattr(getattr(conn, "dialect", None), "name", "")
+    if dialect_name == "postgresql":
+        row = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = :name
+                LIMIT 1
+                """
+            ),
+            {"name": table_name},
+        ).fetchone()
+        return row is not None
+
     row = conn.execute(
         text("SELECT name FROM sqlite_master WHERE type='table' AND name=:name"),
         {"name": table_name},
@@ -105,6 +147,64 @@ def _seed_departments(conn) -> None:
         )
 
 
+def _seed_default_tools(conn) -> None:
+    if not _table_exists(conn, "it_portal_tools"):
+        return
+
+    for tool in DEFAULT_TOOL_DIRECTORY:
+        conn.execute(
+            text(
+                """
+                INSERT INTO it_portal_tools (
+                    name,
+                    slug,
+                    category,
+                    description,
+                    website_url,
+                    login_url,
+                    icon,
+                    launch_mode,
+                    status,
+                    is_active,
+                    created_at,
+                    updated_at
+                )
+                SELECT
+                    CAST(:insert_name AS TEXT),
+                    CAST(:insert_slug AS TEXT),
+                    CAST(:insert_category AS TEXT),
+                    CAST(:insert_description AS TEXT),
+                    CAST(:insert_website_url AS TEXT),
+                    CAST(:insert_login_url AS TEXT),
+                    CAST(:insert_icon AS TEXT),
+                    CAST(:insert_launch_mode AS TEXT),
+                    CAST(:insert_status AS TEXT),
+                    CAST(:insert_is_active AS BOOLEAN),
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM it_portal_tools
+                    WHERE LOWER(TRIM(slug)) = LOWER(TRIM(CAST(:match_slug AS TEXT)))
+                )
+                """
+            ),
+            {
+                "insert_name": tool["name"],
+                "insert_slug": tool["slug"],
+                "insert_category": tool["category"],
+                "insert_description": tool["description"],
+                "insert_website_url": tool["website_url"],
+                "insert_login_url": tool["login_url"],
+                "insert_icon": tool["icon"],
+                "insert_launch_mode": tool["launch_mode"],
+                "insert_status": tool["status"],
+                "insert_is_active": tool["is_active"],
+                "match_slug": tool["slug"],
+            },
+        )
+
+
 def _migrate_enum_type(conn, old_type: str, new_type: str) -> None:
     if not _pg_type_exists(conn, old_type) or not _pg_type_exists(conn, new_type):
         return
@@ -139,6 +239,7 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "backup_codes_encrypted", "TEXT")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "totp_secret_encrypted", "TEXT")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "linked_credential_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "login_method", "VARCHAR(40) DEFAULT 'email_password'")
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "task_comments", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "tasks", "workflow_enabled", "BOOLEAN DEFAULT FALSE")
@@ -271,6 +372,8 @@ def _ensure_postgres_schema(conn) -> None:
                 otp_sender_filter VARCHAR(255),
                 otp_subject_pattern VARCHAR(255),
                 otp_regex VARCHAR(255) NOT NULL DEFAULT '\\b(\\d{4,8})\\b',
+                auth_link_pattern VARCHAR(255),
+                auth_link_host VARCHAR(255),
                 created_by INTEGER REFERENCES users(id),
                 updated_by INTEGER REFERENCES users(id),
                 created_at TIMESTAMP DEFAULT NOW(),
@@ -280,6 +383,8 @@ def _ensure_postgres_schema(conn) -> None:
         )
     )
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_mailboxes_tool_id ON it_portal_tool_mailboxes(tool_id)"))
+    _pg_add_column_if_missing(conn, "it_portal_tool_mailboxes", "auth_link_pattern", "VARCHAR(255)")
+    _pg_add_column_if_missing(conn, "it_portal_tool_mailboxes", "auth_link_host", "VARCHAR(255)")
     conn.execute(
         text(
             """
@@ -298,6 +403,7 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_name ON department_directory(name)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_is_active ON department_directory(is_active)"))
     _seed_departments(conn)
+    _seed_default_tools(conn)
     conn.execute(
         text(
             """
@@ -409,6 +515,7 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_name ON department_directory(name)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_is_active ON department_directory(is_active)"))
         _seed_departments(conn)
+        _seed_default_tools(conn)
 
         if _table_exists(conn, "tasks"):
             task_cols = _table_columns(conn, "tasks")
@@ -713,6 +820,8 @@ def ensure_operational_schema(engine) -> None:
                     otp_sender_filter VARCHAR(255),
                     otp_subject_pattern VARCHAR(255),
                     otp_regex VARCHAR(255) NOT NULL DEFAULT '\\b(\\d{4,8})\\b',
+                    auth_link_pattern VARCHAR(255),
+                    auth_link_host VARCHAR(255),
                     created_by INTEGER,
                     updated_by INTEGER,
                     created_at DATETIME,
@@ -725,3 +834,13 @@ def ensure_operational_schema(engine) -> None:
             )
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_mailboxes_tool_id ON it_portal_tool_mailboxes(tool_id)"))
+        if _table_exists(conn, "it_portal_tool_mailboxes"):
+            mailbox_cols = _table_columns(conn, "it_portal_tool_mailboxes")
+            if "auth_link_pattern" not in mailbox_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_mailboxes ADD COLUMN auth_link_pattern VARCHAR(255)"))
+            if "auth_link_host" not in mailbox_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_mailboxes ADD COLUMN auth_link_host VARCHAR(255)"))
+        if _table_exists(conn, "it_portal_tool_credentials"):
+            credential_cols = _table_columns(conn, "it_portal_tool_credentials")
+            if "login_method" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN login_method VARCHAR(40) DEFAULT 'email_password'"))

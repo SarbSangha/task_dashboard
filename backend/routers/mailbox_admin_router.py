@@ -2,6 +2,7 @@ import imaplib
 import re
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
@@ -22,6 +23,8 @@ class MailboxConfigPayload(BaseModel):
     otp_sender_filter: Optional[str] = None
     otp_subject_pattern: Optional[str] = None
     otp_regex: str = r"\b(\d{4,8})\b"
+    auth_link_pattern: Optional[str] = None
+    auth_link_host: Optional[str] = None
 
 
 class MailboxConfigResponse(BaseModel):
@@ -30,6 +33,8 @@ class MailboxConfigResponse(BaseModel):
     otp_sender_filter: Optional[str]
     otp_subject_pattern: Optional[str]
     otp_regex: str
+    auth_link_pattern: Optional[str]
+    auth_link_host: Optional[str]
     app_password_set: bool
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
@@ -50,6 +55,8 @@ def _serialize_mailbox(mailbox: ITPortalToolMailbox) -> MailboxConfigResponse:
         otp_sender_filter=mailbox.otp_sender_filter,
         otp_subject_pattern=mailbox.otp_subject_pattern,
         otp_regex=mailbox.otp_regex,
+        auth_link_pattern=mailbox.auth_link_pattern,
+        auth_link_host=mailbox.auth_link_host,
         app_password_set=bool(mailbox.app_password_encrypted),
         created_at=mailbox.created_at,
         updated_at=mailbox.updated_at,
@@ -75,6 +82,31 @@ def _validate_regex(pattern: str) -> str:
     return normalized
 
 
+def _validate_optional_regex(pattern: Optional[str], *, label: str) -> Optional[str]:
+    normalized = (pattern or "").strip()
+    if not normalized:
+        return None
+    try:
+        re.compile(normalized)
+    except re.error as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {label}: {exc}") from exc
+    return normalized
+
+
+def _validate_optional_host(value: Optional[str]) -> Optional[str]:
+    normalized = (value or "").strip()
+    if not normalized:
+        return None
+    try:
+        parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+        hostname = (parsed.hostname or "").strip().lower()
+    except Exception:
+        hostname = normalized.split("/")[0].strip().lower()
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Auth link host must be a valid hostname")
+    return hostname[4:] if hostname.startswith("www.") else hostname
+
+
 @router.get("/{tool_id}/mailbox", response_model=MailboxConfigResponse)
 def get_mailbox_config(
     tool_id: int,
@@ -98,6 +130,8 @@ def upsert_mailbox_config(
 ):
     _get_tool(db, tool_id)
     otp_regex = _validate_regex(payload.otp_regex)
+    auth_link_pattern = _validate_optional_regex(payload.auth_link_pattern, label="auth link regex")
+    auth_link_host = _validate_optional_host(payload.auth_link_host)
 
     mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool_id).first()
     encrypted_password = encrypt_secret(payload.app_password) if payload.app_password is not None else None
@@ -115,6 +149,8 @@ def upsert_mailbox_config(
             otp_sender_filter=(payload.otp_sender_filter or "").strip() or None,
             otp_subject_pattern=(payload.otp_subject_pattern or "").strip() or None,
             otp_regex=otp_regex,
+            auth_link_pattern=auth_link_pattern,
+            auth_link_host=auth_link_host,
             created_by=current_user.id,
             updated_by=current_user.id,
         )
@@ -126,6 +162,8 @@ def upsert_mailbox_config(
         mailbox.otp_sender_filter = (payload.otp_sender_filter or "").strip() or None
         mailbox.otp_subject_pattern = (payload.otp_subject_pattern or "").strip() or None
         mailbox.otp_regex = otp_regex
+        mailbox.auth_link_pattern = auth_link_pattern
+        mailbox.auth_link_host = auth_link_host
         mailbox.updated_by = current_user.id
         mailbox.updated_at = datetime.utcnow()
 

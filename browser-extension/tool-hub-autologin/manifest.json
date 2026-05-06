@@ -20,6 +20,8 @@
     "https://dashboard.ritzmediaworld.in/*",
     "http://dashboard.ritzmediaworld.in/*",
     "https://192.168.1.15/*",
+    "https://claude.ai/*",
+    "https://*.claude.ai/*",
     "https://envato.com/*",
     "https://www.envato.com/*",
     "https://elements.envato.com/*",
@@ -28,6 +30,8 @@
     "https://*.freepik.com/*",
     "https://magnific.com/*",
     "https://*.magnific.com/*",
+    "https://grammarly.com/*",
+    "https://*.grammarly.com/*",
     "https://higgsfield.ai/*",
     "https://*.higgsfield.ai/*",
     "https://heygen.com/*",
@@ -68,6 +72,14 @@
     },
     {
       "matches": [
+        "https://claude.ai/*",
+        "https://*.claude.ai/*"
+      ],
+      "js": ["content-claude.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
         "https://auth.openai.com/*"
@@ -96,6 +108,14 @@
         "https://*.magnific.com/*"
       ],
       "js": ["content-freepik.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://grammarly.com/*",
+        "https://*.grammarly.com/*"
+      ],
+      "js": ["content-grammarly.js"],
       "run_at": "document_idle"
     },
     {

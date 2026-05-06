@@ -77,6 +77,7 @@ const EMPTY_CREDENTIAL_FORM = {
   scope: 'company',
   user_ids: [],
   assigned_user_ids: [],
+  login_method: 'email_password',
   login_identifier: '',
   password: '',
   backup_codes: '',
@@ -91,17 +92,38 @@ const EMPTY_MAILBOX_FORM = {
   otp_sender_filter: '',
   otp_subject_pattern: '',
   otp_regex: '\\b(\\d{4,8})\\b',
+  auth_link_host: '',
+  auth_link_pattern: '',
 };
 
 const normalizeToolSlug = (value) => {
   const normalized = `${value || ''}`.trim().toLowerCase();
-  if (normalized === 'chat-gpt') return 'chatgpt';
-  return normalized;
+  const slugified = normalized.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (slugified === 'chat-gpt') return 'chatgpt';
+  return slugified;
 };
 
 const supportsSharedCompanyCredentialAssignments = (value) => {
   const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug);
   return Boolean(normalizedToolSlug && normalizedToolSlug !== 'tool');
+};
+
+const toolSupportsPasswordOptionalCredential = (value) => {
+  const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug || value?.name);
+  return normalizedToolSlug === 'claude';
+};
+
+const toolSupportsCredentialLoginMethodSelection = (value) => {
+  const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug || value?.name);
+  return normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai' || normalizedToolSlug === 'kling';
+};
+
+const getDefaultCredentialLoginMethod = (value) => {
+  const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug || value?.name);
+  if (normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai' || normalizedToolSlug === 'kling') {
+    return 'email_password';
+  }
+  return 'email_password';
 };
 
 const getSharedCredentialLabels = (toolValue) => {
@@ -300,14 +322,16 @@ export default function Tools() {
   const [assignmentSavingKey, setAssignmentSavingKey] = useState('');
   const [sharedCredentialAssignmentPicker, setSharedCredentialAssignmentPicker] = useState(null);
 
-  const loadToolCredentials = async (toolList, signal) => {
+  const loadToolCredentials = async (toolList, signal, { manageLoading = true } = {}) => {
     if (signal?.aborted) return;
     if (!toolList.length) {
       setToolCredentialsByToolId({});
       return;
     }
 
-    setAssignmentLoading(true);
+    if (manageLoading) {
+      setAssignmentLoading(true);
+    }
     try {
       const results = await Promise.all(
         toolList.map(async (tool) => {
@@ -324,7 +348,7 @@ export default function Tools() {
         setToolCredentialsByToolId(Object.fromEntries(results));
       }
     } finally {
-      if (!signal?.aborted) {
+      if (manageLoading && !signal?.aborted) {
         setAssignmentLoading(false);
       }
     }
@@ -349,10 +373,30 @@ export default function Tools() {
       setTools(nextTools);
       setIsAdmin(!!response.isAdmin);
       if (response.isAdmin) {
-        const userResponse = await authAPI.getAdminAllUsers({ signal });
-        if (signal?.aborted) return;
-        setUsers((userResponse.users || []).filter((user) => !user.isDeleted));
-        await loadToolCredentials(nextTools, signal);
+        const inlineCredentialSummaries = response.credentialSummariesByToolId || null;
+        setAssignmentLoading(true);
+        if (inlineCredentialSummaries && typeof inlineCredentialSummaries === 'object') {
+          setToolCredentialsByToolId(inlineCredentialSummaries);
+        } else {
+          setToolCredentialsByToolId({});
+        }
+        void (async () => {
+          try {
+            const userResponse = await authAPI.getAdminAllUsers({ signal });
+            if (signal?.aborted) return;
+            setUsers((userResponse.users || []).filter((user) => !user.isDeleted));
+            if (!(inlineCredentialSummaries && typeof inlineCredentialSummaries === 'object')) {
+              await loadToolCredentials(nextTools, signal, { manageLoading: false });
+            }
+          } catch (err) {
+            if (isRequestCanceled(err) || signal?.aborted) return;
+            setError(err?.response?.data?.detail || 'Unable to load IT tools.');
+          } finally {
+            if (!signal?.aborted) {
+              setAssignmentLoading(false);
+            }
+          }
+        })();
       } else if (!signal?.aborted) {
         setUsers([]);
         setToolCredentialsByToolId({});
@@ -407,8 +451,12 @@ export default function Tools() {
   }, [credentialForm.toolId, selectedTool, tools]);
 
   const activeCredentialToolSlug = normalizeToolSlug(activeCredentialTool?.slug);
+  const activeCredentialLoginMethod = credentialForm.login_method || getDefaultCredentialLoginMethod(activeCredentialToolSlug);
   const showToolTotpSecretField = ['flow', 'chatgpt'].includes(activeCredentialToolSlug);
   const showFlowBackupCodesField = activeCredentialToolSlug === 'flow';
+  const activeCredentialPasswordOptional = toolSupportsPasswordOptionalCredential(activeCredentialToolSlug)
+    || (toolSupportsCredentialLoginMethodSelection(activeCredentialToolSlug) && activeCredentialLoginMethod === 'google');
+  const activeCredentialShouldHidePasswordField = toolSupportsPasswordOptionalCredential(activeCredentialToolSlug);
   const totpSecretToolLabel = activeCredentialToolSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
   const activeCredentialToolSummaries = useMemo(() => {
     const toolId = `${activeCredentialTool?.id || ''}`.trim();
@@ -420,9 +468,22 @@ export default function Tools() {
     return activeCredentialToolSummaries.filter(
       (summary) => summary.scope === 'company'
         && Boolean(summary?.isActive)
-        && Boolean(summary?.hasApiKey || (summary?.hasLoginIdentifier && summary?.hasPassword))
+        && Boolean(
+          summary?.hasApiKey
+          || (
+            summary?.hasLoginIdentifier
+            && (
+              summary?.hasPassword
+              || toolSupportsPasswordOptionalCredential(activeCredentialTool)
+              || (
+                toolSupportsCredentialLoginMethodSelection(activeCredentialTool)
+                && (summary?.loginMethod || getDefaultCredentialLoginMethod(activeCredentialTool)) === 'google'
+              )
+            )
+          )
+        )
     );
-  }, [activeCredentialToolSlug, activeCredentialToolSummaries]);
+  }, [activeCredentialToolSlug, activeCredentialToolSummaries, activeCredentialTool]);
   const selectedSharedCredentialSummary = useMemo(() => {
     const credentialId = Number(credentialForm.credential_id || 0);
     if (!credentialId) return null;
@@ -460,12 +521,24 @@ export default function Tools() {
     }, {});
   }, [toolCredentialsByToolId, tools]);
 
-  const hasStoredUsableCredentialSummary = (summary) => {
-    return Boolean(summary && (summary.hasApiKey || (summary.hasLoginIdentifier && summary.hasPassword)));
+  const hasStoredUsableCredentialSummary = (summary, toolValue = null) => {
+    const loginMethod = summary?.loginMethod || getDefaultCredentialLoginMethod(toolValue);
+    const passwordOptional = toolSupportsPasswordOptionalCredential(toolValue)
+      || (toolSupportsCredentialLoginMethodSelection(toolValue) && loginMethod === 'google');
+    return Boolean(
+      summary
+      && (
+        summary.hasApiKey
+        || (
+          summary.hasLoginIdentifier
+          && (summary.hasPassword || passwordOptional)
+        )
+      )
+    );
   };
 
-  const hasActiveUsableCredentialSummary = (summary) => {
-    return Boolean(summary?.isActive) && hasStoredUsableCredentialSummary(summary);
+  const hasActiveUsableCredentialSummary = (summary, toolValue = null) => {
+    return Boolean(summary?.isActive) && hasStoredUsableCredentialSummary(summary, toolValue);
   };
 
   const getLinkedCompanyCredentialSummary = (directory, userCredential) => {
@@ -503,15 +576,16 @@ export default function Tools() {
     const userCredential = directory.users[userId];
     const linkedCompanyCredential = getLinkedCompanyCredentialSummary(directory, userCredential);
     const sharedCredentialAssignmentMode = isSharedCredentialAssignmentMode(toolId);
+    const tool = tools.find((item) => Number(item.id) === Number(toolId)) || null;
 
     if (userCredential) {
       if (!userCredential.isActive) {
         return false;
       }
-      if (hasActiveUsableCredentialSummary(linkedCompanyCredential)) {
+      if (hasActiveUsableCredentialSummary(linkedCompanyCredential, tool)) {
         return true;
       }
-      if (hasStoredUsableCredentialSummary(userCredential)) {
+      if (hasStoredUsableCredentialSummary(userCredential, tool)) {
         return true;
       }
       return false;
@@ -530,6 +604,7 @@ export default function Tools() {
       toolId: `${summary.toolId || activeCredentialTool?.id || ''}`,
       credential_id: `${summary.id}`,
       scope: 'company',
+      login_method: summary.loginMethod || getDefaultCredentialLoginMethod(activeCredentialToolSlug),
       assigned_user_ids: (summary.assignedUserIds || []).map((value) => `${value}`),
       login_identifier: summary.loginIdentifierPreview || '',
       notes: summary.notes || '',
@@ -542,6 +617,7 @@ export default function Tools() {
       ...EMPTY_CREDENTIAL_FORM,
       toolId: `${toolId || ''}`,
       scope: current.scope || 'company',
+      login_method: getDefaultCredentialLoginMethod(activeCredentialToolSlug),
     }));
   };
 
@@ -640,13 +716,13 @@ export default function Tools() {
     const linkedCompanyCredential = getLinkedCompanyCredentialSummary(directory, userCredential);
     const normalizedToolSlug = normalizeToolSlug(tool?.slug);
     const currentlyAssigned = isUserAssignedToTool(toolId, userId);
-    const activeCompanyCredentials = (directory.companyList || []).filter((summary) => hasActiveUsableCredentialSummary(summary));
+    const activeCompanyCredentials = (directory.companyList || []).filter((summary) => hasActiveUsableCredentialSummary(summary, tool));
     const hasDirectUserCredential = Boolean(
       userCredential?.isActive
       && !linkedCompanyCredential
-      && hasStoredUsableCredentialSummary(userCredential)
+      && hasStoredUsableCredentialSummary(userCredential, tool)
     );
-    const hasSourceCredential = hasStoredUsableCredentialSummary(userCredential) || activeCompanyCredentials.length > 0;
+    const hasSourceCredential = hasStoredUsableCredentialSummary(userCredential, tool) || activeCompanyCredentials.length > 0;
 
       if (!currentlyAssigned && !hasSourceCredential) {
         setSelectedTool(tool);
@@ -654,6 +730,7 @@ export default function Tools() {
           ...EMPTY_CREDENTIAL_FORM,
           toolId: `${toolId}`,
           scope: 'user',
+          login_method: getDefaultCredentialLoginMethod(tool),
           user_ids: [`${userId}`],
         });
         setError('');
@@ -736,6 +813,8 @@ export default function Tools() {
         otp_sender_filter: response.otp_sender_filter || '',
         otp_subject_pattern: response.otp_subject_pattern || '',
         otp_regex: response.otp_regex || EMPTY_MAILBOX_FORM.otp_regex,
+        auth_link_host: response.auth_link_host || '',
+        auth_link_pattern: response.auth_link_pattern || '',
       });
       setMailboxMeta({
         exists: true,
@@ -829,6 +908,7 @@ export default function Tools() {
           ...EMPTY_CREDENTIAL_FORM,
           toolId: `${toolId}`,
           scope: credentialForm.scope || 'company',
+          login_method: getDefaultCredentialLoginMethod(targetTool),
         });
       }
       setNotice(`Credential deleted from ${targetTool?.name || 'the tool library'}.`);
@@ -851,6 +931,10 @@ export default function Tools() {
     const targetToolSlug = normalizeToolSlug(targetTool?.slug);
     const supportsBackupCodes = targetToolSlug === 'flow';
     const supportsTotpSecret = ['flow', 'chatgpt'].includes(targetToolSlug);
+    const selectedLoginMethod = credentialForm.login_method || getDefaultCredentialLoginMethod(targetToolSlug);
+    const passwordOptionalCredential = toolSupportsPasswordOptionalCredential(targetToolSlug)
+      || (toolSupportsCredentialLoginMethodSelection(targetToolSlug) && selectedLoginMethod === 'google');
+    const shouldHidePasswordField = toolSupportsPasswordOptionalCredential(targetToolSlug);
     const backupCodesValue = supportsBackupCodes
       ? (credentialForm.backup_codes.trim() || undefined)
       : undefined;
@@ -861,7 +945,9 @@ export default function Tools() {
       ? Number(credentialForm.credential_id)
       : undefined;
     const loginIdentifierValue = credentialForm.login_identifier.trim() || undefined;
-    const passwordValue = credentialForm.password || undefined;
+    const passwordValue = shouldHidePasswordField
+      ? undefined
+      : (credentialForm.password || undefined);
     const assignedUserIdsValue = supportsSharedCompanyCredentialAssignments(targetToolSlug) && credentialForm.scope === 'company'
       ? [...new Set((credentialForm.assigned_user_ids || [])
         .map((value) => Number(value))
@@ -871,9 +957,13 @@ export default function Tools() {
       supportsSharedCompanyCredentialAssignments(targetToolSlug)
       && credentialForm.scope === 'company'
       && !credentialIdValue
-      && (!loginIdentifierValue || !passwordValue)
+      && (!loginIdentifierValue || (!passwordValue && !passwordOptionalCredential))
     ) {
-      setError(`Enter the ${targetTool?.name || 'tool'} username/email and password before saving a new shared login.`);
+      setError(
+        passwordOptionalCredential
+          ? `Enter the ${targetTool?.name || 'tool'} sign-in email before saving a new shared login.`
+          : `Enter the ${targetTool?.name || 'tool'} username/email and password before saving a new shared login.`,
+      );
       return;
     }
     setSaving(true);
@@ -895,6 +985,7 @@ export default function Tools() {
         const firstResult = await itToolsAPI.upsertCredential(toolId, {
           scope: 'user',
           user_id: firstUserId,
+          login_method: selectedLoginMethod,
           login_identifier: loginIdentifierValue,
           password: passwordValue,
           backup_codes: backupCodesValue,
@@ -908,11 +999,13 @@ export default function Tools() {
               scope: 'user',
               user_id: userId,
               linked_credential_id: linkedCredentialId,
+              login_method: selectedLoginMethod,
               is_active: true,
             }
             : {
               scope: 'user',
               user_id: userId,
+              login_method: selectedLoginMethod,
               login_identifier: loginIdentifierValue,
               password: passwordValue,
               backup_codes: backupCodesValue,
@@ -943,11 +1036,12 @@ export default function Tools() {
           setError(firstFailure?.response?.data?.detail || 'Some user assignments could not be saved.');
           setNotice(saveNotice);
         } else {
-          setCredentialForm({
-            ...EMPTY_CREDENTIAL_FORM,
-            toolId: `${toolId}`,
-            scope: 'user',
-          });
+        setCredentialForm({
+          ...EMPTY_CREDENTIAL_FORM,
+          toolId: `${toolId}`,
+          scope: 'user',
+          login_method: getDefaultCredentialLoginMethod(targetTool),
+        });
           setNotice(saveNotice);
         }
       } else {
@@ -955,6 +1049,7 @@ export default function Tools() {
           credential_id: credentialIdValue,
           scope: credentialForm.scope,
           user_id: null,
+          login_method: selectedLoginMethod,
           login_identifier: loginIdentifierValue,
           password: passwordValue,
           backup_codes: backupCodesValue,
@@ -963,7 +1058,11 @@ export default function Tools() {
           assigned_user_ids: assignedUserIdsValue,
           create_new: supportsSharedCompanyCredentialAssignments(targetToolSlug) && !credentialIdValue,
         });
-        setCredentialForm({ ...EMPTY_CREDENTIAL_FORM, toolId: `${toolId}` });
+        setCredentialForm({
+          ...EMPTY_CREDENTIAL_FORM,
+          toolId: `${toolId}`,
+          login_method: getDefaultCredentialLoginMethod(targetTool),
+        });
         setNotice(
           supportsSharedCompanyCredentialAssignments(targetToolSlug)
             ? getSharedCredentialLabels(targetTool || targetToolSlug).saveNotice
@@ -1005,11 +1104,13 @@ export default function Tools() {
         otp_sender_filter: mailboxForm.otp_sender_filter || undefined,
         otp_subject_pattern: mailboxForm.otp_subject_pattern || undefined,
         otp_regex: mailboxForm.otp_regex || EMPTY_MAILBOX_FORM.otp_regex,
+        auth_link_host: mailboxForm.auth_link_host || undefined,
+        auth_link_pattern: mailboxForm.auth_link_pattern || undefined,
       });
       await loadMailboxConfig(toolId);
-      setNotice('OTP mailbox settings saved.');
+      setNotice('Verification mailbox settings saved.');
     } catch (err) {
-      setError(err?.response?.data?.detail || 'Failed to save OTP mailbox settings.');
+      setError(err?.response?.data?.detail || 'Failed to save verification mailbox settings.');
     } finally {
       setMailboxBusy(false);
     }
@@ -1028,12 +1129,12 @@ export default function Tools() {
     try {
       const response = await itToolsAPI.testMailboxConfig(toolId);
       if (response.success) {
-        setNotice(response.message || 'OTP mailbox connected successfully.');
+        setNotice(response.message || 'Verification mailbox connected successfully.');
       } else {
-        setError(response.message || 'OTP mailbox test failed.');
+        setError(response.message || 'Verification mailbox test failed.');
       }
     } catch (err) {
-      setError(err?.response?.data?.detail || 'Failed to test OTP mailbox.');
+      setError(err?.response?.data?.detail || 'Failed to test verification mailbox.');
     } finally {
       setMailboxBusy(false);
     }
@@ -1047,7 +1148,7 @@ export default function Tools() {
     }
 
     const tool = tools.find((item) => `${item.id}` === toolId);
-    const confirmed = window.confirm(`Remove OTP mailbox settings for ${tool?.name || 'this tool'}?`);
+    const confirmed = window.confirm(`Remove verification mailbox settings for ${tool?.name || 'this tool'}?`);
     if (!confirmed) return;
 
     setMailboxBusy(true);
@@ -1057,9 +1158,9 @@ export default function Tools() {
       await itToolsAPI.deleteMailboxConfig(toolId);
       setMailboxForm({ ...EMPTY_MAILBOX_FORM, toolId });
       setMailboxMeta({ exists: false, appPasswordSet: false });
-      setNotice('OTP mailbox settings removed.');
+      setNotice('Verification mailbox settings removed.');
     } catch (err) {
-      setError(err?.response?.data?.detail || 'Failed to delete OTP mailbox settings.');
+      setError(err?.response?.data?.detail || 'Failed to delete verification mailbox settings.');
     } finally {
       setMailboxBusy(false);
     }
@@ -1186,13 +1287,13 @@ export default function Tools() {
                   <option value="external_link">External link</option>
                   <option value="sso">SSO</option>
                   <option value="api_proxy">API proxy</option>
-                  <option value="extension_autofill">Extension auto-fill (ChatGPT/OpenAI, Envato, Freepik, Higgsfield, HeyGen, Kling AI, Flow)</option>
+                  <option value="extension_autofill">Extension auto-fill (Claude, ChatGPT/OpenAI, Envato, Freepik, Grammarly, Higgsfield, HeyGen, Kling AI, Flow)</option>
                   <option value="automation">Auto-login form submit</option>
                 </select>
               </div>
               {toolForm.launch_mode === 'extension_autofill' && (
                 <p className="it-card-copy">
-                  The current browser extension build supports ChatGPT/OpenAI, Envato, Freepik, Higgsfield, HeyGen, Kling AI, and a starter Flow
+                  The current browser extension build supports Claude, ChatGPT/OpenAI, Envato, Freepik, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow
                   extension scaffold. For other tools, use Manual credential or Auto-login form submit.
                 </p>
               )}
@@ -1239,8 +1340,8 @@ export default function Tools() {
             <form className="it-admin-card" onSubmit={handleSaveCredential} autoComplete="off" data-tool-credential-form="true">
               <div className="it-admin-card-header">
                 <div>
-                  <h2>Add Password</h2>
-                  <p className="it-card-copy">Store the assigned company credential securely for extension autofill and manual launch support.</p>
+                  <h2>Add Credential</h2>
+                  <p className="it-card-copy">Store the assigned company login securely for extension autofill, magic-link flows, and manual launch support.</p>
                 </div>
                 <span>Encrypted</span>
               </div>
@@ -1251,6 +1352,7 @@ export default function Tools() {
                     ...EMPTY_CREDENTIAL_FORM,
                     toolId: e.target.value,
                     scope: credentialForm.scope,
+                    login_method: getDefaultCredentialLoginMethod(tools.find((tool) => `${tool.id}` === `${e.target.value}`) || ''),
                   })}
                   required
                 >
@@ -1265,6 +1367,7 @@ export default function Tools() {
                     ...EMPTY_CREDENTIAL_FORM,
                     toolId: credentialForm.toolId || selectedTool?.id || '',
                     scope: e.target.value,
+                    login_method: credentialForm.login_method || getDefaultCredentialLoginMethod(activeCredentialToolSlug),
                     user_ids: e.target.value === 'user' ? credentialForm.user_ids : [],
                   })}
                 >
@@ -1466,8 +1569,51 @@ export default function Tools() {
                     <small>Specific-user saves are also stored in the company credential library, but only the selected users will be linked to this login.</small>
                   </div>
                 )}
-                <input value={credentialForm.login_identifier} onChange={(e) => setCredentialForm({ ...credentialForm, login_identifier: e.target.value })} placeholder="Username / email" autoComplete="off" spellCheck={false} />
-                <input type="password" value={credentialForm.password} onChange={(e) => setCredentialForm({ ...credentialForm, password: e.target.value })} placeholder={credentialForm.credential_id ? 'Enter a new password only if this one changed' : 'Password'} autoComplete="new-password" />
+                {toolSupportsCredentialLoginMethodSelection(activeCredentialToolSlug) && (
+                  <select
+                    value={activeCredentialLoginMethod}
+                    onChange={(e) => setCredentialForm({
+                      ...credentialForm,
+                      login_method: e.target.value,
+                    })}
+                  >
+                    <option value="email_password">Continue with email</option>
+                    <option value="google">Continue with Google</option>
+                  </select>
+                )}
+                <input
+                  value={credentialForm.login_identifier}
+                  onChange={(e) => setCredentialForm({ ...credentialForm, login_identifier: e.target.value })}
+                  placeholder={
+                    activeCredentialPasswordOptional
+                      ? 'Sign-in email'
+                      : toolSupportsCredentialLoginMethodSelection(activeCredentialToolSlug)
+                        ? 'Email'
+                        : 'Username / email'
+                  }
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                {!activeCredentialShouldHidePasswordField && (
+                  <input
+                    type="password"
+                    value={credentialForm.password}
+                    onChange={(e) => setCredentialForm({ ...credentialForm, password: e.target.value })}
+                    placeholder={
+                      activeCredentialLoginMethod === 'google'
+                        ? (credentialForm.credential_id ? 'Enter a new Google password only if this one changed' : 'Google password optional')
+                        : (credentialForm.credential_id ? 'Enter a new password only if this one changed' : 'Password')
+                    }
+                    autoComplete="new-password"
+                  />
+                )}
+                {activeCredentialPasswordOptional && (
+                  <div className="it-span-2 it-mailbox-summary">
+                    {activeCredentialToolSlug === 'claude'
+                      ? 'Claude uses email-link sign-in. Save only the email here, then configure the Verification Mailbox below so the extension can fetch the secure sign-in link from Gmail.'
+                      : 'This Kling credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'}
+                  </div>
+                )}
                 {showToolTotpSecretField && (
                   <div className="it-span-2 it-secret-support-field">
                     <label htmlFor="flow-totp-secret">{totpSecretToolLabel} authenticator seed</label>
@@ -1524,8 +1670,8 @@ export default function Tools() {
             <form className="it-admin-card" onSubmit={handleSaveMailbox} autoComplete="off">
               <div className="it-admin-card-header">
                 <div>
-                  <h2>OTP Mailbox</h2>
-                  <p className="it-card-copy">Manage the Gmail inbox used for OTP codes so you can swap the tool email quickly whenever access changes.</p>
+                  <h2>Verification Mailbox</h2>
+                  <p className="it-card-copy">Manage the Gmail inbox used for OTP codes or magic sign-in links so email-based tools like Claude can complete verification securely.</p>
                 </div>
                 <span>{mailboxMeta.exists ? 'Configured' : 'Optional'}</span>
               </div>
@@ -1574,11 +1720,23 @@ export default function Tools() {
                   placeholder="OTP regex with one capture group"
                   autoComplete="off"
                 />
+                <input
+                  value={mailboxForm.auth_link_host}
+                  onChange={(e) => setMailboxForm({ ...mailboxForm, auth_link_host: e.target.value })}
+                  placeholder="Auth link host optional, e.g. claude.ai"
+                  autoComplete="off"
+                />
+                <input
+                  value={mailboxForm.auth_link_pattern}
+                  onChange={(e) => setMailboxForm({ ...mailboxForm, auth_link_pattern: e.target.value })}
+                  placeholder="Auth link regex optional"
+                  autoComplete="off"
+                />
               </div>
               <p className="it-mailbox-summary">
                 {mailboxMeta.exists
                   ? `Mailbox saved for this tool${mailboxMeta.appPasswordSet ? ' with an app password on file.' : '.'}`
-                  : 'No OTP mailbox saved for this tool yet.'}
+                  : 'No verification mailbox saved for this tool yet.'}
               </p>
               <div className="it-admin-actions">
                 <button className="it-primary-btn" type="submit" disabled={mailboxBusy}>
@@ -1628,9 +1786,9 @@ export default function Tools() {
                     <th className="it-user-column">User</th>
                     {assignmentColumns.map((tool) => {
                       const directory = credentialDirectory[tool.id] || { company: null, companyList: [] };
-                      const companyReady = (directory.companyList || []).some((summary) => hasActiveUsableCredentialSummary(summary));
+                      const companyReady = (directory.companyList || []).some((summary) => hasActiveUsableCredentialSummary(summary, tool));
                       const normalizedToolSlug = normalizeToolSlug(tool?.slug);
-                      const readyCredentialCount = (directory.companyList || []).filter((summary) => hasActiveUsableCredentialSummary(summary)).length;
+                      const readyCredentialCount = (directory.companyList || []).filter((summary) => hasActiveUsableCredentialSummary(summary, tool)).length;
                       return (
                         <th key={tool.id} className="it-tool-column">
                           <div className="it-tool-column-copy">

@@ -617,6 +617,7 @@ class ITPortalToolCredential(Base):
     scope = Column(String, nullable=False, default="company", index=True)  # company/user
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     linked_credential_id = Column(Integer, ForeignKey("it_portal_tool_credentials.id"), index=True)
+    login_method = Column(String(40), default="email_password", index=True)
     login_identifier_encrypted = Column(Text)
     password_encrypted = Column(Text)
     backup_codes_encrypted = Column(Text)
@@ -653,6 +654,8 @@ class ITPortalToolMailbox(Base):
     otp_sender_filter = Column(String(255))
     otp_subject_pattern = Column(String(255))
     otp_regex = Column(String(255), nullable=False, default=r"\b(\d{4,8})\b")
+    auth_link_pattern = Column(String(255))
+    auth_link_host = Column(String(255))
     created_by = Column(Integer, ForeignKey("users.id"))
     updated_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow, index=True)

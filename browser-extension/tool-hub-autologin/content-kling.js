@@ -17,6 +17,7 @@ const KEEP_ALIVE_MS          = 1500;   // was 3000
 const MUTATION_DEBOUNCE_MS   = 200;    // was 250
 const SUBMIT_LOCK_MS         = 12000;
 const POST_LOGIN_GRACE_MS    = 7000;   // was 10000
+const GOOGLE_POPUP_GRACE_MS  = 30000;
 const EMAIL_STEP_GRACE_MS    = 1800;   // was 3500
 const MIN_RUN_GAP_MS         = 150;    // was 200
 const LAUNCH_RETRY_DELAY_MS  = 400;
@@ -127,6 +128,14 @@ const CTX = {
   sessionClearDone     : false,  // FIX: guard against repeated session clearing
   blockedRevealControl : null,
 };
+
+function normalizeLoginMethod(value) {
+  return `${value || ''}`.trim().toLowerCase() || 'email_password';
+}
+
+function isGoogleCredential() {
+  return normalizeLoginMethod(CTX.credential?.loginMethod) === 'google';
+}
 
 // ── Status badge ──────────────────────────────────────────────
 function ensureBadge() {
@@ -435,8 +444,6 @@ function suppressPasswordReveal(passInput) {
   if (!passInput) return;
 
   enforcePasswordMask(passInput);
-  ensurePasswordRevealGuards();
-
   const candidates = findPasswordRevealCandidates(passInput);
   candidates.forEach((candidate) => disablePasswordRevealControl(candidate));
   CTX.blockedRevealControl = candidates[0] || null;
@@ -511,6 +518,13 @@ function findLandingCandidates() {
 
 function findEmailChooserButton() {
   return findLandingCandidates().find((el) => isEmailAuthAction(el)) || null;
+}
+
+function findGoogleAuthButton() {
+  return findLandingCandidates().find((el) => {
+    const text = buttonDescriptorText(el) || buttonText(el);
+    return text.includes('google') && !text.includes('apple') && !text.includes('facebook');
+  }) || null;
 }
 
 // FIX: No longer matches generic /app hrefs — those are nav links, not login buttons
@@ -705,6 +719,7 @@ function stop(message, phase = P.DONE) {
   if (CTX.observer) { CTX.observer.disconnect();  CTX.observer = null; } // FIX: stops mutation drain
   clearTicket();
   clearCheckpoint();
+  msg({ type: 'TOOL_HUB_REVOKE_ACTIVE_LAUNCH', toolSlug: TOOL_SLUG }).catch(() => {});
   setStatus(message);
 }
 
@@ -732,6 +747,15 @@ function clickLandingAction(button, nextPhase, delayAfterClick) {
   CTX.lastLandingActionKey   = actionKey;
   CTX.landingActionLockUntil = now + delayAfterClick;
   if (!CTX.stopped) safeClick(button);  // immediate — no setTimeout wrapper
+  if (nextPhase === P.WAIT_REDIRECT) {
+    CTX.submitAt = now;
+    CTX.submitKind = isGoogleCredential() ? 'google' : '';
+    CTX.submitLockUntil = now + SUBMIT_LOCK_MS;
+    writeCheckpoint(P.WAIT_REDIRECT, {
+      submitAt: now,
+      submitKind: CTX.submitKind || 'unknown',
+    });
+  }
   CTX.phase = nextPhase;
   wake(delayAfterClick);
   return true;
@@ -830,7 +854,7 @@ async function tick() {
       setStatus('Fetching credentials…');
       try {
         const credential = await loadCredential();
-        if (!credential?.loginIdentifier || !credential?.password) {
+        if (!credential?.loginIdentifier || (!credential?.password && !isGoogleCredential())) {
           setStatus('Credential missing. Check the dashboard.');
           wake(3000);
           return;
@@ -857,6 +881,15 @@ async function tick() {
 
     // ── OPEN_LANDING ──────────────────────────────────────────
     case P.OPEN_LANDING: {
+      if (isGoogleCredential()) {
+        const googleButton = findGoogleAuthButton();
+        if (googleButton) {
+          setStatus('Opening Google sign-in…');
+          clickLandingAction(googleButton, P.WAIT_REDIRECT, EMAIL_CHOOSER_WAIT_MS);
+          return;
+        }
+      }
+
       if (hasLoginForm()) {
         CTX.phase = P.FILL;
         wake(0);
@@ -893,6 +926,15 @@ async function tick() {
       const emailInput = findInput(EMAIL_SELS);
       const passInput  = findInput(PASS_SELS);
 
+      if (isGoogleCredential()) {
+        const googleButton = findGoogleAuthButton();
+        if (googleButton) {
+          setStatus('Continuing with Google…');
+          clickLandingAction(googleButton, P.WAIT_REDIRECT, EMAIL_CHOOSER_WAIT_MS);
+          return;
+        }
+      }
+
       suppressPasswordReveal(passInput);
 
       if (!emailInput && !passInput) {
@@ -901,7 +943,7 @@ async function tick() {
         return;
       }
 
-      if (!CTX.credential?.loginIdentifier || !CTX.credential?.password) {
+      if (!CTX.credential?.loginIdentifier || (!CTX.credential?.password && !isGoogleCredential())) {
         CTX.phase = P.LOAD_CRED;
         wake(0);
         return;
@@ -987,6 +1029,15 @@ async function tick() {
         }
 
         return;
+      }
+
+      if (isGoogleCredential() && location.pathname.startsWith('/app') && findGoogleAuthButton()) {
+        if (elapsed < GOOGLE_POPUP_GRACE_MS) {
+          const remaining = Math.max(1, Math.round((GOOGLE_POPUP_GRACE_MS - elapsed) / 1000));
+          setStatus(`Waiting for Google sign-in window… (${remaining}s)`);
+          wake(800);
+          return;
+        }
       }
 
       // FIX: chooser check guarded with elapsed > 1500ms to avoid
