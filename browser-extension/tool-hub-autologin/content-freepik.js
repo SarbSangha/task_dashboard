@@ -62,8 +62,17 @@ const STATE = {
   passwordSavingRestoreTimer: null,
   passwordRevealGuardAttached: false,
   switchingToLoginUntil: 0,
+  lastBackNavigationAt: 0,
   stopped: false,
 };
+
+function normalizeLoginMethod(value) {
+  return `${value || ''}`.trim().toLowerCase() || 'email_password';
+}
+
+function isGoogleCredential() {
+  return normalizeLoginMethod(STATE.credential?.loginMethod) === 'google';
+}
 
 function ensureStatusBadge() {
   const existing = document.getElementById('rmw-autologin-status');
@@ -373,6 +382,116 @@ function collectUniqueElements(elements) {
   return Array.from(new Set(elements.filter(Boolean)));
 }
 
+function collectBroadActionCandidates() {
+  const textNodes = Array.from(document.querySelectorAll('button, a[href], [role="button"], [tabindex], div, span'))
+    .map((element) => findClickableAncestor(element));
+  return collectUniqueElements([
+    ...collectActionCandidates(),
+    ...textNodes,
+  ]).filter((element) => isVisible(element) && !isDisabled(element));
+}
+
+function collectGoogleTextCandidates() {
+  return collectUniqueElements(
+    Array.from(document.querySelectorAll('button, a[href], [role="button"], [tabindex], div, span, p, strong'))
+      .map((element) => {
+        const text = actionText(element);
+        const hints = controlHintText(element);
+        if (
+          text.includes('google')
+          || text.includes('gmail')
+          || hints.includes('google')
+          || hints.includes('gmail')
+        ) {
+          return findClickableAncestor(element);
+        }
+        return null;
+      })
+  ).filter((element) => isVisible(element) && !isDisabled(element));
+}
+
+function collectElementChain(element, maxDepth = 8) {
+  const chain = [];
+  let current = element || null;
+  let depth = 0;
+  while (current && current !== document.body && depth < maxDepth) {
+    chain.push(current);
+    current = current.parentElement;
+    depth += 1;
+  }
+  return chain;
+}
+
+function extractCandidateUrlsFromText(value) {
+  const raw = `${value || ''}`;
+  const matches = [
+    ...raw.matchAll(/https?:\/\/[^\s"'`]+/gi),
+  ];
+  return matches.map((match) => `${match[0] || ''}`.trim()).filter(Boolean);
+}
+
+function resolveAbsoluteUrl(value) {
+  const raw = `${value || ''}`.trim();
+  if (!raw || raw.startsWith('#') || raw.toLowerCase().startsWith('javascript:')) {
+    return '';
+  }
+  try {
+    return new URL(raw, window.location.href).href;
+  } catch {
+    return '';
+  }
+}
+
+function looksLikeGoogleLoginUrl(value) {
+  const absoluteUrl = resolveAbsoluteUrl(value);
+  if (!absoluteUrl) return false;
+  try {
+    const url = new URL(absoluteUrl);
+    const host = normalizeText(url.hostname);
+    const path = normalizeText(url.pathname);
+    const query = normalizeText(url.search);
+    if (host.includes('accounts.google.com')) {
+      return true;
+    }
+    return (
+      (host.includes('magnific.com') || host.includes('freepik.com'))
+      && (
+        (path.includes('oauth') && query.includes('google'))
+        || (path.includes('auth') && query.includes('google'))
+        || (path.includes('social') && query.includes('google'))
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function resolveGoogleLoginUrl(element) {
+  const candidates = [];
+  collectElementChain(element).forEach((node) => {
+    if (!node?.getAttributeNames) return;
+    node.getAttributeNames().forEach((attributeName) => {
+      const attributeValue = `${node.getAttribute(attributeName) || ''}`.trim();
+      if (!attributeValue) return;
+      candidates.push(attributeValue);
+      extractCandidateUrlsFromText(attributeValue).forEach((value) => candidates.push(value));
+    });
+    ['href', 'action', 'formAction'].forEach((propertyName) => {
+      const propertyValue = `${node[propertyName] || ''}`.trim();
+      if (!propertyValue) return;
+      candidates.push(propertyValue);
+      extractCandidateUrlsFromText(propertyValue).forEach((value) => candidates.push(value));
+    });
+  });
+
+  for (const candidate of candidates) {
+    if (!looksLikeGoogleLoginUrl(candidate)) continue;
+    const absoluteUrl = resolveAbsoluteUrl(candidate);
+    if (absoluteUrl) return absoluteUrl;
+  }
+  return '';
+}
+
 function isActionLikeElement(element) {
   if (!element || !isVisible(element) || isDisabled(element)) return false;
   if (element.matches?.(ACTION_SELECTORS)) return true;
@@ -429,6 +548,44 @@ function findEmailChooserAction() {
   }) || null;
 }
 
+function findGoogleLoginAction() {
+  const broadMatch = collectBroadActionCandidates().find((element) => {
+    const text = actionText(element);
+    const href = normalizeText(element.getAttribute?.('href') || '');
+    const hints = controlHintText(element);
+    return text.includes('continue with google')
+      || text.includes('continue with gmail')
+      || text.includes('continue with google account')
+      || text.includes('continue with gmail account')
+      || text.includes('sign in with google')
+      || text.includes('sign in with gmail')
+      || text.includes('login with google')
+      || text.includes('login with gmail')
+      || text.includes('continue using google')
+      || text.includes('continue using gmail')
+      || text === 'google'
+      || text === 'gmail'
+      || href.includes('accounts.google.com')
+      || (href.includes('oauth') && href.includes('google'))
+      || (hints.includes('google') && (hints.includes('oauth') || hints.includes('social')))
+      || (hints.includes('gmail') && (hints.includes('oauth') || hints.includes('social')))
+      || (hints.includes('google') && hints.includes('continue'))
+      || (hints.includes('gmail') && hints.includes('continue'));
+  });
+  if (broadMatch) return broadMatch;
+
+  return collectGoogleTextCandidates().find((element) => {
+    const text = actionText(element);
+    const href = normalizeText(element.getAttribute?.('href') || '');
+    const hints = controlHintText(element);
+    return text.includes('google')
+      || text.includes('gmail')
+      || href.includes('google')
+      || hints.includes('google')
+      || hints.includes('gmail');
+  }) || null;
+}
+
 function findGenericLoginAction() {
   return collectActionCandidates().find((element) => {
     const text = actionText(element);
@@ -442,6 +599,20 @@ function findGenericLoginAction() {
     return textLooksLikeLogin
       || href.includes('/log-in')
       || href.includes('/login');
+  }) || null;
+}
+
+function findBackAction() {
+  return collectActionCandidates().find((element) => {
+    const text = actionText(element);
+    const href = normalizeText(element.getAttribute?.('href') || '');
+    return text === 'back'
+      || text.includes(' back')
+      || text.startsWith('back ')
+      || text.includes('go back')
+      || href === '/'
+      || href.endsWith('/log-in')
+      || href.endsWith('/login');
   }) || null;
 }
 
@@ -856,6 +1027,23 @@ function clickElement(element) {
     element.focus({ preventScroll: true });
   } catch {}
   try {
+    const href = `${element.getAttribute?.('href') || element.href || ''}`.trim();
+    const canDirectNavigate = href
+      && !href.startsWith('#')
+      && !href.toLowerCase().startsWith('javascript:');
+    if (typeof PointerEvent === 'function') {
+      ['pointerdown', 'pointerup'].forEach((eventName) => {
+        try {
+          element.dispatchEvent(new PointerEvent(eventName, {
+            bubbles: true,
+            cancelable: true,
+            pointerType: 'mouse',
+            isPrimary: true,
+            view: window,
+          }));
+        } catch {}
+      });
+    }
     ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((eventName) => {
       try {
         element.dispatchEvent(new MouseEvent(eventName, {
@@ -868,10 +1056,57 @@ function clickElement(element) {
     if (typeof element.click === 'function') {
       element.click();
     }
+    if (canDirectNavigate && isVisible(element)) {
+      window.setTimeout(() => {
+        if (document.contains(element)) {
+          try { window.location.assign(href); } catch {}
+        }
+      }, 250);
+    }
     return true;
   } catch {
     return false;
   }
+}
+
+function clickElementAtCenter(element) {
+  if (!element || !isVisible(element) || isDisabled(element)) return false;
+  const rect = element.getBoundingClientRect();
+  if (!rect.width || !rect.height) return false;
+
+  const centerX = rect.left + (rect.width / 2);
+  const centerY = rect.top + (rect.height / 2);
+  const topElement = document.elementFromPoint(centerX, centerY);
+  const target = findClickableAncestor(topElement) || findClickableAncestor(element) || element;
+  return clickElement(target);
+}
+
+function clickGoogleLoginAction(element) {
+  if (!element) return false;
+
+  const targets = collectUniqueElements([
+    element,
+    element.closest?.('button, a[href], [role="button"], form'),
+    ...collectElementChain(element),
+  ]).filter(Boolean);
+
+  let clicked = false;
+  for (const target of targets) {
+    if (clickElementAtCenter(target) || clickElement(target)) {
+      clicked = true;
+      break;
+    }
+  }
+
+  const url = resolveGoogleLoginUrl(element);
+  if (url) {
+    window.setTimeout(() => {
+      try { window.location.assign(url); } catch {}
+    }, clicked ? 250 : 0);
+    return true;
+  }
+
+  return clicked;
 }
 
 function submitLogin(emailInput, passwordInput, submitButton) {
@@ -918,7 +1153,7 @@ function requestCredential() {
 
       clearStoredLaunchTicket();
       STATE.credential = response.data?.credential || null;
-      if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
+      if (!STATE.credential?.loginIdentifier || (!STATE.credential?.password && !isGoogleCredential())) {
         setStatus('Credential missing');
         return;
       }
@@ -1027,6 +1262,8 @@ function attemptFlow() {
   const emailChooserVisible = !hasCredentialInputs && isEmailChooserSurface();
   const emailChooserAction = !hasCredentialInputs ? findEmailChooserAction() : null;
   const genericLoginAction = !hasCredentialInputs && !emailChooserVisible ? findGenericLoginAction() : null;
+  const googleLoginAction = findGoogleLoginAction();
+  const backAction = findBackAction();
 
   if (loginFormVisible) {
     STATE.switchingToLoginUntil = 0;
@@ -1042,11 +1279,25 @@ function attemptFlow() {
   }
 
   if (!hasCredentialInputs) {
+    if (isGoogleCredential() && googleLoginAction) {
+      if (Date.now() - STATE.lastLoginOpenAt < LOGIN_OPEN_COOLDOWN_MS) {
+        setStatus('Waiting for Google sign-in');
+        scheduleAttempt(400);
+        return;
+      }
+
+      STATE.lastLoginOpenAt = Date.now();
+      setStatus('Opening Google sign-in');
+      clickGoogleLoginAction(googleLoginAction);
+      scheduleAttempt(700);
+      return;
+    }
+
     const loginAction = emailChooserVisible
-      ? (emailChooserAction || findLoginOpenAction())
+      ? (isGoogleCredential() ? null : (emailChooserAction || findLoginOpenAction()))
       : (genericLoginAction || findLoginOpenAction());
     if (!loginAction) {
-      setStatus('Waiting for Magnific login form');
+      setStatus(isGoogleCredential() ? 'Waiting for Google sign-in option' : 'Waiting for Magnific login form');
       return;
     }
 
@@ -1071,8 +1322,42 @@ function attemptFlow() {
     return;
   }
 
-  if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
+  if (!STATE.credential?.loginIdentifier || (!STATE.credential?.password && !isGoogleCredential())) {
     setStatus('Waiting for credential');
+    return;
+  }
+
+  if (isGoogleCredential()) {
+    if (hasCredentialInputs && !googleLoginAction && backAction) {
+      if (Date.now() - STATE.lastBackNavigationAt < LOGIN_OPEN_COOLDOWN_MS) {
+        setStatus('Waiting to return to sign-in options');
+        scheduleAttempt(400);
+        return;
+      }
+
+      STATE.lastBackNavigationAt = Date.now();
+      setStatus('Returning to sign-in options');
+      clickElement(backAction);
+      scheduleAttempt(700);
+      return;
+    }
+
+    if (googleLoginAction) {
+      if (Date.now() - STATE.lastLoginOpenAt < LOGIN_OPEN_COOLDOWN_MS) {
+        setStatus('Waiting for Google sign-in');
+        scheduleAttempt(400);
+        return;
+      }
+
+      STATE.lastLoginOpenAt = Date.now();
+      setStatus('Opening Google sign-in');
+      clickGoogleLoginAction(googleLoginAction);
+      scheduleAttempt(700);
+      return;
+    }
+
+    setStatus('Waiting for Google sign-in option');
+    scheduleAttempt(500);
     return;
   }
 

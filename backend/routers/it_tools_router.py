@@ -45,6 +45,7 @@ SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROU
 SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "claude", "envato", "freepik", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
 PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
+    "freepik": {"email_password", "google"},
     "kling": {"email_password", "google"},
     "kling-ai": {"email_password", "google"},
     "klingai": {"email_password", "google"},
@@ -1846,8 +1847,8 @@ async def upsert_credential(
                 detail=(
                     "New shared Claude credentials require the sign-in email address."
                     if canonical_tool_slug == "claude"
-                    else "New shared Kling Google credentials require the Google email address."
-                    if canonical_tool_slug in {"kling", "kling-ai", "klingai"} and login_method == "google"
+                    else "New shared Google-login credentials require the Google email address."
+                    if canonical_tool_slug in {"freepik", "kling", "kling-ai", "klingai"} and login_method == "google"
                     else "New shared company credentials require both username/email and password"
                 ),
             )

@@ -302,6 +302,62 @@ function fillField(input, value) {
   input.dispatchEvent(new Event('blur', { bubbles: true }));
 }
 
+function setInputValueForTyping(input, nextValue) {
+  const next = `${nextValue || ''}`;
+  const prev = `${input.value || ''}`;
+  const setter = getValueSetter(input);
+  if (setter) setter.call(input, next); else input.value = next;
+  input.setAttribute('value', next);
+  if (input._valueTracker?.setValue) input._valueTracker.setValue(prev);
+}
+
+async function typeFieldLikeUser(input, value, { perCharDelayMs = 12 } = {}) {
+  const next = `${value || ''}`;
+  focusElement(input);
+  setInputValueForTyping(input, '');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  for (let i = 0; i < next.length; i += 1) {
+    const ch = next[i];
+    const partial = next.slice(0, i + 1);
+    try {
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key: ch,
+        code: ch.length === 1 ? `Key${ch.toUpperCase()}` : '',
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+    try {
+      input.dispatchEvent(new InputEvent('beforeinput', {
+        data: ch,
+        inputType: 'insertText',
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+    setInputValueForTyping(input, partial);
+    try {
+      input.dispatchEvent(new InputEvent('input', {
+        data: ch,
+        inputType: 'insertText',
+        bubbles: true,
+      }));
+    } catch {
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    try {
+      input.dispatchEvent(new KeyboardEvent('keyup', {
+        key: ch,
+        code: ch.length === 1 ? `Key${ch.toUpperCase()}` : '',
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+    if (perCharDelayMs > 0) await sleep(perCharDelayMs);
+  }
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 function sleep(ms) { return new Promise((r) => setTimeout(r, Math.max(0, ms))); }
 
 function focusElement(el) {
@@ -411,6 +467,9 @@ function pressEnter(input) {
 function onGoogleDomain()  { return location.hostname === 'accounts.google.com'; }
 function onChatGPTDomain() { return location.hostname.includes('chat.openai.com') || location.hostname.includes('chatgpt.com'); }
 function onAuthDomain()    { return location.hostname.includes('auth.openai.com'); }
+function isOpenAIPasswordPage() {
+  return onAuthDomain() && location.pathname.toLowerCase().includes('/log-in/password');
+}
 function isGoogleIdentifierUrl() {
   return onGoogleDomain() && location.pathname.includes('/signin/identifier');
 }
@@ -418,8 +477,14 @@ function isGooglePasswordUrl() {
   return onGoogleDomain() && (location.pathname.includes('/signin/challenge') || location.pathname.includes('/signin/v2/challenge'));
 }
 function isEmailVerificationPage() {
+  const pageText = (document.body?.innerText || '').toLowerCase();
   return location.pathname.toLowerCase().includes('email-verification')
-    || (document.body?.innerText || '').toLowerCase().includes('route error');
+    || (
+      pageText.includes('enter the verification code')
+      || pageText.includes('temporary chatgpt login code')
+      || pageText.includes('check your inbox')
+      || pageText.includes('resend email')
+    );
 }
 
 function findEmailVerificationCodeInput() {
@@ -1267,16 +1332,18 @@ async function tick() {
         setStatus(`Credential error: ${err.message} (${CTX.credRetries}/${MAX_CRED_RETRIES})`);
         wake(2000); return;
       }
-      CTX.phase = onGoogleDomain() ? PHASE.GOOGLE_CHOOSER : PHASE.CHATGPT_LANDING;
+      CTX.phase = onGoogleDomain()
+        ? PHASE.GOOGLE_CHOOSER
+        : ((isOpenAIPasswordPage() || findPasswordInputInModal()) ? PHASE.CHATGPT_PASSWORD : PHASE.CHATGPT_LANDING);
       wake(0);
       break;
     }
 
     // ── CHATGPT_LANDING ──────────────────────────────────────
     case PHASE.CHATGPT_LANDING: {
-      if (isEmailVerificationPage()) { CTX.phase = PHASE.CHATGPT_EMAIL_OTP; wake(0); return; }
+      if (isOpenAIPasswordPage() || findPasswordInputInModal()){ CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
       if (findEmailInputInModal())   { CTX.phase = PHASE.CHATGPT_EMAIL;    wake(0); return; }
-      if (findPasswordInputInModal()){ CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
+      if (findEmailVerificationCodeInput() || isEmailVerificationPage()) { CTX.phase = PHASE.CHATGPT_EMAIL_OTP; wake(0); return; }
       if (findLoginDialog() || findThirdPartyButtons().length > 0) { CTX.phase = PHASE.PREFER_PROVIDER; wake(0); return; }
       if (CTX.landingClicks < 3) {
         const btn = findLandingLoginBtn();
@@ -1293,7 +1360,9 @@ async function tick() {
 
     // ── CHATGPT_EMAIL_OTP ────────────────────────────────────
     case PHASE.CHATGPT_EMAIL_OTP: {
-      if (!isEmailVerificationPage()) { CTX.phase = PHASE.CHATGPT_LANDING; wake(0); return; }
+      if (isOpenAIPasswordPage() || findPasswordInputInModal()) { CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
+      if (findEmailInputInModal())    { CTX.phase = PHASE.CHATGPT_EMAIL;    wake(0); return; }
+      if (!findEmailVerificationCodeInput() && !isEmailVerificationPage()) { CTX.phase = PHASE.CHATGPT_LANDING; wake(0); return; }
       await handleEmailVerificationStep();
       break;
     }
@@ -1301,8 +1370,8 @@ async function tick() {
     // ── PREFER_PROVIDER ──────────────────────────────────────
     case PHASE.PREFER_PROVIDER: {
       const cred = CTX.credential;
+      if (isOpenAIPasswordPage() || findPasswordInputInModal()) { CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
       if (findEmailInputInModal())    { CTX.phase = PHASE.CHATGPT_EMAIL;    wake(0); return; }
-      if (findPasswordInputInModal()) { CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
       if (Date.now() < CTX.submitLockUntil) { setStatus('Provider clicked — waiting for OAuth redirect...'); wake(600); return; }
       const providerBtn = getPreferredProviderBtn(cred);
       if (providerBtn) {
@@ -1328,7 +1397,7 @@ async function tick() {
       const cred = CTX.credential;
       const emailInput = findEmailInputInModal();
       if (!emailInput) {
-        if (findPasswordInputInModal()) { CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
+        if (isOpenAIPasswordPage() || findPasswordInputInModal()) { CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
         if (!findLoginDialog())         { CTX.phase = PHASE.CHATGPT_LANDING;  wake(300); return; }
         setStatus('Waiting for email field...'); wake(300); return;
       }
@@ -1362,8 +1431,16 @@ async function tick() {
       passInput.focus();
       await sleep(100);
       fillField(passInput, cred.password);
+      if (`${passInput.value || ''}` !== `${cred.password || ''}`) {
+        await typeFieldLikeUser(passInput, cred.password, { perCharDelayMs: 10 });
+      }
       suppressPasswordFieldExposure(passInput);
       await sleep(FIELD_FILL_DELAY_MS);
+      if (`${passInput.value || ''}` !== `${cred.password || ''}`) {
+        setStatus('Password fill did not stick yet — retrying...');
+        wake(250);
+        return;
+      }
       saveFlowHint(cred, LOGIN_FLOW.OPENAI_PASSWORD, 'password_field');
       const btn = findContinueBtn(passInput) || findSubmitBtn('password', passInput);
       if (!btn)            { setStatus('Password filled — Sign In not found yet...'); wake(300); return; }
