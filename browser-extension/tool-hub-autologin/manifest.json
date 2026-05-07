@@ -28,6 +28,8 @@
     "https://market.envato.com/*",
     "https://freepik.com/*",
     "https://*.freepik.com/*",
+    "https://genspark.ai/*",
+    "https://*.genspark.ai/*",
     "https://magnific.com/*",
     "https://*.magnific.com/*",
     "https://grammarly.com/*",
@@ -108,6 +110,14 @@
         "https://*.magnific.com/*"
       ],
       "js": ["content-freepik.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://genspark.ai/*",
+        "https://*.genspark.ai/*"
+      ],
+      "js": ["content-genspark.js"],
       "run_at": "document_idle"
     },
     {

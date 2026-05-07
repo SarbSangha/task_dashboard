@@ -36,16 +36,18 @@ HOSTNAME_EQUIVALENT_GROUPS = (
     {"claude.ai"},
     {"envato.com", "elements.envato.com", "market.envato.com"},
     {"freepik.com"},
+    {"genspark.ai", "www.genspark.ai", "login.genspark.ai"},
     {"grammarly.com"},
     {"higgsfield.ai", "app.higgsfield.ai", "beta.higgsfield.ai"},
     {"heygen.com", "www.heygen.com", "auth.heygen.com", "app.heygen.com"},
     {"kling.ai", "klingai.com", "app.klingai.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
-SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "claude", "envato", "freepik", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "claude", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
 PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
     "freepik": {"email_password", "google"},
+    "genspark": {"email_password", "google"},
     "kling": {"email_password", "google"},
     "kling-ai": {"email_password", "google"},
     "klingai": {"email_password", "google"},
@@ -1848,7 +1850,7 @@ async def upsert_credential(
                     "New shared Claude credentials require the sign-in email address."
                     if canonical_tool_slug == "claude"
                     else "New shared Google-login credentials require the Google email address."
-                    if canonical_tool_slug in {"freepik", "kling", "kling-ai", "klingai"} and login_method == "google"
+                    if canonical_tool_slug in {"freepik", "genspark", "kling", "kling-ai", "klingai"} and login_method == "google"
                     else "New shared company credentials require both username/email and password"
                 ),
             )

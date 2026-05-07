@@ -662,6 +662,13 @@ function inferToolSlugFromGooglePage() {
     ))) {
       return 'freepik';
     }
+
+    if (values.some((value) => (
+      value.includes('genspark.ai')
+      || value.includes('login.genspark.ai')
+    ))) {
+      return 'genspark';
+    }
   } catch {}
 
   const currentPageText = pageText();
@@ -696,12 +703,24 @@ function inferToolSlugFromGooglePage() {
     return 'freepik';
   }
 
+  if (
+    currentPageText.includes('continue to genspark.ai')
+    || currentPageText.includes('continue to genspark')
+    || currentPageText.includes('to continue to genspark.ai')
+    || currentPageText.includes('to continue to genspark')
+  ) {
+    return 'genspark';
+  }
+
   return '';
 }
 
 function supportsPasswordOptionalGoogleCredential(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
-  return normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai';
+  return normalizedToolSlug === 'genspark'
+    || normalizedToolSlug === 'kling'
+    || normalizedToolSlug === 'kling-ai'
+    || normalizedToolSlug === 'klingai';
 }
 
 function isGoogleIdentifierUrl() {
@@ -1205,6 +1224,7 @@ function findGoogleAccountChooserAction(credential) {
 function shouldPreferGoogleAddAccount(toolSlug = STATE.toolSlug) {
   const normalized = normalizeToolSlug(toolSlug);
   return normalized === 'freepik'
+    || normalized === 'genspark'
     || normalized === 'kling'
     || normalized === 'kling-ai'
     || normalized === 'klingai';

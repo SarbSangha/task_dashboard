@@ -116,6 +116,7 @@ const toolSupportsPasswordOptionalCredential = (value) => {
 const toolSupportsCredentialLoginMethodSelection = (value) => {
   const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug || value?.name);
   return normalizedToolSlug === 'freepik'
+    || normalizedToolSlug === 'genspark'
     || normalizedToolSlug === 'kling-ai'
     || normalizedToolSlug === 'klingai'
     || normalizedToolSlug === 'kling';
@@ -1616,6 +1617,8 @@ export default function Tools() {
                       ? 'Claude uses email-link sign-in. Save only the email here, then configure the Verification Mailbox below so the extension can fetch the secure sign-in link from Gmail.'
                       : activeCredentialToolSlug === 'freepik'
                         ? 'This Freepik credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                        : activeCredentialToolSlug === 'genspark'
+                          ? 'This Genspark credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                         : 'This Kling credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'}
                   </div>
                 )}

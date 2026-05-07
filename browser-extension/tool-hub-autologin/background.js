@@ -9,6 +9,7 @@ const TOOL_SESSION_DOMAINS = {
   envato: ['envato.com', 'elements.envato.com', 'market.envato.com'],
   freepik: ['freepik.com', 'www.freepik.com', 'magnific.com', 'www.magnific.com'],
   flow: ['labs.google'],
+  genspark: ['genspark.ai', 'www.genspark.ai', 'login.genspark.ai'],
   grammarly: ['grammarly.com', 'www.grammarly.com', 'app.grammarly.com'],
   higgsfield: ['higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'],
   heygen: ['heygen.com', 'auth.heygen.com', 'app.heygen.com'],
@@ -43,6 +44,12 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'www.freepik.com',
     'magnific.com',
     'www.magnific.com',
+    'accounts.google.com',
+  ],
+  genspark: [
+    'genspark.ai',
+    'www.genspark.ai',
+    'login.genspark.ai',
     'accounts.google.com',
   ],
   grammarly: [
