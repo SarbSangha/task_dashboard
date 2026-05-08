@@ -107,6 +107,7 @@ const ACTION_SELECTORS = [
 function normalizeToolSlug(value) {
   const normalized = `${value || ''}`.trim().toLowerCase();
   if (normalized === 'chat-gpt') return 'chatgpt';
+  if (['enhencor', 'enhencer', 'enhancer'].includes(normalized)) return 'enhancor';
   return normalized;
 }
 
@@ -181,7 +182,8 @@ function isKlingGoogleFlow(toolSlug = STATE.toolSlug) {
 
 function shouldProtectGooglePasswordReveal(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
-  return normalizedToolSlug === 'freepik'
+  return normalizedToolSlug === 'enhancor'
+    || normalizedToolSlug === 'freepik'
     || normalizedToolSlug === 'kling'
     || normalizedToolSlug === 'kling-ai'
     || normalizedToolSlug === 'klingai';
@@ -193,13 +195,24 @@ function isFlowTool() {
 
 function supportsGoogleAuthenticatorAutomation(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
-  return normalizedToolSlug === 'flow' || normalizedToolSlug === 'chatgpt';
+  return normalizedToolSlug === 'flow'
+    || normalizedToolSlug === 'chatgpt'
+    || normalizedToolSlug === 'enhancor'
+    || normalizedToolSlug === 'freepik'
+    || normalizedToolSlug === 'genspark'
+    || normalizedToolSlug === 'kling'
+    || normalizedToolSlug === 'kling-ai'
+    || normalizedToolSlug === 'klingai';
 }
 
 function getToolDisplayName(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
   if (normalizedToolSlug === 'flow') return 'Flow';
   if (normalizedToolSlug === 'chatgpt') return 'ChatGPT';
+  if (normalizedToolSlug === 'enhancor') return 'Enhancor';
+  if (normalizedToolSlug === 'freepik') return 'Freepik';
+  if (normalizedToolSlug === 'genspark') return 'Genspark';
+  if (normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai') return 'Kling';
   return 'Google';
 }
 
@@ -562,18 +575,27 @@ function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
 }
 
-function readStoredFlowExtensionTicket() {
+function getGoogleExtensionTicketStorageKey(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  if (normalizedToolSlug === 'flow') {
+    return FLOW_EXTENSION_TICKET_STORAGE_KEY;
+  }
+  return `rmw_google_extension_ticket_${normalizedToolSlug || 'default'}`;
+}
+
+function readStoredGoogleExtensionTicket(toolSlug = STATE.toolSlug) {
   try {
-    return `${window.sessionStorage.getItem(FLOW_EXTENSION_TICKET_STORAGE_KEY) || ''}`.trim();
+    return `${window.sessionStorage.getItem(getGoogleExtensionTicketStorageKey(toolSlug)) || ''}`.trim();
   } catch {
     return '';
   }
 }
 
-function storeFlowExtensionTicket(ticket) {
+function storeGoogleExtensionTicket(ticket, toolSlug = STATE.toolSlug) {
   try {
-    if (ticket) window.sessionStorage.setItem(FLOW_EXTENSION_TICKET_STORAGE_KEY, ticket);
-    else window.sessionStorage.removeItem(FLOW_EXTENSION_TICKET_STORAGE_KEY);
+    const storageKey = getGoogleExtensionTicketStorageKey(toolSlug);
+    if (ticket) window.sessionStorage.setItem(storageKey, ticket);
+    else window.sessionStorage.removeItem(storageKey);
   } catch {}
 }
 
@@ -593,13 +615,13 @@ function extractExtensionTicketFromValue(value) {
   }
 }
 
-function captureFlowExtensionTicket() {
+function captureGoogleExtensionTicket(toolSlug = STATE.toolSlug) {
   try {
     const url = new URL(window.location.href);
     const directTicket = `${url.searchParams.get('rmw_extension_ticket') || ''}`.trim()
       || `${new URLSearchParams((url.hash || '').replace(/^#/, '')).get('rmw_extension_ticket') || ''}`.trim();
     if (directTicket) {
-      storeFlowExtensionTicket(directTicket);
+      storeGoogleExtensionTicket(directTicket, toolSlug);
       return directTicket;
     }
 
@@ -612,13 +634,17 @@ function captureFlowExtensionTicket() {
     for (const value of nestedValues) {
       const nestedTicket = extractExtensionTicketFromValue(value);
       if (nestedTicket) {
-        storeFlowExtensionTicket(nestedTicket);
+        storeGoogleExtensionTicket(nestedTicket, toolSlug);
         return nestedTicket;
       }
     }
   } catch {}
 
-  return readStoredFlowExtensionTicket();
+  return readStoredGoogleExtensionTicket(toolSlug);
+}
+
+function captureFlowExtensionTicket() {
+  return captureGoogleExtensionTicket('flow');
 }
 
 function inferToolSlugFromGooglePage() {
@@ -644,6 +670,13 @@ function inferToolSlugFromGooglePage() {
       || value.includes('openai.com')
     ))) {
       return 'chatgpt';
+    }
+
+    if (values.some((value) => (
+      value.includes('enhancor.ai')
+      || value.includes('app.enhancor.ai')
+    ))) {
+      return 'enhancor';
     }
 
     if (values.some((value) => (
@@ -678,6 +711,15 @@ function inferToolSlugFromGooglePage() {
     || currentPageText.includes('to continue to openai')
   ) {
     return 'chatgpt';
+  }
+
+  if (
+    currentPageText.includes('continue to enhancor.ai')
+    || currentPageText.includes('continue to enhancor')
+    || currentPageText.includes('to continue to enhancor.ai')
+    || currentPageText.includes('to continue to enhancor')
+  ) {
+    return 'enhancor';
   }
 
   if (
@@ -717,7 +759,8 @@ function inferToolSlugFromGooglePage() {
 
 function supportsPasswordOptionalGoogleCredential(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
-  return normalizedToolSlug === 'genspark'
+  return normalizedToolSlug === 'enhancor'
+    || normalizedToolSlug === 'genspark'
     || normalizedToolSlug === 'kling'
     || normalizedToolSlug === 'kling-ai'
     || normalizedToolSlug === 'klingai';
@@ -1223,7 +1266,8 @@ function findGoogleAccountChooserAction(credential) {
 
 function shouldPreferGoogleAddAccount(toolSlug = STATE.toolSlug) {
   const normalized = normalizeToolSlug(toolSlug);
-  return normalized === 'freepik'
+  return normalized === 'enhancor'
+    || normalized === 'freepik'
     || normalized === 'genspark'
     || normalized === 'kling'
     || normalized === 'kling-ai'
@@ -2062,7 +2106,7 @@ async function requestFlowTotp() {
   STATE.totpRequestAttempts += 1;
   setStatus(`Fetching ${getToolDisplayName()} authenticator code (attempt ${STATE.totpRequestAttempts})...`);
 
-  const extensionTicket = captureFlowExtensionTicket();
+  const extensionTicket = captureGoogleExtensionTicket(STATE.toolSlug);
   const response = await sendRuntimeMessage({
     type: 'TOOL_HUB_FETCH_TOTP',
     toolSlug: STATE.toolSlug,
@@ -2139,7 +2183,9 @@ async function submitFlowTotpStep(input) {
 
 async function loadLaunchState() {
   const inferredToolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
-  const extensionTicket = inferredToolSlug === 'flow' ? captureFlowExtensionTicket() : '';
+  const extensionTicket = supportsGoogleAuthenticatorAutomation(inferredToolSlug)
+    ? captureGoogleExtensionTicket(inferredToolSlug)
+    : '';
   const response = extensionTicket
     ? await sendRuntimeMessage({
         type: 'TOOL_HUB_ACTIVATE_LAUNCH',
@@ -2190,7 +2236,9 @@ function requestCredential() {
   STATE.requestAttempts += 1;
   setStatus(`Fetching credential (attempt ${STATE.requestAttempts})`);
   const requestContext = getContinuationRequestContext(toolSlug);
-  const extensionTicket = toolSlug === 'flow' ? captureFlowExtensionTicket() : '';
+  const extensionTicket = supportsGoogleAuthenticatorAutomation(toolSlug)
+    ? captureGoogleExtensionTicket(toolSlug)
+    : '';
 
   chrome.runtime.sendMessage(
     {
@@ -2645,8 +2693,10 @@ async function attemptFlowTotpStep() {
   }
 
   if (!STATE.totpValue) {
-    requestFlowTotp();
-    setStatus(STATE.totpFetching ? `Fetching ${getToolDisplayName()} authenticator code...` : `Waiting for ${getToolDisplayName()} authenticator code...`);
+    await requestFlowTotp();
+    if (!STATE.totpValue && STATE.totpFetching) {
+      setStatus(`Fetching ${getToolDisplayName()} authenticator code...`);
+    }
     return true;
   }
 

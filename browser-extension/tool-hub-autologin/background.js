@@ -6,6 +6,7 @@ const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
 const TOOL_SESSION_DOMAINS = {
   claude: ['claude.ai', 'www.claude.ai'],
+  enhancor: ['enhancor.ai', 'www.enhancor.ai', 'app.enhancor.ai'],
   envato: ['envato.com', 'elements.envato.com', 'market.envato.com'],
   freepik: ['freepik.com', 'www.freepik.com', 'magnific.com', 'www.magnific.com'],
   flow: ['labs.google'],
@@ -33,6 +34,12 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
   claude: [
     'claude.ai',
     'www.claude.ai',
+  ],
+  enhancor: [
+    'enhancor.ai',
+    'www.enhancor.ai',
+    'app.enhancor.ai',
+    'accounts.google.com',
   ],
   envato: [
     'envato.com',
@@ -154,6 +161,7 @@ function normalizeFlowLaunchUrl(value) {
 function normalizeToolSlug(value) {
   const normalized = `${value || ''}`.trim().toLowerCase();
   if (normalized === 'chat-gpt') return 'chatgpt';
+  if (['enhencor', 'enhencer', 'enhancer'].includes(normalized)) return 'enhancor';
   return normalized;
 }
 
@@ -301,12 +309,16 @@ function isRecentContinuationReuseAllowed(toolSlug, pageUrl, hostname) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug);
   const pageHost = hostnameFromPageUrl(pageUrl) || normalizeHostname(hostname);
 
-  if (['kling', 'kling-ai', 'klingai'].includes(normalizedToolSlug)) {
+  if (['enhancor', 'freepik'].includes(normalizedToolSlug)) {
+    return false;
+  }
+
+  if (['genspark', 'flow', 'kling', 'kling-ai', 'klingai'].includes(normalizedToolSlug)) {
     return pageHost === 'accounts.google.com';
   }
 
   if (normalizedToolSlug !== 'chatgpt') {
-    return true;
+    return false;
   }
 
   return [
@@ -758,7 +770,18 @@ async function setPasswordSavingSuppressedForTab(tabId, suppressed) {
   return { suppressed: false };
 }
 
-function getIsolatedLaunchUrl(toolSlug, launchUrl) {
+function getIncognitoWindowToolName(toolSlug, toolName = '') {
+  const explicitToolName = `${toolName || ''}`.trim();
+  if (explicitToolName) return explicitToolName;
+  const normalizedSlug = normalizeToolSlug(toolSlug);
+  if (normalizedSlug === 'chatgpt') return 'ChatGPT';
+  if (normalizedSlug === 'flow') return 'Flow';
+  if (normalizedSlug === 'enhancor') return 'Enhancor';
+  if (normalizedSlug === 'freepik') return 'Freepik';
+  return 'this tool';
+}
+
+function getIncognitoLaunchUrl(toolSlug, launchUrl) {
   const normalizedSlug = normalizeToolSlug(toolSlug);
   if (normalizedSlug === 'flow') {
     return normalizeFlowLaunchUrl(launchUrl);
@@ -766,17 +789,17 @@ function getIsolatedLaunchUrl(toolSlug, launchUrl) {
   return `${launchUrl || ''}`.trim();
 }
 
-async function openToolIsolatedWindow(toolSlug, launchUrl) {
+async function openToolIncognitoWindow(toolSlug, launchUrl, toolName = '') {
   const normalizedSlug = normalizeToolSlug(toolSlug);
-  const toolName = normalizedSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
-  const url = getIsolatedLaunchUrl(normalizedSlug, launchUrl);
+  const resolvedToolName = getIncognitoWindowToolName(normalizedSlug, toolName);
+  const url = getIncognitoLaunchUrl(normalizedSlug, launchUrl);
   if (!url) {
-    throw new Error(`${toolName} launch URL is missing.`);
+    throw new Error(`${resolvedToolName} launch URL is missing.`);
   }
 
   const incognitoAllowed = await chrome.extension.isAllowedIncognitoAccess();
   if (!incognitoAllowed) {
-    throw new Error(`Enable "Allow in Incognito" for this extension, then launch ${toolName} again.`);
+    throw new Error(`Enable "Allow in Incognito" for this extension, then launch ${resolvedToolName} again.`);
   }
 
   const createdWindow = await chrome.windows.create({
@@ -1325,13 +1348,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === 'TOOL_HUB_OPEN_FLOW_ISOLATED_WINDOW') {
-    if (!['flow', 'chatgpt'].includes(normalizeToolSlug(message.toolSlug))) {
-      sendResponse({ ok: false, error: 'Isolated window launch is only configured for Flow and ChatGPT.' });
+  if (message?.type === 'TOOL_HUB_OPEN_INCOGNITO_WINDOW' || message?.type === 'TOOL_HUB_OPEN_FLOW_ISOLATED_WINDOW') {
+    if (!normalizeToolSlug(message.toolSlug) || !`${message.launchUrl || ''}`.trim()) {
+      sendResponse({ ok: false, error: 'Incognito window launch details are incomplete.' });
       return true;
     }
 
-    openToolIsolatedWindow(message.toolSlug, message.launchUrl)
+    openToolIncognitoWindow(message.toolSlug, message.launchUrl, message.toolName)
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

@@ -87,6 +87,7 @@ const EMPTY_CREDENTIAL_FORM = {
 
 const EMPTY_MAILBOX_FORM = {
   toolId: '',
+  mailbox_id: '',
   email_address: '',
   app_password: '',
   otp_sender_filter: '',
@@ -96,10 +97,16 @@ const EMPTY_MAILBOX_FORM = {
   auth_link_pattern: '',
 };
 
+const EMPTY_MAILBOX_META = {
+  exists: false,
+  appPasswordSet: false,
+};
+
 const normalizeToolSlug = (value) => {
   const normalized = `${value || ''}`.trim().toLowerCase();
   const slugified = normalized.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   if (slugified === 'chat-gpt') return 'chatgpt';
+  if (['enhencor', 'enhencer', 'enhancer'].includes(slugified)) return 'enhancor';
   return slugified;
 };
 
@@ -115,7 +122,8 @@ const toolSupportsPasswordOptionalCredential = (value) => {
 
 const toolSupportsCredentialLoginMethodSelection = (value) => {
   const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug || value?.name);
-  return normalizedToolSlug === 'freepik'
+  return normalizedToolSlug === 'enhancor'
+    || normalizedToolSlug === 'freepik'
     || normalizedToolSlug === 'genspark'
     || normalizedToolSlug === 'kling-ai'
     || normalizedToolSlug === 'klingai'
@@ -128,6 +136,31 @@ const getDefaultCredentialLoginMethod = (value) => {
     return 'email_password';
   }
   return 'email_password';
+};
+
+const shouldLaunchExtensionToolInIncognito = (toolSlug, loginMethod) => {
+  const normalizedLoginMethod = `${loginMethod || ''}`.trim().toLowerCase();
+  return normalizedLoginMethod === 'google';
+};
+
+const toolSupportsAuthenticatorSeed = (toolSlug, loginMethod = '') => {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug);
+  const normalizedLoginMethod = `${loginMethod || ''}`.trim().toLowerCase();
+  if (normalizedToolSlug === 'flow' || normalizedToolSlug === 'chatgpt') {
+    return true;
+  }
+  return toolSupportsCredentialLoginMethodSelection(normalizedToolSlug) && normalizedLoginMethod === 'google';
+};
+
+const getAuthenticatorSeedToolLabel = (toolSlug) => {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug);
+  if (normalizedToolSlug === 'chatgpt') return 'ChatGPT';
+  if (normalizedToolSlug === 'flow') return 'Flow';
+  if (normalizedToolSlug === 'enhancor') return 'Enhancor';
+  if (normalizedToolSlug === 'freepik') return 'Freepik';
+  if (normalizedToolSlug === 'genspark') return 'Genspark';
+  if (normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai') return 'Kling';
+  return 'Google';
 };
 
 const getSharedCredentialLabels = (toolValue) => {
@@ -218,11 +251,21 @@ const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
   window.addEventListener('message', handleMessage);
 });
 
-const openFlowInIsolatedWindow = (launchDetail) => new Promise((resolve) => {
+const openToolInIncognitoWindow = (launchDetail) => new Promise((resolve) => {
   const normalizedSlug = normalizeToolSlug(launchDetail?.toolSlug);
-  const toolName = normalizedSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
-  if (!['flow', 'chatgpt'].includes(normalizedSlug)) {
-    resolve({ ok: false, error: 'Isolated launch is only available for Flow and ChatGPT.' });
+  const toolName = `${launchDetail?.toolName || ''}`.trim() || (
+    normalizedSlug === 'chatgpt'
+    ? 'ChatGPT'
+    : normalizedSlug === 'flow'
+      ? 'Flow'
+      : normalizedSlug === 'enhancor'
+        ? 'Enhancor'
+      : normalizedSlug === 'freepik'
+        ? 'Freepik'
+        : 'this tool'
+  );
+  if (!normalizedSlug || !launchDetail?.launchUrl) {
+    resolve({ ok: false, error: `${toolName} launch details are incomplete.` });
     return;
   }
 
@@ -261,7 +304,7 @@ const openFlowInIsolatedWindow = (launchDetail) => new Promise((resolve) => {
   const timerId = window.setTimeout(() => {
     finish({
       ok: false,
-      error: `${toolName} isolated launch timed out. Check whether the extension is loaded and allowed in incognito.`,
+      error: `${toolName} incognito launch timed out. Check whether the extension is loaded and allowed in incognito.`,
     });
   }, 5000);
 
@@ -319,7 +362,8 @@ export default function Tools() {
   const [toolForm, setToolForm] = useState(EMPTY_TOOL_FORM);
   const [credentialForm, setCredentialForm] = useState(EMPTY_CREDENTIAL_FORM);
   const [mailboxForm, setMailboxForm] = useState(EMPTY_MAILBOX_FORM);
-  const [mailboxMeta, setMailboxMeta] = useState({ exists: false, appPasswordSet: false });
+  const [mailboxMeta, setMailboxMeta] = useState(EMPTY_MAILBOX_META);
+  const [mailboxEntries, setMailboxEntries] = useState([]);
   const [launchResult, setLaunchResult] = useState(null);
   const [toolCredentialsByToolId, setToolCredentialsByToolId] = useState({});
   const [assignmentLoading, setAssignmentLoading] = useState(false);
@@ -456,12 +500,12 @@ export default function Tools() {
 
   const activeCredentialToolSlug = normalizeToolSlug(activeCredentialTool?.slug);
   const activeCredentialLoginMethod = credentialForm.login_method || getDefaultCredentialLoginMethod(activeCredentialToolSlug);
-  const showToolTotpSecretField = ['flow', 'chatgpt'].includes(activeCredentialToolSlug);
+  const showToolTotpSecretField = toolSupportsAuthenticatorSeed(activeCredentialToolSlug, activeCredentialLoginMethod);
   const showFlowBackupCodesField = activeCredentialToolSlug === 'flow';
   const activeCredentialPasswordOptional = toolSupportsPasswordOptionalCredential(activeCredentialToolSlug)
     || (toolSupportsCredentialLoginMethodSelection(activeCredentialToolSlug) && activeCredentialLoginMethod === 'google');
   const activeCredentialShouldHidePasswordField = toolSupportsPasswordOptionalCredential(activeCredentialToolSlug);
-  const totpSecretToolLabel = activeCredentialToolSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
+  const totpSecretToolLabel = getAuthenticatorSeedToolLabel(activeCredentialToolSlug);
   const activeCredentialToolSummaries = useMemo(() => {
     const toolId = `${activeCredentialTool?.id || ''}`.trim();
     if (!toolId) return [];
@@ -798,36 +842,72 @@ export default function Tools() {
     });
   };
 
-  const loadMailboxConfig = async (toolId) => {
+  const selectMailboxEntry = (toolId, entry) => {
+    const normalizedToolId = `${toolId || ''}`.trim();
+    if (!normalizedToolId || !entry) {
+      setMailboxForm({ ...EMPTY_MAILBOX_FORM, toolId: normalizedToolId });
+      setMailboxMeta(EMPTY_MAILBOX_META);
+      return;
+    }
+
+    setMailboxForm({
+      toolId: normalizedToolId,
+      mailbox_id: `${entry.id || ''}`,
+      email_address: entry.email_address || '',
+      app_password: '',
+      otp_sender_filter: entry.otp_sender_filter || '',
+      otp_subject_pattern: entry.otp_subject_pattern || '',
+      otp_regex: entry.otp_regex || EMPTY_MAILBOX_FORM.otp_regex,
+      auth_link_host: entry.auth_link_host || '',
+      auth_link_pattern: entry.auth_link_pattern || '',
+    });
+    setMailboxMeta({
+      exists: true,
+      appPasswordSet: !!entry.app_password_set,
+    });
+  };
+
+  const startNewMailboxEntry = (toolId) => {
+    const normalizedToolId = `${toolId || mailboxForm.toolId || ''}`.trim();
+    setMailboxForm({
+      ...EMPTY_MAILBOX_FORM,
+      toolId: normalizedToolId,
+    });
+    setMailboxMeta(EMPTY_MAILBOX_META);
+  };
+
+  const loadMailboxConfig = async (toolId, preferredMailboxId = '') => {
     const normalizedToolId = `${toolId || ''}`.trim();
     if (!normalizedToolId) {
       setMailboxForm(EMPTY_MAILBOX_FORM);
-      setMailboxMeta({ exists: false, appPasswordSet: false });
+      setMailboxMeta(EMPTY_MAILBOX_META);
+      setMailboxEntries([]);
       return;
     }
 
     setMailboxBusy(true);
     setError('');
     try {
-      const response = await itToolsAPI.getMailboxConfig(normalizedToolId);
-      setMailboxForm({
-        toolId: normalizedToolId,
-        email_address: response.email_address || '',
-        app_password: '',
-        otp_sender_filter: response.otp_sender_filter || '',
-        otp_subject_pattern: response.otp_subject_pattern || '',
-        otp_regex: response.otp_regex || EMPTY_MAILBOX_FORM.otp_regex,
-        auth_link_host: response.auth_link_host || '',
-        auth_link_pattern: response.auth_link_pattern || '',
-      });
-      setMailboxMeta({
-        exists: true,
-        appPasswordSet: !!response.app_password_set,
-      });
+      const response = await itToolsAPI.listMailboxConfigs(normalizedToolId);
+      const nextEntries = Array.isArray(response?.mailboxes) ? response.mailboxes : [];
+      setMailboxEntries(nextEntries);
+      if (!nextEntries.length) {
+        startNewMailboxEntry(normalizedToolId);
+        return;
+      }
+
+      const normalizedPreferredMailbox = `${preferredMailboxId || ''}`.trim().toLowerCase();
+      const preferredEntry = nextEntries.find((entry) => {
+        const entryId = `${entry.id || ''}`.trim().toLowerCase();
+        const entryEmail = `${entry.email_address || ''}`.trim().toLowerCase();
+        return entryId === normalizedPreferredMailbox || entryEmail === normalizedPreferredMailbox;
+      })
+        || nextEntries[0];
+      selectMailboxEntry(normalizedToolId, preferredEntry);
     } catch (err) {
       if (err?.response?.status === 404) {
-        setMailboxForm({ ...EMPTY_MAILBOX_FORM, toolId: normalizedToolId });
-        setMailboxMeta({ exists: false, appPasswordSet: false });
+        setMailboxEntries([]);
+        startNewMailboxEntry(normalizedToolId);
         return;
       }
       setError(err?.response?.data?.detail || 'Unable to load OTP mailbox settings.');
@@ -934,8 +1014,8 @@ export default function Tools() {
     const targetTool = tools.find((tool) => `${tool.id}` === `${toolId}`) || null;
     const targetToolSlug = normalizeToolSlug(targetTool?.slug);
     const supportsBackupCodes = targetToolSlug === 'flow';
-    const supportsTotpSecret = ['flow', 'chatgpt'].includes(targetToolSlug);
     const selectedLoginMethod = credentialForm.login_method || getDefaultCredentialLoginMethod(targetToolSlug);
+    const supportsTotpSecret = toolSupportsAuthenticatorSeed(targetToolSlug, selectedLoginMethod);
     const passwordOptionalCredential = toolSupportsPasswordOptionalCredential(targetToolSlug)
       || (toolSupportsCredentialLoginMethodSelection(targetToolSlug) && selectedLoginMethod === 'google');
     const shouldHidePasswordField = toolSupportsPasswordOptionalCredential(targetToolSlug);
@@ -1086,7 +1166,8 @@ export default function Tools() {
       ...EMPTY_MAILBOX_FORM,
       toolId: `${toolId || ''}`,
     });
-    setMailboxMeta({ exists: false, appPasswordSet: false });
+    setMailboxMeta(EMPTY_MAILBOX_META);
+    setMailboxEntries([]);
     void loadMailboxConfig(toolId);
   };
 
@@ -1103,6 +1184,7 @@ export default function Tools() {
     setNotice('');
     try {
       await itToolsAPI.upsertMailboxConfig(toolId, {
+        mailbox_id: mailboxForm.mailbox_id || undefined,
         email_address: mailboxForm.email_address,
         app_password: mailboxForm.app_password || undefined,
         otp_sender_filter: mailboxForm.otp_sender_filter || undefined,
@@ -1111,7 +1193,7 @@ export default function Tools() {
         auth_link_host: mailboxForm.auth_link_host || undefined,
         auth_link_pattern: mailboxForm.auth_link_pattern || undefined,
       });
-      await loadMailboxConfig(toolId);
+      await loadMailboxConfig(toolId, mailboxForm.mailbox_id || mailboxForm.email_address);
       setNotice('Verification mailbox settings saved.');
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to save verification mailbox settings.');
@@ -1122,8 +1204,13 @@ export default function Tools() {
 
   const handleTestMailbox = async () => {
     const toolId = `${mailboxForm.toolId || ''}`.trim();
+    const mailboxId = `${mailboxForm.mailbox_id || ''}`.trim();
     if (!toolId) {
       setError('Choose a tool before testing the OTP mailbox.');
+      return;
+    }
+    if (!mailboxId) {
+      setError('Choose a saved mailbox before testing the OTP mailbox.');
       return;
     }
 
@@ -1131,7 +1218,7 @@ export default function Tools() {
     setError('');
     setNotice('');
     try {
-      const response = await itToolsAPI.testMailboxConfig(toolId);
+      const response = await itToolsAPI.testMailboxConfig(toolId, mailboxId);
       if (response.success) {
         setNotice(response.message || 'Verification mailbox connected successfully.');
       } else {
@@ -1146,8 +1233,13 @@ export default function Tools() {
 
   const handleDeleteMailbox = async () => {
     const toolId = `${mailboxForm.toolId || ''}`.trim();
+    const mailboxId = `${mailboxForm.mailbox_id || ''}`.trim();
     if (!toolId) {
       setError('Choose a tool before deleting the OTP mailbox.');
+      return;
+    }
+    if (!mailboxId) {
+      setError('Choose a saved mailbox before deleting the OTP mailbox.');
       return;
     }
 
@@ -1159,9 +1251,8 @@ export default function Tools() {
     setError('');
     setNotice('');
     try {
-      await itToolsAPI.deleteMailboxConfig(toolId);
-      setMailboxForm({ ...EMPTY_MAILBOX_FORM, toolId });
-      setMailboxMeta({ exists: false, appPasswordSet: false });
+      await itToolsAPI.deleteMailboxConfig(toolId, mailboxId);
+      await loadMailboxConfig(toolId);
       setNotice('Verification mailbox settings removed.');
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to delete verification mailbox settings.');
@@ -1186,6 +1277,7 @@ export default function Tools() {
       let launchUrl = response.launchUrl;
       if (response.extensionAutoFill && response.extensionTicket && response.tool?.slug) {
         const normalizedToolSlug = normalizeToolSlug(response.tool.slug);
+        const launchLoginMethod = `${response.credential?.loginMethod || ''}`.trim().toLowerCase();
         const launchDetail = {
           toolSlug: normalizedToolSlug,
           toolName: response.tool.name,
@@ -1206,13 +1298,17 @@ export default function Tools() {
           throw new Error(launchStored.error || 'Extension launch bridge did not respond.');
         }
         launchUrl = resolveExtensionLaunchUrl(response.launchUrl, response.extensionTicket, normalizedToolSlug);
-        if (['flow', 'chatgpt'].includes(normalizedToolSlug)) {
-          const isolatedResult = await openFlowInIsolatedWindow({
+        if (
+          ['flow', 'chatgpt'].includes(normalizedToolSlug)
+          || shouldLaunchExtensionToolInIncognito(normalizedToolSlug, launchLoginMethod)
+        ) {
+          const isolatedResult = await openToolInIncognitoWindow({
             toolSlug: normalizedToolSlug,
+            toolName: response.tool.name,
             launchUrl,
           });
           if (!isolatedResult.ok) {
-            throw new Error(isolatedResult.error || `Unable to open ${response.tool.name || response.tool.slug} in an isolated window.`);
+            throw new Error(isolatedResult.error || `Unable to open ${response.tool.name || response.tool.slug} in an incognito window.`);
           }
           return;
         }
@@ -1615,6 +1711,8 @@ export default function Tools() {
                   <div className="it-span-2 it-mailbox-summary">
                     {activeCredentialToolSlug === 'claude'
                       ? 'Claude uses email-link sign-in. Save only the email here, then configure the Verification Mailbox below so the extension can fetch the secure sign-in link from Gmail.'
+                      : activeCredentialToolSlug === 'enhancor'
+                        ? 'This Enhancor credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                       : activeCredentialToolSlug === 'freepik'
                         ? 'This Freepik credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                         : activeCredentialToolSlug === 'genspark'
@@ -1679,9 +1777,9 @@ export default function Tools() {
               <div className="it-admin-card-header">
                 <div>
                   <h2>Verification Mailbox</h2>
-                  <p className="it-card-copy">Manage the Gmail inbox used for OTP codes or magic sign-in links so email-based tools like Claude can complete verification securely.</p>
+                  <p className="it-card-copy">Manage the Gmail inboxes used for OTP codes or magic sign-in links. The extension will automatically match the mailbox email to the saved credential email for tools like ChatGPT and Claude.</p>
                 </div>
-                <span>{mailboxMeta.exists ? 'Configured' : 'Optional'}</span>
+                <span>{mailboxEntries.length ? `${mailboxEntries.length} saved` : 'Optional'}</span>
               </div>
               <select
                 value={mailboxForm.toolId}
@@ -1694,11 +1792,46 @@ export default function Tools() {
                   <option key={tool.id} value={tool.id}>{tool.name}</option>
                 ))}
               </select>
+              {!!mailboxForm.toolId && !!mailboxEntries.length && (
+                <div className="it-user-picker">
+                  <div className="it-user-picker-header">
+                    <span>Saved mailboxes</span>
+                    <span>{mailboxEntries.length} total</span>
+                  </div>
+                  <div className="it-user-checklist" role="group" aria-label="Saved verification mailboxes">
+                    {mailboxEntries.map((entry) => {
+                      const selected = `${mailboxForm.mailbox_id || ''}` === `${entry.id || ''}`;
+                      return (
+                        <button
+                          key={`mailbox-${entry.id}`}
+                          type="button"
+                          className={`it-user-checklist-item ${selected ? 'is-selected' : ''}`}
+                          onClick={() => selectMailboxEntry(mailboxForm.toolId, entry)}
+                        >
+                          <span className="it-user-checklist-copy">
+                            <strong>{entry.email_address}</strong>
+                            <small>{entry.app_password_set ? 'App password saved' : 'Needs app password'}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="it-user-picker-actions">
+                    <button
+                      type="button"
+                      className="it-link-btn"
+                      onClick={() => startNewMailboxEntry(mailboxForm.toolId)}
+                    >
+                      Add another mailbox
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="it-form-grid">
                 <input
                   value={mailboxForm.email_address}
                   onChange={(e) => setMailboxForm({ ...mailboxForm, email_address: e.target.value })}
-                  placeholder="otp-inbox@gmail.com"
+                  placeholder="Use the same email saved in the credential, e.g. otp-inbox@gmail.com"
                   autoComplete="email"
                   required
                 />
@@ -1743,8 +1876,8 @@ export default function Tools() {
               </div>
               <p className="it-mailbox-summary">
                 {mailboxMeta.exists
-                  ? `Mailbox saved for this tool${mailboxMeta.appPasswordSet ? ' with an app password on file.' : '.'}`
-                  : 'No verification mailbox saved for this tool yet.'}
+                  ? `Editing mailbox ${mailboxForm.email_address || 'entry'}${mailboxMeta.appPasswordSet ? ' with an app password on file.' : '.'}`
+                  : 'Add a mailbox whose email matches the credential email you expect OTP or magic-link verification to use.'}
               </p>
               <div className="it-admin-actions">
                 <button className="it-primary-btn" type="submit" disabled={mailboxBusy}>
@@ -1754,7 +1887,7 @@ export default function Tools() {
                   className="it-secondary-btn"
                   type="button"
                   onClick={handleTestMailbox}
-                  disabled={mailboxBusy || !mailboxMeta.exists || !mailboxForm.toolId}
+                  disabled={mailboxBusy || !mailboxMeta.exists || !mailboxForm.toolId || !mailboxForm.mailbox_id}
                 >
                   Test Connection
                 </button>
@@ -1762,7 +1895,7 @@ export default function Tools() {
                   className="it-danger-btn"
                   type="button"
                   onClick={handleDeleteMailbox}
-                  disabled={mailboxBusy || !mailboxMeta.exists || !mailboxForm.toolId}
+                  disabled={mailboxBusy || !mailboxMeta.exists || !mailboxForm.toolId || !mailboxForm.mailbox_id}
                 >
                   Delete Mailbox
                 </button>

@@ -13,6 +13,7 @@ const MAX_LAUNCH_USES = 3;
 function normalizeToolSlug(value) {
   const normalized = `${value || ''}`.trim().toLowerCase();
   if (normalized === 'chat-gpt') return 'chatgpt';
+  if (['enhencor', 'enhencer', 'enhancer'].includes(normalized)) return 'enhancor';
   return normalized;
 }
 
@@ -100,11 +101,19 @@ function handleLaunchDetail(detail) {
     .catch(() => {});
 }
 
-function requestFlowIsolatedWindow(detail) {
+function getIncognitoLaunchToolName(toolSlug) {
+  if (toolSlug === 'chatgpt') return 'ChatGPT';
+  if (toolSlug === 'flow') return 'Flow';
+  if (toolSlug === 'enhancor') return 'Enhancor';
+  if (toolSlug === 'freepik') return 'Freepik';
+  return 'this tool';
+}
+
+function requestIncognitoWindow(detail) {
   const toolSlug = normalizeToolSlug(detail?.toolSlug);
   const launchUrl = `${detail?.launchUrl || ''}`.trim();
-  if (!['flow', 'chatgpt'].includes(toolSlug) || !launchUrl) {
-    const toolName = toolSlug === 'chatgpt' ? 'ChatGPT' : 'Flow';
+  const toolName = `${detail?.toolName || ''}`.trim() || getIncognitoLaunchToolName(toolSlug);
+  if (!toolSlug || !launchUrl) {
     emitWindowLaunchResult({
       toolSlug,
       ok: false,
@@ -115,8 +124,9 @@ function requestFlowIsolatedWindow(detail) {
 
   chrome.runtime.sendMessage(
     {
-      type: 'TOOL_HUB_OPEN_FLOW_ISOLATED_WINDOW',
+      type: 'TOOL_HUB_OPEN_INCOGNITO_WINDOW',
       toolSlug,
+      toolName,
       launchUrl,
     },
     (response) => {
@@ -132,7 +142,7 @@ function requestFlowIsolatedWindow(detail) {
       emitWindowLaunchResult({
         toolSlug,
         ok: Boolean(response?.ok),
-        error: response?.ok ? '' : (response?.error || `Unable to open ${toolSlug === 'chatgpt' ? 'ChatGPT' : 'Flow'} in an isolated window.`),
+        error: response?.ok ? '' : (response?.error || `Unable to open ${toolName} in an incognito window.`),
       });
     }
   );
@@ -197,7 +207,7 @@ window.addEventListener(EXTENSION_LAUNCH_EVENT, (event) => {
   handleLaunchDetail(event.detail);
 });
 window.addEventListener(EXTENSION_WINDOW_LAUNCH_EVENT, (event) => {
-  requestFlowIsolatedWindow(event.detail);
+  requestIncognitoWindow(event.detail);
 });
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
@@ -208,7 +218,7 @@ window.addEventListener('message', (event) => {
     return;
   }
   if (event.data?.type === EXTENSION_WINDOW_LAUNCH_MESSAGE_TYPE) {
-    requestFlowIsolatedWindow(event.data);
+    requestIncognitoWindow(event.data);
   }
 });
 document.addEventListener('visibilitychange', () => {

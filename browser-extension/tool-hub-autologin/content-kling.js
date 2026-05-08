@@ -261,6 +261,11 @@ function buttonDescriptorText(el) {
   return parts.filter(Boolean).join(' ').trim().toLowerCase();
 }
 
+function hasKlingNetworkErrorToast() {
+  const text = normalizeSpace(document.body?.innerText || '');
+  return text.includes('network error, please try again');
+}
+
 function isActionLikeElement(el) {
   if (!el || !isVisible(el)) return false;
   if (el.matches?.(ACTION_SELECTORS.join(','))) return isEnabled(el);
@@ -479,6 +484,77 @@ function safeClick(el) {
   return true;
 }
 
+function enhancedSafeClick(el) {
+  if (!el || !isVisible(el) || !isEnabled(el)) return false;
+  const clickable = findClickableAncestor(el) || el;
+  const anchor = clickable.closest?.('a[href]') || (clickable.matches?.('a[href]') ? clickable : null);
+  let target = anchor || clickable;
+  if (anchor) {
+    const href = `${anchor.getAttribute('href') || ''}`.trim();
+    const linkTarget = `${anchor.getAttribute('target') || ''}`.trim().toLowerCase();
+    if (href && href !== '#' && !href.toLowerCase().startsWith('javascript:') && linkTarget === '_blank') {
+      try { anchor.setAttribute('target', '_self'); } catch {}
+    }
+  }
+  try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch {}
+  try { target.focus({ preventScroll: true }); } catch {}
+
+  try {
+    const rect = target.getBoundingClientRect();
+    const clientX = rect.left + (rect.width / 2);
+    const clientY = rect.top + (rect.height / 2);
+    const pointed = document.elementFromPoint(clientX, clientY);
+    const pointedTarget = findClickableAncestor(pointed) || pointed;
+    if (pointedTarget && isVisible(pointedTarget) && isEnabled(pointedTarget)) {
+      target = pointedTarget;
+    }
+    const pointerCtor = typeof window.PointerEvent === 'function' ? window.PointerEvent : window.MouseEvent;
+    [
+      ['pointerover', pointerCtor],
+      ['mouseover', window.MouseEvent],
+      ['pointerenter', pointerCtor],
+      ['mouseenter', window.MouseEvent],
+      ['pointerdown', pointerCtor],
+      ['mousedown', window.MouseEvent],
+      ['pointerup', pointerCtor],
+      ['mouseup', window.MouseEvent],
+      ['pointerout', pointerCtor],
+      ['mouseout', window.MouseEvent],
+    ].forEach(([type, EventCtor]) => {
+      try {
+        target.dispatchEvent(new EventCtor(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+          clientX,
+          clientY,
+        }));
+      } catch {}
+    });
+  } catch {}
+
+  try {
+    target.click();
+    return true;
+  } catch {
+    try {
+      const rect = target.getBoundingClientRect();
+      target.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX: rect.left + (rect.width / 2),
+        clientY: rect.top + (rect.height / 2),
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 // ── Button detection helpers ──────────────────────────────────
 function isThirdPartyAuthAction(el) {
   const text = buttonDescriptorText(el) || buttonText(el);
@@ -527,8 +603,78 @@ function findGoogleAuthButton() {
   }) || null;
 }
 
+function scoreExactSignInCandidate(el) {
+  if (!el) return -1;
+  const text = normalizeSpace(buttonText(el));
+  const descriptor = normalizeSpace(buttonDescriptorText(el));
+  const hints = controlHintText(el);
+  const rect = el.getBoundingClientRect();
+  let score = 0;
+
+  if (text === 'sign in') score += 100;
+  else if (descriptor === 'sign in') score += 90;
+  else if (text.includes('sign in')) score += 40;
+
+  if (el.closest?.('aside, nav')) score += 40;
+  if (rect.left <= 140) score += 25;
+  if (rect.width <= 160 && rect.height <= 80) score += 20;
+  if (hints.includes('api')) score += 10;
+  if (hints.includes('google') || hints.includes('apple') || hints.includes('facebook')) score -= 40;
+  if (descriptor.includes('trial package') || descriptor.includes('experience now') || descriptor.includes('create now')) score -= 50;
+
+  return score;
+}
+
+function findDirectInteractiveSignInButton() {
+  const directSelectors = [
+    'button',
+    'a[href]',
+    '[role="button"]',
+    'input[type="button"]',
+    'input[type="submit"]',
+  ];
+
+  const matches = collectUniqueElements(
+    directSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+  )
+    .filter((el) => isVisible(el) && isEnabled(el))
+    .filter((el) => {
+      if (isThirdPartyAuthAction(el) || isEmailAuthAction(el)) return false;
+      const text = normalizeSpace(buttonText(el));
+      const descriptor = normalizeSpace(buttonDescriptorText(el));
+      return text === 'sign in' || descriptor === 'sign in';
+    });
+
+  if (!matches.length) return null;
+  return matches.sort((left, right) => scoreExactSignInCandidate(right) - scoreExactSignInCandidate(left))[0] || null;
+}
+
+function findExactSignInButton() {
+  const directMatch = findDirectInteractiveSignInButton();
+  if (directMatch) return directMatch;
+
+  const rawCandidates = Array.from(document.querySelectorAll('[tabindex],div,span,li'))
+    .filter((el) => isVisible(el))
+    .map((el) => findClickableAncestor(el) || el);
+
+  const matches = collectUniqueElements(rawCandidates)
+    .filter((el) => isActionLikeElement(el))
+    .filter((el) => {
+      if (isThirdPartyAuthAction(el) || isEmailAuthAction(el)) return false;
+      const text = normalizeSpace(buttonText(el));
+      const descriptor = normalizeSpace(buttonDescriptorText(el));
+      return text === 'sign in' || descriptor === 'sign in';
+    });
+
+  if (!matches.length) return null;
+  return matches.sort((left, right) => scoreExactSignInCandidate(right) - scoreExactSignInCandidate(left))[0] || null;
+}
+
 // FIX: No longer matches generic /app hrefs — those are nav links, not login buttons
 function findLandingEntryButton() {
+  const exactSignInButton = findExactSignInButton();
+  if (exactSignInButton) return exactSignInButton;
+
   const candidates = findLandingCandidates();
   const signInButton = candidates.find((el) => {
     if (isThirdPartyAuthAction(el) || isEmailAuthAction(el)) return false;
@@ -558,8 +704,7 @@ function hasVisibleLoginSurface() {
 
 // FIX: Never redirect if already on /app — prevents reload during transient render
 function shouldRedirectToApp() {
-  if (location.pathname.startsWith('/app')) return false;
-  return !hasVisibleLoginSurface();
+  return !location.pathname.startsWith('/app');
 }
 
 function collectVisibleTextSnapshot() {
@@ -746,7 +891,14 @@ function clickLandingAction(button, nextPhase, delayAfterClick) {
 
   CTX.lastLandingActionKey   = actionKey;
   CTX.landingActionLockUntil = now + delayAfterClick;
-  if (!CTX.stopped) safeClick(button);  // immediate — no setTimeout wrapper
+  if (!CTX.stopped) {
+    const exactSignInButton = findExactSignInButton();
+    const useEnhancedSignInClick = exactSignInButton && button === exactSignInButton;
+    const clickOk = useEnhancedSignInClick
+      ? enhancedSafeClick(button)
+      : safeClick(button);
+    if (!clickOk) return false;
+  }
   if (nextPhase === P.WAIT_REDIRECT) {
     CTX.submitAt = now;
     CTX.submitKind = isGoogleCredential() ? 'google' : '';
@@ -758,6 +910,43 @@ function clickLandingAction(button, nextPhase, delayAfterClick) {
   }
   CTX.phase = nextPhase;
   wake(delayAfterClick);
+  return true;
+}
+
+function clickGoogleLandingAction(button, statusMessage) {
+  if (!button) return false;
+  const actionKey = landingActionKey(button);
+  const now = Date.now();
+  const sameActionPending = actionKey
+    && actionKey === CTX.lastLandingActionKey
+    && CTX.landingActionLockUntil > now;
+
+  if (sameActionPending) {
+    setStatus('Waiting for Google sign-in to open…');
+    wake(Math.max(100, CTX.landingActionLockUntil - now));
+    return true;
+  }
+
+  CTX.lastLandingActionKey = actionKey;
+  CTX.landingActionLockUntil = now + EMAIL_CHOOSER_WAIT_MS;
+
+  const clickTarget = findClickableAncestor(button) || button;
+  if (!enhancedSafeClick(clickTarget)) {
+    setStatus('Google button click failed. Retrying…');
+    wake(300);
+    return true;
+  }
+
+  CTX.submitAt = now;
+  CTX.submitKind = 'google';
+  CTX.submitLockUntil = now + SUBMIT_LOCK_MS;
+  writeCheckpoint(P.WAIT_REDIRECT, {
+    submitAt: now,
+    submitKind: 'google',
+  });
+  CTX.phase = P.WAIT_REDIRECT;
+  setStatus(statusMessage || 'Opening Google sign-in…');
+  wake(EMAIL_CHOOSER_WAIT_MS);
   return true;
 }
 
@@ -884,8 +1073,7 @@ async function tick() {
       if (isGoogleCredential()) {
         const googleButton = findGoogleAuthButton();
         if (googleButton) {
-          setStatus('Opening Google sign-in…');
-          clickLandingAction(googleButton, P.WAIT_REDIRECT, EMAIL_CHOOSER_WAIT_MS);
+          clickGoogleLandingAction(googleButton, 'Opening Google sign-in…');
           return;
         }
       }
@@ -929,8 +1117,7 @@ async function tick() {
       if (isGoogleCredential()) {
         const googleButton = findGoogleAuthButton();
         if (googleButton) {
-          setStatus('Continuing with Google…');
-          clickLandingAction(googleButton, P.WAIT_REDIRECT, EMAIL_CHOOSER_WAIT_MS);
+          clickGoogleLandingAction(googleButton, 'Continuing with Google…');
           return;
         }
       }
@@ -1016,6 +1203,11 @@ async function tick() {
 
       if (isAuthenticated()) {
         stop('✓ Signed in successfully', P.DONE);
+        return;
+      }
+
+      if (CTX.submitKind === 'google' && hasKlingNetworkErrorToast()) {
+        stop('Google sign-in failed on Kling side. Click Sign in with Google manually to continue.', P.BLOCKED);
         return;
       }
 

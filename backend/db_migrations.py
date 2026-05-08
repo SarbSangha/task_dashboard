@@ -36,6 +36,18 @@ DEFAULT_TOOL_DIRECTORY = (
         "status": "active",
         "is_active": True,
     },
+    {
+        "name": "Enhancor",
+        "slug": "enhancor",
+        "category": "AI",
+        "description": "Enhancor AI workspace",
+        "website_url": "https://enhancor.ai/",
+        "login_url": "https://app.enhancor.ai/auth",
+        "icon": "Globe",
+        "launch_mode": "extension_autofill",
+        "status": "active",
+        "is_active": True,
+    },
 )
 
 
@@ -385,6 +397,7 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_mailboxes_tool_id ON it_portal_tool_mailboxes(tool_id)"))
     _pg_add_column_if_missing(conn, "it_portal_tool_mailboxes", "auth_link_pattern", "VARCHAR(255)")
     _pg_add_column_if_missing(conn, "it_portal_tool_mailboxes", "auth_link_host", "VARCHAR(255)")
+    _pg_add_column_if_missing(conn, "it_portal_tool_mailboxes", "mailboxes_json", "JSON")
     conn.execute(
         text(
             """
@@ -840,6 +853,8 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE it_portal_tool_mailboxes ADD COLUMN auth_link_pattern VARCHAR(255)"))
             if "auth_link_host" not in mailbox_cols:
                 conn.execute(text("ALTER TABLE it_portal_tool_mailboxes ADD COLUMN auth_link_host VARCHAR(255)"))
+            if "mailboxes_json" not in mailbox_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_mailboxes ADD COLUMN mailboxes_json JSON"))
         if _table_exists(conn, "it_portal_tool_credentials"):
             credential_cols = _table_columns(conn, "it_portal_tool_credentials")
             if "login_method" not in credential_cols:

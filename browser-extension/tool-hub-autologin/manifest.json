@@ -22,6 +22,8 @@
     "https://192.168.1.15/*",
     "https://claude.ai/*",
     "https://*.claude.ai/*",
+    "https://enhancor.ai/*",
+    "https://*.enhancor.ai/*",
     "https://envato.com/*",
     "https://www.envato.com/*",
     "https://elements.envato.com/*",
@@ -78,6 +80,14 @@
         "https://*.claude.ai/*"
       ],
       "js": ["content-claude.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://enhancor.ai/*",
+        "https://*.enhancor.ai/*"
+      ],
+      "js": ["content-enhancor.js"],
       "run_at": "document_idle"
     },
     {

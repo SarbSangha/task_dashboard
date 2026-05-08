@@ -100,6 +100,13 @@ function ensureStatusBadge() {
   return badge;
 }
 
+function hideStatusBadge() {
+  const badge = document.getElementById('rmw-autologin-status');
+  if (badge) {
+    badge.remove();
+  }
+}
+
 function setStatus(message) {
   if (STATE.status === message) return;
   STATE.status = message;
@@ -123,6 +130,26 @@ function stop(message) {
   }
   releasePasswordSavingSuppressed(0);
   setStatus(message);
+}
+
+function complete(message = 'Magnific login complete') {
+  STATE.stopped = true;
+  if (STATE.scheduledTimer) {
+    window.clearTimeout(STATE.scheduledTimer);
+    STATE.scheduledTimer = null;
+  }
+  if (STATE.keepAliveTimer) {
+    window.clearInterval(STATE.keepAliveTimer);
+    STATE.keepAliveTimer = null;
+  }
+  if (STATE.observer) {
+    STATE.observer.disconnect();
+    STATE.observer = null;
+  }
+  releasePasswordSavingSuppressed(0);
+  STATE.status = message;
+  console.debug('[RMW Magnific Auto Login]', message);
+  window.setTimeout(() => hideStatusBadge(), 600);
 }
 
 function sendRuntimeMessage(message) {
@@ -622,6 +649,37 @@ function isLoginPage() {
     || Boolean(findInput(EMAIL_SELECTORS))
     || Boolean(findInput(PASSWORD_SELECTORS))
     || Boolean(findLoginOpenAction());
+}
+
+function isAuthenticatedMagnificPage() {
+  try {
+    const url = new URL(window.location.href);
+    const host = normalizeText(url.hostname);
+    const path = normalizeText(url.pathname);
+    const onMagnificHost = host.includes('magnific.com') || host.includes('freepik.com');
+    if (!onMagnificHost) return false;
+
+    if (path.includes('/log-in') || path.includes('/login') || path.includes('/sign-up') || path.includes('/signup')) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  const emailInput = findInput(EMAIL_SELECTORS);
+  const passwordInput = findInput(PASSWORD_SELECTORS);
+  if (emailInput || passwordInput) return false;
+
+  if (findGoogleLoginAction() || findGenericLoginAction()) return false;
+
+  const pageText = normalizeText(document.body?.innerText || '');
+  return pageText.includes('logout')
+    || pageText.includes('profile')
+    || pageText.includes('settings')
+    || pageText.includes('projects')
+    || pageText.includes('workspace')
+    || pageText.includes('dashboard')
+    || pageText.includes('my account');
 }
 
 function onSignUpRoute() {
@@ -1242,6 +1300,11 @@ function attemptFlow() {
 
   if (!STATE.launchAuthorized) {
     scheduleAsyncStep(enforceDashboardOnlyAccess);
+    return;
+  }
+
+  if (isAuthenticatedMagnificPage()) {
+    complete();
     return;
   }
 

@@ -34,6 +34,7 @@ EXTENSION_AUTOFILL_TICKET_TTL_SEC = 20 * 60
 HOSTNAME_EQUIVALENT_GROUPS = (
     {"chatgpt.com", "chat.openai.com", "auth.openai.com", "openai.com"},
     {"claude.ai"},
+    {"enhancor.ai", "app.enhancor.ai", "www.enhancor.ai"},
     {"envato.com", "elements.envato.com", "market.envato.com"},
     {"freepik.com"},
     {"genspark.ai", "www.genspark.ai", "login.genspark.ai"},
@@ -43,9 +44,10 @@ HOSTNAME_EQUIVALENT_GROUPS = (
     {"kling.ai", "klingai.com", "app.klingai.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
-SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "claude", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "claude", "enhancor", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
 PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
+    "enhancor": {"email_password", "google"},
     "freepik": {"email_password", "google"},
     "genspark": {"email_password", "google"},
     "kling": {"email_password", "google"},
@@ -127,6 +129,8 @@ def _canonical_tool_slug(value: str) -> str:
     slug = _slugify(value or "")
     if slug == "chat-gpt":
         return "chatgpt"
+    if slug in {"enhencor", "enhencer", "enhancer"}:
+        return "enhancor"
     return slug
 
 
@@ -1017,6 +1021,105 @@ def _expand_equivalent_hostnames(hostname: str) -> set[str]:
     return expanded
 
 
+def _normalize_mailbox_entry(raw_entry: Optional[dict], *, fallback_email: str = "") -> Optional[dict]:
+    if not isinstance(raw_entry, dict):
+        return None
+
+    email_address = (raw_entry.get("email_address") or fallback_email or "").strip()
+    if not email_address:
+        return None
+
+    return {
+        "id": f"{raw_entry.get('id') or ''}".strip(),
+        "email_address": email_address,
+        "app_password_encrypted": raw_entry.get("app_password_encrypted"),
+        "otp_sender_filter": (raw_entry.get("otp_sender_filter") or "").strip() or None,
+        "otp_subject_pattern": (raw_entry.get("otp_subject_pattern") or "").strip() or None,
+        "otp_regex": (raw_entry.get("otp_regex") or r"\b(\d{4,8})\b").strip() or r"\b(\d{4,8})\b",
+        "auth_link_pattern": (raw_entry.get("auth_link_pattern") or "").strip() or None,
+        "auth_link_host": (raw_entry.get("auth_link_host") or "").strip() or None,
+    }
+
+
+def _mailbox_entries_for_tool(mailbox: Optional[ITPortalToolMailbox]) -> list[dict]:
+    if not mailbox:
+        return []
+
+    stored_entries = mailbox.mailboxes_json if isinstance(mailbox.mailboxes_json, list) else []
+    normalized_entries: list[dict] = []
+    for raw_entry in stored_entries:
+        normalized_entry = _normalize_mailbox_entry(raw_entry)
+        if normalized_entry:
+            normalized_entries.append(normalized_entry)
+
+    legacy_entry = _normalize_mailbox_entry(
+        {
+            "id": "legacy-primary",
+            "email_address": mailbox.email_address,
+            "app_password_encrypted": mailbox.app_password_encrypted,
+            "otp_sender_filter": mailbox.otp_sender_filter,
+            "otp_subject_pattern": mailbox.otp_subject_pattern,
+            "otp_regex": mailbox.otp_regex,
+            "auth_link_pattern": mailbox.auth_link_pattern,
+            "auth_link_host": mailbox.auth_link_host,
+        }
+    )
+    if legacy_entry and not any(
+        (entry.get("email_address") or "").strip().lower() == legacy_entry["email_address"].lower()
+        for entry in normalized_entries
+    ):
+        normalized_entries.insert(0, legacy_entry)
+
+    return normalized_entries
+
+
+def _effective_credential_for_mailbox_lookup(
+    db: Session,
+    credential: Optional[ITPortalToolCredential],
+    *,
+    canonical_tool_slug: str = "",
+) -> Optional[ITPortalToolCredential]:
+    return _resolve_linked_company_credential(
+        db,
+        credential,
+        canonical_tool_slug=canonical_tool_slug,
+    ) or credential
+
+
+def _select_matching_mailbox_entry(
+    tool: ITPortalTool,
+    mailbox: Optional[ITPortalToolMailbox],
+    *,
+    credential_email: str = "",
+) -> dict:
+    entries = _mailbox_entries_for_tool(mailbox)
+    if not entries:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No mailbox configured for tool '{tool.name}'. Ask an admin to add the mailbox in the dashboard.",
+        )
+
+    normalized_email = (credential_email or "").strip().lower()
+    if normalized_email:
+        exact_match = next(
+            (entry for entry in entries if (entry.get("email_address") or "").strip().lower() == normalized_email),
+            None,
+        )
+        if exact_match:
+            return exact_match
+
+    if len(entries) == 1:
+        return entries[0]
+
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"No verification mailbox matches credential email '{credential_email}' for tool '{tool.name}'. "
+            "Add a mailbox entry with the same email address in the dashboard."
+        ),
+    )
+
+
 def _validate_extension_autofill_target(
     launch_mode: str,
     website_url: Optional[str],
@@ -1038,7 +1141,7 @@ def _validate_extension_autofill_target(
 
     raise HTTPException(
         status_code=400,
-        detail="Extension auto-fill currently supports ChatGPT/OpenAI, Claude, Envato, Freepik, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
+        detail="Extension auto-fill currently supports ChatGPT/OpenAI, Claude, Enhancor, Envato, Freepik, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
     )
 
 
@@ -1479,14 +1582,17 @@ async def get_extension_otp(
             detail="OTP already fetched for this launch session. Launch the tool again from the dashboard.",
         )
 
+    credential = _resolve_tool_credential(db, tool.id, current_user.id)
+    effective_credential = _effective_credential_for_mailbox_lookup(
+        db,
+        credential,
+        canonical_tool_slug=_canonical_tool_slug(tool.slug or ""),
+    )
+    credential_email = decrypt_secret(effective_credential.login_identifier_encrypted) if effective_credential else ""
     mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool.id).first()
-    if not mailbox:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No mailbox configured for tool '{tool.name}'. Ask an admin to add the mailbox in the dashboard.",
-        )
+    mailbox_entry = _select_matching_mailbox_entry(tool, mailbox, credential_email=credential_email)
 
-    app_password = decrypt_secret(mailbox.app_password_encrypted)
+    app_password = decrypt_secret(mailbox_entry.get("app_password_encrypted"))
     if not app_password:
         raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
 
@@ -1497,18 +1603,18 @@ async def get_extension_otp(
         try:
             otp = await asyncio.to_thread(
                 fetch_otp_from_gmail,
-                mailbox.email_address,
+                mailbox_entry["email_address"],
                 app_password,
-                mailbox.otp_regex,
-                mailbox.otp_sender_filter,
-                mailbox.otp_subject_pattern,
+                mailbox_entry.get("otp_regex") or r"\b(\d{4,8})\b",
+                mailbox_entry.get("otp_sender_filter"),
+                mailbox_entry.get("otp_subject_pattern"),
                 OTP_EMAIL_MAX_AGE_SEC,
             )
             last_fetch_error = None
         except imaplib.IMAP4.error as exc:
             raise HTTPException(
                 status_code=502,
-                detail=f"Mailbox login failed for {mailbox.email_address}. Update the Gmail app password or enable IMAP. ({exc})",
+                detail=f"Mailbox login failed for {mailbox_entry['email_address']}. Update the Gmail app password or enable IMAP. ({exc})",
             ) from exc
         except Exception as exc:
             last_fetch_error = exc
@@ -1539,7 +1645,7 @@ async def get_extension_otp(
         tool_id=tool.id,
         details={
             "hostname": _normalize_hostname(payload.hostname or payload.page_url),
-            "mailbox": mailbox.email_address,
+            "mailbox": mailbox_entry["email_address"],
         },
     )
     db.commit()
@@ -1578,14 +1684,17 @@ async def get_extension_auth_link(
             detail="Auth link already fetched for this launch session. Launch the tool again from the dashboard.",
         )
 
+    credential = _resolve_tool_credential(db, tool.id, current_user.id)
+    effective_credential = _effective_credential_for_mailbox_lookup(
+        db,
+        credential,
+        canonical_tool_slug=_canonical_tool_slug(tool.slug or ""),
+    )
+    credential_email = decrypt_secret(effective_credential.login_identifier_encrypted) if effective_credential else ""
     mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool.id).first()
-    if not mailbox:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No mailbox configured for tool '{tool.name}'. Ask an admin to add the mailbox in the dashboard.",
-        )
+    mailbox_entry = _select_matching_mailbox_entry(tool, mailbox, credential_email=credential_email)
 
-    app_password = decrypt_secret(mailbox.app_password_encrypted)
+    app_password = decrypt_secret(mailbox_entry.get("app_password_encrypted"))
     if not app_password:
         raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
 
@@ -1596,19 +1705,19 @@ async def get_extension_auth_link(
         try:
             auth_link = await asyncio.to_thread(
                 fetch_auth_link_from_gmail,
-                mailbox.email_address,
+                mailbox_entry["email_address"],
                 app_password,
-                mailbox.auth_link_pattern,
-                mailbox.auth_link_host,
-                mailbox.otp_sender_filter,
-                mailbox.otp_subject_pattern,
+                mailbox_entry.get("auth_link_pattern"),
+                mailbox_entry.get("auth_link_host"),
+                mailbox_entry.get("otp_sender_filter"),
+                mailbox_entry.get("otp_subject_pattern"),
                 AUTH_LINK_EMAIL_MAX_AGE_SEC,
             )
             last_fetch_error = None
         except imaplib.IMAP4.error as exc:
             raise HTTPException(
                 status_code=502,
-                detail=f"Mailbox login failed for {mailbox.email_address}. Update the Gmail app password or enable IMAP. ({exc})",
+                detail=f"Mailbox login failed for {mailbox_entry['email_address']}. Update the Gmail app password or enable IMAP. ({exc})",
             ) from exc
         except Exception as exc:
             last_fetch_error = exc
@@ -1639,7 +1748,7 @@ async def get_extension_auth_link(
         tool_id=tool.id,
         details={
             "hostname": _normalize_hostname(payload.hostname or payload.page_url),
-            "mailbox": mailbox.email_address,
+            "mailbox": mailbox_entry["email_address"],
         },
     )
     db.commit()
@@ -1850,7 +1959,7 @@ async def upsert_credential(
                     "New shared Claude credentials require the sign-in email address."
                     if canonical_tool_slug == "claude"
                     else "New shared Google-login credentials require the Google email address."
-                    if canonical_tool_slug in {"freepik", "genspark", "kling", "kling-ai", "klingai"} and login_method == "google"
+                    if canonical_tool_slug in {"enhancor", "freepik", "genspark", "kling", "kling-ai", "klingai"} and login_method == "google"
                     else "New shared company credentials require both username/email and password"
                 ),
             )

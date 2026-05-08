@@ -656,6 +656,7 @@ class ITPortalToolMailbox(Base):
     otp_regex = Column(String(255), nullable=False, default=r"\b(\d{4,8})\b")
     auth_link_pattern = Column(String(255))
     auth_link_host = Column(String(255))
+    mailboxes_json = Column(JSON)
     created_by = Column(Integer, ForeignKey("users.id"))
     updated_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow, index=True)

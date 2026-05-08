@@ -1362,23 +1362,23 @@ export const itToolsAPI = {
     return response.data;
   },
 
-  getMailboxConfig: async (toolId) => {
-    const response = await api.get(`/api/it-tools/${toolId}/mailbox`);
+  listMailboxConfigs: async (toolId) => {
+    const response = await api.get(`/api/it-tools/${toolId}/mailboxes`);
     return response.data;
   },
 
   upsertMailboxConfig: async (toolId, payload) => {
-    const response = await api.post(`/api/it-tools/${toolId}/mailbox`, payload);
+    const response = await api.post(`/api/it-tools/${toolId}/mailboxes`, payload);
     return response.data;
   },
 
-  deleteMailboxConfig: async (toolId) => {
-    const response = await api.delete(`/api/it-tools/${toolId}/mailbox`);
+  deleteMailboxConfig: async (toolId, mailboxId) => {
+    const response = await api.delete(`/api/it-tools/${toolId}/mailboxes/${mailboxId}`);
     return response.data;
   },
 
-  testMailboxConfig: async (toolId) => {
-    const response = await api.post(`/api/it-tools/${toolId}/mailbox/test`);
+  testMailboxConfig: async (toolId, mailboxId) => {
+    const response = await api.post(`/api/it-tools/${toolId}/mailboxes/${mailboxId}/test`);
     return response.data;
   },
 
