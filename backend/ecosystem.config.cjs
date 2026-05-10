@@ -4,7 +4,7 @@ module.exports = {
       name: 'backend',
       cwd: __dirname,
       script: 'venv/bin/python3',
-      args: '-m uvicorn main:app --host 0.0.0.0 --port 8000',
+      args: ['-m', 'uvicorn', 'main:app', '--host', '0.0.0.0', '--port', '8000'],
       interpreter: 'none',
       autorestart: true,
       watch: false,
