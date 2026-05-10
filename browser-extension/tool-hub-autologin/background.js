@@ -511,6 +511,8 @@ async function activatePendingLaunchForTab(tabId, toolSlug, hostname, pageUrl) {
     hostname: resolvedHostname || normalizeHostname(storedLaunch.hostname),
     ticket: `${storedLaunch.ticket}`.trim(),
     expiresAt: Number(storedLaunch.expiresAt || 0),
+    usageTrackingTicket: `${storedLaunch.usageTrackingTicket || ''}`.trim(),
+    usageTrackingTicketExpiresAt: Number(storedLaunch.usageTrackingTicketExpiresAt || 0),
   };
   await setActiveLaunch(tabId, launch);
   return launch;
@@ -527,6 +529,12 @@ async function setActiveLaunch(tabId, launch) {
     ticket: nextTicket,
     expiresAt: Number(launch.expiresAt || 0),
     hostname: normalizeHostname(launch.hostname),
+    usageTrackingTicket: `${launch.usageTrackingTicket || existingLaunch.usageTrackingTicket || ''}`.trim(),
+    usageTrackingTicketExpiresAt: Number(
+      launch.usageTrackingTicketExpiresAt
+      || existingLaunch.usageTrackingTicketExpiresAt
+      || 0
+    ),
     activatedAt: Date.now(),
     freshSessionPreparedAt: sameTicket ? Number(existingLaunch.freshSessionPreparedAt || 0) : 0,
     authTransitionAt: sameTicket ? Number(existingLaunch.authTransitionAt || 0) : 0,
@@ -1079,6 +1087,30 @@ async function postCredentialRequest(settings, payload) {
   return data;
 }
 
+async function postUsageEvent(settings, payload) {
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetch(`${settings.apiBase}/api/it-tools/extension/usage-event`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    throw new Error(buildApiErrorMessage(data, response, 'Usage event request failed', settings));
+  }
+
+  return data;
+}
+
 async function getToolsForCurrentUser(settings) {
   const headers = {};
   if (settings.sessionToken) {
@@ -1232,6 +1264,33 @@ async function fetchTotp(message, senderTabId = 0, openerTabId = 0) {
   }
 }
 
+async function reportUsageEvent(message, senderTabId = 0, openerTabId = 0) {
+  const settings = await getSettings();
+  const tabId = message.tabId || senderTabId || 0;
+  const directLaunch = await getActiveLaunch(tabId, message.toolSlug);
+  const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, message.toolSlug);
+  const activeLaunch = directLaunch || inheritedLaunch;
+
+  return postUsageEvent(settings, {
+    tool_slug: message.toolSlug,
+    hostname: message.hostname,
+    page_url: message.pageUrl,
+    extension_ticket: `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim() || null,
+    usage_ticket: `${message.usageTicket || activeLaunch?.usageTrackingTicket || ''}`.trim() || null,
+    event_type: message.eventType,
+    status: message.status,
+    model_label: message.modelLabel,
+    duration_label: message.durationLabel,
+    resolution_label: message.resolutionLabel,
+    prompt_text: message.promptText,
+    expected_credits: message.expectedCredits,
+    credits_before: message.creditsBefore,
+    credits_after: message.creditsAfter,
+    credits_burned: message.creditsBurned,
+    metadata: message.metadata || {},
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const senderTabId = sender?.tab?.id || 0;
   const senderOpenerTabId = sender?.tab?.openerTabId || 0;
@@ -1376,6 +1435,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'TOOL_HUB_FETCH_TOTP') {
     fetchTotp(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_REPORT_USAGE_EVENT') {
+    reportUsageEvent(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

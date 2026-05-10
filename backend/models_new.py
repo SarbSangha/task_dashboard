@@ -1,5 +1,5 @@
 # models_new.py - New Database Models
-from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Boolean, ForeignKey, JSON, Enum as SQLEnum, Index, UniqueConstraint, text
+from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Boolean, ForeignKey, JSON, Float, Enum as SQLEnum, Index, UniqueConstraint, text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from database_config import Base, ArchiveBase
@@ -642,6 +642,49 @@ class ITPortalToolAudit(Base):
     action = Column(String, nullable=False, index=True)
     details_json = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ITPortalToolUsageEvent(Base):
+    __tablename__ = "it_portal_tool_usage_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tool_id = Column(Integer, ForeignKey("it_portal_tools.id"), nullable=False, index=True)
+    credential_id = Column(Integer, ForeignKey("it_portal_tool_credentials.id"), index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    event_date = Column(Date, nullable=False, index=True)
+    status = Column(String, nullable=False, default="captured", index=True)
+    model_label = Column(String(255))
+    duration_label = Column(String(80))
+    resolution_label = Column(String(80))
+    prompt_text = Column(Text)
+    expected_credits = Column(Float)
+    credits_before = Column(Float)
+    credits_after = Column(Float)
+    credits_burned = Column(Float)
+    metadata_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "toolId": self.tool_id,
+            "credentialId": self.credential_id,
+            "userId": self.user_id,
+            "eventType": self.event_type,
+            "eventDate": self.event_date.isoformat() if self.event_date else None,
+            "status": self.status,
+            "modelLabel": self.model_label,
+            "durationLabel": self.duration_label,
+            "resolutionLabel": self.resolution_label,
+            "promptText": self.prompt_text,
+            "expectedCredits": self.expected_credits,
+            "creditsBefore": self.credits_before,
+            "creditsAfter": self.credits_after,
+            "creditsBurned": self.credits_burned,
+            "metadata": self.metadata_json or {},
+            "createdAt": serialize_utc_datetime(self.created_at),
+        }
 
 
 class ITPortalToolMailbox(Base):

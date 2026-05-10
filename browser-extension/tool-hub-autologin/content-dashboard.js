@@ -54,6 +54,8 @@ async function savePendingLaunch(detail) {
     ticket,
     expiresAt,
     hostname,
+    usageTrackingTicket: `${detail?.usageTrackingTicket || ''}`.trim(),
+    usageTrackingTicketExpiresAt: Number(detail?.usageTrackingTicketExpiresAt || 0),
     remainingUses: MAX_LAUNCH_USES,
     savedAt: now,
   };

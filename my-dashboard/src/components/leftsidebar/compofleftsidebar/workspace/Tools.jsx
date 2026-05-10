@@ -10,6 +10,18 @@ const EXTENSION_WINDOW_LAUNCH_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_WINDOW_LAUN
 const EXTENSION_WINDOW_LAUNCH_RESULT_EVENT = 'rmw:tool-hub-extension-window-launch-result';
 const EXTENSION_WINDOW_LAUNCH_RESULT_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_WINDOW_LAUNCH_RESULT';
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
+const buildDateInputValue = (offsetDays = 0) => {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+};
+
+const EMPTY_USAGE_FILTERS = {
+  toolSlug: 'kling-ai',
+  dateFrom: buildDateInputValue(-6),
+  dateTo: buildDateInputValue(0),
+  userId: '',
+};
 
 const Icons = {
   Search: () => (
@@ -317,18 +329,28 @@ const openToolInIncognitoWindow = (launchDetail) => new Promise((resolve) => {
   }, window.location.origin);
 });
 
-const buildExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug) => {
-  if (!launchUrl || !extensionTicket) return launchUrl;
+const buildExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug, usageTrackingTicket = '') => {
+  if (!launchUrl || (!extensionTicket && !usageTrackingTicket)) return launchUrl;
 
   try {
     const url = new URL(launchUrl, window.location.origin);
     const normalizedToolSlug = normalizeToolSlug(toolSlug);
-    url.searchParams.set('rmw_extension_ticket', extensionTicket);
+    if (extensionTicket) {
+      url.searchParams.set('rmw_extension_ticket', extensionTicket);
+    }
+    if (usageTrackingTicket) {
+      url.searchParams.set('rmw_usage_ticket', usageTrackingTicket);
+    }
     if (normalizedToolSlug) {
       url.searchParams.set('rmw_tool_slug', normalizedToolSlug);
     }
     const params = new URLSearchParams((url.hash || '').replace(/^#/, ''));
-    params.set('rmw_extension_ticket', extensionTicket);
+    if (extensionTicket) {
+      params.set('rmw_extension_ticket', extensionTicket);
+    }
+    if (usageTrackingTicket) {
+      params.set('rmw_usage_ticket', usageTrackingTicket);
+    }
     if (normalizedToolSlug) {
       params.set('rmw_tool_slug', normalizedToolSlug);
     }
@@ -339,13 +361,26 @@ const buildExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug) => {
   }
 };
 
-const resolveExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug) => {
+const resolveExtensionLaunchUrl = (launchUrl, extensionTicket, toolSlug, usageTrackingTicket = '') => {
   const normalizedSlug = normalizeToolSlug(toolSlug);
   const nextLaunchUrl = normalizedSlug === 'flow' ? FLOW_DIRECT_ROUTE_URL : launchUrl;
-  return buildExtensionLaunchUrl(nextLaunchUrl, extensionTicket, normalizedSlug);
+  return buildExtensionLaunchUrl(nextLaunchUrl, extensionTicket, normalizedSlug, usageTrackingTicket);
 };
 
-export default function Tools() {
+const formatUsageNumber = (value) => {
+  const numericValue = Number(value || 0);
+  return Number.isFinite(numericValue) ? numericValue.toFixed(numericValue % 1 === 0 ? 0 : 2) : '0';
+};
+
+const formatUsageDate = (value) => {
+  if (!value) return 'N/A';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString();
+};
+
+export default function Tools({ view = 'tools' }) {
+  const activeView = view === 'credits' ? 'credits' : 'tools';
   const [tools, setTools] = useState([]);
   const [users, setUsers] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -369,6 +404,16 @@ export default function Tools() {
   const [assignmentLoading, setAssignmentLoading] = useState(false);
   const [assignmentSavingKey, setAssignmentSavingKey] = useState('');
   const [sharedCredentialAssignmentPicker, setSharedCredentialAssignmentPicker] = useState(null);
+  const [usageFilters, setUsageFilters] = useState(EMPTY_USAGE_FILTERS);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageRows, setUsageRows] = useState([]);
+  const [usageSummary, setUsageSummary] = useState({
+    generateClicks: 0,
+    userCount: 0,
+    creditsBurned: 0,
+    expectedCredits: 0,
+  });
+  const [recentUsageEvents, setRecentUsageEvents] = useState([]);
 
   const loadToolCredentials = async (toolList, signal, { manageLoading = true } = {}) => {
     if (signal?.aborted) return;
@@ -460,13 +505,78 @@ export default function Tools() {
   };
 
   useEffect(() => {
+    if (activeView !== 'tools') {
+      setLoading(false);
+      return undefined;
+    }
     const controller = new AbortController();
     void loadTools(controller.signal);
 
     return () => {
       controller.abort();
     };
-  }, []);
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'credits') return undefined;
+
+    const controller = new AbortController();
+    setError('');
+    setLoading(false);
+
+    void authAPI.getAdminAllUsers({ signal: controller.signal }).then((response) => {
+      if (controller.signal.aborted) return;
+      setUsers((response.users || []).filter((user) => !user.isDeleted));
+      setIsAdmin(true);
+    }).catch((err) => {
+      if (isRequestCanceled(err) || controller.signal.aborted) return;
+      if (err?.response?.status === 403) {
+        setIsAdmin(false);
+        setUsers([]);
+        return;
+      }
+      setError(err?.response?.data?.detail || 'Unable to load credit filters.');
+    });
+
+    return () => {
+      controller.abort();
+    };
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'credits') return undefined;
+    const controller = new AbortController();
+    setUsageLoading(true);
+    void itToolsAPI.getUsageReport({
+      tool_slug: usageFilters.toolSlug,
+      date_from: usageFilters.dateFrom,
+      date_to: usageFilters.dateTo,
+      user_id: usageFilters.userId || undefined,
+      signal: controller.signal,
+    }).then((response) => {
+      if (controller.signal.aborted) return;
+      if (typeof response.isAdmin === 'boolean') {
+        setIsAdmin(response.isAdmin);
+      }
+      setUsageRows(response.rows || []);
+      setUsageSummary(response.summary || {
+        generateClicks: 0,
+        userCount: 0,
+        creditsBurned: 0,
+        expectedCredits: 0,
+      });
+      setRecentUsageEvents(response.recentEvents || []);
+    }).catch((err) => {
+      if (isRequestCanceled(err) || controller.signal.aborted) return;
+      setError(err?.response?.data?.detail || 'Unable to load Kling usage report.');
+    }).finally(() => {
+      if (!controller.signal.aborted) {
+        setUsageLoading(false);
+      }
+    });
+
+    return () => controller.abort();
+  }, [activeView, usageFilters.toolSlug, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
 
   const categories = useMemo(() => {
     return ['All', ...new Set(tools.map((tool) => tool.category || 'General'))];
@@ -1283,6 +1393,8 @@ export default function Tools() {
           toolName: response.tool.name,
           ticket: response.extensionTicket,
           expiresAt: Number(response.extensionTicketExpiresAt || 0) * 1000,
+          usageTrackingTicket: response.usageTrackingTicket || '',
+          usageTrackingTicketExpiresAt: Number(response.usageTrackingTicketExpiresAt || 0) * 1000,
           launchUrl: response.launchUrl,
         };
         window.dispatchEvent(new CustomEvent(EXTENSION_LAUNCH_EVENT, {
@@ -1297,7 +1409,12 @@ export default function Tools() {
         if (!launchStored.ok) {
           throw new Error(launchStored.error || 'Extension launch bridge did not respond.');
         }
-        launchUrl = resolveExtensionLaunchUrl(response.launchUrl, response.extensionTicket, normalizedToolSlug);
+        launchUrl = resolveExtensionLaunchUrl(
+          response.launchUrl,
+          response.extensionTicket,
+          normalizedToolSlug,
+          response.usageTrackingTicket || ''
+        );
         if (
           ['flow', 'chatgpt'].includes(normalizedToolSlug)
           || shouldLaunchExtensionToolInIncognito(normalizedToolSlug, launchLoginMethod)
@@ -1356,7 +1473,7 @@ export default function Tools() {
         {error && <div className="tool-alert error">{error}</div>}
         {notice && <div className="tool-alert success">{notice}</div>}
 
-        {isAdmin && (
+        {activeView === 'tools' && isAdmin && (
           <section className="it-admin-grid">
             <form className="it-admin-card" onSubmit={handleSaveTool} autoComplete="off">
               <div className="it-admin-card-header">
@@ -1904,7 +2021,7 @@ export default function Tools() {
           </section>
         )}
 
-        {isAdmin && (
+        {activeView === 'tools' && isAdmin && (
           <section className="it-assignment-card">
             <div className="it-admin-card-header">
               <div>
@@ -2120,57 +2237,175 @@ export default function Tools() {
           </section>
         )}
 
-        <div className="category-container">
-          {categories.map((category) => (
-            <button
-              key={category}
-              onClick={() => setSelectedCategory(category)}
-              className={`category-btn ${selectedCategory === category ? 'active' : ''}`}
-            >
-              {category}
-            </button>
-          ))}
-        </div>
-
-        <div className="tool-grid">
-          {loading ? (
-            <div className="empty-state"><h3>Loading IT tools...</h3></div>
-          ) : filteredTools.length > 0 ? (
-            filteredTools.map((tool) => {
-              const CardIcon = IconComponent(tool.icon);
-              return (
-                <button
-                  key={tool.id}
-                  type="button"
-                  className="tool-card"
-                  onClick={() => handleLaunchTool(tool)}
-                  disabled={launchingToolId === `${tool.id}`}
+        {activeView === 'credits' && isAdmin && (
+          <section className="it-usage-card">
+            <div className="it-usage-header">
+              <div>
+                <p className="it-profile-eyebrow">Kling Usage</p>
+                <h2>Kling credit burn by user and date</h2>
+                <p className="it-card-copy">Track Generate clicks, expected credits, and captured credit burn for Kling launches that started from the dashboard.</p>
+              </div>
+              <div className="it-usage-filters">
+                <input
+                  type="date"
+                  value={usageFilters.dateFrom}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, dateFrom: event.target.value }))}
+                />
+                <input
+                  type="date"
+                  value={usageFilters.dateTo}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, dateTo: event.target.value }))}
+                />
+                <select
+                  value={usageFilters.userId}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, userId: event.target.value }))}
                 >
-                  <div className="tool-header">
-                    <div className="tool-icon"><CardIcon /></div>
-                    <div className="status-badge">
-                      <span className={`status-dot ${tool.status === 'active' ? 'status-active' : 'status-maintenance'}`}></span>
-                      <span>{tool.status || 'active'}</span>
-                    </div>
-                  </div>
-                  <h3 className="tool-name">{tool.name}</h3>
-                  <p className="tool-description">{tool.description || 'Open this company tool.'}</p>
-                  <div className="tool-info">
-                    <p><strong>Category:</strong> {tool.category}</p>
-                    <p><strong>Credential:</strong> {tool.hasCredential ? tool.credentialScope : 'Not assigned'}</p>
-                  </div>
-                </button>
-              );
-            })
-          ) : (
-            <div className="empty-state">
-              <h3>No tools found</h3>
-              <button className="reset-btn" onClick={() => { setSearchQuery(''); setSelectedCategory('All'); }}>
-                Reset filters
-              </button>
+                  <option value="">All users</option>
+                  {sortedUsers.map((user) => (
+                    <option key={`usage-user-${user.id}`} value={user.id}>
+                      {user.name || user.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-          )}
-        </div>
+
+            <div className="it-usage-summary-grid">
+              <div className="it-usage-summary-pill">
+                <span>Generate clicks</span>
+                <strong>{usageLoading ? '...' : usageSummary.generateClicks}</strong>
+              </div>
+              <div className="it-usage-summary-pill">
+                <span>Credits burned</span>
+                <strong>{usageLoading ? '...' : formatUsageNumber(usageSummary.creditsBurned)}</strong>
+              </div>
+              <div className="it-usage-summary-pill">
+                <span>Expected credits</span>
+                <strong>{usageLoading ? '...' : formatUsageNumber(usageSummary.expectedCredits)}</strong>
+              </div>
+              <div className="it-usage-summary-pill">
+                <span>Users</span>
+                <strong>{usageLoading ? '...' : usageSummary.userCount}</strong>
+              </div>
+            </div>
+
+            <div className="it-usage-table-wrap">
+              <table className="it-usage-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>User</th>
+                    <th>Clicks</th>
+                    <th>Credits Burned</th>
+                    <th>Expected Credits</th>
+                    <th>Last Event</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usageLoading ? (
+                    <tr>
+                      <td colSpan="6">Loading Kling usage...</td>
+                    </tr>
+                  ) : usageRows.length ? usageRows.map((row) => (
+                    <tr key={`${row.date}:${row.userId}`}>
+                      <td>{formatUsageDate(row.date)}</td>
+                      <td>
+                        <div className="it-usage-user-cell">
+                          <strong>{row.userName || row.userEmail || `User #${row.userId}`}</strong>
+                          <small>{row.userEmail || ''}</small>
+                        </div>
+                      </td>
+                      <td>{row.generateClicks}</td>
+                      <td>{formatUsageNumber(row.creditsBurned)}</td>
+                      <td>{formatUsageNumber(row.expectedCredits)}</td>
+                      <td>{formatUsageDate(row.lastEventAt)}</td>
+                    </tr>
+                  )) : (
+                    <tr>
+                      <td colSpan="6">No Kling usage captured for the selected filters yet.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {!!recentUsageEvents.length && (
+              <div className="it-usage-recent">
+                <h3>Recent captured events</h3>
+                <div className="it-usage-recent-list">
+                  {recentUsageEvents.slice(0, 8).map((event) => (
+                    <div key={event.id} className="it-usage-recent-item">
+                      <strong>{event.userName || event.userEmail || `User #${event.userId}`}</strong>
+                      <span>{formatUsageDate(event.createdAt)}</span>
+                      <small>
+                        {event.modelLabel || 'Kling'}
+                        {event.resolutionLabel ? ` · ${event.resolutionLabel}` : ''}
+                        {event.durationLabel ? ` · ${event.durationLabel}` : ''}
+                        {event.creditsBurned != null ? ` · burned ${formatUsageNumber(event.creditsBurned)}` : ''}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeView === 'tools' && (
+          <>
+            <div className="category-container">
+              {categories.map((category) => (
+                <button
+                  key={category}
+                  onClick={() => setSelectedCategory(category)}
+                  className={`category-btn ${selectedCategory === category ? 'active' : ''}`}
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
+
+            <div className="tool-grid">
+              {loading ? (
+                <div className="empty-state"><h3>Loading IT tools...</h3></div>
+              ) : filteredTools.length > 0 ? (
+                filteredTools.map((tool) => {
+                  const CardIcon = IconComponent(tool.icon);
+                  return (
+                    <button
+                      key={tool.id}
+                      type="button"
+                      className="tool-card"
+                      onClick={() => handleLaunchTool(tool)}
+                      disabled={launchingToolId === `${tool.id}`}
+                    >
+                      <div className="tool-header">
+                        <div className="tool-icon"><CardIcon /></div>
+                        <div className="status-badge">
+                          <span className={`status-dot ${tool.status === 'active' ? 'status-active' : 'status-maintenance'}`}></span>
+                          <span>{tool.status || 'active'}</span>
+                        </div>
+                      </div>
+                      <h3 className="tool-name">{tool.name}</h3>
+                      <p className="tool-description">{tool.description || 'Open this company tool.'}</p>
+                      <div className="tool-info">
+                        <p><strong>Category:</strong> {tool.category}</p>
+                        <p><strong>Credential:</strong> {tool.hasCredential ? tool.credentialScope : 'Not assigned'}</p>
+                      </div>
+                    </button>
+                  );
+                })
+              ) : (
+                <div className="empty-state">
+                  <h3>No tools found</h3>
+                  <button className="reset-btn" onClick={() => { setSearchQuery(''); setSelectedCategory('All'); }}>
+                    Reset filters
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </main>
     </div>
   );

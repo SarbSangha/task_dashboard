@@ -765,6 +765,41 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(
             text(
                 """
+                CREATE TABLE IF NOT EXISTS it_portal_tool_usage_events (
+                    id INTEGER PRIMARY KEY,
+                    tool_id INTEGER NOT NULL,
+                    credential_id INTEGER,
+                    user_id INTEGER NOT NULL,
+                    event_type VARCHAR NOT NULL,
+                    event_date DATE NOT NULL,
+                    status VARCHAR NOT NULL DEFAULT 'captured',
+                    model_label VARCHAR(255),
+                    duration_label VARCHAR(80),
+                    resolution_label VARCHAR(80),
+                    prompt_text TEXT,
+                    expected_credits FLOAT,
+                    credits_before FLOAT,
+                    credits_after FLOAT,
+                    credits_burned FLOAT,
+                    metadata_json JSON,
+                    created_at DATETIME,
+                    FOREIGN KEY(tool_id) REFERENCES it_portal_tools (id),
+                    FOREIGN KEY(credential_id) REFERENCES it_portal_tool_credentials (id),
+                    FOREIGN KEY(user_id) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_tool_id ON it_portal_tool_usage_events(tool_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_credential_id ON it_portal_tool_usage_events(credential_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_user_id ON it_portal_tool_usage_events(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_event_type ON it_portal_tool_usage_events(event_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_event_date ON it_portal_tool_usage_events(event_date)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_created_at ON it_portal_tool_usage_events(created_at)"))
+
+        conn.execute(
+            text(
+                """
                 CREATE TABLE IF NOT EXISTS group_chat_messages (
                     id INTEGER PRIMARY KEY,
                     group_id INTEGER NOT NULL,

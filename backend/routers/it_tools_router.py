@@ -8,18 +8,18 @@ import json
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
-from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, User
+from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, ITPortalToolUsageEvent, User
 from services.otp_mail_service import fetch_auth_link_from_gmail, fetch_otp_from_gmail
 from services.totp_service import generate_totp_code, parse_totp_config
 from utils.credential_crypto import decrypt_secret, encrypt_secret
@@ -118,6 +118,25 @@ class OtpRequestPayload(BaseModel):
     hostname: Optional[str] = Field(None, max_length=255)
     page_url: Optional[str] = Field(None, max_length=2000)
     extension_ticket: Optional[str] = Field(None, max_length=4000)
+
+
+class ExtensionUsageEventPayload(BaseModel):
+    tool_slug: Optional[str] = Field(None, max_length=140)
+    hostname: Optional[str] = Field(None, max_length=255)
+    page_url: Optional[str] = Field(None, max_length=2000)
+    extension_ticket: Optional[str] = Field(None, max_length=4000)
+    usage_ticket: Optional[str] = Field(None, max_length=4000)
+    event_type: str = Field("generate_click", max_length=120)
+    status: Optional[str] = Field("captured", max_length=80)
+    model_label: Optional[str] = Field(None, max_length=255)
+    duration_label: Optional[str] = Field(None, max_length=80)
+    resolution_label: Optional[str] = Field(None, max_length=80)
+    prompt_text: Optional[str] = None
+    expected_credits: Optional[float] = None
+    credits_before: Optional[float] = None
+    credits_after: Optional[float] = None
+    credits_burned: Optional[float] = None
+    metadata: Optional[dict] = None
 
 
 def _slugify(value: str) -> str:
@@ -1235,6 +1254,10 @@ def _extension_ticket_error() -> HTTPException:
     return HTTPException(status_code=403, detail="Launch this tool from the dashboard before auto-fill can run")
 
 
+def _usage_tracking_ticket_error() -> HTTPException:
+    return HTTPException(status_code=403, detail="Launch this tool from the dashboard before usage tracking can run")
+
+
 OTP_POLL_INTERVAL_SEC = 5
 OTP_MAX_WAIT_SEC = 60
 OTP_EMAIL_MAX_AGE_SEC = 120
@@ -1243,6 +1266,7 @@ _otp_consumed_tickets: dict[str, float] = {}
 AUTH_LINK_MAX_WAIT_SEC = 60
 AUTH_LINK_EMAIL_MAX_AGE_SEC = 300
 _auth_link_consumed_tickets: dict[str, float] = {}
+USAGE_TRACKING_TICKET_TTL_SEC = 24 * 60 * 60
 
 
 def _cleanup_otp_tickets() -> None:
@@ -1341,6 +1365,57 @@ def _render_auto_login_page(tool: ITPortalTool, credential: ITPortalToolCredenti
   </script>
 </body>
 </html>"""
+
+
+def _parse_report_date(value: Optional[str], field_name: str) -> Optional[date]:
+    normalized = f"{value or ''}".strip()
+    if not normalized:
+        return None
+    try:
+        return date.fromisoformat(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be in YYYY-MM-DD format") from exc
+
+
+def _normalize_status_label(value: Optional[str], fallback: str = "captured") -> str:
+    normalized = f"{value or fallback}".strip().lower()
+    return normalized or fallback
+
+
+def _normalize_usage_float(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None
+    if normalized != normalized:
+        return None
+    return normalized
+
+
+def _normalize_prompt_text(value: Optional[str]) -> Optional[str]:
+    normalized = (value or "").strip()
+    return normalized or None
+
+
+def _validate_usage_ticket_for_tool(
+    *,
+    tool: ITPortalTool,
+    current_user: User,
+    usage_ticket: str,
+) -> dict:
+    if not usage_ticket:
+        raise _usage_tracking_ticket_error()
+
+    ticket_payload = _decode_ticket(usage_ticket)
+    if ticket_payload.get("kind") != "tool_usage_tracking":
+        raise _usage_tracking_ticket_error()
+    if int(ticket_payload.get("userId") or 0) != current_user.id:
+        raise _usage_tracking_ticket_error()
+    if int(ticket_payload.get("toolId") or 0) != tool.id:
+        raise _usage_tracking_ticket_error()
+    return ticket_payload
 
 
 @router.get("/tools")
@@ -1548,6 +1623,87 @@ async def get_extension_credential(
             "password": password or None,
             "backupCodes": _decode_backup_codes(credential),
         },
+    }
+
+
+@router.post("/extension/usage-event")
+async def report_extension_usage_event(
+    payload: ExtensionUsageEventPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db),
+):
+    tool = _find_extension_tool(db, payload)
+    if not tool:
+        raise HTTPException(status_code=404, detail="No matching tool found for this page")
+    if tool.launch_mode != "extension_autofill":
+        raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill usage tracking")
+
+    usage_ticket = f"{payload.usage_ticket or ''}".strip()
+    extension_ticket = f"{payload.extension_ticket or ''}".strip()
+    if usage_ticket:
+        _validate_usage_ticket_for_tool(tool=tool, current_user=current_user, usage_ticket=usage_ticket)
+    elif extension_ticket:
+        ticket_payload = _decode_ticket(extension_ticket)
+        if ticket_payload.get("kind") != "extension_autofill":
+            raise _extension_ticket_error()
+        if int(ticket_payload.get("userId") or 0) != current_user.id:
+            raise _extension_ticket_error()
+        if int(ticket_payload.get("toolId") or 0) != tool.id:
+            raise _extension_ticket_error()
+    else:
+        raise _usage_tracking_ticket_error()
+
+    credential = _resolve_tool_credential(db, tool.id, current_user.id)
+    expected_credits = _normalize_usage_float(payload.expected_credits)
+    credits_before = _normalize_usage_float(payload.credits_before)
+    credits_after = _normalize_usage_float(payload.credits_after)
+    credits_burned = _normalize_usage_float(payload.credits_burned)
+    if credits_burned is None:
+        if credits_before is not None and credits_after is not None:
+            credits_burned = max(0.0, credits_before - credits_after)
+        else:
+            credits_burned = expected_credits
+
+    usage_event = ITPortalToolUsageEvent(
+        tool_id=tool.id,
+        credential_id=credential.id if credential else None,
+        user_id=current_user.id,
+        event_type=(payload.event_type or "generate_click").strip().lower() or "generate_click",
+        event_date=datetime.utcnow().date(),
+        status=_normalize_status_label(payload.status),
+        model_label=(payload.model_label or "").strip() or None,
+        duration_label=(payload.duration_label or "").strip() or None,
+        resolution_label=(payload.resolution_label or "").strip() or None,
+        prompt_text=_normalize_prompt_text(payload.prompt_text),
+        expected_credits=expected_credits,
+        credits_before=credits_before,
+        credits_after=credits_after,
+        credits_burned=credits_burned,
+        metadata_json=payload.metadata or {},
+    )
+    db.add(usage_event)
+    db.flush()
+    _add_audit(
+        db,
+        actor_id=current_user.id,
+        action="tool_usage_reported",
+        tool_id=tool.id,
+        credential_id=credential.id if credential else None,
+        target_user_id=current_user.id,
+        details={
+            "eventType": usage_event.event_type,
+            "status": usage_event.status,
+            "expectedCredits": expected_credits,
+            "creditsBurned": credits_burned,
+            "hostname": _normalize_hostname(payload.hostname or payload.page_url),
+        },
+    )
+    db.commit()
+    db.refresh(usage_event)
+
+    return {
+        "success": True,
+        "event": usage_event.to_dict(),
     }
 
 
@@ -2199,6 +2355,8 @@ async def launch_tool(
     launch_url = tool.login_url or tool.website_url
     extension_ticket = None
     extension_ticket_expires_at = None
+    usage_tracking_ticket = None
+    usage_tracking_ticket_expires_at = None
     if tool.launch_mode == "automation":
         ticket = _sign_ticket(
             {
@@ -2217,6 +2375,15 @@ async def launch_tool(
                 "toolId": tool.id,
                 "userId": current_user.id,
                 "exp": extension_ticket_expires_at,
+            }
+        )
+        usage_tracking_ticket_expires_at = int(time.time()) + USAGE_TRACKING_TICKET_TTL_SEC
+        usage_tracking_ticket = _sign_ticket(
+            {
+                "kind": "tool_usage_tracking",
+                "toolId": tool.id,
+                "userId": current_user.id,
+                "exp": usage_tracking_ticket_expires_at,
             }
         )
 
@@ -2238,8 +2405,158 @@ async def launch_tool(
         "extensionAutoFill": tool.launch_mode == "extension_autofill",
         "extensionTicket": extension_ticket,
         "extensionTicketExpiresAt": extension_ticket_expires_at,
+        "usageTrackingTicket": usage_tracking_ticket,
+        "usageTrackingTicketExpiresAt": usage_tracking_ticket_expires_at,
         "tool": _serialize_tool(tool, credential=credential),
         "credential": revealed,
+    }
+
+
+@router.get("/usage-report")
+async def get_tool_usage_report(
+    tool_slug: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db),
+):
+    is_admin = has_any_role(current_user, {"admin"})
+    if user_id and not is_admin and int(user_id) != int(current_user.id):
+        raise HTTPException(status_code=403, detail="You can only view your own usage.")
+
+    parsed_date_from = _parse_report_date(date_from, "date_from")
+    parsed_date_to = _parse_report_date(date_to, "date_to")
+    if parsed_date_from and parsed_date_to and parsed_date_from > parsed_date_to:
+        raise HTTPException(status_code=400, detail="date_from cannot be later than date_to")
+
+    normalized_tool_slug = _canonical_tool_slug(tool_slug or "")
+    base_query = (
+        db.query(ITPortalToolUsageEvent, User, ITPortalTool)
+        .join(User, User.id == ITPortalToolUsageEvent.user_id)
+        .join(ITPortalTool, ITPortalTool.id == ITPortalToolUsageEvent.tool_id)
+    )
+
+    if normalized_tool_slug and normalized_tool_slug != "tool":
+        base_query = base_query.filter(ITPortalTool.slug.in_({
+            normalized_tool_slug,
+            "kling" if normalized_tool_slug == "kling-ai" else normalized_tool_slug,
+            "kling-ai" if normalized_tool_slug in {"kling", "klingai"} else normalized_tool_slug,
+            "klingai" if normalized_tool_slug in {"kling", "kling-ai"} else normalized_tool_slug,
+        }))
+    if parsed_date_from:
+        base_query = base_query.filter(ITPortalToolUsageEvent.event_date >= parsed_date_from)
+    if parsed_date_to:
+        base_query = base_query.filter(ITPortalToolUsageEvent.event_date <= parsed_date_to)
+    if is_admin:
+        if user_id:
+            base_query = base_query.filter(ITPortalToolUsageEvent.user_id == int(user_id))
+    else:
+        base_query = base_query.filter(ITPortalToolUsageEvent.user_id == current_user.id)
+
+    aggregate_rows = (
+        db.query(
+            ITPortalToolUsageEvent.event_date.label("event_date"),
+            ITPortalToolUsageEvent.user_id.label("user_id"),
+            User.name.label("user_name"),
+            User.email.label("user_email"),
+            func.count(ITPortalToolUsageEvent.id).label("generate_clicks"),
+            func.coalesce(func.sum(ITPortalToolUsageEvent.credits_burned), 0).label("total_credits_burned"),
+            func.coalesce(func.sum(ITPortalToolUsageEvent.expected_credits), 0).label("total_expected_credits"),
+            func.max(ITPortalToolUsageEvent.created_at).label("last_event_at"),
+        )
+        .join(User, User.id == ITPortalToolUsageEvent.user_id)
+        .join(ITPortalTool, ITPortalTool.id == ITPortalToolUsageEvent.tool_id)
+    )
+    if normalized_tool_slug and normalized_tool_slug != "tool":
+        aggregate_rows = aggregate_rows.filter(ITPortalTool.slug.in_({
+            normalized_tool_slug,
+            "kling" if normalized_tool_slug == "kling-ai" else normalized_tool_slug,
+            "kling-ai" if normalized_tool_slug in {"kling", "klingai"} else normalized_tool_slug,
+            "klingai" if normalized_tool_slug in {"kling", "kling-ai"} else normalized_tool_slug,
+        }))
+    if parsed_date_from:
+        aggregate_rows = aggregate_rows.filter(ITPortalToolUsageEvent.event_date >= parsed_date_from)
+    if parsed_date_to:
+        aggregate_rows = aggregate_rows.filter(ITPortalToolUsageEvent.event_date <= parsed_date_to)
+    if is_admin:
+        if user_id:
+            aggregate_rows = aggregate_rows.filter(ITPortalToolUsageEvent.user_id == int(user_id))
+    else:
+        aggregate_rows = aggregate_rows.filter(ITPortalToolUsageEvent.user_id == current_user.id)
+    aggregate_rows = (
+        aggregate_rows
+        .group_by(ITPortalToolUsageEvent.event_date, ITPortalToolUsageEvent.user_id, User.name, User.email)
+        .order_by(ITPortalToolUsageEvent.event_date.desc(), User.name.asc(), User.email.asc())
+        .all()
+    )
+
+    summary_row = (
+        db.query(
+            func.count(ITPortalToolUsageEvent.id).label("event_count"),
+            func.count(func.distinct(ITPortalToolUsageEvent.user_id)).label("user_count"),
+            func.coalesce(func.sum(ITPortalToolUsageEvent.credits_burned), 0).label("total_credits_burned"),
+            func.coalesce(func.sum(ITPortalToolUsageEvent.expected_credits), 0).label("total_expected_credits"),
+        )
+        .join(ITPortalTool, ITPortalTool.id == ITPortalToolUsageEvent.tool_id)
+    )
+    if normalized_tool_slug and normalized_tool_slug != "tool":
+        summary_row = summary_row.filter(ITPortalTool.slug.in_({
+            normalized_tool_slug,
+            "kling" if normalized_tool_slug == "kling-ai" else normalized_tool_slug,
+            "kling-ai" if normalized_tool_slug in {"kling", "klingai"} else normalized_tool_slug,
+            "klingai" if normalized_tool_slug in {"kling", "kling-ai"} else normalized_tool_slug,
+        }))
+    if parsed_date_from:
+        summary_row = summary_row.filter(ITPortalToolUsageEvent.event_date >= parsed_date_from)
+    if parsed_date_to:
+        summary_row = summary_row.filter(ITPortalToolUsageEvent.event_date <= parsed_date_to)
+    if is_admin:
+        if user_id:
+            summary_row = summary_row.filter(ITPortalToolUsageEvent.user_id == int(user_id))
+    else:
+        summary_row = summary_row.filter(ITPortalToolUsageEvent.user_id == current_user.id)
+    summary_row = summary_row.one()
+
+    recent_events = (
+        base_query
+        .order_by(ITPortalToolUsageEvent.created_at.desc())
+        .limit(30)
+        .all()
+    )
+
+    return {
+        "success": True,
+        "isAdmin": is_admin,
+        "rows": [
+            {
+                "date": row.event_date.isoformat() if row.event_date else None,
+                "userId": row.user_id,
+                "userName": row.user_name or "",
+                "userEmail": row.user_email or "",
+                "generateClicks": int(row.generate_clicks or 0),
+                "creditsBurned": float(row.total_credits_burned or 0),
+                "expectedCredits": float(row.total_expected_credits or 0),
+                "lastEventAt": row.last_event_at.isoformat() if row.last_event_at else None,
+            }
+            for row in aggregate_rows
+        ],
+        "summary": {
+            "generateClicks": int(summary_row.event_count or 0),
+            "userCount": int(summary_row.user_count or 0),
+            "creditsBurned": float(summary_row.total_credits_burned or 0),
+            "expectedCredits": float(summary_row.total_expected_credits or 0),
+        },
+        "recentEvents": [
+            {
+                **event.to_dict(),
+                "toolName": tool_item.name,
+                "toolSlug": tool_item.slug,
+                "userName": user.name or "",
+                "userEmail": user.email or "",
+            }
+            for event, user, tool_item in recent_events
+        ],
     }
 
 

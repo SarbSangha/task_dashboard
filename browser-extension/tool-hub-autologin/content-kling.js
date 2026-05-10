@@ -8,6 +8,7 @@
 const TOOL_SLUG               = 'kling-ai';
 const LOGIN_URL               = 'https://kling.ai/app';
 const EXTENSION_TICKET_KEY    = 'rmw_extension_ticket';
+const USAGE_TICKET_KEY        = 'rmw_kling_usage_ticket';
 const PREPARED_LAUNCH_KEY     = 'rmw_kling_prepared_launch';
 const BLOCKED_NOTICE_KEY      = 'rmw_kling_blocked_notice';
 const SESSION_CHECKPOINT_KEY  = 'rmw_kling_checkpoint';
@@ -129,6 +130,13 @@ const CTX = {
   blockedRevealControl : null,
 };
 
+const USAGE_CTX = {
+  listenerAttached    : false,
+  lastGenerateKey     : '',
+  lastGenerateAt      : 0,
+  pendingReportTimer  : null,
+};
+
 function normalizeLoginMethod(value) {
   return `${value || ''}`.trim().toLowerCase() || 'email_password';
 }
@@ -186,6 +194,17 @@ function readTicketFromUrl() {
   } catch { return ''; }
 }
 
+function readUsageTicketFromUrl() {
+  try {
+    const sp = new URLSearchParams(location.search || '');
+    const ticket = `${sp.get('rmw_usage_ticket') || ''}`.trim();
+    if (ticket) return ticket;
+    const hash = `${location.hash || ''}`.replace(/^#/, '');
+    if (!hash) return '';
+    return `${new URLSearchParams(hash).get('rmw_usage_ticket') || ''}`.trim();
+  } catch { return ''; }
+}
+
 function storeTicket(ticket) {
   try {
     ticket
@@ -199,22 +218,40 @@ function loadStoredTicket() {
   catch { return ''; }
 }
 
+function storeUsageTicket(ticket) {
+  try {
+    ticket
+      ? sessionStorage.setItem(USAGE_TICKET_KEY, ticket)
+      : sessionStorage.removeItem(USAGE_TICKET_KEY);
+  } catch {}
+}
+
+function loadStoredUsageTicket() {
+  try { return `${sessionStorage.getItem(USAGE_TICKET_KEY) || ''}`.trim(); }
+  catch { return ''; }
+}
+
 function clearTicket() {
   try { sessionStorage.removeItem(EXTENSION_TICKET_KEY); } catch {}
 }
 
 function captureTicket() {
   const ticket = readTicketFromUrl();
-  if (!ticket) return loadStoredTicket();
-  storeTicket(ticket);
-  try {
-    const sp = new URLSearchParams(location.search || '');
-    sp.delete('rmw_extension_ticket');
-    sp.delete('rmw_tool_slug');
-    const q = sp.toString();
-    history.replaceState(null, '', location.pathname + (q ? `?${q}` : ''));
-  } catch {}
-  return ticket;
+  const usageTicket = readUsageTicketFromUrl();
+  if (usageTicket) storeUsageTicket(usageTicket);
+  const resolvedTicket = ticket || loadStoredTicket();
+  if (ticket) storeTicket(ticket);
+  if (ticket || usageTicket) {
+    try {
+      const sp = new URLSearchParams(location.search || '');
+      sp.delete('rmw_extension_ticket');
+      sp.delete('rmw_usage_ticket');
+      sp.delete('rmw_tool_slug');
+      const q = sp.toString();
+      history.replaceState(null, '', location.pathname + (q ? `?${q}` : ''));
+    } catch {}
+  }
+  return resolvedTicket;
 }
 
 // ── FIX: Only ever remove OUR keys — never clear site storage ─
@@ -223,6 +260,193 @@ function clearOurKeys() {
   [sessionStorage, localStorage].forEach((s) => {
     keys.forEach((k) => { try { s.removeItem(k); } catch {} });
   });
+}
+
+function parseCreditNumber(value) {
+  const match = `${value || ''}`.replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+  return match ? Number(match[1]) : null;
+}
+
+function findVisiblePromptField() {
+  return collectUniqueElements([
+    ...Array.from(document.querySelectorAll('textarea')),
+    ...Array.from(document.querySelectorAll('input[type="text"], input:not([type])')),
+    ...Array.from(document.querySelectorAll('[contenteditable="true"]')),
+  ]).find((el) => isVisible(el) && !el.disabled && !el.readOnly) || null;
+}
+
+function readPromptText() {
+  const input = findVisiblePromptField();
+  if (!input) return '';
+  const value = 'value' in input ? input.value : (input.innerText || input.textContent || '');
+  return `${value || ''}`.trim();
+}
+
+function readSelectedModelLabel() {
+  const text = normalizeSpace(document.body?.innerText || '');
+  const patterns = [
+    /\b(video\s*\d+(?:\.\d+)?\s*(?:turbo|master|pro)?)/i,
+    /\b(master|turbo)\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1].trim();
+    if (match?.[0]) return match[0].trim();
+  }
+  return '';
+}
+
+function findGenerateActionTarget(target) {
+  const candidate = findClickableAncestor(target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement);
+  if (!candidate || !isVisible(candidate) || !isEnabled(candidate)) return null;
+
+  const text = normalizeSpace(buttonDescriptorText(candidate) || buttonText(candidate));
+  if (!/(^|\s)(\d+(?:\.\d+)?\s+)?generate$/.test(text)) return null;
+  if (text.includes('create in omni')) return null;
+
+  const rect = candidate.getBoundingClientRect();
+  if (rect.width < 120 || rect.height < 36) return null;
+  if (rect.top < window.innerHeight * 0.45) return null;
+  return candidate;
+}
+
+function readGenerateControlContext(generateButton) {
+  const scopeCandidates = [];
+  let cur = generateButton?.parentElement || null;
+  let depth = 0;
+  while (cur && cur !== document.body && depth < 6) {
+    scopeCandidates.push(cur);
+    cur = cur.parentElement;
+    depth += 1;
+  }
+
+  const scopeText = normalizeSpace(
+    scopeCandidates
+      .slice(0, 3)
+      .map((el) => buttonDescriptorText(el))
+      .filter(Boolean)
+      .join(' ')
+  );
+
+  const durationMatch = scopeText.match(/\b(\d+)\s*s\b/i);
+  const resolutionMatch = scopeText.match(/\b(360p|540p|720p|1080p|4k)\b/i);
+  const ratioMatch = scopeText.match(/\b\d+\s*[:x]\s*\d+\b/i);
+
+  return {
+    durationLabel: durationMatch?.[0] || '',
+    resolutionLabel: resolutionMatch?.[0] || '',
+    aspectRatioLabel: ratioMatch?.[0] || '',
+  };
+}
+
+function readVisibleCreditBalance() {
+  const candidates = collectUniqueElements(Array.from(document.querySelectorAll('div,span,button,strong,b')))
+    .filter((el) => isVisible(el))
+    .filter((el) => /^\d+(?:\.\d+)?$/.test(`${el.textContent || ''}`.trim()))
+    .map((el) => {
+      const rect = el.getBoundingClientRect();
+      let score = 0;
+      if (rect.left < 220) score += 3;
+      if (rect.top > window.innerHeight * 0.55) score += 3;
+      if (rect.width < 80) score += 1;
+      const parentText = normalizeSpace(el.parentElement?.innerText || '');
+      if (parentText.includes('upgrade')) score += 2;
+      return { el, score };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  return candidates.length ? parseCreditNumber(candidates[0].el.textContent) : null;
+}
+
+function buildGenerateUsageSnapshot(generateButton) {
+  const buttonLabel = normalizeSpace(buttonDescriptorText(generateButton) || buttonText(generateButton));
+  const controlContext = readGenerateControlContext(generateButton);
+  return {
+    eventType: 'generate_click',
+    status: 'captured',
+    promptText: readPromptText(),
+    modelLabel: readSelectedModelLabel(),
+    durationLabel: controlContext.durationLabel,
+    resolutionLabel: controlContext.resolutionLabel,
+    expectedCredits: parseCreditNumber(buttonLabel),
+    creditsBefore: readVisibleCreditBalance(),
+    metadata: {
+      actionLabel: buttonLabel,
+      aspectRatioLabel: controlContext.aspectRatioLabel,
+      pathname: location.pathname,
+    },
+  };
+}
+
+async function reportKlingUsage(snapshot) {
+  const usageTicket = loadStoredUsageTicket();
+  if (!usageTicket) return;
+
+  await msg({
+    type: 'TOOL_HUB_REPORT_USAGE_EVENT',
+    toolSlug: TOOL_SLUG,
+    hostname: location.hostname,
+    pageUrl: location.href,
+    usageTicket,
+    eventType: snapshot.eventType,
+    status: snapshot.status,
+    modelLabel: snapshot.modelLabel,
+    durationLabel: snapshot.durationLabel,
+    resolutionLabel: snapshot.resolutionLabel,
+    promptText: snapshot.promptText,
+    expectedCredits: snapshot.expectedCredits,
+    creditsBefore: snapshot.creditsBefore,
+    creditsAfter: snapshot.creditsAfter,
+    creditsBurned: snapshot.creditsBurned,
+    metadata: snapshot.metadata,
+  });
+}
+
+function scheduleGenerateUsageReport(generateButton) {
+  const snapshot = buildGenerateUsageSnapshot(generateButton);
+  const dedupeKey = JSON.stringify([
+    snapshot.promptText,
+    snapshot.modelLabel,
+    snapshot.durationLabel,
+    snapshot.resolutionLabel,
+    snapshot.expectedCredits,
+  ]);
+  const now = Date.now();
+  if (USAGE_CTX.lastGenerateKey === dedupeKey && now - USAGE_CTX.lastGenerateAt < 1500) {
+    return;
+  }
+
+  USAGE_CTX.lastGenerateKey = dedupeKey;
+  USAGE_CTX.lastGenerateAt = now;
+  if (USAGE_CTX.pendingReportTimer) {
+    clearTimeout(USAGE_CTX.pendingReportTimer);
+    USAGE_CTX.pendingReportTimer = null;
+  }
+
+  USAGE_CTX.pendingReportTimer = window.setTimeout(() => {
+    USAGE_CTX.pendingReportTimer = null;
+    const creditsAfter = readVisibleCreditBalance();
+    snapshot.creditsAfter = creditsAfter;
+    snapshot.creditsBurned = (
+      snapshot.creditsBefore != null && creditsAfter != null
+        ? Math.max(0, snapshot.creditsBefore - creditsAfter)
+        : snapshot.expectedCredits
+    );
+    reportKlingUsage(snapshot).catch(() => {});
+  }, 1800);
+}
+
+function handleGenerateClick(event) {
+  const generateButton = findGenerateActionTarget(event.target);
+  if (!generateButton) return;
+  scheduleGenerateUsageReport(generateButton);
+}
+
+function startUsageTracking() {
+  captureTicket();
+  if (USAGE_CTX.listenerAttached) return;
+  USAGE_CTX.listenerAttached = true;
+  document.addEventListener('click', handleGenerateClick, true);
 }
 
 // ── DOM helpers ───────────────────────────────────────────────
@@ -856,7 +1080,7 @@ async function markFreshSessionPrepared() {
 }
 
 // ── Stop ──────────────────────────────────────────────────────
-function stop(message, phase = P.DONE) {
+function stop(message, phase = P.DONE, options = {}) {
   CTX.phase = phase;
   CTX.stopped = true;
   if (CTX.timer)    { clearTimeout(CTX.timer);    CTX.timer = null; }
@@ -864,7 +1088,9 @@ function stop(message, phase = P.DONE) {
   if (CTX.observer) { CTX.observer.disconnect();  CTX.observer = null; } // FIX: stops mutation drain
   clearTicket();
   clearCheckpoint();
-  msg({ type: 'TOOL_HUB_REVOKE_ACTIVE_LAUNCH', toolSlug: TOOL_SLUG }).catch(() => {});
+  if (!options.preserveLaunch) {
+    msg({ type: 'TOOL_HUB_REVOKE_ACTIVE_LAUNCH', toolSlug: TOOL_SLUG }).catch(() => {});
+  }
   setStatus(message);
 }
 
@@ -1207,7 +1433,11 @@ async function tick() {
       }
 
       if (CTX.submitKind === 'google' && hasKlingNetworkErrorToast()) {
-        stop('Google sign-in failed on Kling side. Click Sign in with Google manually to continue.', P.BLOCKED);
+        stop(
+          'Google sign-in failed on Kling side. Click Sign in with Google manually to continue.',
+          P.BLOCKED,
+          { preserveLaunch: true }
+        );
         return;
       }
 
@@ -1334,6 +1564,7 @@ function onMutation() {
 
 // ── Start ─────────────────────────────────────────────────────
 function start() {
+  startUsageTracking();
   ensureBadge();
   CTX.ticket = captureTicket();
   CTX.observer = new MutationObserver(onMutation);

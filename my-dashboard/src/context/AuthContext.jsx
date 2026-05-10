@@ -6,6 +6,47 @@ import useActivityTracker from '../hooks/useActivityTracker';
 import { cleanupWebPushSubscription } from '../utils/webPush';
 
 export const AuthContext = createContext();
+const AUTH_BOOTSTRAP_CACHE_MS = 10000;
+const AUTH_BOOTSTRAP_RETRY_COUNT = 2;
+const AUTH_BOOTSTRAP_RETRY_DELAY_MS = 900;
+let authBootstrapPromise = null;
+let authBootstrapCachedResult = null;
+let authBootstrapCachedAt = 0;
+
+const isNetworkLikeError = (error) =>
+  !error?.response && (
+    error?.code === 'ECONNABORTED'
+    || error?.code === 'ERR_NETWORK'
+    || error?.message?.toLowerCase?.().includes('timeout')
+  );
+
+const resetAuthBootstrapCache = () => {
+  authBootstrapPromise = null;
+  authBootstrapCachedResult = null;
+  authBootstrapCachedAt = 0;
+};
+
+const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const getCurrentUserWithRetry = async () => {
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt < AUTH_BOOTSTRAP_RETRY_COUNT) {
+    try {
+      return await authAPI.getCurrentUser();
+    } catch (error) {
+      lastError = error;
+      if (!isNetworkLikeError(error) || attempt === AUTH_BOOTSTRAP_RETRY_COUNT - 1) {
+        throw error;
+      }
+      await wait(AUTH_BOOTSTRAP_RETRY_DELAY_MS);
+      attempt += 1;
+    }
+  }
+
+  throw lastError;
+};
 
 // ✅ ADD THIS: Custom hook to use auth context
 export const useAuth = () => {
@@ -19,6 +60,7 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [authIssue, setAuthIssue] = useState(null);
   const noAvatarUserIdsRef = useRef(new Set());
   const handleActivityAuthFailure = useCallback(() => {
     noAvatarUserIdsRef.current.clear();
@@ -60,18 +102,48 @@ export const AuthProvider = ({ children }) => {
   const checkAuth = async () => {
     console.log('🔍 Checking authentication...');
     try {
-      const response = await authAPI.getCurrentUser();
+      const now = Date.now();
+      let response = null;
+
+      if (authBootstrapCachedResult && (now - authBootstrapCachedAt) < AUTH_BOOTSTRAP_CACHE_MS) {
+        response = authBootstrapCachedResult;
+      } else {
+        if (!authBootstrapPromise) {
+          authBootstrapPromise = getCurrentUserWithRetry()
+            .then((result) => {
+              authBootstrapCachedResult = result;
+              authBootstrapCachedAt = Date.now();
+              return result;
+            })
+            .finally(() => {
+              authBootstrapPromise = null;
+            });
+        }
+        response = await authBootstrapPromise;
+      }
+
       if (response.success && response.user) {
         setUser(response.user);
+        setAuthIssue(null);
         void fetchAndPatchAvatar(response.user);
         console.log('✅ User authenticated:', response.user.email);
       } else {
         console.log('ℹ️ No active session');
         noAvatarUserIdsRef.current.clear();
         setUser(null);
+        setAuthIssue(null);
       }
     } catch (error) {
-      console.log('ℹ️ No active session');
+      if (isNetworkLikeError(error)) {
+        console.warn('⚠️ Auth check failed because the auth service is unreachable or timed out.');
+        setAuthIssue({
+          code: 'AUTH_UNREACHABLE',
+          message: 'Cannot reach the login service right now.',
+        });
+      } else {
+        console.log('ℹ️ No active session');
+        setAuthIssue(null);
+      }
       noAvatarUserIdsRef.current.clear();
       setUser(null);
     } finally {
@@ -121,6 +193,7 @@ export const AuthProvider = ({ children }) => {
       const response = await authAPI.login(email, password, rememberMe);
       
       if (response.success && response.user) {
+        resetAuthBootstrapCache();
         setUser(response.user);
         void fetchAndPatchAvatar(response.user);
         try {
@@ -128,6 +201,7 @@ export const AuthProvider = ({ children }) => {
         } catch {
           // no-op
         }
+        setAuthIssue(null);
         console.log('✅ Login successful:', response.user.email);
         return { success: true };
       } else {
@@ -216,13 +290,17 @@ export const AuthProvider = ({ children }) => {
         timestamp: new Date().toISOString(),
       }).catch(() => {});
       await authAPI.logout();
+      resetAuthBootstrapCache();
       noAvatarUserIdsRef.current.clear();
       setUser(null);
+      setAuthIssue(null);
       console.log('✅ Logout successful');
     } catch (error) {
       console.error('❌ Logout error:', error);
+      resetAuthBootstrapCache();
       noAvatarUserIdsRef.current.clear();
       setUser(null);
+      setAuthIssue(null);
     }
   };
 
@@ -257,6 +335,7 @@ export const AuthProvider = ({ children }) => {
   const value = {
     user,
     loading,
+    authIssue,
     login,
     logout,
     register,

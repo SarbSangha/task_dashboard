@@ -2,6 +2,7 @@
 const LOGIN_FLOW_STORAGE_KEY = 'rmw_chatgpt_login_flow_hints_v1';
 const LOGIN_FLOW_HINT_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const FLOW_EXTENSION_TICKET_STORAGE_KEY = 'rmw_flow_google_extension_ticket';
+const LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY = 'rmw_google_extension_ticket_last_tool_slug';
 const STATE = {
   credential: null,
   requested: false,
@@ -11,6 +12,7 @@ const STATE = {
   lastEmailSubmitAt: 0,
   lastPasswordFilledAt: 0,
   lastPasswordSubmitAt: 0,
+  lastConsentSubmitAt: 0,
   lastTotpFilledAt: 0,
   lastTotpSubmitAt: 0,
   lastBackupCodeFilledAt: 0,
@@ -28,6 +30,8 @@ const STATE = {
   lastMutationHandledAt: 0,
   launchChecked: false,
   launchAuthorized: false,
+  launchRetryAttempts: 0,
+  lastLaunchRetryAt: 0,
   toolSlug: '',
   passwordSavingInFlight: false,
   passwordSavingSuppressed: false,
@@ -576,16 +580,60 @@ function sleep(ms) {
 }
 
 function getGoogleExtensionTicketStorageKey(toolSlug = STATE.toolSlug) {
-  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  const normalizedToolSlug = normalizeToolSlug(
+    toolSlug
+    || inferToolSlugFromGooglePage()
+    || readStoredGoogleLastToolSlug()
+  );
   if (normalizedToolSlug === 'flow') {
     return FLOW_EXTENSION_TICKET_STORAGE_KEY;
   }
   return `rmw_google_extension_ticket_${normalizedToolSlug || 'default'}`;
 }
 
+function readStoredGoogleLastToolSlug() {
+  try {
+    const sessionToolSlug = normalizeToolSlug(window.sessionStorage.getItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY));
+    if (sessionToolSlug) return sessionToolSlug;
+
+    const localToolSlug = normalizeToolSlug(window.localStorage.getItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY));
+    if (localToolSlug) {
+      try { window.sessionStorage.setItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY, localToolSlug); } catch {}
+      return localToolSlug;
+    }
+  } catch {}
+
+  return '';
+}
+
+function listKnownGoogleToolSlugs() {
+  return ['flow', 'chatgpt', 'enhancor', 'freepik', 'genspark', 'kling-ai'];
+}
+
+function inferStoredGoogleToolSlug() {
+  const rememberedToolSlug = readStoredGoogleLastToolSlug();
+  if (rememberedToolSlug && readStoredGoogleExtensionTicket(rememberedToolSlug)) {
+    return rememberedToolSlug;
+  }
+
+  const matchingToolSlugs = listKnownGoogleToolSlugs()
+    .filter((toolSlug) => Boolean(readStoredGoogleExtensionTicket(toolSlug)));
+
+  return matchingToolSlugs.length === 1 ? matchingToolSlugs[0] : '';
+}
+
 function readStoredGoogleExtensionTicket(toolSlug = STATE.toolSlug) {
   try {
-    return `${window.sessionStorage.getItem(getGoogleExtensionTicketStorageKey(toolSlug)) || ''}`.trim();
+    const storageKey = getGoogleExtensionTicketStorageKey(toolSlug);
+    const sessionTicket = `${window.sessionStorage.getItem(storageKey) || ''}`.trim();
+    if (sessionTicket) return sessionTicket;
+
+    const localTicket = `${window.localStorage.getItem(storageKey) || ''}`.trim();
+    if (localTicket) {
+      try { window.sessionStorage.setItem(storageKey, localTicket); } catch {}
+      return localTicket;
+    }
+    return '';
   } catch {
     return '';
   }
@@ -593,9 +641,19 @@ function readStoredGoogleExtensionTicket(toolSlug = STATE.toolSlug) {
 
 function storeGoogleExtensionTicket(ticket, toolSlug = STATE.toolSlug) {
   try {
-    const storageKey = getGoogleExtensionTicketStorageKey(toolSlug);
-    if (ticket) window.sessionStorage.setItem(storageKey, ticket);
-    else window.sessionStorage.removeItem(storageKey);
+    const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+    const storageKey = getGoogleExtensionTicketStorageKey(normalizedToolSlug);
+    if (ticket) {
+      window.sessionStorage.setItem(storageKey, ticket);
+      window.localStorage.setItem(storageKey, ticket);
+      if (normalizedToolSlug) {
+        window.sessionStorage.setItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY, normalizedToolSlug);
+        window.localStorage.setItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY, normalizedToolSlug);
+      }
+    } else {
+      window.sessionStorage.removeItem(storageKey);
+      window.localStorage.removeItem(storageKey);
+    }
   } catch {}
 }
 
@@ -754,7 +812,7 @@ function inferToolSlugFromGooglePage() {
     return 'genspark';
   }
 
-  return '';
+  return inferStoredGoogleToolSlug();
 }
 
 function supportsPasswordOptionalGoogleCredential(toolSlug = STATE.toolSlug) {
@@ -1943,6 +2001,61 @@ function findNextButton(kind, input = null) {
     || null;
 }
 
+function isGoogleConsentContinueScreen() {
+  if (!isKlingGoogleFlow()) return false;
+  if (findGoogleEmailInput() || findGooglePasswordInput()) return false;
+
+  const text = pageText();
+  const mentionsKling = text.includes("you're signing back in to kling.ai")
+    || text.includes('youre signing back in to kling.ai')
+    || text.includes('signing back in to kling.ai')
+    || text.includes('review kling.ai')
+    || text.includes('kling.ai privacy policy')
+    || text.includes('kling.ai terms of service');
+
+  return mentionsKling
+    && text.includes('sign in with google')
+    && text.includes('continue');
+}
+
+function findGoogleConsentContinueButton() {
+  return findVisibleActionByText([
+    'continue',
+    'yes, continue',
+    'confirm',
+    'allow',
+  ]);
+}
+
+async function attemptGoogleConsentContinueStep() {
+  if (!isGoogleConsentContinueScreen()) return false;
+
+  if (STATE.lastConsentSubmitAt && Date.now() - STATE.lastConsentSubmitAt < STEP_PENDING_RETRY_MS) {
+    setStatus('Google consent accepted, waiting to continue');
+    scheduleAttempt(700);
+    return true;
+  }
+
+  const continueButton = findGoogleConsentContinueButton();
+  if (!continueButton) {
+    setStatus('Waiting for Google consent continue button');
+    scheduleAttempt(300);
+    return true;
+  }
+
+  setStatus('Continuing Google sign-in');
+  if (!activateActionElement(continueButton)) {
+    setStatus('Google consent continue not ready');
+    scheduleAttempt(300);
+    return true;
+  }
+
+  STATE.lastConsentSubmitAt = Date.now();
+  setStatus('Google consent accepted, continuing sign-in');
+  scheduleAttempt(600);
+  return true;
+}
+
 function getGoogleEmailValue(loginIdentifier, input) {
   const full = `${loginIdentifier || ''}`.trim();
   if (!full.includes('@')) return full;
@@ -2212,6 +2325,36 @@ async function loadLaunchState() {
   if (inferredToolSlug === 'flow' && !extensionTicket) {
     STATE.launchAuthorized = false;
   }
+}
+
+async function retryLaunchStateIfNeeded() {
+  const inferredToolSlug = normalizeToolSlug(
+    STATE.toolSlug
+    || inferToolSlugFromGooglePage()
+    || inferStoredGoogleToolSlug()
+  );
+  if (!inferredToolSlug) return false;
+  if (STATE.launchRetryAttempts >= 3) return false;
+
+  const now = Date.now();
+  if (now - STATE.lastLaunchRetryAt < 500) {
+    return true;
+  }
+
+  STATE.toolSlug = inferredToolSlug;
+  STATE.launchRetryAttempts += 1;
+  STATE.lastLaunchRetryAt = now;
+  STATE.launchChecked = false;
+  setStatus(`Re-checking ${getToolDisplayName(inferredToolSlug)} dashboard launch`);
+
+  try {
+    await loadLaunchState();
+  } catch {
+    STATE.launchChecked = true;
+    STATE.launchAuthorized = false;
+  }
+
+  return true;
 }
 
 function enforceDashboardOnlyAccess() {
@@ -2849,9 +2992,14 @@ async function attemptFill() {
     return;
   }
   if (!STATE.launchAuthorized) {
+    if (await retryLaunchStateIfNeeded()) {
+      scheduleAttempt(250);
+      return;
+    }
     enforceDashboardOnlyAccess();
     return;
   }
+  STATE.launchRetryAttempts = 0;
 
   const credential = STATE.credential;
   if (isEmbeddedGoogleButtonFrame()) {
@@ -2892,6 +3040,7 @@ async function attemptFill() {
   }
 
   if (await attemptPasswordStep(credential)) return;
+  if (await attemptGoogleConsentContinueStep()) return;
   if (await attemptEmailStep(credential)) return;
   if (await attemptFlowTotpStep()) return;
   if (await attemptFlowBackupCodeStep(credential)) return;

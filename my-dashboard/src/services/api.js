@@ -6,7 +6,8 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const SESSION_TOKEN_STORAGE_KEY = 'rmw_session_token_v1';
 const SESSION_TOKEN_REMEMBER_KEY = 'rmw_session_token_remember_v1';
 const REQUEST_TIMEOUT_MS = 15000;
-const AUTH_REQUEST_TIMEOUT_MS = 30000;
+const AUTH_REQUEST_TIMEOUT_MS = 8000;
+const AUTH_BOOTSTRAP_TIMEOUT_MS = 5000;
 const BACKGROUND_REQUEST_TIMEOUT_MS = 8000;
 const PRESIGN_TIMEOUT_MS = 30000;
 const DIRECT_UPLOAD_CONCURRENCY = 2;
@@ -444,7 +445,7 @@ export const authAPI = {
 
   getCurrentUser: async () => {
     const response = await api.get('/api/auth/me', {
-      timeout: AUTH_REQUEST_TIMEOUT_MS,
+      timeout: AUTH_BOOTSTRAP_TIMEOUT_MS,
     });
     return response.data;
   },
@@ -1394,6 +1395,11 @@ export const itToolsAPI = {
 
   launchTool: async (toolId) => {
     const response = await api.post(`/api/it-tools/tools/${toolId}/launch`);
+    return response.data;
+  },
+
+  getUsageReport: async ({ signal, ...params } = {}) => {
+    const response = await api.get('/api/it-tools/usage-report', { params, signal });
     return response.data;
   },
 };

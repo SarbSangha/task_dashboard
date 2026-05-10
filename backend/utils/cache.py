@@ -61,7 +61,13 @@ def _build_cache_key(
 async def init_redis(url: str | None = None):
     global redis_client
 
-    redis_url = (url or os.getenv("REDIS_URL") or "redis://localhost:6379").strip()
+    configured_url = os.getenv("REDIS_URL")
+    if url is not None:
+        redis_url = url.strip()
+    elif configured_url is not None:
+        redis_url = configured_url.strip()
+    else:
+        redis_url = "redis://localhost:6379"
     if not redis_url or redis is None:
         if redis is None:
             logger.warning("Redis dependency is not installed; response caching is disabled.")

@@ -67,6 +67,13 @@ def _allowed_origins() -> list[str]:
     return merged
 
 
+def _display_frontend_url() -> str:
+    frontend_url = (os.getenv("FRONTEND_URL") or "").strip()
+    if frontend_url:
+        return frontend_url
+    return "not configured"
+
+
 def _origin_allowed(origin: str) -> bool:
     normalized = (origin or "").strip()
     if not normalized:
@@ -180,7 +187,7 @@ async def lifespan(app: FastAPI):
     print(f"Operational DB: {_mask_db_url(OPERATIONAL_DB_URL)}")
     print(f"Archive DB: {_mask_db_url(ARCHIVE_DB_URL)}")
     await init_redis()
-    print("Frontend: http://localhost:5173\n")
+    print(f"Frontend: {_display_frontend_url()}\n")
     
     yield
     

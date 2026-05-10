@@ -10,6 +10,7 @@ const TeamTab = lazy(() => import('./tabs/TeamTab'));
 const CompanyTab = lazy(() => import('./tabs/CompanyTab'));
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab'));
 const ToolsTab = lazy(() => import('./tabs/ToolsTab'));
+const CreditsTab = lazy(() => import('./tabs/CreditsTab'));
 
 const TAB_ITEMS = [
   { key: 'overview', label: 'Overview', icon: '📈' },
@@ -19,6 +20,7 @@ const TAB_ITEMS = [
   { key: 'company', label: 'Company', icon: '🏢' },
   { key: 'analytics', label: 'Analytics', icon: '📊' },
   { key: 'Tools', label: 'Tools', icon: '🧰' },
+  { key: 'credits', label: 'Credits', icon: '💳' },
 ];
 
 const TAB_COMPONENTS = {
@@ -29,6 +31,7 @@ const TAB_COMPONENTS = {
   company: CompanyTab,
   analytics: AnalyticsTab,
   Tools: ToolsTab,
+  credits: CreditsTab,
 };
 
 const TAB_SKELETON_VARIANTS = {
@@ -39,6 +42,7 @@ const TAB_SKELETON_VARIANTS = {
   company: 'company',
   analytics: 'analytics',
   Tools: 'overview',
+  credits: 'overview',
 };
 
 function TabSkeleton({ activeTab }) {
