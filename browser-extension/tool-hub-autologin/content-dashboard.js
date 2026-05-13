@@ -114,9 +114,47 @@ function getIncognitoLaunchToolName(toolSlug) {
   return 'this tool';
 }
 
+function appendExtensionLaunchParams(launchUrl, detail) {
+  const rawUrl = `${launchUrl || ''}`.trim();
+  if (!rawUrl) return '';
+
+  const ticket = `${detail?.ticket || detail?.extensionTicket || ''}`.trim();
+  const usageTicket = `${detail?.usageTrackingTicket || ''}`.trim();
+  const toolSlug = normalizeToolSlug(detail?.toolSlug);
+  if (!ticket && !usageTicket && !toolSlug) return rawUrl;
+
+  try {
+    const url = new URL(rawUrl);
+    if (ticket && !url.searchParams.get('rmw_extension_ticket')) {
+      url.searchParams.set('rmw_extension_ticket', ticket);
+    }
+    if (usageTicket && !url.searchParams.get('rmw_usage_ticket')) {
+      url.searchParams.set('rmw_usage_ticket', usageTicket);
+    }
+    if (toolSlug && !url.searchParams.get('rmw_tool_slug')) {
+      url.searchParams.set('rmw_tool_slug', toolSlug);
+    }
+
+    const hashParams = new URLSearchParams((url.hash || '').replace(/^#/, ''));
+    if (ticket && !hashParams.get('rmw_extension_ticket')) {
+      hashParams.set('rmw_extension_ticket', ticket);
+    }
+    if (usageTicket && !hashParams.get('rmw_usage_ticket')) {
+      hashParams.set('rmw_usage_ticket', usageTicket);
+    }
+    if (toolSlug && !hashParams.get('rmw_tool_slug')) {
+      hashParams.set('rmw_tool_slug', toolSlug);
+    }
+    url.hash = hashParams.toString();
+    return url.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 function requestIncognitoWindow(detail) {
   const toolSlug = normalizeToolSlug(detail?.toolSlug);
-  const launchUrl = `${detail?.launchUrl || ''}`.trim();
+  const launchUrl = appendExtensionLaunchParams(detail?.launchUrl, detail);
   const toolName = `${detail?.toolName || ''}`.trim() || getIncognitoLaunchToolName(toolSlug);
   if (!toolSlug || !launchUrl) {
     emitWindowLaunchResult({
@@ -133,6 +171,8 @@ function requestIncognitoWindow(detail) {
       toolSlug,
       toolName,
       launchUrl,
+      extensionTicket: `${detail?.ticket || detail?.extensionTicket || ''}`.trim(),
+      usageTrackingTicket: `${detail?.usageTrackingTicket || ''}`.trim(),
     },
     (response) => {
       if (chrome.runtime.lastError) {

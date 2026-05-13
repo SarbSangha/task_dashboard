@@ -147,6 +147,7 @@ const toolSupportsCredentialLoginMethodSelection = (value) => {
   const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug || value?.name);
   return normalizedToolSlug === 'enhancor'
     || normalizedToolSlug === 'elevenlabs'
+    || normalizedToolSlug === 'flow'
     || normalizedToolSlug === 'freepik'
     || normalizedToolSlug === 'genspark'
     || normalizedToolSlug === 'kling-ai'
@@ -1939,6 +1940,10 @@ export default function Tools({ view = 'tools' }) {
       const response = await itToolsAPI.launchTool(tool.id);
       setLaunchResult(response);
       let launchUrl = response.launchUrl;
+      const responseToolSlug = normalizeToolSlug(response.tool?.slug || tool?.slug || tool?.name);
+      if (responseToolSlug === 'elevenlabs' && (!response.extensionAutoFill || !response.extensionTicket)) {
+        throw new Error('ElevenLabs launch did not return an extension ticket. Restart the backend, refresh the dashboard, then launch ElevenLabs again.');
+      }
       if (response.extensionAutoFill && response.extensionTicket && response.tool?.slug) {
         const normalizedToolSlug = normalizeToolSlug(response.tool.slug);
         const launchLoginMethod = `${response.credential?.loginMethod || ''}`.trim().toLowerCase();
@@ -1977,6 +1982,8 @@ export default function Tools({ view = 'tools' }) {
             toolSlug: normalizedToolSlug,
             toolName: response.tool.name,
             launchUrl,
+            ticket: response.extensionTicket,
+            usageTrackingTicket: response.usageTrackingTicket || '',
           });
           if (!isolatedResult.ok) {
             throw new Error(isolatedResult.error || `Unable to open ${response.tool.name || response.tool.slug} in an incognito window.`);

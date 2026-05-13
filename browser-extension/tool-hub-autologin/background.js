@@ -806,18 +806,57 @@ function getIncognitoWindowToolName(toolSlug, toolName = '') {
   return 'this tool';
 }
 
-function getIncognitoLaunchUrl(toolSlug, launchUrl) {
+function appendExtensionLaunchParamsToUrl(launchUrl, toolSlug, extensionTicket = '', usageTrackingTicket = '') {
+  const rawUrl = `${launchUrl || ''}`.trim();
+  if (!rawUrl) return '';
+
   const normalizedSlug = normalizeToolSlug(toolSlug);
-  if (normalizedSlug === 'flow') {
-    return normalizeFlowLaunchUrl(launchUrl);
+  const ticket = `${extensionTicket || ''}`.trim();
+  const usageTicket = `${usageTrackingTicket || ''}`.trim();
+  if (!normalizedSlug && !ticket && !usageTicket) return rawUrl;
+
+  try {
+    const url = new URL(rawUrl);
+    if (ticket && !url.searchParams.get('rmw_extension_ticket')) {
+      url.searchParams.set('rmw_extension_ticket', ticket);
+    }
+    if (usageTicket && !url.searchParams.get('rmw_usage_ticket')) {
+      url.searchParams.set('rmw_usage_ticket', usageTicket);
+    }
+    if (normalizedSlug && !url.searchParams.get('rmw_tool_slug')) {
+      url.searchParams.set('rmw_tool_slug', normalizedSlug);
+    }
+
+    const hashParams = new URLSearchParams((url.hash || '').replace(/^#/, ''));
+    if (ticket && !hashParams.get('rmw_extension_ticket')) {
+      hashParams.set('rmw_extension_ticket', ticket);
+    }
+    if (usageTicket && !hashParams.get('rmw_usage_ticket')) {
+      hashParams.set('rmw_usage_ticket', usageTicket);
+    }
+    if (normalizedSlug && !hashParams.get('rmw_tool_slug')) {
+      hashParams.set('rmw_tool_slug', normalizedSlug);
+    }
+    url.hash = hashParams.toString();
+    return url.toString();
+  } catch {
+    return rawUrl;
   }
-  return `${launchUrl || ''}`.trim();
 }
 
-async function openToolIncognitoWindow(toolSlug, launchUrl, toolName = '') {
+function getIncognitoLaunchUrl(toolSlug, launchUrl, extensionTicket = '', usageTrackingTicket = '') {
+  const normalizedSlug = normalizeToolSlug(toolSlug);
+  const ticketedUrl = appendExtensionLaunchParamsToUrl(launchUrl, normalizedSlug, extensionTicket, usageTrackingTicket);
+  if (normalizedSlug === 'flow') {
+    return normalizeFlowLaunchUrl(ticketedUrl);
+  }
+  return ticketedUrl;
+}
+
+async function openToolIncognitoWindow(toolSlug, launchUrl, toolName = '', extensionTicket = '', usageTrackingTicket = '') {
   const normalizedSlug = normalizeToolSlug(toolSlug);
   const resolvedToolName = getIncognitoWindowToolName(normalizedSlug, toolName);
-  const url = getIncognitoLaunchUrl(normalizedSlug, launchUrl);
+  const url = getIncognitoLaunchUrl(normalizedSlug, launchUrl, extensionTicket, usageTrackingTicket);
   if (!url) {
     throw new Error(`${resolvedToolName} launch URL is missing.`);
   }
@@ -1433,7 +1472,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
-    openToolIncognitoWindow(message.toolSlug, message.launchUrl, message.toolName)
+    openToolIncognitoWindow(
+      message.toolSlug,
+      message.launchUrl,
+      message.toolName,
+      message.extensionTicket,
+      message.usageTrackingTicket
+    )
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

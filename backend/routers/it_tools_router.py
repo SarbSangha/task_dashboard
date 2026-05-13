@@ -52,6 +52,7 @@ PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
     "enhancor": {"email_password", "google"},
     "elevenlabs": {"email_password", "google"},
+    "flow": {"email_password", "google"},
     "freepik": {"email_password", "google"},
     "genspark": {"email_password", "google"},
     "kling": {"email_password", "google"},
@@ -2501,12 +2502,14 @@ async def launch_tool(
 
     revealed = None
     canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
+    force_extension_autofill_launch = canonical_tool_slug == "elevenlabs"
+    effective_extension_autofill = tool.launch_mode == "extension_autofill" or force_extension_autofill_launch
     revealed_login_method = _normalize_credential_login_method(canonical_tool_slug, credential.login_method)
     revealed = {
         "scope": credential.scope,
         "loginMethod": revealed_login_method,
         "loginIdentifier": decrypt_secret(credential.login_identifier_encrypted),
-        "password": None if tool.launch_mode in {"automation", "extension_autofill"} else decrypt_secret(credential.password_encrypted),
+        "password": None if tool.launch_mode == "automation" or effective_extension_autofill else decrypt_secret(credential.password_encrypted),
         "backupCodes": _decode_backup_codes(credential),
         "apiKey": decrypt_secret(credential.api_key_encrypted),
         "notes": credential.notes,
@@ -2517,7 +2520,7 @@ async def launch_tool(
     extension_ticket_expires_at = None
     usage_tracking_ticket = None
     usage_tracking_ticket_expires_at = None
-    if tool.launch_mode == "automation":
+    if tool.launch_mode == "automation" and not force_extension_autofill_launch:
         ticket = _sign_ticket(
             {
                 "kind": "automation_launch",
@@ -2527,7 +2530,7 @@ async def launch_tool(
             }
         )
         launch_url = _automation_launch_url(request, ticket)
-    elif tool.launch_mode == "extension_autofill":
+    elif effective_extension_autofill:
         extension_ticket_expires_at = int(time.time()) + EXTENSION_AUTOFILL_TICKET_TTL_SEC
         extension_ticket = _sign_ticket(
             {
@@ -2554,15 +2557,19 @@ async def launch_tool(
         tool_id=tool.id,
         credential_id=credential.id if credential else None,
         target_user_id=credential.user_id if credential else None,
-        details={"launchMode": tool.launch_mode, "credentialScope": credential.scope if credential else None},
+        details={
+            "launchMode": tool.launch_mode,
+            "effectiveLaunchMode": "extension_autofill" if effective_extension_autofill else tool.launch_mode,
+            "credentialScope": credential.scope if credential else None,
+        },
     )
     db.commit()
 
     return {
         "success": True,
         "launchUrl": launch_url,
-        "autoLogin": tool.launch_mode == "automation",
-        "extensionAutoFill": tool.launch_mode == "extension_autofill",
+        "autoLogin": tool.launch_mode == "automation" and not force_extension_autofill_launch,
+        "extensionAutoFill": effective_extension_autofill,
         "extensionTicket": extension_ticket,
         "extensionTicketExpiresAt": extension_ticket_expires_at,
         "usageTrackingTicket": usage_tracking_ticket,
