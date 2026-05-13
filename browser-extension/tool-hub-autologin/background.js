@@ -325,7 +325,7 @@ function isRecentContinuationReuseAllowed(toolSlug, pageUrl, hostname) {
     return false;
   }
 
-  if (['genspark', 'flow', 'kling', 'kling-ai', 'klingai'].includes(normalizedToolSlug)) {
+  if (['elevenlabs', 'genspark', 'flow', 'kling', 'kling-ai', 'klingai'].includes(normalizedToolSlug)) {
     return pageHost === 'accounts.google.com';
   }
 

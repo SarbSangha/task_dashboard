@@ -5,6 +5,8 @@ const MIN_RUN_GAP_MS = 500;
 const KEEP_ALIVE_MS = 2500;
 const ACTION_COOLDOWN_MS = 1800;
 const SUBMIT_COOLDOWN_MS = 5000;
+const LAUNCH_RETRY_DELAY_MS = 500;
+const MAX_LAUNCH_RETRIES = 10;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -49,6 +51,9 @@ const STATE = {
   lastRunAt: 0,
   lastActionAt: 0,
   lastSubmitAt: 0,
+  launchRetryAttempts: 0,
+  lastLaunchRetryAt: 0,
+  launchRetryInFlight: false,
 };
 
 function normalizeLoginMethod(value) {
@@ -227,6 +232,38 @@ async function loadLaunchState() {
   STATE.launchChecked = true;
   STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
+}
+
+function retryLaunchAuthorizationIfNeeded() {
+  if (STATE.launchAuthorized || STATE.launchRetryInFlight) return true;
+  if (STATE.launchRetryAttempts >= MAX_LAUNCH_RETRIES) return false;
+
+  const now = Date.now();
+  if (now - STATE.lastLaunchRetryAt < LAUNCH_RETRY_DELAY_MS) {
+    setStatus('Waiting for dashboard launch authorization');
+    scheduleAttempt(LAUNCH_RETRY_DELAY_MS);
+    return true;
+  }
+
+  STATE.launchRetryAttempts += 1;
+  STATE.lastLaunchRetryAt = now;
+  STATE.launchRetryInFlight = true;
+  setStatus(`Checking dashboard launch authorization (${STATE.launchRetryAttempts}/${MAX_LAUNCH_RETRIES})`);
+
+  loadLaunchState()
+    .then(() => {
+      STATE.launchRetryInFlight = false;
+      if (STATE.launchAuthorized) {
+        STATE.launchRetryAttempts = 0;
+      }
+      scheduleAttempt(100);
+    })
+    .catch(() => {
+      STATE.launchRetryInFlight = false;
+      scheduleAttempt(LAUNCH_RETRY_DELAY_MS);
+    });
+
+  return true;
 }
 
 function isVisible(element) {
@@ -644,6 +681,7 @@ function attemptFlow() {
   }
 
   if (!STATE.launchAuthorized) {
+    if (retryLaunchAuthorizationIfNeeded()) return;
     stop('Launch this tool from the dashboard first');
     return;
   }

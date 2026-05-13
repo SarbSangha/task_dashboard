@@ -9,7 +9,6 @@ const MIN_RUN_GAP_MS = 400;
 const KEEP_ALIVE_MS = 2000;
 const LOGIN_OPEN_COOLDOWN_MS = 2500;
 const SUBMIT_COOLDOWN_MS = 5000;
-const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -57,9 +56,7 @@ const STATE = {
   lastRunAt: 0,
   lastLoginOpenAt: 0,
   lastSubmitAt: 0,
-  passwordSavingInFlight: false,
-  passwordSavingSuppressed: false,
-  passwordSavingRestoreTimer: null,
+  passwordFilled: false,
   passwordRevealGuardAttached: false,
   switchingToLoginUntil: 0,
   lastBackNavigationAt: 0,
@@ -128,7 +125,6 @@ function stop(message) {
     STATE.observer.disconnect();
     STATE.observer = null;
   }
-  releasePasswordSavingSuppressed(0);
   setStatus(message);
 }
 
@@ -146,7 +142,6 @@ function complete(message = 'Magnific login complete') {
     STATE.observer.disconnect();
     STATE.observer = null;
   }
-  releasePasswordSavingSuppressed(0);
   STATE.status = message;
   console.debug('[RMW Magnific Auto Login]', message);
   window.setTimeout(() => hideStatusBadge(), 600);
@@ -162,66 +157,6 @@ function sendRuntimeMessage(message) {
       resolve(response || { ok: false, error: 'No response received' });
     });
   });
-}
-
-async function ensurePasswordSavingSuppressed() {
-  if (STATE.passwordSavingSuppressed) return true;
-
-  const response = await sendRuntimeMessage({
-    type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
-    suppressed: true,
-  });
-
-  if (!response?.ok) {
-    setStatus(response?.error || 'Could not suppress Chrome password prompt');
-    return false;
-  }
-
-  STATE.passwordSavingSuppressed = true;
-  return true;
-}
-
-function requestPasswordSavingSuppression() {
-  if (STATE.passwordSavingSuppressed || STATE.passwordSavingInFlight) {
-    return;
-  }
-
-  STATE.passwordSavingInFlight = true;
-  setStatus('Disabling Chrome password-save prompt');
-
-  ensurePasswordSavingSuppressed()
-    .then((ok) => {
-      STATE.passwordSavingInFlight = false;
-      if (!ok) {
-        stop('Blocked: Chrome password-save prompt could not be disabled.');
-        return;
-      }
-      scheduleAttempt(50);
-    })
-    .catch((error) => {
-      STATE.passwordSavingInFlight = false;
-      stop(`Blocked: ${error?.message || 'Could not disable Chrome password-save prompt.'}`);
-    });
-}
-
-function releasePasswordSavingSuppressed(delay = 0) {
-  if (STATE.passwordSavingRestoreTimer) {
-    window.clearTimeout(STATE.passwordSavingRestoreTimer);
-    STATE.passwordSavingRestoreTimer = null;
-  }
-
-  if (!STATE.passwordSavingSuppressed && delay <= 0) {
-    return;
-  }
-
-  STATE.passwordSavingRestoreTimer = window.setTimeout(() => {
-    sendRuntimeMessage({
-      type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
-      suppressed: false,
-    });
-    STATE.passwordSavingSuppressed = false;
-    STATE.passwordSavingRestoreTimer = null;
-  }, Math.max(0, delay));
 }
 
 function readLaunchTicketFromUrl() {
@@ -949,28 +884,7 @@ function ensurePasswordRevealGuard() {
 }
 
 function lockPasswordVisibility(passwordInput) {
-  if (!passwordInput) return;
-  enforcePasswordMask(passwordInput);
-  ensurePasswordRevealGuard();
-
-  findPasswordToggleCandidates(passwordInput).forEach((toggle) => {
-    if (!toggle || toggle.dataset.rmwPasswordToggleLocked === '1') return;
-
-    toggle.dataset.rmwPasswordToggleLocked = '1';
-    toggle.setAttribute('aria-disabled', 'true');
-    toggle.setAttribute('tabindex', '-1');
-    if ('disabled' in toggle) {
-      try {
-        toggle.disabled = true;
-      } catch {}
-    }
-    toggle.style.pointerEvents = 'none';
-    toggle.style.opacity = '0.45';
-
-    const blockToggle = (event) => blockPasswordToggleEvent(event, passwordInput);
-    ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'keydown', 'keyup']
-      .forEach((eventName) => toggle.addEventListener(eventName, blockToggle, true));
-  });
+  void passwordInput;
 }
 
 function isLoginSurface(emailInput, passwordInput) {
@@ -988,46 +902,8 @@ function isEmailChooserSurface() {
 
 function protectPasswordField(passwordInput) {
   if (!passwordInput) return;
-  if (passwordInput.dataset.rmwPasswordProtected === '1') return;
-
-  passwordInput.dataset.rmwPasswordProtected = '1';
-  passwordInput.setAttribute('autocomplete', 'off');
-  passwordInput.setAttribute('spellcheck', 'false');
-
-  const collapseSelection = () => {
-    try {
-      const length = `${passwordInput.value || ''}`.length;
-      passwordInput.setSelectionRange(length, length);
-    } catch {}
-  };
-
-  const blockEvent = (event) => {
-    collapseSelection();
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    event.stopPropagation();
-  };
-
-  passwordInput.addEventListener('copy', blockEvent, true);
-  passwordInput.addEventListener('cut', blockEvent, true);
-  passwordInput.addEventListener('contextmenu', blockEvent, true);
-  passwordInput.addEventListener('dragstart', blockEvent, true);
-  passwordInput.addEventListener('select', collapseSelection, true);
-  passwordInput.addEventListener('mouseup', collapseSelection, true);
-
-  passwordInput.addEventListener('keydown', (event) => {
-    const key = `${event.key || ''}`.toLowerCase();
-    if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'x'].includes(key)) {
-      blockEvent(event);
-      return;
-    }
-
-    if (event.shiftKey && ['arrowleft', 'arrowright', 'home', 'end'].includes(key)) {
-      blockEvent(event);
-    }
-  }, true);
-
-  collapseSelection();
+  ensurePasswordRevealGuard();
+  lockPasswordVisibility(passwordInput);
 }
 
 function setInputValue(input, value) {
@@ -1333,7 +1209,6 @@ function attemptFlow() {
   }
 
   if (passwordInput) {
-    lockPasswordVisibility(passwordInput);
     protectPasswordField(passwordInput);
   }
 
@@ -1470,13 +1345,10 @@ function attemptFlow() {
     setInputValue(emailInput, STATE.credential.loginIdentifier);
   }
 
-  if (passwordInput.value !== STATE.credential.password) {
-    if (!STATE.passwordSavingSuppressed) {
-      requestPasswordSavingSuppression();
-      return;
-    }
+  if (passwordInput.value !== STATE.credential.password && !STATE.passwordFilled) {
     passwordInput.focus();
     setInputValue(passwordInput, STATE.credential.password);
+    STATE.passwordFilled = passwordInput.value === STATE.credential.password;
   }
 
   if (!isReadyForSubmit(emailInput, passwordInput)) {
@@ -1491,9 +1363,9 @@ function attemptFlow() {
 
   const submitButton = findLoginSubmitButton(emailInput, passwordInput);
   STATE.lastSubmitAt = Date.now();
+  STATE.passwordFilled = true;
   setStatus('Submitting Magnific login');
   submitLogin(emailInput, passwordInput, submitButton);
-  releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
 }
 
 function runAttempt() {

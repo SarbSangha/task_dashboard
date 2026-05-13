@@ -1060,6 +1060,23 @@ function buttonDescriptorText(el) {
   return parts.filter(Boolean).join(' ').trim().toLowerCase();
 }
 
+function isPolicyLikeAction(el) {
+  if (!el) return false;
+  const text = buttonDescriptorText(el) || buttonText(el);
+  const href = `${el.getAttribute?.('href') || ''}`.trim().toLowerCase();
+  const combined = `${text} ${href}`.trim();
+  return combined.includes('privacy')
+    || combined.includes('terms')
+    || combined.includes('policy')
+    || combined.includes('cookies')
+    || combined.includes('cookie')
+    || combined.includes('help center')
+    || combined.includes('/privacy')
+    || combined.includes('/terms')
+    || combined.includes('/policy')
+    || combined.includes('/cookies');
+}
+
 function hasKlingNetworkErrorToast() {
   const text = normalizeSpace(document.body?.innerText || '');
   return text.includes('network error, please try again');
@@ -1662,12 +1679,14 @@ function enhancedSafeClick(el) {
 
 // ── Button detection helpers ──────────────────────────────────
 function isThirdPartyAuthAction(el) {
+  if (isPolicyLikeAction(el)) return false;
   const text = buttonDescriptorText(el) || buttonText(el);
   return text.includes('google') || text.includes('apple')
     || text.includes('facebook') || text.includes('continue as ');
 }
 
 function isEmailAuthAction(el) {
+  if (isPolicyLikeAction(el)) return false;
   const text = buttonDescriptorText(el) || buttonText(el);
   return text.includes('sign in with email')
     || text.includes('continue with email')
@@ -1694,7 +1713,9 @@ function findLandingCandidates() {
         || text.includes('use email') || text.includes('experience now') || text.includes('create now');
     })
     .map((el) => findClickableAncestor(el));
-  return collectUniqueElements([...primary, ...fallback]).filter((el) => isActionLikeElement(el));
+  return collectUniqueElements([...primary, ...fallback])
+    .filter((el) => isActionLikeElement(el))
+    .filter((el) => !isPolicyLikeAction(el));
 }
 
 function findEmailChooserButton() {
@@ -1744,6 +1765,7 @@ function findDirectInteractiveSignInButton() {
   )
     .filter((el) => isVisible(el) && isEnabled(el))
     .filter((el) => {
+      if (isPolicyLikeAction(el)) return false;
       if (isThirdPartyAuthAction(el) || isEmailAuthAction(el)) return false;
       const text = normalizeSpace(buttonText(el));
       const descriptor = normalizeSpace(buttonDescriptorText(el));
@@ -1765,6 +1787,7 @@ function findExactSignInButton() {
   const matches = collectUniqueElements(rawCandidates)
     .filter((el) => isActionLikeElement(el))
     .filter((el) => {
+      if (isPolicyLikeAction(el)) return false;
       if (isThirdPartyAuthAction(el) || isEmailAuthAction(el)) return false;
       const text = normalizeSpace(buttonText(el));
       const descriptor = normalizeSpace(buttonDescriptorText(el));
@@ -1782,6 +1805,7 @@ function findLandingEntryButton() {
 
   const candidates = findLandingCandidates();
   const signInButton = candidates.find((el) => {
+    if (isPolicyLikeAction(el)) return false;
     if (isThirdPartyAuthAction(el) || isEmailAuthAction(el)) return false;
     const text = buttonDescriptorText(el) || buttonText(el);
     return text === 'sign in' || text === 'login' || text === 'log in'
@@ -1789,6 +1813,7 @@ function findLandingEntryButton() {
   });
   if (signInButton) return signInButton;
   return candidates.find((el) => {
+    if (isPolicyLikeAction(el)) return false;
     if (isThirdPartyAuthAction(el) || isEmailAuthAction(el)) return false;
     const text = buttonDescriptorText(el) || buttonText(el);
     if (text.includes('experience now') || text.includes('create now') || text.includes('get started')) return true;

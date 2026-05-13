@@ -30,6 +30,22 @@ const PASSWORD_SELECTORS = [
   'input[aria-label*="password" i]',
 ].join(',');
 
+const OTP_SELECTORS = [
+  'input[autocomplete="one-time-code"]',
+  'input[name="code"]',
+  'input[name*="otp" i]',
+  'input[name*="verification" i]',
+  'input[id*="code" i]',
+  'input[id*="otp" i]',
+  'input[id*="verification" i]',
+  'input[placeholder*="code" i]',
+  'input[placeholder*="otp" i]',
+  'input[placeholder*="verification" i]',
+  'input[aria-label*="code" i]',
+  'input[aria-label*="otp" i]',
+  'input[aria-label*="verification" i]',
+].join(',');
+
 const ACTION_SELECTORS = [
   'button',
   'a[href]',
@@ -53,6 +69,11 @@ const STATE = {
   lastActionAt: 0,
   lastSubmitAt: 0,
   lastEmailContinueAt: 0,
+  otpValue: '',
+  otpFetching: false,
+  otpRequestAttempts: 0,
+  otpLastRequestAt: 0,
+  otpSubmittedAt: 0,
 };
 
 function ensureStatusBadge() {
@@ -257,6 +278,10 @@ function actionText(element) {
   );
 }
 
+function pageText() {
+  return normalizeText(document.body?.innerText || document.body?.textContent || '');
+}
+
 function controlHintText(element) {
   return normalizeText([
     actionText(element),
@@ -302,6 +327,40 @@ function collectBroadActionCandidates() {
 function findInput(selectorList) {
   return Array.from(document.querySelectorAll(selectorList))
     .find((element) => isVisible(element) && !element.disabled && !element.readOnly) || null;
+}
+
+function findOtpInput() {
+  const direct = findInput(OTP_SELECTORS);
+  if (direct) return direct;
+
+  const text = pageText();
+  const looksLikeOtpScreen = text.includes('finish logging in')
+    || text.includes('enter the code')
+    || text.includes('code we sent')
+    || text.includes("didn't get the code")
+    || text.includes('resend');
+  if (!looksLikeOtpScreen) return null;
+
+  return Array.from(document.querySelectorAll('input'))
+    .find((element) => {
+      if (!isVisible(element) || element.disabled || element.readOnly) return false;
+      const type = `${element.type || ''}`.trim().toLowerCase();
+      if (type === 'password' || type === 'email') return false;
+      const hints = normalizeText([
+        element.type,
+        element.name,
+        element.id,
+        element.placeholder,
+        element.getAttribute('aria-label'),
+        element.getAttribute('autocomplete'),
+        element.getAttribute('inputmode'),
+      ].filter(Boolean).join(' '));
+      return hints.includes('code')
+        || hints.includes('otp')
+        || hints.includes('verification')
+        || hints.includes('one-time')
+        || hints.includes('numeric');
+    }) || null;
 }
 
 function getValueSetter(element) {
@@ -535,6 +594,19 @@ function findStageSubmitButton(emailInput, passwordInput) {
   return null;
 }
 
+function findOtpSubmitButton(otpInput) {
+  return findStageSubmitButton(otpInput, null)
+    || collectActionCandidates()
+      .find((element) => {
+        const text = actionText(element);
+        return (text === 'continue' || text.includes('continue') || text.includes('verify'))
+          && !text.includes('google')
+          && !text.includes('help')
+          && !text.includes('resend');
+      })
+    || null;
+}
+
 function submitStage(primaryInput, submitButton) {
   if (submitButton && clickElement(submitButton)) return true;
   if (pressEnter(primaryInput)) return true;
@@ -600,7 +672,7 @@ function requestCredential() {
 
       clearStoredLaunchTicket();
       STATE.credential = response.data?.credential || null;
-      if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
+      if (!STATE.credential?.loginIdentifier) {
         setStatus('Credential missing');
         return;
       }
@@ -609,6 +681,73 @@ function requestCredential() {
       scheduleAttempt(100);
     }
   );
+}
+
+function requestOtp() {
+  const now = Date.now();
+  if (STATE.otpFetching || STATE.otpValue) return;
+  if (STATE.otpRequestAttempts >= 4) {
+    setStatus('Canva OTP fetch failed after 4 attempts');
+    return;
+  }
+  if (now - STATE.otpLastRequestAt < 2500) return;
+
+  STATE.otpFetching = true;
+  STATE.otpLastRequestAt = now;
+  STATE.otpRequestAttempts += 1;
+  setStatus(`Fetching Canva OTP from email (attempt ${STATE.otpRequestAttempts})`);
+
+  sendRuntimeMessage({
+    type: 'TOOL_HUB_FETCH_OTP',
+    toolSlug: TOOL_SLUG,
+    hostname: window.location.hostname,
+    pageUrl: window.location.href,
+    extensionTicket: getStoredLaunchTicket(),
+  }).then((response) => {
+    STATE.otpFetching = false;
+
+    if (!response?.ok || !response.otp) {
+      setStatus(response?.error || 'Canva OTP not received yet');
+      scheduleAttempt(1500);
+      return;
+    }
+
+    STATE.otpValue = `${response.otp}`.trim();
+    scheduleAttempt(100);
+  });
+}
+
+function attemptOtpStep(otpInput) {
+  if (!otpInput) return false;
+
+  if (!STATE.otpValue && !STATE.otpFetching) {
+    requestOtp();
+  }
+
+  if (!STATE.otpValue) {
+    setStatus(STATE.otpFetching ? 'Fetching Canva OTP from email' : 'Waiting for Canva OTP');
+    scheduleAttempt(1200);
+    return true;
+  }
+
+  if (`${otpInput.value || ''}`.trim() !== STATE.otpValue) {
+    setStatus('Filling Canva OTP');
+    setInputValue(otpInput, STATE.otpValue);
+    scheduleAttempt(300);
+    return true;
+  }
+
+  if (Date.now() - STATE.otpSubmittedAt < 3000) {
+    setStatus('Canva OTP submitted, waiting for login');
+    return true;
+  }
+
+  const submitButton = findOtpSubmitButton(otpInput);
+  STATE.otpSubmittedAt = Date.now();
+  STATE.lastSubmitAt = Date.now();
+  setStatus('Submitting Canva OTP');
+  submitStage(otpInput, submitButton);
+  return true;
 }
 
 function canActNow() {
@@ -661,9 +800,15 @@ function attemptFlow() {
 
   const emailInput = findEmailInput();
   const passwordInput = findInput(PASSWORD_SELECTORS);
+  const otpInput = findOtpInput();
 
   if (!STATE.credential) {
     requestCredential();
+  }
+
+  if (otpInput) {
+    attemptOtpStep(otpInput);
+    return;
   }
 
   if (!emailInput && !passwordInput) {
@@ -673,7 +818,7 @@ function attemptFlow() {
     return;
   }
 
-  if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
+  if (!STATE.credential?.loginIdentifier) {
     setStatus('Waiting for credential');
     return;
   }
@@ -708,6 +853,11 @@ function attemptFlow() {
 
   if (emailInput && emailInput.value && emailInput.value !== STATE.credential.loginIdentifier) {
     setInputValue(emailInput, STATE.credential.loginIdentifier);
+  }
+
+  if (!STATE.credential?.password) {
+    setStatus('Canva password missing; waiting for OTP or manual password entry');
+    return;
   }
 
   if (passwordInput.value !== STATE.credential.password) {

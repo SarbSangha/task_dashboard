@@ -199,9 +199,21 @@ function isKlingGoogleFlow(toolSlug = STATE.toolSlug) {
   return normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai';
 }
 
+function isFreepikGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'freepik';
+}
+
+function hasFreepikGooglePasswordValue(input, expectedValue, toolSlug = STATE.toolSlug) {
+  if (!isFreepikGoogleFlow(toolSlug)) return false;
+  const passwordValue = `${expectedValue || ''}`;
+  if (!passwordValue) return false;
+  return `${input?.value || ''}` === passwordValue
+    || getGooglePasswordTypedMarker(input) === passwordValue;
+}
+
 function shouldProtectGooglePasswordReveal(toolSlug = STATE.toolSlug) {
-  void toolSlug;
-  return false;
+  return isKlingGoogleFlow(toolSlug) || isFreepikGoogleFlow(toolSlug);
 }
 
 function shouldAggressivelyDisableGoogleRevealControls(toolSlug = STATE.toolSlug) {
@@ -1283,23 +1295,19 @@ function keepProtectedGoogleRevealControlsUnchecked(passInput) {
 }
 
 function scheduleProtectedGooglePasswordRemask(passInput) {
-  if (!passInput) return;
-  [0, 40, 120, 260].forEach((delayMs) => {
-    window.setTimeout(() => {
-      const activePasswordInput = passInput.isConnected ? passInput : findGooglePasswordInput();
-      if (!activePasswordInput) return;
-      if (`${activePasswordInput.type || ''}`.trim().toLowerCase() !== 'password') {
-        enforceProtectedGooglePasswordMask(activePasswordInput);
-      }
-    }, delayMs);
-  });
+  void passInput;
 }
 
 function clearProtectedGooglePasswordMaskLoop() {
+  if (STATE.passwordTypeObserver) {
+    try { STATE.passwordTypeObserver.disconnect(); } catch {}
+  }
   if (STATE.passwordMaskLoopTimer) {
     window.clearInterval(STATE.passwordMaskLoopTimer);
-    STATE.passwordMaskLoopTimer = null;
   }
+  STATE.passwordMaskLoopTimer = null;
+  STATE.passwordTypeObserver = null;
+  STATE.passwordTypeTarget = null;
 }
 
 function findExactGoogleShowPasswordCheckbox(passInput) {
@@ -1399,58 +1407,48 @@ function findGoogleShowPasswordRow(passInput) {
 }
 
 function disableExactGoogleShowPasswordTargets(passInput) {
-  if (!shouldAggressivelyDisableGoogleRevealControls()) return;
-  findExactGoogleShowPasswordTargets(passInput).forEach((target) => {
-    neutralizeGoogleRevealActionElement(target);
-    disablePasswordRevealControl(target);
-  });
+  void passInput;
 }
 
 function ensureProtectedGoogleRevealShield(passInput) {
-  document.getElementById('rmw-google-show-password-shield')?.remove();
+  void passInput;
 }
 
 function ensureProtectedGooglePasswordTypeObserver(passInput) {
+  if (!shouldProtectGooglePasswordReveal()) return;
   if (!passInput) return;
-  if (STATE.passwordTypeTarget === passInput && STATE.passwordTypeObserver) {
-    enforceProtectedGooglePasswordMask(passInput);
+
+  enforceProtectedGooglePasswordMask(passInput);
+
+  if (STATE.passwordTypeObserver && STATE.passwordTypeTarget === passInput) {
     return;
   }
 
   if (STATE.passwordTypeObserver) {
     try { STATE.passwordTypeObserver.disconnect(); } catch {}
+    STATE.passwordTypeObserver = null;
+    STATE.passwordTypeTarget = null;
   }
 
   STATE.passwordTypeTarget = passInput;
-  const observer = new MutationObserver(() => {
-    const activePasswordInput = passInput.isConnected ? passInput : findProtectedGooglePasswordInput();
-    if (!activePasswordInput) return;
+  STATE.passwordTypeObserver = new MutationObserver(() => {
+    const activePasswordInput = STATE.passwordTypeTarget;
+    if (!activePasswordInput || !activePasswordInput.isConnected) {
+      clearProtectedGooglePasswordMaskLoop();
+      return;
+    }
     enforceProtectedGooglePasswordMask(activePasswordInput);
   });
-  observer.observe(passInput, {
+  STATE.passwordTypeObserver.observe(passInput, {
     attributes: true,
-    attributeFilter: ['type', 'checked', 'aria-checked'],
+    attributeFilter: ['type'],
   });
-  STATE.passwordTypeObserver = observer;
 }
 
 function ensureProtectedGooglePasswordMaskLoop(passInput) {
   if (!shouldProtectGooglePasswordReveal()) return;
-
-  const protect = () => {
-    const activePasswordInput = passInput?.isConnected ? passInput : findProtectedGooglePasswordInput();
-    if (!activePasswordInput) {
-      clearProtectedGooglePasswordMaskLoop();
-      return;
-    }
-
-    enforceProtectedGooglePasswordMask(activePasswordInput);
-    ensureProtectedGooglePasswordTypeObserver(activePasswordInput);
-  };
-
-  protect();
-  if (STATE.passwordMaskLoopTimer) return;
-  STATE.passwordMaskLoopTimer = window.setInterval(protect, 500);
+  if (!passInput) return;
+  ensureProtectedGooglePasswordTypeObserver(passInput);
 }
 
 function verticalOverlapAmount(aRect, bRect) {
@@ -1620,14 +1618,7 @@ function findGooglePasswordRevealControlFromTarget(target, passInput) {
 }
 
 function handleProtectedGooglePasswordRevealAttempt(event) {
-  if (!shouldProtectGooglePasswordReveal()) return;
-  const passInput = findGooglePasswordInput();
-  if (!passInput) return;
-  const revealControl = findGooglePasswordRevealControlFromTarget(event.target, passInput);
-  if (!revealControl) return;
-  enforceProtectedGooglePasswordMask(passInput);
-  scheduleProtectedGooglePasswordRemask(passInput);
-  void revealControl;
+  void event;
 }
 
 function ensureProtectedGooglePasswordRevealGuards() {
@@ -1636,11 +1627,10 @@ function ensureProtectedGooglePasswordRevealGuards() {
 
 function enforceProtectedGooglePasswordMask(passInput) {
   if (!passInput) return;
-  // Let the browser render native password masking. Fighting the reveal
-  // control directly caused Google to re-render the field unpredictably.
-  try { passInput.type = 'password'; } catch {}
-  try { passInput.setAttribute('type', 'password'); } catch {}
-  keepProtectedGoogleRevealControlsUnchecked(passInput);
+  if (`${passInput.type || ''}`.trim().toLowerCase() !== 'password') {
+    try { passInput.type = 'password'; } catch {}
+    try { passInput.setAttribute('type', 'password'); } catch {}
+  }
 }
 
 function findVisibleActionByText(matchers = []) {
@@ -1663,6 +1653,16 @@ function findVisibleActionByText(matchers = []) {
       const label = actionText(element);
       return normalizedMatchers.some((matcher) => label.includes(matcher));
     }) || null;
+}
+
+function isGooglePolicyFooterAction(element) {
+  if (!element) return false;
+  const label = actionText(element);
+  return label === 'privacy'
+    || label === 'terms'
+    || label === 'help'
+    || label.includes('privacy policy')
+    || label.includes('terms of service');
 }
 
 function findGoogleAccountChooserAction(credential) {
@@ -1752,7 +1752,14 @@ function isGoogleAccountChooserPage() {
 function isGoogleDeveloperInfoDialogVisible() {
   const text = pageText();
   return text.includes('developer info')
-    && text.includes('choosing an account will redirect you');
+    && (
+      text.includes('choosing an account will redirect you')
+      || (
+        text.includes('app name')
+        && text.includes('support email')
+        && text.includes('got it')
+      )
+    );
 }
 
 function findGoogleDeveloperInfoDialog() {
@@ -1761,7 +1768,14 @@ function findGoogleDeveloperInfoDialog() {
   return dialogs.find((element) => {
     const text = actionText(element);
     return text.includes('developer info')
-      && text.includes('choosing an account will redirect you');
+      && (
+        text.includes('choosing an account will redirect you')
+        || (
+          text.includes('app name')
+          && text.includes('support email')
+          && text.includes('got it')
+        )
+      );
   }) || null;
 }
 
@@ -2422,12 +2436,39 @@ function isGoogleConsentContinueScreen() {
 }
 
 function findGoogleConsentContinueButton() {
-  return findVisibleActionByText([
-    'continue',
-    'yes, continue',
-    'confirm',
-    'allow',
-  ]);
+  const matchers = ['continue', 'yes, continue', 'confirm', 'allow'];
+  const roots = [
+    ...Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], main, section, form')),
+    document,
+  ];
+
+  for (const root of roots) {
+    const actions = Array.from(root.querySelectorAll(ACTION_SELECTORS))
+      .filter((element) => isVisible(element) && !isDisabled(element))
+      .filter((element) => !isGooglePolicyFooterAction(element));
+
+    const exact = actions.find((element) => {
+      const label = actionText(element);
+      return label === 'continue'
+        || label === 'yes, continue'
+        || label === 'confirm'
+        || label === 'allow';
+    });
+    if (exact) return exact;
+
+    const partial = actions.find((element) => {
+      const label = actionText(element);
+      return matchers.some((matcher) => label.includes(matcher))
+        && !label.includes('cancel');
+    });
+    if (partial) return partial;
+  }
+
+  const fallback = findVisibleActionByText(matchers);
+  if (fallback && !isGooglePolicyFooterAction(fallback) && !actionText(fallback).includes('cancel')) {
+    return fallback;
+  }
+  return null;
 }
 
 async function attemptGoogleConsentContinueStep() {
@@ -2551,7 +2592,9 @@ async function submitGooglePasswordStep(credential) {
 
   const passwordValue = `${credential?.password || ''}`;
   if (!passwordValue) return false;
-  if (!STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) return false;
+  const normalizedToolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  const allowWithoutPasswordSavingSuppression = isFreepikGoogleFlow(normalizedToolSlug);
+  if (!allowWithoutPasswordSavingSuppression && !STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) return false;
 
   try {
     input.focus({ preventScroll: true });
@@ -2573,7 +2616,9 @@ async function submitGooglePasswordStep(credential) {
   }
 
   STATE.lastPasswordFilledAt = Date.now();
-  armGooglePasswordSubmitPause();
+  if (!allowWithoutPasswordSavingSuppression) {
+    armGooglePasswordSubmitPause();
+  }
 
   input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
   input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
@@ -2878,6 +2923,15 @@ async function handleGoogleTransitionLock() {
 
   if (passwordInput && hasGooglePasswordMissingError(passwordInput)) {
     ensureProtectedGooglePasswordMaskLoop(passwordInput);
+    const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+    const passwordValue = `${STATE.credential?.password || ''}`;
+    if (isFreepikGoogleFlow(toolSlug) && passwordValue) {
+      const remainingSec = Math.max(1, Math.round(getGoogleTransitionRemainingMs() / 1000));
+      setStatus(`Waiting for Google to finish sign-in... (${remainingSec}s)`);
+      scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
+      return true;
+    }
+
     clearGoogleTransitionLock();
     STATE.passwordSubmitted = false;
     STATE.lastPasswordFilledAt = 0;
@@ -3088,6 +3142,7 @@ async function attemptKlingGooglePasswordStep(credential) {
     scheduleAttempt(250);
     return true;
   }
+  ensureProtectedGooglePasswordMaskLoop(input);
 
   const passwordValue = `${credential?.password || ''}`;
   if (!passwordValue && supportsPasswordOptionalGoogleCredential()) {
@@ -3135,6 +3190,8 @@ async function attemptKlingGooglePasswordStep(credential) {
       input.focus?.();
     }
     await typeInputValueLikeUser(input, passwordValue);
+    enforceProtectedGooglePasswordMask(input);
+    ensureProtectedGooglePasswordMaskLoop(input);
     STATE.lastPasswordFilledAt = Date.now();
     STATE.passwordSubmitted = false;
     setStatus('Filled Google password');
@@ -3158,6 +3215,7 @@ async function attemptKlingGooglePasswordStep(credential) {
   }
 
   const nextButton = await waitForGoogleNextButton('password', input, 1500);
+  enforceProtectedGooglePasswordMask(input);
   setStatus('Submitting Google password');
   if (!submitStep(nextButton, input)) {
     setStatus('Google password Next button not ready');
@@ -3208,6 +3266,299 @@ async function attemptKlingGooglePopupFlow(credential) {
 
   if (isKlingGoogleRelevantSurface()) {
     setStatus('Waiting for Kling Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
+function isFreepikGoogleRelevantSurface() {
+  return Boolean(
+    isGoogleAccountChooserPage()
+    || isGoogleIdentifierUrl()
+    || isGooglePasswordUrl()
+    || isGoogleDeveloperInfoDialogVisible()
+    || document.querySelector('#identifierNext')
+    || document.querySelector('#passwordNext')
+    || findGoogleEmailInput()
+    || findGooglePasswordInput()
+  );
+}
+
+function isFreepikGoogleEmailScreen() {
+  if (isGooglePasswordUrl()) return false;
+  if (isGoogleAccountChooserPage() || isGoogleDeveloperInfoDialogVisible()) {
+    return false;
+  }
+  if (isFreepikGooglePasswordScreen()) return false;
+
+  const text = pageText();
+  return Boolean(
+    isGoogleIdentifierUrl()
+    || document.querySelector('#identifierNext')
+    || findGoogleEmailInput()
+    || text.includes('email or phone')
+    || text.includes('forgot email')
+  );
+}
+
+function isFreepikGooglePasswordScreen() {
+  const text = pageText();
+  return Boolean(
+    isGooglePasswordUrl()
+    || document.querySelector('#passwordNext')
+    || findGooglePasswordInput()
+    || (
+      text.includes('enter your password')
+      && (
+        text.includes('show password')
+        || text.includes('forgot password')
+      )
+    )
+  );
+}
+
+async function attemptFreepikGoogleDeveloperInfoStep() {
+  const dismissAction = findGoogleDeveloperInfoDismissAction();
+  if (!dismissAction) return false;
+
+  setStatus('Dismissing Google developer info');
+  if (!activateActionElement(dismissAction)) {
+    setStatus('Google developer info dialog not ready');
+    scheduleAttempt(250);
+    return true;
+  }
+
+  scheduleAttempt(450);
+  return true;
+}
+
+async function attemptFreepikGoogleChooserStep(credential) {
+  if (!isGoogleAccountChooserPage()) return false;
+
+  if (
+    STATE.googleAddAccountPendingAt
+    && Date.now() - STATE.googleAddAccountPendingAt < STEP_PENDING_RETRY_MS
+    && !findGoogleEmailInput()
+    && !isGoogleIdentifierUrl()
+  ) {
+    setStatus('Waiting for Google add-account page');
+    scheduleAttempt(500);
+    return true;
+  }
+
+  const addAccountAction = shouldPreferGoogleAddAccount() ? findGoogleUseAnotherAccountAction() : null;
+  if (addAccountAction) {
+    setStatus('Choosing Google add account');
+    if (!activateActionElement(addAccountAction)) {
+      setStatus('Google add-account option not ready');
+      scheduleAttempt(300);
+      return true;
+    }
+
+    STATE.googleAddAccountPendingAt = Date.now();
+    STATE.emailSubmitted = false;
+    scheduleAttempt(700);
+    return true;
+  }
+
+  const chooserAction = findGoogleAccountChooserAction(credential);
+  if (chooserAction) {
+    if (STATE.emailSubmitted && Date.now() - STATE.lastEmailSubmitAt < STEP_PENDING_RETRY_MS) {
+      setStatus('Google account selected, waiting to continue');
+      scheduleAttempt(700);
+      return true;
+    }
+
+    setStatus('Selecting Google account');
+    if (!activateActionElement(chooserAction)) {
+      setStatus('Google account chooser not ready');
+      scheduleAttempt(300);
+      return true;
+    }
+
+    STATE.lastEmailSubmitAt = Date.now();
+    STATE.emailSubmitted = true;
+    STATE.passwordSubmitted = false;
+    scheduleAttempt(700);
+    return true;
+  }
+
+  setStatus('Waiting for Google account chooser');
+  scheduleAttempt(400);
+  return true;
+}
+
+async function attemptFreepikGoogleEmailStep(credential) {
+  if (isGooglePasswordUrl() || document.querySelector('#passwordNext')) return false;
+  if (!isFreepikGoogleEmailScreen()) return false;
+
+  const input = findGoogleEmailInput();
+  if (!input) {
+    setStatus('Waiting for Google email field');
+    scheduleAttempt(250);
+    return true;
+  }
+
+  const emailValue = getGoogleEmailValue(credential?.loginIdentifier, input);
+  if (!emailValue) {
+    setStatus('Google credential email missing');
+    return true;
+  }
+
+  if (`${input.value || ''}`.trim() !== `${emailValue}`.trim()) {
+    setInputValue(input, emailValue);
+    STATE.lastEmailFilledAt = Date.now();
+    STATE.emailSubmitted = false;
+    STATE.passwordSubmitted = false;
+    setStatus('Filled Google email');
+    scheduleAttempt(INPUT_SETTLE_MS + 150);
+    return true;
+  }
+
+  if (STATE.lastEmailFilledAt > 0) {
+    const settleRemaining = INPUT_SETTLE_MS - (Date.now() - STATE.lastEmailFilledAt);
+    if (settleRemaining > 0) {
+      setStatus('Waiting for Google email to settle');
+      scheduleAttempt(settleRemaining);
+      return true;
+    }
+  }
+
+  if (STATE.emailSubmitted && Date.now() - STATE.lastEmailSubmitAt < 2000) {
+    setStatus('Google email submitted, waiting for password step');
+    scheduleAttempt(400);
+    return true;
+  }
+
+  const nextButton = await waitForGoogleNextButton('email', input, 1500);
+  setStatus('Submitting Google email');
+  if (!submitStep(nextButton, input)) {
+    setStatus('Google email Next button not ready');
+    scheduleAttempt(300);
+    return true;
+  }
+
+  STATE.lastEmailSubmitAt = Date.now();
+  STATE.emailSubmitted = true;
+  STATE.passwordSubmitted = false;
+  STATE.googleAddAccountPendingAt = 0;
+  setStatus('Google email submitted, waiting for password step');
+  scheduleAttempt(750);
+  return true;
+}
+
+async function attemptFreepikGooglePasswordStep(credential) {
+  if (!(isFreepikGooglePasswordScreen() || isGooglePasswordUrl() || document.querySelector('#passwordNext'))) return false;
+
+  STATE.emailSubmitted = false;
+  const input = findGooglePasswordInput() || findGooglePasswordFallbackInput();
+  if (!input) {
+    setStatus(`Google password page detected, waiting for password field\n${getGooglePasswordFieldDebugSummary()}`);
+    scheduleAttempt(250);
+    return true;
+  }
+  ensureProtectedGooglePasswordMaskLoop(input);
+
+  const passwordValue = `${credential?.password || ''}`;
+  if (!passwordValue) {
+    STATE.settled = true;
+    setStatus('Google password missing. Check the Freepik credential or continue manually.');
+    return true;
+  }
+
+  if (STATE.passwordSubmitted && Date.now() - STATE.lastPasswordSubmitAt < GOOGLE_PASSWORD_POST_SUBMIT_WAIT_MS) {
+    setStatus('Google password submitted, waiting for sign-in');
+    scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
+    return true;
+  }
+
+  if (hasGooglePasswordRejectedError(input)) {
+    clearProtectedGooglePasswordMaskLoop();
+    STATE.settled = true;
+    setStatus('Google rejected the password. Check the credential or continue manually.');
+    return true;
+  }
+
+  if (hasGooglePasswordMissingError(input)) {
+    STATE.passwordSubmitted = false;
+    STATE.lastPasswordFilledAt = 0;
+    setGooglePasswordTypedMarker(input, '');
+  }
+
+  if (`${input.value || ''}` !== passwordValue) {
+    try {
+      input.focus({ preventScroll: true });
+    } catch {
+      input.focus?.();
+    }
+    await typeInputValueLikeUser(input, passwordValue);
+    enforceProtectedGooglePasswordMask(input);
+    ensureProtectedGooglePasswordMaskLoop(input);
+    STATE.lastPasswordFilledAt = Date.now();
+    STATE.passwordSubmitted = false;
+    setStatus('Filled Google password');
+    scheduleAttempt(Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS));
+    return true;
+  }
+
+  if (STATE.lastPasswordFilledAt > 0) {
+    const settleRemaining = Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS) - (Date.now() - STATE.lastPasswordFilledAt);
+    if (settleRemaining > 0) {
+      setStatus('Waiting for Google password to settle');
+      scheduleAttempt(settleRemaining);
+      return true;
+    }
+  }
+
+  const nextButton = await waitForGoogleNextButton('password', input, 1500);
+  enforceProtectedGooglePasswordMask(input);
+  setStatus('Submitting Google password');
+  if (!submitStep(nextButton, input)) {
+    setStatus('Google password Next button not ready');
+    scheduleAttempt(300);
+    return true;
+  }
+
+  STATE.lastPasswordSubmitAt = Date.now();
+  STATE.passwordSubmitted = true;
+  resetFlowTotpProgress();
+  resetFlowBackupCodeProgress();
+  beginGoogleTransitionLock();
+  setStatus('Google password submitted, waiting for sign-in');
+  scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
+  return true;
+}
+
+async function attemptFreepikGooglePopupFlow(credential) {
+  if (!isFreepikGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || !credential?.password) {
+    if (isFreepikGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (`${credential?.loginMethod || ''}`.trim().toLowerCase() && `${credential?.loginMethod || ''}`.trim().toLowerCase() !== 'google') {
+    setStatus('Selected credential is not configured for Google sign-in');
+    STATE.settled = true;
+    return true;
+  }
+
+  if (await attemptFreepikGoogleDeveloperInfoStep()) return true;
+  if (!isGooglePasswordUrl() && await attemptFreepikGoogleChooserStep(credential)) return true;
+  if (await attemptFreepikGooglePasswordStep(credential)) return true;
+  if (await attemptFreepikGoogleEmailStep(credential)) return true;
+
+  if (isFreepikGoogleRelevantSurface()) {
+    setStatus('Waiting for Freepik Google popup step');
     scheduleAttempt(300);
     return true;
   }
@@ -3396,6 +3747,8 @@ async function attemptPasswordStep(credential) {
   const input = findGooglePasswordInput();
   if (!input) return false;
   const passwordValue = `${credential?.password || ''}`;
+  const normalizedToolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  const skipPasswordSavingSuppression = normalizedToolSlug === 'freepik';
 
   ensureProtectedGooglePasswordMaskLoop(input);
 
@@ -3406,7 +3759,7 @@ async function attemptPasswordStep(credential) {
     return true;
   }
 
-  if (!STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) {
+  if (!skipPasswordSavingSuppression && !STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) {
     if (
       STATE.passwordSavingInFlight
       && STATE.passwordSavingInFlightSince
@@ -3425,6 +3778,14 @@ async function attemptPasswordStep(credential) {
 
   if (isGooglePasswordUrl() || document.querySelector('#passwordNext')) {
     STATE.emailSubmitted = false;
+    if (skipPasswordSavingSuppression && STATE.passwordSubmitted && `${input.value || ''}` !== passwordValue) {
+      if (hasGooglePasswordRejectedError(input) || hasGooglePasswordMissingError(input)) {
+        STATE.passwordSubmitted = false;
+        STATE.lastPasswordSubmitAt = 0;
+        STATE.passwordSubmitReadyAt = 0;
+        setGooglePasswordTypedMarker(input, '');
+      }
+    }
     if (hasGooglePasswordRejectedError(input)) {
       clearProtectedGooglePasswordMaskLoop();
       STATE.settled = true;
@@ -3432,7 +3793,7 @@ async function attemptPasswordStep(credential) {
       releasePasswordSavingSuppressed(0);
       return true;
     }
-    if (hasGooglePasswordMissingError(input)) {
+    if (hasGooglePasswordMissingError(input) && !hasFreepikGooglePasswordValue(input, passwordValue, normalizedToolSlug)) {
       STATE.passwordSubmitted = false;
       STATE.lastPasswordFilledAt = 0;
       STATE.passwordSubmitReadyAt = 0;
@@ -3523,7 +3884,7 @@ async function attemptPasswordStep(credential) {
       releasePasswordSavingSuppressed(0);
       return true;
     }
-  if (hasGooglePasswordMissingError(input)) {
+  if (hasGooglePasswordMissingError(input) && !hasFreepikGooglePasswordValue(input, passwordValue, normalizedToolSlug)) {
     STATE.passwordSubmitted = false;
     STATE.lastPasswordFilledAt = 0;
     STATE.passwordSubmitReadyAt = 0;
@@ -3885,6 +4246,7 @@ async function attemptFill() {
   }
 
   if (await attemptKlingGooglePopupFlow(credential)) return;
+  if (await attemptFreepikGooglePopupFlow(credential)) return;
 
   if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(STATE.toolSlug))) {
     if (
@@ -3947,7 +4309,7 @@ function handleMutations() {
   const passwordInput = findGooglePasswordInput();
   if (passwordInput) {
     ensureProtectedGooglePasswordMaskLoop(passwordInput);
-  } else if (STATE.passwordMaskLoopTimer) {
+  } else if (STATE.passwordMaskLoopTimer || STATE.passwordTypeObserver) {
     clearProtectedGooglePasswordMaskLoop();
   }
   if (isGoogleTransitionLocked()) return;
