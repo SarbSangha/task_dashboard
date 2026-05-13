@@ -168,6 +168,16 @@ def _tool_supports_password_optional_credential(canonical_tool_slug: str) -> boo
     return canonical_tool_slug in PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS
 
 
+def _tool_uses_extension_autofill(tool, *, allow_automation: bool = False) -> bool:
+    if not tool:
+        return False
+    if tool.launch_mode == "extension_autofill":
+        return True
+    if allow_automation and tool.launch_mode == "automation":
+        return True
+    return _canonical_tool_slug(tool.slug or "") == "elevenlabs"
+
+
 def _normalize_credential_login_method(canonical_tool_slug: str, value: Optional[str]) -> str:
     normalized = f"{value or ''}".strip().lower() or "email_password"
     allowed_values = TOOL_CREDENTIAL_LOGIN_METHODS.get(canonical_tool_slug, {"email_password"})
@@ -1687,7 +1697,7 @@ async def get_extension_credential(
     tool = _find_extension_tool(db, payload)
     if not tool:
         raise HTTPException(status_code=404, detail="No matching tool found for this page")
-    if tool.launch_mode not in {"extension_autofill", "automation"}:
+    if not _tool_uses_extension_autofill(tool, allow_automation=True):
         raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill")
 
     if payload.extension_ticket:
@@ -1765,7 +1775,7 @@ async def report_extension_usage_event(
     tool = _find_extension_tool(db, payload)
     if not tool:
         raise HTTPException(status_code=404, detail="No matching tool found for this page")
-    if tool.launch_mode != "extension_autofill":
+    if not _tool_uses_extension_autofill(tool):
         raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill usage tracking")
 
     usage_ticket = f"{payload.usage_ticket or ''}".strip()
@@ -1877,7 +1887,7 @@ async def get_extension_otp(
     tool = _find_extension_tool(db, payload)
     if not tool:
         raise HTTPException(status_code=404, detail="No matching tool found for this page")
-    if tool.launch_mode != "extension_autofill":
+    if not _tool_uses_extension_autofill(tool):
         raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill")
 
     extension_ticket = (payload.extension_ticket or "").strip()
@@ -1979,7 +1989,7 @@ async def get_extension_auth_link(
     tool = _find_extension_tool(db, payload)
     if not tool:
         raise HTTPException(status_code=404, detail="No matching tool found for this page")
-    if tool.launch_mode != "extension_autofill":
+    if not _tool_uses_extension_autofill(tool):
         raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill")
 
     extension_ticket = (payload.extension_ticket or "").strip()
@@ -2082,7 +2092,7 @@ async def get_extension_totp(
     tool = _find_extension_tool(db, payload)
     if not tool:
         raise HTTPException(status_code=404, detail="No matching tool found for this page")
-    if tool.launch_mode != "extension_autofill":
+    if not _tool_uses_extension_autofill(tool):
         raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill")
 
     extension_ticket = (payload.extension_ticket or "").strip()
@@ -2502,8 +2512,8 @@ async def launch_tool(
 
     revealed = None
     canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
-    force_extension_autofill_launch = canonical_tool_slug == "elevenlabs"
-    effective_extension_autofill = tool.launch_mode == "extension_autofill" or force_extension_autofill_launch
+    force_extension_autofill_launch = _tool_uses_extension_autofill(tool) and tool.launch_mode != "extension_autofill"
+    effective_extension_autofill = _tool_uses_extension_autofill(tool)
     revealed_login_method = _normalize_credential_login_method(canonical_tool_slug, credential.login_method)
     revealed = {
         "scope": credential.scope,
