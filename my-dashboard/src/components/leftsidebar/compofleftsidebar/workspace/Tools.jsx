@@ -129,6 +129,7 @@ const normalizeToolSlug = (value) => {
   const slugified = normalized.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   if (slugified === 'chat-gpt') return 'chatgpt';
   if (['enhencor', 'enhencer', 'enhancer'].includes(slugified)) return 'enhancor';
+  if (['eleven-labs', 'eleven-lab'].includes(slugified)) return 'elevenlabs';
   return slugified;
 };
 
@@ -304,7 +305,9 @@ const openToolInIncognitoWindow = (launchDetail) => new Promise((resolve) => {
         ? 'Enhancor'
       : normalizedSlug === 'freepik'
         ? 'Freepik'
-        : 'this tool'
+        : normalizedSlug === 'elevenlabs'
+          ? 'ElevenLabs'
+          : 'this tool'
   );
   if (!normalizedSlug || !launchDetail?.launchUrl) {
     resolve({ ok: false, error: `${toolName} launch details are incomplete.` });

@@ -54,6 +54,8 @@ const STATE = {
   launchRetryAttempts: 0,
   lastLaunchRetryAt: 0,
   launchRetryInFlight: false,
+  launchTicket: '',
+  lastLaunchError: '',
 };
 
 function normalizeLoginMethod(value) {
@@ -183,22 +185,28 @@ function clearStoredLaunchTicket() {
   } catch {}
 }
 
-function captureLaunchTicket() {
-  const ticket = readLaunchTicketFromUrl();
-  if (!ticket) return getStoredLaunchTicket();
-
-  storeLaunchTicket(ticket);
+function removeLaunchTicketFromUrl() {
   try {
-    const searchParams = new URLSearchParams(window.location.search || '');
-    searchParams.delete('rmw_extension_ticket');
-    searchParams.delete('rmw_tool_slug');
-    const nextSearch = searchParams.toString();
-    window.history.replaceState(
-      null,
-      '',
-      `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
-    );
+    const url = new URL(window.location.href);
+    url.searchParams.delete('rmw_extension_ticket');
+    url.searchParams.delete('rmw_usage_ticket');
+    url.searchParams.delete('rmw_tool_slug');
+
+    const hashParams = new URLSearchParams((url.hash || '').replace(/^#/, ''));
+    hashParams.delete('rmw_extension_ticket');
+    hashParams.delete('rmw_usage_ticket');
+    hashParams.delete('rmw_tool_slug');
+    url.hash = hashParams.toString();
+    window.history.replaceState(null, '', url.toString());
   } catch {}
+}
+
+function captureLaunchTicket() {
+  const ticket = readLaunchTicketFromUrl() || getStoredLaunchTicket() || STATE.launchTicket;
+  if (!ticket) return '';
+
+  STATE.launchTicket = ticket;
+  storeLaunchTicket(ticket);
   return ticket;
 }
 
@@ -215,11 +223,16 @@ async function loadLaunchState() {
 
     if (activation?.ok && activation.authorized) {
       clearStoredLaunchTicket();
+      removeLaunchTicketFromUrl();
+      STATE.launchTicket = '';
+      STATE.lastLaunchError = '';
       STATE.launchChecked = true;
       STATE.launchAuthorized = true;
       STATE.launchExpiresAt = Number(activation.expiresAt || 0);
       return;
     }
+
+    STATE.lastLaunchError = `${activation?.error || 'Dashboard launch ticket was not accepted'}`.trim();
   }
 
   const response = await sendRuntimeMessage({
@@ -232,6 +245,13 @@ async function loadLaunchState() {
   STATE.launchChecked = true;
   STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
+  if (STATE.launchAuthorized) {
+    STATE.lastLaunchError = '';
+  } else if (response?.error) {
+    STATE.lastLaunchError = `${response.error}`.trim();
+  } else if (!storedTicket) {
+    STATE.lastLaunchError = 'No dashboard launch ticket reached ElevenLabs. Reload the extension, then launch ElevenLabs from the dashboard again.';
+  }
 }
 
 function retryLaunchAuthorizationIfNeeded() {
@@ -248,7 +268,7 @@ function retryLaunchAuthorizationIfNeeded() {
   STATE.launchRetryAttempts += 1;
   STATE.lastLaunchRetryAt = now;
   STATE.launchRetryInFlight = true;
-  setStatus(`Checking dashboard launch authorization (${STATE.launchRetryAttempts}/${MAX_LAUNCH_RETRIES})`);
+  setStatus(`Checking dashboard launch authorization (${STATE.launchRetryAttempts}/${MAX_LAUNCH_RETRIES})${STATE.launchTicket ? '' : ' - no ticket yet'}`);
 
   loadLaunchState()
     .then(() => {
@@ -258,7 +278,8 @@ function retryLaunchAuthorizationIfNeeded() {
       }
       scheduleAttempt(100);
     })
-    .catch(() => {
+    .catch((error) => {
+      STATE.lastLaunchError = `${error?.message || 'Launch authorization check failed'}`.trim();
       STATE.launchRetryInFlight = false;
       scheduleAttempt(LAUNCH_RETRY_DELAY_MS);
     });
@@ -608,7 +629,7 @@ function requestCredential() {
       toolSlug: TOOL_SLUG,
       hostname: window.location.hostname,
       pageUrl: window.location.href,
-      extensionTicket: getStoredLaunchTicket(),
+      extensionTicket: STATE.launchTicket || getStoredLaunchTicket(),
     },
     (response) => {
       STATE.requestedCredential = false;
@@ -682,7 +703,7 @@ function attemptFlow() {
 
   if (!STATE.launchAuthorized) {
     if (retryLaunchAuthorizationIfNeeded()) return;
-    stop('Launch this tool from the dashboard first');
+    stop(STATE.lastLaunchError || 'Launch this tool from the dashboard first');
     return;
   }
 

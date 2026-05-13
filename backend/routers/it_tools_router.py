@@ -47,7 +47,7 @@ HOSTNAME_EQUIVALENT_GROUPS = (
     {"kling.ai", "klingai.com", "app.klingai.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
-SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"canva", "chatgpt", "claude", "enhancor", "elevenlabs", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"canva", "chatgpt", "claude", "enhancor", "elevenlabs", "eleven-labs", "eleven-lab", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
 PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
     "enhancor": {"email_password", "google"},
@@ -158,6 +158,8 @@ def _canonical_tool_slug(value: str) -> str:
         return "chatgpt"
     if slug in {"enhencor", "enhencer", "enhancer"}:
         return "enhancor"
+    if slug in {"eleven-labs", "eleven-lab"}:
+        return "elevenlabs"
     return slug
 
 

@@ -14,6 +14,7 @@ function normalizeToolSlug(value) {
   const normalized = `${value || ''}`.trim().toLowerCase();
   if (normalized === 'chat-gpt') return 'chatgpt';
   if (['enhencor', 'enhencer', 'enhancer'].includes(normalized)) return 'enhancor';
+  if (['eleven-labs', 'eleven-lab'].includes(normalized)) return 'elevenlabs';
   return normalized;
 }
 
