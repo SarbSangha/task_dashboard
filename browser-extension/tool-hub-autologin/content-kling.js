@@ -14,21 +14,32 @@ const BLOCKED_NOTICE_KEY      = 'rmw_kling_blocked_notice';
 const SESSION_CHECKPOINT_KEY  = 'rmw_kling_checkpoint';
 
 // ── Timing constants ──────────────────────────────────────────
-const KEEP_ALIVE_MS          = 1500;   // was 3000
+const KEEP_ALIVE_MS          = 10000;
 const MUTATION_DEBOUNCE_MS   = 200;    // was 250
 const SUBMIT_LOCK_MS         = 12000;
 const POST_LOGIN_GRACE_MS    = 7000;   // was 10000
-const GOOGLE_POPUP_GRACE_MS  = 30000;
-const EMAIL_STEP_GRACE_MS    = 1800;   // was 3500
+const AUTH_TRANSITION_TIMEOUT_MS = 45000;
+const AUTH_TRANSITION_INITIAL_QUIET_MS = 3000;
+const AUTH_TRANSITION_POLL_MS = 2000;
+const EMAIL_STEP_GRACE_MS    = 5000;   // was 3500
 const MIN_RUN_GAP_MS         = 150;    // was 200
-const LAUNCH_RETRY_DELAY_MS  = 400;
-const MAX_LAUNCH_RETRIES     = 6;
+const LAUNCH_RETRY_DELAY_MS  = 8000;
+const MAX_LAUNCH_RETRIES     = 2;
 const FIELD_FILL_DELAY_MS    = 60;     // was 80
+const TYPED_FILL_CHAR_DELAY_MS = 0;
+const EMAIL_SUBMIT_DELAY_MS  = 180;
+const PASSWORD_SUBMIT_DELAY_MS = 180;
+const PASSWORD_FIELD_SETTLE_MS = 320;
+const PASSWORD_FIELD_SETTLE_CHECK_MS = 80;
 const LANDING_CLICK_DELAY_MS = 0;      // was 60 — removed double-delay wrapper
 const LANDING_RETRY_DELAY_MS = 500;    // was 1200
 const EMAIL_CHOOSER_WAIT_MS  = 600;    // was 1500
 const CHECKPOINT_RESUME_MS   = 400;    // was 1200
 const POST_SUBMIT_WAIT_MS    = 300;    // was 700
+const USAGE_REPORT_POLL_MS   = 1200;
+const USAGE_REPORT_MAX_WAIT_MS = 30000;
+const BADGE_HIDE_DONE_MS     = 4000;
+const BADGE_HIDE_BLOCKED_MS  = 12000;
 
 const AUTHENTICATED_APP_LABELS = [
   'explore', 'assets', 'generate', 'canvas', 'all tools', 'api', 'omni',
@@ -41,6 +52,7 @@ const P = {
   OPEN_LANDING : 'openLanding',
   FILL         : 'fill',
   SUBMIT       : 'submit',
+  WAIT_GOOGLE  : 'waitGoogle',
   WAIT_REDIRECT: 'waitRedirect',
   DONE         : 'done',
   BLOCKED      : 'blocked',
@@ -78,6 +90,7 @@ const PASS_SELS = [
 const PASSWORD_REVEAL_ACTION_HINTS = ['show', 'hide', 'view', 'reveal', 'toggle'];
 const PASSWORD_REVEAL_SUBJECT_HINTS = ['password', 'passcode'];
 const PASSWORD_REVEAL_ICON_HINTS = ['eye', 'visibility', 'visible'];
+const PASSWORD_GUARD_STYLE_ID = 'rmw-kling-password-guard-style';
 
 // ── Checkpoint: survives same-origin reload, cleared on done/fail ──
 function writeCheckpoint(phase, extra = {}) {
@@ -114,9 +127,15 @@ const CTX = {
   keepAlive            : null,
   observer             : null,
   credential           : null,
+  badgeHideTimer       : null,
   submitLockUntil      : 0,
   submitAt             : 0,
   submitKind           : '',
+  lastSubmitActionKey  : '',
+  submitActionLockUntil: 0,
+  passwordSubmitGuardKey: '',
+  passwordSubmitGuardUntil: 0,
+  manualGoogleHandoff  : false,
   launchRetries        : 0,
   lastRunAt            : 0,
   lastMutationAt       : 0,
@@ -124,14 +143,20 @@ const CTX = {
   authorized           : false,
   prepared             : false,
   expiresAt            : 0,
+  authTransitionAt     : 0,
+  authTransitionActive : false,
   lastLandingActionKey : '',
   landingActionLockUntil: 0,
   sessionClearDone     : false,  // FIX: guard against repeated session clearing
   blockedRevealControl : null,
+  lastStatusMessage    : '',
 };
 
 const USAGE_CTX = {
   listenerAttached    : false,
+  debugReadyShown     : false,
+  lastInteractionAt   : 0,
+  lastInteractionType : '',
   lastGenerateKey     : '',
   lastGenerateAt      : 0,
   pendingReportTimer  : null,
@@ -163,22 +188,143 @@ function ensureBadge() {
   return el;
 }
 
-function setStatus(message) {
+function hideBadge() {
+  const badge = document.getElementById('rmw-kling-badge');
+  if (badge) {
+    badge.remove();
+  }
+}
+
+function clearBadgeHideTimer() {
+  if (CTX.badgeHideTimer) {
+    clearTimeout(CTX.badgeHideTimer);
+    CTX.badgeHideTimer = null;
+  }
+}
+
+function scheduleBadgeHide(delayMs = 0) {
+  clearBadgeHideTimer();
+  if (!delayMs || delayMs <= 0) return;
+  CTX.badgeHideTimer = window.setTimeout(() => {
+    CTX.badgeHideTimer = null;
+    hideBadge();
+  }, delayMs);
+}
+
+function setStatus(message, options = {}) {
+  const normalizedMessage = `${message || ''}`;
+  const isSameMessage = CTX.lastStatusMessage === normalizedMessage;
+  CTX.lastStatusMessage = normalizedMessage;
   console.debug('[RMW Kling]', message);
   const badge = ensureBadge();
   if (badge) badge.textContent = `Kling Auto-Login\n${message}`;
+  if (options.hideAfterMs) {
+    if (!(options.preserveExistingHideTimer && isSameMessage && CTX.badgeHideTimer)) {
+      scheduleBadgeHide(options.hideAfterMs);
+    }
+  } else if (!options.preserveExistingHideTimer) {
+    clearBadgeHideTimer();
+  }
+}
+
+function formatResolvedCredentialLabel(credential) {
+  const credentialId = Number(credential?.id || 0);
+  return credentialId > 0 ? `Credential #${credentialId}` : 'credential';
+}
+
+function buildSignedInStatusMessage() {
+  const credentialId = Number(CTX.credential?.id || 0);
+  return credentialId > 0
+    ? `✓ Signed in successfully (${formatResolvedCredentialLabel(CTX.credential)})`
+    : '✓ Signed in successfully';
+}
+
+function isExtensionContextInvalidatedError(value) {
+  const message = `${value || ''}`.trim().toLowerCase();
+  return message.includes('extension context invalidated');
+}
+
+function buildExtensionContextInvalidatedError(message = 'Extension context invalidated.') {
+  const error = new Error(message);
+  error.contextInvalidated = true;
+  return error;
+}
+
+function hasRecentAuthTransition(maxAgeMs = AUTH_TRANSITION_TIMEOUT_MS) {
+  return Number(CTX.authTransitionAt || 0) > 0
+    && (Date.now() - Number(CTX.authTransitionAt || 0)) < maxAgeMs;
+}
+
+function isGoogleAuthTransitionPending() {
+  return Boolean(CTX.authTransitionActive && hasRecentAuthTransition());
+}
+
+function startGoogleAuthTransition(startedAt = Date.now()) {
+  CTX.authTransitionActive = true;
+  CTX.submitKind = 'google';
+  CTX.authTransitionAt = Math.max(Number(CTX.authTransitionAt || 0), Number(startedAt || 0), Date.now());
+  msg({ type: 'TOOL_HUB_MARK_AUTH_TRANSITION', toolSlug: TOOL_SLUG })
+    .then((response) => {
+      if (response?.ok) {
+        CTX.authTransitionAt = Date.now();
+      }
+    })
+    .catch(() => {});
+}
+
+function clearAuthTransition() {
+  CTX.authTransitionAt = 0;
+  CTX.authTransitionActive = false;
+}
+
+function resumeGoogleAuthTransition(startedAt = Date.now()) {
+  CTX.authTransitionActive = true;
+  CTX.submitKind = 'google';
+  CTX.authTransitionAt = Math.max(Number(CTX.authTransitionAt || 0), Number(startedAt || 0), Date.now());
+}
+
+function getGoogleAuthTransitionElapsedMs() {
+  if (!isGoogleAuthTransitionPending()) return 0;
+  return Math.max(0, Date.now() - Number(CTX.authTransitionAt || 0));
+}
+
+function getGoogleAuthTransitionRemainingMs() {
+  return Math.max(0, AUTH_TRANSITION_TIMEOUT_MS - getGoogleAuthTransitionElapsedMs());
 }
 
 // ── Chrome messaging ──────────────────────────────────────────
 function msg(payload) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(payload, (response) => {
-      if (chrome.runtime.lastError) {
-        resolve({ ok: false, error: chrome.runtime.lastError.message });
+    try {
+      if (!chrome?.runtime?.id || typeof chrome.runtime.sendMessage !== 'function') {
+        resolve({
+          ok: false,
+          error: 'Extension context invalidated.',
+          contextInvalidated: true,
+        });
         return;
       }
-      resolve(response || { ok: false, error: 'No response' });
-    });
+
+      chrome.runtime.sendMessage(payload, (response) => {
+        const runtimeErrorMessage = chrome.runtime.lastError?.message || '';
+        if (runtimeErrorMessage) {
+          resolve({
+            ok: false,
+            error: runtimeErrorMessage,
+            contextInvalidated: isExtensionContextInvalidatedError(runtimeErrorMessage),
+          });
+          return;
+        }
+        resolve(response || { ok: false, error: 'No response' });
+      });
+    } catch (error) {
+      const runtimeErrorMessage = error?.message || 'Extension context invalidated.';
+      resolve({
+        ok: false,
+        error: runtimeErrorMessage,
+        contextInvalidated: isExtensionContextInvalidatedError(runtimeErrorMessage),
+      });
+    }
   });
 }
 
@@ -256,15 +402,68 @@ function captureTicket() {
 
 // ── FIX: Only ever remove OUR keys — never clear site storage ─
 function clearOurKeys() {
-  const keys = [EXTENSION_TICKET_KEY, PREPARED_LAUNCH_KEY, BLOCKED_NOTICE_KEY];
+  const keys = [EXTENSION_TICKET_KEY, USAGE_TICKET_KEY, PREPARED_LAUNCH_KEY, BLOCKED_NOTICE_KEY];
   [sessionStorage, localStorage].forEach((s) => {
     keys.forEach((k) => { try { s.removeItem(k); } catch {} });
   });
 }
 
+function clearUsageTicket() {
+  try { sessionStorage.removeItem(USAGE_TICKET_KEY); } catch {}
+}
+
 function parseCreditNumber(value) {
-  const match = `${value || ''}`.replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+  const normalizedValue = `${value || ''}`.replace(/,/g, '').trim().toLowerCase();
+  if (!normalizedValue) return null;
+
+  const match = normalizedValue.match(/(\d+(?:\.\d+)?)\s*([km])?/i);
+  if (!match?.[1]) return null;
+
+  const numericValue = Number(match[1]);
+  if (!Number.isFinite(numericValue)) return null;
+
+  const suffix = `${match[2] || ''}`.toLowerCase();
+  if (suffix === 'k') return numericValue * 1000;
+  if (suffix === 'm') return numericValue * 1000000;
+  return numericValue;
+}
+
+function parseExpectedCreditsFromGenerateText(value) {
+  const normalized = normalizeGenerateActionLabel(value);
+  if (!normalized) return null;
+  const match = normalized.match(/(?:^|\s)(\d+(?:\.\d+)?)\s+generate(?:\s|$)/i);
   return match ? Number(match[1]) : null;
+}
+
+function collectGenerateTextCandidates(generateButton) {
+  if (!generateButton) return [];
+
+  const rawCandidates = [
+    generateButton.innerText,
+    generateButton.textContent,
+    generateButton.value,
+    generateButton.getAttribute?.('aria-label'),
+    generateButton.getAttribute?.('title'),
+    ...Array.from(generateButton.querySelectorAll('span,strong,b,div')).map((el) => el.textContent),
+  ];
+
+  const splitCandidates = rawCandidates
+    .filter(Boolean)
+    .flatMap((value) => `${value}`.split(/\r?\n+/))
+    .map((value) => normalizeGenerateActionLabel(value))
+    .filter(Boolean);
+
+  return collectUniqueElements(splitCandidates).sort((left, right) => left.length - right.length);
+}
+
+function buildLocalDateValue(offsetDays = 0) {
+  const date = new Date();
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() + offsetDays);
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function findVisiblePromptField() {
@@ -285,7 +484,10 @@ function readPromptText() {
 function readSelectedModelLabel() {
   const text = normalizeSpace(document.body?.innerText || '');
   const patterns = [
+    /\b(image\s*\d+(?:\.\d+)?(?:\s*[a-z][a-z0-9-]*)?)/i,
     /\b(video\s*\d+(?:\.\d+)?\s*(?:turbo|master|pro)?)/i,
+    /\b(motion\s*control)\b/i,
+    /\bavatar\b/i,
     /\b(master|turbo)\b/i,
   ];
   for (const pattern of patterns) {
@@ -296,18 +498,154 @@ function readSelectedModelLabel() {
   return '';
 }
 
+function readGenerationMode() {
+  const pathname = `${location.pathname || ''}`.toLowerCase();
+  if (pathname.includes('/image/')) return 'image';
+  if (pathname.includes('/video/')) return 'video';
+  if (pathname.includes('/motion/')) return 'motion-control';
+  if (pathname.includes('/avatar/')) return 'avatar';
+
+  const activeTab = Array.from(document.querySelectorAll('button,a,[role="button"],div,span'))
+    .find((el) => {
+      if (!isVisible(el)) return false;
+      const text = normalizeSpace(buttonDescriptorText(el) || buttonText(el));
+      if (!text) return false;
+      const style = getComputedStyle(el);
+      return (
+        ['image generation', 'video generation', 'motion control', 'avatar'].includes(text)
+        && (style.fontWeight === '700' || style.fontWeight === '600' || el.getAttribute('aria-current') === 'page')
+      );
+    });
+
+  const label = normalizeSpace(buttonDescriptorText(activeTab) || buttonText(activeTab));
+  if (label.includes('image')) return 'image';
+  if (label.includes('video')) return 'video';
+  if (label.includes('motion')) return 'motion-control';
+  if (label.includes('avatar')) return 'avatar';
+  return '';
+}
+
+function normalizeGenerateActionLabel(value) {
+  return normalizeSpace(`${value || ''}`)
+    .replace(/\b(\d+(?:\.\d+)?)\s+generate\s+\1generate\b/g, '$1 generate')
+    .replace(/\bgenerate\s+generate\b/g, 'generate')
+    .trim();
+}
+
+function readGenerateButtonLabel(generateButton) {
+  return normalizeGenerateActionLabel(buttonText(generateButton))
+    || normalizeGenerateActionLabel(buttonDescriptorText(generateButton));
+}
+
+function readExpectedCreditsFromGenerateButton(generateButton) {
+  if (!generateButton) return null;
+
+  for (const value of collectGenerateTextCandidates(generateButton)) {
+    const parsed = parseExpectedCreditsFromGenerateText(value);
+    if (parsed != null) return parsed;
+  }
+  return null;
+}
+
+function readCurrentKlingAccountLabel() {
+  const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+  const visibleCandidates = collectUniqueElements(
+    Array.from(document.querySelectorAll('button,span,div,a,p,strong,b'))
+  )
+    .filter((el) => isVisible(el))
+    .map((el) => `${el.textContent || ''}`.trim())
+    .filter(Boolean);
+
+  for (const text of visibleCandidates) {
+    const match = text.match(emailPattern);
+    if (match?.[0]) return match[0].trim();
+  }
+  return '';
+}
+
+function readTrackedKlingAccountLabel() {
+  return `${CTX.credential?.loginIdentifier || ''}`.trim() || readCurrentKlingAccountLabel();
+}
+
+async function resolveTrackedKlingAccountLabel() {
+  const immediateLabel = readTrackedKlingAccountLabel();
+  if (immediateLabel) return immediateLabel;
+  try {
+    const credential = await loadCredential();
+    return `${credential?.loginIdentifier || ''}`.trim() || readCurrentKlingAccountLabel();
+  } catch {
+    return readCurrentKlingAccountLabel();
+  }
+}
+
+function collectInteractionCandidateElements(target) {
+  const path = typeof target?.composedPath === 'function' ? target.composedPath() : [];
+  const pathElements = path.filter((node) => node?.nodeType === Node.ELEMENT_NODE);
+  const fallback = [];
+  let cur = target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+  let depth = 0;
+  while (cur && cur !== document.body && depth < 8) {
+    fallback.push(cur);
+    cur = cur.parentElement;
+    depth += 1;
+  }
+  return collectUniqueElements([...pathElements, ...fallback]);
+}
+
 function findGenerateActionTarget(target) {
-  const candidate = findClickableAncestor(target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement);
-  if (!candidate || !isVisible(candidate) || !isEnabled(candidate)) return null;
+  const candidates = collectInteractionCandidateElements(target)
+    .map((el) => findClickableAncestor(el) || el);
 
-  const text = normalizeSpace(buttonDescriptorText(candidate) || buttonText(candidate));
-  if (!/(^|\s)(\d+(?:\.\d+)?\s+)?generate$/.test(text)) return null;
-  if (text.includes('create in omni')) return null;
+  let bestCandidate = null;
+  let bestScore = -1;
 
-  const rect = candidate.getBoundingClientRect();
-  if (rect.width < 120 || rect.height < 36) return null;
-  if (rect.top < window.innerHeight * 0.45) return null;
-  return candidate;
+  for (const candidate of collectUniqueElements(candidates)) {
+    if (!candidate || !isVisible(candidate) || !isEnabled(candidate)) continue;
+
+    const text = readGenerateButtonLabel(candidate);
+    if (!text) continue;
+    if (!/(^|\s)generate($|\s)/.test(text)) continue;
+    if (text.includes('create in omni')) continue;
+
+    const rect = candidate.getBoundingClientRect();
+    if (rect.width < 90 || rect.height < 32) continue;
+
+    let score = 0;
+    if (candidate.matches?.('button,[role="button"],a[href],input[type="button"],input[type="submit"]')) score += 5;
+    if (rect.width >= 140) score += 3;
+    if (rect.height >= 40) score += 2;
+    if (parseCreditNumber(text) != null) score += 2;
+    if (rect.top > window.innerHeight * 0.5) score += 1;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidate = candidate;
+    }
+  }
+
+  return bestCandidate;
+}
+
+function readGenerateLikeClickLabel(target) {
+  const path = typeof target?.composedPath === 'function' ? target.composedPath() : [];
+  const pathElements = path.filter((node) => node?.nodeType === Node.ELEMENT_NODE);
+  const fallback = [];
+  let cur = target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+  let depth = 0;
+  while (cur && cur !== document.body && depth < 5) {
+    fallback.push(cur);
+    cur = cur.parentElement;
+    depth += 1;
+  }
+
+  const candidates = collectUniqueElements([...pathElements, ...fallback]);
+  for (const candidate of candidates) {
+    const text = normalizeSpace(buttonDescriptorText(candidate) || buttonText(candidate));
+    if (text.includes('generate')) {
+      return text;
+    }
+  }
+  return '';
 }
 
 function readGenerateControlContext(generateButton) {
@@ -336,10 +674,76 @@ function readGenerateControlContext(generateButton) {
     durationLabel: durationMatch?.[0] || '',
     resolutionLabel: resolutionMatch?.[0] || '',
     aspectRatioLabel: ratioMatch?.[0] || '',
+    scopeText,
   };
 }
 
 function readVisibleCreditBalance() {
+  const creditCandidates = [];
+
+  for (const el of collectUniqueElements(Array.from(document.querySelectorAll('div,span,button,strong,b')))) {
+    if (!isVisible(el)) continue;
+    if (el.closest?.('#rmw-kling-badge')) continue;
+
+    const text = `${el.textContent || ''}`.trim();
+    if (!text || text.length > 32) continue;
+    if (text.includes('-')) continue;
+
+    const parsedValue = parseCreditNumber(text);
+    if (parsedValue == null) continue;
+
+    const normalizedText = normalizeSpace(text);
+    const rect = el.getBoundingClientRect();
+    const contextText = normalizeSpace([
+      el.parentElement?.innerText || '',
+      el.parentElement?.parentElement?.innerText || '',
+      el.closest?.('button')?.innerText || '',
+    ].join(' '));
+    const isCompactDisplay = /[km]\s*$/i.test(text);
+
+    if (
+      /\b\d+\s*[:x]\s*\d+\b/.test(normalizedText)
+      || /\b(360p|540p|720p|1080p|4k|2k|hd)\b/i.test(normalizedText)
+      || /\b(image|video|motion|avatar|seconds?|mins?|styles?)\b/i.test(contextText)
+      || /\b(consumed credits|purchase|obtained|transfer out)\b/i.test(contextText)
+    ) {
+      continue;
+    }
+
+    let score = 0;
+    if (/^\d+(?:\.\d+)?\s*[km]?$/i.test(text)) score += 6;
+    if (isCompactDisplay) score += 3;
+    if (!isCompactDisplay && /^\d+(?:\.\d+)?$/.test(text)) score += 7;
+    if (parsedValue >= 1000) score += 4;
+    if (rect.left < 220) score += 3;
+    if (rect.top > window.innerHeight * 0.7) score += 4;
+    if (rect.width < 120) score += 1;
+    if (contextText.includes('upgrade')) score += 2;
+    if (contextText.includes('subscription')) score += 2;
+    if (contextText.includes('api')) score += 1;
+    if (contextText.includes('credit details')) score += 4;
+    if (contextText.includes('remaining credits')) score += 24;
+    if (contextText.includes('membership credits')) score += 10;
+    if (contextText.includes('top-up credits')) score += 8;
+    if (contextText.includes('bonus credits')) score += 8;
+
+    creditCandidates.push({
+      el,
+      parsedValue,
+      score,
+    });
+  }
+
+  creditCandidates.sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score;
+    if (right.parsedValue !== left.parsedValue) return right.parsedValue - left.parsedValue;
+    return 0;
+  });
+
+  if (creditCandidates.length) {
+    return creditCandidates[0].parsedValue;
+  }
+
   const candidates = collectUniqueElements(Array.from(document.querySelectorAll('div,span,button,strong,b')))
     .filter((el) => isVisible(el))
     .filter((el) => /^\d+(?:\.\d+)?$/.test(`${el.textContent || ''}`.trim()))
@@ -358,36 +762,73 @@ function readVisibleCreditBalance() {
   return candidates.length ? parseCreditNumber(candidates[0].el.textContent) : null;
 }
 
+function showCurrentCreditsDebug(reason = '') {
+  const credits = readVisibleCreditBalance();
+  const suffix = reason ? ` (${reason})` : '';
+  setStatus(
+    credits != null
+      ? `Current credits: ${credits}${suffix}`
+      : `Current credits: not found${suffix}`,
+    { hideAfterMs: 4000 }
+  );
+}
+
+function readCredentialUsageMetadata() {
+  const credentialId = Number(CTX.credential?.id || 0);
+  const linkedCredentialId = Number(CTX.credential?.linkedCredentialId || 0);
+  return {
+    credentialId: credentialId > 0 ? credentialId : null,
+    linkedCredentialId: linkedCredentialId > 0 ? linkedCredentialId : null,
+    credentialLabel: `${CTX.credential?.loginIdentifier || ''}`.trim() || null,
+  };
+}
+
 function buildGenerateUsageSnapshot(generateButton) {
-  const buttonLabel = normalizeSpace(buttonDescriptorText(generateButton) || buttonText(generateButton));
+  const buttonLabel = readGenerateButtonLabel(generateButton);
   const controlContext = readGenerateControlContext(generateButton);
+  const generationMode = readGenerationMode();
+  const creditsBefore = readVisibleCreditBalance();
+  const klingAccountLabel = readTrackedKlingAccountLabel();
+  const credentialUsageMetadata = readCredentialUsageMetadata();
   return {
     eventType: 'generate_click',
+    eventDate: buildLocalDateValue(),
     status: 'captured',
     promptText: readPromptText(),
     modelLabel: readSelectedModelLabel(),
     durationLabel: controlContext.durationLabel,
     resolutionLabel: controlContext.resolutionLabel,
-    expectedCredits: parseCreditNumber(buttonLabel),
-    creditsBefore: readVisibleCreditBalance(),
+    expectedCredits: readExpectedCreditsFromGenerateButton(generateButton),
+    creditsBefore,
     metadata: {
       actionLabel: buttonLabel,
       aspectRatioLabel: controlContext.aspectRatioLabel,
+      generationMode,
       pathname: location.pathname,
+      controlContext: controlContext.scopeText,
+      currentCredits: creditsBefore,
+      klingAccountLabel,
+      credentialId: credentialUsageMetadata.credentialId,
+      linkedCredentialId: credentialUsageMetadata.linkedCredentialId,
+      credentialLabel: credentialUsageMetadata.credentialLabel,
     },
   };
 }
 
 async function reportKlingUsage(snapshot) {
   const usageTicket = loadStoredUsageTicket();
-  if (!usageTicket) return;
+  const extensionTicket = loadStoredTicket();
 
-  await msg({
+  const response = await msg({
     type: 'TOOL_HUB_REPORT_USAGE_EVENT',
+    eventId: snapshot.eventId,
+    credentialId: Number(snapshot.metadata?.credentialId || CTX.credential?.id || 0) || null,
     toolSlug: TOOL_SLUG,
     hostname: location.hostname,
     pageUrl: location.href,
+    eventDate: snapshot.eventDate,
     usageTicket,
+    extensionTicket,
     eventType: snapshot.eventType,
     status: snapshot.status,
     modelLabel: snapshot.modelLabel,
@@ -399,6 +840,72 @@ async function reportKlingUsage(snapshot) {
     creditsAfter: snapshot.creditsAfter,
     creditsBurned: snapshot.creditsBurned,
     metadata: snapshot.metadata,
+  });
+
+  if (response?.contextInvalidated) {
+    throw buildExtensionContextInvalidatedError(response.error);
+  }
+
+  if (!response?.ok) {
+    throw new Error(response?.error || 'Usage event request failed');
+  }
+
+  return response;
+}
+
+function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason) {
+  snapshot.creditsAfter = creditsAfter;
+  snapshot.creditsBurned = (
+    snapshot.creditsBefore != null && creditsAfter != null
+      ? Math.max(0, snapshot.creditsBefore - creditsAfter)
+      : snapshot.expectedCredits
+  );
+  snapshot.metadata = {
+    ...(snapshot.metadata || {}),
+    currentCredits: creditsAfter != null ? creditsAfter : snapshot.creditsBefore,
+    settlementReason,
+  };
+  return snapshot;
+}
+
+function waitForGenerateUsageSettlement(snapshot) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    let lastObservedCredits = snapshot.creditsBefore;
+    let settled = false;
+    let intervalId = 0;
+
+    const finish = (creditsAfter, settlementReason) => {
+      if (settled) return;
+      settled = true;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+      resolve(finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason));
+    };
+
+    const check = () => {
+      const creditsAfter = readVisibleCreditBalance();
+      if (creditsAfter != null) {
+        lastObservedCredits = creditsAfter;
+      }
+
+      if (
+        snapshot.creditsBefore != null
+        && creditsAfter != null
+        && creditsAfter < snapshot.creditsBefore
+      ) {
+        finish(creditsAfter, 'balance_decreased');
+        return;
+      }
+
+      if (Date.now() - startedAt >= USAGE_REPORT_MAX_WAIT_MS) {
+        finish(lastObservedCredits, 'timeout');
+      }
+    };
+
+    intervalId = window.setInterval(check, USAGE_REPORT_POLL_MS);
+    check();
   });
 }
 
@@ -425,20 +932,81 @@ function scheduleGenerateUsageReport(generateButton) {
 
   USAGE_CTX.pendingReportTimer = window.setTimeout(() => {
     USAGE_CTX.pendingReportTimer = null;
-    const creditsAfter = readVisibleCreditBalance();
-    snapshot.creditsAfter = creditsAfter;
-    snapshot.creditsBurned = (
-      snapshot.creditsBefore != null && creditsAfter != null
-        ? Math.max(0, snapshot.creditsBefore - creditsAfter)
-        : snapshot.expectedCredits
-    );
-    reportKlingUsage(snapshot).catch(() => {});
-  }, 1800);
+    resolveTrackedKlingAccountLabel()
+      .then((klingAccountLabel) => {
+        snapshot.metadata = {
+          ...(snapshot.metadata || {}),
+          klingAccountLabel: klingAccountLabel || snapshot.metadata?.klingAccountLabel || '',
+        };
+        return reportKlingUsage({
+          ...snapshot,
+          status: 'submitted',
+          metadata: {
+            ...(snapshot.metadata || {}),
+            stage: 'submitted',
+          },
+        });
+      })
+      .then((response) => {
+        const eventId = Number(response?.event?.id || 0);
+        if (eventId > 0) {
+          snapshot.eventId = eventId;
+        }
+        setStatus(`Usage saved: ${eventId > 0 ? `#${eventId}` : 'submitted'}`, { hideAfterMs: 3500 });
+        return waitForGenerateUsageSettlement(snapshot);
+      })
+      .then((settledSnapshot) => reportKlingUsage({
+        ...settledSnapshot,
+        status: 'settled',
+        metadata: {
+          ...(settledSnapshot.metadata || {}),
+          stage: 'settled',
+        },
+      }))
+      .then((response) => {
+        const eventId = Number(response?.event?.id || snapshot.eventId || 0);
+        setStatus(`Usage updated: ${eventId > 0 ? `#${eventId}` : 'settled'}`, { hideAfterMs: 3500 });
+      })
+      .catch((error) => {
+        if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) {
+          return;
+        }
+        setStatus(`Usage tracking failed: ${error?.message || 'Unknown error'}`);
+        console.warn('[RMW Kling] Usage report failed', error);
+      });
+  }, 1200);
 }
 
-function handleGenerateClick(event) {
+function clearPendingUsageReport() {
+  if (USAGE_CTX.pendingReportTimer) {
+    clearTimeout(USAGE_CTX.pendingReportTimer);
+    USAGE_CTX.pendingReportTimer = null;
+  }
+}
+
+function handleGenerateInteraction(event) {
+  const now = Date.now();
+  if (
+    USAGE_CTX.lastInteractionType === event.type
+    && now - USAGE_CTX.lastInteractionAt < 120
+  ) {
+    return;
+  }
+  USAGE_CTX.lastInteractionType = event.type;
+  USAGE_CTX.lastInteractionAt = now;
+
   const generateButton = findGenerateActionTarget(event.target);
-  if (!generateButton) return;
+  if (!generateButton) {
+    const debugLabel = readGenerateLikeClickLabel(event.target);
+    if (debugLabel) {
+      setStatus(`Generate-like interaction: ${debugLabel}`, { hideAfterMs: 4000 });
+      window.setTimeout(() => showCurrentCreditsDebug('after generate-like interaction'), 250);
+    }
+    return;
+  }
+  const label = readGenerateButtonLabel(generateButton);
+  setStatus(`Generate detected: ${label || 'button found'}`, { hideAfterMs: 4000 });
+  window.setTimeout(() => showCurrentCreditsDebug('after generate detect'), 250);
   scheduleGenerateUsageReport(generateButton);
 }
 
@@ -446,7 +1014,14 @@ function startUsageTracking() {
   captureTicket();
   if (USAGE_CTX.listenerAttached) return;
   USAGE_CTX.listenerAttached = true;
-  document.addEventListener('click', handleGenerateClick, true);
+  document.addEventListener('pointerdown', handleGenerateInteraction, true);
+  document.addEventListener('click', handleGenerateInteraction, true);
+  window.addEventListener('pagehide', clearPendingUsageReport, true);
+  if (!USAGE_CTX.debugReadyShown) {
+    USAGE_CTX.debugReadyShown = true;
+    setStatus('Kling usage tracker ready', { hideAfterMs: 2500 });
+    window.setTimeout(() => showCurrentCreditsDebug('startup'), 900);
+  }
 }
 
 // ── DOM helpers ───────────────────────────────────────────────
@@ -526,6 +1101,55 @@ function valuesMatch(a, b) {
 
 function normalizeSpace(value) {
   return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function passwordSemanticText(input) {
+  if (!input) return '';
+  return normalizeSpace([
+    input.getAttribute?.('type') || input.type || '',
+    input.getAttribute?.('autocomplete') || '',
+    input.getAttribute?.('name') || '',
+    input.getAttribute?.('id') || '',
+    input.getAttribute?.('placeholder') || '',
+    input.getAttribute?.('aria-label') || '',
+    input.getAttribute?.('data-testid') || '',
+    input.getAttribute?.('class') || '',
+  ].join(' '));
+}
+
+function isPasswordSemanticInput(input) {
+  if (!input) return false;
+  const descriptor = passwordSemanticText(input);
+  return descriptor.includes('password')
+    || descriptor.includes('passcode')
+    || descriptor.includes('current-password')
+    || descriptor.includes('new-password');
+}
+
+function findVisiblePasswordInputs() {
+  return Array.from(document.querySelectorAll('input'))
+    .filter((input) => isVisible(input) && !input.disabled && !input.readOnly && isPasswordSemanticInput(input));
+}
+
+function findPrimaryPasswordInput() {
+  const candidates = collectUniqueElements([
+    findInput(PASS_SELS),
+    ...findVisiblePasswordInputs(),
+  ]).filter(Boolean);
+
+  if (!candidates.length) return null;
+  return candidates
+    .sort((left, right) => {
+      const score = (input) => {
+        let value = 0;
+        if (input === document.activeElement) value += 8;
+        if (`${input.value || ''}`.length > 0) value += 6;
+        if ((`${input.getAttribute?.('type') || input.type || ''}`.trim().toLowerCase()) === 'password') value += 4;
+        if (input.matches?.('input[autocomplete="current-password"], input[autocomplete="new-password"]')) value += 3;
+        return value;
+      };
+      return score(right) - score(left);
+    })[0];
 }
 
 function controlHintText(el) {
@@ -637,57 +1261,314 @@ function findPasswordRevealControlFromTarget(target, passInput) {
   return candidates.find((candidate) => findPasswordRevealCandidates(passInput).includes(candidate)) || null;
 }
 
+function ensurePasswordGuardStyle() {
+  void PASSWORD_GUARD_STYLE_ID;
+}
+
+function applyPasswordConcealmentStyles(passInput) {
+  void passInput;
+}
+
+function concealPasswordText(passInput) {
+  void passInput;
+}
+
 function enforcePasswordMask(passInput) {
-  if (!passInput) return;
-  try {
-    if (passInput.type !== 'password') {
-      passInput.type = 'password';
-    }
-    if (passInput.getAttribute('type') !== 'password') {
-      passInput.setAttribute('type', 'password');
-    }
-  } catch {}
+  void passInput;
 }
 
 function handlePasswordRevealAttempt(event) {
-  const passInput = findInput(PASS_SELS);
-  if (!passInput) return;
-
-  const revealControl = findPasswordRevealControlFromTarget(event.target, passInput);
-  if (!revealControl) return;
-
-  disablePasswordRevealControl(revealControl);
-  enforcePasswordMask(passInput);
-  blockRevealControlEvent(event);
+  void event;
 }
 
 function ensurePasswordRevealGuards() {
-  if (document.documentElement?.dataset?.rmwKlingRevealGuardAttached === 'true') return;
-  document.documentElement.dataset.rmwKlingRevealGuardAttached = 'true';
-
-  ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'keydown', 'keyup']
-    .forEach((eventName) => document.addEventListener(eventName, handlePasswordRevealAttempt, true));
+  void handlePasswordRevealAttempt;
 }
 
 function suppressPasswordReveal(passInput) {
-  if (!passInput) return;
-
-  enforcePasswordMask(passInput);
-  const candidates = findPasswordRevealCandidates(passInput);
-  candidates.forEach((candidate) => disablePasswordRevealControl(candidate));
-  CTX.blockedRevealControl = candidates[0] || null;
+  void passInput;
+  CTX.blockedRevealControl = null;
 }
 
 // ── React-compatible fill ─────────────────────────────────────
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
+}
+
+function getValueSetter(input) {
+  let current = input;
+  while (current && current !== Object.prototype) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, 'value');
+    if (descriptor?.set) {
+      return descriptor.set;
+    }
+    current = Object.getPrototypeOf(current);
+  }
+  return null;
+}
+
+function isPasswordField(input) {
+  if (!input) return false;
+  const type = `${input.getAttribute?.('type') || input.type || ''}`.trim().toLowerCase();
+  return type === 'password' || isPasswordSemanticInput(input);
+}
+
+function moveCaretToEnd(input) {
+  if (!input || typeof input.setSelectionRange !== 'function') return;
+  try {
+    const length = `${input.value || ''}`.length;
+    input.setSelectionRange(length, length);
+  } catch {}
+}
+
+function getPasswordTypedMarker(input) {
+  return `${input?.dataset?.rmwKlingTypedValue || ''}`;
+}
+
+function setPasswordTypedMarker(input, value) {
+  if (!input?.dataset) return;
+  input.dataset.rmwKlingTypedValue = `${value || ''}`;
+}
+
+function resetPasswordSubmitGuard() {
+  CTX.passwordSubmitGuardKey = '';
+  CTX.passwordSubmitGuardUntil = 0;
+}
+
+function buildPasswordSubmitGuardKey(emailInput, passInput) {
+  const emailMarker = emailInput
+    ? `${`${emailInput.value || ''}`.trim().toLowerCase()}`
+    : '';
+  const passwordLength = `${passInput?.value || ''}`.length;
+  return [
+    location.pathname || '',
+    emailMarker,
+    passwordLength,
+    passInput ? 'password-present' : 'password-missing',
+  ].join('|');
+}
+
+async function waitForFieldValueStability(input, value, {
+  durationMs = PASSWORD_FIELD_SETTLE_MS,
+  intervalMs = PASSWORD_FIELD_SETTLE_CHECK_MS,
+} = {}) {
+  if (!input) return true;
+  const expectedValue = `${value || ''}`;
+  if (!valuesMatch(input.value, expectedValue)) return false;
+
+  const deadline = Date.now() + Math.max(0, durationMs);
+  while (Date.now() < deadline) {
+    await sleep(intervalMs);
+    if (!input.isConnected) return false;
+    if (!valuesMatch(input.value, expectedValue)) return false;
+  }
+  return valuesMatch(input.value, expectedValue);
+}
+
 function fillField(input, value) {
   if (!input) return;
-  const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-  if (desc?.set) desc.set.call(input, value);
-  else input.value = value;
-  input.setAttribute('value', value);
-  ['input', 'change', 'blur'].forEach((e) =>
-    input.dispatchEvent(new Event(e, { bubbles: true }))
-  );
+  const passwordField = isPasswordField(input);
+  const nextValue = `${value || ''}`;
+  const previousValue = `${input.value || ''}`;
+  const setter = getValueSetter(input);
+  try { input.focus({ preventScroll: true }); } catch {}
+  if (setter) setter.call(input, nextValue);
+  else input.value = nextValue;
+  input.setAttribute('value', nextValue);
+  if (input._valueTracker && typeof input._valueTracker.setValue === 'function') {
+    input._valueTracker.setValue(previousValue);
+  }
+  try {
+    input.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      data: nextValue,
+      inputType: 'insertText',
+    }));
+  } catch {}
+  try {
+    input.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      data: nextValue,
+      inputType: 'insertText',
+    }));
+  } catch {
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  moveCaretToEnd(input);
+  if (!passwordField) {
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+  }
+}
+
+async function typeFieldLikeUser(input, value, { perCharDelayMs = TYPED_FILL_CHAR_DELAY_MS } = {}) {
+  if (!input) return;
+  const passwordField = isPasswordField(input);
+  const nextValue = `${value || ''}`;
+  const setter = getValueSetter(input);
+  const setTypedValue = (typedValue, previousValue) => {
+    if (setter) setter.call(input, typedValue);
+    else input.value = typedValue;
+    input.setAttribute('value', typedValue);
+    if (input._valueTracker && typeof input._valueTracker.setValue === 'function') {
+      input._valueTracker.setValue(previousValue);
+    }
+  };
+
+  try { input.focus({ preventScroll: true }); } catch {}
+
+  const initialValue = `${input.value || ''}`;
+  setTypedValue('', initialValue);
+  try {
+    input.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      data: '',
+      inputType: 'deleteContentBackward',
+    }));
+  } catch {}
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+
+  for (let index = 0; index < nextValue.length; index += 1) {
+    const character = nextValue[index];
+    const partialValue = nextValue.slice(0, index + 1);
+    const previousPartial = `${input.value || ''}`;
+    try {
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key: character,
+        code: character.length === 1 ? `Key${character.toUpperCase()}` : '',
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+    try {
+      input.dispatchEvent(new InputEvent('beforeinput', {
+        data: character,
+        inputType: 'insertText',
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+    setTypedValue(partialValue, previousPartial);
+    try {
+      input.dispatchEvent(new InputEvent('input', {
+        data: character,
+        inputType: 'insertText',
+        bubbles: true,
+      }));
+    } catch {
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    try {
+      input.dispatchEvent(new KeyboardEvent('keyup', {
+        key: character,
+        code: character.length === 1 ? `Key${character.toUpperCase()}` : '',
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+    if (perCharDelayMs > 0) {
+      await sleep(perCharDelayMs);
+    }
+  }
+
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  moveCaretToEnd(input);
+  if (passwordField) {
+    setPasswordTypedMarker(input, nextValue);
+  }
+  if (!passwordField) {
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+  }
+}
+
+async function ensureFieldValue(input, value) {
+  if (!input) return true;
+  const passwordField = isPasswordField(input);
+  if (valuesMatch(input.value, value)) {
+    return passwordField
+      ? waitForFieldValueStability(input, value)
+      : true;
+  }
+
+  fillField(input, value);
+  await sleep(FIELD_FILL_DELAY_MS);
+  if (passwordField && await waitForFieldValueStability(input, value)) return true;
+  if (!passwordField && valuesMatch(input.value, value)) return true;
+
+  if (passwordField) {
+    await typeFieldLikeUser(input, value);
+    await sleep(FIELD_FILL_DELAY_MS);
+    if (await waitForFieldValueStability(input, value)) return true;
+  }
+
+  if (valuesMatch(input.value, value)) return true;
+  fillField(input, value);
+  await sleep(FIELD_FILL_DELAY_MS);
+  return passwordField
+    ? waitForFieldValueStability(input, value)
+    : valuesMatch(input.value, value);
+}
+
+function submitNearestForm(input) {
+  const form = input?.closest?.('form');
+  if (!form) return false;
+
+  try {
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
+      return true;
+    }
+  } catch {}
+
+  try {
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function pressEnter(input) {
+  if (!input) return false;
+  try { input.focus({ preventScroll: true }); } catch {}
+  ['keydown', 'keypress', 'keyup'].forEach((eventName) => {
+    try {
+      input.dispatchEvent(new KeyboardEvent(eventName, {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch {}
+  });
+  return true;
+}
+
+function submitSignInStep(button, fallbackInput) {
+  if (button && safeClick(button)) return true;
+  if (submitNearestForm(fallbackInput)) return true;
+  return pressEnter(fallbackInput);
+}
+
+function buildSubmitActionKey(kind, emailInput, passInput, button) {
+  const buttonLabel = normalizeSpace(buttonDescriptorText(button) || buttonText(button));
+  const emailMarker = emailInput
+    ? `${emailInput.getAttribute?.('name') || emailInput.id || 'email'}:${`${emailInput.value || ''}`.trim().toLowerCase()}`
+    : 'email:none';
+  const passwordMarker = passInput
+    ? `password:${`${passInput.value || ''}`.length}`
+    : 'password:none';
+  return [
+    kind || 'unknown',
+    location.pathname || '',
+    buttonLabel || 'button',
+    emailMarker,
+    passwordMarker,
+  ].join('|');
 }
 
 // ── Single safe click — no multi-event chain ──────────────────
@@ -919,7 +1800,7 @@ function findLandingEntryButton() {
 }
 
 function hasLoginForm() {
-  return Boolean(findInput(EMAIL_SELS) || findInput(PASS_SELS));
+  return Boolean(findInput(EMAIL_SELS) || findPrimaryPasswordInput());
 }
 
 function hasVisibleLoginSurface() {
@@ -928,7 +1809,19 @@ function hasVisibleLoginSurface() {
 
 // FIX: Never redirect if already on /app — prevents reload during transient render
 function shouldRedirectToApp() {
-  return !location.pathname.startsWith('/app');
+  const pathname = `${location.pathname || ''}`.toLowerCase();
+  if (pathname.startsWith('/app')) return false;
+  if (isGoogleAuthTransitionPending()) return false;
+  if (hasVisibleLoginSurface()) return false;
+  if (
+    pathname.includes('/auth')
+    || pathname.includes('/login')
+    || pathname.includes('/signin')
+    || pathname.includes('/accounts')
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function collectVisibleTextSnapshot() {
@@ -1011,6 +1904,7 @@ async function checkAuthorization() {
         authorized: true,
         prepared: Boolean(activation.prepared),
         expiresAt: Number(activation.expiresAt || 0),
+        authTransitionAt: Number(activation.authTransitionAt || 0),
       };
     }
   }
@@ -1024,6 +1918,7 @@ async function checkAuthorization() {
     authorized: Boolean(response?.ok && response.authorized),
     prepared: Boolean(response?.ok && response.authorized && response.prepared),
     expiresAt: Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0),
+    authTransitionAt: Number(response?.ok && response.authorized ? response.authTransitionAt || 0 : 0),
   };
 }
 
@@ -1081,17 +1976,29 @@ async function markFreshSessionPrepared() {
 
 // ── Stop ──────────────────────────────────────────────────────
 function stop(message, phase = P.DONE, options = {}) {
+  const preserveLaunch = options.preserveLaunch ?? (phase === P.DONE);
   CTX.phase = phase;
   CTX.stopped = true;
+  resetPasswordSubmitGuard();
+  clearAuthTransition();
+  clearPendingUsageReport();
   if (CTX.timer)    { clearTimeout(CTX.timer);    CTX.timer = null; }
   if (CTX.keepAlive){ clearInterval(CTX.keepAlive); CTX.keepAlive = null; }
   if (CTX.observer) { CTX.observer.disconnect();  CTX.observer = null; } // FIX: stops mutation drain
-  clearTicket();
+  if (!preserveLaunch) {
+    clearTicket();
+    clearUsageTicket();
+  }
   clearCheckpoint();
-  if (!options.preserveLaunch) {
+  if (!preserveLaunch) {
     msg({ type: 'TOOL_HUB_REVOKE_ACTIVE_LAUNCH', toolSlug: TOOL_SLUG }).catch(() => {});
   }
-  setStatus(message);
+  const hideAfterMs = options.hideAfterMs ?? (
+    phase === P.DONE
+      ? BADGE_HIDE_DONE_MS
+      : (phase === P.BLOCKED ? BADGE_HIDE_BLOCKED_MS : 0)
+  );
+  setStatus(message, { hideAfterMs });
 }
 
 function wake(delay = 0) {
@@ -1140,6 +2047,14 @@ function clickLandingAction(button, nextPhase, delayAfterClick) {
 }
 
 function clickGoogleLandingAction(button, statusMessage) {
+  if (CTX.manualGoogleHandoff) {
+    setStatus('Waiting for manual Google sign-in…', {
+      hideAfterMs: BADGE_HIDE_BLOCKED_MS,
+      preserveExistingHideTimer: true,
+    });
+    wake(1000);
+    return true;
+  }
   if (!button) return false;
   const actionKey = landingActionKey(button);
   const now = Date.now();
@@ -1164,15 +2079,16 @@ function clickGoogleLandingAction(button, statusMessage) {
   }
 
   CTX.submitAt = now;
-  CTX.submitKind = 'google';
   CTX.submitLockUntil = now + SUBMIT_LOCK_MS;
-  writeCheckpoint(P.WAIT_REDIRECT, {
+  startGoogleAuthTransition(now);
+  writeCheckpoint(P.WAIT_GOOGLE, {
     submitAt: now,
     submitKind: 'google',
+    authTransitionAt: now,
   });
-  CTX.phase = P.WAIT_REDIRECT;
+  CTX.phase = P.WAIT_GOOGLE;
   setStatus(statusMessage || 'Opening Google sign-in…');
-  wake(EMAIL_CHOOSER_WAIT_MS);
+  wake(AUTH_TRANSITION_INITIAL_QUIET_MS);
   return true;
 }
 
@@ -1194,7 +2110,8 @@ async function run() {
 
 async function tick() {
   if (isAuthenticated()) {
-    stop('✓ Signed in successfully', P.DONE);
+    CTX.manualGoogleHandoff = false;
+    stop(buildSignedInStatusMessage(), P.DONE);
     return;
   }
 
@@ -1204,6 +2121,15 @@ async function tick() {
     case P.BOOT: {
       CTX.ticket = captureTicket();
       const checkpoint = readCheckpoint();
+      if (checkpoint?.phase === P.WAIT_GOOGLE || (checkpoint?.phase === P.WAIT_REDIRECT && checkpoint.submitKind === 'google')) {
+        resumeGoogleAuthTransition(Number(checkpoint.authTransitionAt || checkpoint.submitAt || Date.now()));
+        setStatus('Resuming after login redirect…');
+        CTX.submitAt       = checkpoint.submitAt || Date.now();
+        CTX.submitLockUntil = Date.now() + SUBMIT_LOCK_MS;
+        CTX.phase = P.WAIT_GOOGLE;
+        wake(AUTH_TRANSITION_INITIAL_QUIET_MS);
+        return;
+      }
       if (checkpoint?.phase === P.WAIT_REDIRECT) {
         setStatus('Resuming after login redirect…');
         CTX.submitAt       = checkpoint.submitAt || Date.now();
@@ -1228,8 +2154,15 @@ async function tick() {
       CTX.authorized = Boolean(auth.authorized);
       CTX.prepared   = Boolean(auth.prepared);
       CTX.expiresAt  = Number(auth.expiresAt || 0);
+      CTX.authTransitionAt = Number(auth.authTransitionAt || CTX.authTransitionAt || 0);
+      CTX.authTransitionActive = hasRecentAuthTransition();
 
       if (!CTX.authorized) {
+        if (isGoogleAuthTransitionPending()) {
+          setStatus('Google sign-in is still completing…');
+          wake(AUTH_TRANSITION_POLL_MS);
+          return;
+        }
         CTX.launchRetries += 1;
         if (CTX.launchRetries > MAX_LAUNCH_RETRIES) {
           stop('Open this tool from the dashboard first.', P.BLOCKED);
@@ -1241,6 +2174,12 @@ async function tick() {
       }
 
       CTX.launchRetries = 0;
+
+      if (isGoogleAuthTransitionPending() && !CTX.manualGoogleHandoff) {
+        CTX.phase = P.WAIT_GOOGLE;
+        wake(AUTH_TRANSITION_POLL_MS);
+        return;
+      }
 
       // FIX: sessionClearDone guard — only clears cookies on FIRST launch prep
       if (CTX.expiresAt && !CTX.prepared && !CTX.sessionClearDone) {
@@ -1274,6 +2213,9 @@ async function tick() {
           wake(3000);
           return;
         }
+        if (credential?.id) {
+          setStatus(`Using ${formatResolvedCredentialLabel(credential)}`);
+        }
       } catch (error) {
         const message = error?.message || 'Unavailable';
         if (message.toLowerCase().includes('open this tool from the dashboard first')) {
@@ -1296,9 +2238,25 @@ async function tick() {
 
     // ── OPEN_LANDING ──────────────────────────────────────────
     case P.OPEN_LANDING: {
+      if (isGoogleCredential() && !CTX.manualGoogleHandoff && isGoogleAuthTransitionPending()) {
+        CTX.phase = P.WAIT_GOOGLE;
+        const remaining = Math.max(1, Math.round(getGoogleAuthTransitionRemainingMs() / 1000));
+        setStatus(`Waiting for Google OAuth to finish… (${remaining}s)`);
+        wake(AUTH_TRANSITION_POLL_MS);
+        return;
+      }
+
       if (isGoogleCredential()) {
         const googleButton = findGoogleAuthButton();
         if (googleButton) {
+          if (CTX.manualGoogleHandoff) {
+            setStatus('Waiting for manual Google sign-in…', {
+              hideAfterMs: BADGE_HIDE_BLOCKED_MS,
+              preserveExistingHideTimer: true,
+            });
+            wake(1000);
+            return;
+          }
           clickGoogleLandingAction(googleButton, 'Opening Google sign-in…');
           return;
         }
@@ -1338,11 +2296,27 @@ async function tick() {
     // ── FILL ──────────────────────────────────────────────────
     case P.FILL: {
       const emailInput = findInput(EMAIL_SELS);
-      const passInput  = findInput(PASS_SELS);
+      const passInput  = findPrimaryPasswordInput();
+
+      if (isGoogleCredential() && !CTX.manualGoogleHandoff && isGoogleAuthTransitionPending()) {
+        CTX.phase = P.WAIT_GOOGLE;
+        const remaining = Math.max(1, Math.round(getGoogleAuthTransitionRemainingMs() / 1000));
+        setStatus(`Waiting for Google OAuth to finish… (${remaining}s)`);
+        wake(AUTH_TRANSITION_POLL_MS);
+        return;
+      }
 
       if (isGoogleCredential()) {
         const googleButton = findGoogleAuthButton();
         if (googleButton) {
+          if (CTX.manualGoogleHandoff) {
+            setStatus('Waiting for manual Google sign-in…', {
+              hideAfterMs: BADGE_HIDE_BLOCKED_MS,
+              preserveExistingHideTimer: true,
+            });
+            wake(1000);
+            return;
+          }
           clickGoogleLandingAction(googleButton, 'Continuing with Google…');
           return;
         }
@@ -1364,17 +2338,44 @@ async function tick() {
 
       if (emailInput && !valuesMatch(emailInput.value, CTX.credential.loginIdentifier)) {
         emailInput.focus();
-        fillField(emailInput, CTX.credential.loginIdentifier);
       }
+
+      const emailReady = !emailInput || await ensureFieldValue(emailInput, CTX.credential.loginIdentifier);
 
       if (passInput && !valuesMatch(passInput.value, CTX.credential.password)) {
         passInput.focus();
-        fillField(passInput, CTX.credential.password);
       }
 
-      setStatus('Fields filled. Looking for Sign In…');
+      const passwordReady = !passInput || await ensureFieldValue(passInput, CTX.credential.password);
+
+      if (!emailReady || !passwordReady) {
+        if (passInput) {
+          resetPasswordSubmitGuard();
+        }
+        setStatus(passwordReady ? 'Syncing email field…' : 'Syncing password field…');
+        wake(FIELD_FILL_DELAY_MS);
+        return;
+      }
+
+      const hasPasswordStep = Boolean(passInput);
+      if (hasPasswordStep) {
+        const passwordSubmitGuardKey = buildPasswordSubmitGuardKey(emailInput, passInput);
+        const now = Date.now();
+        if (CTX.passwordSubmitGuardKey !== passwordSubmitGuardKey || CTX.passwordSubmitGuardUntil <= now) {
+          CTX.passwordSubmitGuardKey = passwordSubmitGuardKey;
+          CTX.passwordSubmitGuardUntil = now + PASSWORD_SUBMIT_DELAY_MS;
+        }
+      } else {
+        resetPasswordSubmitGuard();
+      }
+      const submitDelayMs = hasPasswordStep ? PASSWORD_SUBMIT_DELAY_MS : EMAIL_SUBMIT_DELAY_MS;
+      setStatus(
+        hasPasswordStep
+          ? 'Password filled. Re-checking before Sign In…'
+          : 'Email filled. Continuing…'
+      );
       CTX.phase = P.SUBMIT;
-      wake(FIELD_FILL_DELAY_MS);
+      wake(submitDelayMs);
       return;
     }
 
@@ -1387,15 +2388,23 @@ async function tick() {
       }
 
       const emailInput = findInput(EMAIL_SELS);
-      const passInput  = findInput(PASS_SELS);
+      const passInput  = findPrimaryPasswordInput();
 
       suppressPasswordReveal(passInput);
 
       if (emailInput && !valuesMatch(emailInput.value, CTX.credential?.loginIdentifier)) {
+        resetPasswordSubmitGuard();
         CTX.phase = P.FILL; wake(0); return;
       }
       if (passInput && !valuesMatch(passInput.value, CTX.credential?.password)) {
+        resetPasswordSubmitGuard();
         CTX.phase = P.FILL; wake(0); return;
+      }
+
+      if (passInput && Date.now() < CTX.passwordSubmitGuardUntil) {
+        setStatus('Password filled. Re-checking before Sign In…');
+        wake(Math.max(50, CTX.passwordSubmitGuardUntil - Date.now()));
+        return;
       }
 
       const signInButton = findSignInButton(emailInput, passInput);
@@ -1406,14 +2415,28 @@ async function tick() {
       }
 
       const nextSubmitKind = emailInput && !passInput ? 'email' : (passInput ? 'password' : 'unknown');
+      const nextSubmitActionKey = buildSubmitActionKey(nextSubmitKind, emailInput, passInput, signInButton);
+      const now = Date.now();
+      const sameSubmitPending = nextSubmitActionKey
+        && nextSubmitActionKey === CTX.lastSubmitActionKey
+        && CTX.submitActionLockUntil > now;
+      if (sameSubmitPending) {
+        setStatus(nextSubmitKind === 'email' ? 'Waiting for password step…' : 'Waiting to retry Sign In…');
+        wake(350);
+        return;
+      }
       setStatus(nextSubmitKind === 'email' ? 'Continuing to password step…' : 'Clicking Sign In…');
 
-      writeCheckpoint(P.WAIT_REDIRECT, { submitAt: Date.now(), submitKind: nextSubmitKind });
+      writeCheckpoint(P.WAIT_REDIRECT, { submitAt: now, submitKind: nextSubmitKind });
 
-      if (safeClick(signInButton)) {
-        CTX.submitAt       = Date.now();
+      if (submitSignInStep(signInButton, passInput || emailInput)) {
+        resetPasswordSubmitGuard();
+        const submitActionLockMs = nextSubmitKind === 'email' ? EMAIL_STEP_GRACE_MS : SUBMIT_LOCK_MS;
+        CTX.submitAt       = now;
         CTX.submitKind     = nextSubmitKind;
-        CTX.submitLockUntil = Date.now() + SUBMIT_LOCK_MS;
+        CTX.submitLockUntil = now + SUBMIT_LOCK_MS;
+        CTX.lastSubmitActionKey = nextSubmitActionKey;
+        CTX.submitActionLockUntil = now + submitActionLockMs;
         CTX.phase = P.WAIT_REDIRECT;
         wake(POST_SUBMIT_WAIT_MS);  // 300ms — was 700ms
       } else {
@@ -1423,21 +2446,98 @@ async function tick() {
       return;
     }
 
+    // ── WAIT_GOOGLE ────────────────────────────────────────────
+    case P.WAIT_GOOGLE: {
+      const elapsed = getGoogleAuthTransitionElapsedMs();
+
+      if (isAuthenticated()) {
+        CTX.manualGoogleHandoff = false;
+        stop(buildSignedInStatusMessage(), P.DONE);
+        return;
+      }
+
+      if (elapsed < AUTH_TRANSITION_INITIAL_QUIET_MS) {
+        const remaining = Math.max(1, Math.round((AUTH_TRANSITION_INITIAL_QUIET_MS - elapsed) / 1000));
+        setStatus(`Waiting for Google to process sign-in… (${remaining}s)`);
+        wake(AUTH_TRANSITION_POLL_MS);
+        return;
+      }
+
+      if (hasKlingNetworkErrorToast()) {
+        CTX.manualGoogleHandoff = true;
+        CTX.submitLockUntil = 0;
+        clearAuthTransition();
+        clearCheckpoint();
+        setStatus(
+          'Google sign-in failed on Kling side. Click Sign in with Google manually to continue.',
+          { hideAfterMs: BADGE_HIDE_BLOCKED_MS }
+        );
+        wake(1500);
+        return;
+      }
+
+      if (hasLoginForm()) {
+        const bodyText = `${document.body?.innerText || ''}`.toLowerCase();
+        const hasError = [
+          'incorrect password', 'invalid password', 'wrong password',
+          'invalid email', 'account not found', 'try again', 'password is incorrect',
+          'couldn’t sign you in', "couldn't sign you in", 'google rejected',
+        ].some((token) => bodyText.includes(token));
+        if (hasError) {
+          clearAuthTransition();
+          stop('Login failed. Check credentials in the dashboard.', P.BLOCKED);
+          return;
+        }
+      }
+
+      if (hasSignedInToast()) {
+        setStatus('Kling accepted login — waiting for app...');
+        wake(AUTH_TRANSITION_POLL_MS);
+        return;
+      }
+
+      if (elapsed >= AUTH_TRANSITION_TIMEOUT_MS) {
+        setStatus('Google sign-in timed out. Retrying…');
+        CTX.submitLockUntil = 0;
+        clearAuthTransition();
+        clearCheckpoint();
+        CTX.lastLandingActionKey = '';
+        CTX.landingActionLockUntil = 0;
+        CTX.phase = P.OPEN_LANDING;
+        wake(0);
+        return;
+      }
+
+      const remaining = Math.max(1, Math.round(getGoogleAuthTransitionRemainingMs() / 1000));
+      setStatus(`Waiting for Google OAuth to finish… (${remaining}s)`);
+      wake(AUTH_TRANSITION_POLL_MS);
+      return;
+    }
+
     // ── WAIT_REDIRECT ─────────────────────────────────────────
     case P.WAIT_REDIRECT: {
       const elapsed = Date.now() - CTX.submitAt;
+      const emailInput = findInput(EMAIL_SELS);
+      const passInput = findPrimaryPasswordInput();
+      const hasCredentialSurface = Boolean(emailInput || passInput);
+      const stillOnEmailOnlyStep = Boolean(emailInput && !passInput);
+      const waitingForPasswordStep = CTX.submitKind === 'email' && elapsed <= EMAIL_STEP_GRACE_MS;
 
       if (isAuthenticated()) {
-        stop('✓ Signed in successfully', P.DONE);
+        CTX.manualGoogleHandoff = false;
+        stop(buildSignedInStatusMessage(), P.DONE);
         return;
       }
 
       if (CTX.submitKind === 'google' && hasKlingNetworkErrorToast()) {
-        stop(
+        CTX.manualGoogleHandoff = true;
+        CTX.submitLockUntil = 0;
+        clearCheckpoint();
+        setStatus(
           'Google sign-in failed on Kling side. Click Sign in with Google manually to continue.',
-          P.BLOCKED,
-          { preserveLaunch: true }
+          { hideAfterMs: BADGE_HIDE_BLOCKED_MS }
         );
+        wake(1500);
         return;
       }
 
@@ -1445,7 +2545,7 @@ async function tick() {
         setStatus('Kling accepted login — waiting for app...');
         CTX.submitLockUntil = Date.now() + 3000;
 
-        if (!location.pathname.startsWith('/app')) {
+        if (shouldRedirectToApp()) {
           location.replace(LOGIN_URL);
           return;
         }
@@ -1453,18 +2553,16 @@ async function tick() {
         return;
       }
 
-      if (isGoogleCredential() && location.pathname.startsWith('/app') && findGoogleAuthButton()) {
-        if (elapsed < GOOGLE_POPUP_GRACE_MS) {
-          const remaining = Math.max(1, Math.round((GOOGLE_POPUP_GRACE_MS - elapsed) / 1000));
-          setStatus(`Waiting for Google sign-in window… (${remaining}s)`);
-          wake(800);
-          return;
-        }
-      }
-
       // FIX: chooser check guarded with elapsed > 1500ms to avoid
       // premature re-entry while SPA transition is still in progress
-      if (location.pathname.startsWith('/app') && findEmailChooserButton() && elapsed > 1500) {
+      if (
+        location.pathname.startsWith('/app')
+        && findEmailChooserButton()
+        && elapsed > 1500
+        && !waitingForPasswordStep
+        && !emailInput
+        && !passInput
+      ) {
         setStatus('Kling reloaded chooser — re-entering…');
         CTX.submitLockUntil        = 0;
         CTX.lastLandingActionKey   = '';   // FIX BUG2 — reset lock so click fires
@@ -1475,15 +2573,8 @@ async function tick() {
         return;
       }
 
-      // Ended up on public kling.ai after login — redirect back to app
-      if (!location.pathname.startsWith('/app')) {
-        setStatus('Post-login redirect to public page — going to app…');
-        location.replace(LOGIN_URL);
-        return;
-      }
-
       // Email-only step: password field appeared — fill it
-      if (CTX.submitKind === 'email' && findInput(PASS_SELS)) {
+      if (CTX.submitKind === 'email' && passInput) {
         CTX.submitLockUntil = 0;
         clearCheckpoint();
         CTX.phase = P.FILL;
@@ -1504,12 +2595,41 @@ async function tick() {
         }
       }
 
-      // Email step grace timeout (1800ms)
-      if (CTX.submitKind === 'email' && elapsed > EMAIL_STEP_GRACE_MS) {
+      // Email step grace timeout
+      if (CTX.submitKind === 'email' && stillOnEmailOnlyStep && elapsed > EMAIL_STEP_GRACE_MS) {
         CTX.submitLockUntil = 0;
         clearCheckpoint();
         CTX.phase = P.FILL;
         wake(0);
+        return;
+      }
+
+      // Stay on Kling's auth route while a credential form is still visible.
+      // Redirecting to /app too early refreshes the password step and loses progress.
+      if (!location.pathname.startsWith('/app')) {
+        if (hasCredentialSurface) {
+          setStatus(
+            CTX.submitKind === 'password'
+              ? 'Waiting for password submit to complete…'
+              : 'Waiting for Kling login flow…'
+          );
+          wake(450);
+          return;
+        }
+
+        if (elapsed < 1200) {
+          wake(300);
+          return;
+        }
+
+        if (shouldRedirectToApp()) {
+          setStatus('Post-login redirect to public page — going to app…');
+          location.replace(LOGIN_URL);
+          return;
+        }
+
+        setStatus('Waiting for Kling login flow…');
+        wake(450);
         return;
       }
 
@@ -1554,6 +2674,7 @@ async function tick() {
 // stop() disconnects observer on DONE/BLOCKED to prevent CPU drain after login
 function onMutation() {
   if (CTX.stopped) return;
+  if (isGoogleAuthTransitionPending()) return;
   const now = Date.now();
   if (now - CTX.lastMutationAt < MUTATION_DEBOUNCE_MS) return;
   CTX.lastMutationAt = now;
@@ -1572,7 +2693,7 @@ function start() {
     childList: true, subtree: true, attributes: false,
   });
   CTX.keepAlive = setInterval(() => {
-    if (!CTX.stopped && !CTX.busy && !CTX.timer) wake(0);
+    if (!CTX.stopped && !CTX.busy && !CTX.timer && !isGoogleAuthTransitionPending()) wake(0);
   }, KEEP_ALIVE_MS);
   wake(0);
 }

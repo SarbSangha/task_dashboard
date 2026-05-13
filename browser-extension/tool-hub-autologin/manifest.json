@@ -20,6 +20,8 @@
     "https://dashboard.ritzmediaworld.in/*",
     "http://dashboard.ritzmediaworld.in/*",
     "https://192.168.1.15/*",
+    "https://canva.com/*",
+    "https://*.canva.com/*",
     "https://claude.ai/*",
     "https://*.claude.ai/*",
     "https://enhancor.ai/*",
@@ -40,6 +42,8 @@
     "https://*.higgsfield.ai/*",
     "https://heygen.com/*",
     "https://*.heygen.com/*",
+    "https://elevenlabs.io/*",
+    "https://*.elevenlabs.io/*",
     "https://google.com/*",
     "https://*.google.com/*",
     "https://labs.google/*",
@@ -72,6 +76,14 @@
         "https://192.168.1.15/*"
       ],
       "js": ["content-dashboard.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://canva.com/*",
+        "https://*.canva.com/*"
+      ],
+      "js": ["content-canva.js"],
       "run_at": "document_idle"
     },
     {
@@ -152,6 +164,14 @@
         "https://*.heygen.com/*"
       ],
       "js": ["content-heygen.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://elevenlabs.io/*",
+        "https://*.elevenlabs.io/*"
+      ],
+      "js": ["content-elevenlabs.js"],
       "run_at": "document_idle"
     },
     {

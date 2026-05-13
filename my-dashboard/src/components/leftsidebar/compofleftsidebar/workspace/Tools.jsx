@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { authAPI, isRequestCanceled, itToolsAPI } from '../../../../services/api';
 import './Tools.css';
 
@@ -12,15 +12,19 @@ const EXTENSION_WINDOW_LAUNCH_RESULT_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_WIND
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const buildDateInputValue = (offsetDays = 0) => {
   const date = new Date();
+  date.setHours(12, 0, 0, 0);
   date.setDate(date.getDate() + offsetDays);
-  return date.toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 const EMPTY_USAGE_FILTERS = {
   toolSlug: 'kling-ai',
-  dateFrom: buildDateInputValue(-6),
-  dateTo: buildDateInputValue(0),
+  selectedDate: buildDateInputValue(0),
   userId: '',
+  credentialId: '',
 };
 
 const Icons = {
@@ -96,6 +100,7 @@ const EMPTY_CREDENTIAL_FORM = {
   totp_secret: '',
   notes: '',
 };
+const USAGE_REPORT_REFRESH_MS = 15000;
 
 const EMPTY_MAILBOX_FORM = {
   toolId: '',
@@ -112,6 +117,11 @@ const EMPTY_MAILBOX_FORM = {
 const EMPTY_MAILBOX_META = {
   exists: false,
   appPasswordSet: false,
+};
+
+const updateToolFormField = (setToolForm, setError, key, value) => {
+  setToolForm((current) => ({ ...current, [key]: value }));
+  setError('');
 };
 
 const normalizeToolSlug = (value) => {
@@ -135,6 +145,7 @@ const toolSupportsPasswordOptionalCredential = (value) => {
 const toolSupportsCredentialLoginMethodSelection = (value) => {
   const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug || value?.name);
   return normalizedToolSlug === 'enhancor'
+    || normalizedToolSlug === 'elevenlabs'
     || normalizedToolSlug === 'freepik'
     || normalizedToolSlug === 'genspark'
     || normalizedToolSlug === 'kling-ai'
@@ -169,6 +180,7 @@ const getAuthenticatorSeedToolLabel = (toolSlug) => {
   if (normalizedToolSlug === 'chatgpt') return 'ChatGPT';
   if (normalizedToolSlug === 'flow') return 'Flow';
   if (normalizedToolSlug === 'enhancor') return 'Enhancor';
+  if (normalizedToolSlug === 'elevenlabs') return 'ElevenLabs';
   if (normalizedToolSlug === 'freepik') return 'Freepik';
   if (normalizedToolSlug === 'genspark') return 'Genspark';
   if (normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai') return 'Kling';
@@ -179,8 +191,24 @@ const getSharedCredentialLabels = (toolValue) => {
   const isStringValue = typeof toolValue === 'string';
   const normalizedToolSlug = normalizeToolSlug(isStringValue ? toolValue : toolValue?.slug);
   const displayName = isStringValue
-    ? (normalizedToolSlug === 'chatgpt' ? 'ChatGPT' : normalizedToolSlug === 'flow' ? 'Flow' : 'tool')
-    : (toolValue?.name || (normalizedToolSlug === 'chatgpt' ? 'ChatGPT' : normalizedToolSlug === 'flow' ? 'Flow' : 'tool'));
+    ? (normalizedToolSlug === 'chatgpt'
+      ? 'ChatGPT'
+      : normalizedToolSlug === 'flow'
+        ? 'Flow'
+        : normalizedToolSlug === 'canva'
+          ? 'Canva'
+          : normalizedToolSlug === 'elevenlabs'
+            ? 'ElevenLabs'
+            : 'tool')
+    : (toolValue?.name || (normalizedToolSlug === 'chatgpt'
+      ? 'ChatGPT'
+      : normalizedToolSlug === 'flow'
+        ? 'Flow'
+        : normalizedToolSlug === 'canva'
+          ? 'Canva'
+          : normalizedToolSlug === 'elevenlabs'
+            ? 'ElevenLabs'
+            : 'tool'));
   if (normalizedToolSlug === 'chatgpt') {
     return {
       singular: 'password',
@@ -374,13 +402,115 @@ const formatUsageNumber = (value) => {
 
 const formatUsageDate = (value) => {
   if (!value) return 'N/A';
-  const parsed = new Date(value);
+  const normalizedValue = `${value}`;
+  const dateOnlyMatch = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const parsed = dateOnlyMatch
+    ? new Date(Number(dateOnlyMatch[1]), Number(dateOnlyMatch[2]) - 1, Number(dateOnlyMatch[3]), 12, 0, 0, 0)
+    : new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleDateString();
 };
 
+const formatUsageDateTime = (value) => {
+  if (!value) return 'N/A';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString([], {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+};
+
+const formatUsageCredentialTitle = (credentialLabel, credentialId) => {
+  const normalizedLabel = `${credentialLabel || ''}`.trim();
+  const numericCredentialId = Number(credentialId || 0);
+  if (normalizedLabel && numericCredentialId > 0) {
+    return `${normalizedLabel} (Credential #${numericCredentialId})`;
+  }
+  if (normalizedLabel) return normalizedLabel;
+  if (numericCredentialId > 0) return `Credential #${numericCredentialId}`;
+  return 'No credential';
+};
+
+const formatUsageCredentialMeta = (credentialId, credentialScope) => {
+  const numericCredentialId = Number(credentialId || 0);
+  return [
+    numericCredentialId > 0 ? `ID ${numericCredentialId}` : '',
+    `${credentialScope || ''}`.trim(),
+  ].filter(Boolean).join(' · ');
+};
+
+const resolveCurrentCreditsValue = (summary, recentEvents = []) => {
+  if (summary?.currentCredits != null) {
+    return summary.currentCredits;
+  }
+  for (const event of recentEvents) {
+    if (event?.creditsAfter != null) return event.creditsAfter;
+    if (event?.creditsBefore != null) return event.creditsBefore;
+    if (event?.metadata?.currentCredits != null) return event.metadata.currentCredits;
+  }
+  return null;
+};
+
+const getUsageTimestamp = (value) => {
+  if (!value) return 0;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+};
+
+const getUsageUserLabel = (entry) => entry?.userName || entry?.userEmail || `User #${entry?.userId}`;
+
+const getUsageUserKey = (entry) => {
+  const numericUserId = Number(entry?.userId || 0);
+  if (numericUserId > 0) return `user:${numericUserId}`;
+  return `user:${`${entry?.userEmail || entry?.userName || 'unknown'}`.trim().toLowerCase()}`;
+};
+
+const getUsageCredentialKey = (entry) => {
+  const numericCredentialId = Number(entry?.credentialId || 0);
+  if (numericCredentialId > 0) return `credential:${numericCredentialId}`;
+  return `credential:none:${`${entry?.credentialLabel || 'No credential'}`.trim().toLowerCase() || 'no-credential'}`;
+};
+
+const isKlingUsageTool = (tool) => {
+  const normalizedToolSlug = normalizeToolSlug(typeof tool === 'string' ? tool : tool?.slug);
+  return normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai';
+};
+
+const normalizeUsageCredentialLabel = (value) => `${value || ''}`.trim().toLowerCase();
+
+const resolveUsageCredentialLabel = (entry, credentialLabelMap) => {
+  const numericCredentialId = Number(entry?.credentialId || 0);
+  const mappedLabel = numericCredentialId > 0 ? `${credentialLabelMap.get(numericCredentialId) || ''}`.trim() : '';
+  if (mappedLabel) return mappedLabel;
+  return `${entry?.credentialLabel || ''}`.trim();
+};
+
+const hasDisplayableUsageCredential = (entry) => {
+  const numericCredentialId = Number(entry?.credentialId || 0);
+  if (numericCredentialId > 0) return true;
+  return Boolean(normalizeUsageCredentialLabel(entry?.credentialLabel));
+};
+
+const compareUsageAggregateTotals = (left, right) => {
+  if (Number(right?.creditsBurned || 0) !== Number(left?.creditsBurned || 0)) {
+    return Number(right?.creditsBurned || 0) - Number(left?.creditsBurned || 0);
+  }
+  if (Number(right?.expectedCredits || 0) !== Number(left?.expectedCredits || 0)) {
+    return Number(right?.expectedCredits || 0) - Number(left?.expectedCredits || 0);
+  }
+  if (Number(right?.generateClicks || 0) !== Number(left?.generateClicks || 0)) {
+    return Number(right?.generateClicks || 0) - Number(left?.generateClicks || 0);
+  }
+  return getUsageTimestamp(right?.lastEventAt) - getUsageTimestamp(left?.lastEventAt);
+};
+
 export default function Tools({ view = 'tools' }) {
   const activeView = view === 'credits' ? 'credits' : 'tools';
+  const containerRef = useRef(null);
   const [tools, setTools] = useState([]);
   const [users, setUsers] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -404,6 +534,7 @@ export default function Tools({ view = 'tools' }) {
   const [assignmentLoading, setAssignmentLoading] = useState(false);
   const [assignmentSavingKey, setAssignmentSavingKey] = useState('');
   const [sharedCredentialAssignmentPicker, setSharedCredentialAssignmentPicker] = useState(null);
+  const [isHeaderVisible, setIsHeaderVisible] = useState(true);
   const [usageFilters, setUsageFilters] = useState(EMPTY_USAGE_FILTERS);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageRows, setUsageRows] = useState([]);
@@ -412,8 +543,13 @@ export default function Tools({ view = 'tools' }) {
     userCount: 0,
     creditsBurned: 0,
     expectedCredits: 0,
+    currentCredits: null,
   });
   const [recentUsageEvents, setRecentUsageEvents] = useState([]);
+  const resolvedCurrentCredits = useMemo(
+    () => resolveCurrentCreditsValue(usageSummary, recentUsageEvents),
+    [usageSummary, recentUsageEvents],
+  );
 
   const loadToolCredentials = async (toolList, signal, { manageLoading = true } = {}) => {
     if (signal?.aborted) return;
@@ -518,6 +654,52 @@ export default function Tools({ view = 'tools' }) {
   }, [activeView]);
 
   useEffect(() => {
+    const rootElement = containerRef.current;
+    if (!rootElement) return undefined;
+
+    const isScrollableElement = (element) => {
+      if (!element || element === document.body) return false;
+      const style = window.getComputedStyle(element);
+      const overflowY = style.overflowY || style.overflow;
+      return /(auto|scroll|overlay)/.test(overflowY) && element.scrollHeight > element.clientHeight;
+    };
+
+    let scrollContainer = rootElement.parentElement;
+    while (scrollContainer && !isScrollableElement(scrollContainer)) {
+      scrollContainer = scrollContainer.parentElement;
+    }
+
+    const scrollTarget = scrollContainer || window;
+    const getScrollTop = () => (
+      scrollTarget === window
+        ? (window.scrollY || window.pageYOffset || 0)
+        : (scrollTarget.scrollTop || 0)
+    );
+
+    let lastScrollY = getScrollTop();
+
+    const handleScroll = () => {
+      const currentScrollY = getScrollTop();
+      const scrollDelta = currentScrollY - lastScrollY;
+
+      if (currentScrollY <= 12) {
+        setIsHeaderVisible(true);
+      } else if (scrollDelta > 6) {
+        setIsHeaderVisible(false);
+      } else if (scrollDelta < -6) {
+        setIsHeaderVisible(true);
+      }
+
+      lastScrollY = currentScrollY;
+    };
+
+    scrollTarget.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      scrollTarget.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
+
+  useEffect(() => {
     if (activeView !== 'credits') return undefined;
 
     const controller = new AbortController();
@@ -545,12 +727,36 @@ export default function Tools({ view = 'tools' }) {
 
   useEffect(() => {
     if (activeView !== 'credits') return undefined;
+
+    const controller = new AbortController();
+    void itToolsAPI.listTools({ signal: controller.signal }).then((response) => {
+      if (controller.signal.aborted) return;
+      if (Array.isArray(response.tools)) {
+        setTools(response.tools);
+      }
+      if (response.credentialSummariesByToolId && typeof response.credentialSummariesByToolId === 'object') {
+        setToolCredentialsByToolId(response.credentialSummariesByToolId);
+      }
+      if (typeof response.isAdmin === 'boolean') {
+        setIsAdmin(response.isAdmin);
+      }
+    }).catch((err) => {
+      if (isRequestCanceled(err) || controller.signal.aborted) return;
+      setError(err?.response?.data?.detail || 'Unable to load Kling credential mails.');
+    });
+
+    return () => {
+      controller.abort();
+    };
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'credits') return undefined;
     const controller = new AbortController();
     setUsageLoading(true);
     void itToolsAPI.getUsageReport({
       tool_slug: usageFilters.toolSlug,
-      date_from: usageFilters.dateFrom,
-      date_to: usageFilters.dateTo,
+      selected_date: usageFilters.selectedDate,
       user_id: usageFilters.userId || undefined,
       signal: controller.signal,
     }).then((response) => {
@@ -564,6 +770,7 @@ export default function Tools({ view = 'tools' }) {
         userCount: 0,
         creditsBurned: 0,
         expectedCredits: 0,
+        currentCredits: null,
       });
       setRecentUsageEvents(response.recentEvents || []);
     }).catch((err) => {
@@ -576,7 +783,54 @@ export default function Tools({ view = 'tools' }) {
     });
 
     return () => controller.abort();
-  }, [activeView, usageFilters.toolSlug, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
+  }, [activeView, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
+
+  useEffect(() => {
+    if (activeView !== 'credits') return undefined;
+
+    const refreshUsage = () => {
+      const controller = new AbortController();
+      void itToolsAPI.getUsageReport({
+        tool_slug: usageFilters.toolSlug,
+        selected_date: usageFilters.selectedDate,
+        user_id: usageFilters.userId || undefined,
+        signal: controller.signal,
+      }).then((response) => {
+        if (controller.signal.aborted) return;
+        if (typeof response.isAdmin === 'boolean') {
+          setIsAdmin(response.isAdmin);
+        }
+        setUsageRows(response.rows || []);
+        setUsageSummary(response.summary || {
+          generateClicks: 0,
+          userCount: 0,
+          creditsBurned: 0,
+          expectedCredits: 0,
+          currentCredits: null,
+        });
+        setRecentUsageEvents(response.recentEvents || []);
+      }).catch((err) => {
+        if (isRequestCanceled(err) || controller.signal.aborted) return;
+        setError(err?.response?.data?.detail || 'Unable to refresh Kling usage report.');
+      });
+      return controller;
+    };
+
+    const intervalId = window.setInterval(() => {
+      refreshUsage();
+    }, USAGE_REPORT_REFRESH_MS);
+
+    const handleFocus = () => {
+      refreshUsage();
+    };
+
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [activeView, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
 
   const categories = useMemo(() => {
     return ['All', ...new Set(tools.map((tool) => tool.category || 'General'))];
@@ -589,6 +843,299 @@ export default function Tools({ view = 'tools' }) {
       return leftLabel.localeCompare(rightLabel);
     });
   }, [users]);
+
+  const klingCredentialSummaries = useMemo(() => {
+    return tools
+      .filter((tool) => isKlingUsageTool(tool))
+      .flatMap((tool) => toolCredentialsByToolId[`${tool.id}`] || [])
+      .filter((summary) => Number(summary?.id || 0) > 0)
+      .filter((summary) => Boolean(summary?.isActive))
+      .filter((summary) => Boolean(normalizeUsageCredentialLabel(summary?.loginIdentifierPreview)));
+  }, [toolCredentialsByToolId, tools]);
+
+  const klingCredentialLabelMap = useMemo(() => {
+    const nextMap = new Map();
+    klingCredentialSummaries.forEach((summary) => {
+      const numericCredentialId = Number(summary?.id || 0);
+      const loginIdentifierPreview = normalizeUsageCredentialLabel(summary?.loginIdentifierPreview);
+      if (numericCredentialId > 0 && loginIdentifierPreview) {
+        nextMap.set(numericCredentialId, loginIdentifierPreview);
+      }
+    });
+    return nextMap;
+  }, [klingCredentialSummaries]);
+
+  const normalizedUsageRows = useMemo(() => {
+    return usageRows.map((row) => ({
+      ...row,
+      credentialLabel: resolveUsageCredentialLabel(row, klingCredentialLabelMap),
+    }));
+  }, [klingCredentialLabelMap, usageRows]);
+
+  const normalizedRecentUsageEvents = useMemo(() => {
+    return recentUsageEvents.map((event) => ({
+      ...event,
+      credentialLabel: resolveUsageCredentialLabel(event, klingCredentialLabelMap),
+    }));
+  }, [klingCredentialLabelMap, recentUsageEvents]);
+
+  const usageCredentialOptions = useMemo(() => {
+    const optionMap = new Map();
+    const addOption = (credentialId, credentialLabel = '') => {
+      const numericCredentialId = Number(credentialId || 0);
+      if (numericCredentialId <= 0) return;
+      const label = normalizeUsageCredentialLabel(credentialLabel);
+      if (!label || optionMap.has(label)) return;
+      optionMap.set(label, {
+        value: `${numericCredentialId}`,
+        label,
+      });
+    };
+
+    klingCredentialSummaries.forEach((summary) => {
+      addOption(summary.id, summary.loginIdentifierPreview);
+    });
+
+    return Array.from(optionMap.values()).sort((left, right) => left.label.localeCompare(right.label));
+  }, [klingCredentialSummaries]);
+
+  const availableUsageCredentialIds = useMemo(() => {
+    return new Set(usageCredentialOptions.map((option) => option.value));
+  }, [usageCredentialOptions]);
+
+  const filteredUsageRows = useMemo(() => {
+    const normalizedCredentialId = `${usageFilters.credentialId || ''}`.trim();
+    if (!normalizedCredentialId) return normalizedUsageRows;
+    if (!availableUsageCredentialIds.has(normalizedCredentialId)) return normalizedUsageRows;
+    return normalizedUsageRows.filter((row) => `${row.credentialId || ''}` === normalizedCredentialId);
+  }, [availableUsageCredentialIds, normalizedUsageRows, usageFilters.credentialId]);
+
+  const filteredRecentUsageEvents = useMemo(() => {
+    const normalizedCredentialId = `${usageFilters.credentialId || ''}`.trim();
+    if (!normalizedCredentialId) return normalizedRecentUsageEvents;
+    if (!availableUsageCredentialIds.has(normalizedCredentialId)) return normalizedRecentUsageEvents;
+    return normalizedRecentUsageEvents.filter((event) => `${event.credentialId || ''}` === normalizedCredentialId);
+  }, [availableUsageCredentialIds, normalizedRecentUsageEvents, usageFilters.credentialId]);
+
+  useEffect(() => {
+    const normalizedCredentialId = `${usageFilters.credentialId || ''}`.trim();
+    if (!normalizedCredentialId) return;
+    if (availableUsageCredentialIds.has(normalizedCredentialId)) return;
+    setUsageFilters((current) => {
+      if (!current.credentialId || availableUsageCredentialIds.has(`${current.credentialId}`.trim())) {
+        return current;
+      }
+      return {
+        ...current,
+        credentialId: '',
+      };
+    });
+  }, [availableUsageCredentialIds, usageFilters.credentialId]);
+
+  const displayableUsageRows = useMemo(() => {
+    return filteredUsageRows.filter((row) => hasDisplayableUsageCredential(row));
+  }, [filteredUsageRows]);
+
+  const usageBreakdown = useMemo(() => {
+    const userMap = new Map();
+    const credentialMap = new Map();
+    const trackedCredentialIds = new Set();
+
+    const matrixRows = [...displayableUsageRows]
+      .map((row) => ({
+        ...row,
+        generateClicks: Number(row.generateClicks || 0),
+        creditsBurned: Number(row.creditsBurned || 0),
+        expectedCredits: Number(row.expectedCredits || 0),
+      }))
+      .sort((left, right) => {
+        const totalsComparison = compareUsageAggregateTotals(left, right);
+        if (totalsComparison !== 0) return totalsComparison;
+        return getUsageUserLabel(left).localeCompare(getUsageUserLabel(right));
+      });
+
+    matrixRows.forEach((row) => {
+      const userKey = getUsageUserKey(row);
+      const credentialKey = getUsageCredentialKey(row);
+      const numericCredentialId = Number(row.credentialId || 0);
+      const lastEventTime = getUsageTimestamp(row.lastEventAt);
+
+      if (numericCredentialId > 0) {
+        trackedCredentialIds.add(numericCredentialId);
+      }
+
+      if (!userMap.has(userKey)) {
+        userMap.set(userKey, {
+          key: userKey,
+          userId: row.userId,
+          userName: row.userName || '',
+          userEmail: row.userEmail || '',
+          generateClicks: 0,
+          creditsBurned: 0,
+          expectedCredits: 0,
+          lastEventAt: row.lastEventAt || '',
+          lastEventTime,
+          credentials: new Map(),
+        });
+      }
+
+      const userEntry = userMap.get(userKey);
+      userEntry.generateClicks += Number(row.generateClicks || 0);
+      userEntry.creditsBurned += Number(row.creditsBurned || 0);
+      userEntry.expectedCredits += Number(row.expectedCredits || 0);
+      if (lastEventTime >= userEntry.lastEventTime) {
+        userEntry.lastEventTime = lastEventTime;
+        userEntry.lastEventAt = row.lastEventAt || userEntry.lastEventAt;
+      }
+
+      if (!userEntry.credentials.has(credentialKey)) {
+        userEntry.credentials.set(credentialKey, {
+          key: credentialKey,
+          credentialId: row.credentialId,
+          credentialLabel: row.credentialLabel || '',
+          credentialScope: row.credentialScope || '',
+          generateClicks: 0,
+          creditsBurned: 0,
+          expectedCredits: 0,
+          lastEventAt: row.lastEventAt || '',
+          lastEventTime,
+        });
+      }
+
+      const userCredentialEntry = userEntry.credentials.get(credentialKey);
+      userCredentialEntry.generateClicks += Number(row.generateClicks || 0);
+      userCredentialEntry.creditsBurned += Number(row.creditsBurned || 0);
+      userCredentialEntry.expectedCredits += Number(row.expectedCredits || 0);
+      if (lastEventTime >= userCredentialEntry.lastEventTime) {
+        userCredentialEntry.lastEventTime = lastEventTime;
+        userCredentialEntry.lastEventAt = row.lastEventAt || userCredentialEntry.lastEventAt;
+      }
+
+      if (!credentialMap.has(credentialKey)) {
+        credentialMap.set(credentialKey, {
+          key: credentialKey,
+          credentialId: row.credentialId,
+          credentialLabel: row.credentialLabel || '',
+          credentialScope: row.credentialScope || '',
+          generateClicks: 0,
+          creditsBurned: 0,
+          expectedCredits: 0,
+          lastEventAt: row.lastEventAt || '',
+          lastEventTime,
+          users: new Map(),
+        });
+      }
+
+      const credentialEntry = credentialMap.get(credentialKey);
+      credentialEntry.generateClicks += Number(row.generateClicks || 0);
+      credentialEntry.creditsBurned += Number(row.creditsBurned || 0);
+      credentialEntry.expectedCredits += Number(row.expectedCredits || 0);
+      if (lastEventTime >= credentialEntry.lastEventTime) {
+        credentialEntry.lastEventTime = lastEventTime;
+        credentialEntry.lastEventAt = row.lastEventAt || credentialEntry.lastEventAt;
+      }
+
+      if (!credentialEntry.users.has(userKey)) {
+        credentialEntry.users.set(userKey, {
+          key: userKey,
+          userId: row.userId,
+          userName: row.userName || '',
+          userEmail: row.userEmail || '',
+          generateClicks: 0,
+          creditsBurned: 0,
+          expectedCredits: 0,
+          lastEventAt: row.lastEventAt || '',
+          lastEventTime,
+        });
+      }
+
+      const credentialUserEntry = credentialEntry.users.get(userKey);
+      credentialUserEntry.generateClicks += Number(row.generateClicks || 0);
+      credentialUserEntry.creditsBurned += Number(row.creditsBurned || 0);
+      credentialUserEntry.expectedCredits += Number(row.expectedCredits || 0);
+      if (lastEventTime >= credentialUserEntry.lastEventTime) {
+        credentialUserEntry.lastEventTime = lastEventTime;
+        credentialUserEntry.lastEventAt = row.lastEventAt || credentialUserEntry.lastEventAt;
+      }
+    });
+
+    return {
+      matrixRows,
+      byUser: Array.from(userMap.values())
+        .map((entry) => ({
+          ...entry,
+          credentialCount: entry.credentials.size,
+          credentials: Array.from(entry.credentials.values())
+            .sort(compareUsageAggregateTotals)
+            .map((credentialEntry) => {
+              const nextCredentialEntry = { ...credentialEntry };
+              delete nextCredentialEntry.lastEventTime;
+              return nextCredentialEntry;
+            }),
+        }))
+        .sort(compareUsageAggregateTotals)
+        .map((entry) => {
+          const nextEntry = { ...entry };
+          delete nextEntry.lastEventTime;
+          return nextEntry;
+        }),
+      byCredential: Array.from(credentialMap.values())
+        .map((entry) => ({
+          ...entry,
+          userCount: entry.users.size,
+          users: Array.from(entry.users.values())
+            .sort((left, right) => {
+              const totalsComparison = compareUsageAggregateTotals(left, right);
+              if (totalsComparison !== 0) return totalsComparison;
+              return getUsageUserLabel(left).localeCompare(getUsageUserLabel(right));
+            })
+            .map((userEntry) => {
+              const nextUserEntry = { ...userEntry };
+              delete nextUserEntry.lastEventTime;
+              return nextUserEntry;
+            }),
+        }))
+        .sort((left, right) => {
+          const totalsComparison = compareUsageAggregateTotals(left, right);
+          if (totalsComparison !== 0) return totalsComparison;
+          return formatUsageCredentialTitle(left.credentialLabel, left.credentialId)
+            .localeCompare(formatUsageCredentialTitle(right.credentialLabel, right.credentialId));
+        })
+        .map((entry) => {
+          const nextEntry = { ...entry };
+          delete nextEntry.lastEventTime;
+          return nextEntry;
+        }),
+      trackedCredentialCount: trackedCredentialIds.size,
+    };
+  }, [displayableUsageRows]);
+
+  const usageSummaryForDisplay = useMemo(() => {
+    const hasAnyFilteredData = filteredUsageRows.length > 0 || filteredRecentUsageEvents.length > 0;
+    if (!hasAnyFilteredData) {
+      return {
+        generateClicks: 0,
+        creditsBurned: 0,
+        currentCredits: null,
+      };
+    }
+
+    let generateClicks = 0;
+    let creditsBurned = 0;
+
+    displayableUsageRows.forEach((row) => {
+      generateClicks += Number(row.generateClicks || 0);
+      creditsBurned += Number(row.creditsBurned || 0);
+    });
+
+    const filteredCurrentCredits = resolveCurrentCreditsValue({ currentCredits: null }, filteredRecentUsageEvents);
+
+    return {
+      generateClicks,
+      creditsBurned,
+      currentCredits: filteredCurrentCredits != null ? filteredCurrentCredits : resolvedCurrentCredits,
+    };
+  }, [displayableUsageRows, filteredRecentUsageEvents, filteredUsageRows.length, resolvedCurrentCredits]);
 
   const filteredTools = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -931,6 +1478,8 @@ export default function Tools({ view = 'tools' }) {
 
   const handleEditToolChange = (toolId) => {
     setEditToolId(toolId);
+    setError('');
+    setNotice('');
     const tool = tools.find((item) => `${item.id}` === `${toolId}`);
     if (!tool) {
       setToolForm(EMPTY_TOOL_FORM);
@@ -1443,8 +1992,8 @@ export default function Tools({ view = 'tools' }) {
   const IconComponent = (name) => Icons[name] || Icons.Globe;
 
   return (
-    <div className="app-container">
-      <header className="app-header">
+    <div ref={containerRef} className="app-container">
+      <header className={`app-header ${isHeaderVisible ? 'is-visible' : 'is-hidden'}`}>
         <div className="header-wrapper">
           <div>
             <p className="it-profile-eyebrow">IT Profile</p>
@@ -1490,27 +2039,27 @@ export default function Tools({ view = 'tools' }) {
                 ))}
               </select>
               <div className="it-form-grid">
-                <input value={toolForm.name} onChange={(e) => setToolForm({ ...toolForm, name: e.target.value })} placeholder="Tool name" autoComplete="off" required />
-                <input value={toolForm.category} onChange={(e) => setToolForm({ ...toolForm, category: e.target.value })} placeholder="Category" autoComplete="off" />
-                <input value={toolForm.website_url} onChange={(e) => setToolForm({ ...toolForm, website_url: e.target.value })} placeholder="Website URL" autoComplete="url" required />
-                <input value={toolForm.login_url} onChange={(e) => setToolForm({ ...toolForm, login_url: e.target.value })} placeholder="Login URL optional" autoComplete="url" />
-                <select value={toolForm.icon} onChange={(e) => setToolForm({ ...toolForm, icon: e.target.value })}>
+                <input value={toolForm.name} onChange={(e) => updateToolFormField(setToolForm, setError, 'name', e.target.value)} placeholder="Tool name" autoComplete="off" required />
+                <input value={toolForm.category} onChange={(e) => updateToolFormField(setToolForm, setError, 'category', e.target.value)} placeholder="Category" autoComplete="off" />
+                <input value={toolForm.website_url} onChange={(e) => updateToolFormField(setToolForm, setError, 'website_url', e.target.value)} placeholder="Website URL" autoComplete="url" required />
+                <input value={toolForm.login_url} onChange={(e) => updateToolFormField(setToolForm, setError, 'login_url', e.target.value)} placeholder="Login URL optional" autoComplete="url" />
+                <select value={toolForm.icon} onChange={(e) => updateToolFormField(setToolForm, setError, 'icon', e.target.value)}>
                   {Object.keys(Icons).filter((key) => key !== 'Search').map((icon) => (
                     <option key={icon} value={icon}>{icon}</option>
                   ))}
                 </select>
-                <select value={toolForm.launch_mode} onChange={(e) => setToolForm({ ...toolForm, launch_mode: e.target.value })}>
+                <select value={toolForm.launch_mode} onChange={(e) => updateToolFormField(setToolForm, setError, 'launch_mode', e.target.value)}>
                   <option value="manual_credential">Manual credential</option>
                   <option value="external_link">External link</option>
                   <option value="sso">SSO</option>
                   <option value="api_proxy">API proxy</option>
-                  <option value="extension_autofill">Extension auto-fill (Claude, ChatGPT/OpenAI, Envato, Freepik, Grammarly, Higgsfield, HeyGen, Kling AI, Flow)</option>
+                  <option value="extension_autofill">Extension auto-fill (Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow)</option>
                   <option value="automation">Auto-login form submit</option>
                 </select>
               </div>
               {toolForm.launch_mode === 'extension_autofill' && (
                 <p className="it-card-copy">
-                  The current browser extension build supports Claude, ChatGPT/OpenAI, Envato, Freepik, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow
+                  The current browser extension build supports Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow
                   extension scaffold. For other tools, use Manual credential or Auto-login form submit.
                 </p>
               )}
@@ -1518,32 +2067,32 @@ export default function Tools({ view = 'tools' }) {
                 <div className="it-form-grid auto-login-grid">
                   <input
                     value={toolForm.auto_login_action_url}
-                    onChange={(e) => setToolForm({ ...toolForm, auto_login_action_url: e.target.value })}
+                    onChange={(e) => updateToolFormField(setToolForm, setError, 'auto_login_action_url', e.target.value)}
                     placeholder="Login submit URL optional"
                     autoComplete="url"
                   />
                   <select
                     value={toolForm.auto_login_method}
-                    onChange={(e) => setToolForm({ ...toolForm, auto_login_method: e.target.value })}
+                    onChange={(e) => updateToolFormField(setToolForm, setError, 'auto_login_method', e.target.value)}
                   >
                     <option value="POST">POST</option>
                     <option value="GET">GET</option>
                   </select>
                   <input
                     value={toolForm.auto_login_username_field}
-                    onChange={(e) => setToolForm({ ...toolForm, auto_login_username_field: e.target.value })}
+                    onChange={(e) => updateToolFormField(setToolForm, setError, 'auto_login_username_field', e.target.value)}
                     placeholder="Username field name"
                     autoComplete="off"
                   />
                   <input
                     value={toolForm.auto_login_password_field}
-                    onChange={(e) => setToolForm({ ...toolForm, auto_login_password_field: e.target.value })}
+                    onChange={(e) => updateToolFormField(setToolForm, setError, 'auto_login_password_field', e.target.value)}
                     placeholder="Password field name"
                     autoComplete="off"
                   />
                 </div>
               )}
-              <textarea value={toolForm.description} onChange={(e) => setToolForm({ ...toolForm, description: e.target.value })} placeholder="Short description" autoComplete="off" />
+              <textarea value={toolForm.description} onChange={(e) => updateToolFormField(setToolForm, setError, 'description', e.target.value)} placeholder="Short description" autoComplete="off" />
               <div className="it-admin-actions">
                 <button className="it-primary-btn" type="submit" disabled={saving}>{saving ? 'Saving...' : editToolId ? 'Update Tool' : 'Add Tool'}</button>
                 {editToolId && (
@@ -1830,6 +2379,8 @@ export default function Tools({ view = 'tools' }) {
                       ? 'Claude uses email-link sign-in. Save only the email here, then configure the Verification Mailbox below so the extension can fetch the secure sign-in link from Gmail.'
                       : activeCredentialToolSlug === 'enhancor'
                         ? 'This Enhancor credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                      : activeCredentialToolSlug === 'elevenlabs'
+                        ? 'This ElevenLabs credential can use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                       : activeCredentialToolSlug === 'freepik'
                         ? 'This Freepik credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                         : activeCredentialToolSlug === 'genspark'
@@ -2240,23 +2791,18 @@ export default function Tools({ view = 'tools' }) {
         {activeView === 'credits' && isAdmin && (
           <section className="it-usage-card">
             <div className="it-usage-header">
-              <div>
+              <div className="it-usage-heading">
                 <p className="it-profile-eyebrow">Kling Usage</p>
-                <h2>Kling credit burn by user and date</h2>
-                <p className="it-card-copy">Track Generate clicks, expected credits, and captured credit burn for Kling launches that started from the dashboard.</p>
               </div>
               <div className="it-usage-filters">
                 <input
+                  className="it-usage-filter-control"
                   type="date"
-                  value={usageFilters.dateFrom}
-                  onChange={(event) => setUsageFilters((current) => ({ ...current, dateFrom: event.target.value }))}
-                />
-                <input
-                  type="date"
-                  value={usageFilters.dateTo}
-                  onChange={(event) => setUsageFilters((current) => ({ ...current, dateTo: event.target.value }))}
+                  value={usageFilters.selectedDate}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, selectedDate: event.target.value }))}
                 />
                 <select
+                  className="it-usage-filter-control"
                   value={usageFilters.userId}
                   onChange={(event) => setUsageFilters((current) => ({ ...current, userId: event.target.value }))}
                 >
@@ -2267,82 +2813,73 @@ export default function Tools({ view = 'tools' }) {
                     </option>
                   ))}
                 </select>
+                <select
+                  className="it-usage-filter-control"
+                  value={usageFilters.credentialId}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, credentialId: event.target.value }))}
+                >
+                  <option value="">All Kling mails</option>
+                  {usageCredentialOptions.map((option) => (
+                    <option key={`usage-credential-${option.value}`} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
             <div className="it-usage-summary-grid">
               <div className="it-usage-summary-pill">
                 <span>Generate clicks</span>
-                <strong>{usageLoading ? '...' : usageSummary.generateClicks}</strong>
+                <strong>{usageLoading ? '...' : usageSummaryForDisplay.generateClicks}</strong>
               </div>
               <div className="it-usage-summary-pill">
                 <span>Credits burned</span>
-                <strong>{usageLoading ? '...' : formatUsageNumber(usageSummary.creditsBurned)}</strong>
+                <strong>{usageLoading ? '...' : formatUsageNumber(usageSummaryForDisplay.creditsBurned)}</strong>
               </div>
               <div className="it-usage-summary-pill">
-                <span>Expected credits</span>
-                <strong>{usageLoading ? '...' : formatUsageNumber(usageSummary.expectedCredits)}</strong>
-              </div>
-              <div className="it-usage-summary-pill">
-                <span>Users</span>
-                <strong>{usageLoading ? '...' : usageSummary.userCount}</strong>
+                <span>Current credits</span>
+                <strong>{usageLoading ? '...' : (usageSummaryForDisplay.currentCredits != null ? formatUsageNumber(usageSummaryForDisplay.currentCredits) : '-')}</strong>
               </div>
             </div>
 
-            <div className="it-usage-table-wrap">
-              <table className="it-usage-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>User</th>
-                    <th>Clicks</th>
-                    <th>Credits Burned</th>
-                    <th>Expected Credits</th>
-                    <th>Last Event</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {usageLoading ? (
-                    <tr>
-                      <td colSpan="6">Loading Kling usage...</td>
-                    </tr>
-                  ) : usageRows.length ? usageRows.map((row) => (
-                    <tr key={`${row.date}:${row.userId}`}>
-                      <td>{formatUsageDate(row.date)}</td>
-                      <td>
-                        <div className="it-usage-user-cell">
-                          <strong>{row.userName || row.userEmail || `User #${row.userId}`}</strong>
-                          <small>{row.userEmail || ''}</small>
-                        </div>
-                      </td>
-                      <td>{row.generateClicks}</td>
-                      <td>{formatUsageNumber(row.creditsBurned)}</td>
-                      <td>{formatUsageNumber(row.expectedCredits)}</td>
-                      <td>{formatUsageDate(row.lastEventAt)}</td>
-                    </tr>
-                  )) : (
-                    <tr>
-                      <td colSpan="6">No Kling usage captured for the selected filters yet.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {!!recentUsageEvents.length && (
+            {!!filteredRecentUsageEvents.length && (
               <div className="it-usage-recent">
                 <h3>Recent captured events</h3>
                 <div className="it-usage-recent-list">
-                  {recentUsageEvents.slice(0, 8).map((event) => (
+                  {filteredRecentUsageEvents.slice(0, 8).map((event) => (
                     <div key={event.id} className="it-usage-recent-item">
-                      <strong>{event.userName || event.userEmail || `User #${event.userId}`}</strong>
-                      <span>{formatUsageDate(event.createdAt)}</span>
-                      <small>
-                        {event.modelLabel || 'Kling'}
-                        {event.resolutionLabel ? ` · ${event.resolutionLabel}` : ''}
-                        {event.durationLabel ? ` · ${event.durationLabel}` : ''}
-                        {event.creditsBurned != null ? ` · burned ${formatUsageNumber(event.creditsBurned)}` : ''}
-                      </small>
+                      <div className="it-usage-recent-top">
+                        <div className="it-usage-user-cell">
+                          <strong>{event.userName || event.userEmail || `User #${event.userId}`}</strong>
+                          <small>{event.userEmail || ''}</small>
+                        </div>
+                        <div className="it-usage-recent-burn">
+                          <span>Credits burned</span>
+                          <strong>{event.creditsBurned != null ? formatUsageNumber(event.creditsBurned) : '-'}</strong>
+                        </div>
+                      </div>
+                      <div className="it-usage-recent-grid">
+                        <div className="it-usage-recent-meta">
+                          <span>Date & time</span>
+                          <strong>{formatUsageDateTime(event.createdAt)}</strong>
+                        </div>
+                        <div className="it-usage-recent-meta">
+                          <span>Kling ID used</span>
+                          <strong>{formatUsageCredentialTitle(event.credentialLabel, event.credentialId)}</strong>
+                          <small>{event.credentialScope || ''}</small>
+                        </div>
+                        <div className="it-usage-recent-meta">
+                          <span>Generation</span>
+                          <strong>{event.modelLabel || 'Kling'}</strong>
+                          <small>
+                            {[
+                              event.resolutionLabel,
+                              event.durationLabel,
+                            ].filter(Boolean).join(' · ') || 'No extra generation details'}
+                          </small>
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>

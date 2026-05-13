@@ -104,10 +104,12 @@ function handleLaunchDetail(detail) {
 }
 
 function getIncognitoLaunchToolName(toolSlug) {
+  if (toolSlug === 'canva') return 'Canva';
   if (toolSlug === 'chatgpt') return 'ChatGPT';
   if (toolSlug === 'flow') return 'Flow';
   if (toolSlug === 'enhancor') return 'Enhancor';
   if (toolSlug === 'freepik') return 'Freepik';
+  if (toolSlug === 'elevenlabs') return 'ElevenLabs';
   return 'this tool';
 }
 

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session
 
+from auth import get_request_session_token, resolve_session_user
 from database_config import get_operational_db
 from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, ITPortalToolUsageEvent, User
 from services.otp_mail_service import fetch_auth_link_from_gmail, fetch_otp_from_gmail
@@ -32,9 +33,11 @@ VALID_SCOPES = {"company", "user"}
 VALID_LAUNCH_MODES = {"external_link", "manual_credential", "sso", "api_proxy", "automation", "extension_autofill"}
 EXTENSION_AUTOFILL_TICKET_TTL_SEC = 20 * 60
 HOSTNAME_EQUIVALENT_GROUPS = (
+    {"canva.com", "www.canva.com"},
     {"chatgpt.com", "chat.openai.com", "auth.openai.com", "openai.com"},
     {"claude.ai"},
     {"enhancor.ai", "app.enhancor.ai", "www.enhancor.ai"},
+    {"elevenlabs.io", "www.elevenlabs.io", "app.elevenlabs.io"},
     {"envato.com", "elements.envato.com", "market.envato.com"},
     {"freepik.com"},
     {"genspark.ai", "www.genspark.ai", "login.genspark.ai"},
@@ -44,10 +47,11 @@ HOSTNAME_EQUIVALENT_GROUPS = (
     {"kling.ai", "klingai.com", "app.klingai.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
-SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"chatgpt", "claude", "enhancor", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"canva", "chatgpt", "claude", "enhancor", "elevenlabs", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
 PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
     "enhancor": {"email_password", "google"},
+    "elevenlabs": {"email_password", "google"},
     "freepik": {"email_password", "google"},
     "genspark": {"email_password", "google"},
     "kling": {"email_password", "google"},
@@ -107,6 +111,7 @@ class CredentialUpsertPayload(BaseModel):
 
 
 class ExtensionCredentialPayload(BaseModel):
+    credential_id: Optional[int] = None
     tool_slug: Optional[str] = Field(None, max_length=140)
     hostname: Optional[str] = Field(None, max_length=255)
     page_url: Optional[str] = Field(None, max_length=2000)
@@ -121,9 +126,12 @@ class OtpRequestPayload(BaseModel):
 
 
 class ExtensionUsageEventPayload(BaseModel):
+    event_id: Optional[int] = None
+    credential_id: Optional[int] = None
     tool_slug: Optional[str] = Field(None, max_length=140)
     hostname: Optional[str] = Field(None, max_length=255)
     page_url: Optional[str] = Field(None, max_length=2000)
+    event_date: Optional[str] = Field(None, max_length=10)
     extension_ticket: Optional[str] = Field(None, max_length=4000)
     usage_ticket: Optional[str] = Field(None, max_length=4000)
     event_type: str = Field("generate_click", max_length=120)
@@ -847,6 +855,29 @@ def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optiona
     return None
 
 
+def _resolve_usage_event_credential(
+    db: Session,
+    *,
+    tool_id: int,
+    user_id: int,
+    explicit_credential_id: Optional[int] = None,
+) -> Optional[ITPortalToolCredential]:
+    explicit_id = int(explicit_credential_id or 0)
+    if explicit_id > 0:
+        explicit_credential = (
+            db.query(ITPortalToolCredential)
+            .filter(
+                ITPortalToolCredential.id == explicit_id,
+                ITPortalToolCredential.tool_id == tool_id,
+            )
+            .first()
+        )
+        if explicit_credential:
+            return explicit_credential
+
+    return _resolve_tool_credential(db, tool_id, user_id)
+
+
 def _normalize_login_identifier(value: Optional[str]) -> str:
     return (value or "").strip().lower()
 
@@ -1160,7 +1191,7 @@ def _validate_extension_autofill_target(
 
     raise HTTPException(
         status_code=400,
-        detail="Extension auto-fill currently supports ChatGPT/OpenAI, Claude, Enhancor, Envato, Freepik, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
+        detail="Extension auto-fill currently supports Canva, ChatGPT/OpenAI, Claude, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
     )
 
 
@@ -1399,6 +1430,20 @@ def _normalize_prompt_text(value: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+def _merge_usage_metadata(existing: Optional[dict], incoming: Optional[dict]) -> dict:
+    merged = dict(existing or {})
+    for key, value in (incoming or {}).items():
+        merged[key] = value
+    return merged
+
+
+def _resolve_usage_event_user_by_id(db: Session, user_id: int) -> User:
+    user = db.query(User).filter(User.id == int(user_id)).first()
+    if not user or user.is_deleted:
+        raise _usage_tracking_ticket_error()
+    return user
+
+
 def _validate_usage_ticket_for_tool(
     *,
     tool: ITPortalTool,
@@ -1416,6 +1461,81 @@ def _validate_usage_ticket_for_tool(
     if int(ticket_payload.get("toolId") or 0) != tool.id:
         raise _usage_tracking_ticket_error()
     return ticket_payload
+
+
+def _resolve_user_from_usage_ticket(
+    *,
+    tool: ITPortalTool,
+    usage_ticket: str,
+    db: Session,
+) -> tuple[User, dict]:
+    if not usage_ticket:
+        raise _usage_tracking_ticket_error()
+
+    ticket_payload = _decode_ticket(usage_ticket)
+    if ticket_payload.get("kind") != "tool_usage_tracking":
+        raise _usage_tracking_ticket_error()
+    if int(ticket_payload.get("toolId") or 0) != tool.id:
+        raise _usage_tracking_ticket_error()
+
+    user = _resolve_usage_event_user_by_id(db, int(ticket_payload.get("userId") or 0))
+    return user, ticket_payload
+
+
+def _resolve_user_from_extension_ticket(
+    *,
+    tool: ITPortalTool,
+    extension_ticket: str,
+    db: Session,
+) -> tuple[User, dict]:
+    if not extension_ticket:
+        raise _extension_ticket_error()
+
+    ticket_payload = _decode_ticket(extension_ticket)
+    if ticket_payload.get("kind") != "extension_autofill":
+        raise _extension_ticket_error()
+    if int(ticket_payload.get("toolId") or 0) != tool.id:
+        raise _extension_ticket_error()
+
+    user = _resolve_usage_event_user_by_id(db, int(ticket_payload.get("userId") or 0))
+    return user, ticket_payload
+
+
+def _resolve_usage_event_actor(
+    *,
+    request: Request,
+    db: Session,
+    tool: ITPortalTool,
+    usage_ticket: str,
+    extension_ticket: str,
+) -> User:
+    session_user = None
+    session_token = get_request_session_token(
+        request.cookies.get("session_id"),
+        request.headers.get("X-Session-Id"),
+    )
+    if session_token:
+        try:
+            session_user = resolve_session_user(session_token, db, raise_on_missing=False)
+        except HTTPException:
+            session_user = None
+
+    if usage_ticket:
+        ticket_user, _ = _resolve_user_from_usage_ticket(tool=tool, usage_ticket=usage_ticket, db=db)
+        if session_user and int(session_user.id) != int(ticket_user.id):
+            raise _usage_tracking_ticket_error()
+        return ticket_user
+
+    if extension_ticket:
+        ticket_user, _ = _resolve_user_from_extension_ticket(tool=tool, extension_ticket=extension_ticket, db=db)
+        if session_user and int(session_user.id) != int(ticket_user.id):
+            raise _extension_ticket_error()
+        return ticket_user
+
+    if session_user:
+        return session_user
+
+    raise _usage_tracking_ticket_error()
 
 
 @router.get("/tools")
@@ -1576,7 +1696,12 @@ async def get_extension_credential(
         if int(ticket_payload.get("toolId") or 0) != tool.id:
             raise _extension_ticket_error()
 
-    credential = _resolve_tool_credential(db, tool.id, current_user.id)
+    credential = _resolve_usage_event_credential(
+        db,
+        tool_id=tool.id,
+        user_id=current_user.id,
+        explicit_credential_id=payload.credential_id,
+    )
     if not credential:
         raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
 
@@ -1617,7 +1742,9 @@ async def get_extension_credential(
             "launchMode": tool.launch_mode,
         },
         "credential": {
+            "id": credential.id,
             "scope": credential.scope,
+            "linkedCredentialId": credential.linked_credential_id,
             "loginMethod": login_method,
             "loginIdentifier": login_identifier,
             "password": password or None,
@@ -1629,7 +1756,7 @@ async def get_extension_credential(
 @router.post("/extension/usage-event")
 async def report_extension_usage_event(
     payload: ExtensionUsageEventPayload,
-    current_user: User = Depends(get_current_user),
+    request: Request,
     db: Session = Depends(get_operational_db),
 ):
     tool = _find_extension_tool(db, payload)
@@ -1640,20 +1767,16 @@ async def report_extension_usage_event(
 
     usage_ticket = f"{payload.usage_ticket or ''}".strip()
     extension_ticket = f"{payload.extension_ticket or ''}".strip()
-    if usage_ticket:
-        _validate_usage_ticket_for_tool(tool=tool, current_user=current_user, usage_ticket=usage_ticket)
-    elif extension_ticket:
-        ticket_payload = _decode_ticket(extension_ticket)
-        if ticket_payload.get("kind") != "extension_autofill":
-            raise _extension_ticket_error()
-        if int(ticket_payload.get("userId") or 0) != current_user.id:
-            raise _extension_ticket_error()
-        if int(ticket_payload.get("toolId") or 0) != tool.id:
-            raise _extension_ticket_error()
-    else:
-        raise _usage_tracking_ticket_error()
+    current_user = _resolve_usage_event_actor(
+        request=request,
+        db=db,
+        tool=tool,
+        usage_ticket=usage_ticket,
+        extension_ticket=extension_ticket,
+    )
 
     credential = _resolve_tool_credential(db, tool.id, current_user.id)
+    parsed_event_date = _parse_report_date(payload.event_date, "event_date") if payload.event_date else None
     expected_credits = _normalize_usage_float(payload.expected_credits)
     credits_before = _normalize_usage_float(payload.credits_before)
     credits_after = _normalize_usage_float(payload.credits_after)
@@ -1664,29 +1787,64 @@ async def report_extension_usage_event(
         else:
             credits_burned = expected_credits
 
-    usage_event = ITPortalToolUsageEvent(
-        tool_id=tool.id,
-        credential_id=credential.id if credential else None,
-        user_id=current_user.id,
-        event_type=(payload.event_type or "generate_click").strip().lower() or "generate_click",
-        event_date=datetime.utcnow().date(),
-        status=_normalize_status_label(payload.status),
-        model_label=(payload.model_label or "").strip() or None,
-        duration_label=(payload.duration_label or "").strip() or None,
-        resolution_label=(payload.resolution_label or "").strip() or None,
-        prompt_text=_normalize_prompt_text(payload.prompt_text),
-        expected_credits=expected_credits,
-        credits_before=credits_before,
-        credits_after=credits_after,
-        credits_burned=credits_burned,
-        metadata_json=payload.metadata or {},
-    )
-    db.add(usage_event)
+    usage_event = None
+    action_name = "tool_usage_reported"
+    normalized_event_type = (payload.event_type or "generate_click").strip().lower() or "generate_click"
+    normalized_status = _normalize_status_label(payload.status)
+    merged_metadata = payload.metadata or {}
+
+    if payload.event_id:
+        usage_event = (
+            db.query(ITPortalToolUsageEvent)
+            .filter(
+                ITPortalToolUsageEvent.id == int(payload.event_id),
+                ITPortalToolUsageEvent.tool_id == tool.id,
+                ITPortalToolUsageEvent.user_id == current_user.id,
+            )
+            .first()
+        )
+        if not usage_event:
+            raise HTTPException(status_code=404, detail="Usage event not found")
+
+        usage_event.credential_id = credential.id if credential else usage_event.credential_id
+        usage_event.event_type = normalized_event_type
+        usage_event.status = normalized_status
+        usage_event.event_date = parsed_event_date or usage_event.event_date
+        usage_event.model_label = (payload.model_label or "").strip() or usage_event.model_label
+        usage_event.duration_label = (payload.duration_label or "").strip() or usage_event.duration_label
+        usage_event.resolution_label = (payload.resolution_label or "").strip() or usage_event.resolution_label
+        usage_event.prompt_text = _normalize_prompt_text(payload.prompt_text) or usage_event.prompt_text
+        usage_event.expected_credits = expected_credits if expected_credits is not None else usage_event.expected_credits
+        usage_event.credits_before = credits_before if credits_before is not None else usage_event.credits_before
+        usage_event.credits_after = credits_after if credits_after is not None else usage_event.credits_after
+        usage_event.credits_burned = credits_burned if credits_burned is not None else usage_event.credits_burned
+        usage_event.metadata_json = _merge_usage_metadata(usage_event.metadata_json, merged_metadata)
+        action_name = "tool_usage_updated"
+    else:
+        usage_event = ITPortalToolUsageEvent(
+            tool_id=tool.id,
+            credential_id=credential.id if credential else None,
+            user_id=current_user.id,
+            event_type=normalized_event_type,
+            event_date=parsed_event_date or datetime.utcnow().date(),
+            status=normalized_status,
+            model_label=(payload.model_label or "").strip() or None,
+            duration_label=(payload.duration_label or "").strip() or None,
+            resolution_label=(payload.resolution_label or "").strip() or None,
+            prompt_text=_normalize_prompt_text(payload.prompt_text),
+            expected_credits=expected_credits,
+            credits_before=credits_before,
+            credits_after=credits_after,
+            credits_burned=credits_burned,
+            metadata_json=merged_metadata,
+        )
+        db.add(usage_event)
+
     db.flush()
     _add_audit(
         db,
         actor_id=current_user.id,
-        action="tool_usage_reported",
+        action=action_name,
         tool_id=tool.id,
         credential_id=credential.id if credential else None,
         target_user_id=current_user.id,
@@ -2415,6 +2573,7 @@ async def launch_tool(
 @router.get("/usage-report")
 async def get_tool_usage_report(
     tool_slug: Optional[str] = None,
+    selected_date: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     user_id: Optional[int] = None,
@@ -2425,8 +2584,12 @@ async def get_tool_usage_report(
     if user_id and not is_admin and int(user_id) != int(current_user.id):
         raise HTTPException(status_code=403, detail="You can only view your own usage.")
 
+    parsed_selected_date = _parse_report_date(selected_date, "selected_date")
     parsed_date_from = _parse_report_date(date_from, "date_from")
     parsed_date_to = _parse_report_date(date_to, "date_to")
+    if parsed_selected_date:
+        parsed_date_from = parsed_selected_date
+        parsed_date_to = parsed_selected_date
     if parsed_date_from and parsed_date_to and parsed_date_from > parsed_date_to:
         raise HTTPException(status_code=400, detail="date_from cannot be later than date_to")
 
@@ -2458,6 +2621,7 @@ async def get_tool_usage_report(
         db.query(
             ITPortalToolUsageEvent.event_date.label("event_date"),
             ITPortalToolUsageEvent.user_id.label("user_id"),
+            ITPortalToolUsageEvent.credential_id.label("credential_id"),
             User.name.label("user_name"),
             User.email.label("user_email"),
             func.count(ITPortalToolUsageEvent.id).label("generate_clicks"),
@@ -2486,8 +2650,19 @@ async def get_tool_usage_report(
         aggregate_rows = aggregate_rows.filter(ITPortalToolUsageEvent.user_id == current_user.id)
     aggregate_rows = (
         aggregate_rows
-        .group_by(ITPortalToolUsageEvent.event_date, ITPortalToolUsageEvent.user_id, User.name, User.email)
-        .order_by(ITPortalToolUsageEvent.event_date.desc(), User.name.asc(), User.email.asc())
+        .group_by(
+            ITPortalToolUsageEvent.event_date,
+            ITPortalToolUsageEvent.user_id,
+            ITPortalToolUsageEvent.credential_id,
+            User.name,
+            User.email,
+        )
+        .order_by(
+            ITPortalToolUsageEvent.event_date.desc(),
+            User.name.asc(),
+            User.email.asc(),
+            ITPortalToolUsageEvent.credential_id.asc(),
+        )
         .all()
     )
 
@@ -2525,6 +2700,65 @@ async def get_tool_usage_report(
         .all()
     )
 
+    grouped_event_meta = {}
+    grouped_events = (
+        base_query
+        .order_by(ITPortalToolUsageEvent.created_at.desc())
+        .all()
+    )
+    for event, _, _ in grouped_events:
+        key = (event.event_date.isoformat() if event.event_date else "", int(event.user_id or 0), int(event.credential_id or 0))
+        if key not in grouped_event_meta:
+            grouped_event_meta[key] = event.metadata_json or {}
+
+    latest_current_credits = None
+    for event, _, _ in recent_events:
+        if event.credits_after is not None:
+            latest_current_credits = float(event.credits_after)
+            break
+        if event.credits_before is not None:
+            latest_current_credits = float(event.credits_before)
+            break
+        metadata_current_credits = None
+        if isinstance(event.metadata_json, dict):
+            metadata_current_credits = _normalize_usage_float(event.metadata_json.get("currentCredits"))
+        if metadata_current_credits is not None:
+            latest_current_credits = float(metadata_current_credits)
+            break
+
+    credential_ids = set()
+    for row in aggregate_rows:
+        if row.credential_id:
+            credential_ids.add(int(row.credential_id))
+    for event, _, _ in recent_events:
+        if event.credential_id:
+            credential_ids.add(int(event.credential_id))
+
+    credential_map = {}
+    if credential_ids:
+        credentials = (
+            db.query(ITPortalToolCredential)
+            .filter(ITPortalToolCredential.id.in_(credential_ids))
+            .all()
+        )
+        credential_map = {
+            credential.id: {
+                "scope": credential.scope,
+                "loginIdentifier": decrypt_secret(credential.login_identifier_encrypted) or "",
+            }
+            for credential in credentials
+        }
+
+    def _resolve_usage_credential_label(credential_id: Optional[int], metadata: Optional[dict] = None) -> str:
+        credential_label = (credential_map.get(credential_id) or {}).get("loginIdentifier", "")
+        if credential_label:
+            return credential_label
+        if isinstance(metadata, dict):
+            return (
+                f"{metadata.get('credentialLabel') or metadata.get('klingAccountLabel') or ''}".strip()
+            )
+        return ""
+
     return {
         "success": True,
         "isAdmin": is_admin,
@@ -2532,6 +2766,16 @@ async def get_tool_usage_report(
             {
                 "date": row.event_date.isoformat() if row.event_date else None,
                 "userId": row.user_id,
+                "credentialId": row.credential_id,
+                "credentialScope": (credential_map.get(row.credential_id) or {}).get("scope", ""),
+                "credentialLabel": _resolve_usage_credential_label(
+                    row.credential_id,
+                    grouped_event_meta.get((
+                        row.event_date.isoformat() if row.event_date else "",
+                        int(row.user_id or 0),
+                        int(row.credential_id or 0),
+                    )) or {},
+                ),
                 "userName": row.user_name or "",
                 "userEmail": row.user_email or "",
                 "generateClicks": int(row.generate_clicks or 0),
@@ -2546,12 +2790,15 @@ async def get_tool_usage_report(
             "userCount": int(summary_row.user_count or 0),
             "creditsBurned": float(summary_row.total_credits_burned or 0),
             "expectedCredits": float(summary_row.total_expected_credits or 0),
+            "currentCredits": latest_current_credits,
         },
         "recentEvents": [
             {
                 **event.to_dict(),
                 "toolName": tool_item.name,
                 "toolSlug": tool_item.slug,
+                "credentialScope": (credential_map.get(event.credential_id) or {}).get("scope", ""),
+                "credentialLabel": _resolve_usage_credential_label(event.credential_id, event.metadata_json),
                 "userName": user.name or "",
                 "userEmail": user.email or "",
             }

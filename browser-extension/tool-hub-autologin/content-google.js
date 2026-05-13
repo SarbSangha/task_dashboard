@@ -11,7 +11,10 @@ const STATE = {
   lastEmailFilledAt: 0,
   lastEmailSubmitAt: 0,
   lastPasswordFilledAt: 0,
+  passwordSubmitReadyAt: 0,
   lastPasswordSubmitAt: 0,
+  googleTransitionLock: false,
+  googleTransitionStartedAt: 0,
   lastConsentSubmitAt: 0,
   lastTotpFilledAt: 0,
   lastTotpSubmitAt: 0,
@@ -34,6 +37,7 @@ const STATE = {
   lastLaunchRetryAt: 0,
   toolSlug: '',
   passwordSavingInFlight: false,
+  passwordSavingInFlightSince: 0,
   passwordSavingSuppressed: false,
   passwordSavingBypass: false,
   passwordSavingRestoreTimer: null,
@@ -48,6 +52,7 @@ const STATE = {
   embeddedButtonClickedAt: 0,
   developerInfoDismissedAt: 0,
   googleAddAccountPendingAt: 0,
+  passwordMaskLoopTimer: null,
   passwordTypeObserver: null,
   passwordTypeTarget: null,
   settled: false,
@@ -55,13 +60,25 @@ const STATE = {
 };
 
 const MIN_RUN_GAP_MS = 900;
-const KEEP_ALIVE_MS = 3500;
+const KEEP_ALIVE_MS = 10000;
 const STEP_PENDING_RETRY_MS = 5000;
+const LAUNCH_RETRY_DELAY_MS = 10000;
+const MAX_LAUNCH_RETRIES = 2;
 const INPUT_SETTLE_MS = 300;
-const GOOGLE_PASSWORD_SETTLE_MS = 260;
+const GOOGLE_PASSWORD_SETTLE_MS = 450;
+const GOOGLE_PASSWORD_STABLE_MS = 700;
+const GOOGLE_PASSWORD_POST_SUBMIT_WAIT_MS = 18000;
+const GOOGLE_AUTH_TRANSITION_TIMEOUT_MS = 60000;
+const GOOGLE_AUTH_TRANSITION_POLL_MS = 2500;
+const GOOGLE_PASSWORD_CHAR_DELAY_MIN_MS = 110;
+const GOOGLE_PASSWORD_CHAR_DELAY_MAX_MS = 220;
+const GOOGLE_PASSWORD_PRE_SUBMIT_PAUSE_MIN_MS = 900;
+const GOOGLE_PASSWORD_PRE_SUBMIT_PAUSE_MAX_MS = 2200;
+const GOOGLE_PASSWORD_RETRY_DELAY_MS = 1200;
 const NEXT_BUTTON_WAIT_MS = 2500;
 const NEXT_BUTTON_POLL_MS = 120;
 const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
+const RUNTIME_MESSAGE_TIMEOUT_MS = 2000;
 const PASSWORD_REVEAL_ACTION_HINTS = ['show', 'hide', 'view', 'reveal', 'toggle'];
 const PASSWORD_REVEAL_SUBJECT_HINTS = ['password', 'passcode'];
 const PASSWORD_REVEAL_ICON_HINTS = ['eye', 'visibility', 'visible'];
@@ -80,7 +97,13 @@ const EMAIL_SELECTORS = [
 const PASSWORD_SELECTORS = [
   'input[type="password"]',
   'input[name="Passwd"]',
+  'input[name*="passwd" i]',
+  'input[name*="password" i]',
+  'input[id*="passwd" i]',
+  'input[id*="password" i]',
   'input[autocomplete="current-password"]',
+  'input[aria-label*="password" i]',
+  'input[placeholder*="password" i]',
 ];
 const BACKUP_CODE_INPUT_SELECTORS = [
   'input[autocomplete="one-time-code"]',
@@ -150,14 +173,6 @@ function shouldRunOnCurrentPage() {
   }
 
   try {
-    if (window.top !== window.self) {
-      return false;
-    }
-  } catch {
-    return false;
-  }
-
-  try {
     const url = new URL(window.location.href);
     const host = normalizeText(url.hostname);
     const path = normalizeText(url.pathname);
@@ -185,12 +200,12 @@ function isKlingGoogleFlow(toolSlug = STATE.toolSlug) {
 }
 
 function shouldProtectGooglePasswordReveal(toolSlug = STATE.toolSlug) {
-  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
-  return normalizedToolSlug === 'enhancor'
-    || normalizedToolSlug === 'freepik'
-    || normalizedToolSlug === 'kling'
-    || normalizedToolSlug === 'kling-ai'
-    || normalizedToolSlug === 'klingai';
+  void toolSlug;
+  return false;
+}
+
+function shouldAggressivelyDisableGoogleRevealControls(toolSlug = STATE.toolSlug) {
+  return false;
 }
 
 function isFlowTool() {
@@ -202,6 +217,7 @@ function supportsGoogleAuthenticatorAutomation(toolSlug = STATE.toolSlug) {
   return normalizedToolSlug === 'flow'
     || normalizedToolSlug === 'chatgpt'
     || normalizedToolSlug === 'enhancor'
+    || normalizedToolSlug === 'elevenlabs'
     || normalizedToolSlug === 'freepik'
     || normalizedToolSlug === 'genspark'
     || normalizedToolSlug === 'kling'
@@ -214,6 +230,7 @@ function getToolDisplayName(toolSlug = STATE.toolSlug) {
   if (normalizedToolSlug === 'flow') return 'Flow';
   if (normalizedToolSlug === 'chatgpt') return 'ChatGPT';
   if (normalizedToolSlug === 'enhancor') return 'Enhancor';
+  if (normalizedToolSlug === 'elevenlabs') return 'ElevenLabs';
   if (normalizedToolSlug === 'freepik') return 'Freepik';
   if (normalizedToolSlug === 'genspark') return 'Genspark';
   if (normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai') return 'Kling';
@@ -300,13 +317,36 @@ function findEmbeddedGoogleButtonAction() {
 
 function sendRuntimeMessage(message) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        resolve({ ok: false, error: chrome.runtime.lastError.message });
+    let settled = false;
+    const finish = (response) => {
+      if (settled) return;
+      settled = true;
+      resolve(response);
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      finish({ ok: false, error: 'Runtime message timed out' });
+    }, RUNTIME_MESSAGE_TIMEOUT_MS);
+
+    try {
+      if (!chrome?.runtime?.id || typeof chrome.runtime.sendMessage !== 'function') {
+        window.clearTimeout(timeoutId);
+        finish({ ok: false, error: 'Extension runtime unavailable' });
         return;
       }
-      resolve(response || { ok: false, error: 'No response received' });
-    });
+
+      chrome.runtime.sendMessage(message, (response) => {
+        window.clearTimeout(timeoutId);
+        if (chrome.runtime.lastError) {
+          finish({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        finish(response || { ok: false, error: 'No response received' });
+      });
+    } catch (error) {
+      window.clearTimeout(timeoutId);
+      finish({ ok: false, error: error?.message || 'Runtime messaging failed' });
+    }
   });
 }
 
@@ -330,16 +370,32 @@ async function ensurePasswordSavingSuppressed() {
 }
 
 function requestPasswordSavingSuppression() {
-  if (STATE.passwordSavingSuppressed || STATE.passwordSavingBypass || STATE.passwordSavingInFlight) {
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingBypass) {
+    return;
+  }
+
+  if (STATE.passwordSavingInFlight) {
+    if (
+      STATE.passwordSavingInFlightSince
+      && Date.now() - STATE.passwordSavingInFlightSince > 4000
+    ) {
+      STATE.passwordSavingInFlight = false;
+      STATE.passwordSavingInFlightSince = 0;
+      STATE.passwordSavingBypass = true;
+      setStatus('Warning: Password-save suppression timed out. Continuing anyway...');
+      scheduleAttempt(50);
+    }
     return;
   }
 
   STATE.passwordSavingInFlight = true;
+  STATE.passwordSavingInFlightSince = Date.now();
   setStatus('Disabling Chrome password-save prompt...');
 
   ensurePasswordSavingSuppressed()
     .then((ok) => {
       STATE.passwordSavingInFlight = false;
+      STATE.passwordSavingInFlightSince = 0;
       if (!ok) {
         scheduleAttempt(50);
         return;
@@ -348,8 +404,10 @@ function requestPasswordSavingSuppression() {
     })
     .catch((error) => {
       STATE.passwordSavingInFlight = false;
-      STATE.settled = true;
-      setStatus(`Blocked: ${error?.message || 'Could not disable Chrome password-save prompt.'}`);
+      STATE.passwordSavingInFlightSince = 0;
+      STATE.passwordSavingBypass = true;
+      setStatus(`Warning: ${error?.message || 'Could not disable Chrome password-save prompt'} Continuing anyway...`);
+      scheduleAttempt(50);
     });
 }
 
@@ -402,20 +460,97 @@ function isChooserLikeAction(element) {
   );
 }
 
+function collectQueryRoots(root = document) {
+  const roots = [];
+  const seen = new Set();
+  const queue = [root];
+
+  while (queue.length) {
+    const currentRoot = queue.shift();
+    if (!currentRoot || seen.has(currentRoot)) continue;
+    seen.add(currentRoot);
+    roots.push(currentRoot);
+
+    const elements = currentRoot.querySelectorAll ? Array.from(currentRoot.querySelectorAll('*')) : [];
+    elements.forEach((element) => {
+      if (element?.shadowRoot && !seen.has(element.shadowRoot)) {
+        queue.push(element.shadowRoot);
+      }
+
+      if (element?.tagName?.toLowerCase?.() === 'iframe') {
+        try {
+          const frameDoc = element.contentDocument;
+          if (frameDoc && !seen.has(frameDoc)) {
+            queue.push(frameDoc);
+          }
+        } catch {}
+      }
+    });
+  }
+
+  return roots;
+}
+
+function queryAllDeep(selectors) {
+  const selectorList = Array.isArray(selectors) ? selectors : [selectors];
+  const results = [];
+  const seen = new Set();
+
+  collectQueryRoots(document).forEach((root) => {
+    selectorList.forEach((selector) => {
+      if (!selector || !root.querySelectorAll) return;
+      Array.from(root.querySelectorAll(selector)).forEach((element) => {
+        if (!element || seen.has(element)) return;
+        seen.add(element);
+        results.push(element);
+      });
+    });
+  });
+
+  return results;
+}
+
 function findInput(selectors) {
   for (const selector of selectors) {
-    const matches = Array.from(document.querySelectorAll(selector));
+    const matches = queryAllDeep(selector);
     const input = matches.find((item) => !item.readOnly && !isDisabled(item) && isVisible(item));
     if (input) return input;
   }
   return null;
 }
 
+function findRelaxedVisibleInput(selectors) {
+  for (const selector of selectors) {
+    const matches = queryAllDeep(selector);
+    const input = matches.find((item) => item && isVisible(item) && `${item.type || ''}`.trim().toLowerCase() !== 'hidden');
+    if (input) return input;
+  }
+  return null;
+}
+
+function readReferencedNodeText(idsValue) {
+  return `${idsValue || ''}`
+    .trim()
+    .split(/\s+/)
+    .map((id) => document.getElementById(id)?.innerText || '')
+    .filter(Boolean)
+    .join(' ');
+}
+
+function isGooglePasswordPageLikely() {
+  const currentPageText = pageText();
+  return isGooglePasswordUrl()
+    || Boolean(document.querySelector('#passwordNext'))
+    || currentPageText.includes('enter your password')
+    || currentPageText.includes('show password')
+    || currentPageText.includes('forgot password');
+}
+
 function findGoogleEmailInput() {
   const direct = findInput(EMAIL_SELECTORS);
   if (direct) return direct;
 
-  const candidates = Array.from(document.querySelectorAll('input'))
+  const candidates = queryAllDeep('input')
     .filter((input) => !input.readOnly && !isDisabled(input) && isVisible(input) && input.type !== 'password');
 
   return candidates.find((input) => {
@@ -443,7 +578,134 @@ function findGoogleEmailInput() {
 }
 
 function findGooglePasswordInput() {
-  return findInput(PASSWORD_SELECTORS);
+  const direct = findInput(PASSWORD_SELECTORS);
+  if (direct) return direct;
+
+  const relaxedDirect = findRelaxedVisibleInput(PASSWORD_SELECTORS);
+  if (relaxedDirect) return relaxedDirect;
+
+  const passwordPageLikely = isGooglePasswordPageLikely();
+  if (!passwordPageLikely) return null;
+
+  const candidates = queryAllDeep(['input', 'textarea', '[role="textbox"]'])
+    .filter((input) => input && isVisible(input) && `${input.type || ''}`.trim().toLowerCase() !== 'hidden');
+
+  const scored = candidates
+    .map((input) => ({ input, score: scoreGooglePasswordCandidate(input) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (scored[0]?.input) return scored[0].input;
+  if (candidates.length === 1) return candidates[0];
+  return null;
+}
+
+function findGooglePasswordFallbackInput() {
+  if (!isGooglePasswordPageLikely()) return null;
+
+  const candidates = queryAllDeep(['input', 'textarea', '[role="textbox"]'])
+    .filter((input) => input && isVisible(input) && `${input.type || ''}`.trim().toLowerCase() !== 'hidden');
+
+  const nonIdentifierCandidates = candidates.filter((input) => {
+    const descriptor = normalizeText([
+      input.id,
+      input.name,
+      input.type,
+      input.autocomplete,
+      input.inputMode,
+      input.getAttribute('aria-label'),
+      input.getAttribute('placeholder'),
+      readReferencedNodeText(input.getAttribute('aria-labelledby')),
+      readReferencedNodeText(input.getAttribute('aria-describedby')),
+      input.closest('form, main, section, article, div')?.innerText,
+    ].filter(Boolean).join(' '));
+
+    return !descriptor.includes('email or phone')
+      && !descriptor.includes('forgot email')
+      && !descriptor.includes('identifier');
+  });
+
+  if (nonIdentifierCandidates.length === 1) {
+    return nonIdentifierCandidates[0];
+  }
+
+  const nearPasswordNext = nonIdentifierCandidates.find((input) => input.closest?.('#password') || input.closest?.('form'));
+  return nearPasswordNext || nonIdentifierCandidates[0] || (candidates.length === 1 ? candidates[0] : null);
+}
+
+function findProtectedGooglePasswordInput() {
+  return findGooglePasswordInput() || findGooglePasswordFallbackInput();
+}
+
+function getGooglePasswordFieldDebugSummary() {
+  const selectorMatches = queryAllDeep(PASSWORD_SELECTORS).filter((element) => element && isVisible(element));
+  const broadCandidates = queryAllDeep(['input', 'textarea', '[role="textbox"]'])
+    .filter((element) => element && isVisible(element) && `${element.type || ''}`.trim().toLowerCase() !== 'hidden');
+
+  const sample = broadCandidates.slice(0, 3).map((element) => {
+    const descriptor = normalizeText([
+      element.tagName,
+      element.id,
+      element.name,
+      element.type,
+      element.autocomplete,
+      element.getAttribute?.('role'),
+      element.getAttribute?.('aria-label'),
+      element.getAttribute?.('placeholder'),
+      readReferencedNodeText(element.getAttribute?.('aria-labelledby')),
+      readReferencedNodeText(element.getAttribute?.('aria-describedby')),
+    ].filter(Boolean).join(' '));
+    return `${element.tagName.toLowerCase()}:${descriptor || 'no-desc'}:ro=${Boolean(element.readOnly)}:dis=${isDisabled(element)}`;
+  }).join(' | ');
+
+  return `pwdUrl=${isGooglePasswordUrl()} next=${Boolean(document.querySelector('#passwordNext'))} sel=${selectorMatches.length} broad=${broadCandidates.length}${sample ? ` sample=${sample}` : ''}`;
+}
+
+function scoreGooglePasswordCandidate(input) {
+  if (!input) return 0;
+
+  const descriptor = normalizeText([
+    input.id,
+    input.name,
+    input.type,
+    input.autocomplete,
+    input.inputMode,
+    input.getAttribute('aria-label'),
+    input.getAttribute('placeholder'),
+    readReferencedNodeText(input.getAttribute('aria-labelledby')),
+    readReferencedNodeText(input.getAttribute('aria-describedby')),
+    input.closest('form, main, section, article, div')?.innerText,
+  ].filter(Boolean).join(' '));
+  const passwordPageLikely = isGooglePasswordPageLikely();
+
+  let score = 0;
+  if (descriptor.includes('password')) score += 6;
+  if (descriptor.includes('passwd')) score += 6;
+  if (descriptor.includes('current-password')) score += 5;
+  if (descriptor.includes('enter your password')) score += 8;
+  if (descriptor.includes('show password')) score += 4;
+  if (descriptor.includes('forgot password')) score += 3;
+  if (descriptor.includes('forgot email')) score -= 6;
+  if (descriptor.includes('email or phone')) score -= 6;
+  if (descriptor.includes('identifier')) score += passwordPageLikely ? -1 : -6;
+  if (descriptor.includes('verification code')) score -= 8;
+  if (descriptor.includes('backup code')) score -= 8;
+  if (descriptor.includes('authenticator')) score -= 8;
+
+  const type = `${input.type || ''}`.trim().toLowerCase();
+  if (type === 'password') score += 10;
+  if (type === 'text' || type === 'email' || type === 'tel') score += 1;
+  if (!input.readOnly) score += 2;
+  if (!isDisabled(input)) score += 2;
+  if (input.readOnly) score -= 1;
+  if (isDisabled(input)) score -= 1;
+  if (passwordPageLikely) score += 2;
+  if (input === document.activeElement && passwordPageLikely) score += 8;
+
+  if (input.closest?.('#password, #passwordNext')) score += 8;
+  if (document.querySelector('#passwordNext')) score += 2;
+
+  return score;
 }
 
 function getValueSetter(element) {
@@ -500,8 +762,103 @@ function setInputValue(input, value) {
   input.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-async function typeInputValueLikeUser(input, value, { perCharDelayMs = 16 } = {}) {
+function isGooglePasswordInput(input) {
+  if (!input) return false;
+  const type = `${input.type || input.getAttribute?.('type') || ''}`.trim().toLowerCase();
+  const name = `${input.name || input.getAttribute?.('name') || ''}`.trim().toLowerCase();
+  const autocomplete = `${input.autocomplete || input.getAttribute?.('autocomplete') || ''}`.trim().toLowerCase();
+  return type === 'password'
+    || name === 'passwd'
+    || autocomplete === 'current-password'
+    || (isGooglePasswordPageLikely() && scoreGooglePasswordCandidate(input) >= 8);
+}
+
+function getGooglePasswordTypedMarker(input) {
+  return `${input?.dataset?.rmwGoogleTypedPasswordValue || ''}`;
+}
+
+function setGooglePasswordTypedMarker(input, value) {
+  if (!input?.dataset) return;
+  input.dataset.rmwGoogleTypedPasswordValue = `${value || ''}`;
+}
+
+function randomIntBetween(min, max) {
+  const lower = Math.ceil(Math.min(min, max));
+  const upper = Math.floor(Math.max(min, max));
+  return Math.floor(Math.random() * ((upper - lower) + 1)) + lower;
+}
+
+function armGooglePasswordSubmitPause() {
+  STATE.passwordSubmitReadyAt = Date.now() + randomIntBetween(
+    GOOGLE_PASSWORD_PRE_SUBMIT_PAUSE_MIN_MS,
+    GOOGLE_PASSWORD_PRE_SUBMIT_PAUSE_MAX_MS
+  );
+}
+
+function getGooglePasswordSubmitPauseRemaining() {
+  return Math.max(0, Number(STATE.passwordSubmitReadyAt || 0) - Date.now());
+}
+
+function beginGoogleTransitionLock(startedAt = Date.now()) {
+  STATE.googleTransitionLock = true;
+  STATE.googleTransitionStartedAt = Number(startedAt || Date.now());
+}
+
+function clearGoogleTransitionLock() {
+  STATE.googleTransitionLock = false;
+  STATE.googleTransitionStartedAt = 0;
+}
+
+function isGoogleTransitionLocked() {
+  return Boolean(
+    STATE.googleTransitionLock
+    && STATE.googleTransitionStartedAt
+    && (Date.now() - Number(STATE.googleTransitionStartedAt || 0)) < GOOGLE_AUTH_TRANSITION_TIMEOUT_MS
+  );
+}
+
+function getGoogleTransitionElapsedMs() {
+  if (!STATE.googleTransitionStartedAt) return 0;
+  return Math.max(0, Date.now() - Number(STATE.googleTransitionStartedAt || 0));
+}
+
+function getGoogleTransitionRemainingMs() {
+  return Math.max(0, GOOGLE_AUTH_TRANSITION_TIMEOUT_MS - getGoogleTransitionElapsedMs());
+}
+
+async function isGooglePasswordReadyForSubmit(input, value) {
+  if (!input) return false;
+  const expectedValue = `${value || ''}`;
+  if (`${input.value || ''}` !== expectedValue) return false;
+
+  const typedPasswordReady = getGooglePasswordTypedMarker(input) === expectedValue;
+  if (!typedPasswordReady && STATE.lastPasswordFilledAt > 0) {
+    const settleRemaining = Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS) - (Date.now() - STATE.lastPasswordFilledAt);
+    if (settleRemaining > 0) {
+      return false;
+    }
+  }
+
+  return waitForInputValueStability(input, expectedValue);
+}
+
+async function waitForInputValueStability(input, value, { durationMs = GOOGLE_PASSWORD_STABLE_MS, intervalMs = 80 } = {}) {
+  if (!input) return false;
+  const expectedValue = `${value || ''}`;
+  if (`${input.value || ''}` !== expectedValue) return false;
+
+  const deadline = Date.now() + Math.max(0, durationMs);
+  while (Date.now() < deadline) {
+    await sleep(intervalMs);
+    if (!input.isConnected) return false;
+    if (`${input.value || ''}` !== expectedValue) return false;
+  }
+  return `${input.value || ''}` === expectedValue;
+}
+
+async function typeInputValueLikeUser(input, value, { perCharDelayMs = null } = {}) {
   if (!input) return;
+  const passwordInput = isGooglePasswordInput(input);
   const nextValue = `${value || ''}`;
   const setter = getValueSetter(input);
 
@@ -521,58 +878,31 @@ async function typeInputValueLikeUser(input, value, { perCharDelayMs = 16 } = {}
 
   let currentValue = '';
   for (const char of nextValue) {
-    try {
-      input.dispatchEvent(new KeyboardEvent('keydown', {
-        key: char,
-        code: char.length === 1 ? `Key${char.toUpperCase()}` : '',
-        bubbles: true,
-        cancelable: true,
-      }));
-    } catch {}
-
-    try {
-      input.dispatchEvent(new InputEvent('beforeinput', {
-        bubbles: true,
-        cancelable: true,
-        data: char,
-        inputType: 'insertText',
-      }));
-    } catch {}
-
     currentValue += char;
+    const previousValue = `${input.value || ''}`;
     if (setter) setter.call(input, currentValue);
     else input.value = currentValue;
     input.setAttribute('value', currentValue);
     if (input._valueTracker?.setValue) {
-      input._valueTracker.setValue(currentValue.slice(0, -1));
+      input._valueTracker.setValue(previousValue);
     }
 
     try {
-      input.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        cancelable: true,
-        data: char,
-        inputType: 'insertText',
-      }));
+      input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
     } catch {
       input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
     }
 
-    try {
-      input.dispatchEvent(new KeyboardEvent('keyup', {
-        key: char,
-        code: char.length === 1 ? `Key${char.toUpperCase()}` : '',
-        bubbles: true,
-        cancelable: true,
-      }));
-    } catch {}
-
-    if (perCharDelayMs > 0) {
-      await sleep(perCharDelayMs);
-    }
+    const delayMs = Number.isFinite(perCharDelayMs) && perCharDelayMs >= 0
+      ? perCharDelayMs
+      : randomIntBetween(GOOGLE_PASSWORD_CHAR_DELAY_MIN_MS, GOOGLE_PASSWORD_CHAR_DELAY_MAX_MS);
+    await sleep(delayMs);
   }
 
   input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+  if (passwordInput) {
+    setGooglePasswordTypedMarker(input, nextValue);
+  }
 }
 
 function sleep(ms) {
@@ -738,6 +1068,13 @@ function inferToolSlugFromGooglePage() {
     }
 
     if (values.some((value) => (
+      value.includes('elevenlabs.io')
+      || value.includes('app.elevenlabs.io')
+    ))) {
+      return 'elevenlabs';
+    }
+
+    if (values.some((value) => (
       value.includes('kling.ai')
       || value.includes('klingai.com')
       || value.includes('app.klingai.com')
@@ -786,6 +1123,12 @@ function inferToolSlugFromGooglePage() {
     || currentPageText.includes('to continue to kling.ai')
     || currentPageText.includes('to continue to kling ai')
     || currentPageText.includes('to continue to kling')
+    || currentPageText.includes("kling.ai's privacy")
+    || currentPageText.includes("kling.ai's terms")
+    || currentPageText.includes('review kling.ai')
+    || currentPageText.includes('signing back in to kling')
+    || currentPageText.includes('kling.ai terms of service')
+    || currentPageText.includes('kling.ai privacy policy')
   ) {
     return 'kling-ai';
   }
@@ -837,7 +1180,11 @@ function isGooglePasswordUrl() {
   try {
     const url = new URL(window.location.href);
     return url.hostname.includes('accounts.google.com')
-      && (url.pathname.includes('/signin/challenge') || url.pathname.includes('/signin/v2/challenge'));
+      && (
+        url.pathname.includes('/signin/challenge')
+        || url.pathname.includes('/signin/v2/challenge')
+        || url.pathname.includes('/v3/signin/challenge')
+      );
   } catch {
     return false;
   }
@@ -932,16 +1279,7 @@ function blockRevealControlEvent(event) {
 }
 
 function keepProtectedGoogleRevealControlsUnchecked(passInput) {
-  findExplicitGoogleShowPasswordControls(passInput).forEach((control) => {
-    if (control.matches?.('input[type="checkbox"], input[type="radio"]')) {
-      try { control.checked = false; } catch {}
-      try { control.defaultChecked = false; } catch {}
-      try { control.setAttribute('aria-checked', 'false'); } catch {}
-    }
-    if (control.getAttribute?.('role') === 'checkbox') {
-      try { control.setAttribute('aria-checked', 'false'); } catch {}
-    }
-  });
+  void passInput;
 }
 
 function scheduleProtectedGooglePasswordRemask(passInput) {
@@ -950,10 +1288,18 @@ function scheduleProtectedGooglePasswordRemask(passInput) {
     window.setTimeout(() => {
       const activePasswordInput = passInput.isConnected ? passInput : findGooglePasswordInput();
       if (!activePasswordInput) return;
-      enforceProtectedGooglePasswordMask(activePasswordInput);
-      disableExactGoogleShowPasswordTargets(activePasswordInput);
+      if (`${activePasswordInput.type || ''}`.trim().toLowerCase() !== 'password') {
+        enforceProtectedGooglePasswordMask(activePasswordInput);
+      }
     }, delayMs);
   });
+}
+
+function clearProtectedGooglePasswordMaskLoop() {
+  if (STATE.passwordMaskLoopTimer) {
+    window.clearInterval(STATE.passwordMaskLoopTimer);
+    STATE.passwordMaskLoopTimer = null;
+  }
 }
 
 function findExactGoogleShowPasswordCheckbox(passInput) {
@@ -971,9 +1317,15 @@ function findExactGoogleShowPasswordCheckbox(passInput) {
 
   for (const scope of scopes) {
     const checkbox = Array.from(scope.querySelectorAll('input[type="checkbox"][jsname="YPqjbf"]'))
-      .find((element) => isVisible(element) && isNearPasswordInput(passInput, element));
+      .find((element) => isVisible(element) && isSafeGoogleRevealTarget(passInput, element));
     if (checkbox) {
       return checkbox;
+    }
+
+    const fallback = Array.from(scope.querySelectorAll('input[type="checkbox"]'))
+      .find((element) => isVisible(element) && isSafeGoogleRevealTarget(passInput, element));
+    if (fallback) {
+      return fallback;
     }
   }
   return null;
@@ -1012,10 +1364,7 @@ function findExactGoogleShowPasswordTargets(passInput) {
   });
 
   return Array.from(new Set(targets)).filter((element) => (
-    element
-    && element.nodeType === Node.ELEMENT_NODE
-    && isVisible(element)
-    && isNearPasswordInput(passInput, element)
+    isSafeGoogleRevealTarget(passInput, element)
   ));
 }
 
@@ -1050,6 +1399,7 @@ function findGoogleShowPasswordRow(passInput) {
 }
 
 function disableExactGoogleShowPasswordTargets(passInput) {
+  if (!shouldAggressivelyDisableGoogleRevealControls()) return;
   findExactGoogleShowPasswordTargets(passInput).forEach((target) => {
     neutralizeGoogleRevealActionElement(target);
     disablePasswordRevealControl(target);
@@ -1057,36 +1407,7 @@ function disableExactGoogleShowPasswordTargets(passInput) {
 }
 
 function ensureProtectedGoogleRevealShield(passInput) {
-  const existing = document.getElementById('rmw-google-show-password-shield');
-  const target = findGoogleShowPasswordRow(passInput);
-  if (!target) {
-    existing?.remove();
-    return;
-  }
-
-  const rect = target.getBoundingClientRect();
-  if (!rect.width || !rect.height) {
-    existing?.remove();
-    return;
-  }
-
-  const shield = existing || document.createElement('div');
-  shield.id = 'rmw-google-show-password-shield';
-  shield.setAttribute('aria-hidden', 'true');
-  shield.style.position = 'fixed';
-  shield.style.left = `${Math.max(0, rect.left - 2)}px`;
-  shield.style.top = `${Math.max(0, rect.top - 2)}px`;
-  shield.style.width = `${rect.width + 4}px`;
-  shield.style.height = `${rect.height + 4}px`;
-  shield.style.zIndex = '2147483646';
-  shield.style.background = 'transparent';
-  shield.style.pointerEvents = 'auto';
-  shield.style.cursor = 'not-allowed';
-  ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']
-    .forEach((eventName) => shield.addEventListener(eventName, blockRevealControlEvent, true));
-  if (!existing) {
-    (document.body || document.documentElement).appendChild(shield);
-  }
+  document.getElementById('rmw-google-show-password-shield')?.remove();
 }
 
 function ensureProtectedGooglePasswordTypeObserver(passInput) {
@@ -1102,17 +1423,34 @@ function ensureProtectedGooglePasswordTypeObserver(passInput) {
 
   STATE.passwordTypeTarget = passInput;
   const observer = new MutationObserver(() => {
-    const activePasswordInput = passInput.isConnected ? passInput : findGooglePasswordInput();
+    const activePasswordInput = passInput.isConnected ? passInput : findProtectedGooglePasswordInput();
     if (!activePasswordInput) return;
     enforceProtectedGooglePasswordMask(activePasswordInput);
-    ensureProtectedGoogleRevealShield(activePasswordInput);
-    disableExactGoogleShowPasswordTargets(activePasswordInput);
   });
   observer.observe(passInput, {
     attributes: true,
     attributeFilter: ['type', 'checked', 'aria-checked'],
   });
   STATE.passwordTypeObserver = observer;
+}
+
+function ensureProtectedGooglePasswordMaskLoop(passInput) {
+  if (!shouldProtectGooglePasswordReveal()) return;
+
+  const protect = () => {
+    const activePasswordInput = passInput?.isConnected ? passInput : findProtectedGooglePasswordInput();
+    if (!activePasswordInput) {
+      clearProtectedGooglePasswordMaskLoop();
+      return;
+    }
+
+    enforceProtectedGooglePasswordMask(activePasswordInput);
+    ensureProtectedGooglePasswordTypeObserver(activePasswordInput);
+  };
+
+  protect();
+  if (STATE.passwordMaskLoopTimer) return;
+  STATE.passwordMaskLoopTimer = window.setInterval(protect, 500);
 }
 
 function verticalOverlapAmount(aRect, bRect) {
@@ -1129,6 +1467,27 @@ function isNearPasswordInput(passInput, candidate) {
   return verticalOverlap >= Math.min(passRect.height, candidateRect.height) * 0.4
     && candidateCenterX >= passRect.right - 40
     && horizontalGap <= 80;
+}
+
+function isSafeGoogleRevealTarget(passInput, element) {
+  if (!passInput || !element || element.nodeType !== Node.ELEMENT_NODE || !isVisible(element)) return false;
+  if (element === passInput || element.contains?.(passInput) || passInput.contains?.(element)) return false;
+  if (element.closest?.('#passwordNext, #identifierNext')) return false;
+  if (element.querySelector?.('#passwordNext, #identifierNext')) return false;
+
+  const passRect = passInput.getBoundingClientRect();
+  const rect = element.getBoundingClientRect();
+  if (!rect.width || !rect.height) return false;
+
+  const maxAllowedWidth = Math.max(220, Math.round(passRect.width * 0.8));
+  const maxAllowedHeight = Math.max(64, Math.round(passRect.height * 1.8));
+  if (rect.width > maxAllowedWidth || rect.height > maxAllowedHeight) return false;
+
+  const passBottom = passRect.bottom;
+  const verticalGap = rect.top - passBottom;
+  const sameRow = isNearPasswordInput(passInput, element);
+  const belowPassword = verticalGap >= -12 && verticalGap <= 72 && rect.left < passRect.right && rect.right > passRect.left;
+  return sameRow || belowPassword;
 }
 
 function findGooglePasswordRevealCandidates(passInput) {
@@ -1213,22 +1572,22 @@ function findExplicitGoogleShowPasswordControls(passInput) {
         const forId = `${candidate.getAttribute('for') || ''}`.trim();
         if (forId) {
           const linkedInput = document.getElementById(forId);
-          if (linkedInput && isVisible(linkedInput)) controls.push(linkedInput);
+          if (isSafeGoogleRevealTarget(passInput, linkedInput)) controls.push(linkedInput);
         }
         const nestedInput = candidate.querySelector?.('input[type="checkbox"], input[type="radio"]');
-        if (nestedInput && isVisible(nestedInput)) controls.push(nestedInput);
+        if (isSafeGoogleRevealTarget(passInput, nestedInput)) controls.push(nestedInput);
         return;
       }
 
       controls.push(candidate);
-      const clickableAncestor = candidate.closest('button, [role="button"], label, div[tabindex], span[tabindex], li, [data-view-id], [jsaction], [jscontroller]');
-      if (clickableAncestor && isVisible(clickableAncestor) && isNearPasswordInput(passInput, clickableAncestor)) {
+      const clickableAncestor = candidate.closest('button, [role="button"], label, div[tabindex], span[tabindex], li, [data-view-id], [jsaction]');
+      if (isSafeGoogleRevealTarget(passInput, clickableAncestor)) {
         controls.push(clickableAncestor);
       }
     });
   });
 
-  return Array.from(new Set(controls)).filter(Boolean);
+  return Array.from(new Set(controls)).filter((control) => isSafeGoogleRevealTarget(passInput, control));
 }
 
 function findGooglePasswordRevealControlFromTarget(target, passInput) {
@@ -1266,22 +1625,19 @@ function handleProtectedGooglePasswordRevealAttempt(event) {
   if (!passInput) return;
   const revealControl = findGooglePasswordRevealControlFromTarget(event.target, passInput);
   if (!revealControl) return;
-  disablePasswordRevealControl(revealControl);
   enforceProtectedGooglePasswordMask(passInput);
   scheduleProtectedGooglePasswordRemask(passInput);
-  blockRevealControlEvent(event);
+  void revealControl;
 }
 
 function ensureProtectedGooglePasswordRevealGuards() {
-  if (!shouldProtectGooglePasswordReveal()) return;
-  if (document.documentElement?.dataset?.rmwGoogleRevealGuardAttached === 'true') return;
-  document.documentElement.dataset.rmwGoogleRevealGuardAttached = 'true';
-  ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'keydown', 'keyup', 'change', 'input']
-    .forEach((eventName) => document.addEventListener(eventName, handleProtectedGooglePasswordRevealAttempt, true));
+  void handleProtectedGooglePasswordRevealAttempt;
 }
 
 function enforceProtectedGooglePasswordMask(passInput) {
   if (!passInput) return;
+  // Let the browser render native password masking. Fighting the reveal
+  // control directly caused Google to re-render the field unpredictably.
   try { passInput.type = 'password'; } catch {}
   try { passInput.setAttribute('type', 'password'); } catch {}
   keepProtectedGoogleRevealControlsUnchecked(passInput);
@@ -1325,6 +1681,7 @@ function findGoogleAccountChooserAction(credential) {
 function shouldPreferGoogleAddAccount(toolSlug = STATE.toolSlug) {
   const normalized = normalizeToolSlug(toolSlug);
   return normalized === 'enhancor'
+    || normalized === 'elevenlabs'
     || normalized === 'freepik'
     || normalized === 'genspark'
     || normalized === 'kling'
@@ -1385,6 +1742,9 @@ function findGoogleUseAnotherAccountAction() {
 }
 
 function isGoogleAccountChooserPage() {
+  // The password challenge page can still show "Use another account",
+  // but that is not a chooser surface.
+  if (isGooglePasswordUrl()) return false;
   const text = pageText();
   return text.includes('choose an account') || text.includes('use another account');
 }
@@ -1434,6 +1794,49 @@ function findGoogleDeveloperInfoDismissAction() {
 
 function pageText() {
   return normalizeText(document.body?.innerText || '');
+}
+
+function readGooglePasswordContext(input) {
+  const describedBy = `${input?.getAttribute?.('aria-describedby') || ''}`.trim();
+  const describedText = describedBy
+    ? describedBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.innerText || '')
+        .filter(Boolean)
+        .join(' ')
+    : '';
+  return normalizeText([
+    document.body?.innerText,
+    input?.closest('form, main, section, article, div')?.innerText,
+    describedText,
+  ].filter(Boolean).join(' '));
+}
+
+function hasGooglePasswordMissingError(input) {
+  if (!input) return false;
+  const contextText = readGooglePasswordContext(input);
+  const invalid = `${input.getAttribute('aria-invalid') || ''}`.trim().toLowerCase() === 'true';
+  return invalid && (
+    contextText.includes('enter a password')
+    || contextText.includes('enter your password')
+  );
+}
+
+function hasGooglePasswordRejectedError(input) {
+  if (!input) return false;
+  const contextText = readGooglePasswordContext(input);
+  const invalid = `${input.getAttribute('aria-invalid') || ''}`.trim().toLowerCase() === 'true';
+  return invalid && [
+    'wrong password',
+    'incorrect password',
+    'password is incorrect',
+    "couldn't sign you in",
+    'couldnt sign you in',
+    'enter the correct password',
+    'verify it\'s you',
+    'verify its you',
+    'too many failed attempts',
+  ].some((token) => contextText.includes(token));
 }
 
 function isFlowAuthenticatorScreen() {
@@ -1928,8 +2331,8 @@ function submitStep(button, input) {
 
 function didGoogleEmailAdvance() {
   return Boolean(
-    findGooglePasswordInput()
-    || isGooglePasswordUrl()
+    isGooglePasswordUrl()
+    || findGooglePasswordInput()
     || (!isGoogleIdentifierUrl() && !findGoogleEmailInput())
   );
 }
@@ -2070,7 +2473,7 @@ function getGoogleEmailValue(loginIdentifier, input) {
 }
 
 async function submitGoogleNextStep(kind, input) {
-  const waitAfterSubmitMs = kind === 'password' ? 1800 : 700;
+  const waitAfterSubmitMs = kind === 'password' ? 2600 : 700;
   const didAdvance = kind === 'password' ? didGooglePasswordAdvance : didGoogleEmailAdvance;
 
   const nextButton = await waitForGoogleNextButton(
@@ -2081,6 +2484,15 @@ async function submitGoogleNextStep(kind, input) {
   if (nextButton && safeClick(nextButton)) {
     await sleep(waitAfterSubmitMs);
     if (didAdvance()) return true;
+  }
+
+  if (kind === 'password') {
+    const retryButton = getGoogleNextButton(kind, input);
+    if (retryButton && retryButton !== nextButton && safeClick(retryButton)) {
+      await sleep(waitAfterSubmitMs);
+      if (didAdvance()) return true;
+    }
+    return didAdvance();
   }
 
   if (pressEnter(input)) {
@@ -2148,11 +2560,11 @@ async function submitGooglePasswordStep(credential) {
   }
 
   if (`${input.value || ''}` !== passwordValue) {
-    await typeInputValueLikeUser(input, passwordValue, { perCharDelayMs: 8 });
+    await typeInputValueLikeUser(input, passwordValue);
     await sleep(Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS));
     if (`${input.value || ''}` !== passwordValue) {
-      await typeInputValueLikeUser(input, passwordValue, { perCharDelayMs: 4 });
-      await sleep(180);
+      await typeInputValueLikeUser(input, passwordValue);
+      await sleep(Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS));
     }
   }
 
@@ -2160,17 +2572,25 @@ async function submitGooglePasswordStep(credential) {
     return false;
   }
 
+  STATE.lastPasswordFilledAt = Date.now();
+  armGooglePasswordSubmitPause();
+
   input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
   input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-  input.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
   await sleep(Math.max(INPUT_SETTLE_MS, 350));
 
-  if (`${input.value || ''}` !== passwordValue) {
+  if (!(await isGooglePasswordReadyForSubmit(input, passwordValue))) {
     return false;
+  }
+
+  const submitPauseRemaining = getGooglePasswordSubmitPauseRemaining();
+  if (submitPauseRemaining > 0) {
+    await sleep(submitPauseRemaining);
   }
 
   const submitted = await submitGoogleNextStep('password', input);
   if (submitted) {
+    beginGoogleTransitionLock();
     releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
   }
   return submitted;
@@ -2328,16 +2748,17 @@ async function loadLaunchState() {
 }
 
 async function retryLaunchStateIfNeeded() {
+  if (isGoogleTransitionLocked()) return false;
   const inferredToolSlug = normalizeToolSlug(
     STATE.toolSlug
     || inferToolSlugFromGooglePage()
     || inferStoredGoogleToolSlug()
   );
   if (!inferredToolSlug) return false;
-  if (STATE.launchRetryAttempts >= 3) return false;
+  if (STATE.launchRetryAttempts >= MAX_LAUNCH_RETRIES) return false;
 
   const now = Date.now();
-  if (now - STATE.lastLaunchRetryAt < 500) {
+  if (now - STATE.lastLaunchRetryAt < LAUNCH_RETRY_DELAY_MS) {
     return true;
   }
 
@@ -2418,7 +2839,7 @@ function requestCredential() {
 
 async function markAuthTransition() {
   if (!isFlowTool()) return false;
-  if (STATE.authTransitionMarkedAt && Date.now() - STATE.authTransitionMarkedAt < 15000) {
+  if (STATE.authTransitionMarkedAt && Date.now() - STATE.authTransitionMarkedAt < GOOGLE_AUTH_TRANSITION_TIMEOUT_MS) {
     return true;
   }
 
@@ -2433,7 +2854,370 @@ async function markAuthTransition() {
   return false;
 }
 
+async function handleGoogleTransitionLock() {
+  if (!STATE.googleTransitionLock) return false;
+
+  if (!isGoogleTransitionLocked()) {
+    clearGoogleTransitionLock();
+    STATE.passwordSubmitted = false;
+    STATE.passwordSubmitReadyAt = 0;
+    setStatus('Google sign-in wait timed out. Retrying...');
+    scheduleAttempt(0);
+    return true;
+  }
+
+  const passwordInput = findGooglePasswordInput();
+  if (passwordInput && hasGooglePasswordRejectedError(passwordInput)) {
+    clearProtectedGooglePasswordMaskLoop();
+    clearGoogleTransitionLock();
+    STATE.settled = true;
+    setStatus('Google rejected the password. Check the credential or continue manually.');
+    releasePasswordSavingSuppressed(0);
+    return true;
+  }
+
+  if (passwordInput && hasGooglePasswordMissingError(passwordInput)) {
+    ensureProtectedGooglePasswordMaskLoop(passwordInput);
+    clearGoogleTransitionLock();
+    STATE.passwordSubmitted = false;
+    STATE.lastPasswordFilledAt = 0;
+    STATE.passwordSubmitReadyAt = 0;
+    setGooglePasswordTypedMarker(passwordInput, '');
+    setStatus('Google did not accept the password input. Retyping...');
+    scheduleAttempt(GOOGLE_PASSWORD_RETRY_DELAY_MS);
+    return true;
+  }
+
+  if (passwordInput) {
+    ensureProtectedGooglePasswordMaskLoop(passwordInput);
+  }
+
+  const remainingSec = Math.max(1, Math.round(getGoogleTransitionRemainingMs() / 1000));
+  setStatus(`Waiting for Google to finish sign-in... (${remainingSec}s)`);
+  scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
+  return true;
+}
+
+function isKlingGoogleRelevantSurface() {
+  return Boolean(
+    isGoogleAccountChooserPage()
+    || isGoogleIdentifierUrl()
+    || isGooglePasswordUrl()
+    || isGoogleDeveloperInfoDialogVisible()
+    || isGoogleConsentContinueScreen()
+    || document.querySelector('#identifierNext')
+    || document.querySelector('#passwordNext')
+    || findGoogleEmailInput()
+    || findGooglePasswordInput()
+  );
+}
+
+function isKlingGoogleEmailScreen() {
+  // Once Google has advanced to /challenge/pwd, the email step must stay off.
+  if (isGooglePasswordUrl()) return false;
+  if (isGoogleAccountChooserPage() || isGoogleConsentContinueScreen() || isGoogleDeveloperInfoDialogVisible()) {
+    return false;
+  }
+  if (isKlingGooglePasswordScreen()) return false;
+
+  const text = pageText();
+  return Boolean(
+    isGoogleIdentifierUrl()
+    || document.querySelector('#identifierNext')
+    || findGoogleEmailInput()
+    || text.includes('email or phone')
+    || text.includes('forgot email')
+  );
+}
+
+function isKlingGooglePasswordScreen() {
+  if (isGoogleConsentContinueScreen()) return false;
+
+  const text = pageText();
+  return Boolean(
+    isGooglePasswordUrl()
+    || document.querySelector('#passwordNext')
+    || findGooglePasswordInput()
+    || (
+      text.includes('enter your password')
+      && (
+        text.includes('show password')
+        || text.includes('forgot password')
+      )
+    )
+  );
+}
+
+async function attemptKlingGoogleDeveloperInfoStep() {
+  const dismissAction = findGoogleDeveloperInfoDismissAction();
+  if (!dismissAction) return false;
+
+  setStatus('Dismissing Google developer info');
+  if (!activateActionElement(dismissAction)) {
+    setStatus('Google developer info dialog not ready');
+    scheduleAttempt(250);
+    return true;
+  }
+
+  scheduleAttempt(450);
+  return true;
+}
+
+async function attemptKlingGoogleChooserStep(credential) {
+  if (!isGoogleAccountChooserPage()) return false;
+
+  if (
+    STATE.googleAddAccountPendingAt
+    && Date.now() - STATE.googleAddAccountPendingAt < STEP_PENDING_RETRY_MS
+    && !findGoogleEmailInput()
+    && !isGoogleIdentifierUrl()
+  ) {
+    setStatus('Waiting for Google add-account page');
+    scheduleAttempt(500);
+    return true;
+  }
+
+  const addAccountAction = shouldPreferGoogleAddAccount() ? findGoogleUseAnotherAccountAction() : null;
+  if (addAccountAction) {
+    setStatus('Choosing Google add account');
+    if (!activateActionElement(addAccountAction)) {
+      setStatus('Google add-account option not ready');
+      scheduleAttempt(300);
+      return true;
+    }
+
+    STATE.googleAddAccountPendingAt = Date.now();
+    STATE.emailSubmitted = false;
+    scheduleAttempt(700);
+    return true;
+  }
+
+  const chooserAction = findGoogleAccountChooserAction(credential);
+  if (chooserAction) {
+    if (STATE.emailSubmitted && Date.now() - STATE.lastEmailSubmitAt < STEP_PENDING_RETRY_MS) {
+      setStatus('Google account selected, waiting to continue');
+      scheduleAttempt(700);
+      return true;
+    }
+
+    setStatus('Selecting Google account');
+    if (!activateActionElement(chooserAction)) {
+      setStatus('Google account chooser not ready');
+      scheduleAttempt(300);
+      return true;
+    }
+
+    STATE.lastEmailSubmitAt = Date.now();
+    STATE.emailSubmitted = true;
+    STATE.passwordSubmitted = false;
+    scheduleAttempt(700);
+    return true;
+  }
+
+  setStatus('Waiting for Google account chooser');
+  scheduleAttempt(400);
+  return true;
+}
+
+async function attemptKlingGoogleEmailStep(credential) {
+  if (isGooglePasswordUrl() || document.querySelector('#passwordNext')) return false;
+  if (!isKlingGoogleEmailScreen()) return false;
+
+  const input = findGoogleEmailInput();
+  if (!input) {
+    setStatus('Waiting for Google email field');
+    scheduleAttempt(250);
+    return true;
+  }
+
+  const emailValue = getGoogleEmailValue(credential?.loginIdentifier, input);
+  if (!emailValue) {
+    setStatus('Google credential email missing');
+    return true;
+  }
+
+  if (`${input.value || ''}`.trim() !== `${emailValue}`.trim()) {
+    setInputValue(input, emailValue);
+    STATE.lastEmailFilledAt = Date.now();
+    STATE.emailSubmitted = false;
+    STATE.passwordSubmitted = false;
+    setStatus('Filled Google email');
+    scheduleAttempt(INPUT_SETTLE_MS + 150);
+    return true;
+  }
+
+  if (STATE.lastEmailFilledAt > 0) {
+    const settleRemaining = INPUT_SETTLE_MS - (Date.now() - STATE.lastEmailFilledAt);
+    if (settleRemaining > 0) {
+      setStatus('Waiting for Google email to settle');
+      scheduleAttempt(settleRemaining);
+      return true;
+    }
+  }
+
+  if (STATE.emailSubmitted && Date.now() - STATE.lastEmailSubmitAt < 2000) {
+    setStatus('Google email submitted, waiting for password step');
+    scheduleAttempt(400);
+    return true;
+  }
+
+  const nextButton = await waitForGoogleNextButton('email', input, 1500);
+  setStatus('Submitting Google email');
+  if (!submitStep(nextButton, input)) {
+    setStatus('Google email Next button not ready');
+    scheduleAttempt(300);
+    return true;
+  }
+
+  STATE.lastEmailSubmitAt = Date.now();
+  STATE.emailSubmitted = true;
+  STATE.passwordSubmitted = false;
+  STATE.googleAddAccountPendingAt = 0;
+  setStatus('Google email submitted, waiting for password step');
+  scheduleAttempt(750);
+  return true;
+}
+
+async function attemptKlingGooglePasswordStep(credential) {
+  if (!(isKlingGooglePasswordScreen() || isGooglePasswordUrl() || document.querySelector('#passwordNext'))) return false;
+
+  STATE.emailSubmitted = false;
+  const input = findGooglePasswordInput() || findGooglePasswordFallbackInput();
+  if (!input) {
+    setStatus(`Google password page detected, waiting for password field\n${getGooglePasswordFieldDebugSummary()}`);
+    scheduleAttempt(250);
+    return true;
+  }
+
+  const passwordValue = `${credential?.password || ''}`;
+  if (!passwordValue && supportsPasswordOptionalGoogleCredential()) {
+    STATE.settled = true;
+    setStatus('Google password step needs manual completion for this Kling account.');
+    releasePasswordSavingSuppressed(0);
+    return true;
+  }
+
+  if (!STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) {
+    if (
+      STATE.passwordSavingInFlight
+      && STATE.passwordSavingInFlightSince
+      && Date.now() - STATE.passwordSavingInFlightSince > 4000
+    ) {
+      STATE.passwordSavingInFlight = false;
+      STATE.passwordSavingInFlightSince = 0;
+      STATE.passwordSavingBypass = true;
+      setStatus('Warning: Password-save suppression timed out. Continuing anyway...');
+      scheduleAttempt(50);
+      return true;
+    }
+    requestPasswordSavingSuppression();
+    return true;
+  }
+
+  if (hasGooglePasswordRejectedError(input)) {
+    clearProtectedGooglePasswordMaskLoop();
+    STATE.settled = true;
+    setStatus('Google rejected the password. Check the credential or continue manually.');
+    releasePasswordSavingSuppressed(0);
+    return true;
+  }
+
+  if (hasGooglePasswordMissingError(input)) {
+    STATE.passwordSubmitted = false;
+    STATE.lastPasswordFilledAt = 0;
+    setGooglePasswordTypedMarker(input, '');
+  }
+
+  if (`${input.value || ''}` !== passwordValue) {
+    try {
+      input.focus({ preventScroll: true });
+    } catch {
+      input.focus?.();
+    }
+    await typeInputValueLikeUser(input, passwordValue);
+    STATE.lastPasswordFilledAt = Date.now();
+    STATE.passwordSubmitted = false;
+    setStatus('Filled Google password');
+    scheduleAttempt(Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS));
+    return true;
+  }
+
+  if (STATE.lastPasswordFilledAt > 0) {
+    const settleRemaining = Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS) - (Date.now() - STATE.lastPasswordFilledAt);
+    if (settleRemaining > 0) {
+      setStatus('Waiting for Google password to settle');
+      scheduleAttempt(settleRemaining);
+      return true;
+    }
+  }
+
+  if (STATE.passwordSubmitted && Date.now() - STATE.lastPasswordSubmitAt < GOOGLE_PASSWORD_POST_SUBMIT_WAIT_MS) {
+    setStatus('Google password submitted, waiting for sign-in');
+    scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
+    return true;
+  }
+
+  const nextButton = await waitForGoogleNextButton('password', input, 1500);
+  setStatus('Submitting Google password');
+  if (!submitStep(nextButton, input)) {
+    setStatus('Google password Next button not ready');
+    scheduleAttempt(300);
+    return true;
+  }
+
+  STATE.lastPasswordSubmitAt = Date.now();
+  STATE.passwordSubmitted = true;
+  resetFlowTotpProgress();
+  resetFlowBackupCodeProgress();
+  beginGoogleTransitionLock();
+  releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
+  setStatus('Google password submitted, waiting for sign-in');
+  scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
+  return true;
+}
+
+async function attemptKlingGooglePopupFlow(credential) {
+  if (!isKlingGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(toolSlug))) {
+    if (isKlingGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (`${credential?.loginMethod || ''}`.trim().toLowerCase() && `${credential?.loginMethod || ''}`.trim().toLowerCase() !== 'google') {
+    setStatus('Selected credential is not configured for Google sign-in');
+    STATE.settled = true;
+    return true;
+  }
+
+  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
+  // Google can show "Use another account" on the password page, but we should
+  // never re-enter chooser logic once already on /challenge/pwd.
+  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptGoogleConsentContinueStep()) return true;
+  if (await attemptKlingGoogleEmailStep(credential)) return true;
+
+  if (isKlingGoogleRelevantSurface()) {
+    setStatus('Waiting for Kling Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
 async function attemptEmailStep(credential) {
+  // Never process the email step once already on the password challenge page.
+  if (isGooglePasswordUrl()) return false;
+
   const directAddAccountUrl = (
     isGoogleAccountChooserPage()
     && shouldPreferGoogleAddAccount()
@@ -2613,6 +3397,8 @@ async function attemptPasswordStep(credential) {
   if (!input) return false;
   const passwordValue = `${credential?.password || ''}`;
 
+  ensureProtectedGooglePasswordMaskLoop(input);
+
   if (!passwordValue && supportsPasswordOptionalGoogleCredential()) {
     STATE.settled = true;
     setStatus('Google password step needs manual completion for this Kling account.');
@@ -2621,62 +3407,96 @@ async function attemptPasswordStep(credential) {
   }
 
   if (!STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) {
+    if (
+      STATE.passwordSavingInFlight
+      && STATE.passwordSavingInFlightSince
+      && Date.now() - STATE.passwordSavingInFlightSince > 4000
+    ) {
+      STATE.passwordSavingInFlight = false;
+      STATE.passwordSavingInFlightSince = 0;
+      STATE.passwordSavingBypass = true;
+      setStatus('Warning: Password-save suppression timed out. Continuing anyway...');
+      scheduleAttempt(50);
+      return true;
+    }
     requestPasswordSavingSuppression();
     return true;
   }
 
   if (isGooglePasswordUrl() || document.querySelector('#passwordNext')) {
     STATE.emailSubmitted = false;
-    if (STATE.passwordSubmitted && Date.now() - STATE.lastPasswordSubmitAt < STEP_PENDING_RETRY_MS) {
-      setStatus('Password submitted, waiting for Google sign-in');
-      scheduleAttempt(700);
+    if (hasGooglePasswordRejectedError(input)) {
+      clearProtectedGooglePasswordMaskLoop();
+      STATE.settled = true;
+      setStatus('Google rejected the password. Check the credential or continue manually.');
+      releasePasswordSavingSuppressed(0);
+      return true;
+    }
+    if (hasGooglePasswordMissingError(input)) {
+      STATE.passwordSubmitted = false;
+      STATE.lastPasswordFilledAt = 0;
+      STATE.passwordSubmitReadyAt = 0;
+      setGooglePasswordTypedMarker(input, '');
+      setStatus('Google did not accept the password input. Retyping...');
+      scheduleAttempt(GOOGLE_PASSWORD_RETRY_DELAY_MS);
+      return true;
+    }
+    if (STATE.passwordSubmitted) {
+      const submitAgeMs = Date.now() - STATE.lastPasswordSubmitAt;
+      if (submitAgeMs < GOOGLE_PASSWORD_POST_SUBMIT_WAIT_MS) {
+        setStatus('Password submitted, waiting for Google sign-in');
+        scheduleAttempt(1400);
+        return true;
+      }
+      STATE.settled = true;
+      setStatus('Google kept returning to the password step. Continue manually or relaunch the flow.');
+      releasePasswordSavingSuppressed(0);
       return true;
     }
 
-    if (input.value !== passwordValue) {
+    if (`${input.value || ''}` !== passwordValue) {
       try {
         input.focus({ preventScroll: true });
       } catch {
         input.focus?.();
       }
-      await typeInputValueLikeUser(input, passwordValue, { perCharDelayMs: 8 });
-      ensureProtectedGoogleRevealShield(input);
-      disableExactGoogleShowPasswordTargets(input);
+      await typeInputValueLikeUser(input, passwordValue);
       enforceProtectedGooglePasswordMask(input);
       STATE.lastPasswordFilledAt = Date.now();
+      armGooglePasswordSubmitPause();
       STATE.passwordSubmitted = false;
-      setStatus('Password filled, waiting to continue');
+      setStatus('Password filled, pausing before submit');
       scheduleAttempt(Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS));
       return true;
     }
 
     if (STATE.lastPasswordFilledAt > 0) {
-      ensureProtectedGoogleRevealShield(input);
-      disableExactGoogleShowPasswordTargets(input);
       enforceProtectedGooglePasswordMask(input);
       const settleRemaining = Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS) - (Date.now() - STATE.lastPasswordFilledAt);
       if (settleRemaining > 0) {
-        setStatus('Password filled, waiting to continue');
+        setStatus('Password filled, pausing before submit');
         scheduleAttempt(settleRemaining);
         return true;
       }
     }
 
-    if (STATE.passwordSubmitted) {
-      if (Date.now() - STATE.lastPasswordSubmitAt > STEP_PENDING_RETRY_MS) {
-        STATE.passwordSubmitted = false;
-      } else {
-        setStatus('Password filled, waiting for Google sign-in');
-        return true;
-      }
+    const submitPauseRemaining = getGooglePasswordSubmitPauseRemaining();
+    if (submitPauseRemaining > 0) {
+      setStatus('Password filled, pausing before submit');
+      scheduleAttempt(submitPauseRemaining);
+      return true;
     }
 
     const now = Date.now();
-    if (`${input.value || ''}` === passwordValue && now - STATE.lastPasswordSubmitAt > 1200) {
+    if (
+      `${input.value || ''}` === passwordValue
+      && await isGooglePasswordReadyForSubmit(input, passwordValue)
+      && now - STATE.lastPasswordSubmitAt > 1200
+    ) {
       const submitted = await submitGooglePasswordStep(credential);
       if (!submitted) {
         setStatus('Google password step not ready');
-        scheduleAttempt(500);
+        scheduleAttempt(GOOGLE_PASSWORD_RETRY_DELAY_MS);
         return true;
       }
 
@@ -2685,68 +3505,99 @@ async function attemptPasswordStep(credential) {
       resetFlowTotpProgress();
       resetFlowBackupCodeProgress();
       await markAuthTransition();
-      setStatus('Password submitted, signing in');
-      scheduleAttempt(350);
+      setStatus('Password submitted, waiting for Google to finish sign-in');
+      scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
       return true;
     }
 
-    setStatus('Password filled, waiting to continue');
-    scheduleAttempt(250);
+    setStatus('Password filled, pausing before submit');
+    scheduleAttempt(700);
     return true;
   }
 
   STATE.emailSubmitted = false;
-  if (input.value !== passwordValue) {
+    if (hasGooglePasswordRejectedError(input)) {
+      clearProtectedGooglePasswordMaskLoop();
+      STATE.settled = true;
+      setStatus('Google rejected the password. Check the credential or continue manually.');
+      releasePasswordSavingSuppressed(0);
+      return true;
+    }
+  if (hasGooglePasswordMissingError(input)) {
+    STATE.passwordSubmitted = false;
+    STATE.lastPasswordFilledAt = 0;
+    STATE.passwordSubmitReadyAt = 0;
+    setGooglePasswordTypedMarker(input, '');
+    setStatus('Google did not accept the password input. Retyping...');
+    scheduleAttempt(GOOGLE_PASSWORD_RETRY_DELAY_MS);
+    return true;
+  }
+  if (STATE.passwordSubmitted) {
+    const submitAgeMs = Date.now() - STATE.lastPasswordSubmitAt;
+    if (submitAgeMs < GOOGLE_PASSWORD_POST_SUBMIT_WAIT_MS) {
+      setStatus('Password submitted, waiting for Google sign-in');
+      scheduleAttempt(1400);
+      return true;
+    }
+    STATE.settled = true;
+    setStatus('Google kept returning to the password step. Continue manually or relaunch the flow.');
+    releasePasswordSavingSuppressed(0);
+    return true;
+  }
+  if (`${input.value || ''}` !== passwordValue) {
     try {
       input.focus({ preventScroll: true });
     } catch {
       input.focus?.();
     }
-    await typeInputValueLikeUser(input, passwordValue, { perCharDelayMs: 8 });
-    ensureProtectedGoogleRevealShield(input);
-    disableExactGoogleShowPasswordTargets(input);
+    await typeInputValueLikeUser(input, passwordValue);
     enforceProtectedGooglePasswordMask(input);
     STATE.lastPasswordFilledAt = Date.now();
+    armGooglePasswordSubmitPause();
     STATE.passwordSubmitted = false;
-    setStatus('Password filled, waiting to continue');
+    setStatus('Password filled, pausing before submit');
     scheduleAttempt(Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS));
     return true;
   }
 
   if (STATE.lastPasswordFilledAt > 0) {
-    ensureProtectedGoogleRevealShield(input);
-    disableExactGoogleShowPasswordTargets(input);
     enforceProtectedGooglePasswordMask(input);
     const settleRemaining = Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS) - (Date.now() - STATE.lastPasswordFilledAt);
     if (settleRemaining > 0) {
-      setStatus('Password filled, waiting to continue');
+      setStatus('Password filled, pausing before submit');
       scheduleAttempt(settleRemaining);
       return true;
     }
   }
 
-  if (STATE.passwordSubmitted) {
-    if (Date.now() - STATE.lastPasswordSubmitAt > STEP_PENDING_RETRY_MS) {
-      STATE.passwordSubmitted = false;
-    } else {
-      setStatus('Password filled, waiting for Google sign-in');
-      return true;
-    }
+  const submitPauseRemaining = getGooglePasswordSubmitPauseRemaining();
+  if (submitPauseRemaining > 0) {
+    setStatus('Password filled, pausing before submit');
+    scheduleAttempt(submitPauseRemaining);
+    return true;
   }
 
   const now = Date.now();
-  if (`${input.value || ''}` === passwordValue && now - STATE.lastPasswordSubmitAt > 2500) {
+  if (
+    `${input.value || ''}` === passwordValue
+    && await isGooglePasswordReadyForSubmit(input, passwordValue)
+    && now - STATE.lastPasswordSubmitAt > 2500
+  ) {
     const submitted = await submitGooglePasswordStep(credential);
     if (!submitted) {
       setStatus('Password filled, submit action not ready');
-      scheduleAttempt(250);
+      scheduleAttempt(GOOGLE_PASSWORD_RETRY_DELAY_MS);
       return true;
     }
 
     STATE.lastPasswordSubmitAt = now;
     STATE.passwordSubmitted = true;
-    setStatus('Password filled, clicking Next');
+    setStatus('Password submitted, waiting for Google to finish sign-in');
+    scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
+    return true;
   }
+  setStatus('Password filled, pausing before submit');
+  scheduleAttempt(700);
   return true;
 }
 
@@ -2987,6 +3838,7 @@ async function attemptFlowBackupCodeStep(credential) {
 
 async function attemptFill() {
   if (STATE.settled) return;
+  if (await handleGoogleTransitionLock()) return;
   if (!STATE.launchChecked) {
     setStatus('Checking dashboard launch');
     return;
@@ -3032,8 +3884,16 @@ async function attemptFill() {
     return;
   }
 
+  if (await attemptKlingGooglePopupFlow(credential)) return;
+
   if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(STATE.toolSlug))) {
-    if (findGoogleEmailInput() || findGooglePasswordInput() || isGoogleAccountChooserPage() || findGoogleAccountChooserAction(credential)) {
+    if (
+      findGoogleEmailInput()
+      || findGooglePasswordInput()
+      || isGoogleAccountChooserPage()
+      || findGoogleAccountChooserAction(credential)
+      || isGooglePasswordUrl()
+    ) {
       requestCredential();
     }
     return;
@@ -3084,6 +3944,13 @@ function scheduleAttempt(delay = 0) {
 
 function handleMutations() {
   if (STATE.settled) return;
+  const passwordInput = findGooglePasswordInput();
+  if (passwordInput) {
+    ensureProtectedGooglePasswordMaskLoop(passwordInput);
+  } else if (STATE.passwordMaskLoopTimer) {
+    clearProtectedGooglePasswordMaskLoop();
+  }
+  if (isGoogleTransitionLocked()) return;
   const now = Date.now();
   if (now - STATE.lastMutationHandledAt < 1200) return;
   STATE.lastMutationHandledAt = now;
@@ -3102,9 +3969,14 @@ function start() {
     setStatus(`Booting ${inferredToolSlug} Google auto-login`);
   }
 
+  ensureProtectedGooglePasswordRevealGuards();
   STATE.observer = new MutationObserver(() => handleMutations());
   STATE.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
-  STATE.keepAliveTimer = window.setInterval(() => scheduleAttempt(0), KEEP_ALIVE_MS);
+  STATE.keepAliveTimer = window.setInterval(() => {
+    if (!isGoogleTransitionLocked()) {
+      scheduleAttempt(0);
+    }
+  }, KEEP_ALIVE_MS);
   loadLaunchState()
     .catch(() => {
       STATE.launchChecked = true;

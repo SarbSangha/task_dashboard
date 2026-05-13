@@ -5,6 +5,7 @@ const FLOW_HOME_URL = 'https://labs.google/fx';
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
 const TOOL_SESSION_DOMAINS = {
+  canva: ['canva.com', 'www.canva.com'],
   claude: ['claude.ai', 'www.claude.ai'],
   enhancor: ['enhancor.ai', 'www.enhancor.ai', 'app.enhancor.ai'],
   envato: ['envato.com', 'elements.envato.com', 'market.envato.com'],
@@ -14,6 +15,7 @@ const TOOL_SESSION_DOMAINS = {
   grammarly: ['grammarly.com', 'www.grammarly.com', 'app.grammarly.com'],
   higgsfield: ['higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'],
   heygen: ['heygen.com', 'auth.heygen.com', 'app.heygen.com'],
+  elevenlabs: ['elevenlabs.io', 'www.elevenlabs.io', 'app.elevenlabs.io'],
   kling: ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   'kling-ai': ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   klingai: ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
@@ -22,6 +24,10 @@ const TOOL_OPTIONAL_SESSION_DOMAINS = {
   flow: ['accounts.google.com', 'google.com', '.google.com'],
 };
 const TOOL_LOGIN_CONTINUATION_HOSTS = {
+  canva: [
+    'canva.com',
+    'www.canva.com',
+  ],
   chatgpt: [
     'chatgpt.com',
     'chat.openai.com',
@@ -73,6 +79,12 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'heygen.com',
     'auth.heygen.com',
     'app.heygen.com',
+  ],
+  elevenlabs: [
+    'elevenlabs.io',
+    'www.elevenlabs.io',
+    'app.elevenlabs.io',
+    'accounts.google.com',
   ],
   flow: [
     'labs.google',
@@ -634,6 +646,8 @@ async function activateLaunchForTab(tabId, toolSlug, hostname, extensionTicket) 
       hostname,
       ticket: extensionTicket,
       expiresAt: Number(storedLaunch.expiresAt || 0),
+      usageTrackingTicket: `${storedLaunch.usageTrackingTicket || ''}`.trim(),
+      usageTrackingTicketExpiresAt: Number(storedLaunch.usageTrackingTicketExpiresAt || 0),
     };
     await setActiveLaunch(tabId, launch);
     return launch;
@@ -782,10 +796,12 @@ function getIncognitoWindowToolName(toolSlug, toolName = '') {
   const explicitToolName = `${toolName || ''}`.trim();
   if (explicitToolName) return explicitToolName;
   const normalizedSlug = normalizeToolSlug(toolSlug);
+  if (normalizedSlug === 'canva') return 'Canva';
   if (normalizedSlug === 'chatgpt') return 'ChatGPT';
   if (normalizedSlug === 'flow') return 'Flow';
   if (normalizedSlug === 'enhancor') return 'Enhancor';
   if (normalizedSlug === 'freepik') return 'Freepik';
+  if (normalizedSlug === 'elevenlabs') return 'ElevenLabs';
   return 'this tool';
 }
 
@@ -1272,9 +1288,12 @@ async function reportUsageEvent(message, senderTabId = 0, openerTabId = 0) {
   const activeLaunch = directLaunch || inheritedLaunch;
 
   return postUsageEvent(settings, {
+    event_id: message.eventId,
+    credential_id: message.credentialId,
     tool_slug: message.toolSlug,
     hostname: message.hostname,
     page_url: message.pageUrl,
+    event_date: message.eventDate,
     extension_ticket: `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim() || null,
     usage_ticket: `${message.usageTicket || activeLaunch?.usageTrackingTicket || ''}`.trim() || null,
     event_type: message.eventType,
