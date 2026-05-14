@@ -5,7 +5,13 @@ const MIN_RUN_GAP_MS = 500;
 const KEEP_ALIVE_MS = 2500;
 const ACTION_COOLDOWN_MS = 1800;
 const SUBMIT_COOLDOWN_MS = 4500;
+const PASSWORD_SUBMIT_COOLDOWN_MS = 900;
 const EMAIL_STAGE_SETTLE_MS = 2200;
+const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
+const PASSWORD_SAVING_SUPPRESSION_TIMEOUT_MS = 4000;
+const PASSWORD_REVEAL_GUARD_BURST_MS = 1800;
+const PASSWORD_REVEAL_GUARD_BURST_INTERVAL_MS = 90;
+const PASSWORD_REVEAL_GUARD_KEEP_ALIVE_MS = 120;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -54,6 +60,8 @@ const ACTION_SELECTORS = [
   '[role="button"]',
 ].join(',');
 
+const PASSWORD_REVEAL_GUARD_STYLE_ID = 'rmw-canva-password-reveal-guard-style';
+
 const STATE = {
   status: 'Waiting for Canva',
   credential: null,
@@ -74,6 +82,18 @@ const STATE = {
   otpRequestAttempts: 0,
   otpLastRequestAt: 0,
   otpSubmittedAt: 0,
+  passwordRevealObserver: null,
+  passwordRevealTarget: null,
+  passwordRevealEventsBound: false,
+  passwordRevealOverlay: null,
+  passwordRevealInlineOverlay: null,
+  passwordRevealKeepAliveTimer: null,
+  passwordRevealGuardUntil: 0,
+  passwordSavingInFlight: false,
+  passwordSavingInFlightSince: 0,
+  passwordSavingSuppressed: false,
+  passwordSavingBypass: false,
+  passwordSavingRestoreTimer: null,
 };
 
 function ensureStatusBadge() {
@@ -127,6 +147,8 @@ function stop(message) {
     STATE.observer.disconnect();
     STATE.observer = null;
   }
+  releasePasswordSavingSuppressed(0);
+  clearCanvaPasswordRevealGuard();
   setStatus(message);
 }
 
@@ -144,6 +166,8 @@ function complete(message = 'Canva login complete') {
     STATE.observer.disconnect();
     STATE.observer = null;
   }
+  releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
+  clearCanvaPasswordRevealGuard();
   STATE.status = message;
   console.debug('[RMW Canva Auto Login]', message);
   window.setTimeout(() => hideStatusBadge(), 600);
@@ -159,6 +183,82 @@ function sendRuntimeMessage(message) {
       resolve(response || { ok: false, error: 'No response received' });
     });
   });
+}
+
+async function ensurePasswordSavingSuppressed() {
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingBypass) return true;
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+    suppressed: true,
+  });
+
+  if (!response?.ok) {
+    STATE.passwordSavingBypass = true;
+    setStatus(response?.error || 'Could not disable Chrome password-save prompt. Continuing...');
+    return false;
+  }
+
+  STATE.passwordSavingSuppressed = true;
+  STATE.passwordSavingBypass = false;
+  return true;
+}
+
+function requestPasswordSavingSuppression() {
+  if (STATE.passwordSavingSuppressed || STATE.passwordSavingBypass) return;
+
+  if (STATE.passwordSavingInFlight) {
+    if (
+      STATE.passwordSavingInFlightSince
+      && Date.now() - STATE.passwordSavingInFlightSince > PASSWORD_SAVING_SUPPRESSION_TIMEOUT_MS
+    ) {
+      STATE.passwordSavingInFlight = false;
+      STATE.passwordSavingInFlightSince = 0;
+      STATE.passwordSavingBypass = true;
+      setStatus('Warning: Password-save suppression timed out. Continuing...');
+      scheduleAttempt(50);
+    }
+    return;
+  }
+
+  STATE.passwordSavingInFlight = true;
+  STATE.passwordSavingInFlightSince = Date.now();
+  setStatus('Disabling Chrome password-save prompt...');
+  ensurePasswordSavingSuppressed()
+    .then(() => {
+      STATE.passwordSavingInFlight = false;
+      STATE.passwordSavingInFlightSince = 0;
+      scheduleAttempt(50);
+    })
+    .catch((error) => {
+      STATE.passwordSavingInFlight = false;
+      STATE.passwordSavingInFlightSince = 0;
+      STATE.passwordSavingBypass = true;
+      setStatus(`Warning: ${error?.message || 'Could not disable Chrome password-save prompt.'} Continuing...`);
+      scheduleAttempt(50);
+    });
+}
+
+function releasePasswordSavingSuppressed(delay = 0) {
+  if (STATE.passwordSavingRestoreTimer) {
+    window.clearTimeout(STATE.passwordSavingRestoreTimer);
+    STATE.passwordSavingRestoreTimer = null;
+  }
+
+  if (STATE.passwordSavingBypass) {
+    STATE.passwordSavingBypass = false;
+    return;
+  }
+
+  if (!STATE.passwordSavingSuppressed && delay <= 0) return;
+
+  STATE.passwordSavingRestoreTimer = window.setTimeout(() => {
+    sendRuntimeMessage({
+      type: 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED',
+      suppressed: false,
+    });
+    STATE.passwordSavingSuppressed = false;
+    STATE.passwordSavingRestoreTimer = null;
+  }, Math.max(0, delay));
 }
 
 function readLaunchTicketFromUrl() {
@@ -327,6 +427,451 @@ function collectBroadActionCandidates() {
 function findInput(selectorList) {
   return Array.from(document.querySelectorAll(selectorList))
     .find((element) => isVisible(element) && !element.disabled && !element.readOnly) || null;
+}
+
+function getInputContextText(input) {
+  const parts = [
+    input?.type,
+    input?.name,
+    input?.id,
+    input?.placeholder,
+    input?.getAttribute?.('aria-label'),
+    input?.getAttribute?.('autocomplete'),
+  ];
+
+  let current = input?.parentElement;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    parts.push(current.innerText, current.textContent, current.getAttribute?.('aria-label'));
+    current = current.parentElement;
+  }
+
+  return normalizeText(parts.filter(Boolean).join(' '));
+}
+
+function findCanvaPasswordInput() {
+  const direct = findInput(PASSWORD_SELECTORS);
+  if (direct) return direct;
+
+  const expectedPassword = `${STATE.credential?.password || ''}`;
+  const inputs = Array.from(document.querySelectorAll('input'))
+    .filter((element) => isVisible(element) && !element.disabled && !element.readOnly);
+
+  let best = null;
+  let bestScore = 0;
+  for (const input of inputs) {
+    const type = `${input.type || ''}`.trim().toLowerCase();
+    if (['email', 'submit', 'button', 'checkbox', 'radio', 'hidden'].includes(type)) continue;
+
+    const context = getInputContextText(input);
+    let score = 0;
+    if (context.includes('password')) score += 8;
+    if (context.includes('log in to your account') || context.includes('forgot password')) score += 3;
+    if (expectedPassword && `${input.value || ''}` === expectedPassword) score += 12;
+    if (type === 'text' && expectedPassword && `${input.value || ''}` === expectedPassword) score += 6;
+
+    if (score > bestScore) {
+      best = input;
+      bestScore = score;
+    }
+  }
+
+  return bestScore >= 8 ? best : null;
+}
+
+function ensureCanvaPasswordRevealGuardStyle() {
+  if (document.getElementById(PASSWORD_REVEAL_GUARD_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = PASSWORD_REVEAL_GUARD_STYLE_ID;
+  style.textContent = `
+    [data-rmw-canva-password-reveal="true"] {
+      visibility: hidden !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+    [data-rmw-canva-password-input="true"] {
+      -webkit-text-security: disc !important;
+      text-security: disc !important;
+    }
+    #rmw-canva-password-reveal-overlay {
+      position: fixed !important;
+      z-index: 2147483647 !important;
+      display: block !important;
+      pointer-events: auto !important;
+      cursor: default !important;
+      background: transparent !important;
+      border: 0 !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+    #rmw-canva-password-reveal-inline-overlay {
+      position: absolute !important;
+      z-index: 2147483647 !important;
+      display: block !important;
+      pointer-events: auto !important;
+      cursor: default !important;
+      background: transparent !important;
+      border: 0 !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+  `;
+  (document.head || document.documentElement).appendChild(style);
+}
+
+function enforceCanvaPasswordMasked(input) {
+  if (!input) return;
+  try {
+    if (input.type !== 'password') input.type = 'password';
+  } catch {}
+  try {
+    if (input.getAttribute('type') !== 'password') input.setAttribute('type', 'password');
+  } catch {}
+  try {
+    input.setAttribute('data-rmw-canva-password-input', 'true');
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('data-lpignore', 'true');
+    input.setAttribute('data-1p-ignore', 'true');
+    input.closest('form')?.setAttribute('autocomplete', 'off');
+  } catch {}
+  try {
+    input.style.setProperty('-webkit-text-security', 'disc', 'important');
+    input.style.setProperty('text-security', 'disc', 'important');
+  } catch {}
+}
+
+function isLikelyCanvaPasswordRevealControl(element, passwordInput) {
+  if (!element || !passwordInput || element === passwordInput || element.contains?.(passwordInput)) return false;
+  if (!isVisible(element)) return false;
+
+  const inputRect = passwordInput.getBoundingClientRect();
+  const rect = element.getBoundingClientRect();
+  if (!inputRect.width || !inputRect.height || !rect.width || !rect.height) return false;
+
+  const label = controlHintText(element);
+  if (/(forgot|login|log in|sign in|continue|google|email|help|back)/.test(label)) return false;
+  if (/(show|hide|reveal|visible|visibility|eye|password)/.test(label)) return true;
+
+  const centerX = rect.left + (rect.width / 2);
+  const centerY = rect.top + (rect.height / 2);
+  const verticallyInside = centerY >= inputRect.top && centerY <= inputRect.bottom;
+  const horizontallyNearRight = centerX >= inputRect.left + (inputRect.width * 0.72)
+    && centerX <= inputRect.right + 12;
+  const hasIcon = Boolean(element.querySelector?.('svg, img, [class*="eye" i], [class*="visible" i], [class*="visibility" i]'));
+  return verticallyInside && horizontallyNearRight && hasIcon;
+}
+
+function findCanvaPasswordRevealControls(passwordInput) {
+  const candidates = Array.from(document.querySelectorAll([
+    ACTION_SELECTORS,
+    '[tabindex]',
+    '[aria-label]',
+    '[title]',
+    'svg',
+    'img',
+    '[class*="eye" i]',
+    '[class*="visible" i]',
+    '[class*="visibility" i]',
+  ].join(',')))
+    .map((element) => findClickableAncestor(element) || element);
+
+  return Array.from(new Set(candidates))
+    .filter((element) => isLikelyCanvaPasswordRevealControl(element, passwordInput));
+}
+
+function ensureCanvaPasswordRevealOverlay() {
+  if (STATE.passwordRevealOverlay?.isConnected) return STATE.passwordRevealOverlay;
+  const overlay = document.createElement('div');
+  overlay.id = 'rmw-canva-password-reveal-overlay';
+  overlay.setAttribute('aria-hidden', 'true');
+  ['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick', 'keydown'].forEach((type) => {
+    overlay.addEventListener(type, (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      enforceCanvaPasswordMasked(STATE.passwordRevealTarget || findCanvaPasswordInput());
+    }, true);
+  });
+  (document.body || document.documentElement).appendChild(overlay);
+  STATE.passwordRevealOverlay = overlay;
+  return overlay;
+}
+
+function blockCanvaRevealOverlayEvent(event) {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const input = STATE.passwordRevealTarget || findCanvaPasswordInput();
+  enforceCanvaPasswordMasked(input);
+  if (input) scheduleCanvaPasswordRevealGuardBurst(input, 1200);
+}
+
+function bindCanvaRevealOverlayEvents(overlay) {
+  ['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick', 'keydown'].forEach((type) => {
+    overlay.addEventListener(type, blockCanvaRevealOverlayEvent, true);
+  });
+}
+
+function findCanvaPasswordFieldShell(passwordInput) {
+  if (!passwordInput) return null;
+  const inputRect = passwordInput.getBoundingClientRect();
+  let best = passwordInput.parentElement;
+  let current = passwordInput.parentElement;
+
+  for (let depth = 0; current && current !== document.body && depth < 5; depth += 1) {
+    const rect = current.getBoundingClientRect();
+    const containsInput = rect.left <= inputRect.left + 1
+      && rect.right >= inputRect.right - 1
+      && rect.top <= inputRect.top + 1
+      && rect.bottom >= inputRect.bottom - 1;
+    const wrapperSized = rect.width <= inputRect.width + 90
+      && rect.height <= inputRect.height + 42;
+
+    if (containsInput && wrapperSized) {
+      best = current;
+    }
+    current = current.parentElement;
+  }
+
+  return best;
+}
+
+function ensureCanvaPasswordRevealInlineOverlay(passwordInput) {
+  const shell = findCanvaPasswordFieldShell(passwordInput);
+  if (!shell) return null;
+
+  let overlay = STATE.passwordRevealInlineOverlay;
+  if (!overlay?.isConnected) {
+    overlay = document.createElement('div');
+    overlay.id = 'rmw-canva-password-reveal-inline-overlay';
+    overlay.setAttribute('aria-hidden', 'true');
+    bindCanvaRevealOverlayEvents(overlay);
+    STATE.passwordRevealInlineOverlay = overlay;
+  }
+
+  if (overlay.parentElement !== shell) {
+    shell.appendChild(overlay);
+  }
+
+  try {
+    const shellStyle = window.getComputedStyle(shell);
+    if (shellStyle.position === 'static') {
+      shell.style.position = 'relative';
+    }
+  } catch {}
+
+  return overlay;
+}
+
+function updateCanvaPasswordRevealOverlay(passwordInput) {
+  if (!passwordInput || !isVisible(passwordInput)) return;
+  const overlay = ensureCanvaPasswordRevealOverlay();
+  const inlineOverlay = ensureCanvaPasswordRevealInlineOverlay(passwordInput);
+  const inputRect = passwordInput.getBoundingClientRect();
+  const width = Math.min(58, Math.max(42, inputRect.width * 0.18));
+  const height = Math.max(20, inputRect.height - 4);
+
+  Object.assign(overlay.style, {
+    left: `${Math.max(0, inputRect.right - width - 2)}px`,
+    top: `${Math.max(0, inputRect.top + 2)}px`,
+    width: `${width}px`,
+    height: `${height}px`,
+    borderRadius: '8px',
+    background: 'transparent',
+  });
+
+  if (inlineOverlay?.parentElement) {
+    const shellRect = inlineOverlay.parentElement.getBoundingClientRect();
+    Object.assign(inlineOverlay.style, {
+      left: `${Math.max(0, inputRect.right - shellRect.left - width - 2)}px`,
+      top: `${Math.max(0, inputRect.top - shellRect.top + 2)}px`,
+      width: `${width}px`,
+      height: `${height}px`,
+      borderRadius: '8px',
+      background: 'transparent',
+    });
+  }
+}
+
+function applyCanvaPasswordRevealGuard(passwordInput) {
+  if (!passwordInput || !passwordInput.isConnected) return;
+  enforceCanvaPasswordMasked(passwordInput);
+  refreshCanvaPasswordRevealControls(passwordInput);
+}
+
+function startCanvaPasswordRevealGuardKeepAlive(passwordInput) {
+  if (STATE.passwordRevealKeepAliveTimer) return;
+
+  STATE.passwordRevealKeepAliveTimer = window.setInterval(() => {
+    const input = (STATE.passwordRevealTarget?.isConnected && STATE.passwordRevealTarget)
+      || findCanvaPasswordInput();
+    if (!input || !input.isConnected || !isVisible(input)) {
+      return;
+    }
+
+    STATE.passwordRevealTarget = input;
+    applyCanvaPasswordRevealGuard(input);
+  }, PASSWORD_REVEAL_GUARD_KEEP_ALIVE_MS);
+
+  if (passwordInput) {
+    STATE.passwordRevealTarget = passwordInput;
+    applyCanvaPasswordRevealGuard(passwordInput);
+  }
+}
+
+function scheduleCanvaPasswordRevealGuardBurst(passwordInput, durationMs = PASSWORD_REVEAL_GUARD_BURST_MS) {
+  if (!passwordInput) return;
+  const deadline = Date.now() + Math.max(0, durationMs);
+  STATE.passwordRevealGuardUntil = Math.max(STATE.passwordRevealGuardUntil || 0, deadline);
+
+  const tick = () => {
+    const input = passwordInput.isConnected ? passwordInput : STATE.passwordRevealTarget;
+    if (!input || !input.isConnected) return;
+    applyCanvaPasswordRevealGuard(input);
+    if (Date.now() < STATE.passwordRevealGuardUntil) {
+      window.setTimeout(tick, PASSWORD_REVEAL_GUARD_BURST_INTERVAL_MS);
+    }
+  };
+
+  tick();
+}
+
+function refreshCanvaPasswordRevealControls(passwordInput) {
+  document.querySelectorAll('[data-rmw-canva-password-reveal="true"]').forEach((element) => {
+    if (!isLikelyCanvaPasswordRevealControl(element, passwordInput)) {
+      element.removeAttribute('data-rmw-canva-password-reveal');
+      element.removeAttribute('aria-hidden');
+      element.removeAttribute('tabindex');
+    }
+  });
+
+  for (const control of findCanvaPasswordRevealControls(passwordInput)) {
+    control.setAttribute('data-rmw-canva-password-reveal', 'true');
+    control.setAttribute('aria-hidden', 'true');
+    control.setAttribute('tabindex', '-1');
+  }
+  updateCanvaPasswordRevealOverlay(passwordInput);
+}
+
+function isInsideCanvaPasswordRevealZone(event) {
+  const input = STATE.passwordRevealTarget || findCanvaPasswordInput();
+  if (!input || !isVisible(input)) return false;
+
+  const inputRect = input.getBoundingClientRect();
+  const revealZoneLeft = inputRect.left + (inputRect.width * 0.72);
+  const revealZoneRight = inputRect.right + 14;
+  const revealZoneTop = inputRect.top - 4;
+  const revealZoneBottom = inputRect.bottom + 4;
+
+  if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+    return event.clientX >= revealZoneLeft
+      && event.clientX <= revealZoneRight
+      && event.clientY >= revealZoneTop
+      && event.clientY <= revealZoneBottom;
+  }
+
+  const target = event.target;
+  if (!target?.getBoundingClientRect) return false;
+  const targetRect = target.getBoundingClientRect();
+  const centerX = targetRect.left + (targetRect.width / 2);
+  const centerY = targetRect.top + (targetRect.height / 2);
+  return centerX >= revealZoneLeft
+    && centerX <= revealZoneRight
+    && centerY >= revealZoneTop
+    && centerY <= revealZoneBottom;
+}
+
+function isCanvaPasswordRevealEventTarget(event) {
+  return Boolean(event.target?.closest?.('[data-rmw-canva-password-reveal="true"]'))
+    || Boolean(event.target?.closest?.('#rmw-canva-password-reveal-overlay'))
+    || isInsideCanvaPasswordRevealZone(event);
+}
+
+function handleCanvaPasswordRevealEvent(event) {
+  if (!isCanvaPasswordRevealEventTarget(event)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const input = STATE.passwordRevealTarget || findCanvaPasswordInput();
+  enforceCanvaPasswordMasked(input);
+  if (input) {
+    ensureCanvaPasswordRevealGuard(input);
+    scheduleCanvaPasswordRevealGuardBurst(input, 1200);
+  }
+}
+
+function bindCanvaPasswordRevealEvents() {
+  if (STATE.passwordRevealEventsBound) return;
+  STATE.passwordRevealEventsBound = true;
+  ['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown'].forEach((type) => {
+    document.addEventListener(type, handleCanvaPasswordRevealEvent, true);
+    window.addEventListener(type, handleCanvaPasswordRevealEvent, true);
+  });
+  ['resize', 'scroll'].forEach((type) => {
+    window.addEventListener(type, () => {
+      if (STATE.passwordRevealTarget) {
+        updateCanvaPasswordRevealOverlay(STATE.passwordRevealTarget);
+      }
+    }, true);
+  });
+}
+
+function clearCanvaPasswordRevealGuard() {
+  if (STATE.passwordRevealObserver) {
+    try { STATE.passwordRevealObserver.disconnect(); } catch {}
+    STATE.passwordRevealObserver = null;
+  }
+  if (STATE.passwordRevealKeepAliveTimer) {
+    window.clearInterval(STATE.passwordRevealKeepAliveTimer);
+    STATE.passwordRevealKeepAliveTimer = null;
+  }
+  STATE.passwordRevealTarget = null;
+  STATE.passwordRevealGuardUntil = 0;
+  if (STATE.passwordRevealOverlay) {
+    try { STATE.passwordRevealOverlay.remove(); } catch {}
+    STATE.passwordRevealOverlay = null;
+  }
+  if (STATE.passwordRevealInlineOverlay) {
+    try { STATE.passwordRevealInlineOverlay.remove(); } catch {}
+    STATE.passwordRevealInlineOverlay = null;
+  }
+  document.querySelectorAll('[data-rmw-canva-password-reveal="true"]').forEach((element) => {
+    element.removeAttribute('data-rmw-canva-password-reveal');
+    element.removeAttribute('aria-hidden');
+    element.removeAttribute('tabindex');
+  });
+  document.querySelectorAll('[data-rmw-canva-password-input="true"]').forEach((element) => {
+    element.removeAttribute('data-rmw-canva-password-input');
+    try {
+      element.style.removeProperty('-webkit-text-security');
+      element.style.removeProperty('text-security');
+    } catch {}
+  });
+}
+
+function ensureCanvaPasswordRevealGuard(passwordInput) {
+  if (!passwordInput) return;
+  ensureCanvaPasswordRevealGuardStyle();
+  bindCanvaPasswordRevealEvents();
+  applyCanvaPasswordRevealGuard(passwordInput);
+  startCanvaPasswordRevealGuardKeepAlive(passwordInput);
+
+  if (STATE.passwordRevealObserver && STATE.passwordRevealTarget === passwordInput) return;
+  if (STATE.passwordRevealObserver) {
+    try { STATE.passwordRevealObserver.disconnect(); } catch {}
+  }
+
+  STATE.passwordRevealTarget = passwordInput;
+  STATE.passwordRevealObserver = new MutationObserver(() => {
+    const input = STATE.passwordRevealTarget;
+    if (!input || !input.isConnected) {
+      clearCanvaPasswordRevealGuard();
+      return;
+    }
+    applyCanvaPasswordRevealGuard(input);
+  });
+  STATE.passwordRevealObserver.observe(document.body || document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['type', 'aria-label', 'title', 'class', 'style'],
+  });
 }
 
 function findOtpInput() {
@@ -635,7 +1180,7 @@ function isAuthenticatedCanvaPage() {
   }
 
   const emailInput = findEmailInput();
-  const passwordInput = findInput(PASSWORD_SELECTORS);
+  const passwordInput = findCanvaPasswordInput();
   if (emailInput || passwordInput) return false;
 
   if (findCanvaEmailAction() || findAuthOpenAction()) return false;
@@ -799,8 +1344,14 @@ function attemptFlow() {
   }
 
   const emailInput = findEmailInput();
-  const passwordInput = findInput(PASSWORD_SELECTORS);
+  const passwordInput = findCanvaPasswordInput();
   const otpInput = findOtpInput();
+
+  if (passwordInput) {
+    ensureCanvaPasswordRevealGuard(passwordInput);
+  } else {
+    clearCanvaPasswordRevealGuard();
+  }
 
   if (!STATE.credential) {
     requestCredential();
@@ -860,24 +1411,39 @@ function attemptFlow() {
     return;
   }
 
-  if (passwordInput.value !== STATE.credential.password) {
-    setInputValue(passwordInput, STATE.credential.password);
+  if (!STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) {
+    requestPasswordSavingSuppression();
+    return;
   }
 
   if (passwordInput.value !== STATE.credential.password) {
+    applyCanvaPasswordRevealGuard(passwordInput);
+    setInputValue(passwordInput, STATE.credential.password);
+    ensureCanvaPasswordRevealGuard(passwordInput);
+    updateCanvaPasswordRevealOverlay(passwordInput);
+    scheduleCanvaPasswordRevealGuardBurst(passwordInput);
+  }
+
+  if (passwordInput.value !== STATE.credential.password) {
+    scheduleCanvaPasswordRevealGuardBurst(passwordInput, 700);
     setStatus('Filling Canva password');
     return;
   }
 
-  if (Date.now() - STATE.lastSubmitAt < SUBMIT_COOLDOWN_MS) {
+  scheduleCanvaPasswordRevealGuardBurst(passwordInput, 700);
+  updateCanvaPasswordRevealOverlay(passwordInput);
+
+  if (Date.now() - STATE.lastSubmitAt < PASSWORD_SUBMIT_COOLDOWN_MS) {
     setStatus('Waiting for Canva sign-in');
     return;
   }
 
   const submitButton = findStageSubmitButton(emailInput, passwordInput);
   STATE.lastSubmitAt = Date.now();
+  scheduleCanvaPasswordRevealGuardBurst(passwordInput, 1200);
   setStatus('Submitting Canva login');
   submitStage(passwordInput, submitButton);
+  releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
 }
 
 function runAttempt() {

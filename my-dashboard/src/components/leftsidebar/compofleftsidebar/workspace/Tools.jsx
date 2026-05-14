@@ -166,6 +166,7 @@ const getDefaultCredentialLoginMethod = (value) => {
 const shouldLaunchExtensionToolInIncognito = (toolSlug, loginMethod) => {
   const normalizedToolSlug = normalizeToolSlug(toolSlug);
   const normalizedLoginMethod = `${loginMethod || ''}`.trim().toLowerCase();
+  if (normalizedToolSlug === 'canva') return true;
   if (normalizedToolSlug === 'elevenlabs') return true;
   return normalizedLoginMethod === 'google';
 };

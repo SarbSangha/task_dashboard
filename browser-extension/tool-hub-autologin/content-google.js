@@ -209,6 +209,21 @@ function isFlowGoogleFlow(toolSlug = STATE.toolSlug) {
   return normalizedToolSlug === 'flow';
 }
 
+function isEnhancorGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'enhancor';
+}
+
+function isGensparkGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'genspark';
+}
+
+function isElevenLabsGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'elevenlabs';
+}
+
 function hasFreepikGooglePasswordValue(input, expectedValue, toolSlug = STATE.toolSlug) {
   if (!isFreepikGoogleFlow(toolSlug)) return false;
   const passwordValue = `${expectedValue || ''}`;
@@ -218,7 +233,12 @@ function hasFreepikGooglePasswordValue(input, expectedValue, toolSlug = STATE.to
 }
 
 function shouldProtectGooglePasswordReveal(toolSlug = STATE.toolSlug) {
-  return isKlingGoogleFlow(toolSlug) || isFreepikGoogleFlow(toolSlug) || isFlowGoogleFlow(toolSlug);
+  return isKlingGoogleFlow(toolSlug)
+    || isFreepikGoogleFlow(toolSlug)
+    || isFlowGoogleFlow(toolSlug)
+    || isEnhancorGoogleFlow(toolSlug)
+    || isGensparkGoogleFlow(toolSlug)
+    || isElevenLabsGoogleFlow(toolSlug);
 }
 
 function shouldAggressivelyDisableGoogleRevealControls(toolSlug = STATE.toolSlug) {
@@ -954,7 +974,7 @@ function readStoredGoogleLastToolSlug() {
 }
 
 function listKnownGoogleToolSlugs() {
-  return ['flow', 'chatgpt', 'enhancor', 'freepik', 'genspark', 'kling-ai'];
+  return ['flow', 'chatgpt', 'enhancor', 'elevenlabs', 'freepik', 'genspark', 'kling-ai'];
 }
 
 function inferStoredGoogleToolSlug() {
@@ -1132,6 +1152,19 @@ function inferToolSlugFromGooglePage() {
     || currentPageText.includes('to continue to enhancor')
   ) {
     return 'enhancor';
+  }
+
+  if (
+    currentPageText.includes('continue to elevenlabs')
+    || currentPageText.includes('continue to eleven labs')
+    || currentPageText.includes('to continue to elevenlabs')
+    || currentPageText.includes('to continue to eleven labs')
+    || currentPageText.includes('review elevenlabs')
+    || currentPageText.includes('signing back in to elevenlabs')
+    || currentPageText.includes('elevenlabs privacy policy')
+    || currentPageText.includes('elevenlabs terms of service')
+  ) {
+    return 'elevenlabs';
   }
 
   if (
@@ -2425,7 +2458,7 @@ function findNextButton(kind, input = null) {
 }
 
 function isGoogleConsentContinueScreen() {
-  if (!isKlingGoogleFlow()) return false;
+  if (!isKlingGoogleFlow() && !isEnhancorGoogleFlow() && !isGensparkGoogleFlow() && !isElevenLabsGoogleFlow()) return false;
   if (findGoogleEmailInput() || findGooglePasswordInput()) return false;
 
   const text = pageText();
@@ -2436,7 +2469,38 @@ function isGoogleConsentContinueScreen() {
     || text.includes('kling.ai privacy policy')
     || text.includes('kling.ai terms of service');
 
-  return mentionsKling
+  const mentionsEnhancor = text.includes("you're signing back in to enhancor")
+    || text.includes('youre signing back in to enhancor')
+    || text.includes('signing back in to enhancor')
+    || text.includes('continue to enhancor')
+    || text.includes('to continue to enhancor')
+    || text.includes('review enhancor')
+    || text.includes("enhancor's privacy")
+    || text.includes('enhancor privacy policy')
+    || text.includes('enhancor terms of service');
+
+  const mentionsGenspark = text.includes("you're signing back in to genspark")
+    || text.includes('youre signing back in to genspark')
+    || text.includes('signing back in to genspark')
+    || text.includes('continue to genspark')
+    || text.includes('to continue to genspark')
+    || text.includes('review genspark')
+    || text.includes("genspark's privacy")
+    || text.includes('genspark privacy policy')
+    || text.includes('genspark terms of service');
+
+  const mentionsElevenLabs = text.includes("you're signing back in to elevenlabs")
+    || text.includes('youre signing back in to elevenlabs')
+    || text.includes('signing back in to elevenlabs')
+    || text.includes('continue to elevenlabs')
+    || text.includes('to continue to elevenlabs')
+    || text.includes('review elevenlabs')
+    || text.includes("elevenlabs's privacy")
+    || text.includes("elevenlabs' privacy")
+    || text.includes('elevenlabs privacy policy')
+    || text.includes('elevenlabs terms of service');
+
+  return (mentionsKling || mentionsEnhancor || mentionsGenspark || mentionsElevenLabs)
     && text.includes('sign in with google')
     && text.includes('continue');
 }
@@ -2931,7 +2995,16 @@ async function handleGoogleTransitionLock() {
     ensureProtectedGooglePasswordMaskLoop(passwordInput);
     const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
     const passwordValue = `${STATE.credential?.password || ''}`;
-    if ((isFreepikGoogleFlow(toolSlug) || isFlowGoogleFlow(toolSlug)) && passwordValue) {
+    if (
+      (
+        isFreepikGoogleFlow(toolSlug)
+        || isFlowGoogleFlow(toolSlug)
+        || isEnhancorGoogleFlow(toolSlug)
+        || isGensparkGoogleFlow(toolSlug)
+        || isElevenLabsGoogleFlow(toolSlug)
+      )
+      && passwordValue
+    ) {
       const remainingSec = Math.max(1, Math.round(getGoogleTransitionRemainingMs() / 1000));
       setStatus(`Waiting for Google to finish sign-in... (${remainingSec}s)`);
       scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
@@ -3153,7 +3226,13 @@ async function attemptKlingGooglePasswordStep(credential) {
   const passwordValue = `${credential?.password || ''}`;
   if (!passwordValue && supportsPasswordOptionalGoogleCredential()) {
     STATE.settled = true;
-    setStatus('Google password step needs manual completion for this Kling account.');
+    setStatus(`Google password step needs manual completion for this ${getToolDisplayName()} account.`);
+    releasePasswordSavingSuppressed(0);
+    return true;
+  }
+  if (!passwordValue) {
+    STATE.settled = true;
+    setStatus(`Google password missing. Check the ${getToolDisplayName()} credential or continue manually.`);
     releasePasswordSavingSuppressed(0);
     return true;
   }
@@ -3405,6 +3484,102 @@ async function attemptFlowGooglePopupFlow(credential) {
 
   if (isKlingGoogleRelevantSurface()) {
     setStatus('Waiting for Flow Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
+async function attemptEnhancorGooglePopupFlow(credential) {
+  if (!isEnhancorGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(toolSlug))) {
+    if (isKlingGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
+  // Enhancor uses Google's standard chooser/password pages; reuse the stable
+  // Kling sequence but keep this route isolated from Kling itself.
+  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptGoogleConsentContinueStep()) return true;
+  if (await attemptKlingGoogleEmailStep(credential)) return true;
+
+  if (isKlingGoogleRelevantSurface()) {
+    setStatus('Waiting for Enhancor Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
+async function attemptGensparkGooglePopupFlow(credential) {
+  if (!isGensparkGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(toolSlug))) {
+    if (isKlingGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
+  // Genspark uses Google's standard chooser/password pages; reuse the stable
+  // Kling sequence but keep this route isolated from Kling itself.
+  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptGoogleConsentContinueStep()) return true;
+  if (await attemptKlingGoogleEmailStep(credential)) return true;
+
+  if (isKlingGoogleRelevantSurface()) {
+    setStatus('Waiting for Genspark Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
+async function attemptElevenLabsGooglePopupFlow(credential) {
+  if (!isElevenLabsGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || !credential?.password) {
+    if (isKlingGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
+  // ElevenLabs uses the same Google account chooser structure as Kling. Avoid
+  // treating the password page's "Use another account" link as a chooser.
+  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptGoogleConsentContinueStep()) return true;
+  if (await attemptKlingGoogleEmailStep(credential)) return true;
+
+  if (isKlingGoogleRelevantSurface()) {
+    setStatus('Waiting for ElevenLabs Google popup step');
     scheduleAttempt(300);
     return true;
   }
@@ -4407,6 +4582,9 @@ async function attemptFill() {
   if (await attemptKlingGooglePopupFlow(credential)) return;
   if (await attemptFreepikGooglePopupFlow(credential)) return;
   if (await attemptFlowGooglePopupFlow(credential)) return;
+  if (await attemptEnhancorGooglePopupFlow(credential)) return;
+  if (await attemptGensparkGooglePopupFlow(credential)) return;
+  if (await attemptElevenLabsGooglePopupFlow(credential)) return;
 
   if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(STATE.toolSlug))) {
     if (

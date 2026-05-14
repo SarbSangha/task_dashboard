@@ -56,6 +56,9 @@ const STATE = {
   launchRetryInFlight: false,
   launchTicket: '',
   lastLaunchError: '',
+  authPageSeenAt: 0,
+  googleClickAttempts: 0,
+  lastGoogleClickAt: 0,
 };
 
 function normalizeLoginMethod(value) {
@@ -563,7 +566,7 @@ function submitLogin(emailInput, passwordInput, submitButton) {
 }
 
 function findGoogleLoginAction() {
-  return collectBroadActionCandidates().find((element) => {
+  const match = collectBroadActionCandidates().find((element) => {
     const text = actionText(element);
     const hints = controlHintText(element);
     return text.includes('sign in with google')
@@ -571,6 +574,9 @@ function findGoogleLoginAction() {
       || text.includes('login with google')
       || (text === 'google' && hints.includes('google'));
   }) || null;
+  if (!match) return null;
+
+  return match.closest?.('button, a[href], [role="button"]') || match;
 }
 
 function findAuthOpenAction() {
@@ -585,6 +591,54 @@ function findAuthOpenAction() {
       || href.includes('/sign-in')
       || hints.includes('/sign-in');
   }) || null;
+}
+
+function findCookieConsentAction() {
+  const roots = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], section, aside, div'))
+    .filter((element) => isVisible(element));
+
+  const cookieRoot = roots.find((element) => {
+    const text = actionText(element);
+    return text.includes('cookie settings')
+      && (text.includes('strictly necessary') || text.includes('preferences') || text.includes('statistics'));
+  });
+  if (!cookieRoot) return null;
+
+  const candidates = collectBroadActionCandidates()
+    .filter((element) => {
+      try {
+        return cookieRoot.contains(element);
+      } catch {
+        return false;
+      }
+    });
+
+  const preferredLabels = ['accept selection', 'reject all', 'accept all', 'save preferences'];
+  for (const label of preferredLabels) {
+    const match = candidates.find((element) => actionText(element) === label);
+    if (match) return match;
+  }
+
+  return candidates.find((element) => {
+    const text = actionText(element);
+    return text.includes('accept') || text.includes('reject') || text.includes('save');
+  }) || null;
+}
+
+function attemptDismissCookieConsent() {
+  const action = findCookieConsentAction();
+  if (!action) return false;
+  if (!canActNow()) return true;
+
+  markActionTaken();
+  setStatus('Dismissing ElevenLabs cookie settings');
+  if (!clickElement(action)) {
+    setStatus('Cookie settings action not ready');
+    scheduleAttempt(300);
+    return true;
+  }
+  scheduleAttempt(500);
+  return true;
 }
 
 function isAuthenticatedElevenLabsPage() {
@@ -686,12 +740,38 @@ function attemptOpenAuth() {
 function attemptOpenGoogle() {
   const googleAction = findGoogleLoginAction();
   if (!googleAction) return false;
+  if (!STATE.authPageSeenAt) {
+    STATE.authPageSeenAt = Date.now();
+    setStatus('Waiting for ElevenLabs Google sign-in to become ready');
+    scheduleAttempt(500);
+    return true;
+  }
+  if (Date.now() - STATE.authPageSeenAt < 1200) {
+    setStatus('Waiting for ElevenLabs Google sign-in to become ready');
+    scheduleAttempt(300);
+    return true;
+  }
+  if (STATE.lastGoogleClickAt && Date.now() - STATE.lastGoogleClickAt < 2500) {
+    setStatus('Waiting for ElevenLabs Google sign-in redirect');
+    scheduleAttempt(500);
+    return true;
+  }
+  if (STATE.googleClickAttempts >= 2) {
+    setStatus('ElevenLabs Google sign-in did not open. Continue manually or relaunch.');
+    return true;
+  }
   if (!canActNow()) return true;
 
   markActionTaken();
+  STATE.lastGoogleClickAt = Date.now();
+  STATE.googleClickAttempts += 1;
   setStatus('Opening ElevenLabs Google sign-in');
-  clickElement(googleAction);
-  scheduleAttempt(700);
+  if (!clickElement(googleAction)) {
+    setStatus('ElevenLabs Google button not ready');
+    scheduleAttempt(500);
+    return true;
+  }
+  scheduleAttempt(1200);
   return true;
 }
 
@@ -707,6 +787,8 @@ function attemptFlow() {
     return;
   }
 
+  if (attemptDismissCookieConsent()) return;
+
   if (isAuthenticatedElevenLabsPage()) {
     complete();
     return;
@@ -714,6 +796,9 @@ function attemptFlow() {
 
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
+  if (emailInput || passwordInput) {
+    STATE.authPageSeenAt = STATE.authPageSeenAt || Date.now();
+  }
 
   if (!STATE.credential) {
     requestCredential();
