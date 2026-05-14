@@ -20,6 +20,11 @@
     "https://dashboard.ritzmediaworld.in/*",
     "http://dashboard.ritzmediaworld.in/*",
     "https://192.168.1.15/*",
+    "https://behance.net/*",
+    "https://*.behance.net/*",
+    "https://auth.services.adobe.com/*",
+    "https://*.adobe.com/*",
+    "https://*.adobelogin.com/*",
     "https://canva.com/*",
     "https://*.canva.com/*",
     "https://claude.ai/*",
@@ -78,6 +83,17 @@
         "https://192.168.1.15/*"
       ],
       "js": ["content-dashboard.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://behance.net/*",
+        "https://*.behance.net/*",
+        "https://auth.services.adobe.com/*",
+        "https://adobeid-na1.services.adobe.com/*",
+        "https://ims-na1.adobelogin.com/*"
+      ],
+      "js": ["content-behance.js"],
       "run_at": "document_idle"
     },
     {

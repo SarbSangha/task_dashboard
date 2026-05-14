@@ -5,6 +5,7 @@ const FLOW_HOME_URL = 'https://labs.google/fx';
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
 const TOOL_SESSION_DOMAINS = {
+  behance: ['behance.net', 'www.behance.net', 'auth.services.adobe.com', 'adobeid-na1.services.adobe.com', 'ims-na1.adobelogin.com'],
   canva: ['canva.com', 'www.canva.com'],
   claude: ['claude.ai', 'www.claude.ai'],
   enhancor: ['enhancor.ai', 'www.enhancor.ai', 'app.enhancor.ai'],
@@ -25,6 +26,14 @@ const TOOL_OPTIONAL_SESSION_DOMAINS = {
   flow: ['accounts.google.com', 'google.com', '.google.com'],
 };
 const TOOL_LOGIN_CONTINUATION_HOSTS = {
+  behance: [
+    'behance.net',
+    'www.behance.net',
+    'auth.services.adobe.com',
+    'adobeid-na1.services.adobe.com',
+    'ims-na1.adobelogin.com',
+    'accounts.google.com',
+  ],
   canva: [
     'canva.com',
     'www.canva.com',
@@ -805,6 +814,7 @@ function getIncognitoWindowToolName(toolSlug, toolName = '') {
   const explicitToolName = `${toolName || ''}`.trim();
   if (explicitToolName) return explicitToolName;
   const normalizedSlug = normalizeToolSlug(toolSlug);
+  if (normalizedSlug === 'behance') return 'Behance';
   if (normalizedSlug === 'canva') return 'Canva';
   if (normalizedSlug === 'chatgpt') return 'ChatGPT';
   if (normalizedSlug === 'flow') return 'Flow';

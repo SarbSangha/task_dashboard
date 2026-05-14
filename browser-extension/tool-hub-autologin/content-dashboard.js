@@ -106,6 +106,7 @@ function handleLaunchDetail(detail) {
 }
 
 function getIncognitoLaunchToolName(toolSlug) {
+  if (toolSlug === 'behance') return 'Behance';
   if (toolSlug === 'canva') return 'Canva';
   if (toolSlug === 'chatgpt') return 'ChatGPT';
   if (toolSlug === 'flow') return 'Flow';

@@ -146,7 +146,8 @@ const toolSupportsPasswordOptionalCredential = (value) => {
 
 const toolSupportsCredentialLoginMethodSelection = (value) => {
   const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug || value?.name);
-  return normalizedToolSlug === 'enhancor'
+  return normalizedToolSlug === 'behance'
+    || normalizedToolSlug === 'enhancor'
     || normalizedToolSlug === 'elevenlabs'
     || normalizedToolSlug === 'flow'
     || normalizedToolSlug === 'freepik'
@@ -185,6 +186,7 @@ const toolSupportsAuthenticatorSeed = (toolSlug, loginMethod = '') => {
 const getAuthenticatorSeedToolLabel = (toolSlug) => {
   const normalizedToolSlug = normalizeToolSlug(toolSlug);
   if (normalizedToolSlug === 'chatgpt') return 'ChatGPT';
+  if (normalizedToolSlug === 'behance') return 'Behance';
   if (normalizedToolSlug === 'flow') return 'Flow';
   if (normalizedToolSlug === 'enhancor') return 'Enhancor';
   if (normalizedToolSlug === 'elevenlabs') return 'ElevenLabs';
@@ -199,7 +201,9 @@ const getSharedCredentialLabels = (toolValue) => {
   const isStringValue = typeof toolValue === 'string';
   const normalizedToolSlug = normalizeToolSlug(isStringValue ? toolValue : toolValue?.slug);
   const displayName = isStringValue
-    ? (normalizedToolSlug === 'chatgpt'
+    ? (normalizedToolSlug === 'behance'
+      ? 'Behance'
+      : normalizedToolSlug === 'chatgpt'
       ? 'ChatGPT'
       : normalizedToolSlug === 'flow'
         ? 'Flow'
@@ -210,7 +214,9 @@ const getSharedCredentialLabels = (toolValue) => {
           : normalizedToolSlug === 'pinterest'
             ? 'Pinterest'
             : 'tool')
-    : (toolValue?.name || (normalizedToolSlug === 'chatgpt'
+    : (toolValue?.name || (normalizedToolSlug === 'behance'
+      ? 'Behance'
+      : normalizedToolSlug === 'chatgpt'
       ? 'ChatGPT'
       : normalizedToolSlug === 'flow'
         ? 'Flow'
@@ -306,7 +312,9 @@ const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
 const openToolInIncognitoWindow = (launchDetail) => new Promise((resolve) => {
   const normalizedSlug = normalizeToolSlug(launchDetail?.toolSlug);
   const toolName = `${launchDetail?.toolName || ''}`.trim() || (
-    normalizedSlug === 'chatgpt'
+    normalizedSlug === 'behance'
+    ? 'Behance'
+    : normalizedSlug === 'chatgpt'
     ? 'ChatGPT'
     : normalizedSlug === 'flow'
       ? 'Flow'
@@ -2075,13 +2083,13 @@ export default function Tools({ view = 'tools' }) {
                   <option value="external_link">External link</option>
                   <option value="sso">SSO</option>
                   <option value="api_proxy">API proxy</option>
-                  <option value="extension_autofill">Extension auto-fill (Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, Pinterest)</option>
+                  <option value="extension_autofill">Extension auto-fill (Behance, Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, Pinterest)</option>
                   <option value="automation">Auto-login form submit</option>
                 </select>
               </div>
               {toolForm.launch_mode === 'extension_autofill' && (
                 <p className="it-card-copy">
-                  The current browser extension build supports Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, and Pinterest
+                  The current browser extension build supports Behance, Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, and Pinterest
                   extension scaffold. For other tools, use Manual credential or Auto-login form submit.
                 </p>
               )}
@@ -2399,6 +2407,8 @@ export default function Tools({ view = 'tools' }) {
                   <div className="it-span-2 it-mailbox-summary">
                     {activeCredentialToolSlug === 'claude'
                       ? 'Claude uses email-link sign-in. Save only the email here, then configure the Verification Mailbox below so the extension can fetch the secure sign-in link from Gmail.'
+                      : activeCredentialToolSlug === 'behance'
+                        ? 'This Behance credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                       : activeCredentialToolSlug === 'enhancor'
                         ? 'This Enhancor credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                       : activeCredentialToolSlug === 'elevenlabs'

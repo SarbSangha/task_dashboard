@@ -200,6 +200,11 @@ function isKlingGoogleFlow(toolSlug = STATE.toolSlug) {
   return normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai';
 }
 
+function isBehanceGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'behance';
+}
+
 function isFreepikGoogleFlow(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
   return normalizedToolSlug === 'freepik';
@@ -239,7 +244,8 @@ function hasFreepikGooglePasswordValue(input, expectedValue, toolSlug = STATE.to
 }
 
 function shouldProtectGooglePasswordReveal(toolSlug = STATE.toolSlug) {
-  return isKlingGoogleFlow(toolSlug)
+  return isBehanceGoogleFlow(toolSlug)
+    || isKlingGoogleFlow(toolSlug)
     || isFreepikGoogleFlow(toolSlug)
     || isFlowGoogleFlow(toolSlug)
     || isEnhancorGoogleFlow(toolSlug)
@@ -259,6 +265,7 @@ function isFlowTool() {
 function supportsGoogleAuthenticatorAutomation(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
   return normalizedToolSlug === 'flow'
+    || normalizedToolSlug === 'behance'
     || normalizedToolSlug === 'chatgpt'
     || normalizedToolSlug === 'enhancor'
     || normalizedToolSlug === 'elevenlabs'
@@ -273,6 +280,7 @@ function supportsGoogleAuthenticatorAutomation(toolSlug = STATE.toolSlug) {
 function getToolDisplayName(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
   if (normalizedToolSlug === 'flow') return 'Flow';
+  if (normalizedToolSlug === 'behance') return 'Behance';
   if (normalizedToolSlug === 'chatgpt') return 'ChatGPT';
   if (normalizedToolSlug === 'enhancor') return 'Enhancor';
   if (normalizedToolSlug === 'elevenlabs') return 'ElevenLabs';
@@ -983,7 +991,7 @@ function readStoredGoogleLastToolSlug() {
 }
 
 function listKnownGoogleToolSlugs() {
-  return ['flow', 'chatgpt', 'enhancor', 'elevenlabs', 'freepik', 'genspark', 'kling-ai', 'pinterest'];
+  return ['flow', 'behance', 'chatgpt', 'enhancor', 'elevenlabs', 'freepik', 'genspark', 'kling-ai', 'pinterest'];
 }
 
 function inferStoredGoogleToolSlug() {
@@ -1093,6 +1101,17 @@ function inferToolSlugFromGooglePage() {
       .filter(Boolean)
       .map((value) => `${value}`.toLowerCase());
 
+    if (values.some((value) => (
+      value.includes('behance.net')
+      || value.includes('behanceweb')
+      || value.includes('auth.services.adobe.com')
+      || value.includes('adobeid-na1.services.adobe.com')
+      || value.includes('adobeid')
+      || value.includes('adobelogin.com')
+    ))) {
+      return 'behance';
+    }
+
     if (values.some((value) => value.includes('labs.google'))) {
       return 'flow';
     }
@@ -1154,6 +1173,17 @@ function inferToolSlugFromGooglePage() {
   } catch {}
 
   const currentPageText = pageText();
+  if (
+    currentPageText.includes('continue to behance')
+    || currentPageText.includes('to continue to behance')
+    || currentPageText.includes('review behance')
+    || currentPageText.includes('signing back in to behance')
+    || currentPageText.includes('behance privacy policy')
+    || currentPageText.includes('behance terms of service')
+  ) {
+    return 'behance';
+  }
+
   if (
     currentPageText.includes('continue to openai')
     || currentPageText.includes('continue to chatgpt')
@@ -1746,7 +1776,8 @@ function findGoogleAccountChooserAction(credential) {
 
 function shouldPreferGoogleAddAccount(toolSlug = STATE.toolSlug) {
   const normalized = normalizeToolSlug(toolSlug);
-  return normalized === 'enhancor'
+  return normalized === 'behance'
+    || normalized === 'enhancor'
     || normalized === 'elevenlabs'
     || normalized === 'flow'
     || normalized === 'freepik'
@@ -2487,7 +2518,7 @@ function findNextButton(kind, input = null) {
 }
 
 function isGoogleConsentContinueScreen() {
-  if (!isKlingGoogleFlow() && !isEnhancorGoogleFlow() && !isGensparkGoogleFlow() && !isElevenLabsGoogleFlow() && !isPinterestGoogleFlow()) return false;
+  if (!isBehanceGoogleFlow() && !isKlingGoogleFlow() && !isEnhancorGoogleFlow() && !isGensparkGoogleFlow() && !isElevenLabsGoogleFlow() && !isPinterestGoogleFlow()) return false;
   if (findGoogleEmailInput() || findGooglePasswordInput()) return false;
 
   const text = pageText();
@@ -2497,6 +2528,16 @@ function isGoogleConsentContinueScreen() {
     || text.includes('review kling.ai')
     || text.includes('kling.ai privacy policy')
     || text.includes('kling.ai terms of service');
+
+  const mentionsBehance = text.includes("you're signing back in to behance")
+    || text.includes('youre signing back in to behance')
+    || text.includes('signing back in to behance')
+    || text.includes('continue to behance')
+    || text.includes('to continue to behance')
+    || text.includes('review behance')
+    || text.includes("behance's privacy")
+    || text.includes('behance privacy policy')
+    || text.includes('behance terms of service');
 
   const mentionsEnhancor = text.includes("you're signing back in to enhancor")
     || text.includes('youre signing back in to enhancor')
@@ -2539,7 +2580,7 @@ function isGoogleConsentContinueScreen() {
     || text.includes('pinterest privacy policy')
     || text.includes('pinterest terms of service');
 
-  return (mentionsKling || mentionsEnhancor || mentionsGenspark || mentionsElevenLabs || mentionsPinterest)
+  return (mentionsBehance || mentionsKling || mentionsEnhancor || mentionsGenspark || mentionsElevenLabs || mentionsPinterest)
     && text.includes('sign in with google')
     && text.includes('continue');
 }
@@ -3036,7 +3077,8 @@ async function handleGoogleTransitionLock() {
     const passwordValue = `${STATE.credential?.password || ''}`;
     if (
       (
-        isFreepikGoogleFlow(toolSlug)
+        isBehanceGoogleFlow(toolSlug)
+        || isFreepikGoogleFlow(toolSlug)
         || isFlowGoogleFlow(toolSlug)
         || isEnhancorGoogleFlow(toolSlug)
         || isGensparkGoogleFlow(toolSlug)
@@ -3658,6 +3700,44 @@ async function attemptPinterestGooglePopupFlow(credential) {
 
   if (isKlingGoogleRelevantSurface()) {
     setStatus('Waiting for Pinterest Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
+async function attemptBehanceGooglePopupFlow(credential) {
+  if (!isBehanceGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || !credential?.password) {
+    if (isKlingGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (`${credential?.loginMethod || ''}`.trim().toLowerCase() && `${credential?.loginMethod || ''}`.trim().toLowerCase() !== 'google') {
+    setStatus('Selected credential is not configured for Google sign-in');
+    STATE.settled = true;
+    return true;
+  }
+
+  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
+  // Adobe/Behance uses Google's standard account chooser/password pages; reuse
+  // the stable Kling sequence while keeping the Behance route isolated.
+  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptGoogleConsentContinueStep()) return true;
+  if (await attemptKlingGoogleEmailStep(credential)) return true;
+
+  if (isKlingGoogleRelevantSurface()) {
+    setStatus('Waiting for Behance Google popup step');
     scheduleAttempt(300);
     return true;
   }
@@ -4667,6 +4747,7 @@ async function attemptFill() {
   if (await attemptGensparkGooglePopupFlow(credential)) return;
   if (await attemptElevenLabsGooglePopupFlow(credential)) return;
   if (await attemptPinterestGooglePopupFlow(credential)) return;
+  if (await attemptBehanceGooglePopupFlow(credential)) return;
 
   if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(STATE.toolSlug))) {
     if (

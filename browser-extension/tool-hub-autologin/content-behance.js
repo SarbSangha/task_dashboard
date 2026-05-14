@@ -1,19 +1,19 @@
-const TOOL_SLUG = 'pinterest';
+const TOOL_SLUG = 'behance';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
 
 const MIN_RUN_GAP_MS = 450;
-const KEEP_ALIVE_MS = 2000;
+const KEEP_ALIVE_MS = 2200;
 const ACTION_COOLDOWN_MS = 900;
-const SUBMIT_COOLDOWN_MS = 2500;
+const SUBMIT_COOLDOWN_MS = 2200;
 const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
   'input[name="email"]',
+  'input[name="username"]',
   'input[id*="email" i]',
-  'input[name*="email" i]',
+  'input[id*="username" i]',
   'input[autocomplete="username"]',
-  'input[autocomplete="email"]',
   'input[placeholder*="email" i]',
   'input[aria-label*="email" i]',
 ].join(',');
@@ -21,8 +21,8 @@ const EMAIL_SELECTORS = [
 const PASSWORD_SELECTORS = [
   'input[type="password"]',
   'input[name="password"]',
+  'input[name="passwd"]',
   'input[id*="password" i]',
-  'input[name*="password" i]',
   'input[autocomplete="current-password"]',
   'input[placeholder*="password" i]',
   'input[aria-label*="password" i]',
@@ -37,7 +37,7 @@ const ACTION_SELECTORS = [
 ].join(',');
 
 const STATE = {
-  status: 'Waiting for Pinterest',
+  status: 'Waiting for Behance',
   credential: null,
   launchChecked: false,
   launchAuthorized: false,
@@ -49,17 +49,13 @@ const STATE = {
   settled: false,
   lastRunAt: 0,
   lastActionAt: 0,
-  lastSubmitAt: 0,
-  authOpenStartedAt: 0,
-  loginRouteStartedAt: 0,
-  homeRouteStartedAt: 0,
-  directLoginRouted: false,
+  lastEmailSubmitAt: 0,
+  lastPasswordSubmitAt: 0,
   passwordSavingInFlight: false,
   passwordSavingInFlightSince: 0,
   passwordSavingSuppressed: false,
   passwordSavingBypass: false,
   passwordSavingRestoreTimer: null,
-  revealGuardAttached: false,
 };
 
 function normalizeLoginMethod(value) {
@@ -91,7 +87,7 @@ function ensureStatusBadge() {
     pointerEvents: 'none',
     whiteSpace: 'pre-wrap',
   });
-  badge.textContent = `Pinterest auto-login\n${STATE.status}`;
+  badge.textContent = `Behance auto-login\n${STATE.status}`;
   (document.body || document.documentElement).appendChild(badge);
   return badge;
 }
@@ -104,8 +100,8 @@ function hideStatusBadge() {
 function setStatus(message) {
   if (STATE.status === message) return;
   STATE.status = message;
-  ensureStatusBadge().textContent = `Pinterest auto-login\n${message}`;
-  console.debug('[RMW Pinterest Auto Login]', message);
+  ensureStatusBadge().textContent = `Behance auto-login\n${message}`;
+  console.debug('[RMW Behance Auto Login]', message);
 }
 
 function sendRuntimeMessage(message) {
@@ -160,8 +156,6 @@ function requestPasswordSavingSuppression() {
       STATE.passwordSavingInFlightSince = 0;
       if (!ok) {
         STATE.passwordSavingBypass = true;
-        scheduleAttempt(50);
-        return;
       }
       scheduleAttempt(50);
     })
@@ -204,7 +198,7 @@ function stop(message) {
   setStatus(message);
 }
 
-function complete(message = 'Pinterest login complete') {
+function complete(message = 'Behance login complete') {
   STATE.settled = true;
   if (STATE.scheduledTimer) window.clearTimeout(STATE.scheduledTimer);
   if (STATE.keepAliveTimer) window.clearInterval(STATE.keepAliveTimer);
@@ -213,7 +207,7 @@ function complete(message = 'Pinterest login complete') {
   STATE.keepAliveTimer = null;
   STATE.observer = null;
   releasePasswordSavingSuppressed(0);
-  console.debug('[RMW Pinterest Auto Login]', message);
+  console.debug('[RMW Behance Auto Login]', message);
   window.setTimeout(() => hideStatusBadge(), 600);
 }
 
@@ -327,6 +321,10 @@ function normalizeText(value) {
   return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+function pageText() {
+  return normalizeText(document.body?.innerText || '');
+}
+
 function actionText(element) {
   return normalizeText(
     element?.innerText
@@ -345,7 +343,6 @@ function controlHintText(element) {
     element?.getAttribute?.('id'),
     element?.getAttribute?.('class'),
     element?.getAttribute?.('data-testid'),
-    element?.getAttribute?.('aria-label'),
   ].filter(Boolean).join(' '));
 }
 
@@ -415,14 +412,6 @@ function setInputValue(input, value) {
   }
 
   try {
-    input.dispatchEvent(new InputEvent('beforeinput', {
-      bubbles: true,
-      cancelable: true,
-      data: nextValue,
-      inputType: 'insertText',
-    }));
-  } catch {}
-  try {
     input.dispatchEvent(new InputEvent('input', {
       bubbles: true,
       data: nextValue,
@@ -432,6 +421,7 @@ function setInputValue(input, value) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
   input.dispatchEvent(new Event('change', { bubbles: true }));
+  input.dispatchEvent(new Event('blur', { bubbles: true }));
 }
 
 function dispatchMouseSequence(element) {
@@ -527,20 +517,23 @@ function getFieldRoots(...fields) {
   return Array.from(new Set(roots));
 }
 
-function findLoginSubmitButton(emailInput, passwordInput) {
-  const exactMatches = new Set(['log in', 'login', 'sign in', 'continue']);
-  for (const root of getFieldRoots(emailInput, passwordInput)) {
+function findSubmitButton(input, kind = 'continue') {
+  const exactWords = kind === 'password'
+    ? new Set(['continue', 'sign in', 'log in', 'login'])
+    : new Set(['continue', 'next']);
+
+  for (const root of getFieldRoots(input)) {
     const candidates = collectActionCandidates(root);
-    const exact = candidates.find((element) => exactMatches.has(actionText(element)));
+    const exact = candidates.find((element) => exactWords.has(actionText(element)));
     if (exact) return exact;
 
     const partial = candidates.find((element) => {
       const text = actionText(element);
-      return (text.includes('log in') || text.includes('login') || text.includes('sign in') || text.includes('continue'))
+      return (text.includes('continue') || text.includes('next') || text.includes('sign in') || text.includes('login') || text.includes('log in'))
         && !text.includes('google')
         && !text.includes('facebook')
         && !text.includes('apple')
-        && !text.includes('sign up');
+        && !text.includes('create account');
     });
     if (partial) return partial;
 
@@ -550,10 +543,11 @@ function findLoginSubmitButton(emailInput, passwordInput) {
   return null;
 }
 
-function submitLogin(emailInput, passwordInput, submitButton) {
+function submitStep(input, kind) {
+  const submitButton = findSubmitButton(input, kind);
   if (submitButton && clickElement(submitButton)) return true;
-  if (pressEnter(passwordInput || emailInput)) return true;
-  const form = (passwordInput || emailInput)?.closest('form');
+  if (pressEnter(input)) return true;
+  const form = input?.closest('form');
   if (form) {
     try {
       if (typeof form.requestSubmit === 'function') form.requestSubmit();
@@ -576,158 +570,52 @@ function findGoogleLoginAction() {
   }) || null;
 }
 
-function findAuthOpenAction() {
-  const candidates = collectBroadActionCandidates();
-  const loginCandidate = candidates.find((element) => {
-    const text = actionText(element);
-    const href = normalizeText(element.getAttribute?.('href') || '');
-    const hints = controlHintText(element);
-    if (
-      text.includes('sign up')
-      || text.includes('join pinterest')
-      || text.includes('get started')
-      || href.includes('/signup')
-      || hints.includes('signup')
-    ) {
-      return false;
-    }
-    return (
-      text === 'log in'
-      || text === 'login'
-      || text === 'sign in'
-      || text === 'i already have an account'
-      || text.includes('already have an account')
-      || href.includes('/login')
-      || hints.includes('login')
-    ) && !text.includes('google');
-  }) || null;
-
-  return loginCandidate;
-}
-
-function isPinterestSignupSurface() {
-  const text = normalizeText(document.body?.innerText || '');
-  return Boolean(
-    text.includes('create your account')
-    || text.includes('join pinterest')
-    || text.includes('sign up with google')
-    || text.includes('already have an account')
-  );
-}
-
-function findSwitchToLoginAction() {
+function findBehanceSignInAction() {
   return collectBroadActionCandidates().find((element) => {
     const text = actionText(element);
     const href = normalizeText(element.getAttribute?.('href') || '');
-    const hints = controlHintText(element);
-    if (text.includes('google') || text.includes('facebook') || text.includes('apple')) return false;
-    if (text.includes('sign up') || text.includes('join pinterest')) return false;
-    return text === 'log in'
+    return (
+      text === 'sign in'
+      || text === 'log in'
       || text === 'login'
-      || text === 'i already have an account'
-      || text.includes('already have an account')
       || href.includes('/login')
-      || hints.includes('login');
+      || href.includes('adobeid')
+      || href.includes('auth.services.adobe.com')
+    )
+      && !text.includes('google')
+      && !text.includes('facebook')
+      && !text.includes('apple')
+      && !text.includes('create');
   }) || null;
 }
 
-function isPinterestLoginUrl() {
+function isAdobeAuthPage() {
   try {
-    const url = new URL(window.location.href);
-    return url.hostname.includes('pinterest.') && url.pathname.toLowerCase().includes('/login');
+    const host = new URL(window.location.href).hostname;
+    return host.includes('adobe.com') || host.includes('adobelogin.com');
   } catch {
     return false;
   }
 }
 
-function getPinterestLoginUrl() {
+function isAuthenticatedBehancePage() {
   try {
     const url = new URL(window.location.href);
-    if (url.hostname.includes('pinterest.')) {
-      url.pathname = '/login/';
-      url.search = '';
-      url.hash = '';
-      return url.toString();
-    }
-  } catch {}
-  return 'https://www.pinterest.com/login/';
-}
-
-function getPinterestHomeUrl() {
-  try {
-    const url = new URL(window.location.href);
-    if (url.hostname.includes('pinterest.')) {
-      url.pathname = '/';
-      url.search = '';
-      url.hash = '';
-      return url.toString();
-    }
-  } catch {}
-  return 'https://www.pinterest.com/';
-}
-
-function routeToPinterestLogin(reason = 'Opening Pinterest login page') {
-  if (STATE.directLoginRouted || isPinterestLoginUrl()) return false;
-  STATE.directLoginRouted = true;
-  STATE.loginRouteStartedAt = Date.now();
-  markActionTaken();
-  setStatus(reason);
-  window.location.assign(getPinterestLoginUrl());
-  return true;
-}
-
-function routeToPinterestHome(reason = 'Returning to Pinterest home') {
-  if (STATE.homeRouteStartedAt && Date.now() - STATE.homeRouteStartedAt < 8000) return true;
-  STATE.homeRouteStartedAt = Date.now();
-  markActionTaken();
-  setStatus(reason);
-  window.location.assign(getPinterestHomeUrl());
-  return true;
-}
-
-function isPinterestLoadingOnlyPage() {
-  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS) || findGoogleLoginAction()) return false;
-  const text = normalizeText(document.body?.innerText || '');
-  if (text.includes('welcome to pinterest') || text.includes('share profile') || text.includes('following')) return false;
-
-  const visibleContent = Array.from(document.body?.querySelectorAll('button, input, a[href], [role="button"], [role="navigation"], header') || [])
-    .some((element) => isVisible(element));
-  if (visibleContent) return false;
-
-  return Boolean(document.querySelector('svg, img, [aria-label*="pinterest" i]'));
-}
-
-function isAuthenticatedPinterestPage() {
-  const emailInput = findInput(EMAIL_SELECTORS);
-  const passwordInput = findInput(PASSWORD_SELECTORS);
-  if (emailInput || passwordInput || findGoogleLoginAction()) return false;
-
-  const text = normalizeText(document.body?.innerText || '');
-  if (
-    text.includes('join pinterest for free')
-    || text.includes('i already have an account')
-    || text.includes('welcome to pinterest')
-    || findAuthOpenAction()
-  ) {
+    if (!url.hostname.includes('behance.net')) return false;
+  } catch {
     return false;
   }
 
-  const profileMenuVisible = Array.from(document.querySelectorAll('[aria-label*="account" i], [aria-label*="profile" i], [data-test-id*="profile" i], [data-test-id*="account" i]'))
-    .some((element) => isVisible(element));
+  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS) || findGoogleLoginAction() || findBehanceSignInAction()) {
+    return false;
+  }
 
-  const signedInSignals = Boolean(
-    profileMenuVisible
-    || text.includes('share profile')
-    || text.includes('following')
-    || text.includes('profile')
-    || text.includes('boards')
-    || text.includes('create pin')
+  const text = pageText();
+  return text.includes('profile')
+    || text.includes('upload your work')
+    || text.includes('for you')
     || text.includes('notifications')
-    || text.includes('messages')
-  );
-  if (signedInSignals) return true;
-
-  return false;
+    || text.includes('messages');
 }
 
 function requestCredential() {
@@ -778,41 +666,15 @@ function markActionTaken() {
   STATE.lastActionAt = Date.now();
 }
 
-function attemptOpenPinterestAuth() {
-  const switchToLoginAction = isPinterestSignupSurface() ? findSwitchToLoginAction() : null;
-  if (switchToLoginAction) {
-    if (!canActNow()) return true;
-    markActionTaken();
-    STATE.authOpenStartedAt = Date.now();
-    setStatus('Switching Pinterest sign-up to login');
-    clickElement(switchToLoginAction);
-    scheduleAttempt(500);
-    return true;
-  }
-
-  if (
-    STATE.authOpenStartedAt
-    && !STATE.directLoginRouted
-    && Date.now() - STATE.authOpenStartedAt > 2500
-    && !findInput(EMAIL_SELECTORS)
-    && !findInput(PASSWORD_SELECTORS)
-  ) {
-    return routeToPinterestLogin('Pinterest sign-in form did not appear. Opening login page');
-  }
-
-  const authAction = findAuthOpenAction();
-  if (!authAction) {
-    setStatus('Waiting for Pinterest login button');
-    scheduleAttempt(600);
-    return true;
-  }
+function attemptOpenBehanceAuth() {
+  const signInAction = findBehanceSignInAction();
+  if (!signInAction) return false;
   if (!canActNow()) return true;
 
   markActionTaken();
-  STATE.authOpenStartedAt = Date.now();
-  setStatus('Opening Pinterest sign-in');
-  clickElement(authAction);
-  scheduleAttempt(500);
+  setStatus('Opening Behance sign-in');
+  clickElement(signInAction);
+  scheduleAttempt(700);
   return true;
 }
 
@@ -822,92 +684,59 @@ function attemptOpenGoogle() {
   if (!canActNow()) return true;
 
   markActionTaken();
-  setStatus('Opening Pinterest Google sign-in');
+  setStatus('Opening Behance Google sign-in');
   clickElement(googleAction);
+  scheduleAttempt(900);
+  return true;
+}
+
+function attemptEmailStep(emailInput) {
+  if (!emailInput || !STATE.credential?.loginIdentifier) return false;
+
+  if (emailInput.value !== STATE.credential.loginIdentifier) {
+    setStatus('Filling Behance email');
+    setInputValue(emailInput, STATE.credential.loginIdentifier);
+    scheduleAttempt(120);
+    return true;
+  }
+
+  if (Date.now() - STATE.lastEmailSubmitAt < SUBMIT_COOLDOWN_MS) {
+    setStatus('Waiting for Behance password step');
+    return true;
+  }
+
+  STATE.lastEmailSubmitAt = Date.now();
+  setStatus('Submitting Behance email');
+  submitStep(emailInput, 'email');
   scheduleAttempt(700);
   return true;
 }
 
-function isReadyForSubmit(emailInput, passwordInput) {
-  if (!emailInput || !passwordInput || !STATE.credential) return false;
-  return emailInput.value === STATE.credential.loginIdentifier
-    && passwordInput.value === STATE.credential.password;
-}
+function attemptPasswordStep(passwordInput) {
+  if (!passwordInput || !STATE.credential?.password) return false;
 
-function looksLikePasswordRevealControl(element, passwordInput) {
-  if (!element || element === passwordInput || !isVisible(element)) return false;
-  const text = controlHintText(element);
-  if (text.includes('show') || text.includes('hide') || text.includes('eye') || text.includes('visibility')) {
+  if (passwordInput.value !== STATE.credential.password) {
+    if (!STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) {
+      requestPasswordSavingSuppression();
+      return true;
+    }
+    setStatus('Filling Behance password');
+    setInputValue(passwordInput, STATE.credential.password);
+    scheduleAttempt(120);
     return true;
   }
 
-  const svgCount = element.querySelectorAll?.('svg, path, circle').length || 0;
-  if (!svgCount) return false;
-
-  try {
-    const inputRect = passwordInput.getBoundingClientRect();
-    const rect = element.getBoundingClientRect();
-    const verticalOverlap = rect.bottom >= inputRect.top && rect.top <= inputRect.bottom;
-    const nearRightEdge = rect.left >= inputRect.left + (inputRect.width * 0.65) && rect.left <= inputRect.right + 24;
-    return verticalOverlap && nearRightEdge;
-  } catch {
-    return false;
+  if (Date.now() - STATE.lastPasswordSubmitAt < SUBMIT_COOLDOWN_MS) {
+    setStatus('Waiting for Behance sign-in');
+    return true;
   }
-}
 
-function findPinterestPasswordRevealControls(passwordInput) {
-  if (!passwordInput) return [];
-  const controls = [];
-  for (const root of getFieldRoots(passwordInput)) {
-    const candidates = Array.from(root.querySelectorAll('button, [role="button"], [tabindex], div, span, svg'))
-      .map((element) => findClickableAncestor(element) || element);
-    candidates.forEach((candidate) => {
-      if (looksLikePasswordRevealControl(candidate, passwordInput)) {
-        controls.push(candidate);
-      }
-    });
-  }
-  return Array.from(new Set(controls));
-}
-
-function disablePinterestPasswordRevealControl(control) {
-  if (!control || control.dataset?.rmwPinterestRevealBlocked === '1') return;
-
-  try {
-    control.dataset.rmwPinterestRevealBlocked = '1';
-    control.setAttribute('aria-disabled', 'true');
-    control.setAttribute('tabindex', '-1');
-    if ('disabled' in control) control.disabled = true;
-    control.style.pointerEvents = 'none';
-  } catch {}
-}
-
-function blockRevealEvent(event) {
-  const passwordInput = findInput(PASSWORD_SELECTORS);
-  if (!passwordInput) return;
-  const target = event.target;
-  if (!target) return;
-
-  const controls = findPinterestPasswordRevealControls(passwordInput);
-  const matched = controls.some((control) => control === target || control.contains?.(target));
-  if (!matched) return;
-
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  event.stopPropagation();
-  try { passwordInput.setAttribute('type', 'password'); } catch {}
-}
-
-function ensurePinterestPasswordRevealSuppressed(passwordInput) {
-  if (!passwordInput) return;
-  try { passwordInput.setAttribute('type', 'password'); } catch {}
-  findPinterestPasswordRevealControls(passwordInput).forEach(disablePinterestPasswordRevealControl);
-
-  if (STATE.revealGuardAttached) return;
-  STATE.revealGuardAttached = true;
-  ['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown', 'keyup'].forEach((eventName) => {
-    document.addEventListener(eventName, blockRevealEvent, true);
-  });
+  STATE.lastPasswordSubmitAt = Date.now();
+  setStatus('Submitting Behance password');
+  submitStep(passwordInput, 'password');
+  releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
+  scheduleAttempt(800);
+  return true;
 }
 
 function attemptFlow() {
@@ -921,32 +750,13 @@ function attemptFlow() {
     return;
   }
 
-  if (isAuthenticatedPinterestPage()) {
+  if (isAuthenticatedBehancePage()) {
     complete();
     return;
   }
 
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
-  if (!emailInput && !passwordInput && isPinterestSignupSurface()) {
-    if (attemptOpenPinterestAuth()) return;
-  }
-
-  if (
-    !emailInput
-    && !passwordInput
-    && isPinterestLoginUrl()
-    && isPinterestLoadingOnlyPage()
-    && STATE.loginRouteStartedAt
-    && Date.now() - STATE.loginRouteStartedAt > 5000
-  ) {
-    routeToPinterestHome('Pinterest login page is still loading. Checking signed-in home');
-    return;
-  }
-
-  if (passwordInput) {
-    ensurePinterestPasswordRevealSuppressed(passwordInput);
-  }
 
   if (!STATE.credential) {
     requestCredential();
@@ -954,14 +764,8 @@ function attemptFlow() {
 
   if (isGoogleCredential()) {
     if (attemptOpenGoogle()) return;
-    if (attemptOpenPinterestAuth()) return;
-    setStatus('Waiting for Pinterest Google sign-in option');
-    return;
-  }
-
-  if (!emailInput && !passwordInput) {
-    if (attemptOpenPinterestAuth()) return;
-    setStatus('Waiting for Pinterest email sign-in form');
+    if (attemptOpenBehanceAuth()) return;
+    setStatus('Waiting for Behance Google sign-in option');
     return;
   }
 
@@ -970,35 +774,17 @@ function attemptFlow() {
     return;
   }
 
-  if (emailInput && emailInput.value !== STATE.credential.loginIdentifier) {
-    setInputValue(emailInput, STATE.credential.loginIdentifier);
+  if (passwordInput) {
+    if (attemptPasswordStep(passwordInput)) return;
   }
 
-  if (passwordInput && passwordInput.value !== STATE.credential.password) {
-    if (!STATE.passwordSavingSuppressed && !STATE.passwordSavingBypass) {
-      requestPasswordSavingSuppression();
-      return;
-    }
-    ensurePinterestPasswordRevealSuppressed(passwordInput);
-    setInputValue(passwordInput, STATE.credential.password);
-    ensurePinterestPasswordRevealSuppressed(passwordInput);
+  if (emailInput) {
+    if (attemptEmailStep(emailInput)) return;
   }
 
-  if (!isReadyForSubmit(emailInput, passwordInput)) {
-    setStatus('Filling Pinterest login form');
-    return;
-  }
+  if (attemptOpenBehanceAuth()) return;
 
-  if (Date.now() - STATE.lastSubmitAt < SUBMIT_COOLDOWN_MS) {
-    setStatus('Waiting for Pinterest sign-in');
-    return;
-  }
-
-  const submitButton = findLoginSubmitButton(emailInput, passwordInput);
-  STATE.lastSubmitAt = Date.now();
-  setStatus('Submitting Pinterest login');
-  submitLogin(emailInput, passwordInput, submitButton);
-  releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
+  setStatus(isAdobeAuthPage() ? 'Waiting for Adobe sign-in fields' : 'Waiting for Behance sign-in');
 }
 
 function runAttempt() {
@@ -1033,7 +819,7 @@ function start() {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['type', 'aria-label', 'class', 'style'],
+    attributeFilter: ['type', 'aria-label', 'class', 'style', 'disabled', 'aria-disabled'],
   });
 
   STATE.keepAliveTimer = window.setInterval(() => scheduleAttempt(0), KEEP_ALIVE_MS);
