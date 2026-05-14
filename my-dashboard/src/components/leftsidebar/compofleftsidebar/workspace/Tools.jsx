@@ -130,6 +130,7 @@ const normalizeToolSlug = (value) => {
   if (slugified === 'chat-gpt') return 'chatgpt';
   if (['enhencor', 'enhencer', 'enhancer'].includes(slugified)) return 'enhancor';
   if (['eleven-labs', 'eleven-lab'].includes(slugified)) return 'elevenlabs';
+  if (slugified === 'pintrest') return 'pinterest';
   return slugified;
 };
 
@@ -150,6 +151,7 @@ const toolSupportsCredentialLoginMethodSelection = (value) => {
     || normalizedToolSlug === 'flow'
     || normalizedToolSlug === 'freepik'
     || normalizedToolSlug === 'genspark'
+    || normalizedToolSlug === 'pinterest'
     || normalizedToolSlug === 'kling-ai'
     || normalizedToolSlug === 'klingai'
     || normalizedToolSlug === 'kling';
@@ -188,6 +190,7 @@ const getAuthenticatorSeedToolLabel = (toolSlug) => {
   if (normalizedToolSlug === 'elevenlabs') return 'ElevenLabs';
   if (normalizedToolSlug === 'freepik') return 'Freepik';
   if (normalizedToolSlug === 'genspark') return 'Genspark';
+  if (normalizedToolSlug === 'pinterest') return 'Pinterest';
   if (normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai') return 'Kling';
   return 'Google';
 };
@@ -202,8 +205,10 @@ const getSharedCredentialLabels = (toolValue) => {
         ? 'Flow'
         : normalizedToolSlug === 'canva'
           ? 'Canva'
-          : normalizedToolSlug === 'elevenlabs'
-            ? 'ElevenLabs'
+        : normalizedToolSlug === 'elevenlabs'
+          ? 'ElevenLabs'
+          : normalizedToolSlug === 'pinterest'
+            ? 'Pinterest'
             : 'tool')
     : (toolValue?.name || (normalizedToolSlug === 'chatgpt'
       ? 'ChatGPT'
@@ -213,6 +218,8 @@ const getSharedCredentialLabels = (toolValue) => {
           ? 'Canva'
           : normalizedToolSlug === 'elevenlabs'
             ? 'ElevenLabs'
+            : normalizedToolSlug === 'pinterest'
+              ? 'Pinterest'
             : 'tool'));
   if (normalizedToolSlug === 'chatgpt') {
     return {
@@ -309,6 +316,8 @@ const openToolInIncognitoWindow = (launchDetail) => new Promise((resolve) => {
         ? 'Freepik'
         : normalizedSlug === 'elevenlabs'
           ? 'ElevenLabs'
+          : normalizedSlug === 'pinterest'
+            ? 'Pinterest'
           : 'this tool'
   );
   if (!normalizedSlug || !launchDetail?.launchUrl) {
@@ -2066,13 +2075,13 @@ export default function Tools({ view = 'tools' }) {
                   <option value="external_link">External link</option>
                   <option value="sso">SSO</option>
                   <option value="api_proxy">API proxy</option>
-                  <option value="extension_autofill">Extension auto-fill (Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow)</option>
+                  <option value="extension_autofill">Extension auto-fill (Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, Pinterest)</option>
                   <option value="automation">Auto-login form submit</option>
                 </select>
               </div>
               {toolForm.launch_mode === 'extension_autofill' && (
                 <p className="it-card-copy">
-                  The current browser extension build supports Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow
+                  The current browser extension build supports Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, and Pinterest
                   extension scaffold. For other tools, use Manual credential or Auto-login form submit.
                 </p>
               )}
@@ -2398,7 +2407,9 @@ export default function Tools({ view = 'tools' }) {
                         ? 'This Freepik credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                         : activeCredentialToolSlug === 'genspark'
                           ? 'This Genspark credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
-                        : 'This Kling credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'}
+                        : activeCredentialToolSlug === 'pinterest'
+                          ? 'This Pinterest credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                          : 'This Kling credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'}
                   </div>
                 )}
                 {showToolTotpSecretField && (

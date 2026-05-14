@@ -45,9 +45,10 @@ HOSTNAME_EQUIVALENT_GROUPS = (
     {"higgsfield.ai", "app.higgsfield.ai", "beta.higgsfield.ai"},
     {"heygen.com", "www.heygen.com", "auth.heygen.com", "app.heygen.com"},
     {"kling.ai", "klingai.com", "app.klingai.com"},
+    {"pinterest.com", "www.pinterest.com", "in.pinterest.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
-SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"canva", "chatgpt", "claude", "enhancor", "elevenlabs", "eleven-labs", "eleven-lab", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow"}
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"canva", "chatgpt", "claude", "enhancor", "elevenlabs", "eleven-labs", "eleven-lab", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow", "pinterest", "pintrest"}
 PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
     "enhancor": {"email_password", "google"},
@@ -58,6 +59,7 @@ TOOL_CREDENTIAL_LOGIN_METHODS = {
     "kling": {"email_password", "google"},
     "kling-ai": {"email_password", "google"},
     "klingai": {"email_password", "google"},
+    "pinterest": {"email_password", "google"},
 }
 
 
@@ -161,6 +163,8 @@ def _canonical_tool_slug(value: str) -> str:
         return "enhancor"
     if slug in {"eleven-labs", "eleven-lab"}:
         return "elevenlabs"
+    if slug == "pintrest":
+        return "pinterest"
     return slug
 
 
@@ -1204,7 +1208,7 @@ def _validate_extension_autofill_target(
 
     raise HTTPException(
         status_code=400,
-        detail="Extension auto-fill currently supports Canva, ChatGPT/OpenAI, Claude, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, and Flow. Use Manual credential or Auto-login form submit for other tools.",
+        detail="Extension auto-fill currently supports Canva, ChatGPT/OpenAI, Claude, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, and Pinterest. Use Manual credential or Auto-login form submit for other tools.",
     )
 
 
@@ -2286,7 +2290,7 @@ async def upsert_credential(
                     "New shared Claude credentials require the sign-in email address."
                     if canonical_tool_slug == "claude"
                     else "New shared Google-login credentials require the Google email address."
-                    if canonical_tool_slug in {"enhancor", "freepik", "genspark", "kling", "kling-ai", "klingai"} and login_method == "google"
+                    if canonical_tool_slug in {"enhancor", "freepik", "genspark", "kling", "kling-ai", "klingai", "pinterest"} and login_method == "google"
                     else "New shared company credentials require both username/email and password"
                 ),
             )

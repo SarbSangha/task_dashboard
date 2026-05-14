@@ -44,6 +44,8 @@
     "https://*.heygen.com/*",
     "https://elevenlabs.io/*",
     "https://*.elevenlabs.io/*",
+    "https://pinterest.com/*",
+    "https://*.pinterest.com/*",
     "https://google.com/*",
     "https://*.google.com/*",
     "https://labs.google/*",
@@ -173,6 +175,14 @@
       ],
       "js": ["content-elevenlabs.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://pinterest.com/*",
+        "https://*.pinterest.com/*"
+      ],
+      "js": ["content-pinterest.js"],
+      "run_at": "document_idle"
     },
     {
       "matches": [

@@ -19,6 +19,7 @@ const TOOL_SESSION_DOMAINS = {
   kling: ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   'kling-ai': ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   klingai: ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
+  pinterest: ['pinterest.com', 'www.pinterest.com', 'in.pinterest.com'],
 };
 const TOOL_OPTIONAL_SESSION_DOMAINS = {
   flow: ['accounts.google.com', 'google.com', '.google.com'],
@@ -114,6 +115,12 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'app.klingai.com',
     'accounts.google.com',
   ],
+  pinterest: [
+    'pinterest.com',
+    'www.pinterest.com',
+    'in.pinterest.com',
+    'accounts.google.com',
+  ],
 };
 
 function decodeExtensionTicketPayload(ticket) {
@@ -175,6 +182,7 @@ function normalizeToolSlug(value) {
   if (normalized === 'chat-gpt') return 'chatgpt';
   if (['enhencor', 'enhencer', 'enhancer'].includes(normalized)) return 'enhancor';
   if (['eleven-labs', 'eleven-lab'].includes(normalized)) return 'elevenlabs';
+  if (normalized === 'pintrest') return 'pinterest';
   return normalized;
 }
 
@@ -803,6 +811,7 @@ function getIncognitoWindowToolName(toolSlug, toolName = '') {
   if (normalizedSlug === 'enhancor') return 'Enhancor';
   if (normalizedSlug === 'freepik') return 'Freepik';
   if (normalizedSlug === 'elevenlabs') return 'ElevenLabs';
+  if (normalizedSlug === 'pinterest') return 'Pinterest';
   return 'this tool';
 }
 

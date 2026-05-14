@@ -15,6 +15,7 @@ function normalizeToolSlug(value) {
   if (normalized === 'chat-gpt') return 'chatgpt';
   if (['enhencor', 'enhencer', 'enhancer'].includes(normalized)) return 'enhancor';
   if (['eleven-labs', 'eleven-lab'].includes(normalized)) return 'elevenlabs';
+  if (normalized === 'pintrest') return 'pinterest';
   return normalized;
 }
 
@@ -111,6 +112,7 @@ function getIncognitoLaunchToolName(toolSlug) {
   if (toolSlug === 'enhancor') return 'Enhancor';
   if (toolSlug === 'freepik') return 'Freepik';
   if (toolSlug === 'elevenlabs') return 'ElevenLabs';
+  if (toolSlug === 'pinterest') return 'Pinterest';
   return 'this tool';
 }
 
