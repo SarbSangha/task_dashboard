@@ -11,10 +11,12 @@ import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import { useDrafts, useOutbox } from '../../../../hooks/useOutbox';
 import { OutboxSkeleton } from '../../../ui/OutboxSkeleton';
+import { useAuth } from '../../../../context/AuthContext';
 
 const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivate }) => {
   const queryClient = useQueryClient();
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
+  const { user: authUser } = useAuth();
   const [expandedTaskId, setExpandedTaskId] = useState(null);
   const [activeTab, setActiveTab] = useState('all-dispatched');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -34,7 +36,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   } = useOutbox({}, { enabled: isOpen });
 
   const tasks = outboxData?.tasks || [];
-  const currentUser = outboxData?.user || null;
+  const currentUser = outboxData?.user || authUser || null;
 
   const { data: drafts = [] } = useDrafts({
     enabled: isOpen && activeTab === 'all-dispatched' && filterStatus === 'draft',
@@ -402,6 +404,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
                   onClick={handleCardClick}
                   onTaskAction={handleTaskAction}
                   onTrackClick={handleTrackWorkflow}
+                  currentUser={currentUser}
                   formatDate={formatDate}
                   formatTime={formatTime}
                   getStatusClass={getStatusClass}

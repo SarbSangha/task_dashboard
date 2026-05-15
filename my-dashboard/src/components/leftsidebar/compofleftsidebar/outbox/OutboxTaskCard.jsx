@@ -11,6 +11,7 @@ const OutboxTaskCard = ({
   onClick, 
   onTaskAction,
   onTrackClick,
+  currentUser,
   formatDate, 
   formatTime, 
   getStatusClass 
@@ -134,12 +135,21 @@ const OutboxTaskCard = ({
     const latestReachedStep = [...timelineSteps].reverse().find((step) => step.reached);
     return latestReachedStep?.key || '';
   })();
+  const currentUserId = Number(currentUser?.id || currentUser?.userId || 0);
+  const taskCreatorId = Number(task?.creatorId || creator?.id || createdBy || 0);
+  const isCurrentUserCreator = Boolean(currentUserId && taskCreatorId && currentUserId === taskCreatorId);
+  const canEditTask = task?.canEditTask === true && isCurrentUserCreator;
+  const canRevokeTask = task?.canRevokeTask === true && isCurrentUserCreator;
   const menuActions = isDraft
     ? ['edit_draft', 'delete_draft']
     : [
         'track',
         'chat',
-        ...(task.availableActions || []).filter((action) => action === 'edit_task' || action === 'revoke_task')
+        ...(task.availableActions || []).filter((action) => {
+          if (action === 'edit_task') return canEditTask;
+          if (action === 'revoke_task') return canRevokeTask;
+          return false;
+        })
       ];
   const requestTypeLabel = (() => {
     const type = (taskType || 'task').toLowerCase();
@@ -594,11 +604,17 @@ OutboxTaskCard.propTypes = {
     currentStageAssigneeNames: PropTypes.arrayOf(PropTypes.string),
     trackingInfo: PropTypes.object,
     journeyCount: PropTypes.number,
+    canEditTask: PropTypes.bool,
+    canRevokeTask: PropTypes.bool,
   }).isRequired,
   isExpanded: PropTypes.bool.isRequired,
   onClick: PropTypes.func.isRequired,
   onTaskAction: PropTypes.func,
   onTrackClick: PropTypes.func,
+  currentUser: PropTypes.shape({
+    id: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    userId: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+  }),
   formatDate: PropTypes.func.isRequired,
   formatTime: PropTypes.func.isRequired,
   getStatusClass: PropTypes.func.isRequired,

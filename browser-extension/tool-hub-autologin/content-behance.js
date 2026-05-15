@@ -43,6 +43,7 @@ const STATE = {
   launchAuthorized: false,
   launchExpiresAt: 0,
   requestedCredential: false,
+  credentialError: '',
   scheduledTimer: null,
   keepAliveTimer: null,
   observer: null,
@@ -114,6 +115,21 @@ function sendRuntimeMessage(message) {
       resolve(response || { ok: false, error: 'No response received' });
     });
   });
+}
+
+function getCompactPageUrl() {
+  try {
+    const url = new URL(window.location.href);
+    if (url.hostname.includes('adobe.com') || url.hostname.includes('adobelogin.com')) {
+      return `${url.origin}${url.pathname}?rmw_tool_slug=${TOOL_SLUG}`;
+    }
+    if (window.location.href.length > 1800) {
+      return `${url.origin}${url.pathname}?rmw_tool_slug=${TOOL_SLUG}`;
+    }
+    return window.location.href;
+  } catch {
+    return window.location.href;
+  }
 }
 
 async function ensurePasswordSavingSuppressed() {
@@ -271,7 +287,7 @@ async function loadLaunchState() {
       type: 'TOOL_HUB_ACTIVATE_LAUNCH',
       toolSlug: TOOL_SLUG,
       hostname: window.location.hostname,
-      pageUrl: window.location.href,
+      pageUrl: getCompactPageUrl(),
       extensionTicket: storedTicket,
     });
 
@@ -287,7 +303,7 @@ async function loadLaunchState() {
     type: 'TOOL_HUB_GET_LAUNCH_STATE',
     toolSlug: TOOL_SLUG,
     hostname: window.location.hostname,
-    pageUrl: window.location.href,
+    pageUrl: getCompactPageUrl(),
   });
 
   STATE.launchChecked = true;
@@ -622,6 +638,7 @@ function requestCredential() {
   if (STATE.requestedCredential || STATE.credential) return;
 
   STATE.requestedCredential = true;
+  STATE.credentialError = '';
   setStatus('Fetching credential');
 
   chrome.runtime.sendMessage(
@@ -629,7 +646,7 @@ function requestCredential() {
       type: 'TOOL_HUB_GET_CREDENTIAL',
       toolSlug: TOOL_SLUG,
       hostname: window.location.hostname,
-      pageUrl: window.location.href,
+      pageUrl: getCompactPageUrl(),
       extensionTicket: getStoredLaunchTicket(),
     },
     (response) => {
@@ -641,17 +658,20 @@ function requestCredential() {
       }
 
       if (!response?.ok) {
-        setStatus(response?.error || 'Credential unavailable');
+        STATE.credentialError = `${response?.error || 'Credential unavailable'}`.trim();
+        setStatus(`Credential unavailable: ${STATE.credentialError}`);
         return;
       }
 
       clearStoredLaunchTicket();
       STATE.credential = response.data?.credential || null;
       if (!STATE.credential?.loginIdentifier || (!STATE.credential?.password && !isGoogleCredential())) {
-        setStatus('Credential missing');
+        STATE.credentialError = 'Assigned credential is missing email or password';
+        setStatus(`Credential unavailable: ${STATE.credentialError}`);
         return;
       }
 
+      STATE.credentialError = '';
       setStatus('Credential loaded');
       scheduleAttempt(100);
     }
@@ -760,6 +780,16 @@ function attemptFlow() {
 
   if (!STATE.credential) {
     requestCredential();
+    if (STATE.requestedCredential) {
+      setStatus('Fetching Behance credential');
+      return;
+    }
+    if (STATE.credentialError) {
+      setStatus(`Credential unavailable: ${STATE.credentialError}`);
+      return;
+    }
+    setStatus('Waiting for Behance credential');
+    return;
   }
 
   if (isGoogleCredential()) {

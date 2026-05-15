@@ -105,25 +105,41 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     const normalizedStatus = `${task?.status || ''}`.toLowerCase();
     const creatorId = task?.creator?.id ?? task?.creatorId;
     const submittedBy = task?.submittedBy;
+    const assignedTo = Array.isArray(task?.assignedTo) ? task.assignedTo : [];
     const isCreatorTask = task?.myRole === 'creator'
       || (currentUserId !== '' && creatorId != null && String(creatorId) === currentUserId);
+    const isAssignedToMe = currentUserId !== ''
+      && assignedTo.some((person) => person?.id != null && String(person.id) === currentUserId);
     const isSubmittedByMe =
       currentUserId !== ''
       && submittedBy != null
       && String(submittedBy) === currentUserId;
+    const isSelfAssignedTask = isCreatorTask && (
+      isAssignedToMe
+      || task?.myRole === 'assignee'
+      || task?.myRole === 'creator'
+    );
 
     return {
       normalizedStatus,
       isCreatorTask,
+      isSelfAssignedTask,
       isSubmittedByMe,
       isParticipantTask: !isCreatorTask,
     };
   }, [currentUserId]);
 
   const doesTaskMatchFilter = React.useCallback((task, currentFilter) => {
-    const { normalizedStatus, isCreatorTask, isSubmittedByMe, isParticipantTask } = getTaskFilterMeta(task);
+    const {
+      normalizedStatus,
+      isCreatorTask,
+      isSelfAssignedTask,
+      isSubmittedByMe,
+      isParticipantTask,
+    } = getTaskFilterMeta(task);
 
     if (currentFilter === 'unread') return !(task?.isRead ?? false);
+    if (currentFilter === 'self_assigned') return isSelfAssignedTask;
     if (currentFilter === 'working') return ['assigned', 'in_progress', 'need_improvement'].includes(normalizedStatus);
     if (currentFilter === 'submitted') {
       return normalizedStatus === 'submitted' && (isSubmittedByMe || isParticipantTask);
@@ -762,6 +778,12 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
             onClick={() => setFilter('unread')}
           >
             Unread ({getFilterCount('unread')})
+          </button>
+          <button 
+            className={`filter-btn ${filter === 'self_assigned' ? 'active' : ''}`}
+            onClick={() => setFilter('self_assigned')}
+          >
+            Self Assigned ({getFilterCount('self_assigned')})
           </button>
           <button 
             className={`filter-btn ${filter === 'working' ? 'active' : ''}`}

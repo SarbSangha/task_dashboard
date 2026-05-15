@@ -204,7 +204,21 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
   const [isMaximized, setIsMaximized] = useState(false);
   const allowNavigationRef = useRef(false);
   const initialFormSnapshotRef = useRef(buildDirtySnapshot(createEmptyFormData()));
+  const latestFormDataRef = useRef(formData);
+  const currentDraftIdRef = useRef(null);
+  const draftSaveInFlightRef = useRef(false);
+  const lastAutoSaveSnapshotRef = useRef('');
   const minimizedWindowStyle = useMinimizedWindowStack('assign-task-modal', isOpen && isMinimized);
+
+  const updateCurrentDraftId = useCallback((draftId) => {
+    const normalizedDraftId = draftId ? Number(draftId) : null;
+    currentDraftIdRef.current = normalizedDraftId;
+    setCurrentDraftId(normalizedDraftId);
+  }, []);
+
+  useEffect(() => {
+    latestFormDataRef.current = formData;
+  }, [formData]);
 
   const cacheKeys = useMemo(() => {
     if (!user?.id) return null;
@@ -440,18 +454,20 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       setFormData(mappedEditData);
       initialFormSnapshotRef.current = buildDirtySnapshot(mappedEditData);
       rememberUsers(editingTask.assignedTo || []);
-      setCurrentDraftId(isDraftEdit ? editingTask.id : null);
+      updateCurrentDraftId(isDraftEdit ? editingTask.id : null);
+      lastAutoSaveSnapshotRef.current = '';
       return;
     }
 
     const emptyForm = createEmptyFormData(currentUserDepartment);
     setFormData(emptyForm);
     initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
-    setCurrentDraftId(null);
+    updateCurrentDraftId(null);
+    lastAutoSaveSnapshotRef.current = '';
     setProjectIdState({ status: 'idle', message: '' });
     setTaskIdState({ status: 'idle', message: '' });
     setShowUserDropdown(false);
-  }, [isOpen, editingTask, isDraftEdit]);
+  }, [isOpen, editingTask, isDraftEdit, updateCurrentDraftId]);
 
   useEffect(() => {
     if (isOpen) {
@@ -488,18 +504,8 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     }
   }, [departments, formData.toDepartment, isOpen]);
 
-  // Auto-save every 30 seconds
-  useEffect(() => {
-    if (!isOpen || isTaskEditMode) return;
-
-    const autoSaveInterval = setInterval(() => {
-      if (hasFormData()) {
-        saveDraft(true); // Silent auto-save
-      }
-    }, 30000);
-
-    return () => clearInterval(autoSaveInterval);
-  }, [isOpen, formData, isTaskEditMode]);
+  // Drafts are saved only after an explicit user action:
+  // the Save Draft button, or choosing Save Draft from the close confirmation.
 
   // Compare against the form state when the modal was opened.
   const hasFormData = () => {
@@ -698,7 +704,9 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     const emptyForm = createEmptyFormData(currentUserDepartment);
     setFormData(emptyForm);
     initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
-    setCurrentDraftId(null);
+    latestFormDataRef.current = emptyForm;
+    updateCurrentDraftId(null);
+    lastAutoSaveSnapshotRef.current = '';
     localStorage.removeItem('taskDraft');
   };
 
@@ -717,45 +725,57 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
 
   // ✅ FIXED: Save as draft with field mapping
   const saveDraft = async (silent = false) => {
-    if (!hasFormData()) {
+    if (draftSaveInFlightRef.current) return;
+
+    const draftFormData = latestFormDataRef.current;
+    const draftSnapshot = buildDirtySnapshot(draftFormData);
+
+    if (draftSnapshot === initialFormSnapshotRef.current) {
       if (!silent) showMessage('Nothing to save', 'warning');
       return;
     }
 
+    if (silent && draftSnapshot === lastAutoSaveSnapshotRef.current) {
+      return;
+    }
+
+    draftSaveInFlightRef.current = true;
     setIsSaving(true);
     setSubmitUploadState(createInitialSubmitUploadState());
 
     try {
+      const activeDraftId = currentDraftIdRef.current || currentDraftId || null;
+
       // Save to localStorage with original field names
       localStorage.setItem('taskDraft', JSON.stringify({
-        ...formData,
-        __draftId: currentDraftId || null,
+        ...draftFormData,
+        __draftId: activeDraftId,
       }));
 
       // ✅ Map to backend schema
       const draftPayload = {
-        title: formData.taskName || '',
-        description: formData.taskDetails || '',
-        projectName: formData.projectName || '',
-        taskId: formData.taskId || '',
-        projectId: formData.projectId || '',
-        projectIdRaw: formData.projectIdRaw || '',
-        projectIdHex: formData.projectIdHex || '',
-        customerName: formData.customerName || '',
-        reference: formData.reference || '',
-        myDepartment: formData.myDepartment || currentUserDepartment || '',
-        taskType: formData.taskType || 'task',
-        taskTag: formData.taskTag || 'Audio',
-        priority: (formData.priority || 'medium').toLowerCase(),
-        toDepartment: formData.toDepartment || '',
-        selectedUserIds: formData.selectedUserIds || [],
-        deadline: formData.deadline || null,
-        links: Array.isArray(formData.links) ? formData.links : [],
-        attachments: Array.isArray(formData.attachments) ? formData.attachments : [],
-        workflowEnabled: Boolean(formData.workflowEnabled),
-        finalApprovalRequired: Boolean(formData.finalApprovalRequired),
-        workflowStages: Array.isArray(formData.workflowStages)
-          ? formData.workflowStages.map((stage, index) => ({
+        title: draftFormData.taskName || '',
+        description: draftFormData.taskDetails || '',
+        projectName: draftFormData.projectName || '',
+        taskId: draftFormData.taskId || '',
+        projectId: draftFormData.projectId || '',
+        projectIdRaw: draftFormData.projectIdRaw || '',
+        projectIdHex: draftFormData.projectIdHex || '',
+        customerName: draftFormData.customerName || '',
+        reference: draftFormData.reference || '',
+        myDepartment: draftFormData.myDepartment || currentUserDepartment || '',
+        taskType: draftFormData.taskType || 'task',
+        taskTag: draftFormData.taskTag || 'Audio',
+        priority: (draftFormData.priority || 'medium').toLowerCase(),
+        toDepartment: draftFormData.toDepartment || '',
+        selectedUserIds: draftFormData.selectedUserIds || [],
+        deadline: draftFormData.deadline || null,
+        links: Array.isArray(draftFormData.links) ? draftFormData.links : [],
+        attachments: Array.isArray(draftFormData.attachments) ? draftFormData.attachments : [],
+        workflowEnabled: Boolean(draftFormData.workflowEnabled),
+        finalApprovalRequired: Boolean(draftFormData.finalApprovalRequired),
+        workflowStages: Array.isArray(draftFormData.workflowStages)
+          ? draftFormData.workflowStages.map((stage, index) => ({
               order: Number(stage.order || index + 1),
               title: `${stage.title || ''}`.trim(),
               description: `${stage.description || ''}`.trim(),
@@ -766,17 +786,22 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       };
 
       let response;
-      if (currentDraftId) {
+      if (activeDraftId) {
         try {
-          response = await draftAPI.updateDraft(currentDraftId, draftPayload);
+          response = await draftAPI.updateDraft(activeDraftId, draftPayload);
         } catch (updateError) {
+          if (silent) {
+            console.warn('Silent draft update failed; skipping duplicate draft creation:', updateError);
+            lastAutoSaveSnapshotRef.current = draftSnapshot;
+            return;
+          }
           console.log('Draft not found, creating new one');
           response = await draftAPI.saveDraft(draftPayload);
           const savedDraftId = response?.id || response?.data?.id || null;
           if (savedDraftId) {
-            setCurrentDraftId(savedDraftId);
+            updateCurrentDraftId(savedDraftId);
             localStorage.setItem('taskDraft', JSON.stringify({
-              ...formData,
+              ...draftFormData,
               __draftId: savedDraftId,
             }));
           }
@@ -785,13 +810,15 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         response = await draftAPI.saveDraft(draftPayload);
         const savedDraftId = response?.id || response?.data?.id || null;
         if (savedDraftId) {
-          setCurrentDraftId(savedDraftId);
+          updateCurrentDraftId(savedDraftId);
           localStorage.setItem('taskDraft', JSON.stringify({
-            ...formData,
+            ...draftFormData,
             __draftId: savedDraftId,
           }));
         }
       }
+
+      lastAutoSaveSnapshotRef.current = draftSnapshot;
 
       if (!silent) {
         showMessage('Draft saved successfully', 'success');
@@ -802,6 +829,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         showMessage('Draft saved locally (server error)', 'warning');
       }
     } finally {
+      draftSaveInFlightRef.current = false;
       setIsSaving(false);
     }
   };
@@ -982,9 +1010,10 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       
       // Clear draft from localStorage and API
       localStorage.removeItem('taskDraft');
-      if (currentDraftId) {
+      const draftIdToDelete = currentDraftIdRef.current || currentDraftId;
+      if (draftIdToDelete) {
         try {
-          await draftAPI.deleteDraft(currentDraftId);
+          await draftAPI.deleteDraft(draftIdToDelete);
         } catch (err) {
           console.log('Draft cleanup error:', err);
         }
@@ -1050,9 +1079,11 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
 
     if (confirmClose === 'discard') {
       localStorage.removeItem('taskDraft');
-      setCurrentDraftId(null);
+      updateCurrentDraftId(null);
+      lastAutoSaveSnapshotRef.current = '';
       const emptyForm = createEmptyFormData(currentUserDepartment);
       setFormData(emptyForm);
+      latestFormDataRef.current = emptyForm;
       initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
       allowNavigationRef.current = true;
       return true;

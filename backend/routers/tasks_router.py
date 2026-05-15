@@ -1280,6 +1280,32 @@ def _select_primary_participation(participations: List[TaskParticipant]) -> Opti
     )
 
 
+TASK_DETAIL_EDITABLE_STATUSES = {
+    TaskStatus.PENDING,
+    TaskStatus.FORWARDED,
+    TaskStatus.ASSIGNED,
+    TaskStatus.IN_PROGRESS,
+    TaskStatus.NEED_IMPROVEMENT,
+}
+
+
+def can_edit_task_details(user: User, task: Task) -> bool:
+    return bool(
+        user
+        and user.id == task.creator_id
+        and not task.task_edit_locked
+        and task.status in TASK_DETAIL_EDITABLE_STATUSES
+    )
+
+
+def can_revoke_task(user: User, task: Task) -> bool:
+    return bool(
+        user
+        and user.id == task.creator_id
+        and task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.REJECTED}
+    )
+
+
 def compute_available_actions(
     task: Task,
     user: User,
@@ -1314,12 +1340,9 @@ def compute_available_actions(
         ):
             actions.extend(["approve", "need_improvement"])
 
-        if is_creator and task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.REJECTED}:
+        if can_revoke_task(user, task):
             actions.append("revoke_task")
-        if is_creator and workflow_status in {
-            TaskWorkflowStatus.NOT_STARTED.value,
-            TaskWorkflowStatus.ACTIVE.value,
-        }:
+        if can_edit_task_details(user, task):
             actions.append("edit_task")
 
         deduped = []
@@ -1365,9 +1388,9 @@ def compute_available_actions(
             actions.append("edit_result")
 
     if is_creator:
-        if task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.REJECTED}:
+        if can_revoke_task(user, task):
             actions.append("revoke_task")
-        if task.status in {TaskStatus.PENDING, TaskStatus.NEED_IMPROVEMENT, TaskStatus.FORWARDED}:
+        if can_edit_task_details(user, task):
             actions.append("edit_task")
         if task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED}:
             actions.extend(["approve", "need_improvement"])
@@ -1418,6 +1441,8 @@ def _task_list_loader_options():
             Task.task_version,
             Task.result_version,
             Task.result_text,
+            Task.task_edit_locked,
+            Task.result_edit_locked,
             Task.is_deleted,
         ),
         joinedload(Task.creator).load_only(User.id, User.name, User.department),
@@ -1458,6 +1483,8 @@ def _workflow_task_loader_options():
             Task.updated_at,
             Task.metadata_json,
             Task.result_text,
+            Task.task_edit_locked,
+            Task.result_edit_locked,
         ),
         joinedload(Task.creator).load_only(User.id, User.name, User.department),
     )
@@ -1503,6 +1530,8 @@ def _serialize_task_list_base(task: Task) -> dict:
         "taskVersion": task.task_version,
         "resultVersion": task.result_version,
         "resultText": task.result_text,
+        "taskEditLocked": bool(task.task_edit_locked),
+        "resultEditLocked": bool(task.result_edit_locked),
         "isDeleted": task.is_deleted,
     }
 
@@ -1849,6 +1878,9 @@ def serialize_task_with_context(
             db,
             my_participation=my_participation,
         )
+        task_dict["isCreator"] = current_user.id == task.creator_id
+        task_dict["canEditTask"] = can_edit_task_details(current_user, task)
+        task_dict["canRevokeTask"] = can_revoke_task(current_user, task)
         task_dict["mySystemRoles"] = sorted(list(role_set(current_user)))
 
     return task_dict

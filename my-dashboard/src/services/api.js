@@ -1218,12 +1218,12 @@ export const draftAPI = {
     return response.data;
   },
 
-  updateDraft: async (draftId, draftData) => {
+  updateDraft: async (draftId, draftData, options = {}) => {
     try {
       const response = await api.put(`/api/drafts/${draftId}`, draftData);
       return response.data;
     } catch (error) {
-      if (error.response?.status === 404) {
+      if (error.response?.status === 404 && options.createIfMissing) {
         console.log('Draft not found, creating new one');
         return await draftAPI.saveDraft(draftData);
       }

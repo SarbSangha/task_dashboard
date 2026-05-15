@@ -944,6 +944,27 @@ async function getSettings() {
   };
 }
 
+function formatApiErrorDetail(detail, fallback = 'Request failed') {
+  if (Array.isArray(detail)) {
+    const message = detail
+      .map((item) => {
+        if (!item || typeof item !== 'object') return `${item || ''}`.trim();
+        const loc = Array.isArray(item.loc) ? item.loc.join('.') : item.loc;
+        const msg = item.msg || item.message || item.type || '';
+        return [loc, msg].filter(Boolean).join(': ');
+      })
+      .filter(Boolean)
+      .join('; ');
+    return message || fallback;
+  }
+
+  if (detail && typeof detail === 'object') {
+    return detail.message || detail.msg || JSON.stringify(detail);
+  }
+
+  return `${detail || fallback}`;
+}
+
 async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   const settings = await getSettings();
   const tabId = message.tabId || senderTabId || 0;
@@ -992,7 +1013,7 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.success) {
     const parts = [
-      data.detail || data.message || `Credential request failed (${response.status})`,
+      formatApiErrorDetail(data.detail || data.message, `Credential request failed (${response.status})`),
       `api=${settings.apiBase}`,
       `sessionHeader=${settings.sessionToken ? 'yes' : 'no'}`,
       `http=${response.status}`,
