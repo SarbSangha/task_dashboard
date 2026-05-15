@@ -114,16 +114,13 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       currentUserId !== ''
       && submittedBy != null
       && String(submittedBy) === currentUserId;
-    const isSelfAssignedTask = isCreatorTask && (
-      isAssignedToMe
-      || task?.myRole === 'assignee'
-      || task?.myRole === 'creator'
-    );
+    const isSelfAssignedTask = isCreatorTask && isAssignedToMe;
 
     return {
       normalizedStatus,
       isCreatorTask,
       isSelfAssignedTask,
+      isAssignedToMe,
       isSubmittedByMe,
       isParticipantTask: !isCreatorTask,
     };
@@ -134,13 +131,18 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       normalizedStatus,
       isCreatorTask,
       isSelfAssignedTask,
+      isAssignedToMe,
       isSubmittedByMe,
       isParticipantTask,
     } = getTaskFilterMeta(task);
 
     if (currentFilter === 'unread') return !(task?.isRead ?? false);
     if (currentFilter === 'self_assigned') return isSelfAssignedTask;
-    if (currentFilter === 'working') return ['assigned', 'in_progress', 'need_improvement'].includes(normalizedStatus);
+    if (currentFilter === 'working') {
+      return isAssignedToMe
+        && !isSelfAssignedTask
+        && ['assigned', 'in_progress', 'need_improvement'].includes(normalizedStatus);
+    }
     if (currentFilter === 'submitted') {
       return normalizedStatus === 'submitted' && (isSubmittedByMe || isParticipantTask);
     }

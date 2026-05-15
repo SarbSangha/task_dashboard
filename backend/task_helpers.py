@@ -72,6 +72,10 @@ class TaskHelpers:
             TaskParticipant.is_read == False,
             TaskParticipant.is_active == True,
             TaskParticipant.role != ParticipantRole.CREATOR,
+            ~(
+                (TaskParticipant.role == ParticipantRole.HOD)
+                & (Task.workflow_stage == "pending_creator_hod")
+            ),
             Task.creator_id != user_id,
             Task.is_deleted == False
         ).scalar() or 0

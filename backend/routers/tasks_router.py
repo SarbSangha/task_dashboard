@@ -2974,24 +2974,6 @@ async def create_task(
                     actor=current_user,
                 )
 
-        creator_hods = db.query(User).filter(
-            User.is_active == True,
-            User.department == current_user.department,
-            User.position.ilike("%hod%"),
-            User.id != current_user.id,
-        ).all()
-        for hod in creator_hods:
-            ensure_participant(db, new_task.id, hod.id, ParticipantRole.HOD)
-            create_notification(
-                db,
-                new_task,
-                hod.id,
-                "pending_hod_approval",
-                f"HOD approval required: {new_task.title}",
-                "A new task requires your approval before forwarding.",
-                actor=current_user,
-            )
-
         add_history(
             db,
             new_task,
@@ -3684,6 +3666,10 @@ async def get_inbox(
                     (TaskParticipant.user_id == current_user.id)
                     & (TaskParticipant.is_active == True)
                     & (TaskParticipant.role != ParticipantRole.CREATOR)
+                    & ~(
+                        (TaskParticipant.role == ParticipantRole.HOD)
+                        & (Task.workflow_stage == "pending_creator_hod")
+                    )
                 ),
                 # Creator inbox visibility only for review/result states
                 (
