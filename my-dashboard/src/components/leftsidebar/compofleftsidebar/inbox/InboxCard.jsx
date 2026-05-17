@@ -19,6 +19,8 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const normalizedWorkflowStatus = `${task.workflowStatus || ''}`.toLowerCase();
   const isCreatorTask = task.creator?.id === task.creatorId || task.myRole === 'creator';
   const isRevoked = task.status === 'cancelled' && !!(task.revocation || `${task.workflowStage || ''}`.includes('revoked'));
+  const isHeld = Boolean(task.isHeld || task.holdInfo?.active);
+  const holdUntilLabel = task.holdInfo?.until ? formatDateTimeIndia(task.holdInfo.until) : '';
   const revokedBy = task.revocation?.revokedBy || task.creator?.name || 'Creator';
   const revokedAt = task.revocation?.revokedAt ? formatDateTimeIndia(task.revocation.revokedAt) : '';
   const revokedReason = task.revocation?.reason || '';
@@ -30,10 +32,12 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const canShowStartTask =
     !isWorkflowTask &&
     task.myRole === 'assignee' &&
+    !isHeld &&
     !['completed', 'cancelled', 'rejected'].includes(task.status);
   const canShowSubmitTask =
     !isWorkflowTask &&
     task.myRole === 'assignee' &&
+    !isHeld &&
     !['completed', 'cancelled', 'rejected', 'submitted'].includes(task.status);
   const withStart = canShowStartTask && !baseActions.includes('start')
     ? ['start', ...baseActions]
@@ -44,6 +48,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const inferFallbackActions = () => {
     const inferred = [];
     const terminalStatuses = ['completed', 'cancelled', 'rejected'];
+    if (isHeld) return inferred;
 
     if (isWorkflowTask) {
       const workflowWaitingApproval =
@@ -116,6 +121,8 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     if (action === 'approve') return isWorkflowTask ? 'Approve Stage' : 'Approve';
     if (action === 'need_improvement') return isWorkflowTask ? 'Request Revision' : 'Need Improvement';
     if (action === 'forward') return 'Forward To';
+    if (action === 'hold_task') return 'Hold Task';
+    if (action === 'unhold_task') return 'Unhold Task';
     return action.replace(/_/g, ' ');
   };
   const editCount = Number(task.editCount ?? ((task.taskVersion || 1) - 1));
@@ -464,6 +471,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
             {showEditBadge && (
               <span className="task-edit-badge">Edit #{editCount}</span>
             )}
+            {isHeld && <span className="task-hold-badge">Held</span>}
           </div>
           <p className="card-subtitle">{shortDescription}</p>
         </div>
@@ -493,6 +501,15 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
           <strong>This task has been revoked (regularised).</strong>
           <span>
             {` By ${revokedBy}${revokedAt ? ` on ${revokedAt}` : ''}${revokedReason ? `. Reason: ${revokedReason}` : ''}`}
+          </span>
+        </div>
+      )}
+      {isHeld && !isRevoked && (
+        <div className="held-banner">
+          <strong>This task is on hold.</strong>
+          <span>
+            {holdUntilLabel ? ` Auto-unholds on ${holdUntilLabel}.` : ' The creator must unhold it before work can continue.'}
+            {task.holdInfo?.reason ? ` Reason: ${task.holdInfo.reason}` : ''}
           </span>
         </div>
       )}

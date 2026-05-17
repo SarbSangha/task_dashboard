@@ -49,9 +49,6 @@ export default function CompanyTab() {
   if (loading) {
     return (
       <div className="tab-content">
-        <div className="content-header">
-          <h3>Company Directory</h3>
-        </div>
         <WorkspaceSkeleton variant="company" />
       </div>
     );
@@ -60,7 +57,6 @@ export default function CompanyTab() {
   if (!canViewCompany) {
     return (
       <div className="tab-content">
-        <h3>Company</h3>
         <p>Admin or faculty access is required to view the company directory.</p>
       </div>
     );
@@ -68,9 +64,6 @@ export default function CompanyTab() {
 
   return (
     <div className="tab-content">
-      <div className="content-header">
-        <h3>Company Directory</h3>
-      </div>
       <CacheStatusBanner
         showingCached={cacheStatus.showingCached}
         isRefreshing={isRefreshing}

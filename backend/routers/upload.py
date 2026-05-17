@@ -1,6 +1,9 @@
 # routers/upload.py
 import io
 import os
+import shutil
+import subprocess
+import tempfile
 import time
 import zipfile
 from uuid import uuid4
@@ -16,6 +19,12 @@ from pydantic import BaseModel, Field
 
 from models_new import User
 from routers.auth_router import get_current_user
+
+try:
+    from PIL import Image, UnidentifiedImageError
+except ImportError:  # pragma: no cover - dependency guard for environments not yet upgraded
+    Image = None
+    UnidentifiedImageError = OSError
 
 
 router = APIRouter(tags=["Upload"])
@@ -186,6 +195,93 @@ def _safe_zip_entry_name(filename: Optional[str], fallback: str = "download") ->
     if normalized:
         return normalized
     return _safe_filename(filename, fallback=fallback)
+
+
+def _thumbnail_cache_key(r2_key: str, width: int) -> str:
+    source = r2_key.replace("\\", "/").lstrip("/")
+    return f"thumbnails/w{width}/{source}.webp"
+
+
+def _is_video_content(content_type: str, r2_key: str) -> bool:
+    extension = Path(r2_key).suffix.lower()
+    return content_type.startswith("video/") or extension in {".mp4", ".mov", ".mkv", ".webm", ".avi"}
+
+
+def _is_image_content(content_type: str, r2_key: str) -> bool:
+    extension = Path(r2_key).suffix.lower()
+    return content_type.startswith("image/") or extension in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+
+
+def _generate_image_thumbnail_bytes(source_bytes: bytes, width: int) -> bytes:
+    if Image is None:
+        raise HTTPException(status_code=503, detail="Thumbnail generation dependency is not installed")
+
+    try:
+        with Image.open(io.BytesIO(source_bytes)) as image:
+            image.thumbnail((width, width), Image.Resampling.LANCZOS)
+            if image.mode not in {"RGB", "RGBA"}:
+                image = image.convert("RGB")
+            output = io.BytesIO()
+            image.save(output, format="WEBP", quality=78, method=6)
+            return output.getvalue()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise HTTPException(status_code=415, detail="File is not a supported image") from exc
+
+
+def _generate_video_thumbnail_bytes(source_bytes: bytes, width: int) -> bytes:
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(status_code=503, detail="Video thumbnail generation requires ffmpeg")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_path = Path(temp_dir) / "source-video"
+        output_path = Path(temp_dir) / "thumbnail.webp"
+        input_path.write_bytes(source_bytes)
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            "00:00:02",
+            "-i",
+            str(input_path),
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale='min({width},iw)':-2",
+            "-q:v",
+            "70",
+            "-y",
+            str(output_path),
+        ]
+        try:
+            subprocess.run(command, check=True, capture_output=True, timeout=25)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            fallback_command = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(input_path),
+                "-frames:v",
+                "1",
+                "-vf",
+                f"scale='min({width},iw)':-2",
+                "-q:v",
+                "70",
+                "-y",
+                str(output_path),
+            ]
+            try:
+                subprocess.run(fallback_command, check=True, capture_output=True, timeout=25)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                raise HTTPException(status_code=415, detail="Could not generate a video thumbnail") from exc
+
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            raise HTTPException(status_code=415, detail="Could not generate a video thumbnail")
+
+        return output_path.read_bytes()
 
 
 def _generate_presigned_put_url(client, key: str, content_type: Optional[str]) -> str:
@@ -447,6 +543,8 @@ async def open_file(
     """Open a file from R2 via short-lived signed URL."""
     if not _is_r2_configured():
         raise HTTPException(status_code=500, detail="R2 is not configured on server")
+    if Image is None:
+        raise HTTPException(status_code=503, detail="Thumbnail generation dependency is not installed")
 
     r2_key = _extract_r2_key(path, url)
     if r2_key:
@@ -465,6 +563,65 @@ async def open_file(
         return RedirectResponse(url=url, status_code=307)
 
     raise HTTPException(status_code=404, detail="File not found")
+
+
+@router.get("/api/files/thumbnail")
+async def thumbnail_file(
+    url: Optional[str] = Query(None),
+    path: Optional[str] = Query(None),
+    width: int = Query(360, ge=120, le=960),
+):
+    """Serve a cached WebP thumbnail for image/video files stored in R2."""
+    if not _is_r2_configured():
+        raise HTTPException(status_code=500, detail="R2 is not configured on server")
+
+    r2_key = _extract_r2_key(path, url)
+    if not r2_key:
+        if url and (url.startswith("http://") or url.startswith("https://")):
+            return RedirectResponse(url=url, status_code=307)
+        raise HTTPException(status_code=404, detail="File not found")
+
+    client = _build_r2_client()
+    bucket = _env("R2_BUCKET")
+    cache_key = _thumbnail_cache_key(r2_key, width)
+
+    try:
+        client.head_object(Bucket=bucket, Key=cache_key)
+        signed_url = client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": cache_key},
+            ExpiresIn=600,
+        )
+        return RedirectResponse(url=signed_url, status_code=307)
+    except ClientError as exc:
+        status_code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        error_code = exc.response.get("Error", {}).get("Code")
+        if status_code not in {403, 404} and error_code not in {"404", "NoSuchKey", "NotFound"}:
+            raise HTTPException(status_code=500, detail=f"Unable to check thumbnail cache: {exc}") from exc
+
+    try:
+        obj = client.get_object(Bucket=bucket, Key=r2_key)
+        content_type = (obj.get("ContentType") or "").lower()
+        body = obj["Body"].read()
+        if _is_image_content(content_type, r2_key):
+            thumbnail_bytes = _generate_image_thumbnail_bytes(body, width)
+        elif _is_video_content(content_type, r2_key):
+            thumbnail_bytes = _generate_video_thumbnail_bytes(body, width)
+        else:
+            raise HTTPException(status_code=415, detail="Thumbnails are only available for image and video files")
+
+        client.put_object(
+            Bucket=bucket,
+            Key=cache_key,
+            Body=thumbnail_bytes,
+            ContentType="image/webp",
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        return StreamingResponse(io.BytesIO(thumbnail_bytes), media_type="image/webp")
+    except HTTPException:
+        raise
+    except (ClientError, BotoCoreError) as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to generate thumbnail: {exc}") from exc
 
 
 @router.get("/api/files/download")

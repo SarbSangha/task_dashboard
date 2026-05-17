@@ -1,6 +1,6 @@
 // src/components/leftsidebar/compofleftsidebar/outbox/OutboxModal.jsx
 import './Outbox.css';
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import OutboxTaskCard from './OutboxTaskCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
@@ -13,13 +13,28 @@ import { useDrafts, useOutbox } from '../../../../hooks/useOutbox';
 import { OutboxSkeleton } from '../../../ui/OutboxSkeleton';
 import { useAuth } from '../../../../context/AuthContext';
 
+const getTaskSearchText = (task) => [
+  task?.title,
+  task?.taskNumber,
+  task?.projectName,
+  task?.customerName,
+  task?.reference,
+  task?.status,
+  task?.priority,
+  task?.description,
+  task?.currentStageTitle,
+  task?.creator?.name,
+  task?.creator?.email,
+  ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
+].filter(Boolean).join(' ').toLowerCase();
+
 const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivate }) => {
   const queryClient = useQueryClient();
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
   const { user: authUser } = useAuth();
   const [expandedTaskId, setExpandedTaskId] = useState(null);
-  const [activeTab, setActiveTab] = useState('all-dispatched');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [taskSearch, setTaskSearch] = useState('');
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
@@ -35,11 +50,24 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
     refetch,
   } = useOutbox({}, { enabled: isOpen });
 
-  const tasks = outboxData?.tasks || [];
+  const tasks = useMemo(() => outboxData?.tasks || [], [outboxData?.tasks]);
   const currentUser = outboxData?.user || authUser || null;
 
+  const buildHoldUntil = (dateTimeText) => {
+    const value = `${dateTimeText || ''}`.trim();
+    if (!value) return null;
+    const selectedDate = new Date(value);
+    if (Number.isNaN(selectedDate.getTime())) {
+      throw new Error('Select a valid date and time, or leave it blank for a manual hold.');
+    }
+    if (selectedDate.getTime() <= Date.now()) {
+      throw new Error('Select a future date and time, or leave it blank for a manual hold.');
+    }
+    return selectedDate.toISOString();
+  };
+
   const { data: drafts = [] } = useDrafts({
-    enabled: isOpen && activeTab === 'all-dispatched' && filterStatus === 'draft',
+    enabled: isOpen,
   });
 
   useEffect(() => {
@@ -52,12 +80,6 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   useEffect(() => {
     onMinimizedChange?.(isOpen && isMinimized);
   }, [isMinimized, isOpen, onMinimizedChange]);
-
-  useEffect(() => {
-    if (activeTab !== 'all-dispatched' && filterStatus === 'draft') {
-      setFilterStatus('all');
-    }
-  }, [activeTab, filterStatus]);
 
   useEffect(() => {
     if (!Array.isArray(tasks) || tasks.length === 0) return;
@@ -75,7 +97,9 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
 
   const invalidateOutboxCache = () => {
     queryClient.invalidateQueries({ queryKey: ['outbox'] });
+    queryClient.invalidateQueries({ queryKey: ['inbox'] });
     queryClient.invalidateQueries({ queryKey: ['tracking'] });
+    queryClient.invalidateQueries({ queryKey: ['tasks'] });
     queryClient.invalidateQueries({ queryKey: ['drafts'] });
   };
 
@@ -129,6 +153,57 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
       return;
     }
 
+    if (action === 'hold_task') {
+      const confirmed = await showConfirm(
+        'Hold this task? Workers will not be able to start, submit, approve, forward, or edit results until you unhold it.',
+        { title: 'Hold Task' }
+      );
+      if (!confirmed) return;
+
+      const holdUntilText = await showPrompt(
+        'Optional auto-unhold date and time. Leave blank if you want to unhold manually:',
+        { title: 'Hold Until', defaultValue: '', inputType: 'datetime-local' }
+      );
+      if (holdUntilText === null) return;
+
+      const comments = (await showPrompt('Optional reason for holding this task:', {
+        title: 'Hold Reason',
+        defaultValue: '',
+      })) ?? '';
+
+      try {
+        await taskAPI.holdTask(task.id, {
+          comments: comments.trim(),
+          hold_until: buildHoldUntil(holdUntilText),
+        });
+        invalidateOutboxCache();
+        await refetch();
+      } catch (error) {
+        await showAlert(error?.response?.data?.detail || error?.message || 'Failed to hold task', { title: 'Hold Failed' });
+      }
+      return;
+    }
+
+    if (action === 'unhold_task') {
+      const confirmed = await showConfirm(
+        'Unhold this task now? Work actions will become available again.',
+        { title: 'Unhold Task' }
+      );
+      if (!confirmed) return;
+      const comments = (await showPrompt('Optional note for resuming this task:', {
+        title: 'Unhold Note',
+        defaultValue: '',
+      })) ?? '';
+      try {
+        await taskAPI.unholdTask(task.id, comments.trim());
+        invalidateOutboxCache();
+        await refetch();
+      } catch (error) {
+        await showAlert(error?.response?.data?.detail || 'Failed to unhold task', { title: 'Unhold Failed' });
+      }
+      return;
+    }
+
     if (action === 'revoke_task') {
       const confirmed = await showConfirm(
         'Revoke this task? This will mark it as revoked (regularised) for receivers.',
@@ -163,26 +238,6 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
     return Array.from(seen.values());
   };
 
-  const getBaseDataForTab = React.useCallback(() => {
-    let data = [];
-
-    switch (activeTab) {
-      case 'all-dispatched':
-        data = tasks.filter((t) => t.status !== 'draft');
-        break;
-      case 'awaiting':
-        data = tasks.filter(t => ['pending', 'forwarded', 'assigned'].includes(t.status));
-        break;
-      case 'needs-reimprovement':
-        data = tasks.filter(t => t.status === 'need_improvement');
-        break;
-      default:
-        data = tasks.filter((t) => t.status !== 'draft');
-    }
-
-    return data;
-  }, [activeTab, tasks]);
-
   const getFilteredData = () => {
     if (filterStatus === 'draft') {
       return mergeUniqueById([
@@ -191,24 +246,34 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
       ]);
     }
 
-    let data = getBaseDataForTab();
+    let data = tasks.filter((t) => `${t.status || ''}`.toLowerCase() !== 'draft');
 
     if (filterStatus !== 'all') {
-      if (filterStatus.toLowerCase() === 'completed') {
+      const normalizedFilter = filterStatus.toLowerCase();
+      if (normalizedFilter === 'pending') {
+        data = data.filter((item) => ['pending', 'forwarded', 'assigned'].includes(`${item.status || ''}`.toLowerCase()));
+      } else if (normalizedFilter === 'completed') {
         data = data.filter((item) => ['approved', 'completed'].includes(`${item.status || ''}`.toLowerCase()));
       } else {
-        data = data.filter(item => item.status?.toLowerCase() === filterStatus.toLowerCase());
+        data = data.filter(item => item.status?.toLowerCase() === normalizedFilter);
       }
+    }
+
+    const query = taskSearch.trim().toLowerCase();
+    if (query) {
+      data = data.filter((item) => getTaskSearchText(item).includes(query));
     }
 
     return data;
   };
 
   const filteredData = getFilteredData();
-  const allCount = getBaseDataForTab().length;
-  const pendingCount = tasks.filter(t => ['pending', 'forwarded', 'assigned'].includes(t.status)).length;
-  const inProgressCount = tasks.filter(t => t.status === 'in_progress').length;
-  const submittedCount = tasks.filter(t => t.status === 'submitted').length;
+  const nonDraftTasks = tasks.filter((t) => `${t.status || ''}`.toLowerCase() !== 'draft');
+  const allCount = nonDraftTasks.length;
+  const pendingCount = nonDraftTasks.filter(t => ['pending', 'forwarded', 'assigned'].includes(`${t.status || ''}`.toLowerCase())).length;
+  const inProgressCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'in_progress').length;
+  const submittedCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'submitted').length;
+  const needsImprovementCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'need_improvement').length;
   const completedCount = tasks.filter((t) => ['approved', 'completed'].includes(`${t.status || ''}`.toLowerCase())).length;
   const draftCount = mergeUniqueById([
     ...tasks.filter((t) => `${t.status || ''}`.toLowerCase() === 'draft'),
@@ -287,6 +352,21 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
               </span>
             )}
           </div>
+          {!isMinimized && (
+            <div className="outbox-header-search" onClick={(event) => event.stopPropagation()}>
+              <svg className="outbox-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input
+                type="search"
+                value={taskSearch}
+                onChange={(event) => setTaskSearch(event.target.value)}
+                placeholder="Search tasks, projects..."
+                aria-label="Search outbox tasks"
+              />
+            </div>
+          )}
           <div className="outbox-window-controls">
             {!isMinimized && (
               <button className="outbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title="Minimize">
@@ -302,31 +382,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
           </div>
         </div>
 
-        {/* Top Tab Navigation */}
-        {!isMinimized && (
-        <div className="outbox-top-tabs">
-          <button
-            className={`top-tab-btn ${activeTab === 'all-dispatched' ? 'active' : ''}`}
-            onClick={() => setActiveTab('all-dispatched')}
-          >
-            All Dispatched
-          </button>
-          <button
-            className={`top-tab-btn ${activeTab === 'awaiting' ? 'active' : ''}`}
-            onClick={() => setActiveTab('awaiting')}
-          >
-            Awaiting Acceptance
-          </button>
-          <button
-            className={`top-tab-btn ${activeTab === 'needs-reimprovement' ? 'active' : ''}`}
-            onClick={() => setActiveTab('needs-reimprovement')}
-          >
-            Needs Reimprovement
-          </button>
-        </div>
-        )}
-
-        {/* Secondary Filters */}
+        {/* Outbox Filters */}
         {!isMinimized && (
         <div className="outbox-secondary-filters">
           <div className="filter-buttons-group">
@@ -340,7 +396,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
               className={`secondary-filter-btn ${filterStatus === 'pending' ? 'active' : ''}`}
               onClick={() => setFilterStatus('pending')}
             >
-              Pending ({pendingCount})
+              Awaiting Acceptance ({pendingCount})
             </button>
             <button 
               className={`secondary-filter-btn ${filterStatus === 'in_progress' ? 'active' : ''}`}
@@ -354,6 +410,12 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
             >
               Submitted ({submittedCount})
             </button>
+            <button
+              className={`secondary-filter-btn ${filterStatus === 'need_improvement' ? 'active' : ''}`}
+              onClick={() => setFilterStatus('need_improvement')}
+            >
+              Needs Reimprovement ({needsImprovementCount})
+            </button>
             <button 
               className={`secondary-filter-btn ${filterStatus === 'completed' ? 'active' : ''}`}
               onClick={() => setFilterStatus('completed')}
@@ -363,7 +425,6 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
             <button 
               className={`secondary-filter-btn ${filterStatus === 'draft' ? 'active' : ''}`}
               onClick={() => setFilterStatus('draft')}
-              disabled={activeTab !== 'all-dispatched'}
             >
               Drafts ({draftCount})
             </button>

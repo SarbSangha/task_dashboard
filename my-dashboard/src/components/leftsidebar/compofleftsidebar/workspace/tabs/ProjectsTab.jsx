@@ -47,22 +47,22 @@ export default function ProjectsTab() {
 
   return (
     <div className="tab-content tab-content-projects">
-      <div className="content-header">
-        <h3>Projects</h3>
+      <div className="projects-status-row">
         <button className="add-btn" onClick={() => void refresh()}>
           Refresh
         </button>
-      </div>
 
-      <CacheStatusBanner
-        showingCached={cacheStatus.showingCached}
-        isRefreshing={isRefreshing}
-        cachedAt={cacheStatus.cachedAt}
-        liveUpdatedAt={cacheStatus.liveUpdatedAt}
-        refreshingLabel="Refreshing latest workspace data..."
-        liveLabel="Project folders are up to date"
-        cachedLabel="Showing cached project folders"
-      />
+        <CacheStatusBanner
+          showingCached={cacheStatus.showingCached}
+          isRefreshing={isRefreshing}
+          cachedAt={cacheStatus.cachedAt}
+          liveUpdatedAt={cacheStatus.liveUpdatedAt}
+          refreshingLabel="Refreshing latest workspace data..."
+          liveLabel="Project folders are up to date"
+          cachedLabel="Showing cached project folders"
+          className="cache-status-banner--header"
+        />
+      </div>
 
       <div className="projects-toolbar">
         <input

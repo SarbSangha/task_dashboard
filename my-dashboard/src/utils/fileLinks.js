@@ -33,6 +33,16 @@ export function buildFileDownloadUrl(file, fallbackName) {
   return buildFileActionUrl(file, 'download', fallbackName);
 }
 
+export function buildFileThumbnailUrl(file, width = 360) {
+  const params = new URLSearchParams();
+  appendFileParams(params, file);
+
+  if (!params.toString()) return '';
+
+  params.set('width', String(width));
+  return `${FILES_API_BASE}/api/files/thumbnail?${params.toString()}`;
+}
+
 export function getFileDisplayName(file, fallbackName = 'Attachment') {
   if (typeof file === 'string') {
     const cleanValue = file.split('?')[0];

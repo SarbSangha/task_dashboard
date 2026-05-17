@@ -9,7 +9,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.5);
   z-index: 3000;
   animation: fadeIn 0.34s cubic-bezier(0.22, 1, 0.36, 1);
   transition: opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1);
@@ -65,10 +65,13 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 20px;
-  background: rgba(0, 0, 0, 0.2);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 24px 20px;
+  background: linear-gradient(135deg, #1f2d40 0%, #16212c 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   cursor: default;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.25),
+    0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 .workspace-header-left {
@@ -184,38 +187,50 @@
 /* Tabs */
 .workspace-tabs {
   display: flex;
-  gap: 4px;
-  padding: 0 20px;
+  gap: 8px;
+  padding: 10px 16px;
   background: rgba(0, 0, 0, 0.15);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 0;
   overflow-x: auto;
+  align-items: center;
+  scrollbar-width: none;
+}
+
+.workspace-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .workspace-tab {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 20px;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 14px;
-  font-weight: 500;
+  padding: 7px 14px;
+  min-height: 34px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
   white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1;
 }
 
 .workspace-tab:hover {
   color: white;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
 }
 
 .workspace-tab.active {
   color: white;
-  border-bottom-color: white;
-  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.18);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
 }
 
 .tab-icon {
@@ -319,6 +334,22 @@
 
 .add-btn:hover {
   background: rgba(255, 255, 255, 0.25);
+}
+
+.projects-status-row {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.projects-status-row .add-btn {
+  flex-shrink: 0;
+}
+
+.projects-status-row .cache-status-banner {
+  flex: 1;
+  min-width: 0;
 }
 
 .company-department-toolbar {
@@ -1613,6 +1644,22 @@
   flex-wrap: wrap;
 }
 
+.analytics-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.analytics-status-row .analytics-filter-group {
+  flex-shrink: 0;
+}
+
+.analytics-status-row .cache-status-banner {
+  flex: 1;
+  min-width: 0;
+}
+
 .analytics-filter-btn {
   padding: 10px 16px;
   border-radius: 999px;
@@ -1817,18 +1864,18 @@
 
 /* Tracking Theme Override */
 .workspace-window {
-  background: #1f2937;
+  background: #111b2b;
   border: 1px solid #374151;
 }
 
 .workspace-header {
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.16) 0%, rgba(118, 75, 162, 0.16) 100%);
-  border-bottom: 1px solid #374151;
+  background: linear-gradient(135deg, #1f2d40 0%, #16212c 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .workspace-tabs {
-  background: rgba(0, 0, 0, 0.2);
-  border-bottom: 1px solid #374151;
+  background: transparent;
+  border-bottom: 0;
 }
 
 .workspace-tab {
@@ -1841,6 +1888,7 @@
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
   border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
 }
 
 .workspace-content {

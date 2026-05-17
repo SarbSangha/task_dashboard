@@ -15,3 +15,5 @@ router.add_api_route("/{task_id}/workflow", handlers.get_task_workflow, methods=
 router.add_api_route("/{task_id}/stages/{stage_id}", handlers.update_task_stage, methods=["PATCH"])
 router.add_api_route("/{task_id}/edit-task", handlers.edit_task_details, methods=["PUT"])
 router.add_api_route("/{task_id}/edit-result", handlers.edit_task_result, methods=["PUT"])
+router.add_api_route("/{task_id}/hold", handlers.hold_task, methods=["POST"])
+router.add_api_route("/{task_id}/unhold", handlers.unhold_task, methods=["POST"])

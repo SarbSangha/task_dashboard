@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Grid } from 'react-window';
 import { authAPI, taskAPI } from '../../../../services/api';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
-import { buildFileDownloadUrl, buildFileOpenUrl } from '../../../../utils/fileLinks';
+import { buildFileDownloadUrl, buildFileOpenUrl, buildFileThumbnailUrl } from '../../../../utils/fileLinks';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
@@ -10,6 +11,10 @@ const PAGE_SIZE = 60;
 const DATABANK_REQUEST_TIMEOUT_MS = 60000;
 const DIRECTORY_STRUCTURE_STORAGE_KEY = 'rmw.databank.directory.structure';
 const DEFAULT_DIRECTORY_STRUCTURE = ['uploader', 'date', 'project'];
+const VIRTUAL_CARD_MIN_WIDTH = 260;
+const VIRTUAL_CARD_GAP = 12;
+const VIRTUAL_CARD_ROW_HEIGHT = 390;
+const DIRECTORY_FILE_ROW_HEIGHT = 168;
 
 const DIRECTORY_CRITERIA = {
   uploader: {
@@ -121,7 +126,7 @@ const loadDirectoryStructurePreference = () => {
       return [...DEFAULT_DIRECTORY_STRUCTURE];
     }
     return normalizeDirectoryStructure(JSON.parse(rawValue));
-  } catch (error) {
+  } catch {
     return [...DEFAULT_DIRECTORY_STRUCTURE];
   }
 };
@@ -160,6 +165,450 @@ const getMediaFilterLabel = (value) => {
   return `${value || ''}`.toUpperCase();
 };
 
+function useNearViewport(rootMargin = '700px') {
+  const elementRef = useRef(null);
+  const [isNearViewport, setIsNearViewport] = useState(false);
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || isNearViewport) return undefined;
+
+    if (typeof IntersectionObserver === 'undefined') {
+      setIsNearViewport(true);
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        setIsNearViewport(true);
+        observer.disconnect();
+      },
+      { root: null, rootMargin, threshold: 0.01 }
+    );
+
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [isNearViewport, rootMargin]);
+
+  return [elementRef, isNearViewport];
+}
+
+function useElementSize() {
+  const elementRef = useRef(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element) return undefined;
+
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect();
+      setSize((current) => {
+        const width = Math.round(rect.width);
+        const height = Math.round(rect.height);
+        if (current.width === width && current.height === height) return current;
+        return { width, height };
+      });
+    };
+
+    updateSize();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateSize);
+      return () => window.removeEventListener('resize', updateSize);
+    }
+
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return [elementRef, size];
+}
+
+const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, openUrl, thumbnailUrl }) {
+  const [previewRef, isNearViewport] = useNearViewport();
+
+  if (!openUrl) {
+    return <div ref={previewRef} className="trendings-card-fallback">No preview</div>;
+  }
+
+  if (asset.mediaType === 'image') {
+    return (
+      <div ref={previewRef} className="trendings-card-lazy-frame">
+        {isNearViewport ? (
+          <img
+            src={thumbnailUrl || openUrl}
+            alt={asset.filename}
+            className="trendings-card-image"
+            loading="lazy"
+            decoding="async"
+            fetchPriority="low"
+            onError={(event) => {
+              if (openUrl && event.currentTarget.src !== openUrl) {
+                event.currentTarget.src = openUrl;
+              }
+            }}
+          />
+        ) : (
+          <div className="trendings-card-fallback">Image Preview</div>
+        )}
+      </div>
+    );
+  }
+
+  if (asset.mediaType === 'video') {
+    return (
+      <div ref={previewRef} className="trendings-card-lazy-frame">
+        {isNearViewport && thumbnailUrl ? (
+          <img
+            src={thumbnailUrl}
+            alt={asset.filename}
+            className="trendings-card-image"
+            loading="lazy"
+            decoding="async"
+            fetchPriority="low"
+            onError={(event) => {
+              event.currentTarget.style.display = 'none';
+            }}
+          />
+        ) : (
+          <div className="trendings-card-fallback">Video Preview</div>
+        )}
+      </div>
+    );
+  }
+
+  if (asset.mediaType === 'music') {
+    return <div ref={previewRef} className="trendings-card-fallback">Audio Preview</div>;
+  }
+
+  return <div ref={previewRef} className="trendings-card-fallback">Text/Document</div>;
+});
+
+const TrendingsAssetCard = React.memo(function TrendingsAssetCard({
+  asset,
+  isMenuOpen,
+  onInfo,
+  onPreview,
+  onToggleMenu,
+  openUrl,
+  thumbnailUrl,
+}) {
+  const hasMediaPreview = asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music';
+  const activityTime = getAssetActivityTime(asset);
+
+  return (
+    <div className="trendings-card">
+      {hasMediaPreview && (
+        <div className="trendings-card-preview" onClick={() => onPreview(asset)}>
+          <TrendingsCardPreview asset={asset} openUrl={openUrl} thumbnailUrl={thumbnailUrl} />
+        </div>
+      )}
+      <div className="trendings-card-top">
+        <div className="trendings-card-top-left">
+          <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
+          <span className="stage-badge">{asset.stage}</span>
+        </div>
+        <div className="trendings-card-top-right">
+          <div className="trendings-card-upload-meta">
+            <span className="trendings-card-uploader">
+              {asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader'}
+            </span>
+            <span className="trendings-card-upload-time">
+              {activityTime ? new Date(activityTime).toLocaleString() : '-'}
+            </span>
+          </div>
+          <div className="trendings-card-menu-wrap">
+            <button
+              className="trendings-card-menu-btn"
+              onClick={() => onToggleMenu(asset.id)}
+              title="More"
+            >
+              ⋮
+            </button>
+            {isMenuOpen && (
+              <div className="trendings-card-menu">
+                <button onClick={() => onInfo(asset)}>
+                  Info
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      <h4 className="trendings-title">{asset.filename}</h4>
+      <p className="trendings-meta">{asset.taskTitle} • {asset.taskNumber}</p>
+      <p className="trendings-meta">{asset.projectName || 'No project name'}</p>
+      {!hasMediaPreview && (
+        openUrl ? (
+          <button className="trendings-open-link-btn" onClick={() => onPreview(asset)}>
+            Preview
+          </button>
+        ) : (
+          <span className="trendings-no-link">In-app text reference</span>
+        )
+      )}
+    </div>
+  );
+});
+
+const TrendingsGridCell = React.memo(function TrendingsGridCell({
+  ariaAttributes,
+  assets,
+  buildOpenUrl,
+  buildThumbnailUrl,
+  columnCount,
+  columnIndex,
+  openMenuAssetId,
+  onInfo,
+  onPreview,
+  onToggleMenu,
+  rowIndex,
+  style,
+}) {
+  const assetIndex = rowIndex * columnCount + columnIndex;
+  const asset = assets[assetIndex];
+  if (!asset) return null;
+
+  return (
+    <div {...ariaAttributes} className="trendings-virtual-cell" style={style}>
+      <TrendingsAssetCard
+        asset={asset}
+        isMenuOpen={openMenuAssetId === asset.id}
+        onInfo={onInfo}
+        onPreview={onPreview}
+        onToggleMenu={onToggleMenu}
+        openUrl={buildOpenUrl(asset)}
+        thumbnailUrl={buildThumbnailUrl(asset)}
+      />
+    </div>
+  );
+});
+
+const TrendingsVirtualGrid = React.memo(function TrendingsVirtualGrid({
+  assets,
+  buildOpenUrl,
+  buildThumbnailUrl,
+  canLoadMore,
+  loadMoreAssets,
+  loadingMore,
+  openMenuAssetId,
+  onInfo,
+  onPreview,
+  onToggleMenu,
+}) {
+  const [gridWrapRef, gridSize] = useElementSize();
+  const gridWidth = gridSize.width;
+  const gridHeight = gridSize.height;
+  const columnCount = Math.max(
+    1,
+    Math.floor((Math.max(gridWidth, VIRTUAL_CARD_MIN_WIDTH) + VIRTUAL_CARD_GAP) / (VIRTUAL_CARD_MIN_WIDTH + VIRTUAL_CARD_GAP))
+  );
+  const columnWidth = Math.max(
+    VIRTUAL_CARD_MIN_WIDTH,
+    Math.floor((Math.max(gridWidth, VIRTUAL_CARD_MIN_WIDTH) - VIRTUAL_CARD_GAP * (columnCount - 1)) / columnCount)
+  );
+  const rowCount = Math.max(1, Math.ceil(assets.length / columnCount));
+
+  const handleCellsRendered = useCallback(
+    ({ rowStopIndex }) => {
+      if (!canLoadMore || loadingMore) return;
+      if (rowStopIndex >= rowCount - 2) {
+        loadMoreAssets();
+      }
+    },
+    [canLoadMore, loadMoreAssets, loadingMore, rowCount]
+  );
+
+  return (
+    <div className="trendings-virtual-grid-wrap" ref={gridWrapRef}>
+      {gridWidth > 0 && gridHeight > 0 && (
+        <Grid
+          className="trendings-virtual-grid"
+          cellComponent={TrendingsGridCell}
+          cellProps={{
+            assets,
+            buildOpenUrl,
+            buildThumbnailUrl,
+            columnCount,
+            openMenuAssetId,
+            onInfo,
+            onPreview,
+            onToggleMenu,
+          }}
+          columnCount={columnCount}
+          columnWidth={columnWidth}
+          defaultHeight={620}
+          defaultWidth={980}
+          onCellsRendered={handleCellsRendered}
+          overscanCount={1}
+          rowCount={rowCount}
+          rowHeight={VIRTUAL_CARD_ROW_HEIGHT}
+          style={{ height: gridHeight, width: gridWidth }}
+        />
+      )}
+      {loadingMore && <div className="trendings-virtual-loading">Loading more references...</div>}
+    </div>
+  );
+});
+
+const TrendingsDirectoryFileCard = React.memo(function TrendingsDirectoryFileCard({
+  asset,
+  buildDownloadUrl,
+  buildOpenUrl,
+  onDownload,
+  onInfo,
+  onPreview,
+}) {
+  const openUrl = buildOpenUrl(asset);
+  const downloadUrl = buildDownloadUrl(asset);
+  const activityTime = getAssetActivityTime(asset);
+
+  return (
+    <div className="trendings-directory-file-card">
+      <div className="trendings-directory-file-top">
+        <div className="trendings-directory-file-badges">
+          <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
+          <span className="stage-badge">{asset.stage}</span>
+        </div>
+        <div className="trendings-directory-file-upload-meta">
+          <span className="trendings-directory-file-uploader">
+            {asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader'}
+          </span>
+          <span className="trendings-directory-file-time">
+            {activityTime ? new Date(activityTime).toLocaleString() : '-'}
+          </span>
+        </div>
+      </div>
+      <div className="trendings-directory-file-name">{asset.filename}</div>
+      <div className="trendings-directory-file-meta">
+        <span>{asset.taskTitle}</span>
+        <span>{asset.taskNumber}</span>
+      </div>
+      <div className="trendings-directory-file-actions">
+        {(openUrl || asset.stage?.includes('text')) && (
+          <button
+            className="trendings-open-link-btn"
+            onClick={() => onPreview(asset)}
+          >
+            Preview
+          </button>
+        )}
+        {openUrl && (
+          <a
+            className="trendings-open-link-btn"
+            href={openUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open
+          </a>
+        )}
+        {downloadUrl && (
+          <button
+            className="trendings-open-link-btn"
+            onClick={() => onDownload(asset)}
+          >
+            Download
+          </button>
+        )}
+        <button
+          className="trendings-open-link-btn"
+          onClick={() => onInfo(asset)}
+        >
+          Info
+        </button>
+      </div>
+    </div>
+  );
+});
+
+const TrendingsDirectoryFileCell = React.memo(function TrendingsDirectoryFileCell({
+  ariaAttributes,
+  assets,
+  buildDownloadUrl,
+  buildOpenUrl,
+  onDownload,
+  onInfo,
+  onPreview,
+  rowIndex,
+  style,
+}) {
+  const asset = assets[rowIndex];
+  if (!asset) return null;
+
+  return (
+    <div {...ariaAttributes} className="trendings-directory-file-cell" style={style}>
+      <TrendingsDirectoryFileCard
+        asset={asset}
+        buildDownloadUrl={buildDownloadUrl}
+        buildOpenUrl={buildOpenUrl}
+        onDownload={onDownload}
+        onInfo={onInfo}
+        onPreview={onPreview}
+      />
+    </div>
+  );
+});
+
+const TrendingsDirectoryFileList = React.memo(function TrendingsDirectoryFileList({
+  assets,
+  buildDownloadUrl,
+  buildOpenUrl,
+  canLoadMore,
+  loadingMore,
+  onDownload,
+  onInfo,
+  onLoadMore,
+  onPreview,
+}) {
+  const [fileListRef, fileListSize] = useElementSize();
+  const listWidth = fileListSize.width;
+  const listHeight = fileListSize.height;
+  const rowCount = Math.max(1, assets.length);
+
+  const handleCellsRendered = useCallback(
+    ({ rowStopIndex }) => {
+      if (!canLoadMore || loadingMore) return;
+      if (rowStopIndex >= assets.length - 3) {
+        onLoadMore();
+      }
+    },
+    [assets.length, canLoadMore, loadingMore, onLoadMore]
+  );
+
+  return (
+    <div className="trendings-directory-file-virtual-wrap" ref={fileListRef}>
+      {listWidth > 0 && listHeight > 0 && (
+        <Grid
+          className="trendings-directory-file-virtual-grid"
+          cellComponent={TrendingsDirectoryFileCell}
+          cellProps={{
+            assets,
+            buildDownloadUrl,
+            buildOpenUrl,
+            onDownload,
+            onInfo,
+            onPreview,
+          }}
+          columnCount={1}
+          columnWidth={listWidth}
+          defaultHeight={420}
+          defaultWidth={360}
+          onCellsRendered={handleCellsRendered}
+          overscanCount={1}
+          rowCount={rowCount}
+          rowHeight={DIRECTORY_FILE_ROW_HEIGHT}
+          style={{ height: listHeight, width: listWidth }}
+        />
+      )}
+      {loadingMore && <div className="trendings-directory-virtual-loading">Loading more files...</div>}
+    </div>
+  );
+});
+
 const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -167,7 +616,6 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [hasMore, setHasMore] = useState(false);
   const [nextCursor, setNextCursor] = useState(null);
   const [nextOffset, setNextOffset] = useState(null);
-  const [totalMatchingReferences, setTotalMatchingReferences] = useState(null);
   const [lastLatencyMs, setLastLatencyMs] = useState(null);
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
@@ -193,6 +641,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [directoryFilesHasMore, setDirectoryFilesHasMore] = useState(false);
   const [directoryFilesNextOffset, setDirectoryFilesNextOffset] = useState(0);
   const [directoryFilesPathKey, setDirectoryFilesPathKey] = useState('');
+  const loadMoreInFlightRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -203,24 +652,23 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     onMinimizedChange?.(isOpen && isMinimized);
   }, [isMinimized, isOpen, onMinimizedChange]);
 
-  const buildOpenUrl = (asset) => {
+  const buildOpenUrl = useCallback((asset) => {
     return buildFileOpenUrl(asset) || null;
-  };
+  }, []);
 
-  const buildDownloadUrl = (asset) => {
+  const buildThumbnailUrl = useCallback((asset) => {
+    if (!['image', 'video'].includes(asset?.mediaType)) return null;
+    const filename = `${asset?.filename || asset?.originalName || asset?.url || asset?.path || ''}`.toLowerCase();
+    const mimetype = `${asset?.mimetype || ''}`.toLowerCase();
+    if (mimetype.includes('svg') || filename.endsWith('.svg')) return null;
+    return buildFileThumbnailUrl(asset, 360) || null;
+  }, []);
+
+  const buildDownloadUrl = useCallback((asset) => {
     return buildFileDownloadUrl(asset, asset?.filename || 'download') || null;
-  };
+  }, []);
 
-  const openAssetInNewTab = (asset) => {
-    const openUrl = buildOpenUrl(asset);
-    if (!openUrl) {
-      setPreviewAsset(asset);
-      return;
-    }
-    setPreviewAsset(asset);
-  };
-
-  const downloadAsset = (asset) => {
+  const downloadAsset = useCallback((asset) => {
     const downloadUrl = buildDownloadUrl(asset);
     if (!downloadUrl) return;
     const link = document.createElement('a');
@@ -229,7 +677,20 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  };
+  }, [buildDownloadUrl]);
+
+  const handlePreviewAsset = useCallback((asset) => {
+    setPreviewAsset(asset);
+  }, []);
+
+  const handleToggleAssetMenu = useCallback((assetId) => {
+    setOpenMenuAssetId((prev) => (prev === assetId ? null : assetId));
+  }, []);
+
+  const handleInfoAsset = useCallback((asset) => {
+    setInfoAsset(asset);
+    setOpenMenuAssetId(null);
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -238,6 +699,10 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     }, 250);
     return () => window.clearTimeout(timer);
   }, [isOpen, searchInput]);
+
+  useEffect(() => {
+    setOpenMenuAssetId(null);
+  }, [activeView, departmentFilter, filter, search, sortBy]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -278,7 +743,6 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         setHasMore(Boolean(res?.hasMore));
         setNextCursor(res?.nextCursor || null);
         setNextOffset(Number.isFinite(res?.nextOffset) ? res.nextOffset : null);
-        setTotalMatchingReferences(null);
         setLastLatencyMs(Number.isFinite(res?.latencyMs) ? res.latencyMs : null);
       } catch (error) {
         console.error('Failed to load trendings:', error);
@@ -287,7 +751,6 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         setHasMore(false);
         setNextCursor(null);
         setNextOffset(null);
-        setTotalMatchingReferences(null);
         setLastLatencyMs(null);
         setLoadError('Could not load databank assets right now.');
       } finally {
@@ -301,7 +764,8 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   }, [isOpen, activeView, filter, departmentFilter, search, sortBy]);
 
   const loadMoreAssets = useCallback(async () => {
-    if (loadingMore || loading || !hasMore || (!nextCursor && nextOffset == null)) return;
+    if (loadMoreInFlightRef.current || loadingMore || loading || !hasMore || (!nextCursor && nextOffset == null)) return;
+    loadMoreInFlightRef.current = true;
     setLoadingMore(true);
     setLoadError('');
     try {
@@ -324,41 +788,18 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       setHasMore(Boolean(res?.hasMore));
       setNextCursor(res?.nextCursor || null);
       setNextOffset(Number.isFinite(res?.nextOffset) ? res.nextOffset : null);
-      setTotalMatchingReferences((current) => (
-        Number.isFinite(res?.totalMatchingReferences) ? res.totalMatchingReferences : current
-      ));
       setLastLatencyMs((current) => (Number.isFinite(res?.latencyMs) ? res.latencyMs : current));
     } catch (error) {
       console.error('Failed to load more trendings assets:', error);
       setLoadError('Could not load more databank assets right now.');
     } finally {
+      loadMoreInFlightRef.current = false;
       setLoadingMore(false);
     }
   }, [departmentFilter, filter, hasMore, loading, loadingMore, nextCursor, nextOffset, search, sortBy]);
 
   const filteredAssets = useMemo(() => assets, [assets]);
   const canLoadMore = hasMore && (Boolean(nextCursor) || nextOffset != null);
-  const metrics = useMemo(() => {
-    const groupedByTask = assets.reduce((acc, item) => {
-      acc[item.taskId] = (acc[item.taskId] || 0) + 1;
-      return acc;
-    }, {});
-    const uniqueProjectCount = new Set(
-      assets
-        .map((item) => `${item.projectName || ''}`.trim())
-        .filter(Boolean)
-    ).size;
-
-    return {
-      loadedReferences: assets.length,
-      loadedTasks: Object.keys(groupedByTask).length,
-      loadedProjects: uniqueProjectCount,
-    };
-  }, [assets]);
-
-  const loadedSummaryText = totalMatchingReferences != null
-    ? `Showing ${filteredAssets.length} of ${totalMatchingReferences} references`
-    : `Showing ${filteredAssets.length} references`;
   const isDirectoryTab = activeView === 'directory';
   const activeDirectoryCriteria = useMemo(
     () => directoryStructure.filter((criterionKey) => criterionKey !== 'none'),
@@ -663,13 +1104,20 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     });
   };
 
-  const handleLoadMoreDirectoryFiles = () => {
+  const handleLoadMoreDirectoryFiles = useCallback(() => {
     if (!directoryFilesHasMore || directoryFilesLoading || directoryFilesLoadingMore) {
       return;
     }
     const pathFilters = buildDirectoryPathFilters(selectedDirectoryNodes);
     void loadDirectoryFiles({ pathFilters, append: true });
-  };
+  }, [
+    buildDirectoryPathFilters,
+    directoryFilesHasMore,
+    directoryFilesLoading,
+    directoryFilesLoadingMore,
+    loadDirectoryFiles,
+    selectedDirectoryNodes,
+  ]);
 
   const renderPreviewContent = (asset) => {
     if (!asset) return null;
@@ -698,7 +1146,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       return <iframe src={previewUrl} title={asset.filename} className="trendings-preview-frame" />;
     }
 
-    if (asset.stage.includes('link') && asset.url) {
+    if (asset.stage?.includes('link') && asset.url) {
       return (
         <div className="trendings-preview-link">
           <p>External link preview may be restricted by the target site.</p>
@@ -717,27 +1165,6 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         ) : null}
       </div>
     );
-  };
-
-  const renderCardPreview = (asset) => {
-    const previewUrl = buildOpenUrl(asset);
-    if (!previewUrl) {
-      return <div className="trendings-card-fallback">No preview</div>;
-    }
-
-    if (asset.mediaType === 'image') {
-      return <img src={previewUrl} alt={asset.filename} className="trendings-card-image" loading="lazy" />;
-    }
-
-    if (asset.mediaType === 'video') {
-      return <div className="trendings-card-fallback">Video Preview</div>;
-    }
-
-    if (asset.mediaType === 'music') {
-      return <div className="trendings-card-fallback">Audio Preview</div>;
-    }
-
-    return <div className="trendings-card-fallback">Text/Document</div>;
   };
 
   const handleToggleMinimize = () => {
@@ -775,6 +1202,16 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       >
         <div className="trendings-header">
           <h2>RMW Data</h2>
+          {!isMinimized && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search across all formats..."
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+              />
+            </div>
+          )}
           <div className="trendings-controls">
             {!isMinimized && (
               <button
@@ -798,66 +1235,32 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
 
         {!isMinimized && (
           <>
-            <div className="trendings-search-row">
-              <input
-                className="trendings-search"
-                placeholder="Search across all formats..."
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-              />
-            </div>
-
-            <div className="trendings-view-tabs" role="tablist" aria-label="RMW Data Views">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={!isDirectoryTab}
-                className={`trendings-view-tab ${!isDirectoryTab ? 'active' : ''}`}
-                onClick={() => setActiveView('data')}
-              >
-                Data
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={isDirectoryTab}
-                className={`trendings-view-tab ${isDirectoryTab ? 'active' : ''}`}
-                onClick={() => setActiveView('directory')}
-              >
-                Directory
-              </button>
-            </div>
-
-            {!isDirectoryTab ? (
-              <div className="trendings-metrics">
-                <div className="metric-card">
-                  <div className="metric-title">Loaded References</div>
-                  <div className="metric-value">{metrics.loadedReferences}</div>
-                  <div className="metric-subvalue">{loadedSummaryText}</div>
-                </div>
-                <div className="metric-card">
-                  <div className="metric-title">Loaded Tasks</div>
-                  <div className="metric-value">{metrics.loadedTasks}</div>
-                </div>
-                <div className="metric-card">
-                  <div className="metric-title">Loaded Projects</div>
-                  <div className="metric-value">{metrics.loadedProjects}</div>
-                </div>
-              </div>
-            ) : (
-              <div className="trendings-footnote trendings-directory-footnote">
-                Browse folders first, then load only the files for the selected path. Folder order stays customizable for each user.
-              </div>
-            )}
-
-            {!isDirectoryTab && (
-              <div className="trendings-footnote">
-                Fast databank mode is active. These counts reflect the currently loaded matching assets, and load more continues from the last cursor instead of restarting from the beginning.
-                {lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}
-              </div>
-            )}
-
             <div className="trendings-filter-row">
+              <div className="trendings-view-tabs" role="tablist" aria-label="RMW Data Views">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={!isDirectoryTab}
+                  className={`trendings-view-tab ${!isDirectoryTab ? 'active' : ''}`}
+                  onClick={() => setActiveView('data')}
+                >
+                  Data
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isDirectoryTab}
+                  className={`trendings-view-tab ${isDirectoryTab ? 'active' : ''}`}
+                  onClick={() => setActiveView('directory')}
+                >
+                  Directory
+                </button>
+              </div>
+              <div className="trendings-toolbar-status">
+                {isDirectoryTab
+                  ? 'Browse folders first, then load only the files for the selected path.'
+                  : `Fast databank mode is active.${lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}`}
+              </div>
               <div className="trendings-select-filters">
                 <label className="trendings-filter-select-wrap">
                   <span className="trendings-filter-select-label">Format</span>
@@ -904,7 +1307,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
               </div>
             </div>
 
-            <div className="trendings-content">
+            <div className={`trendings-content ${!isDirectoryTab ? 'trendings-content--data' : ''}`}>
               {loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
               {isDirectoryTab && (
                 <div className="trendings-directory-window">
@@ -1006,61 +1409,19 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                           ))}
                         </div>
                         <div className="trendings-directory-file-list">
-                          {directoryFiles.map((asset) => (
-                            <div key={asset.id} className="trendings-directory-file-card">
-                              <div className="trendings-directory-file-top">
-                                <div className="trendings-directory-file-badges">
-                                  <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
-                                  <span className="stage-badge">{asset.stage}</span>
-                                </div>
-                                <div className="trendings-directory-file-upload-meta">
-                                  <span className="trendings-directory-file-uploader">
-                                    {asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader'}
-                                  </span>
-                                  <span className="trendings-directory-file-time">
-                                    {getAssetActivityTime(asset) ? new Date(getAssetActivityTime(asset)).toLocaleString() : '-'}
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="trendings-directory-file-name">{asset.filename}</div>
-                              <div className="trendings-directory-file-meta">
-                                <span>{asset.taskTitle}</span>
-                                <span>{asset.taskNumber}</span>
-                              </div>
-                              <div className="trendings-directory-file-actions">
-                                {(buildOpenUrl(asset) || asset.stage.includes('text')) && (
-                                  <button
-                                    className="trendings-open-link-btn"
-                                    onClick={() => setPreviewAsset(asset)}
-                                  >
-                                    Preview
-                                  </button>
-                                )}
-                                {buildOpenUrl(asset) && (
-                                  <button
-                                    className="trendings-open-link-btn"
-                                    onClick={() => openAssetInNewTab(asset)}
-                                  >
-                                    Open
-                                  </button>
-                                )}
-                                {buildDownloadUrl(asset) && (
-                                  <button
-                                    className="trendings-open-link-btn"
-                                    onClick={() => downloadAsset(asset)}
-                                  >
-                                    Download
-                                  </button>
-                                )}
-                                <button
-                                  className="trendings-open-link-btn"
-                                  onClick={() => setInfoAsset(asset)}
-                                >
-                                  Info
-                                </button>
-                              </div>
-                            </div>
-                          ))}
+                          {directoryFiles.length > 0 && (
+                            <TrendingsDirectoryFileList
+                              assets={directoryFiles}
+                              buildDownloadUrl={buildDownloadUrl}
+                              buildOpenUrl={buildOpenUrl}
+                              canLoadMore={directoryFilesHasMore}
+                              loadingMore={directoryFilesLoadingMore}
+                              onDownload={downloadAsset}
+                              onInfo={setInfoAsset}
+                              onLoadMore={handleLoadMoreDirectoryFiles}
+                              onPreview={setPreviewAsset}
+                            />
+                          )}
                           {directoryFilesLoading && (
                             <div className="trendings-directory-load-state">
                               Loading files for the selected folder...
@@ -1071,18 +1432,6 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                               {selectedDirectoryPath.length === activeDirectoryCriteria.length
                                 ? 'No files found in this folder.'
                                 : 'Select a full folder path to load files here.'}
-                            </div>
-                          )}
-                          {directoryFiles.length > 0 && directoryFilesHasMore && (
-                            <div className="trendings-directory-load-more-wrap">
-                              <button
-                                type="button"
-                                className="trendings-load-more-btn"
-                                onClick={handleLoadMoreDirectoryFiles}
-                                disabled={directoryFilesLoadingMore}
-                              >
-                                {directoryFilesLoadingMore ? 'Loading more...' : 'Load More Files'}
-                              </button>
                             </div>
                           )}
                         </div>
@@ -1099,79 +1448,18 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                   <div className="trendings-state">No references found for this filter.</div>
                 ) : (
                   <>
-                    <div className="trendings-grid">
-                      {filteredAssets.map((asset) => (
-                        <div key={asset.id} className="trendings-card">
-                          {(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') && (
-                            <div className="trendings-card-preview" onClick={() => setPreviewAsset(asset)}>
-                              {renderCardPreview(asset)}
-                            </div>
-                          )}
-                          <div className="trendings-card-top">
-                            <div className="trendings-card-top-left">
-                              <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
-                              <span className="stage-badge">{asset.stage}</span>
-                            </div>
-                            <div className="trendings-card-top-right">
-                              <div className="trendings-card-upload-meta">
-                                <span className="trendings-card-uploader">
-                                  {asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader'}
-                                </span>
-                                <span className="trendings-card-upload-time">
-                                  {getAssetActivityTime(asset) ? new Date(getAssetActivityTime(asset)).toLocaleString() : '-'}
-                                </span>
-                              </div>
-                              <div className="trendings-card-menu-wrap">
-                                <button
-                                  className="trendings-card-menu-btn"
-                                  onClick={() =>
-                                    setOpenMenuAssetId((prev) => (prev === asset.id ? null : asset.id))
-                                  }
-                                  title="More"
-                                >
-                                  ⋮
-                                </button>
-                                {openMenuAssetId === asset.id && (
-                                  <div className="trendings-card-menu">
-                                    <button
-                                      onClick={() => {
-                                        setInfoAsset(asset);
-                                        setOpenMenuAssetId(null);
-                                      }}
-                                    >
-                                      Info
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                          <h4 className="trendings-title">{asset.filename}</h4>
-                          <p className="trendings-meta">{asset.taskTitle} • {asset.taskNumber}</p>
-                          <p className="trendings-meta">{asset.projectName || 'No project name'}</p>
-                          {!(asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music') &&
-                            (buildOpenUrl(asset) ? (
-                              <button className="trendings-open-link-btn" onClick={() => setPreviewAsset(asset)}>
-                                Preview
-                              </button>
-                            ) : (
-                              <span className="trendings-no-link">In-app text reference</span>
-                            ))}
-                        </div>
-                      ))}
-                    </div>
-                    {canLoadMore && (
-                      <div className="trendings-load-more-wrap">
-                        <button
-                          type="button"
-                          className="trendings-load-more-btn"
-                          onClick={loadMoreAssets}
-                          disabled={loadingMore}
-                        >
-                          {loadingMore ? 'Loading more...' : 'Load More'}
-                        </button>
-                      </div>
-                    )}
+                    <TrendingsVirtualGrid
+                      assets={filteredAssets}
+                      buildOpenUrl={buildOpenUrl}
+                      buildThumbnailUrl={buildThumbnailUrl}
+                      canLoadMore={canLoadMore}
+                      loadMoreAssets={loadMoreAssets}
+                      loadingMore={loadingMore}
+                      openMenuAssetId={openMenuAssetId}
+                      onInfo={handleInfoAsset}
+                      onPreview={handlePreviewAsset}
+                      onToggleMenu={handleToggleAssetMenu}
+                    />
                   </>
                 )
               )}

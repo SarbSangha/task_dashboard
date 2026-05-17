@@ -4,7 +4,6 @@ export default function TasksTab() {
   return (
     <div className="tab-content">
       <div className="content-header">
-        <h3>All Tasks</h3>
         <button className="add-btn">+ Add Task</button>
       </div>
       <div className="tasks-list">

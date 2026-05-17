@@ -42,14 +42,8 @@ const FunctionalMenu = () => {
 
   const panel = getPanelFromPath(pathname);
 
-  const isInboxPanelOpen = panel === 'inbox';
   const isOutboxModalOpen = panel === 'outbox';
-  const isWorkSpaceOpen = panel === 'workspace';
-  const isTrackingPanelOpen = panel === 'tracking';
   const isMessageSystemOpen = panel === 'messages';
-  const isAdminQueueOpen = panel === 'admin-queue';
-  const isTrendingsOpen = panel === 'trendings';
-  const isAssignModalOpen = panel === 'create-task';
 
   const activeItem = PANEL_TO_ACTIVE[panel] || 'tracking-alt';
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -70,7 +64,6 @@ const FunctionalMenu = () => {
     }
 
     if (assignModalRef.current?.consumeNavigationAllowance?.()) {
-      setEditingTask(null);
       return true;
     }
 
@@ -79,7 +72,6 @@ const FunctionalMenu = () => {
       return false;
     }
 
-    setEditingTask(null);
     return true;
   };
 
@@ -133,6 +125,7 @@ const FunctionalMenu = () => {
       void goHome();
     }
   };
+  const isCreateTaskVisible = isPanelVisible('create-task');
 
   const openAssignModal = () => {
     setEditingTask(null);
@@ -140,8 +133,10 @@ const FunctionalMenu = () => {
   };
 
   const closeAssignModal = () => {
-    setEditingTask(null);
-    closePanel('create-task');
+    setPanelMinimized('create-task', false);
+    if (panel === 'create-task') {
+      navigate('/dashboard');
+    }
   };
 
   const openInboxPanel = () => {
@@ -198,6 +193,14 @@ const FunctionalMenu = () => {
     goTo('admin-queue');
   };
   const closeAdminQueue = () => closePanel('admin-queue');
+
+  useEffect(() => {
+    if (isCreateTaskVisible) {
+      return;
+    }
+
+    setEditingTask(null);
+  }, [isCreateTaskVisible]);
 
   useEffect(() => {
     const previousRoute = previousRouteRef.current;

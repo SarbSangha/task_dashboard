@@ -22,13 +22,7 @@ export default function AnalyticsTab() {
 
   return (
     <div className="tab-content">
-      <div className="content-header analytics-header">
-        <div className="analytics-header-copy">
-          <h3>Analytics Dashboard</h3>
-          <p className="analytics-subtitle">
-            Live performance for the logged-in user, filtered by {activeFilter.label.toLowerCase()} activity.
-          </p>
-        </div>
+      <div className="analytics-status-row">
         <div className="analytics-filter-group">
           {filters.map((filter) => (
             <button
@@ -41,17 +35,18 @@ export default function AnalyticsTab() {
             </button>
           ))}
         </div>
-      </div>
 
-      <CacheStatusBanner
-        showingCached={cacheStatus.showingCached}
-        isRefreshing={isRefreshing}
-        cachedAt={cacheStatus.cachedAt}
-        liveUpdatedAt={cacheStatus.liveUpdatedAt}
-        refreshingLabel="Refreshing latest analytics source data..."
-        liveLabel="Analytics source data is up to date"
-        cachedLabel="Showing cached analytics source data"
-      />
+        <CacheStatusBanner
+          showingCached={cacheStatus.showingCached}
+          isRefreshing={isRefreshing}
+          cachedAt={cacheStatus.cachedAt}
+          liveUpdatedAt={cacheStatus.liveUpdatedAt}
+          refreshingLabel="Refreshing latest analytics source data..."
+          liveLabel="Analytics source data is up to date"
+          cachedLabel="Showing cached analytics source data"
+          className="cache-status-banner--header"
+        />
+      </div>
 
       {taskError && <div className="team-member-card">{taskError}</div>}
       {error && <div className="team-member-card">{error}</div>}

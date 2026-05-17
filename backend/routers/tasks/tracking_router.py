@@ -15,6 +15,8 @@ router.add_api_route("/{task_id}/stages/{stage_id}/approve", handlers.approve_ta
 router.add_api_route("/{task_id}/stages/{stage_id}/request-improvement", handlers.request_stage_improvement, methods=["POST"])
 router.add_api_route("/{task_id}/actions/forward", handlers.forward_task, methods=["POST"])
 router.add_api_route("/{task_id}/actions/revoke", handlers.revoke_task, methods=["POST"])
+router.add_api_route("/{task_id}/actions/hold", handlers.hold_task, methods=["POST"])
+router.add_api_route("/{task_id}/actions/unhold", handlers.unhold_task, methods=["POST"])
 router.add_api_route("/{task_id}/comments", handlers.add_comment, methods=["POST"])
 router.add_api_route("/{task_id}/comments", handlers.get_comments, methods=["GET"])
 router.add_api_route("/notifications/me", handlers.get_my_notifications, methods=["GET"])

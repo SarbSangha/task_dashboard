@@ -93,7 +93,6 @@ export default function OverviewTab() {
 
   return (
     <div className="tab-content tab-content-groups">
-      <h3>Workspace Overview</h3>
       <CacheStatusBanner
         showingCached={cacheStatus.showingCached}
         isRefreshing={isRefreshing}

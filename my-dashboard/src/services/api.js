@@ -900,6 +900,28 @@ export const taskAPI = {
     return response.data;
   },
 
+  holdTask: async (taskId, payload = {}) => {
+    try {
+      const response = await api.post(`/api/tasks/${taskId}/actions/hold`, payload);
+      return response.data;
+    } catch (error) {
+      if (error?.response?.status !== 404) throw error;
+      const fallbackResponse = await api.post(`/api/tasks/${taskId}/hold`, payload);
+      return fallbackResponse.data;
+    }
+  },
+
+  unholdTask: async (taskId, comments = '') => {
+    try {
+      const response = await api.post(`/api/tasks/${taskId}/actions/unhold`, { comments });
+      return response.data;
+    } catch (error) {
+      if (error?.response?.status !== 404) throw error;
+      const fallbackResponse = await api.post(`/api/tasks/${taskId}/unhold`, { comments });
+      return fallbackResponse.data;
+    }
+  },
+
   editTask: async (taskId, payload = {}) => {
     const response = await api.put(`/api/tasks/${taskId}/edit-task`, payload);
     return response.data;

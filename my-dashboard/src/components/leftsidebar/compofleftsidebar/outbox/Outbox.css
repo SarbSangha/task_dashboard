@@ -69,15 +69,19 @@
 
 /* Main Header */
 .outbox-main-header {
-  background: white;
-  padding: 20px 32px;
-  border-bottom: 1px solid #e9ecef;
+  background: linear-gradient(135deg, #1f2d40 0%, #16212c 100%);
+  padding: 20px 28px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
   border-radius: 20px 20px 0 0;
   cursor: default;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.25),
+    0 2px 6px rgba(0, 0, 0, 0.15);
+  position: relative;
 }
 
 .header-title-section {
@@ -86,13 +90,55 @@
 
 .outbox-main-title {
   margin: 0;
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 700;
   color: #1a1a1a;
   letter-spacing: 0.3px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.outbox-header-search {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(42vw, 540px);
+  max-width: calc(100% - 420px);
+}
+
+.outbox-header-search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translateY(-50%);
+  color: rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
+
+.outbox-header-search input {
+  width: 100%;
+  height: 40px;
+  padding: 10px 16px 10px 44px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  color: #fff;
+  font-size: 14px;
+  outline: none;
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.outbox-header-search input::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.outbox-header-search input:focus {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: #1abc9c;
+  box-shadow: 0 0 0 3px rgba(26, 188, 156, 0.15);
 }
 
 .outbox-close-btn {
@@ -163,6 +209,10 @@
   display: none;
 }
 
+.outbox-modal.minimized .outbox-header-search {
+  display: none;
+}
+
 .outbox-modal.minimized .outbox-window-controls {
   gap: 6px;
 }
@@ -201,29 +251,33 @@
 }
 
 .top-tab-btn {
-  padding: 14px 24px;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  font-size: 14px;
+  padding: 7px 14px;
+  min-height: 34px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  font-size: 12px;
   font-weight: 600;
-  color: #6c757d;
+  color: rgba(255, 255, 255, 0.78);
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
   position: relative;
-  border-bottom: 3px solid transparent;
+  white-space: nowrap;
+  line-height: 1;
 }
 
 .top-tab-btn:hover {
-  color: #1a1a1a;
-  background: rgb(255, 255, 255);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
 }
 
 .top-tab-btn.active {
-  background: #1a1d23;
-  color: white;
-  border-bottom-color: #1a1d23;
-  border-radius: 8px 8px 0 0;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
 }
 
 /* Secondary Filters Row */
@@ -240,36 +294,38 @@
 
 .filter-buttons-group {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   flex: 1;
 }
 
 .secondary-filter-btn {
-  padding: 9px 18px;
-  background: white;
-  border: 1px solid #dee2e6;
-  border-radius: 8px;
-  font-size: 13px;
+  padding: 7px 14px;
+  min-height: 34px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  font-size: 12px;
   font-weight: 600;
-  color: #495057;
+  color: rgba(255, 255, 255, 0.78);
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
   white-space: nowrap;
+  line-height: 1;
 }
 
 .secondary-filter-btn:hover {
-  border-color: #adb5bd;
-  background: #f8f9fa;
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.12);
   transform: translateY(-1px);
-  color: #495057;
+  color: #fff;
 }
 
 .secondary-filter-btn.active {
-  background: #1a1d23;
-  border-color: #1a1d23;
-  color: white;
-  box-shadow: 0 2px 8px rgba(26, 29, 35, 0.2);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
 }
 
 /* Refresh Button */
@@ -768,6 +824,20 @@
     padding-right: 20px;
   }
 
+  .outbox-main-header {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .outbox-header-search {
+    position: relative;
+    left: auto;
+    order: 3;
+    width: 100%;
+    max-width: none;
+    transform: none;
+  }
+
   .outbox-top-tabs {
     flex-wrap: wrap;
   }
@@ -854,13 +924,13 @@
 
 /* Tracking Theme Override */
 .outbox-modal {
-  background: #1f2937;
+  background: #111b2b;
   border: 1px solid #374151;
 }
 
 .outbox-main-header {
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.16) 0%, rgba(118, 75, 162, 0.16) 100%);
-  border-bottom: 1px solid #374151;
+  background: linear-gradient(135deg, #1f2d40 0%, #16212c 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .outbox-main-title,
@@ -868,10 +938,14 @@
   color: #fff;
 }
 
-.outbox-top-tabs,
 .outbox-secondary-filters {
-  background: rgba(0, 0, 0, 0.2);
-  border-bottom: 1px solid #374151;
+  background: transparent;
+  border-bottom: 0;
+}
+
+.outbox-top-tabs {
+  background: transparent;
+  border-bottom: 0;
 }
 
 .top-tab-btn,
@@ -886,6 +960,7 @@
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border-color: rgba(255, 255, 255, 0.18);
   color: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
 }
 
 .outbox-content {

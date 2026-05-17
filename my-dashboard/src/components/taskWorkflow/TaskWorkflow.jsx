@@ -1,5 +1,5 @@
-import React, { Fragment, useState, useEffect } from 'react';
-import { createPortal } from 'react-dom';
+import { Fragment, useState, useEffect } from 'react';
+import { createPortal, flushSync } from 'react-dom';
 import './TaskWorkflow.css';
 import { formatDateTimeIndia } from '../../utils/dateTime';
 import { buildFileOpenUrl } from '../../utils/fileLinks';
@@ -398,15 +398,14 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
     const [titleLine, detailLine] = step.label.split('\n');
     const stageData = step.stageData;
 
-    const getModuleIcon = () => {
-      if (stageData?.order) return `${stageData.order}`;
-      if (step.type === 'start') return 'L';
-      if (step.type === 'process') return 'i';
-      if (step.type === 'decision') return 'Q';
-      if (step.type === 'action') return 'AI';
-      if (step.type === 'circle') return 'S';
-      if (step.type === 'end') return 'OK';
-      return 'N';
+    const getStageLabel = () => {
+      if (stageData?.title) return stageData.title;
+      if (step.keyName === 'created') return 'Sent';
+      if (step.keyName === 'working') return 'Receive';
+      if (step.keyName === 'submitted') return 'Submit';
+      if (step.keyName === 'approval') return 'Review';
+      if (step.keyName === 'final') return 'Done';
+      return titleLine || step.label;
     };
 
     const baseProps = {
@@ -434,14 +433,22 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
               }
             }}
           >
-            <div className="node-content module-card">
-              <div className="module-card-head">
-                <span className="module-icon" aria-hidden="true">{getModuleIcon()}</span>
-                <span className="module-status">{getStepStatusText(step.status)}</span>
+            <div className="node-content stage-node">
+              <div className="stage-node-ring" aria-hidden="true">
+                {step.status === 'completed' ? (
+                  <svg className="stage-node-check" viewBox="0 0 24 24" fill="none">
+                    <path d="M5 12.5l4.4 4.2L19 7" />
+                  </svg>
+                ) : (
+                  <span className="stage-node-dot" />
+                )}
+                {(step.status === 'active' || step.status === 'returned') && (
+                  <span className="stage-node-pulse" />
+                )}
               </div>
-              <div className="module-card-body">
-                <h4>{titleLine || step.label}</h4>
-                <p>{detailLine || step.actor || 'Workflow Step'}</p>
+              <div className="stage-node-label">
+                <strong>{getStageLabel()}</strong>
+                {detailLine ? <span>{titleLine}</span> : null}
               </div>
             </div>
           </div>
@@ -462,13 +469,11 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
     }
   };
 
-  const renderConnector = (id, status) => {
-    const isActive = status === 'completed' || status === 'active';
+  const renderConnector = (id, currentStatus, nextStatus) => {
+    const isActive = currentStatus === 'completed' && nextStatus !== 'pending';
     return (
       <div className={`workflow-connector ${isActive ? 'active' : ''}`} key={`connector-${id}`} aria-hidden="true">
-        <div className="connector-line">
-          {isActive && <span className="connector-dot"></span>}
-        </div>
+        <div className="connector-line" />
       </div>
     );
   };
@@ -500,42 +505,63 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
     );
   };
 
-  const handleToggleMinimize = () => {
-    if (isMinimized) {
-      setIsMinimized(false);
+  const runPanelViewTransition = (updateState) => {
+    if (document.startViewTransition) {
+      document.startViewTransition(() => {
+        flushSync(updateState);
+      });
       return;
     }
 
-    setIsMaximized(false);
-    setIsMinimized(true);
+    updateState();
+  };
+
+  const restoreFromMinimized = () => {
+    runPanelViewTransition(() => {
+      setIsMinimized(false);
+    });
+  };
+
+  const handleToggleMinimize = () => {
+    if (isMinimized) {
+      restoreFromMinimized();
+      return;
+    }
+
+    runPanelViewTransition(() => {
+      setIsMaximized(false);
+      setIsMinimized(true);
+    });
   };
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
-      setIsMinimized(false);
-      setIsMaximized(true);
+      restoreFromMinimized();
       return;
     }
 
-    setIsMaximized((prev) => !prev);
+    runPanelViewTransition(() => {
+      setIsMaximized((prev) => !prev);
+    });
   };
 
   const dynamicModalStyle = (() => {
     if (isMinimized) return undefined;
 
     const stepCount = Math.max(1, workflowSteps.length);
-    const baseTrackWidth = (stepCount * 220) + (Math.max(0, stepCount - 1) * 82) + 120;
-    const baseWidth = Math.min(1760, Math.max(task.workflowEnabled ? 1100 : 1380, baseTrackWidth));
-    const modalWidth = isMaximized ? '100vw' : `min(98vw, ${baseWidth}px)`;
+    const baseTrackWidth = (stepCount * 84) + (Math.max(0, stepCount - 1) * 74) + 180;
+    const baseWidth = Math.min(1100, Math.max(860, baseTrackWidth));
+    const modalWidth = isMaximized ? '100vw' : '95%';
     const modalHeight = isMaximized
       ? '100vh'
-      : `min(96vh, ${Math.min(1040, Math.max(900, 800 + workflowSteps.length * 28))}px)`;
+      : 'calc(100vh - var(--workflow-panel-top-offset) - 24px)';
 
-    const nodeScale = isMaximized ? 1.24 : baseWidth >= 1500 ? 1.12 : 1.02;
-    const connectorWidth = isMaximized ? 106 : baseWidth >= 1500 ? 92 : 82;
+    const nodeScale = isMaximized ? 1.12 : 1;
+    const connectorWidth = isMaximized ? 106 : 84;
 
     return {
       '--workflow-modal-width': modalWidth,
+      '--workflow-modal-max-width': '1400px',
       '--workflow-modal-height': modalHeight,
       '--workflow-node-scale': nodeScale,
       '--workflow-connector-width': `${connectorWidth}px`
@@ -737,7 +763,7 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
         {/* Header */}
         <div
           className="workflow-modal-header"
-          onClick={isMinimized ? () => setIsMinimized(false) : undefined}
+          onClick={isMinimized ? restoreFromMinimized : undefined}
         >
           <div className="workflow-title-section">
             <h2 className="workflow-title">Task Workflow Path</h2>
@@ -815,8 +841,8 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
                 <div className={`workflow-horizontal ${task.workflowEnabled ? 'stage-flow' : 'simple-flow'}`}>
                   <div className="workflow-section-heading">
                     <div>
-                      <span className="workflow-section-kicker">Workflow map</span>
-                      <h3>Stage progression</h3>
+                      <h3>Workflow Status</h3>
+                      <span className="workflow-section-kicker">Real-time tracking enabled</span>
                       <p>
                         {task.workflowEnabled
                           ? 'Select a stage card to review output, files, comments, and history.'
@@ -828,7 +854,7 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
                     {workflowSteps.map((step, index, arr) => (
                       <Fragment key={step.id}>
                         {renderWorkflowNode(step)}
-                        {index < arr.length - 1 && renderConnector(step.id, step.status)}
+                        {index < arr.length - 1 && renderConnector(step.id, step.status, arr[index + 1].status)}
                       </Fragment>
                     ))}
                   </div>

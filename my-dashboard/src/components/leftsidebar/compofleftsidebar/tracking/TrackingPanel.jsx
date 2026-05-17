@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
@@ -31,6 +32,21 @@ const getActionLabel = (task, action) => {
   if (action === 'revoke_task') return 'revoke task';
   return action.replace(/_/g, ' ');
 };
+
+const getTaskSearchText = (task) => [
+  task?.title,
+  task?.taskNumber,
+  task?.projectName,
+  task?.customerName,
+  task?.reference,
+  task?.status,
+  task?.priority,
+  task?.description,
+  task?.currentStageTitle,
+  task?.creator?.name,
+  task?.creator?.email,
+  ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
+].filter(Boolean).join(' ').toLowerCase();
 
 const TRACKING_FILTERS = [
   {
@@ -67,6 +83,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
   const [selectedTask, setSelectedTask] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [filter, setFilter] = useState('all');
+  const [taskSearch, setTaskSearch] = useState('');
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [openActionMenuId, setOpenActionMenuId] = useState(null);
@@ -158,7 +175,8 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
 
   const filteredTasks = tasks.filter((task) => {
     const activeFilter = TRACKING_FILTERS.find((entry) => entry.key === filter) || TRACKING_FILTERS[0];
-    return activeFilter.matches(task);
+    const query = taskSearch.trim().toLowerCase();
+    return activeFilter.matches(task) && (!query || getTaskSearchText(task).includes(query));
   });
 
   React.useEffect(() => {
@@ -396,21 +414,39 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
     }
   };
 
-  const handleToggleMinimize = () => {
-    if (isMinimized) {
-      onActivate?.();
-      setIsMinimized(false);
+  const runPanelViewTransition = (updateState) => {
+    if (document.startViewTransition) {
+      document.startViewTransition(() => {
+        flushSync(updateState);
+      });
       return;
     }
 
-    setIsMaximized(false);
-    setIsMinimized(true);
+    updateState();
+  };
+
+  const restoreFromMinimized = () => {
+    runPanelViewTransition(() => {
+      onActivate?.();
+      setIsMinimized(false);
+    });
+  };
+
+  const handleToggleMinimize = () => {
+    if (isMinimized) {
+      restoreFromMinimized();
+      return;
+    }
+
+    runPanelViewTransition(() => {
+      setIsMaximized(false);
+      setIsMinimized(true);
+    });
   };
 
   const handleToggleMaximize = () => {
     if (isMinimized) {
-      onActivate?.();
-      setIsMinimized(false);
+      restoreFromMinimized();
       return;
     }
 
@@ -433,8 +469,23 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
         style={minimizedWindowStyle || undefined}
       >
         {/* Header */}
-        <div className="tracking-header" onClick={isMinimized ? () => { onActivate?.(); setIsMinimized(false); } : undefined}>
+        <div className="tracking-header" onClick={isMinimized ? restoreFromMinimized : undefined}>
           <h2>Tracking</h2>
+          {!isMinimized && (
+            <div className="tracking-header-search" onClick={(event) => event.stopPropagation()}>
+              <svg className="tracking-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input
+                type="search"
+                value={taskSearch}
+                onChange={(event) => setTaskSearch(event.target.value)}
+                placeholder="Search tasks, projects..."
+                aria-label="Search tracking tasks"
+              />
+            </div>
+          )}
           
           {/* Control Buttons */}
           <div className="tracking-controls">

@@ -1,5 +1,5 @@
 // src/components/leftsidebar/compofleftsidebar/inbox/InboxPanel.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import InboxCard from './InboxCard';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
@@ -32,11 +32,27 @@ const getActiveStageLabel = (task) => {
   return title;
 };
 
+const getTaskSearchText = (task) => [
+  task?.title,
+  task?.taskNumber,
+  task?.projectName,
+  task?.customerName,
+  task?.reference,
+  task?.status,
+  task?.priority,
+  task?.description,
+  task?.currentStageTitle,
+  task?.creator?.name,
+  task?.creator?.email,
+  ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
+].filter(Boolean).join(' ').toLowerCase();
+
 const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange, onActivate }) => {
   const { showAlert, showPrompt } = useCustomDialogs();
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState('all');
+  const [taskSearch, setTaskSearch] = useState('');
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [chatTask, setChatTask] = useState(null);
@@ -69,6 +85,19 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
   const refreshTimerRef = React.useRef(null);
   const seenTaskIdsRef = React.useRef(new Set());
   const submitUploadControllersRef = React.useRef(new Map());
+
+  const buildHoldUntil = (dateTimeText) => {
+    const value = `${dateTimeText || ''}`.trim();
+    if (!value) return null;
+    const selectedDate = new Date(value);
+    if (Number.isNaN(selectedDate.getTime())) {
+      throw new Error('Select a valid date and time, or leave it blank for a manual hold.');
+    }
+    if (selectedDate.getTime() <= Date.now()) {
+      throw new Error('Select a future date and time, or leave it blank for a manual hold.');
+    }
+    return selectedDate.toISOString();
+  };
   const canceledSubmitUploadKeysRef = React.useRef(new Set());
   const submitAttachmentKeyMapRef = React.useRef(new WeakMap());
   const submitAttachmentKeySeqRef = React.useRef(0);
@@ -80,7 +109,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     isError,
     refetch,
   } = useInbox({}, { enabled: isOpen });
-  const tasks = inboxData?.tasks || [];
+  const tasks = useMemo(() => inboxData?.tasks || [], [inboxData?.tasks]);
   const currentUserId = user?.id != null ? String(user.id) : '';
   const loading = isLoading;
   const isRefreshing = isFetching && !isLoading;
@@ -138,13 +167,11 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
 
     if (currentFilter === 'unread') return !(task?.isRead ?? false);
     if (currentFilter === 'self_assigned') return isSelfAssignedTask;
-    if (currentFilter === 'working') {
-      return isAssignedToMe
-        && !isSelfAssignedTask
-        && ['assigned', 'in_progress', 'need_improvement'].includes(normalizedStatus);
+    if (currentFilter === 'work' || currentFilter === 'working') {
+      return isAssignedToMe && !isSelfAssignedTask;
     }
     if (currentFilter === 'submitted') {
-      return normalizedStatus === 'submitted' && (isSubmittedByMe || isParticipantTask);
+      return normalizedStatus === 'submitted' && !isCreatorTask && (isSubmittedByMe || isParticipantTask);
     }
     if (currentFilter === 'result') return normalizedStatus === 'submitted' && isCreatorTask;
     if (currentFilter === 'need_improvement') return normalizedStatus === 'need_improvement';
@@ -408,7 +435,6 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     }
     try {
       // Validate URL format.
-      // eslint-disable-next-line no-new
       new URL(normalized);
     } catch {
       setSubmitModal((prev) => ({ ...prev, error: 'Enter a valid link URL.' }));
@@ -698,16 +724,39 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         });
         if (result === null) return;
         await taskAPI.editResult(task.id, result);
+      } else if (action === 'hold_task') {
+        const holdUntilText = await showPrompt(
+          'Optional auto-unhold date and time. Leave blank if you want to unhold manually:',
+          { title: 'Hold Until', defaultValue: '', inputType: 'datetime-local' }
+        );
+        if (holdUntilText === null) return;
+        const comments = (await showPrompt('Optional reason for holding this task:', {
+          title: 'Hold Reason',
+          defaultValue: '',
+        })) ?? '';
+        await taskAPI.holdTask(task.id, {
+          comments: comments.trim(),
+          hold_until: buildHoldUntil(holdUntilText),
+        });
+      } else if (action === 'unhold_task') {
+        const comments = (await showPrompt('Optional note for resuming this task:', {
+          title: 'Unhold Task',
+          defaultValue: '',
+        })) ?? '';
+        await taskAPI.unholdTask(task.id, comments.trim());
       }
       if (!['approve', 'need_improvement'].includes(action)) {
         await refreshTaskQueries();
       }
     } catch (error) {
-      await showAlert(error?.response?.data?.detail || 'Action failed', { title: 'Action Failed' });
+      await showAlert(error?.response?.data?.detail || error?.message || 'Action failed', { title: 'Action Failed' });
     }
   };
 
-  const filteredTasks = tasks.filter((task) => doesTaskMatchFilter(task, filter));
+  const filteredTasks = tasks.filter((task) => {
+    const query = taskSearch.trim().toLowerCase();
+    return doesTaskMatchFilter(task, filter) && (!query || getTaskSearchText(task).includes(query));
+  });
 
   if (!isOpen) return null;
 
@@ -748,6 +797,21 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         {/* Header */}
         <div className="inbox-panel-header" onClick={isMinimized ? restoreWindow : undefined}>
           <h2>Inbox</h2>
+          {!isMinimized && (
+            <div className="inbox-header-search" onClick={(event) => event.stopPropagation()}>
+              <svg className="inbox-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input
+                type="search"
+                value={taskSearch}
+                onChange={(event) => setTaskSearch(event.target.value)}
+                placeholder="Search tasks, projects..."
+                aria-label="Search inbox tasks"
+              />
+            </div>
+          )}
           <div className="inbox-window-controls">
             {!isMinimized && (
               <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title="Minimize">
@@ -788,10 +852,10 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
             Self Assigned ({getFilterCount('self_assigned')})
           </button>
           <button 
-            className={`filter-btn ${filter === 'working' ? 'active' : ''}`}
-            onClick={() => setFilter('working')}
+            className={`filter-btn ${filter === 'work' ? 'active' : ''}`}
+            onClick={() => setFilter('work')}
           >
-            Working ({getFilterCount('working')})
+            Work / My Task ({getFilterCount('work')})
           </button>
           <button 
             className={`filter-btn ${filter === 'submitted' ? 'active' : ''}`}

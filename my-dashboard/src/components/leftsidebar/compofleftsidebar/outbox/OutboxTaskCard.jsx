@@ -59,7 +59,9 @@ const OutboxTaskCard = ({
     forwardHistory,
     currentStageAssigneeNames,
     trackingInfo,
-    journeyCount
+    journeyCount,
+    isHeld,
+    holdInfo
   } = task;
   const displayTaskName = taskName || title || 'Untitled Task';
   const displayTaskDetails = taskDetails || description || '';
@@ -138,19 +140,36 @@ const OutboxTaskCard = ({
   const currentUserId = Number(currentUser?.id || currentUser?.userId || 0);
   const taskCreatorId = Number(task?.creatorId || creator?.id || createdBy || 0);
   const isCurrentUserCreator = Boolean(currentUserId && taskCreatorId && currentUserId === taskCreatorId);
+  const isTerminalTask = ['completed', 'cancelled', 'rejected'].includes(normalizedStatus);
   const canEditTask = task?.canEditTask === true && isCurrentUserCreator;
   const canRevokeTask = task?.canRevokeTask === true && isCurrentUserCreator;
+  const activeHoldInfo = isHeld || holdInfo?.active ? holdInfo : null;
+  const canHoldTask = isCurrentUserCreator && !isTerminalTask && !activeHoldInfo;
+  const canUnholdTask = isCurrentUserCreator && !isTerminalTask && Boolean(activeHoldInfo);
+  const holdUntilLabel = activeHoldInfo?.until
+    ? new Date(activeHoldInfo.until).toLocaleString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '';
   const menuActions = isDraft
     ? ['edit_draft', 'delete_draft']
-    : [
+    : Array.from(new Set([
         'track',
         'chat',
+        ...(canUnholdTask ? ['unhold_task'] : []),
+        ...(canHoldTask ? ['hold_task'] : []),
         ...(task.availableActions || []).filter((action) => {
           if (action === 'edit_task') return canEditTask;
           if (action === 'revoke_task') return canRevokeTask;
+          if (action === 'hold_task') return canHoldTask;
+          if (action === 'unhold_task') return canUnholdTask;
           return false;
         })
-      ];
+      ]));
   const requestTypeLabel = (() => {
     const type = (taskType || 'task').toLowerCase();
     if (type === 'task_approval') return 'Task Approval';
@@ -265,6 +284,7 @@ const OutboxTaskCard = ({
               <h3 className="outbox-task-title">
                 {displayTaskName}
                 {isResult && <span className="result-badge">Result</span>}
+                {activeHoldInfo && <span className="hold-badge">Held</span>}
               </h3>
             </div>
             <div className="outbox-subtitle-row">
@@ -306,7 +326,11 @@ const OutboxTaskCard = ({
                               ? 'Delete Draft'
                           : action === 'edit_task'
                             ? 'Edit Task'
-                            : 'Revoke Task'}
+                            : action === 'hold_task'
+                              ? 'Hold Task'
+                              : action === 'unhold_task'
+                                ? 'Unhold Task'
+                                : 'Revoke Task'}
                     </button>
                   ))}
                 </div>
@@ -322,6 +346,18 @@ const OutboxTaskCard = ({
               {getStageIcon(workflowStage)} {workflowStage?.replace('_', ' ')}
             </span>
             {activeStageLabel && <span className="stage-indicator">{activeStageLabel}</span>}
+          </div>
+        )}
+
+        {activeHoldInfo && (
+          <div className="task-hold-banner">
+            <strong>Task on hold</strong>
+            <span>
+              {holdUntilLabel
+                ? `Auto-unholds on ${holdUntilLabel}`
+                : 'Manual unhold required'}
+              {activeHoldInfo.reason ? ` • ${activeHoldInfo.reason}` : ''}
+            </span>
           </div>
         )}
 
@@ -604,8 +640,16 @@ OutboxTaskCard.propTypes = {
     currentStageAssigneeNames: PropTypes.arrayOf(PropTypes.string),
     trackingInfo: PropTypes.object,
     journeyCount: PropTypes.number,
+    isHeld: PropTypes.bool,
+    holdInfo: PropTypes.shape({
+      active: PropTypes.bool,
+      until: PropTypes.string,
+      reason: PropTypes.string,
+    }),
     canEditTask: PropTypes.bool,
     canRevokeTask: PropTypes.bool,
+    canHoldTask: PropTypes.bool,
+    canUnholdTask: PropTypes.bool,
   }).isRequired,
   isExpanded: PropTypes.bool.isRequired,
   onClick: PropTypes.func.isRequired,

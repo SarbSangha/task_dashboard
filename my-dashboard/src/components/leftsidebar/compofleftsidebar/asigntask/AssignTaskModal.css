@@ -6,8 +6,8 @@
 .assign-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: none;
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -55,9 +55,9 @@
 
 /* Top dark bar */
 .assign-modal-header-bar {
-  background: #111827;
+  background: linear-gradient(135deg, #1f2d40 0%, #16212c 100%);
   color: #e5e7eb;
-  padding: 14px 20px;
+  padding: 24px 28px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -66,11 +66,15 @@
   letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: default;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.25),
+    0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 .assign-modal-header-bar > span {
   flex: 1;
   min-width: 0;
+  font-size: 16px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -90,8 +94,8 @@
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   border-radius: 7px;
   display: inline-flex;
   align-items: center;
@@ -105,8 +109,8 @@
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   border-radius: 7px;
   display: inline-flex;
   align-items: center;
@@ -259,9 +263,9 @@
   gap: 10px;
   margin-top: 6px;
   padding: 10px 12px;
-  border: 1px solid #c7d2fe;
+  border: 1px solid rgba(102, 126, 234, 0.24);
   border-radius: 10px;
-  background: #eef2ff;
+  background: rgba(102, 126, 234, 0.08);
   cursor: pointer;
 }
 
@@ -274,14 +278,14 @@
   background: transparent;
   border-radius: 0;
   flex: 0 0 auto;
-  accent-color: #4f46e5;
+  accent-color: #667eea;
 }
 
 .assign-self-toggle span {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  color: #312e81;
+  color: #4f46e5;
   font-size: 13px;
   font-weight: 600;
 }
@@ -369,6 +373,7 @@
   background: rgba(255, 255, 255, 0.9);
   padding: 16px;
   cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
@@ -390,9 +395,14 @@
 }
 
 .assignment-flow-option.active {
-  border-color: rgba(79, 70, 229, 0.38);
-  background: linear-gradient(180deg, rgba(238, 242, 255, 0.95) 0%, rgba(224, 231, 255, 0.92) 100%);
-  box-shadow: 0 16px 30px rgba(99, 102, 241, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
+}
+
+.assignment-flow-option.active strong,
+.assignment-flow-option.active span {
+  color: #ffffff;
 }
 
 .assignment-flow-summary {
@@ -483,7 +493,7 @@
 }
 
 .workflow-toggle input {
-  accent-color: #4f46e5;
+  accent-color: #667eea;
 }
 
 .workflow-toggle.compact {
@@ -508,8 +518,8 @@
   align-items: center;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(99, 102, 241, 0.14);
-  color: #4338ca;
+  border: 1px solid rgba(102, 126, 234, 0.18);
+  color: #667eea;
   padding: 6px 10px;
   font-size: 12px;
   font-weight: 700;
@@ -555,8 +565,8 @@
   padding: 4px 8px;
   margin-bottom: 8px;
   border-radius: 999px;
-  background: rgba(79, 70, 229, 0.12);
-  color: #4338ca;
+  background: rgba(102, 126, 234, 0.12);
+  color: #667eea;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -747,33 +757,36 @@
 .assign-primary-btn {
   padding: 10px 22px;
   border-radius: 999px;
-  border: none;
-  background: #22c55e;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
 }
 
 .assign-primary-btn:hover {
-  background: #16a34a;
+  background: linear-gradient(135deg, #5f76dc 0%, #6f4599 100%);
 }
 
 .assign-secondary-btn {
   padding: 10px 20px;
   border-radius: 999px;
-  border: 1px solid #d1d5db;
-  background: white;
-  color: #4b5563;
+  border: 1px solid rgba(102, 126, 234, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+  color: #667eea;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
 }
 
 .assign-secondary-btn:hover {
-  background: #f3f4f6;
+  background: rgba(102, 126, 234, 0.12);
+  border-color: rgba(102, 126, 234, 0.42);
+  color: #5f76dc;
 }
 
 /* Responsive */
@@ -835,23 +848,24 @@
 .assign-primary-btn {
   padding: 10px 22px;
   border-radius: 999px;
-  border: none;
-  background: #22c55e;
-  color: #ffffff;            /* <- white text on green is fine */
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
 }
 
 /* Secondary button */
 .assign-secondary-btn {
   padding: 10px 20px;
   border-radius: 999px;
-  border: 1px solid #d1d5db;
-  background: #ffffff;       /* white background */
-  color: #111827;            /* dark text */
+  border: 1px solid rgba(102, 126, 234, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+  color: #667eea;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -972,27 +986,28 @@
 }
 
 .assign-actions .assign-primary-btn {
-  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
-  border: none;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
 }
 
 .assign-actions .assign-primary-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #1fbe58 0%, #15803d 100%);
+  background: linear-gradient(135deg, #5f76dc 0%, #6f4599 100%);
 }
 
 /* Draft Button */
 .assign-actions .assign-draft-btn {
-  background: linear-gradient(180deg, #eef4ff 0%, #dbeafe 100%);
-  border: 1px solid #93c5fd;
-  color: #2563eb;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(102, 126, 234, 0.28);
+  color: #667eea;
   cursor: pointer;
 }
 
 .assign-actions .assign-draft-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, #dbeafe 0%, #bfdbfe 100%);
-  border-color: #60a5fa;
-  color: #1d4ed8;
+  background: rgba(102, 126, 234, 0.12);
+  border-color: rgba(102, 126, 234, 0.42);
+  color: #5f76dc;
 }
 
 .assign-actions .assign-draft-btn:disabled {
@@ -1002,16 +1017,16 @@
 
 /* Clear Button */
 .assign-actions .assign-clear-btn {
-  background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%);
-  border: 1px solid #fda4af;
-  color: #dc2626;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(118, 75, 162, 0.28);
+  color: #764ba2;
   cursor: pointer;
 }
 
 .assign-actions .assign-clear-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, #ffe4e6 0%, #fecdd3 100%);
-  border-color: #fb7185;
-  color: #b91c1c;
+  background: rgba(118, 75, 162, 0.12);
+  border-color: rgba(118, 75, 162, 0.42);
+  color: #6f4599;
 }
 
 .assign-actions .assign-clear-btn:disabled {
@@ -1020,14 +1035,15 @@
 }
 
 .assign-actions .assign-secondary-btn {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  border: 1px solid #cbd5e1;
-  color: #0f172a;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(102, 126, 234, 0.28);
+  color: #667eea;
 }
 
 .assign-actions .assign-secondary-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
-  border-color: #94a3b8;
+  background: rgba(102, 126, 234, 0.12);
+  border-color: rgba(102, 126, 234, 0.42);
+  color: #5f76dc;
 }
 
 /* Update existing primary button */

@@ -207,6 +207,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
   const latestFormDataRef = useRef(formData);
   const currentDraftIdRef = useRef(null);
   const draftSaveInFlightRef = useRef(false);
+  const closeConfirmationInFlightRef = useRef(false);
   const lastAutoSaveSnapshotRef = useRef('');
   const minimizedWindowStyle = useMinimizedWindowStack('assign-task-modal', isOpen && isMinimized);
 
@@ -509,7 +510,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
 
   // Compare against the form state when the modal was opened.
   const hasFormData = () => {
-    return buildDirtySnapshot(formData) !== initialFormSnapshotRef.current;
+    return buildDirtySnapshot(latestFormDataRef.current) !== initialFormSnapshotRef.current;
   };
   const isDirty = isOpen && hasFormData();
 
@@ -1057,39 +1058,49 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       return true;
     }
 
-    const confirmClose = await showConfirm(
-      'You have unsaved changes. Do you want to save as draft before closing?',
-      {
-        title: 'Unsaved Changes',
-        confirmText: 'Save Draft',
-        confirmValue: 'save',
-        cancelText: 'Discard',
-        cancelValue: 'discard',
-        tertiaryText: 'Stay Here',
-        tertiaryValue: 'stay',
-        dismissValue: 'stay',
+    if (closeConfirmationInFlightRef.current) {
+      return false;
+    }
+
+    closeConfirmationInFlightRef.current = true;
+
+    try {
+      const confirmClose = await showConfirm(
+        'You have unsaved changes. Do you want to save as draft before closing?',
+        {
+          title: 'Unsaved Changes',
+          confirmText: 'Save Draft',
+          confirmValue: 'save',
+          cancelText: 'Discard',
+          cancelValue: 'discard',
+          tertiaryText: 'Stay Here',
+          tertiaryValue: 'stay',
+          dismissValue: 'stay',
+        }
+      );
+
+      if (confirmClose === 'save') {
+        await saveDraft();
+        allowNavigationRef.current = true;
+        return true;
       }
-    );
 
-    if (confirmClose === 'save') {
-      await saveDraft();
-      allowNavigationRef.current = true;
-      return true;
+      if (confirmClose === 'discard') {
+        localStorage.removeItem('taskDraft');
+        updateCurrentDraftId(null);
+        lastAutoSaveSnapshotRef.current = '';
+        const emptyForm = createEmptyFormData(currentUserDepartment);
+        setFormData(emptyForm);
+        latestFormDataRef.current = emptyForm;
+        initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
+        allowNavigationRef.current = true;
+        return true;
+      }
+
+      return false;
+    } finally {
+      closeConfirmationInFlightRef.current = false;
     }
-
-    if (confirmClose === 'discard') {
-      localStorage.removeItem('taskDraft');
-      updateCurrentDraftId(null);
-      lastAutoSaveSnapshotRef.current = '';
-      const emptyForm = createEmptyFormData(currentUserDepartment);
-      setFormData(emptyForm);
-      latestFormDataRef.current = emptyForm;
-      initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
-      allowNavigationRef.current = true;
-      return true;
-    }
-
-    return false;
   };
 
   useImperativeHandle(ref, () => ({
@@ -1278,7 +1289,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
 
         {!isMinimized && (
         <div className="assign-modal-body">
-          <h2 className="assign-title">{isTaskEditMode ? 'EDIT TASK' : isDraftEdit ? 'EDIT DRAFT' : 'CREATE NEW TASK'}</h2>
           {isTaskEditMode && (
             <div className="assign-edit-note">
               Edit mode currently updates only Task Name, Task Details, Deadline, and Priority. Other fields are shown read-only.

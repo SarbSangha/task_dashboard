@@ -63,51 +63,6 @@ body {
   letter-spacing: 0.5px;
 }
 
-/* ==================== CENTER SECTION - SEARCH BAR ==================== */
-.topnav-center {
-  flex: 1;
-  max-width: 480px;
-  margin: 0 30px;
-}
-
-.search-container {
-  position: relative;
-  width: 100%;
-}
-
-.search-icon {
-  position: absolute;
-  left: 14px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 18px;
-  height: 18px;
-  fill: rgba(255, 255, 255, 0.5);
-  pointer-events: none;
-}
-
-.search-input {
-  width: 100%;
-  padding: 11px 16px 11px 44px;
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 10px;
-  color: white;
-  font-size: 14px;
-  transition: all 0.3s ease;
-  outline: none;
-}
-
-.search-input::placeholder {
-  color: rgba(255, 255, 255, 0.5);
-}
-
-.search-input:focus {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: #1abc9c;
-  box-shadow: 0 0 0 3px rgba(26, 188, 156, 0.15);
-}
-
 /* ==================== RIGHT SECTION - USER & ICONS ==================== */
 .topnav-right {
   display: flex;
@@ -227,11 +182,6 @@ body {
     right: 15px;
   }
 
-  .topnav-center {
-    max-width: 350px;
-    margin: 0 20px;
-  }
-
   .logo-text {
     font-size: 20px;
   }
@@ -246,13 +196,6 @@ body {
     left: 12px;
     right: 12px;
     gap: 12px;
-  }
-
-  .topnav-center {
-    order: 3;
-    flex: 1 1 100%;
-    margin: 0;
-    max-width: 100%;
   }
 
   .user-info {
@@ -295,11 +238,6 @@ body {
   .logo-icon {
     width: 34px;
     height: 34px;
-  }
-
-  .search-input {
-    padding: 10px 12px 10px 40px;
-    font-size: 13px;
   }
 
   .user-avatar {

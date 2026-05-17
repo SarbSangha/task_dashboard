@@ -8,7 +8,7 @@ from sqlalchemy import or_, and_, func, case, inspect, cast, Text as SQLText
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional, List, Set, Dict
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import hashlib
 import os
@@ -404,6 +404,11 @@ class TaskActionPayload(BaseModel):
     result_text: Optional[str] = None
     result_links: List[str] = Field(default_factory=list)
     result_attachments: List[dict] = Field(default_factory=list)
+
+
+class TaskHoldPayload(BaseModel):
+    comments: Optional[str] = None
+    hold_until: Optional[str] = None
 
 
 class TaskAssignPayload(BaseModel):
@@ -1289,6 +1294,79 @@ TASK_DETAIL_EDITABLE_STATUSES = {
 }
 
 
+TASK_TERMINAL_STATUSES = {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.REJECTED}
+TASK_HOLD_META_KEY = "hold"
+
+
+def _parse_task_hold_until(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid hold-until datetime")
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _task_hold_info(task: Task, *, now: Optional[datetime] = None) -> dict:
+    hold = {}
+    if isinstance(task.metadata_json, dict):
+        raw_hold = task.metadata_json.get(TASK_HOLD_META_KEY)
+        if isinstance(raw_hold, dict):
+            hold = raw_hold
+    hold_until = _parse_task_hold_until(hold.get("until"))
+    current_time = now or datetime.utcnow()
+    active = bool(hold.get("active")) and not (hold_until and hold_until <= current_time)
+    return {
+        "active": active,
+        "heldById": hold.get("heldById"),
+        "heldBy": hold.get("heldBy"),
+        "heldAt": hold.get("heldAt"),
+        "until": serialize_utc_datetime(hold_until) if hold_until else None,
+        "reason": hold.get("reason"),
+        "autoExpired": bool(hold.get("active")) and bool(hold_until and hold_until <= current_time),
+        "unheldAt": hold.get("unheldAt"),
+        "unheldBy": hold.get("unheldBy"),
+    }
+
+
+def is_task_hold_active(task: Task, *, now: Optional[datetime] = None) -> bool:
+    return bool(_task_hold_info(task, now=now).get("active"))
+
+
+def can_hold_task(user: User, task: Task) -> bool:
+    return bool(
+        user
+        and user.id == task.creator_id
+        and task.status not in TASK_TERMINAL_STATUSES
+        and not is_task_hold_active(task)
+    )
+
+
+def can_unhold_task(user: User, task: Task) -> bool:
+    return bool(
+        user
+        and user.id == task.creator_id
+        and task.status not in TASK_TERMINAL_STATUSES
+        and is_task_hold_active(task)
+    )
+
+
+def ensure_task_not_held(task: Task) -> None:
+    if is_task_hold_active(task):
+        raise HTTPException(status_code=400, detail="Task is currently on hold")
+
+
 def can_edit_task_details(user: User, task: Task) -> bool:
     return bool(
         user
@@ -1302,7 +1380,7 @@ def can_revoke_task(user: User, task: Task) -> bool:
     return bool(
         user
         and user.id == task.creator_id
-        and task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.REJECTED}
+        and task.status not in TASK_TERMINAL_STATUSES
     )
 
 
@@ -1315,9 +1393,11 @@ def compute_available_actions(
     if task.status == TaskStatus.CANCELLED:
         return []
 
+    is_creator = user.id == task.creator_id
+    is_held = is_task_hold_active(task)
+
     if _is_workflow_task(task):
         actions = ["chat"]
-        is_creator = user.id == task.creator_id
         current_assignee_ids = {
             int(user_id)
             for user_id in (task.current_assignee_ids_json or [])
@@ -1326,7 +1406,13 @@ def compute_available_actions(
         is_current_stage_assignee = user.id in current_assignee_ids
         workflow_status = (task.workflow_status or "").strip().lower()
 
-        if is_current_stage_assignee and workflow_status in {
+        if is_held:
+            if can_unhold_task(user, task):
+                actions.append("unhold_task")
+        elif can_hold_task(user, task):
+            actions.append("hold_task")
+
+        if not is_held and is_current_stage_assignee and workflow_status in {
             TaskWorkflowStatus.ACTIVE.value,
             TaskWorkflowStatus.REVISION_REQUESTED.value,
         }:
@@ -1334,7 +1420,7 @@ def compute_available_actions(
                 actions.append("start")
             actions.append("submit")
 
-        if can_approve(user, task) and (
+        if not is_held and can_approve(user, task) and (
             workflow_status == TaskWorkflowStatus.WAITING_APPROVAL.value
             or _workflow_submission_needs_repair(task)
         ):
@@ -1353,7 +1439,6 @@ def compute_available_actions(
 
     roles = role_set(user)
     actions = ["chat"]
-    is_creator = user.id == task.creator_id
     if my_participation is not None:
         is_assignee = (
             my_participation.is_active == True
@@ -1362,17 +1447,23 @@ def compute_available_actions(
     else:
         is_assignee = user_is_participant(task.id, user.id, ParticipantRole.ASSIGNEE, db)
 
-    if has_any_role(user, {"hod", "super_admin"}):
+    if is_held:
+        if can_unhold_task(user, task):
+            actions.append("unhold_task")
+    elif can_hold_task(user, task):
+        actions.append("hold_task")
+
+    if not is_held and has_any_role(user, {"hod", "super_admin"}):
         if task.status in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.NEED_IMPROVEMENT, TaskStatus.SUBMITTED}:
             actions.extend(["approve", "need_improvement", "forward"])
         if can_assign(user, task):
             actions.append("assign")
 
-    if "spoc" in roles and user.department == task.to_department:
+    if not is_held and "spoc" in roles and user.department == task.to_department:
         if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW, TaskStatus.NEED_IMPROVEMENT}:
             actions.extend(["approve", "need_improvement", "forward"])
 
-    if is_assignee:
+    if not is_held and is_assignee:
         if task.status in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.ASSIGNED, TaskStatus.NEED_IMPROVEMENT}:
             actions.append("start")
         if task.status not in {
@@ -1392,7 +1483,7 @@ def compute_available_actions(
             actions.append("revoke_task")
         if can_edit_task_details(user, task):
             actions.append("edit_task")
-        if task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED}:
+        if not is_held and task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED}:
             actions.extend(["approve", "need_improvement"])
 
     deduped = []
@@ -1495,6 +1586,7 @@ def serialize_task(task: Task, db: Session, current_user: Optional[User] = None)
 
 
 def _serialize_task_list_base(task: Task) -> dict:
+    hold_info = _task_hold_info(task)
     return {
         "id": task.id,
         "taskNumber": task.task_number,
@@ -1532,6 +1624,8 @@ def _serialize_task_list_base(task: Task) -> dict:
         "resultText": task.result_text,
         "taskEditLocked": bool(task.task_edit_locked),
         "resultEditLocked": bool(task.result_edit_locked),
+        "isHeld": bool(hold_info.get("active")),
+        "holdInfo": hold_info,
         "isDeleted": task.is_deleted,
     }
 
@@ -1539,6 +1633,7 @@ def _serialize_task_list_base(task: Task) -> dict:
 def _serialize_task_workflow_summary(task: Task) -> dict:
     meta = task.metadata_json or {}
     creator = task.creator if "creator" not in inspect(task).unloaded else None
+    hold_info = _task_hold_info(task)
     return {
         "id": task.id,
         "taskNumber": task.task_number,
@@ -1562,6 +1657,8 @@ def _serialize_task_workflow_summary(task: Task) -> dict:
         "currentStageAssigneeIds": task.current_assignee_ids_json or [],
         "currentStageApprovalRequired": bool(meta.get(WORKFLOW_SUMMARY_APPROVAL_META_KEY)),
         "currentStageAssigneeNames": meta.get(WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY, []),
+        "isHeld": bool(hold_info.get("active")),
+        "holdInfo": hold_info,
         "creator": {
             "id": creator.id if creator else task.creator_id,
             "name": creator.name if creator else "Unknown",
@@ -1881,6 +1978,8 @@ def serialize_task_with_context(
         task_dict["isCreator"] = current_user.id == task.creator_id
         task_dict["canEditTask"] = can_edit_task_details(current_user, task)
         task_dict["canRevokeTask"] = can_revoke_task(current_user, task)
+        task_dict["canHoldTask"] = can_hold_task(current_user, task)
+        task_dict["canUnholdTask"] = can_unhold_task(current_user, task)
         task_dict["mySystemRoles"] = sorted(list(role_set(current_user)))
 
     return task_dict
@@ -3038,6 +3137,7 @@ def _submit_workflow_stage(
     *,
     stage_id: Optional[int] = None,
 ) -> dict:
+    ensure_task_not_held(task)
     now = datetime.utcnow()
     stage = _get_task_workflow_stage(stage_id, task.id, db) if stage_id else _get_current_workflow_stage(task, db)
     if not stage:
@@ -3179,6 +3279,7 @@ def _approve_workflow_stage(
     *,
     stage_id: Optional[int] = None,
 ) -> dict:
+    ensure_task_not_held(task)
     now = datetime.utcnow()
     task_meta = dict(task.metadata_json or {})
 
@@ -3288,6 +3389,7 @@ def _request_workflow_stage_improvement(
     *,
     stage_id: Optional[int] = None,
 ) -> dict:
+    ensure_task_not_held(task)
     now = datetime.utcnow()
     task_meta = dict(task.metadata_json or {})
     stage = _get_task_workflow_stage(stage_id or task.current_stage_id, task.id, db) if (stage_id or task.current_stage_id) else None
@@ -3364,6 +3466,7 @@ def _start_workflow_stage(
     db: Session,
     current_user: User,
 ) -> dict:
+    ensure_task_not_held(task)
     now = datetime.utcnow()
     stage = _get_current_workflow_stage(task, db)
     if not stage:
@@ -4239,6 +4342,7 @@ async def assign_task_members(
     task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    ensure_task_not_held(task)
     if not can_assign(current_user, task):
         raise HTTPException(status_code=403, detail="Permission denied")
     if _is_workflow_task(task):
@@ -4328,6 +4432,7 @@ async def submit_task(
     task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    ensure_task_not_held(task)
     if _is_workflow_task(task):
         try:
             result = _submit_workflow_stage(task, payload, db, current_user)
@@ -4447,6 +4552,7 @@ async def start_task_work(
     task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    ensure_task_not_held(task)
     if _is_workflow_task(task):
         try:
             result = _start_workflow_stage(task, payload, db, current_user)
@@ -4518,6 +4624,7 @@ async def approve_task(
     task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    ensure_task_not_held(task)
     if not can_approve(current_user, task):
         raise HTTPException(status_code=403, detail="Permission denied")
     if _is_workflow_task(task):
@@ -4593,6 +4700,7 @@ async def request_improvement(
     task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    ensure_task_not_held(task)
     if not can_approve(current_user, task):
         raise HTTPException(status_code=403, detail="Permission denied")
     if _is_workflow_task(task):
@@ -4663,6 +4771,7 @@ async def forward_task(
     task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    ensure_task_not_held(task)
 
     roles = role_set(current_user)
     is_assignee = user_is_participant(task.id, current_user.id, ParticipantRole.ASSIGNEE, db)
@@ -4842,6 +4951,166 @@ async def revoke_task(
     }
 
 
+async def hold_task(
+    task_id: int,
+    payload: TaskHoldPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if current_user.id != task.creator_id:
+        raise HTTPException(status_code=403, detail="Only task creator can hold this task")
+    if task.status in TASK_TERMINAL_STATUSES:
+        raise HTTPException(status_code=400, detail="Task cannot be held in current state")
+    if is_task_hold_active(task):
+        raise HTTPException(status_code=400, detail="Task is already on hold")
+
+    now = datetime.utcnow()
+    hold_until = _parse_task_hold_until(payload.hold_until)
+    if hold_until and hold_until <= now:
+        raise HTTPException(status_code=400, detail="Hold-until time must be in the future")
+
+    reason = (payload.comments or "").strip()
+    hold_info = {
+        "active": True,
+        "heldById": current_user.id,
+        "heldBy": current_user.name,
+        "heldAt": serialize_utc_datetime(now),
+        "until": serialize_utc_datetime(hold_until) if hold_until else None,
+        "reason": reason or None,
+    }
+    meta = dict(task.metadata_json or {})
+    meta[TASK_HOLD_META_KEY] = hold_info
+    task.metadata_json = meta
+    task.updated_at = now
+
+    comment = reason or (
+        f"Task held until {serialize_utc_datetime(hold_until)}"
+        if hold_until
+        else "Task held by creator"
+    )
+    add_history(db, task, current_user.id, "held", task.status.value, comment, {"hold": hold_info})
+    post_system_comment(db, task, current_user.id, comment, "held")
+
+    participants = db.query(TaskParticipant).filter(
+        TaskParticipant.task_id == task.id,
+        TaskParticipant.is_active == True,
+    ).all()
+    notified_users = set()
+    for participant in participants:
+        if participant.user_id == current_user.id:
+            continue
+        participant.is_read = False
+        participant.read_at = None
+        notified_users.add(participant.user_id)
+
+    notify_message = "This task has been placed on hold by the creator."
+    if hold_until:
+        notify_message = f"{notify_message} It will auto-unhold at {serialize_utc_datetime(hold_until)} UTC."
+    if reason:
+        notify_message = f"{notify_message} Reason: {reason}"
+
+    for user_id in notified_users:
+        create_notification(
+            db,
+            task,
+            user_id,
+            "held",
+            f"Task Held: {task.title}",
+            notify_message,
+            actor=current_user,
+            metadata_json={"hold": hold_info},
+        )
+
+    db.commit()
+    await invalidate_task_lane_b_cache()
+    return {
+        "success": True,
+        "message": "Task held successfully",
+        "holdInfo": _task_hold_info(task),
+        "data": serialize_task(task, db, current_user),
+    }
+
+
+async def unhold_task(
+    task_id: int,
+    payload: TaskActionPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user_from_session),
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if current_user.id != task.creator_id:
+        raise HTTPException(status_code=403, detail="Only task creator can unhold this task")
+    if task.status in TASK_TERMINAL_STATUSES:
+        raise HTTPException(status_code=400, detail="Task cannot be unheld in current state")
+    if not is_task_hold_active(task):
+        raise HTTPException(status_code=400, detail="Task is not currently on hold")
+
+    now = datetime.utcnow()
+    reason = (payload.comments or "").strip()
+    meta = dict(task.metadata_json or {})
+    hold_info = dict(meta.get(TASK_HOLD_META_KEY) or {})
+    hold_info.update(
+        {
+            "active": False,
+            "unheldById": current_user.id,
+            "unheldBy": current_user.name,
+            "unheldAt": serialize_utc_datetime(now),
+            "unholdReason": reason or None,
+        }
+    )
+    meta[TASK_HOLD_META_KEY] = hold_info
+    task.metadata_json = meta
+    task.updated_at = now
+
+    comment = reason or "Task unheld by creator"
+    add_history(db, task, current_user.id, "unheld", task.status.value, comment, {"hold": hold_info})
+    post_system_comment(db, task, current_user.id, comment, "unheld")
+
+    participants = db.query(TaskParticipant).filter(
+        TaskParticipant.task_id == task.id,
+        TaskParticipant.is_active == True,
+    ).all()
+    notified_users = set()
+    for participant in participants:
+        if participant.user_id == current_user.id:
+            continue
+        participant.is_read = False
+        participant.read_at = None
+        notified_users.add(participant.user_id)
+
+    for user_id in notified_users:
+        create_notification(
+            db,
+            task,
+            user_id,
+            "unheld",
+            f"Task Resumed: {task.title}",
+            reason or "The creator has removed the hold. Work can continue.",
+            actor=current_user,
+            metadata_json={"hold": hold_info},
+        )
+
+    db.commit()
+    await invalidate_task_lane_b_cache()
+    return {
+        "success": True,
+        "message": "Task unheld successfully",
+        "holdInfo": _task_hold_info(task),
+        "data": serialize_task(task, db, current_user),
+    }
+
+
 async def edit_task_details(
     task_id: int,
     payload: TaskUpdate,
@@ -4939,6 +5208,7 @@ async def edit_task_result(
     task = db.query(Task).filter(Task.id == task_id, Task.is_deleted == False).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    ensure_task_not_held(task)
     if not user_is_participant(task.id, current_user.id, ParticipantRole.ASSIGNEE, db):
         raise HTTPException(status_code=403, detail="Only assignee can edit result")
     if task.result_edit_locked:

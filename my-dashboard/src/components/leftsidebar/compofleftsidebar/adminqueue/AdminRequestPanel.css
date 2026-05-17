@@ -5,7 +5,7 @@
 .admin-queue-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.5);
   z-index: 1200;
 }
 
@@ -23,9 +23,10 @@
   max-width: 1400px;
   height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
-  background: #1f2d45;
+  background: #111b2b;
   border: 1px solid #334766;
   border-radius: 14px;
+  overflow: hidden;
   z-index: 1201;
   display: flex;
   flex-direction: column;
@@ -38,9 +39,15 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 16px;
-  border-bottom: 1px solid #334766;
+  padding: 24px 16px;
+  background: linear-gradient(135deg, #1f2d40 0%, #16212c 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   cursor: default;
+  flex-shrink: 0;
+  border-radius: 14px 14px 0 0;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.25),
+    0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 .admin-queue-header h3 {
@@ -145,25 +152,54 @@
   border-radius: 0;
 }
 
+.admin-queue-panel.maximized .admin-queue-header {
+  border-radius: 0;
+}
+
 .admin-queue-tabs {
   display: flex;
   gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid #334766;
+  padding: 10px 16px;
+  background: transparent;
+  border-bottom: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.admin-queue-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .admin-queue-tabs button {
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #dbeafe;
-  border-radius: 8px;
-  padding: 8px 12px;
+  padding: 7px 14px;
+  min-height: 34px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.admin-queue-tabs button:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  transform: translateY(-1px);
 }
 
 .admin-queue-tabs button.active {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
 }
 
 .admin-queue-content {
@@ -172,6 +208,8 @@
   display: grid;
   grid-template-columns: 1.2fr 1fr;
   gap: 16px;
+  flex: 1;
+  min-height: 0;
 }
 
 .admin-queue-refresh-indicator {

@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
+import { List, useDynamicRowHeight } from 'react-window';
 import './GroupMessagePanel.css';
 import { directMessageAPI, fileAPI, groupAPI, subscribeRealtimeNotifications } from '../../../../services/api';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
@@ -137,6 +138,82 @@ function AttachmentUploadStatus({ uploadState }) {
   );
 }
 
+const VirtualMessageRow = React.memo(function VirtualMessageRow({
+  ariaAttributes,
+  buildAvatarHue,
+  buildInitials,
+  currentUserId,
+  formatMessageTime,
+  index,
+  isSelectionActive,
+  items,
+  mode,
+  selectedIds,
+  style,
+  toggleMessageSelection,
+}) {
+  const item = items[index];
+  if (!item) return null;
+
+  if (item.type === 'separator') {
+    return (
+      <div {...ariaAttributes} style={style} className="group-chat-virtual-row group-chat-virtual-row--separator">
+        <div className="group-chat-day-separator">
+          <span>{item.label}</span>
+        </div>
+      </div>
+    );
+  }
+
+  const message = item.message;
+  const mine = message.senderId === currentUserId;
+  const isSelected = selectedIds.includes(message.id);
+
+  return (
+    <div {...ariaAttributes} style={style} className="group-chat-virtual-row">
+      <div
+        className={`group-chat-row ${mine ? 'mine' : 'theirs'} ${isSelectionActive ? 'selecting' : ''} ${isSelected ? 'selected' : ''}`}
+        onClick={isSelectionActive ? () => toggleMessageSelection(mode, message.id) : undefined}
+      >
+        {isSelectionActive && (
+          <button
+            type="button"
+            className={`group-message-select-toggle ${isSelected ? 'selected' : ''}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleMessageSelection(mode, message.id);
+            }}
+            aria-label={isSelected ? 'Deselect message' : 'Select message'}
+          >
+            {isSelected ? '✓' : ''}
+          </button>
+        )}
+        {!mine && (
+          <div
+            className="group-message-avatar"
+            style={{ '--group-avatar-hue': `${buildAvatarHue(message.senderName)}deg` }}
+          >
+            {buildInitials(message.senderName)}
+          </div>
+        )}
+        <div className={`group-message-bubble ${mine ? 'mine' : 'theirs'} ${message.isOptimistic ? 'optimistic' : ''}`}>
+          {!mine && <div className="group-message-sender">{message.senderName}</div>}
+          {message.message && <div className="group-message-text">{message.message}</div>}
+          {!!message.attachments?.length && (
+            <div className="group-message-attachments">
+              <ChatAttachmentGallery attachments={message.attachments} />
+            </div>
+          )}
+          <div className="group-message-meta">
+            <span>{formatMessageTime(message.createdAt)}</span>
+            {message.isOptimistic && <span className="group-message-status">Sending...</span>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 const appendMessageById = (rows = [], nextMessage) => {
   if (!nextMessage?.id) return rows;
   if (rows.some((row) => row.id === nextMessage.id)) return rows;
@@ -175,6 +252,23 @@ const buildAttachmentCountLabel = (attachments = []) => {
 const buildConversationPreview = (message, attachments = []) =>
   `${message || ''}`.trim() || buildAttachmentCountLabel(attachments);
 
+const buildGroupSearchText = (group) => [
+  group?.name,
+  group?.myRole,
+  group?.memberCount,
+  ...(Array.isArray(group?.members)
+    ? group.members.map((member) => `${member?.name || ''} ${member?.email || ''} ${member?.department || ''} ${member?.position || ''}`)
+    : []),
+].filter(Boolean).join(' ').toLowerCase();
+
+const buildDirectSearchText = (item) => [
+  item?.name,
+  item?.email,
+  item?.department,
+  item?.position,
+  item?.conversation?.lastMessagePreview,
+].filter(Boolean).join(' ').toLowerCase();
+
 const upsertDirectConversation = (rows = [], conversation) => {
   if (!conversation?.user?.id) return rows;
 
@@ -190,27 +284,6 @@ const upsertDirectConversation = (rows = [], conversation) => {
   });
 };
 
-const scrollThreadEndIntoView = (threadEndRef) => {
-  let firstFrameId = 0;
-  let secondFrameId = 0;
-  let timeoutId = 0;
-
-  firstFrameId = window.requestAnimationFrame(() => {
-    secondFrameId = window.requestAnimationFrame(() => {
-      threadEndRef.current?.scrollIntoView({ block: 'end' });
-      timeoutId = window.setTimeout(() => {
-        threadEndRef.current?.scrollIntoView({ block: 'end' });
-      }, 120);
-    });
-  });
-
-  return () => {
-    if (firstFrameId) window.cancelAnimationFrame(firstFrameId);
-    if (secondFrameId) window.cancelAnimationFrame(secondFrameId);
-    if (timeoutId) window.clearTimeout(timeoutId);
-  };
-};
-
 const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMinimizedChange, onActivate }) => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -218,6 +291,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const isActive = variant === 'embedded' || isOpen;
   const isActiveRef = useRef(isActive);
   const [activeTab, setActiveTab] = useState('groups');
+  const [messageSearch, setMessageSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isMessagesRefreshing, setIsMessagesRefreshing] = useState(false);
@@ -253,15 +327,21 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const [selectedGroupMessageIds, setSelectedGroupMessageIds] = useState([]);
   const [selectedDirectMessageIds, setSelectedDirectMessageIds] = useState([]);
   const [forwardState, setForwardState] = useState(createInitialForwardState);
-  const messageThreadRef = useRef(null);
-  const messageThreadEndRef = useRef(null);
-  const directThreadRef = useRef(null);
-  const directThreadEndRef = useRef(null);
+  const groupMessageListRef = useRef(null);
+  const directMessageListRef = useRef(null);
+  const groupRowHeight = useDynamicRowHeight({
+    defaultRowHeight: 116,
+    key: selectedGroupId || 'group-empty',
+  });
   const selectedGroupIdRef = useRef(null);
   const groupMenuRef = useRef(null);
   const [directUsers, setDirectUsers] = useState([]);
   const [directConversations, setDirectConversations] = useState([]);
   const [selectedDirectUserId, setSelectedDirectUserId] = useState(null);
+  const directRowHeight = useDynamicRowHeight({
+    defaultRowHeight: 116,
+    key: selectedDirectUserId || 'direct-empty',
+  });
   const [directMessages, setDirectMessages] = useState([]);
   const [directLoading, setDirectLoading] = useState(true);
   const [directRefreshing, setDirectRefreshing] = useState(false);
@@ -565,6 +645,16 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
 
     return items;
   }, [directConversations, directUsers]);
+  const filteredGroups = useMemo(() => {
+    const query = messageSearch.trim().toLowerCase();
+    if (!query) return groups;
+    return groups.filter((group) => buildGroupSearchText(group).includes(query));
+  }, [groups, messageSearch]);
+  const filteredDirectListItems = useMemo(() => {
+    const query = messageSearch.trim().toLowerCase();
+    if (!query) return directListItems;
+    return directListItems.filter((item) => buildDirectSearchText(item).includes(query));
+  }, [directListItems, messageSearch]);
   const isDirectTabActive = activeTab === 'direct';
   const routeTab = `${searchParams.get('tab') || ''}`.trim().toLowerCase();
   const routeGroupId = Number(searchParams.get('groupId') || 0);
@@ -725,7 +815,10 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       }));
     },
     onConfirmedMessage: ({ tempId, message }) => {
-      setMessages((prev) => replaceMessageById(prev, tempId, message));
+      setMessages((prev) => {
+        if (message?.groupId && selectedGroupIdRef.current !== message.groupId) return prev;
+        return replaceMessageById(prev, tempId, message);
+      });
       setMessageCacheStatus((prev) => ({
         showingCached: false,
         cachedAt: prev.cachedAt,
@@ -1228,9 +1321,17 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   }, []);
 
   useEffect(() => {
-    if (!isActive || !selectedGroupId) return undefined;
+    if (!isActive || !selectedGroupId || messageItems.length === 0) return undefined;
 
-    return scrollThreadEndIntoView(messageThreadEndRef);
+    const firstFrameId = window.requestAnimationFrame(() => {
+      groupMessageListRef.current?.scrollToRow({
+        index: messageItems.length - 1,
+        align: 'end',
+        behavior: 'instant',
+      });
+    });
+
+    return () => window.cancelAnimationFrame(firstFrameId);
   }, [isActive, selectedGroupId, messageItems.length]);
 
   useEffect(() => {
@@ -1339,9 +1440,17 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   }, [activeTab, selectedDirectUserId, selectedGroupId]);
 
   useEffect(() => {
-    if (!isActive || !selectedDirectUserId) return undefined;
+    if (!isActive || !selectedDirectUserId || directMessageItems.length === 0) return undefined;
 
-    return scrollThreadEndIntoView(directThreadEndRef);
+    const firstFrameId = window.requestAnimationFrame(() => {
+      directMessageListRef.current?.scrollToRow({
+        index: directMessageItems.length - 1,
+        align: 'end',
+        behavior: 'instant',
+      });
+    });
+
+    return () => window.cancelAnimationFrame(firstFrameId);
   }, [directMessageItems.length, isActive, selectedDirectUserId]);
 
   const toggleSelected = (id) => {
@@ -1633,18 +1742,23 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     if (!selectedDirectUserId || sendingDirectMessage || uploadingDirectAttachment) return;
     const trimmedMessage = directNewMessage.trim();
     if (!trimmedMessage && directPendingAttachments.length === 0) return;
+    const targetUserId = selectedDirectUserId;
+    const targetUser = selectedDirectUser;
+    const draftAttachments = directPendingAttachments;
     setSendingDirectMessage(true);
 
     try {
-      const response = await directMessageAPI.sendMessage(selectedDirectUserId, {
+      const response = await directMessageAPI.sendMessage(targetUserId, {
         message: trimmedMessage,
-        attachments: directPendingAttachments,
+        attachments: draftAttachments,
       });
       const sent = response?.data;
-      setDirectMessages((prev) => (sent ? [...prev, sent] : prev));
-      if (sent && selectedDirectUser) {
+      if (sent && selectedDirectUserIdRef.current === targetUserId) {
+        setDirectMessages((prev) => appendMessageById(prev, sent));
+      }
+      if (sent && targetUser) {
         setDirectConversations((prev) => upsertDirectConversation(prev, {
-          user: selectedDirectUser,
+          user: targetUser,
           lastMessageAt: sent.createdAt,
           lastMessagePreview: buildConversationPreview(sent.message, sent.attachments).slice(0, 180),
           lastMessageSenderId: sent.senderId,
@@ -1655,9 +1769,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           liveUpdatedAt: Date.now(),
         }));
       }
-      setDirectNewMessage('');
-      setDirectPendingAttachments([]);
-      updateDirectComposerDraft(selectedDirectUserId, createInitialComposerDraft());
+      if (selectedDirectUserIdRef.current === targetUserId) {
+        setDirectNewMessage('');
+        setDirectPendingAttachments([]);
+      }
+      updateDirectComposerDraft(targetUserId, createInitialComposerDraft());
       await syncDirectData({ silent: true });
     } catch (error) {
       setFeedback(error?.response?.data?.detail || 'Failed to send message.');
@@ -1854,6 +1970,10 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const isDirectSelectionActive = selectionMode === 'direct';
   const showEmptyGroupsState = !loading && !isRefreshing && hasResolvedGroupIndex && groups.length === 0;
   const showEmptyDirectState = !directLoading && !directRefreshing && hasResolvedDirectIndex && directListItems.length === 0;
+  const showEmptyGroupSearchState =
+    !loading && !isRefreshing && hasResolvedGroupIndex && groups.length > 0 && filteredGroups.length === 0;
+  const showEmptyDirectSearchState =
+    !directLoading && !directRefreshing && hasResolvedDirectIndex && directListItems.length > 0 && filteredDirectListItems.length === 0;
 
   const refreshCurrentView = () => {
     (activeTab === 'groups' ? syncGroups({ silent: true }) : syncDirectData({ silent: true })).catch(() => {});
@@ -1942,7 +2062,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
             <div>
               <div className="message-system-sidebar-eyebrow">Groups</div>
               <div className="message-system-sidebar-meta">
-                {groups.length} {groups.length === 1 ? 'group' : 'groups'} available
+                {filteredGroups.length} of {groups.length} {groups.length === 1 ? 'group' : 'groups'} available
               </div>
             </div>
             <div className="message-system-sidebar-actions">
@@ -1994,7 +2114,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
 
           <div className="groups-list">
             {showEmptyGroupsState && <div className="group-message-info-card">No groups created yet.</div>}
-            {groups.map((group) => {
+            {showEmptyGroupSearchState && <div className="group-message-info-card">No groups match this search.</div>}
+            {filteredGroups.map((group) => {
               const unreadCount = groupUnreadCounts[group.id] || 0;
               const hasUnread = unreadCount > 0;
 
@@ -2192,7 +2313,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               )}
 
               <div className="group-chat-body">
-                <div className="group-chat-thread" ref={messageThreadRef}>
+                <div className="group-chat-thread">
                   <CacheStatusBanner
                     showingCached={messageCacheStatus.showingCached}
                     isRefreshing={isMessagesRefreshing}
@@ -2203,63 +2324,29 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                     cachedLabel="Showing cached conversation"
                   />
                   {messages.length === 0 && <div className="group-chat-empty-thread">No messages yet. Say hello to the group.</div>}
-                  {messageItems.map((item) => {
-                    if (item.type === 'separator') {
-                      return (
-                        <div key={item.id} className="group-chat-day-separator">
-                          <span>{item.label}</span>
-                        </div>
-                      );
-                    }
-
-                    const message = item.message;
-                    const mine = message.senderId === currentUserId;
-                    const isSelected = selectedGroupMessageIds.includes(message.id);
-
-                    return (
-                      <div
-                        key={item.id}
-                        className={`group-chat-row ${mine ? 'mine' : 'theirs'} ${isGroupSelectionActive ? 'selecting' : ''} ${isSelected ? 'selected' : ''}`}
-                        onClick={isGroupSelectionActive ? () => toggleMessageSelection('group', message.id) : undefined}
-                      >
-                        {isGroupSelectionActive && (
-                          <button
-                            type="button"
-                            className={`group-message-select-toggle ${isSelected ? 'selected' : ''}`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              toggleMessageSelection('group', message.id);
-                            }}
-                            aria-label={isSelected ? 'Deselect message' : 'Select message'}
-                          >
-                            {isSelected ? '✓' : ''}
-                          </button>
-                        )}
-                        {!mine && (
-                          <div
-                            className="group-message-avatar"
-                            style={{ '--group-avatar-hue': `${buildAvatarHue(message.senderName)}deg` }}
-                          >
-                            {buildInitials(message.senderName)}
-                          </div>
-                        )}
-                        <div className={`group-message-bubble ${mine ? 'mine' : 'theirs'} ${message.isOptimistic ? 'optimistic' : ''}`}>
-                          {!mine && <div className="group-message-sender">{message.senderName}</div>}
-                          {message.message && <div className="group-message-text">{message.message}</div>}
-                          {!!message.attachments?.length && (
-                            <div className="group-message-attachments">
-                              <ChatAttachmentGallery attachments={message.attachments} />
-                            </div>
-                          )}
-                          <div className="group-message-meta">
-                            <span>{formatMessageTime(message.createdAt)}</span>
-                            {message.isOptimistic && <span className="group-message-status">Sending...</span>}
-                          </div>
-                        </div>
-                      </div>
-                      );
-                    })}
-                  <div ref={messageThreadEndRef} className="group-chat-thread-end" aria-hidden="true" />
+                  {messageItems.length > 0 && (
+                    <List
+                      className="group-chat-virtual-list"
+                      defaultHeight={520}
+                      listRef={groupMessageListRef}
+                      overscanCount={8}
+                      rowComponent={VirtualMessageRow}
+                      rowCount={messageItems.length}
+                      rowHeight={groupRowHeight}
+                      rowProps={{
+                        buildAvatarHue,
+                        buildInitials,
+                        currentUserId,
+                        formatMessageTime,
+                        isSelectionActive: isGroupSelectionActive,
+                        items: messageItems,
+                        mode: 'group',
+                        selectedIds: selectedGroupMessageIds,
+                        toggleMessageSelection,
+                      }}
+                      style={{ flex: '1 1 auto', minHeight: 0, width: '100%' }}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -2402,7 +2489,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               <div>
                 <div className="message-system-sidebar-eyebrow">Direct Messages</div>
                 <div className="message-system-sidebar-meta">
-                  {directListItems.length} {directListItems.length === 1 ? 'conversation' : 'conversations'} available
+                  {filteredDirectListItems.length} of {directListItems.length} {directListItems.length === 1 ? 'conversation' : 'conversations'} available
                 </div>
               </div>
               <div className="message-system-sidebar-actions">
@@ -2423,7 +2510,10 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               {showEmptyDirectState && (
                 <div className="group-message-info-card">No people available for direct chat yet.</div>
               )}
-              {!directLoading && directListItems.map((item) => {
+              {showEmptyDirectSearchState && (
+                <div className="group-message-info-card">No people or chats match this search.</div>
+              )}
+              {!directLoading && filteredDirectListItems.map((item) => {
                 const unreadCount = directUnreadCounts[item.id] || 0;
                 const hasUnread = unreadCount > 0;
 
@@ -2524,7 +2614,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               )}
 
               <div className="group-chat-body">
-                  <div className="group-chat-thread" ref={directThreadRef}>
+                  <div className="group-chat-thread">
                     <CacheStatusBanner
                       showingCached={directMessageCacheStatus.showingCached}
                       isRefreshing={directMessagesRefreshing}
@@ -2537,62 +2627,29 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                     {directMessages.length === 0 && (
                       <div className="group-chat-empty-thread">No direct messages yet. Start the conversation.</div>
                     )}
-                    {directMessageItems.map((item) => {
-                      if (item.type === 'separator') {
-                        return (
-                          <div key={item.id} className="group-chat-day-separator">
-                            <span>{item.label}</span>
-                          </div>
-                        );
-                      }
-
-                      const message = item.message;
-                      const mine = message.senderId === currentUserId;
-                      const isSelected = selectedDirectMessageIds.includes(message.id);
-
-                      return (
-                        <div
-                          key={item.id}
-                          className={`group-chat-row ${mine ? 'mine' : 'theirs'} ${isDirectSelectionActive ? 'selecting' : ''} ${isSelected ? 'selected' : ''}`}
-                          onClick={isDirectSelectionActive ? () => toggleMessageSelection('direct', message.id) : undefined}
-                        >
-                          {isDirectSelectionActive && (
-                            <button
-                              type="button"
-                              className={`group-message-select-toggle ${isSelected ? 'selected' : ''}`}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleMessageSelection('direct', message.id);
-                              }}
-                              aria-label={isSelected ? 'Deselect message' : 'Select message'}
-                            >
-                              {isSelected ? '✓' : ''}
-                            </button>
-                          )}
-                          {!mine && (
-                            <div
-                              className="group-message-avatar"
-                              style={{ '--group-avatar-hue': `${buildAvatarHue(message.senderName)}deg` }}
-                            >
-                              {buildInitials(message.senderName)}
-                            </div>
-                          )}
-                          <div className={`group-message-bubble ${mine ? 'mine' : 'theirs'}`}>
-                            {!mine && <div className="group-message-sender">{message.senderName}</div>}
-                            {message.message && <div className="group-message-text">{message.message}</div>}
-                            {!!message.attachments?.length && (
-                              <div className="group-message-attachments">
-                                <ChatAttachmentGallery attachments={message.attachments} />
-                              </div>
-                            )}
-                            <div className="group-message-meta">
-                              <span>{formatMessageTime(message.createdAt)}</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <div ref={directThreadEndRef} className="group-chat-thread-end" aria-hidden="true" />
+                    {directMessageItems.length > 0 && (
+                      <List
+                        className="group-chat-virtual-list"
+                        defaultHeight={520}
+                        listRef={directMessageListRef}
+                        overscanCount={8}
+                        rowComponent={VirtualMessageRow}
+                        rowCount={directMessageItems.length}
+                        rowHeight={directRowHeight}
+                        rowProps={{
+                          buildAvatarHue,
+                          buildInitials,
+                          currentUserId,
+                          formatMessageTime,
+                          isSelectionActive: isDirectSelectionActive,
+                          items: directMessageItems,
+                          mode: 'direct',
+                          selectedIds: selectedDirectMessageIds,
+                          toggleMessageSelection,
+                        }}
+                        style={{ flex: '1 1 auto', minHeight: 0, width: '100%' }}
+                      />
+                    )}
                   </div>
                 </div>
 
@@ -2878,6 +2935,21 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               <div className="group-message-modal-copy">
                 <span className="group-message-modal-label">Message System</span>
               </div>
+              {!isMinimized && (
+                <div className="group-message-header-search" onClick={(event) => event.stopPropagation()}>
+                  <svg className="group-message-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="8" />
+                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                  <input
+                    type="search"
+                    value={messageSearch}
+                    onChange={(event) => setMessageSearch(event.target.value)}
+                    placeholder={activeTab === 'groups' ? 'Search groups or members...' : 'Search people or chats...'}
+                    aria-label={activeTab === 'groups' ? 'Search groups' : 'Search direct messages'}
+                  />
+                </div>
+              )}
               {!isMinimized && panelStatusBanner}
             </div>
             <div className="group-message-window-controls">

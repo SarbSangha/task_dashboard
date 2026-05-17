@@ -16,9 +16,6 @@ export default function TeamTab() {
 
   return (
     <div className="tab-content">
-      <div className="content-header">
-        <h3>Team Members ({myDepartment || 'Department'})</h3>
-      </div>
       <CacheStatusBanner
         showingCached={cacheStatus.showingCached}
         isRefreshing={isRefreshing}
