@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useCustomDialogs } from '../../../../common/CustomDialogs';
 import CacheStatusBanner from '../../../../common/CacheStatusBanner';
 import { WorkspaceSkeleton } from '../../../../ui/WorkspaceSkeleton';
@@ -25,6 +25,10 @@ export default function CompanyTab() {
   const [previewMember, setPreviewMember] = useState(null);
   const [newDepartmentName, setNewDepartmentName] = useState('');
   const [departmentSaving, setDepartmentSaving] = useState(false);
+
+  useEffect(() => {
+    setOpenMenuId(null);
+  }, [selectedDepartment]);
 
   const handleAddDepartment = async () => {
     const name = `${newDepartmentName || ''}`.trim();
@@ -151,10 +155,13 @@ export default function CompanyTab() {
             </div>
             <div className="outbox-card-menu-wrap" style={{ marginLeft: 'auto' }}>
               <button
+                type="button"
                 className="outbox-card-menu-btn"
+                aria-label={`Open actions for ${member.name}`}
+                aria-expanded={openMenuId === member.id}
                 onClick={(event) => {
                   event.stopPropagation();
-                  setOpenMenuId(openMenuId === member.id ? null : member.id);
+                  setOpenMenuId((currentMenuId) => (currentMenuId === member.id ? null : member.id));
                 }}
               >
                 ⋮
@@ -162,6 +169,7 @@ export default function CompanyTab() {
               {openMenuId === member.id && (
                 <div className="outbox-card-menu">
                   <button
+                    type="button"
                     onClick={(event) => {
                       event.stopPropagation();
                       setOpenMenuId(null);
@@ -171,6 +179,7 @@ export default function CompanyTab() {
                     Chat
                   </button>
                   <button
+                    type="button"
                     onClick={(event) => {
                       event.stopPropagation();
                       setOpenMenuId(null);

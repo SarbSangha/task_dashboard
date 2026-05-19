@@ -9,17 +9,15 @@ import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import './CompanyMemberPreview.css';
 
 const NAV_ITEMS = [
-  { id: 'overview', label: 'Overview', group: 'functional', description: 'Quick read-only summary of the selected user interface.' },
   { id: 'inbox', label: 'Inbox', group: 'functional', description: 'Tasks assigned to this employee.' },
   { id: 'outbox', label: 'Outbox', group: 'functional', description: 'Tasks created or submitted by this employee.' },
-  { id: 'tracking', label: 'Task Tracking', group: 'functional', description: 'Progress and status snapshot for this employee.' },
+  { id: 'activity', label: 'Activity Snapshot', group: 'functional', description: 'Live activity metrics when available.' },
   { id: 'profile', label: 'Profile Settings', group: 'user', description: 'Read-only profile details.' },
   { id: 'organization', label: 'Organization Details', group: 'user', description: 'Department, role, and employee information.' },
-  { id: 'activity', label: 'Activity Snapshot', group: 'user', description: 'Live activity metrics when available.' },
 ];
 
 const MEMBER_TASK_PREVIEW_CACHE_TTL_MS = 60 * 1000;
-const TASK_DATA_SECTION_IDS = new Set(['overview', 'inbox', 'outbox', 'tracking', 'activity']);
+const TASK_DATA_SECTION_IDS = new Set(['inbox', 'outbox', 'activity']);
 const memberTaskPreviewRequests = new Map();
 function buildMemberTaskPreviewCacheKey(memberId) {
   return `company_member_preview_tasks_${memberId}`;
@@ -77,6 +75,44 @@ function formatActivityDateLabel(value) {
 function isSameLocalDate(value, dateInputValue) {
   if (!value || !dateInputValue) return false;
   return getLocalDateInputValue(value) === dateInputValue;
+}
+
+function taskMatchesDateFilter(task, dateInputValue) {
+  if (!dateInputValue) return true;
+  return ['createdAt', 'updatedAt', 'submittedAt', 'completedAt', 'deadline'].some((key) =>
+    isSameLocalDate(task?.[key], dateInputValue)
+  );
+}
+
+function buildTaskSearchText(task) {
+  const assignedNames = Array.isArray(task?.assignedTo)
+    ? task.assignedTo.map((assignee) => assignee?.name).filter(Boolean).join(' ')
+    : '';
+
+  return [
+    task?.title,
+    task?.taskNumber,
+    task?.projectId,
+    task?.projectName,
+    task?.customerName,
+    task?.reference,
+    task?.status,
+    task?.workflowStage,
+    task?.priority,
+    task?.fromDepartment,
+    task?.toDepartment,
+    task?.creator?.name,
+    assignedNames,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function taskMatchesSearch(task, query) {
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  if (!normalizedQuery) return true;
+  return buildTaskSearchText(task).includes(normalizedQuery);
 }
 
 function isClosedTaskStatus(status) {
@@ -449,12 +485,14 @@ export default function CompanyMemberPreview({
   activity = null,
   onClose,
 }) {
-  const [activeSection, setActiveSection] = useState('overview');
+  const [activeSection, setActiveSection] = useState('inbox');
   const [taskState, setTaskState] = useState({
     loading: false,
     error: '',
     tasks: [],
   });
+  const [taskSearchQuery, setTaskSearchQuery] = useState('');
+  const [taskDateFilter, setTaskDateFilter] = useState('');
   const [activityDate, setActivityDate] = useState(getLocalDateInputValue);
   const [activitySnapshotState, setActivitySnapshotState] = useState({
     loading: false,
@@ -466,7 +504,9 @@ export default function CompanyMemberPreview({
 
   useEffect(() => {
     if (isOpen) {
-      setActiveSection('overview');
+      setActiveSection('inbox');
+      setTaskSearchQuery('');
+      setTaskDateFilter('');
       setActivityDate(getLocalDateInputValue());
       setActivitySnapshotState({
         loading: false,
@@ -564,6 +604,8 @@ export default function CompanyMemberPreview({
         outboxTasks: [],
         trackingTasks: [],
         assignedTaskCount: 0,
+        receivedTaskCount: 0,
+        selfAssignedTaskCount: 0,
         deadlineMissedCount: 0,
         openTaskCount: 0,
         completedTaskCount: 0,
@@ -571,11 +613,19 @@ export default function CompanyMemberPreview({
       };
     }
 
-    const inboxTasks = taskState.tasks.filter((task) =>
-      Array.isArray(task.assignedTo) && task.assignedTo.some((assignee) => assignee.id === normalizedMember.id)
-    );
+    const isAssignedToSelectedMember = (task) =>
+      Array.isArray(task.assignedTo) &&
+      task.assignedTo.some((assignee) => String(assignee.id) === String(normalizedMember.id));
+
+    const inboxTasks = taskState.tasks.filter(isAssignedToSelectedMember);
     const createdTasks = taskState.tasks.filter((task) => task.creatorId === normalizedMember.id);
     const createdTasksForSelectedDate = createdTasks.filter((task) => isSameLocalDate(task.createdAt, activityDate));
+    const selfAssignedTasksForSelectedDate = createdTasksForSelectedDate.filter(isAssignedToSelectedMember);
+    const assignedTasksForSelectedDate = createdTasksForSelectedDate.filter((task) => !isAssignedToSelectedMember(task));
+    const receivedTasksForSelectedDate = inboxTasks.filter((task) =>
+      isSameLocalDate(task.createdAt, activityDate) &&
+      String(task.creatorId) !== String(normalizedMember.id)
+    );
     const outboxTasks = taskState.tasks.filter(
       (task) => task.creatorId === normalizedMember.id || task.submittedBy === normalizedMember.id
     );
@@ -614,7 +664,9 @@ export default function CompanyMemberPreview({
       inboxTasks,
       outboxTasks,
       trackingTasks,
-      assignedTaskCount: createdTasksForSelectedDate.length,
+      assignedTaskCount: assignedTasksForSelectedDate.length,
+      receivedTaskCount: receivedTasksForSelectedDate.length,
+      selfAssignedTaskCount: selfAssignedTasksForSelectedDate.length,
       deadlineMissedCount,
       openTaskCount: Math.max(trackingTasks.length - completedTaskCount, 0),
       completedTaskCount,
@@ -671,13 +723,20 @@ export default function CompanyMemberPreview({
   const functionalItems = NAV_ITEMS.filter((item) => item.group === 'functional');
   const userItems = NAV_ITEMS.filter((item) => item.group === 'user');
   const activeItem = NAV_ITEMS.find((item) => item.id === activeSection) || NAV_ITEMS[0];
-  const overviewTrackingTasks = previewData.trackingTasks.slice(0, 4);
   const todayActivityDate = getLocalDateInputValue();
   const selectedActivity = activitySnapshotState.data || (activityDate === todayActivityDate ? activity : null);
   const hasActivitySnapshot =
     !!selectedActivity &&
     Object.values(selectedActivity).some((value) => value !== null && value !== undefined && value !== '');
   const selectedActivityDateLabel = formatActivityDateLabel(activityDate);
+  const shouldShowTaskFilters = activeSection === 'inbox' || activeSection === 'outbox';
+  const filterPreviewTasks = (tasks) =>
+    tasks.filter((task) =>
+      taskMatchesSearch(task, taskSearchQuery) &&
+      taskMatchesDateFilter(task, taskDateFilter)
+    );
+  const filteredInboxTasks = filterPreviewTasks(previewData.inboxTasks);
+  const filteredOutboxTasks = filterPreviewTasks(previewData.outboxTasks);
   const buildTrackingTaskActions = (task, closeMenu) => (
     <>
       <button
@@ -711,52 +770,81 @@ export default function CompanyMemberPreview({
         aria-label={`${normalizedMember.name} profile preview`}
         onClick={(event) => event.stopPropagation()}
       >
-        <aside className="company-member-preview-sidebar">
-          <div className="company-member-preview-sidebar-header">
-            <div className="company-member-preview-avatar-wrap">
-              <UserAvatar avatar={normalizedMember.avatar} name={normalizedMember.name} size={72} />
+        <div className="company-member-preview-panel-body">
+          <aside className="company-member-preview-sidebar">
+            <div className="company-member-preview-sidebar-header">
+              <div className="company-member-preview-avatar-wrap">
+                <UserAvatar avatar={normalizedMember.avatar} name={normalizedMember.name} size={72} />
+              </div>
+              <h3>{normalizedMember.name}</h3>
+              <p>{normalizedMember.position}</p>
+              <span>{normalizedMember.department}</span>
             </div>
-            <h3>{normalizedMember.name}</h3>
-            <p>{normalizedMember.position}</p>
-            <span>{normalizedMember.department}</span>
-          </div>
 
-          <nav className="company-member-preview-nav">
-            <div className="company-member-preview-nav-group-title">Functional Menu</div>
-            {functionalItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`company-member-preview-nav-item ${activeSection === item.id ? 'active' : ''}`}
-                onClick={() => setActiveSection(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-            <div className="company-member-preview-nav-group-title">User Panel</div>
-            {userItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`company-member-preview-nav-item ${activeSection === item.id ? 'active' : ''}`}
-                onClick={() => setActiveSection(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
+            <nav className="company-member-preview-nav">
+              <div className="company-member-preview-nav-group-title">Functional Menu</div>
+              {functionalItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`company-member-preview-nav-item ${activeSection === item.id ? 'active' : ''}`}
+                  onClick={() => setActiveSection(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+              <div className="company-member-preview-nav-group-title">User Panel</div>
+              {userItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`company-member-preview-nav-item ${activeSection === item.id ? 'active' : ''}`}
+                  onClick={() => setActiveSection(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </nav>
 
-          <div className="company-member-preview-sidebar-footer">
-            Faculty can browse this employee view, but all actions stay read-only.
-          </div>
-        </aside>
+            <div className="company-member-preview-sidebar-footer">
+              Faculty can browse this employee view, but all actions stay read-only.
+            </div>
+          </aside>
 
-        <section className="company-member-preview-content">
+          <section className="company-member-preview-content">
           <div className="company-member-preview-content-header">
             <div>
               <h2>{activeItem.label}</h2>
               <p>{activeItem.description}</p>
             </div>
+            {shouldShowTaskFilters ? (
+              <div className="company-member-preview-header-tools">
+                <div className="company-member-preview-header-search">
+                  <span aria-hidden="true">⌕</span>
+                  <input
+                    type="search"
+                    value={taskSearchQuery}
+                    onChange={(event) => setTaskSearchQuery(event.target.value)}
+                    placeholder="Search tasks, projects..."
+                    aria-label={`Search ${activeItem.label.toLowerCase()} tasks`}
+                  />
+                </div>
+                <label className="company-member-preview-header-date-filter">
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={taskDateFilter}
+                    onChange={(event) => setTaskDateFilter(event.target.value)}
+                    aria-label={`Filter ${activeItem.label.toLowerCase()} tasks by date`}
+                  />
+                  {taskDateFilter ? (
+                    <button type="button" onClick={() => setTaskDateFilter('')} aria-label="Clear date filter">
+                      ×
+                    </button>
+                  ) : null}
+                </label>
+              </div>
+            ) : null}
             <button type="button" className="company-member-preview-close" onClick={onClose}>
               ✕
             </button>
@@ -766,59 +854,13 @@ export default function CompanyMemberPreview({
             <div className="company-member-preview-inline-note">{taskState.error}</div>
           )}
 
-          {activeSection === 'overview' && (
-            <div className="company-member-preview-stack">
-              <div className="company-member-preview-metrics-grid">
-                <SummaryMetric label="Inbox Tasks" value={previewData.inboxTasks.length} tone="info" />
-                <SummaryMetric label="Outbox Tasks" value={previewData.outboxTasks.length} tone="accent" />
-                <SummaryMetric label="Tracking Tasks" value={previewData.trackingTasks.length} tone="success" />
-                <SummaryMetric label="Open Tasks" value={previewData.openTaskCount} tone="warning" />
-              </div>
-
-              <div className="company-member-preview-section-grid">
-                <div className="company-member-preview-card">
-                  <h4>User Snapshot</h4>
-                  <ReadOnlyField label="Name" value={normalizedMember.name} />
-                  <ReadOnlyField label="Department" value={normalizedMember.department} />
-                  <ReadOnlyField label="Position" value={normalizedMember.position} />
-                  <ReadOnlyField label="Status" value={activity?.status || 'Unavailable'} />
-                </div>
-                <div className="company-member-preview-card">
-                  <h4>Task Summary</h4>
-                  <ReadOnlyField label="Created / Submitted" value={previewData.outboxTasks.length} />
-                  <ReadOnlyField label="Assigned" value={previewData.inboxTasks.length} />
-                  <ReadOnlyField label="Completed" value={previewData.completedTaskCount} />
-                  <ReadOnlyField label="Last Seen" value={formatDateTimeIndia(activity?.lastSeen)} />
-                </div>
-              </div>
-
-              <div className="company-member-preview-card company-member-preview-card-wide">
-                <h4>Recent Tracking Items</h4>
-                {taskState.loading ? (
-                  <div className="company-member-preview-empty-state">Loading task preview...</div>
-                ) : (
-                  <TaskList
-                    tasks={overviewTrackingTasks}
-                    emptyMessage="No tracking items found for this employee."
-                    actionMenuBuilder={buildTrackingTaskActions}
-                    metaBuilder={(task) => [
-                      { label: 'Priority', value: formatTaskStatus(task.priority) },
-                      { label: 'Updated', value: formatTaskDate(task.updatedAt || task.createdAt) },
-                      { label: 'Department', value: task.toDepartment || task.fromDepartment || normalizedMember.department },
-                    ]}
-                  />
-                )}
-              </div>
-            </div>
-          )}
-
           {activeSection === 'inbox' && (
-            <div className="company-member-preview-stack">
+            <div className="company-member-preview-stack company-member-preview-task-section">
               <div className="company-member-preview-metrics-grid company-member-preview-metrics-grid-compact">
-                <SummaryMetric label="Assigned Tasks" value={previewData.inboxTasks.length} tone="info" />
+                <SummaryMetric label="Assigned Tasks" value={filteredInboxTasks.length} tone="info" />
                 <SummaryMetric
                   label="Active Inbox Tasks"
-                  value={previewData.inboxTasks.filter((task) => !['approved', 'completed'].includes(String(task.status || '').toLowerCase())).length}
+                  value={filteredInboxTasks.filter((task) => !['approved', 'completed'].includes(String(task.status || '').toLowerCase())).length}
                   tone="warning"
                 />
               </div>
@@ -826,26 +868,28 @@ export default function CompanyMemberPreview({
                 <div className="company-member-preview-empty-state">Loading inbox preview...</div>
               ) : (
                 <TaskList
-                  tasks={previewData.inboxTasks}
+                  tasks={filteredInboxTasks}
                   emptyMessage="No inbox tasks found for this employee."
                   scrollable
+                  actionMenuBuilder={buildTrackingTaskActions}
                   metaBuilder={(task) => [
                     { label: 'From', value: task.creator?.name || 'Unknown' },
-                    { label: 'Priority', value: formatTaskStatus(task.priority) },
+                    { label: 'Workflow', value: formatTaskStatus(task.workflowStage || task.status) },
                     { label: 'Updated', value: formatTaskDate(task.updatedAt || task.createdAt) },
                   ]}
+                  extraContentBuilder={(task) => <TrackingMetroLine task={task} />}
                 />
               )}
             </div>
           )}
 
           {activeSection === 'outbox' && (
-            <div className="company-member-preview-stack">
+            <div className="company-member-preview-stack company-member-preview-task-section">
               <div className="company-member-preview-metrics-grid company-member-preview-metrics-grid-compact">
-                <SummaryMetric label="Created / Submitted" value={previewData.outboxTasks.length} tone="accent" />
+                <SummaryMetric label="Created / Submitted" value={filteredOutboxTasks.length} tone="accent" />
                 <SummaryMetric
                   label="Approved"
-                  value={previewData.outboxTasks.filter((task) => String(task.status || '').toLowerCase() === 'approved').length}
+                  value={filteredOutboxTasks.filter((task) => String(task.status || '').toLowerCase() === 'approved').length}
                   tone="success"
                 />
               </div>
@@ -853,51 +897,12 @@ export default function CompanyMemberPreview({
                 <div className="company-member-preview-empty-state">Loading outbox preview...</div>
               ) : (
                 <TaskList
-                  tasks={previewData.outboxTasks}
+                  tasks={filteredOutboxTasks}
                   emptyMessage="No outbox tasks found for this employee."
-                  scrollable
-                  metaBuilder={(task) => [
-                    { label: 'To', value: task.toDepartment || 'N/A' },
-                    { label: 'Assigned', value: Array.isArray(task.assignedTo) ? task.assignedTo.length : 0 },
-                    { label: 'Updated', value: formatTaskDate(task.updatedAt || task.createdAt) },
-                  ]}
-                />
-              )}
-            </div>
-          )}
-
-          {activeSection === 'tracking' && (
-            <div className="company-member-preview-stack">
-              <div className="company-member-preview-card company-member-preview-card-wide">
-                <h4>Tracking Status Breakdown</h4>
-                {taskState.loading ? (
-                  <div className="company-member-preview-empty-state">Loading tracking summary...</div>
-                ) : previewData.trackingStatusCounts.length > 0 ? (
-                  <div className="company-member-preview-status-grid">
-                    {previewData.trackingStatusCounts.map((item) => (
-                      <SummaryMetric
-                        key={item.status}
-                        label={formatTaskStatus(item.status)}
-                        value={item.count}
-                        tone="default"
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="company-member-preview-empty-state">No tracking data found for this employee.</div>
-                )}
-              </div>
-
-              {taskState.loading ? (
-                <div className="company-member-preview-empty-state">Loading tracking tasks...</div>
-              ) : (
-                <TaskList
-                  tasks={previewData.trackingTasks}
-                  emptyMessage="No tracking tasks found for this employee."
                   scrollable
                   actionMenuBuilder={buildTrackingTaskActions}
                   metaBuilder={(task) => [
-                    { label: 'Priority', value: formatTaskStatus(task.priority) },
+                    { label: 'To', value: task.toDepartment || 'N/A' },
                     { label: 'Workflow', value: formatTaskStatus(task.workflowStage || task.status) },
                     { label: 'Updated', value: formatTaskDate(task.updatedAt || task.createdAt) },
                   ]}
@@ -990,6 +995,8 @@ export default function CompanyMemberPreview({
                     <ReadOnlyField label="Productivity" value={`${selectedActivity?.productivity ?? 0}%`} />
                     <ReadOnlyField label="Tasks Done" value={selectedActivity?.tasksDone ?? 0} />
                     <ReadOnlyField label="Tasks Assigned" value={previewData.assignedTaskCount} />
+                    <ReadOnlyField label="Task Received" value={previewData.receivedTaskCount} />
+                    <ReadOnlyField label="Self Assign Task" value={previewData.selfAssignedTaskCount} />
                     <ReadOnlyField label="Deadline Missed Till Today" value={previewData.deadlineMissedCount} />
                     <ReadOnlyField label="Last Seen" value={formatDateTimeIndia(selectedActivity?.lastSeen)} />
                   </div>
@@ -1001,7 +1008,8 @@ export default function CompanyMemberPreview({
               )}
             </div>
           )}
-        </section>
+          </section>
+        </div>
       </div>
       <TaskWorkflow
         task={workflowTask}

@@ -99,12 +99,21 @@
   white-space: nowrap;
 }
 
-.outbox-header-search {
+.outbox-header-tools {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  width: min(42vw, 540px);
+  width: min(58vw, 720px);
   max-width: calc(100% - 420px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.outbox-header-search {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 220px;
 }
 
 .outbox-header-search-icon {
@@ -139,6 +148,46 @@
   background: rgba(255, 255, 255, 0.18);
   border-color: #1abc9c;
   box-shadow: 0 0 0 3px rgba(26, 188, 156, 0.15);
+}
+
+.outbox-header-date-filter {
+  height: 40px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.outbox-header-date-filter span {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.outbox-header-date-filter input {
+  width: 132px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+}
+
+.outbox-header-date-filter button {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  cursor: pointer;
+  line-height: 1;
 }
 
 .outbox-close-btn {
@@ -829,13 +878,21 @@
     gap: 12px;
   }
 
-  .outbox-header-search {
+  .outbox-header-tools {
     position: relative;
     left: auto;
     order: 3;
     width: 100%;
     max-width: none;
     transform: none;
+  }
+
+  .outbox-header-search {
+    min-width: 0;
+  }
+
+  .outbox-header-date-filter {
+    flex-shrink: 0;
   }
 
   .outbox-top-tabs {

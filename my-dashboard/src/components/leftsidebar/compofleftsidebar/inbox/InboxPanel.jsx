@@ -47,12 +47,36 @@ const getTaskSearchText = (task) => [
   ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
 ].filter(Boolean).join(' ').toLowerCase();
 
+const getLocalDateKey = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+};
+
+const doesTaskMatchDate = (task, selectedDate) => {
+  if (!selectedDate) return true;
+  return [
+    task?.createdAt,
+    task?.updatedAt,
+    task?.sentAt,
+    task?.submittedAt,
+    task?.completedAt,
+    task?.approvedAt,
+    task?.currentStageStartedAt,
+    task?.currentStageEndedAt,
+  ].some((value) => getLocalDateKey(value) === selectedDate);
+};
+
 const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange, onActivate }) => {
   const { showAlert, showPrompt } = useCustomDialogs();
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState('all');
   const [taskSearch, setTaskSearch] = useState('');
+  const [taskDateFilter, setTaskDateFilter] = useState('');
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [chatTask, setChatTask] = useState(null);
@@ -180,8 +204,10 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
   }, [getTaskFilterMeta]);
 
   const getFilterCount = React.useCallback(
-    (currentFilter) => tasks.filter((task) => doesTaskMatchFilter(task, currentFilter)).length,
-    [doesTaskMatchFilter, tasks],
+    (currentFilter) => tasks.filter((task) => (
+      doesTaskMatchFilter(task, currentFilter) && doesTaskMatchDate(task, taskDateFilter)
+    )).length,
+    [doesTaskMatchFilter, taskDateFilter, tasks],
   );
 
   useEffect(() => {
@@ -755,7 +781,11 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
 
   const filteredTasks = tasks.filter((task) => {
     const query = taskSearch.trim().toLowerCase();
-    return doesTaskMatchFilter(task, filter) && (!query || getTaskSearchText(task).includes(query));
+    return (
+      doesTaskMatchFilter(task, filter)
+      && doesTaskMatchDate(task, taskDateFilter)
+      && (!query || getTaskSearchText(task).includes(query))
+    );
   });
 
   if (!isOpen) return null;
@@ -798,18 +828,34 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         <div className="inbox-panel-header" onClick={isMinimized ? restoreWindow : undefined}>
           <h2>Inbox</h2>
           {!isMinimized && (
-            <div className="inbox-header-search" onClick={(event) => event.stopPropagation()}>
-              <svg className="inbox-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-              <input
-                type="search"
-                value={taskSearch}
-                onChange={(event) => setTaskSearch(event.target.value)}
-                placeholder="Search tasks, projects..."
-                aria-label="Search inbox tasks"
-              />
+            <div className="inbox-header-tools" onClick={(event) => event.stopPropagation()}>
+              <div className="inbox-header-search">
+                <svg className="inbox-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <input
+                  type="search"
+                  value={taskSearch}
+                  onChange={(event) => setTaskSearch(event.target.value)}
+                  placeholder="Search tasks, projects..."
+                  aria-label="Search inbox tasks"
+                />
+              </div>
+              <label className="inbox-header-date-filter">
+                <span>Date</span>
+                <input
+                  type="date"
+                  value={taskDateFilter}
+                  onChange={(event) => setTaskDateFilter(event.target.value)}
+                  aria-label="Filter inbox tasks by date"
+                />
+                {taskDateFilter && (
+                  <button type="button" onClick={() => setTaskDateFilter('')} aria-label="Clear inbox date filter">
+                    ×
+                  </button>
+                )}
+              </label>
             </div>
           )}
           <div className="inbox-window-controls">
@@ -837,7 +883,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
             className={`filter-btn ${filter === 'all' ? 'active' : ''}`}
             onClick={() => setFilter('all')}
           >
-            All ({tasks.length})
+            All ({tasks.filter((task) => doesTaskMatchDate(task, taskDateFilter)).length})
           </button>
           <button 
             className={`filter-btn ${filter === 'unread' ? 'active' : ''}`}

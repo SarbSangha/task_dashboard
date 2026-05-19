@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
@@ -48,6 +48,29 @@ const getTaskSearchText = (task) => [
   ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
 ].filter(Boolean).join(' ').toLowerCase();
 
+const getLocalDateKey = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+};
+
+const doesTaskMatchDate = (task, selectedDate) => {
+  if (!selectedDate) return true;
+  return [
+    task?.createdAt,
+    task?.updatedAt,
+    task?.sentAt,
+    task?.submittedAt,
+    task?.completedAt,
+    task?.approvedAt,
+    task?.currentStageStartedAt,
+    task?.currentStageEndedAt,
+  ].some((value) => getLocalDateKey(value) === selectedDate);
+};
+
 const TRACKING_FILTERS = [
   {
     key: 'all',
@@ -84,6 +107,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [filter, setFilter] = useState('all');
   const [taskSearch, setTaskSearch] = useState('');
+  const [taskDateFilter, setTaskDateFilter] = useState('');
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [openActionMenuId, setOpenActionMenuId] = useState(null);
@@ -117,7 +141,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
     onMinimizedChange?.(isOpen && isMinimized);
   }, [isMinimized, isOpen, onMinimizedChange]);
 
-  const tasks = trackingData?.tasks || [];
+  const tasks = useMemo(() => trackingData?.tasks || [], [trackingData?.tasks]);
   const routeTaskId = Number(searchParams.get('taskId') || 0);
   const isRefreshing = isFetching && !loading;
   const trackingError = error?.response?.data?.detail || error?.message || '';
@@ -176,7 +200,11 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
   const filteredTasks = tasks.filter((task) => {
     const activeFilter = TRACKING_FILTERS.find((entry) => entry.key === filter) || TRACKING_FILTERS[0];
     const query = taskSearch.trim().toLowerCase();
-    return activeFilter.matches(task) && (!query || getTaskSearchText(task).includes(query));
+    return (
+      activeFilter.matches(task)
+      && doesTaskMatchDate(task, taskDateFilter)
+      && (!query || getTaskSearchText(task).includes(query))
+    );
   });
 
   React.useEffect(() => {
@@ -472,18 +500,34 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
         <div className="tracking-header" onClick={isMinimized ? restoreFromMinimized : undefined}>
           <h2>Tracking</h2>
           {!isMinimized && (
-            <div className="tracking-header-search" onClick={(event) => event.stopPropagation()}>
-              <svg className="tracking-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-              <input
-                type="search"
-                value={taskSearch}
-                onChange={(event) => setTaskSearch(event.target.value)}
-                placeholder="Search tasks, projects..."
-                aria-label="Search tracking tasks"
-              />
+            <div className="tracking-header-tools" onClick={(event) => event.stopPropagation()}>
+              <div className="tracking-header-search">
+                <svg className="tracking-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <input
+                  type="search"
+                  value={taskSearch}
+                  onChange={(event) => setTaskSearch(event.target.value)}
+                  placeholder="Search tasks, projects..."
+                  aria-label="Search tracking tasks"
+                />
+              </div>
+              <label className="tracking-header-date-filter">
+                <span>Date</span>
+                <input
+                  type="date"
+                  value={taskDateFilter}
+                  onChange={(event) => setTaskDateFilter(event.target.value)}
+                  aria-label="Filter tracking tasks by date"
+                />
+                {taskDateFilter && (
+                  <button type="button" onClick={() => setTaskDateFilter('')} aria-label="Clear tracking date filter">
+                    ×
+                  </button>
+                )}
+              </label>
             </div>
           )}
           

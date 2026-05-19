@@ -28,6 +28,29 @@ const getTaskSearchText = (task) => [
   ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
 ].filter(Boolean).join(' ').toLowerCase();
 
+const getLocalDateKey = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+};
+
+const doesTaskMatchDate = (task, selectedDate) => {
+  if (!selectedDate) return true;
+  return [
+    task?.createdAt,
+    task?.updatedAt,
+    task?.sentAt,
+    task?.submittedAt,
+    task?.completedAt,
+    task?.approvedAt,
+    task?.currentStageStartedAt,
+    task?.currentStageEndedAt,
+  ].some((value) => getLocalDateKey(value) === selectedDate);
+};
+
 const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivate }) => {
   const queryClient = useQueryClient();
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
@@ -35,6 +58,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   const [expandedTaskId, setExpandedTaskId] = useState(null);
   const [filterStatus, setFilterStatus] = useState('all');
   const [taskSearch, setTaskSearch] = useState('');
+  const [taskDateFilter, setTaskDateFilter] = useState('');
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
@@ -240,13 +264,21 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
 
   const getFilteredData = () => {
     if (filterStatus === 'draft') {
-      return mergeUniqueById([
+      let draftData = mergeUniqueById([
         ...tasks.filter((item) => `${item.status || ''}`.toLowerCase() === 'draft'),
         ...drafts,
-      ]);
+      ]).filter((item) => doesTaskMatchDate(item, taskDateFilter));
+
+      const query = taskSearch.trim().toLowerCase();
+      if (query) {
+        draftData = draftData.filter((item) => getTaskSearchText(item).includes(query));
+      }
+      return draftData;
     }
 
-    let data = tasks.filter((t) => `${t.status || ''}`.toLowerCase() !== 'draft');
+    let data = tasks.filter((t) => (
+      `${t.status || ''}`.toLowerCase() !== 'draft' && doesTaskMatchDate(t, taskDateFilter)
+    ));
 
     if (filterStatus !== 'all') {
       const normalizedFilter = filterStatus.toLowerCase();
@@ -268,17 +300,21 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   };
 
   const filteredData = getFilteredData();
-  const nonDraftTasks = tasks.filter((t) => `${t.status || ''}`.toLowerCase() !== 'draft');
+  const nonDraftTasks = tasks.filter((t) => (
+    `${t.status || ''}`.toLowerCase() !== 'draft' && doesTaskMatchDate(t, taskDateFilter)
+  ));
   const allCount = nonDraftTasks.length;
   const pendingCount = nonDraftTasks.filter(t => ['pending', 'forwarded', 'assigned'].includes(`${t.status || ''}`.toLowerCase())).length;
   const inProgressCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'in_progress').length;
   const submittedCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'submitted').length;
   const needsImprovementCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'need_improvement').length;
-  const completedCount = tasks.filter((t) => ['approved', 'completed'].includes(`${t.status || ''}`.toLowerCase())).length;
+  const completedCount = tasks.filter((t) => (
+    ['approved', 'completed'].includes(`${t.status || ''}`.toLowerCase()) && doesTaskMatchDate(t, taskDateFilter)
+  )).length;
   const draftCount = mergeUniqueById([
     ...tasks.filter((t) => `${t.status || ''}`.toLowerCase() === 'draft'),
     ...drafts,
-  ]).length;
+  ]).filter((item) => doesTaskMatchDate(item, taskDateFilter)).length;
 
   const formatDate = (dateString) => {
     return formatDateIndia(dateString);
@@ -353,18 +389,34 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
             )}
           </div>
           {!isMinimized && (
-            <div className="outbox-header-search" onClick={(event) => event.stopPropagation()}>
-              <svg className="outbox-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-              <input
-                type="search"
-                value={taskSearch}
-                onChange={(event) => setTaskSearch(event.target.value)}
-                placeholder="Search tasks, projects..."
-                aria-label="Search outbox tasks"
-              />
+            <div className="outbox-header-tools" onClick={(event) => event.stopPropagation()}>
+              <div className="outbox-header-search">
+                <svg className="outbox-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <input
+                  type="search"
+                  value={taskSearch}
+                  onChange={(event) => setTaskSearch(event.target.value)}
+                  placeholder="Search tasks, projects..."
+                  aria-label="Search outbox tasks"
+                />
+              </div>
+              <label className="outbox-header-date-filter">
+                <span>Date</span>
+                <input
+                  type="date"
+                  value={taskDateFilter}
+                  onChange={(event) => setTaskDateFilter(event.target.value)}
+                  aria-label="Filter outbox tasks by date"
+                />
+                {taskDateFilter && (
+                  <button type="button" onClick={() => setTaskDateFilter('')} aria-label="Clear outbox date filter">
+                    ×
+                  </button>
+                )}
+              </label>
             </div>
           )}
           <div className="outbox-window-controls">

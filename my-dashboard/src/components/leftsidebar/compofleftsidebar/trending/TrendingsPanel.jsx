@@ -229,6 +229,11 @@ function useElementSize() {
 
 const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, openUrl, thumbnailUrl }) {
   const [previewRef, isNearViewport] = useNearViewport();
+  const [thumbnailFailed, setThumbnailFailed] = useState(false);
+
+  useEffect(() => {
+    setThumbnailFailed(false);
+  }, [thumbnailUrl]);
 
   if (!openUrl) {
     return <div ref={previewRef} className="trendings-card-fallback">No preview</div>;
@@ -261,7 +266,7 @@ const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, o
   if (asset.mediaType === 'video') {
     return (
       <div ref={previewRef} className="trendings-card-lazy-frame">
-        {isNearViewport && thumbnailUrl ? (
+        {isNearViewport && thumbnailUrl && !thumbnailFailed ? (
           <img
             src={thumbnailUrl}
             alt={asset.filename}
@@ -271,6 +276,7 @@ const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, o
             fetchPriority="low"
             onError={(event) => {
               event.currentTarget.style.display = 'none';
+              setThumbnailFailed(true);
             }}
           />
         ) : (
