@@ -418,10 +418,13 @@ function TaskList({
   actionMenuBuilder = null,
 }) {
   const [openActionMenuId, setOpenActionMenuId] = useState(null);
+  const taskIdsSignature = useMemo(() => tasks.map((task) => task.id).join('|'), [tasks]);
 
   useEffect(() => {
-    setOpenActionMenuId(null);
-  }, [tasks]);
+    if (openActionMenuId && !tasks.some((task) => task.id === openActionMenuId)) {
+      setOpenActionMenuId(null);
+    }
+  }, [openActionMenuId, taskIdsSignature, tasks]);
 
   if (tasks.length === 0) {
     return <div className="company-member-preview-empty-state">{emptyMessage}</div>;
@@ -445,8 +448,9 @@ function TaskList({
                   <button
                     type="button"
                     className="company-member-preview-task-menu-trigger"
-                    onClick={() => setOpenActionMenuId(openActionMenuId === task.id ? null : task.id)}
+                    onClick={() => setOpenActionMenuId((currentMenuId) => (currentMenuId === task.id ? null : task.id))}
                     aria-label="Task options"
+                    aria-expanded={openActionMenuId === task.id}
                   >
                     ⋮
                   </button>
