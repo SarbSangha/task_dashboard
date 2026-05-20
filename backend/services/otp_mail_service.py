@@ -186,6 +186,29 @@ def _message_datetime(value: str) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
+def _internal_datetime(fetch_metadata) -> Optional[datetime]:
+    try:
+        raw_metadata = fetch_metadata.decode("utf-8", errors="ignore") if isinstance(fetch_metadata, bytes) else str(fetch_metadata or "")
+        match = re.search(r'INTERNALDATE "([^"]+)"', raw_metadata)
+        if not match:
+            return None
+        parsed = parsedate_to_datetime(match.group(1))
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _header_message_from_fetch(raw) -> Optional[Message]:
+    try:
+        if not raw or not raw[0] or not raw[0][1]:
+            return None
+        return email.message_from_bytes(raw[0][1])
+    except Exception:
+        return None
+
+
 def _normalize_host(value: str) -> str:
     raw = (value or "").strip().lower()
     if not raw:
@@ -253,21 +276,36 @@ def fetch_otp_from_gmail(
                 message_ids = data[0].split()
                 recent_message_ids = list(reversed(message_ids))[: max(1, max_messages)]
                 for msg_id in recent_message_ids:
-                    fetch_status, raw = mail.fetch(msg_id, "(RFC822)")
+                    header_status, header_raw = mail.fetch(msg_id, "(RFC822.HEADER INTERNALDATE)")
+                    if header_status != "OK" or not header_raw or not header_raw[0]:
+                        continue
+
+                    header_message = _header_message_from_fetch(header_raw)
+                    if not header_message:
+                        continue
+
+                    message_dt = _internal_datetime(header_raw[0][0]) or _message_datetime(header_message.get("Date", ""))
+                    if message_dt and message_dt < cutoff_dt:
+                        if not_before_dt is not None:
+                            break
+                        continue
+
+                    subject = _decode_mime_header(header_message.get("Subject", ""))
+                    logger.debug("[OTP IMAP] checking subject=%r", subject[:60])
+
+                    match = re.search(pattern, subject)
+                    if match:
+                        otp = match.group(1)
+                        logger.info("[OTP IMAP] OTP extracted for %s", email_address)
+                        return otp
+
+                    fetch_status, raw = mail.fetch(msg_id, "(BODY.PEEK[])")
                     if fetch_status != "OK" or not raw or not raw[0]:
                         continue
 
                     message = email.message_from_bytes(raw[0][1])
-                    message_dt = _message_datetime(message.get("Date", ""))
-                    if message_dt and message_dt < cutoff_dt:
-                        continue
-
-                    subject = _decode_mime_header(message.get("Subject", ""))
                     body = _extract_body(message)
-                    searchable_text = "\n".join(part for part in [subject, body] if part)
-                    logger.debug("[OTP IMAP] checking subject=%r", subject[:60])
-
-                    match = re.search(pattern, searchable_text)
+                    match = re.search(pattern, body)
                     if match:
                         otp = match.group(1)
                         logger.info("[OTP IMAP] OTP extracted for %s", email_address)
