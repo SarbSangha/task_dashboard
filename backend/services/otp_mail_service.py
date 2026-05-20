@@ -246,6 +246,11 @@ def _search_uid_candidates(
             sources.append(f"raw:{query}")
             for uid in uids:
                 combined[_uid_int(uid)] = uid
+        standard_uids = _standard_uid_search(mail, criteria)
+        if standard_uids:
+            sources.append(f"imap:{criteria}")
+            for uid in standard_uids:
+                combined[_uid_int(uid)] = uid
         if combined:
             return list(combined.values()), "+".join(sources)
 
@@ -443,7 +448,6 @@ def fetch_otp_from_gmail(
                     max((_uid_int(uid) for uid in message_uids), default=0),
                     after_uid_int,
                 )
-                fallback_otp = None
                 for msg_id in recent_message_ids:
                     header_status, header_raw = _uid_fetch(mail, msg_id, "(RFC822.HEADER INTERNALDATE)")
                     if header_status != "OK" or not header_raw or not header_raw[0]:
@@ -464,7 +468,6 @@ def fetch_otp_from_gmail(
                     if match:
                         otp = match.group(1)
                         if not_before_dt is not None and message_dt and message_dt < cutoff_dt:
-                            fallback_otp = fallback_otp or otp
                             continue
                         logger.info("[OTP IMAP] OTP extracted for %s", email_address)
                         return otp
@@ -479,14 +482,9 @@ def fetch_otp_from_gmail(
                     if match:
                         otp = match.group(1)
                         if not_before_dt is not None and message_dt and message_dt < cutoff_dt:
-                            fallback_otp = fallback_otp or otp
                             continue
                         logger.info("[OTP IMAP] OTP extracted for %s", email_address)
                         return otp
-
-                if fallback_otp:
-                    logger.info("[OTP IMAP] OTP extracted with timestamp fallback for %s", email_address)
-                    return fallback_otp
 
             if time.monotonic() >= deadline:
                 break

@@ -1313,6 +1313,7 @@ def _usage_tracking_ticket_error() -> HTTPException:
 OTP_POLL_INTERVAL_SEC = 5
 OTP_CODE_POLL_INTERVAL_SEC = 2
 OTP_MAX_WAIT_SEC = 60
+OTP_HIGGSFIELD_MAX_WAIT_SEC = 12
 OTP_EMAIL_MAX_AGE_SEC = 120
 OTP_EMAIL_SCAN_LIMIT = 75
 OTP_TICKET_TTL_SEC = 600
@@ -1975,15 +1976,22 @@ async def get_extension_otp(
     if not app_password:
         raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
 
+    otp = None
+    last_fetch_error = None
+    canonical_tool_slug = _canonical_tool_slug(tool.slug or payload.tool_slug or "")
     otp_not_before_dt = None
     if payload.otp_not_before_epoch_ms:
+        skew_ms = 1000 if canonical_tool_slug == "higgsfield" else 5000
         otp_not_before_dt = datetime.fromtimestamp(
-            max(0, payload.otp_not_before_epoch_ms - 5000) / 1000,
+            max(0, payload.otp_not_before_epoch_ms - skew_ms) / 1000,
             tz=timezone.utc,
         )
 
-    otp = None
-    last_fetch_error = None
+    otp_poll_timeout_sec = (
+        OTP_HIGGSFIELD_MAX_WAIT_SEC
+        if canonical_tool_slug == "higgsfield"
+        else OTP_MAX_WAIT_SEC
+    )
     try:
         otp = await asyncio.to_thread(
             fetch_otp_from_gmail,
@@ -1994,7 +2002,7 @@ async def get_extension_otp(
             mailbox_entry.get("otp_subject_pattern"),
             OTP_EMAIL_MAX_AGE_SEC,
             OTP_EMAIL_SCAN_LIMIT,
-            OTP_MAX_WAIT_SEC,
+            otp_poll_timeout_sec,
             OTP_CODE_POLL_INTERVAL_SEC,
             otp_not_before_dt,
             payload.otp_after_uid,
