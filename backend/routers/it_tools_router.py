@@ -1931,36 +1931,30 @@ async def get_extension_otp(
     if not app_password:
         raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
 
-    attempts = max(1, OTP_MAX_WAIT_SEC // OTP_CODE_POLL_INTERVAL_SEC)
     otp = None
     last_fetch_error = None
-    for attempt_index in range(attempts):
-        try:
-            otp = await asyncio.to_thread(
-                fetch_otp_from_gmail,
-                mailbox_entry["email_address"],
-                app_password,
-                mailbox_entry.get("otp_regex") or r"\b(\d{4,8})\b",
-                mailbox_entry.get("otp_sender_filter"),
-                mailbox_entry.get("otp_subject_pattern"),
-                OTP_EMAIL_MAX_AGE_SEC,
-                OTP_EMAIL_SCAN_LIMIT,
-            )
-            last_fetch_error = None
-        except imaplib.IMAP4.error as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Mailbox login failed for {mailbox_entry['email_address']}. Update the Gmail app password or enable IMAP. ({exc})",
-            ) from exc
-        except Exception as exc:
-            last_fetch_error = exc
-            otp = None
-
-        if otp:
-            break
-
-        if attempt_index < attempts - 1:
-            await asyncio.sleep(OTP_CODE_POLL_INTERVAL_SEC)
+    try:
+        otp = await asyncio.to_thread(
+            fetch_otp_from_gmail,
+            mailbox_entry["email_address"],
+            app_password,
+            mailbox_entry.get("otp_regex") or r"\b(\d{4,8})\b",
+            mailbox_entry.get("otp_sender_filter"),
+            mailbox_entry.get("otp_subject_pattern"),
+            OTP_EMAIL_MAX_AGE_SEC,
+            OTP_EMAIL_SCAN_LIMIT,
+            OTP_MAX_WAIT_SEC,
+            OTP_CODE_POLL_INTERVAL_SEC,
+        )
+        last_fetch_error = None
+    except imaplib.IMAP4.error as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Mailbox login failed for {mailbox_entry['email_address']}. Update the Gmail app password or enable IMAP. ({exc})",
+        ) from exc
+    except Exception as exc:
+        last_fetch_error = exc
+        otp = None
 
     if not otp:
         if last_fetch_error is not None:

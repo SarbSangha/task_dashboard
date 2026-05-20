@@ -2,6 +2,7 @@ import email
 import imaplib
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from email.message import Message
@@ -222,10 +223,13 @@ def fetch_otp_from_gmail(
     otp_subject_pattern: Optional[str] = None,
     max_age_seconds: int = 120,
     max_messages: int = 25,
+    poll_timeout_seconds: int = 0,
+    poll_interval_seconds: int = 2,
 ) -> Optional[str]:
     cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
     since_dt = cutoff_dt - timedelta(days=1)
     pattern = otp_regex or r"\b(\d{4,8})\b"
+    deadline = time.monotonic() + max(0, poll_timeout_seconds)
 
     mail = None
     try:
@@ -240,35 +244,38 @@ def fetch_otp_from_gmail(
         )
         logger.debug("[OTP IMAP] search=%s", criteria)
 
-        status, data = mail.search(None, criteria)
-        if status != "OK" or not data or not data[0]:
-            logger.info("[OTP IMAP] No matching emails found for %s", email_address)
-            return None
+        while True:
+            status, data = mail.search(None, criteria)
+            if status == "OK" and data and data[0]:
+                message_ids = data[0].split()
+                recent_message_ids = list(reversed(message_ids))[: max(1, max_messages)]
+                for msg_id in recent_message_ids:
+                    fetch_status, raw = mail.fetch(msg_id, "(RFC822)")
+                    if fetch_status != "OK" or not raw or not raw[0]:
+                        continue
 
-        message_ids = data[0].split()
-        recent_message_ids = list(reversed(message_ids))[: max(1, max_messages)]
-        for msg_id in recent_message_ids:
-            fetch_status, raw = mail.fetch(msg_id, "(RFC822)")
-            if fetch_status != "OK" or not raw or not raw[0]:
-                continue
+                    message = email.message_from_bytes(raw[0][1])
+                    message_dt = _message_datetime(message.get("Date", ""))
+                    if message_dt and message_dt < cutoff_dt:
+                        continue
 
-            message = email.message_from_bytes(raw[0][1])
-            message_dt = _message_datetime(message.get("Date", ""))
-            if message_dt and message_dt < cutoff_dt:
-                continue
+                    subject = _decode_mime_header(message.get("Subject", ""))
+                    body = _extract_body(message)
+                    searchable_text = "\n".join(part for part in [subject, body] if part)
+                    logger.debug("[OTP IMAP] checking subject=%r", subject[:60])
 
-            subject = _decode_mime_header(message.get("Subject", ""))
-            body = _extract_body(message)
-            searchable_text = "\n".join(part for part in [subject, body] if part)
-            logger.debug("[OTP IMAP] checking subject=%r", subject[:60])
+                    match = re.search(pattern, searchable_text)
+                    if match:
+                        otp = match.group(1)
+                        logger.info("[OTP IMAP] OTP extracted for %s", email_address)
+                        return otp
 
-            match = re.search(pattern, searchable_text)
-            if match:
-                otp = match.group(1)
-                logger.info("[OTP IMAP] OTP extracted for %s", email_address)
-                return otp
+            if time.monotonic() >= deadline:
+                break
 
-        logger.info("[OTP IMAP] Emails found but no OTP matched for %s", email_address)
+            time.sleep(max(1, poll_interval_seconds))
+
+        logger.info("[OTP IMAP] OTP not found for %s within polling window", email_address)
         return None
     except imaplib.IMAP4.error:
         logger.exception("[OTP IMAP] IMAP authentication/protocol error for %s", email_address)

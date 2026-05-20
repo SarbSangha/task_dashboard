@@ -887,7 +887,11 @@ function attemptFill() {
   if (otpInput) {
     STATE.otpStageSeen = true;
   }
-  if ((emailInput || passwordInput) && (STATE.otpValue || STATE.otpFetching || STATE.otpRequestAttempts)) {
+  if (
+    (emailInput || passwordInput)
+    && (STATE.otpValue || STATE.otpFetching || STATE.otpRequestAttempts)
+    && (!postSubmitAt || Date.now() - postSubmitAt > 15000)
+  ) {
     STATE.otpValue = '';
     STATE.otpFetching = false;
     STATE.otpRequestAttempts = 0;
@@ -966,7 +970,11 @@ function attemptFill() {
     STATE.lastSubmitAt = now;
     markAuthTransition();
     setStatus('Credential filled, signing in');
-    window.setTimeout(() => submitButton.click(), 350);
+    window.setTimeout(() => {
+      clickAction(submitButton);
+      requestOtp();
+      scheduleAttempt(500);
+    }, 350);
     return;
   }
 
