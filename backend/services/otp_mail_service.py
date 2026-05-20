@@ -173,6 +173,100 @@ def _build_search_criteria(
     return "(" + " ".join(criteria) + ")"
 
 
+def _quote_imap_value(value: str) -> str:
+    return '"' + (value or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _build_gmail_recent_query(
+    *,
+    sender_filter: Optional[str],
+    subject_pattern: Optional[str],
+    newer_than_minutes: int = 10,
+) -> str:
+    parts = [f"newer_than:{max(1, newer_than_minutes)}m"]
+    if sender_filter:
+        parts.append(f"from:({sender_filter})")
+    if subject_pattern:
+        parts.append(f'subject:"{subject_pattern.replace(chr(34), " ")}"')
+    return " ".join(parts)
+
+
+def _build_gmail_recent_query_variants(
+    *,
+    sender_filter: Optional[str],
+    subject_pattern: Optional[str],
+) -> list[str]:
+    queries = [
+        _build_gmail_recent_query(
+            sender_filter=sender_filter,
+            subject_pattern=subject_pattern,
+        ),
+    ]
+    if sender_filter or subject_pattern:
+        queries.append(_build_gmail_recent_query(sender_filter=sender_filter, subject_pattern=None))
+        queries.append(_build_gmail_recent_query(sender_filter=None, subject_pattern=subject_pattern))
+        queries.append(_build_gmail_recent_query(sender_filter=None, subject_pattern=None))
+    return [query for index, query in enumerate(queries) if query and query not in queries[:index]]
+
+
+def _gmail_raw_uid_search(mail, query: str) -> list[bytes]:
+    if not query:
+        return []
+    try:
+        status, data = mail.uid("SEARCH", None, "X-GM-RAW", _quote_imap_value(query))
+    except Exception:
+        logger.debug("[OTP IMAP] Gmail raw search failed", exc_info=True)
+        return []
+    if status != "OK" or not data or not data[0]:
+        return []
+    return data[0].split()
+
+
+def _standard_uid_search(mail, criteria: str) -> list[bytes]:
+    status, data = mail.uid("SEARCH", None, criteria)
+    if status != "OK" or not data or not data[0]:
+        return []
+    return data[0].split()
+
+
+def _search_uid_candidates(
+    mail,
+    *,
+    criteria: str,
+    raw_queries: list[str],
+    collect_all_raw: bool = False,
+) -> tuple[list[bytes], str]:
+    if collect_all_raw:
+        combined: dict[int, bytes] = {}
+        sources: list[str] = []
+        for query in raw_queries:
+            uids = _gmail_raw_uid_search(mail, query)
+            if not uids:
+                continue
+            sources.append(f"raw:{query}")
+            for uid in uids:
+                combined[_uid_int(uid)] = uid
+        if combined:
+            return list(combined.values()), "+".join(sources)
+
+    for query in raw_queries:
+        uids = _gmail_raw_uid_search(mail, query)
+        if uids:
+            return uids, f"raw:{query}"
+    return _standard_uid_search(mail, criteria), f"imap:{criteria}"
+
+
+def _uid_fetch(mail, uid: bytes, query: str):
+    return mail.uid("FETCH", uid, query)
+
+
+def _uid_int(uid: bytes | str | int) -> int:
+    try:
+        return int(uid)
+    except Exception:
+        return 0
+
+
 def _message_datetime(value: str) -> Optional[datetime]:
     if not value:
         return None
@@ -207,6 +301,52 @@ def _header_message_from_fetch(raw) -> Optional[Message]:
         return email.message_from_bytes(raw[0][1])
     except Exception:
         return None
+
+
+def latest_otp_uid_from_gmail(
+    email_address: str,
+    app_password: str,
+    otp_sender_filter: Optional[str] = None,
+    otp_subject_pattern: Optional[str] = None,
+    max_age_seconds: int = 120,
+) -> Optional[str]:
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+    since_dt = cutoff_dt - timedelta(days=1)
+
+    mail = None
+    try:
+        mail = imaplib.IMAP4_SSL(_GMAIL_IMAP_HOST, _GMAIL_IMAP_PORT)
+        mail.login(email_address, app_password)
+        mail.select("INBOX")
+
+        criteria = _build_search_criteria(
+            sender_filter=otp_sender_filter,
+            subject_pattern=otp_subject_pattern,
+            since_dt=since_dt,
+        )
+        raw_queries = _build_gmail_recent_query_variants(
+            sender_filter=otp_sender_filter,
+            subject_pattern=otp_subject_pattern,
+        )
+        uids, source = _search_uid_candidates(mail, criteria=criteria, raw_queries=raw_queries)
+        if not uids:
+            logger.info("[OTP IMAP] baseline found no matching uid for %s", email_address)
+            return None
+        latest_uid = max((_uid_int(uid) for uid in uids), default=0)
+        logger.info("[OTP IMAP] baseline latest uid=%s source=%s for %s", latest_uid, source, email_address)
+        return str(latest_uid) if latest_uid > 0 else None
+    except imaplib.IMAP4.error:
+        logger.exception("[OTP IMAP] IMAP authentication/protocol error for %s", email_address)
+        raise
+    except Exception:
+        logger.exception("[OTP IMAP] Unexpected error while reading mailbox baseline for %s", email_address)
+        raise
+    finally:
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass
 
 
 def _normalize_host(value: str) -> str:
@@ -249,6 +389,7 @@ def fetch_otp_from_gmail(
     poll_timeout_seconds: int = 0,
     poll_interval_seconds: int = 2,
     not_before_dt: Optional[datetime] = None,
+    after_uid: Optional[str] = None,
 ) -> Optional[str]:
     cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
     if not_before_dt is not None:
@@ -256,6 +397,7 @@ def fetch_otp_from_gmail(
     since_dt = cutoff_dt - timedelta(days=1)
     pattern = otp_regex or r"\b(\d{4,8})\b"
     deadline = time.monotonic() + max(0, poll_timeout_seconds)
+    after_uid_int = _uid_int(after_uid or 0)
 
     mail = None
     try:
@@ -268,15 +410,42 @@ def fetch_otp_from_gmail(
             subject_pattern=otp_subject_pattern,
             since_dt=since_dt,
         )
-        logger.debug("[OTP IMAP] search=%s", criteria)
+        raw_queries = _build_gmail_recent_query_variants(
+            sender_filter=otp_sender_filter,
+            subject_pattern=otp_subject_pattern,
+        )
+        logger.info(
+            "[OTP IMAP] polling search=%s rawQueries=%s afterUid=%s cutoff=%s",
+            criteria,
+            raw_queries,
+            after_uid_int,
+            cutoff_dt.isoformat(),
+        )
 
         while True:
-            status, data = mail.search(None, criteria)
-            if status == "OK" and data and data[0]:
-                message_ids = data[0].split()
-                recent_message_ids = list(reversed(message_ids))[: max(1, max_messages)]
+            message_uids, source = _search_uid_candidates(
+                mail,
+                criteria=criteria,
+                raw_queries=raw_queries,
+                collect_all_raw=after_uid_int > 0,
+            )
+            if message_uids:
+                recent_message_ids = sorted(
+                    (uid for uid in message_uids if _uid_int(uid) > after_uid_int),
+                    key=_uid_int,
+                    reverse=True,
+                )[: max(1, max_messages)]
+                logger.info(
+                    "[OTP IMAP] source=%s matched=%s newer=%s latest=%s afterUid=%s",
+                    source,
+                    len(message_uids),
+                    len(recent_message_ids),
+                    max((_uid_int(uid) for uid in message_uids), default=0),
+                    after_uid_int,
+                )
+                fallback_otp = None
                 for msg_id in recent_message_ids:
-                    header_status, header_raw = mail.fetch(msg_id, "(RFC822.HEADER INTERNALDATE)")
+                    header_status, header_raw = _uid_fetch(mail, msg_id, "(RFC822.HEADER INTERNALDATE)")
                     if header_status != "OK" or not header_raw or not header_raw[0]:
                         continue
 
@@ -285,9 +454,7 @@ def fetch_otp_from_gmail(
                         continue
 
                     message_dt = _internal_datetime(header_raw[0][0]) or _message_datetime(header_message.get("Date", ""))
-                    if message_dt and message_dt < cutoff_dt:
-                        if not_before_dt is not None:
-                            break
+                    if message_dt and message_dt < (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)):
                         continue
 
                     subject = _decode_mime_header(header_message.get("Subject", ""))
@@ -296,10 +463,13 @@ def fetch_otp_from_gmail(
                     match = re.search(pattern, subject)
                     if match:
                         otp = match.group(1)
+                        if not_before_dt is not None and message_dt and message_dt < cutoff_dt:
+                            fallback_otp = fallback_otp or otp
+                            continue
                         logger.info("[OTP IMAP] OTP extracted for %s", email_address)
                         return otp
 
-                    fetch_status, raw = mail.fetch(msg_id, "(BODY.PEEK[])")
+                    fetch_status, raw = _uid_fetch(mail, msg_id, "(BODY.PEEK[])")
                     if fetch_status != "OK" or not raw or not raw[0]:
                         continue
 
@@ -308,8 +478,15 @@ def fetch_otp_from_gmail(
                     match = re.search(pattern, body)
                     if match:
                         otp = match.group(1)
+                        if not_before_dt is not None and message_dt and message_dt < cutoff_dt:
+                            fallback_otp = fallback_otp or otp
+                            continue
                         logger.info("[OTP IMAP] OTP extracted for %s", email_address)
                         return otp
+
+                if fallback_otp:
+                    logger.info("[OTP IMAP] OTP extracted with timestamp fallback for %s", email_address)
+                    return fallback_otp
 
             if time.monotonic() >= deadline:
                 break

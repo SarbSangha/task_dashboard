@@ -1313,7 +1313,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
               </div>
             </div>
 
-            <div className={`trendings-content ${!isDirectoryTab ? 'trendings-content--data' : ''}`}>
+            <div className={`trendings-content ${isDirectoryTab ? 'trendings-content--directory' : 'trendings-content--data'}`}>
               {loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
               {isDirectoryTab && (
                 <div className="trendings-directory-window">

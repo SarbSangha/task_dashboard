@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from auth import get_request_session_token, resolve_session_user
 from database_config import get_operational_db
 from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, ITPortalToolUsageEvent, User
-from services.otp_mail_service import fetch_auth_link_from_gmail, fetch_otp_from_gmail
+from services.otp_mail_service import fetch_auth_link_from_gmail, fetch_otp_from_gmail, latest_otp_uid_from_gmail
 from services.totp_service import generate_totp_code, parse_totp_config
 from utils.credential_crypto import decrypt_secret, encrypt_secret
 from utils.permissions import get_current_user, has_any_role, require_admin, require_user
@@ -129,6 +129,7 @@ class OtpRequestPayload(BaseModel):
     page_url: Optional[str] = Field(None, max_length=2000)
     extension_ticket: Optional[str] = Field(None, max_length=4000)
     otp_not_before_epoch_ms: Optional[int] = Field(None, ge=0)
+    otp_after_uid: Optional[str] = Field(None, max_length=80)
 
 
 class ExtensionUsageEventPayload(BaseModel):
@@ -1336,6 +1337,41 @@ def _cleanup_auth_link_tickets() -> None:
         del _auth_link_consumed_tickets[ticket]
 
 
+def _resolve_extension_otp_mailbox(
+    db: Session,
+    payload: OtpRequestPayload,
+    current_user: User,
+) -> tuple[ITPortalTool, dict]:
+    tool = _find_extension_tool(db, payload)
+    if not tool:
+        raise HTTPException(status_code=404, detail="No matching tool found for this page")
+    if not _tool_uses_extension_autofill(tool):
+        raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill")
+
+    extension_ticket = (payload.extension_ticket or "").strip()
+    if not extension_ticket:
+        raise _extension_ticket_error()
+
+    ticket_payload = _decode_ticket(extension_ticket)
+    if ticket_payload.get("kind") != "extension_autofill":
+        raise _extension_ticket_error()
+    if int(ticket_payload.get("userId") or 0) != current_user.id:
+        raise _extension_ticket_error()
+    if int(ticket_payload.get("toolId") or 0) != tool.id:
+        raise _extension_ticket_error()
+
+    credential = _resolve_tool_credential(db, tool.id, current_user.id)
+    effective_credential = _effective_credential_for_mailbox_lookup(
+        db,
+        credential,
+        canonical_tool_slug=_canonical_tool_slug(tool.slug or ""),
+    )
+    credential_email = decrypt_secret(effective_credential.login_identifier_encrypted) if effective_credential else ""
+    mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool.id).first()
+    mailbox_entry = _select_matching_mailbox_entry(tool, mailbox, credential_email=credential_email)
+    return tool, mailbox_entry
+
+
 def _render_auto_login_page(tool: ITPortalTool, credential: ITPortalToolCredential) -> str:
     metadata = tool.metadata_json or {}
     auto_login = metadata.get("autoLogin") or {}
@@ -1887,29 +1923,46 @@ async def report_extension_usage_event(
     }
 
 
+@router.post("/extension/otp-baseline")
+async def get_extension_otp_baseline(
+    payload: OtpRequestPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db),
+):
+    _tool, mailbox_entry = _resolve_extension_otp_mailbox(db, payload, current_user)
+
+    app_password = decrypt_secret(mailbox_entry.get("app_password_encrypted"))
+    if not app_password:
+        raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
+
+    try:
+        latest_uid = await asyncio.to_thread(
+            latest_otp_uid_from_gmail,
+            mailbox_entry["email_address"],
+            app_password,
+            mailbox_entry.get("otp_sender_filter"),
+            mailbox_entry.get("otp_subject_pattern"),
+            OTP_EMAIL_MAX_AGE_SEC,
+        )
+    except imaplib.IMAP4.error as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Mailbox login failed for {mailbox_entry['email_address']}. Update the Gmail app password or enable IMAP. ({exc})",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Mailbox baseline fetch failed: {exc}") from exc
+
+    return {"success": True, "latestUid": latest_uid}
+
+
 @router.post("/extension/otp")
 async def get_extension_otp(
     payload: OtpRequestPayload,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db),
 ):
-    tool = _find_extension_tool(db, payload)
-    if not tool:
-        raise HTTPException(status_code=404, detail="No matching tool found for this page")
-    if not _tool_uses_extension_autofill(tool):
-        raise HTTPException(status_code=400, detail="Tool is not configured for extension auto-fill")
-
     extension_ticket = (payload.extension_ticket or "").strip()
-    if not extension_ticket:
-        raise _extension_ticket_error()
-
-    ticket_payload = _decode_ticket(extension_ticket)
-    if ticket_payload.get("kind") != "extension_autofill":
-        raise _extension_ticket_error()
-    if int(ticket_payload.get("userId") or 0) != current_user.id:
-        raise _extension_ticket_error()
-    if int(ticket_payload.get("toolId") or 0) != tool.id:
-        raise _extension_ticket_error()
+    tool, mailbox_entry = _resolve_extension_otp_mailbox(db, payload, current_user)
 
     _cleanup_otp_tickets()
     if extension_ticket in _otp_consumed_tickets:
@@ -1917,16 +1970,6 @@ async def get_extension_otp(
             status_code=409,
             detail="OTP already fetched for this launch session. Launch the tool again from the dashboard.",
         )
-
-    credential = _resolve_tool_credential(db, tool.id, current_user.id)
-    effective_credential = _effective_credential_for_mailbox_lookup(
-        db,
-        credential,
-        canonical_tool_slug=_canonical_tool_slug(tool.slug or ""),
-    )
-    credential_email = decrypt_secret(effective_credential.login_identifier_encrypted) if effective_credential else ""
-    mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool.id).first()
-    mailbox_entry = _select_matching_mailbox_entry(tool, mailbox, credential_email=credential_email)
 
     app_password = decrypt_secret(mailbox_entry.get("app_password_encrypted"))
     if not app_password:
@@ -1954,6 +1997,7 @@ async def get_extension_otp(
             OTP_MAX_WAIT_SEC,
             OTP_CODE_POLL_INTERVAL_SEC,
             otp_not_before_dt,
+            payload.otp_after_uid,
         )
         last_fetch_error = None
     except imaplib.IMAP4.error as exc:
@@ -1973,7 +2017,12 @@ async def get_extension_otp(
             )
         raise HTTPException(
             status_code=408,
-            detail="OTP email did not arrive within the timeout window. Check the mailbox filters and try again.",
+            detail=(
+                "OTP email did not arrive within the timeout window. "
+                f"afterUid={payload.otp_after_uid or ''}; "
+                f"notBeforeMs={payload.otp_not_before_epoch_ms or ''}; "
+                "check backend [OTP IMAP] logs for matched/newer UID counts."
+            ),
         )
 
     _otp_consumed_tickets[extension_ticket] = time.monotonic()
@@ -2732,12 +2781,7 @@ async def get_tool_usage_report(
     )
 
     grouped_event_meta = {}
-    grouped_events = (
-        base_query
-        .order_by(ITPortalToolUsageEvent.created_at.desc())
-        .all()
-    )
-    for event, _, _ in grouped_events:
+    for event, _, _ in recent_events:
         key = (event.event_date.isoformat() if event.event_date else "", int(event.user_id or 0), int(event.credential_id or 0))
         if key not in grouped_event_meta:
             grouped_event_meta[key] = event.metadata_json or {}

@@ -1212,6 +1212,8 @@ async function fetchOtp(message, senderTabId = 0, openerTabId = 0) {
       hostname: message.hostname,
       page_url: message.pageUrl,
       extension_ticket: extensionTicket || null,
+      otp_not_before_epoch_ms: Number.isFinite(Number(message.otpNotBeforeMs)) ? Number(message.otpNotBeforeMs) : undefined,
+      otp_after_uid: message.otpAfterUid ? `${message.otpAfterUid}` : undefined,
     }),
   });
 
@@ -1227,6 +1229,46 @@ async function fetchOtp(message, senderTabId = 0, openerTabId = 0) {
   }
 
   return data.otp;
+}
+
+async function fetchOtpBaseline(message, senderTabId = 0, openerTabId = 0) {
+  const settings = await getSettings();
+  const tabId = message.tabId || senderTabId || 0;
+  const directLaunch = await getActiveLaunch(tabId, message.toolSlug);
+  const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, message.toolSlug);
+  const activeLaunch = directLaunch || inheritedLaunch;
+  const extensionTicket = `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim();
+
+  if (!extensionTicket) {
+    throw new Error('Open this tool from the dashboard first.');
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetch(`${settings.apiBase}/api/it-tools/extension/otp-baseline`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify({
+      tool_slug: message.toolSlug,
+      hostname: message.hostname,
+      page_url: message.pageUrl,
+      extension_ticket: extensionTicket || null,
+    }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.message || `OTP baseline request failed (${response.status})`);
+  }
+
+  return data.latestUid || '';
 }
 
 async function fetchAuthLink(message, senderTabId = 0, openerTabId = 0) {
@@ -1692,6 +1734,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'TOOL_HUB_FETCH_OTP') {
     fetchOtp(message, senderTabId, senderOpenerTabId)
       .then((otp) => sendResponse({ ok: true, otp }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_PREPARE_OTP_BASELINE') {
+    fetchOtpBaseline(message, senderTabId, senderOpenerTabId)
+      .then((latestUid) => sendResponse({ ok: true, latestUid }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

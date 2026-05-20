@@ -27,6 +27,8 @@ const EMPTY_USAGE_FILTERS = {
   credentialId: '',
 };
 
+const ASSIGNMENT_USER_PAGE_SIZE = 20;
+
 const Icons = {
   Search: () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -535,6 +537,8 @@ const compareUsageAggregateTotals = (left, right) => {
 export default function Tools({ view = 'tools' }) {
   const activeView = view === 'credits' ? 'credits' : 'tools';
   const containerRef = useRef(null);
+  const headerRef = useRef(null);
+  const usageRefreshControllerRef = useRef(null);
   const [tools, setTools] = useState([]);
   const [users, setUsers] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -557,8 +561,8 @@ export default function Tools({ view = 'tools' }) {
   const [toolCredentialsByToolId, setToolCredentialsByToolId] = useState({});
   const [assignmentLoading, setAssignmentLoading] = useState(false);
   const [assignmentSavingKey, setAssignmentSavingKey] = useState('');
+  const [assignmentUserPage, setAssignmentUserPage] = useState(0);
   const [sharedCredentialAssignmentPicker, setSharedCredentialAssignmentPicker] = useState(null);
-  const [isHeaderVisible, setIsHeaderVisible] = useState(true);
   const [usageFilters, setUsageFilters] = useState(EMPTY_USAGE_FILTERS);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageRows, setUsageRows] = useState([]);
@@ -679,6 +683,7 @@ export default function Tools({ view = 'tools' }) {
 
   useEffect(() => {
     const rootElement = containerRef.current;
+    const headerElement = headerRef.current;
     if (!rootElement) return undefined;
 
     const isScrollableElement = (element) => {
@@ -701,17 +706,26 @@ export default function Tools({ view = 'tools' }) {
     );
 
     let lastScrollY = getScrollTop();
+    let headerVisible = true;
+
+    const setHeaderVisibleClass = (visible) => {
+      if (headerVisible === visible) return;
+      headerVisible = visible;
+      if (!headerElement) return;
+      headerElement.classList.toggle('is-visible', visible);
+      headerElement.classList.toggle('is-hidden', !visible);
+    };
 
     const handleScroll = () => {
       const currentScrollY = getScrollTop();
       const scrollDelta = currentScrollY - lastScrollY;
 
       if (currentScrollY <= 12) {
-        setIsHeaderVisible(true);
+        setHeaderVisibleClass(true);
       } else if (scrollDelta > 6) {
-        setIsHeaderVisible(false);
+        setHeaderVisibleClass(false);
       } else if (scrollDelta < -6) {
-        setIsHeaderVisible(true);
+        setHeaderVisibleClass(true);
       }
 
       lastScrollY = currentScrollY;
@@ -813,7 +827,9 @@ export default function Tools({ view = 'tools' }) {
     if (activeView !== 'credits') return undefined;
 
     const refreshUsage = () => {
+      if (usageRefreshControllerRef.current) return usageRefreshControllerRef.current;
       const controller = new AbortController();
+      usageRefreshControllerRef.current = controller;
       void itToolsAPI.getUsageReport({
         tool_slug: usageFilters.toolSlug,
         selected_date: usageFilters.selectedDate,
@@ -836,6 +852,10 @@ export default function Tools({ view = 'tools' }) {
       }).catch((err) => {
         if (isRequestCanceled(err) || controller.signal.aborted) return;
         setError(err?.response?.data?.detail || 'Unable to refresh Kling usage report.');
+      }).finally(() => {
+        if (usageRefreshControllerRef.current === controller) {
+          usageRefreshControllerRef.current = null;
+        }
       });
       return controller;
     };
@@ -853,6 +873,8 @@ export default function Tools({ view = 'tools' }) {
     return () => {
       clearInterval(intervalId);
       window.removeEventListener('focus', handleFocus);
+      usageRefreshControllerRef.current?.abort();
+      usageRefreshControllerRef.current = null;
     };
   }, [activeView, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
 
@@ -867,6 +889,14 @@ export default function Tools({ view = 'tools' }) {
       return leftLabel.localeCompare(rightLabel);
     });
   }, [users]);
+
+  const toolById = useMemo(() => {
+    const nextMap = new Map();
+    tools.forEach((tool) => {
+      nextMap.set(Number(tool.id), tool);
+    });
+    return nextMap;
+  }, [tools]);
 
   const klingCredentialSummaries = useMemo(() => {
     return tools
@@ -1278,7 +1308,7 @@ export default function Tools({ view = 'tools' }) {
   };
 
   const getAssignedSharedCredentialSummary = (toolId, userId) => {
-    const tool = tools.find((item) => Number(item.id) === Number(toolId));
+    const tool = toolById.get(Number(toolId));
     if (!supportsSharedCompanyCredentialAssignments(tool)) {
       return null;
     }
@@ -1289,7 +1319,7 @@ export default function Tools({ view = 'tools' }) {
   };
 
   const isSharedCredentialAssignmentMode = (toolId) => {
-    const tool = tools.find((item) => Number(item.id) === Number(toolId));
+    const tool = toolById.get(Number(toolId));
     const normalizedToolSlug = normalizeToolSlug(tool?.slug);
     if (!supportsSharedCompanyCredentialAssignments(normalizedToolSlug)) {
       return false;
@@ -1305,7 +1335,7 @@ export default function Tools({ view = 'tools' }) {
     const userCredential = directory.users[userId];
     const linkedCompanyCredential = getLinkedCompanyCredentialSummary(directory, userCredential);
     const sharedCredentialAssignmentMode = isSharedCredentialAssignmentMode(toolId);
-    const tool = tools.find((item) => Number(item.id) === Number(toolId)) || null;
+    const tool = toolById.get(Number(toolId)) || null;
 
     if (userCredential) {
       if (!userCredential.isActive) {
@@ -1499,6 +1529,46 @@ export default function Tools({ view = 'tools' }) {
   };
 
   const assignmentColumns = useMemo(() => filteredTools, [filteredTools]);
+  const assignmentColumnKey = useMemo(
+    () => assignmentColumns.map((tool) => `${tool.id}`).join('|'),
+    [assignmentColumns],
+  );
+  const assignmentPageCount = Math.max(Math.ceil(sortedUsers.length / ASSIGNMENT_USER_PAGE_SIZE), 1);
+  const normalizedAssignmentUserPage = Math.min(assignmentUserPage, assignmentPageCount - 1);
+  const assignmentPageStart = normalizedAssignmentUserPage * ASSIGNMENT_USER_PAGE_SIZE;
+  const assignmentPageEnd = Math.min(assignmentPageStart + ASSIGNMENT_USER_PAGE_SIZE, sortedUsers.length);
+  const assignmentVisibleUsers = useMemo(
+    () => sortedUsers.slice(assignmentPageStart, assignmentPageEnd),
+    [assignmentPageEnd, assignmentPageStart, sortedUsers],
+  );
+  const assignmentColumnMetaById = useMemo(() => {
+    return assignmentColumns.reduce((accumulator, tool) => {
+      const directory = credentialDirectory[tool.id] || { company: null, companyList: [] };
+      const companyList = directory.companyList || [];
+      const normalizedToolSlug = normalizeToolSlug(tool?.slug);
+      const supportsSharedAssignments = supportsSharedCompanyCredentialAssignments(normalizedToolSlug);
+      const readyCredentialCount = companyList.filter((summary) => hasActiveUsableCredentialSummary(summary, tool)).length;
+      const companyReady = readyCredentialCount > 0;
+      const labels = supportsSharedAssignments ? getSharedCredentialLabels(tool) : null;
+      accumulator[tool.id] = {
+        companyReady,
+        readyCredentialCount,
+        supportsSharedAssignments,
+        label: companyReady
+          ? supportsSharedAssignments
+            ? `${readyCredentialCount} ${labels.singular}${readyCredentialCount === 1 ? '' : 's'} ready`
+            : 'Company ready'
+          : supportsSharedAssignments
+            ? `Needs ${labels.singular}`
+            : 'Needs credential',
+      };
+      return accumulator;
+    }, {});
+  }, [assignmentColumns, credentialDirectory]);
+
+  useEffect(() => {
+    setAssignmentUserPage(0);
+  }, [activeView, assignmentColumnKey, sortedUsers.length]);
 
   const handleEditToolChange = (toolId) => {
     setEditToolId(toolId);
@@ -2023,7 +2093,7 @@ export default function Tools({ view = 'tools' }) {
 
   return (
     <div ref={containerRef} className="app-container">
-      <header className={`app-header ${isHeaderVisible ? 'is-visible' : 'is-hidden'}`}>
+      <header ref={headerRef} className="app-header is-visible">
         <div className="header-wrapper">
           <div>
             <p className="it-profile-eyebrow">IT Profile</p>
@@ -2628,23 +2698,17 @@ export default function Tools({ view = 'tools' }) {
                   <tr>
                     <th className="it-user-column">User</th>
                     {assignmentColumns.map((tool) => {
-                      const directory = credentialDirectory[tool.id] || { company: null, companyList: [] };
-                      const companyReady = (directory.companyList || []).some((summary) => hasActiveUsableCredentialSummary(summary, tool));
-                      const normalizedToolSlug = normalizeToolSlug(tool?.slug);
-                      const readyCredentialCount = (directory.companyList || []).filter((summary) => hasActiveUsableCredentialSummary(summary, tool)).length;
+                      const columnMeta = assignmentColumnMetaById[tool.id] || {
+                        companyReady: false,
+                        label: 'Needs credential',
+                      };
                       return (
                         <th key={tool.id} className="it-tool-column">
                           <div className="it-tool-column-copy">
                             <strong>{tool.name}</strong>
                             <small>{tool.category}</small>
-                            <span className={`it-company-badge ${companyReady ? 'is-ready' : 'is-missing'}`}>
-                              {companyReady
-                                ? supportsSharedCompanyCredentialAssignments(normalizedToolSlug)
-                                  ? `${readyCredentialCount} ${getSharedCredentialLabels(tool).singular}${readyCredentialCount === 1 ? '' : 's'} ready`
-                                  : 'Company ready'
-                                : supportsSharedCompanyCredentialAssignments(normalizedToolSlug)
-                                  ? `Needs ${getSharedCredentialLabels(tool).singular}`
-                                  : 'Needs credential'}
+                            <span className={`it-company-badge ${columnMeta.companyReady ? 'is-ready' : 'is-missing'}`}>
+                              {columnMeta.label}
                             </span>
                           </div>
                         </th>
@@ -2672,7 +2736,7 @@ export default function Tools({ view = 'tools' }) {
                       </td>
                     </tr>
                   ) : (
-                    sortedUsers.map((user) => (
+                    assignmentVisibleUsers.map((user) => (
                       <tr key={user.id}>
                         <td className="it-user-cell">
                           <strong>{user.name || user.email}</strong>
@@ -2714,6 +2778,29 @@ export default function Tools({ view = 'tools' }) {
                 </tbody>
               </table>
             </div>
+            {!assignmentLoading && sortedUsers.length > ASSIGNMENT_USER_PAGE_SIZE && (
+              <div className="it-assignment-pager">
+                <span>
+                  Showing {assignmentPageStart + 1}-{assignmentPageEnd} of {sortedUsers.length} users
+                </span>
+                <div className="it-assignment-pager-actions">
+                  <button
+                    type="button"
+                    onClick={() => setAssignmentUserPage((page) => Math.max(page - 1, 0))}
+                    disabled={normalizedAssignmentUserPage <= 0}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAssignmentUserPage((page) => Math.min(page + 1, assignmentPageCount - 1))}
+                    disabled={normalizedAssignmentUserPage >= assignmentPageCount - 1}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
         )}
 

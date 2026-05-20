@@ -13,6 +13,9 @@ const STATE = {
   otpFetching: false,
   otpRequestAttempts: 0,
   otpLastRequestAt: 0,
+  otpBaselineUid: '',
+  otpBaselineFetching: false,
+  otpBaselinePrepared: false,
   lastSubmitAt: 0,
   lastLoginOpenAt: 0,
   loginOpenAttempts: 0,
@@ -760,6 +763,7 @@ async function requestOtp() {
     pageUrl: window.location.href,
     extensionTicket: getStoredLaunchTicket(),
     otpNotBeforeMs: Number(STATE.lastSubmitAt || STATE.authTransitionAt || 0) || Date.now(),
+    otpAfterUid: STATE.otpBaselineUid || undefined,
   });
 
   STATE.otpFetching = false;
@@ -781,6 +785,32 @@ async function requestOtp() {
 
   STATE.otpValue = `${response.otp}`.trim();
   scheduleAttempt(100);
+}
+
+async function prepareOtpBaseline() {
+  if (STATE.otpBaselinePrepared || STATE.otpBaselineFetching) return;
+
+  STATE.otpBaselineFetching = true;
+  setStatus('Preparing Higgsfield OTP lookup');
+  const response = await sendRuntimeMessage({
+    type: 'TOOL_HUB_PREPARE_OTP_BASELINE',
+    toolSlug: TOOL_SLUG,
+    hostname: window.location.hostname,
+    pageUrl: window.location.href,
+    extensionTicket: getStoredLaunchTicket(),
+  });
+  STATE.otpBaselineFetching = false;
+
+  if (!response?.ok) {
+    setStatus(response?.error || 'OTP lookup preparation failed');
+    STATE.otpBaselinePrepared = true;
+    scheduleAttempt(300);
+    return;
+  }
+
+  STATE.otpBaselineUid = `${response.latestUid || ''}`.trim();
+  STATE.otpBaselinePrepared = true;
+  scheduleAttempt(50);
 }
 
 function fillOtp(otpInput, otp) {
@@ -897,6 +927,9 @@ function attemptFill() {
     STATE.otpFetching = false;
     STATE.otpRequestAttempts = 0;
     STATE.otpLastRequestAt = 0;
+    STATE.otpBaselineUid = '';
+    STATE.otpBaselineFetching = false;
+    STATE.otpBaselinePrepared = false;
     STATE.otpStageSeen = false;
     STATE.otpSubmittedAt = 0;
   }
@@ -957,6 +990,17 @@ function attemptFill() {
   const readyForSubmit = (!emailInput || emailInput.value) && (!passwordInput || passwordInput.value);
   if (!readyForSubmit) {
     setStatus('Waiting for credential fields');
+    return;
+  }
+
+  if (!STATE.otpBaselinePrepared) {
+    prepareOtpBaseline().catch((error) => {
+      STATE.otpBaselineFetching = false;
+      STATE.otpBaselinePrepared = true;
+      setStatus(error?.message || 'OTP lookup preparation failed');
+      scheduleAttempt(300);
+    });
+    setStatus(STATE.otpBaselineFetching ? 'Preparing Higgsfield OTP lookup' : 'Starting Higgsfield OTP lookup');
     return;
   }
 

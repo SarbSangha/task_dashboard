@@ -844,6 +844,43 @@ body {
   background: rgba(8, 15, 28, 0.72);
 }
 
+.it-assignment-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+  color: #9fb3d5;
+  font-size: 0.84rem;
+}
+
+.it-assignment-pager-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.it-assignment-pager button {
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 10px;
+  padding: 0.55rem 0.85rem;
+  background: rgba(14, 165, 233, 0.12);
+  color: #dbeafe;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.it-assignment-pager button:hover:not(:disabled) {
+  border-color: rgba(125, 211, 252, 0.55);
+  background: rgba(14, 165, 233, 0.18);
+}
+
+.it-assignment-pager button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .it-picker-overlay {
   position: fixed;
   inset: 0;
