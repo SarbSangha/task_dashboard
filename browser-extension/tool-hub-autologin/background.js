@@ -1,11 +1,28 @@
 const DEFAULT_API_BASE = 'https://dashboard.ritzmediaworld.in';
 const ACTIVE_TAB_LAUNCHES_STORAGE_KEY = 'activeExtensionTabLaunches';
 const PASSWORD_SAVING_STATE_STORAGE_KEY = 'passwordSavingSuppressionState';
+const DASHBOARD_HOSTS = new Set([
+  'dashboard.ritzmediaworld.in',
+  'localhost',
+  '127.0.0.1',
+  '192.168.1.15',
+]);
 const FLOW_HOME_URL = 'https://labs.google/fx';
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
+const DIRECT_TICKET_ONLY_TOOLS = new Set(['behance', 'claude', 'genspark', 'pinterest']);
+const CLEAR_SESSION_ON_CLOSE_TOOLS = new Set(['behance', 'claude', 'genspark', 'pinterest', 'flow']);
 const TOOL_SESSION_DOMAINS = {
-  behance: ['behance.net', 'www.behance.net', 'auth.services.adobe.com', 'adobeid-na1.services.adobe.com', 'ims-na1.adobelogin.com'],
+  behance: [
+    'behance.net',
+    'www.behance.net',
+    'adobe.com',
+    'www.adobe.com',
+    'account.adobe.com',
+    'auth.services.adobe.com',
+    'adobeid-na1.services.adobe.com',
+    'ims-na1.adobelogin.com',
+  ],
   canva: ['canva.com', 'www.canva.com'],
   claude: ['claude.ai', 'www.claude.ai'],
   enhancor: ['enhancor.ai', 'www.enhancor.ai', 'app.enhancor.ai'],
@@ -23,7 +40,10 @@ const TOOL_SESSION_DOMAINS = {
   pinterest: ['pinterest.com', 'www.pinterest.com', 'in.pinterest.com'],
 };
 const TOOL_OPTIONAL_SESSION_DOMAINS = {
+  behance: ['accounts.google.com', 'google.com', '.google.com'],
   flow: ['accounts.google.com', 'google.com', '.google.com'],
+  genspark: ['accounts.google.com', 'google.com', '.google.com'],
+  pinterest: ['accounts.google.com', 'google.com', '.google.com'],
 };
 const TOOL_LOGIN_CONTINUATION_HOSTS = {
   behance: [
@@ -323,6 +343,15 @@ function hostnameFromPageUrl(value) {
   }
 }
 
+function isAllowedDashboardUrl(value) {
+  try {
+    const url = new URL(`${value || ''}`);
+    return DASHBOARD_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function isLoginContinuationPage(toolSlug, pageUrl, hostname) {
   const allowedHosts = TOOL_LOGIN_CONTINUATION_HOSTS[normalizeToolSlug(toolSlug)] || [];
   if (!allowedHosts.length) return false;
@@ -455,6 +484,11 @@ async function getActiveLaunchMap() {
   return launchMap;
 }
 
+async function getStoredActiveLaunchMap() {
+  const stored = await chrome.storage.local.get([ACTIVE_TAB_LAUNCHES_STORAGE_KEY]);
+  return { ...(stored[ACTIVE_TAB_LAUNCHES_STORAGE_KEY] || {}) };
+}
+
 async function getActiveLaunch(tabId, toolSlug) {
   if (!tabId) return null;
   const launchMap = await getActiveLaunchMap();
@@ -501,6 +535,10 @@ async function getRecentContinuationLaunch(toolSlug, hostname, pageUrl) {
 }
 
 async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug, hostname = '', pageUrl = '') {
+  if (DIRECT_TICKET_ONLY_TOOLS.has(normalizeToolSlug(toolSlug))) {
+    return getActiveLaunch(primaryTabId, toolSlug);
+  }
+
   const primaryLaunch = await getActiveLaunch(primaryTabId, toolSlug);
   if (primaryLaunch?.ticket) {
     return primaryLaunch;
@@ -525,7 +563,8 @@ async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug,
 
 async function activatePendingLaunchForTab(tabId, toolSlug, hostname, pageUrl) {
   if (!tabId) return null;
-  if (normalizeToolSlug(toolSlug) === 'chatgpt') {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug);
+  if (normalizedToolSlug === 'chatgpt' || DIRECT_TICKET_ONLY_TOOLS.has(normalizedToolSlug)) {
     return null;
   }
 
@@ -552,10 +591,11 @@ async function setActiveLaunch(tabId, launch) {
   if (!tabId || !launch?.ticket || !launch?.expiresAt) return;
   const launchMap = await getActiveLaunchMap();
   const existingLaunch = launchMap[`${tabId}`] || {};
+  const normalizedToolSlug = normalizeToolSlug(launch.toolSlug);
   const nextTicket = `${launch.ticket}`.trim();
   const sameTicket = `${existingLaunch.ticket || ''}`.trim() === nextTicket;
   launchMap[`${tabId}`] = {
-    toolSlug: normalizeToolSlug(launch.toolSlug),
+    toolSlug: normalizedToolSlug,
     ticket: nextTicket,
     expiresAt: Number(launch.expiresAt || 0),
     hostname: normalizeHostname(launch.hostname),
@@ -571,6 +611,21 @@ async function setActiveLaunch(tabId, launch) {
     directCredentialIssuedAt: sameTicket ? Number(existingLaunch.directCredentialIssuedAt || 0) : 0,
     inheritedCredentialIssuedAt: sameTicket ? Number(existingLaunch.inheritedCredentialIssuedAt || 0) : 0,
     credentialContinuationCount: sameTicket ? Number(existingLaunch.credentialContinuationCount || 0) : 0,
+    clearSessionOnClose: Boolean(
+      normalizedToolSlug === 'genspark'
+      || normalizedToolSlug === 'claude'
+      || normalizedToolSlug === 'behance'
+      || normalizedToolSlug === 'pinterest'
+      || launch.clearSessionOnClose
+      || (sameTicket && existingLaunch.clearSessionOnClose)
+    ),
+    clearGoogleOnClose: Boolean(
+      normalizedToolSlug === 'genspark'
+      || normalizedToolSlug === 'behance'
+      || normalizedToolSlug === 'pinterest'
+      || launch.clearGoogleOnClose
+      || (sameTicket && existingLaunch.clearGoogleOnClose)
+    ),
   };
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
 }
@@ -646,6 +701,31 @@ async function markCredentialIssued(tabId, mode = 'direct', isContinuation = fal
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
 }
 
+async function markSessionCleanupOnClose(tabId, toolSlug = '', options = {}) {
+  if (!tabId) return false;
+  const launchMap = await getActiveLaunchMap();
+  const key = `${tabId}`;
+  const current = launchMap[key];
+  if (!current) return false;
+  if (toolSlug && normalizeToolSlug(current.toolSlug) !== normalizeToolSlug(toolSlug)) {
+    return false;
+  }
+
+  const ticket = `${current.ticket || ''}`.trim();
+  Object.keys(launchMap).forEach((launchKey) => {
+    const item = launchMap[launchKey];
+    if (!item) return;
+    if (normalizeToolSlug(item.toolSlug) !== normalizeToolSlug(current.toolSlug)) return;
+    if (ticket && `${item.ticket || ''}`.trim() !== ticket) return;
+
+    item.clearSessionOnClose = true;
+    item.clearGoogleOnClose = Boolean(options.includeGoogle);
+    launchMap[launchKey] = item;
+  });
+  await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+  return true;
+}
+
 async function activateLaunchForTab(tabId, toolSlug, hostname, extensionTicket) {
   if (!tabId || !extensionTicket) {
     throw new Error('Dashboard launch ticket required.');
@@ -689,7 +769,30 @@ function getToolSessionDomains(toolSlug, options = {}) {
   return Array.from(new Set(domains.filter(Boolean)));
 }
 
+function domainsToOrigins(domains) {
+  return Array.from(new Set(
+    domains
+      .map((domain) => `${domain || ''}`.trim().replace(/^\./, ''))
+      .filter(Boolean)
+      .flatMap((domain) => [`https://${domain}`, `http://${domain}`])
+  ));
+}
+
+function removeBrowsingData(options, dataTypes) {
+  return new Promise((resolve) => {
+    if (!chrome.browsingData?.remove) {
+      resolve(false);
+      return;
+    }
+
+    chrome.browsingData.remove(options, dataTypes, () => {
+      resolve(!chrome.runtime.lastError);
+    });
+  });
+}
+
 async function clearToolSession(toolSlug, options = {}) {
+  const baseDomains = getToolSessionDomains(toolSlug, { includeGoogle: false });
   const domains = getToolSessionDomains(toolSlug, options);
   let removed = 0;
 
@@ -710,7 +813,19 @@ async function clearToolSession(toolSlug, options = {}) {
     }
   }
 
-  return { removed };
+  const siteDataCleared = await removeBrowsingData(
+    { origins: domainsToOrigins(baseDomains) },
+    {
+      cacheStorage: true,
+      fileSystems: true,
+      indexedDB: true,
+      localStorage: true,
+      serviceWorkers: true,
+      webSQL: true,
+    }
+  );
+
+  return { removed, siteDataCleared };
 }
 
 function getPasswordSavingEnabledDetails() {
@@ -900,7 +1015,7 @@ async function openToolIncognitoWindow(toolSlug, launchUrl, toolName = '', exten
 async function cleanupToolSessionForClosedTab(tabId) {
   if (!tabId) return;
 
-  const launchMap = await getActiveLaunchMap();
+  const launchMap = await getStoredActiveLaunchMap();
   const closedLaunch = launchMap[`${tabId}`];
   const normalizedSlug = normalizeToolSlug(closedLaunch?.toolSlug);
 
@@ -908,17 +1023,31 @@ async function cleanupToolSessionForClosedTab(tabId) {
     return;
   }
 
-  const shouldClearSessionOnClose = normalizedSlug === 'flow';
-    if (shouldClearSessionOnClose) {
-      const hasOtherToolTabs = Object.entries(launchMap).some(([key, item]) => {
-        if (key === `${tabId}`) return false;
-        return normalizeToolSlug(item?.toolSlug) === normalizedSlug;
-      });
+  const shouldClearSessionOnClose = CLEAR_SESSION_ON_CLOSE_TOOLS.has(normalizedSlug)
+    || Boolean(closedLaunch.clearSessionOnClose);
+  if (shouldClearSessionOnClose) {
+    const closedTicket = `${closedLaunch.ticket || ''}`.trim();
+    const hasOtherToolTabs = Object.entries(launchMap).some(([key, item]) => {
+      if (key === `${tabId}`) return false;
+      if (normalizeToolSlug(item?.toolSlug) !== normalizedSlug) return false;
+      return closedTicket && `${item?.ticket || ''}`.trim() === closedTicket;
+    });
 
-      if (!hasOtherToolTabs) {
-        await clearToolSession(normalizedSlug, { includeGoogle: true });
-      }
+    if (!hasOtherToolTabs) {
+      const cleanupResult = await clearToolSession(normalizedSlug, {
+        includeGoogle: normalizedSlug === 'flow'
+          || normalizedSlug === 'genspark'
+          || normalizedSlug === 'behance'
+          || normalizedSlug === 'pinterest'
+          || Boolean(closedLaunch.clearGoogleOnClose),
+      });
+      console.debug('[RMW Tool Hub Auto Login] Cleared closed-tab session', {
+        toolSlug: normalizedSlug,
+        tabId,
+        ...cleanupResult,
+      });
     }
+  }
 
   await clearActiveLaunch(tabId);
 }
@@ -968,13 +1097,26 @@ function formatApiErrorDetail(detail, fallback = 'Request failed') {
 async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   const settings = await getSettings();
   const tabId = message.tabId || senderTabId || 0;
+  const normalizedToolSlug = normalizeToolSlug(message.toolSlug);
+  const providedExtensionTicket = `${message.extensionTicket || ''}`.trim();
   const directLaunch = await getActiveLaunch(tabId, message.toolSlug);
-  const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, message.toolSlug);
+  const requiresDirectTicket = DIRECT_TICKET_ONLY_TOOLS.has(normalizedToolSlug);
+  const inheritedLaunch = directLaunch?.ticket || requiresDirectTicket
+    ? null
+    : await getActiveLaunch(openerTabId, message.toolSlug);
   const activeLaunch = directLaunch || inheritedLaunch;
   const launchMode = directLaunch?.ticket ? 'direct' : 'inherited';
-  const extensionTicket = `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim();
+  const extensionTicket = `${providedExtensionTicket || activeLaunch?.ticket || ''}`.trim();
 
   if (!extensionTicket) {
+    throw new Error('Open this tool from the dashboard first.');
+  }
+
+  if (requiresDirectTicket && !directLaunch?.ticket) {
+    throw new Error('Open this tool from the dashboard first.');
+  }
+
+  if (requiresDirectTicket && providedExtensionTicket && providedExtensionTicket !== `${directLaunch?.ticket || ''}`.trim()) {
     throw new Error('Open this tool from the dashboard first.');
   }
 
@@ -1025,6 +1167,16 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
     await markCredentialIssued(tabId, 'direct', isContinuation);
   } else if (launchMode === 'inherited' && openerTabId) {
     await markCredentialIssued(openerTabId, 'inherited', isContinuation);
+  }
+
+  const credential = data?.data?.credential || {};
+  const loginMethod = `${credential.loginMethod || credential.login_method || ''}`.trim().toLowerCase();
+  if (normalizedToolSlug === 'genspark' && loginMethod === 'google') {
+    await markSessionCleanupOnClose(
+      launchMode === 'direct' ? tabId : openerTabId,
+      'genspark',
+      { includeGoogle: true }
+    );
   }
 
   return data;
@@ -1393,6 +1545,8 @@ async function reportUsageEvent(message, senderTabId = 0, openerTabId = 0) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const senderTabId = sender?.tab?.id || 0;
   const senderOpenerTabId = sender?.tab?.openerTabId || 0;
+  const senderUrl = sender?.url || sender?.tab?.url || '';
+  const senderIsDashboard = isAllowedDashboardUrl(senderUrl);
 
   if (message?.type === 'TOOL_HUB_ACTIVATE_LAUNCH') {
     activateLaunchForTab(
@@ -1500,6 +1654,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'TOOL_HUB_SYNC_AUTH_CONTEXT') {
+    if (!senderIsDashboard) {
+      sendResponse({ ok: false, error: 'Auth sync is only allowed from the dashboard.' });
+      return true;
+    }
+
     syncAuthContext(message)
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
@@ -1507,6 +1666,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'TOOL_HUB_OPEN_INCOGNITO_WINDOW' || message?.type === 'TOOL_HUB_OPEN_FLOW_ISOLATED_WINDOW') {
+    if (!senderIsDashboard) {
+      sendResponse({ ok: false, error: 'Tool launches are only allowed from the dashboard.' });
+      return true;
+    }
+
     if (!normalizeToolSlug(message.toolSlug) || !`${message.launchUrl || ''}`.trim()) {
       sendResponse({ ok: false, error: 'Incognito window launch details are incomplete.' });
       return true;

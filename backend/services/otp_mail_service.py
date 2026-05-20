@@ -221,6 +221,7 @@ def fetch_otp_from_gmail(
     otp_sender_filter: Optional[str] = None,
     otp_subject_pattern: Optional[str] = None,
     max_age_seconds: int = 120,
+    max_messages: int = 25,
 ) -> Optional[str]:
     cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
     since_dt = cutoff_dt - timedelta(days=1)
@@ -245,7 +246,8 @@ def fetch_otp_from_gmail(
             return None
 
         message_ids = data[0].split()
-        for msg_id in reversed(message_ids):
+        recent_message_ids = list(reversed(message_ids))[: max(1, max_messages)]
+        for msg_id in recent_message_ids:
             fetch_status, raw = mail.fetch(msg_id, "(RFC822)")
             if fetch_status != "OK" or not raw or not raw[0]:
                 continue

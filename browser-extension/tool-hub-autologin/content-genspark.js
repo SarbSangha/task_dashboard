@@ -8,6 +8,7 @@ const KEEP_ALIVE_MS = 2500;
 const ACTION_COOLDOWN_MS = 1800;
 const SUBMIT_COOLDOWN_MS = 5000;
 const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
+const AUTHENTICATED_CONFIRM_MS = 1500;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -38,6 +39,18 @@ const ACTION_SELECTORS = [
   '[role="button"]',
 ].join(',');
 
+const BROAD_ACTION_SELECTORS = [
+  ACTION_SELECTORS,
+  '[tabindex]',
+  '[onclick]',
+  '[aria-label]',
+  '[data-testid]',
+  '[class*="button"]',
+  '[class*="btn"]',
+  '[class*="login"]',
+  '[class*="sign"]',
+].join(',');
+
 const STATE = {
   status: 'Waiting for Genspark',
   credential: null,
@@ -52,9 +65,11 @@ const STATE = {
   lastRunAt: 0,
   lastActionAt: 0,
   lastSubmitAt: 0,
+  authenticatedSeenAt: 0,
   passwordSavingInFlight: false,
   passwordSavingSuppressed: false,
   passwordSavingRestoreTimer: null,
+  upgradeDialogCache: { at: 0, dialog: null },
 };
 
 function normalizeLoginMethod(value) {
@@ -232,16 +247,14 @@ function getPreparedLaunchKey() {
 }
 
 function hasLocalLaunchEvidence() {
-  return Boolean(
-    readLaunchTicketFromUrl()
-    || getStoredLaunchTicket()
-    || getPreparedLaunchKey()
-  );
+  return Boolean(readLaunchTicketFromUrl() || getStoredLaunchTicket());
 }
 
 function captureLaunchTicket() {
   const ticket = readLaunchTicketFromUrl();
-  if (!ticket) return getStoredLaunchTicket();
+  if (!ticket) {
+    return '';
+  }
 
   storeLaunchTicket(ticket);
   try {
@@ -259,18 +272,17 @@ function captureLaunchTicket() {
 }
 
 async function loadLaunchState() {
-  const storedTicket = captureLaunchTicket();
-  if (storedTicket) {
+  const launchTicket = captureLaunchTicket() || getStoredLaunchTicket();
+  if (launchTicket) {
     const activation = await sendRuntimeMessage({
       type: 'TOOL_HUB_ACTIVATE_LAUNCH',
       toolSlug: TOOL_SLUG,
       hostname: window.location.hostname,
       pageUrl: window.location.href,
-      extensionTicket: storedTicket,
+      extensionTicket: launchTicket,
     });
 
     if (activation?.ok && activation.authorized) {
-      clearStoredLaunchTicket();
       STATE.launchChecked = true;
       STATE.launchAuthorized = true;
       STATE.launchExpiresAt = Number(activation.expiresAt || 0);
@@ -333,9 +345,125 @@ function controlHintText(element) {
   ].filter(Boolean).join(' '));
 }
 
+function textSnippet(element, maxLength = 500) {
+  return normalizeText(`${element?.textContent || ''}`.slice(0, maxLength));
+}
+
+function isUpgradeOrBillingAction(element) {
+  const normalizedText = normalizeText(`${actionText(element)} ${controlHintText(element)} ${element?.getAttribute?.('href') || ''}`);
+  const ownText = actionText(element);
+  if (['sign in', 'sign up', 'login', 'log in'].includes(ownText)
+    || normalizedText.includes('sign in')
+    || normalizedText.includes('login')) {
+    return false;
+  }
+
+  const containerText = textSnippet(
+    element?.closest?.('[role="dialog"], [aria-modal="true"], dialog, section, article, main')
+      || element?.parentElement,
+    700
+  );
+  const text = `${normalizedText} ${containerText}`;
+  return [
+    'upgrade',
+    'pricing',
+    'subscribe',
+    'subscription',
+    'billing',
+    'payment',
+    'checkout',
+    'buy credits',
+    'buy plan',
+    'get pro',
+    'go pro',
+    'pro plan',
+    'premium',
+    'get started - save',
+    'save 20%',
+    'credits / month',
+    'credits/month',
+    'billed annually',
+    'professional workspace',
+  ].some((blockedText) => text.includes(blockedText));
+}
+
+function findUpgradeDialog() {
+  const now = Date.now();
+  if (now - STATE.upgradeDialogCache.at < 700) {
+    const cached = STATE.upgradeDialogCache.dialog;
+    if (!cached || document.documentElement.contains(cached)) return cached;
+  }
+
+  const matches = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], dialog'))
+    .filter((element) => {
+      if (!isVisible(element)) return false;
+      const text = textSnippet(element, 1200);
+      return text.includes('upgrade your plan')
+        || (text.includes('credits / month') && text.includes('get started'))
+        || (text.includes('billed annually') && text.includes('professional workspace'));
+    });
+
+  const dialog = matches
+    .sort((left, right) => {
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      return (leftRect.width * leftRect.height) - (rightRect.width * rightRect.height);
+    })[0] || null;
+
+  STATE.upgradeDialogCache = { at: now, dialog };
+  return dialog;
+}
+
+function isInsideUpgradeDialog(element, dialog = findUpgradeDialog()) {
+  return Boolean(dialog && element && (dialog === element || dialog.contains(element)));
+}
+
+function dismissUpgradeDialog() {
+  const dialog = findUpgradeDialog();
+  if (!dialog) return false;
+
+  let closeAction = Array.from(dialog.querySelectorAll(ACTION_SELECTORS))
+    .filter((element) => isVisible(element) && !isDisabled(element))
+    .find((element) => {
+      const text = actionText(element);
+      const hints = controlHintText(element);
+      return text === '×'
+        || text === 'x'
+        || text === 'close'
+        || hints.includes('close')
+        || hints.includes('dismiss');
+    });
+
+  if (!closeAction) {
+    const dialogRect = dialog.getBoundingClientRect();
+    closeAction = Array.from(dialog.querySelectorAll('button, [role="button"], [tabindex], div, span'))
+      .map((element) => findClickableAncestor(element))
+      .filter((element) => element && isVisible(element) && !isDisabled(element))
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        const leftScore = Math.abs(leftRect.right - dialogRect.right) + Math.abs(leftRect.top - dialogRect.top);
+        const rightScore = Math.abs(rightRect.right - dialogRect.right) + Math.abs(rightRect.top - dialogRect.top);
+        return leftScore - rightScore;
+      })[0] || null;
+  }
+
+  if (!closeAction || !canActNow()) return true;
+
+  markActionTaken();
+  setStatus('Closing Genspark upgrade prompt');
+  clickElement(closeAction);
+  scheduleAttempt(500);
+  return true;
+}
+
 function collectActionCandidates(root = document) {
+  const upgradeDialog = findUpgradeDialog();
   return Array.from(root.querySelectorAll(ACTION_SELECTORS))
-    .filter((element) => isVisible(element) && !isDisabled(element));
+    .filter((element) => isVisible(element)
+      && !isDisabled(element)
+      && !isInsideUpgradeDialog(element, upgradeDialog)
+      && !isUpgradeOrBillingAction(element));
 }
 
 function isActionLikeElement(element) {
@@ -356,12 +484,94 @@ function findClickableAncestor(element) {
 }
 
 function collectBroadActionCandidates() {
-  const textNodes = Array.from(document.querySelectorAll('button, a[href], [role="button"], [tabindex], div, span'))
+  const upgradeDialog = findUpgradeDialog();
+  const textNodes = Array.from(document.querySelectorAll(BROAD_ACTION_SELECTORS))
     .map((element) => findClickableAncestor(element));
   return Array.from(new Set([
     ...collectActionCandidates(),
     ...textNodes.filter(Boolean),
-  ])).filter((element) => isVisible(element) && !isDisabled(element));
+  ])).filter((element) => isVisible(element)
+    && !isDisabled(element)
+      && !isInsideUpgradeDialog(element, upgradeDialog)
+      && !isUpgradeOrBillingAction(element));
+}
+
+function rootContains(root, element) {
+  return root === document || root.contains(element);
+}
+
+function hasVisibleSignedOutAction() {
+  const directSignedOutAction = Array.from(document.querySelectorAll([
+    ACTION_SELECTORS,
+    '[tabindex]',
+    '[onclick]',
+    '[aria-label]',
+    '[data-testid]',
+    'div',
+    'span',
+  ].join(','))).some((element) => {
+    if (!isVisible(element) || isDisabled(element)) return false;
+    const text = normalizeText(element.textContent || element.getAttribute?.('aria-label') || '');
+    return text === 'sign in'
+      || text === 'sign up'
+      || text === 'login'
+      || text === 'log in';
+  });
+  if (directSignedOutAction) return true;
+
+  return collectBroadActionCandidates().some((element) => {
+    const text = actionText(element);
+    const hints = controlHintText(element);
+    return text === 'sign in'
+      || text === 'sign up'
+      || text === 'login'
+      || text === 'log in'
+      || hints.includes('sign in')
+      || hints.includes('sign up')
+      || hints.includes('login');
+  });
+}
+
+function hasAuthenticatedWorkspaceSignal(pageText) {
+  return pageText.includes('upgrade plan')
+    || pageText.includes('business edition')
+    || pageText.includes('sign out')
+    || Boolean(document.querySelector([
+      '[aria-label*="account" i]',
+      '[aria-label*="profile" i]',
+      '[data-testid*="user" i]',
+      '[data-testid*="avatar" i]',
+    ].join(',')));
+}
+
+function isAuthenticatedGensparkPage() {
+  const host = window.location.hostname;
+  if (!host.includes('genspark.ai') || host === 'login.genspark.ai') return false;
+  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS)) return false;
+
+  const path = normalizeText(window.location.pathname || '');
+  if (path.includes('login') || path.includes('signin') || path.includes('sign-in') || path.includes('auth')) {
+    return false;
+  }
+
+  const pageText = textSnippet(document.body || document.documentElement, 8000);
+  const hasAuthPrompt = pageText.includes('login with email')
+    || pageText.includes('continue with google')
+    || pageText.includes('sign in or sign up')
+    || pageText.includes('sign in sign up')
+    || pageText.includes('sign up sign in');
+  if (pageText.includes('sign in') && pageText.includes('sign up')) return false;
+  if (hasVisibleSignedOutAction()) return false;
+  if (!hasAuthPrompt && hasAuthenticatedWorkspaceSignal(pageText)) return true;
+
+  const hasWorkspaceSignal = pageText.includes('new chat')
+    || pageText.includes('library')
+    || pageText.includes('genspark ai workspace')
+    || pageText.includes('ask anything, create anything')
+    || (pageText.includes('ai slides') && pageText.includes('ai sheets') && pageText.includes('ai docs'))
+    || Boolean(document.querySelector('[aria-label*="account" i], [aria-label*="profile" i], [data-testid*="user" i], [data-testid*="avatar" i]'));
+
+  return hasWorkspaceSignal && !hasAuthPrompt;
 }
 
 function findInput(selectorList) {
@@ -437,6 +647,70 @@ function dispatchMouseSequence(element) {
   });
 }
 
+function supportsRegexpVFlag() {
+  try {
+    new RegExp('', 'v');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isGensparkAuthContinuationPage() {
+  return window.location.hostname === 'login.genspark.ai'
+    && /onmicrosoft\.com|oauth2|authorize/i.test(window.location.href);
+}
+
+function dispatchSyntheticClick(element) {
+  try {
+    const rect = element.getBoundingClientRect();
+    element.dispatchEvent(new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX: rect.left + (rect.width / 2),
+      clientY: rect.top + (rect.height / 2),
+    }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function disableInvalidInputPatterns(root = document, options = {}) {
+  let removed = 0;
+  try {
+    Array.from(root.querySelectorAll?.('input[pattern]') || []).forEach((input) => {
+      const pattern = input.getAttribute('pattern');
+      if (!pattern) return;
+
+      if (options.removeAll) {
+        input.dataset.rmwOriginalPattern = pattern;
+        input.removeAttribute('pattern');
+        removed += 1;
+        return;
+      }
+
+      try {
+        // Chrome validates input[pattern] during native clicks/submits. Some
+        // third-party auth pages ship patterns that throw before our click
+        // fallback can run, so remove only patterns the browser rejects.
+        if (supportsRegexpVFlag()) {
+          new RegExp(`^(?:${pattern})$`, 'v');
+        } else {
+          new RegExp(`^(?:${pattern})$`);
+        }
+      } catch {
+        input.dataset.rmwOriginalPattern = pattern;
+        input.removeAttribute('pattern');
+        removed += 1;
+      }
+    });
+  } catch {}
+  return removed;
+}
+
 function clickElement(element) {
   const target = findClickableAncestor(element) || element;
   if (!target || isDisabled(target) || !isVisible(target)) return false;
@@ -464,26 +738,19 @@ function clickElement(element) {
     }
   } catch {}
 
+  const isAuthContinuation = isGensparkAuthContinuationPage();
+  const removedPatterns = disableInvalidInputPatterns(document, { removeAll: isAuthContinuation });
   dispatchMouseSequence(resolvedTarget);
+
+  if (isAuthContinuation || removedPatterns > 0) {
+    return dispatchSyntheticClick(resolvedTarget);
+  }
 
   try {
     resolvedTarget.click();
     return true;
   } catch {
-    try {
-      const rect = resolvedTarget.getBoundingClientRect();
-      resolvedTarget.dispatchEvent(new MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        view: window,
-        clientX: rect.left + (rect.width / 2),
-        clientY: rect.top + (rect.height / 2),
-      }));
-      return true;
-    } catch {
-      return false;
-    }
+    return dispatchSyntheticClick(resolvedTarget);
   }
 }
 
@@ -534,10 +801,10 @@ function getAuthRoots() {
     .filter((element) => isVisible(element));
   roots.push(...visibleDialogs);
 
-  const authSections = Array.from(document.querySelectorAll('main, form, section, article, div'))
+  const authSections = Array.from(document.querySelectorAll('main, form, section, article'))
     .filter((element) => {
       if (!isVisible(element)) return false;
-      const text = normalizeText(element.innerText || element.textContent || '');
+      const text = textSnippet(element, 1200);
       return (
         text.includes('sign in or sign up')
         || text.includes('continue with google')
@@ -581,6 +848,7 @@ function submitLogin(emailInput, passwordInput, submitButton) {
   const form = (passwordInput || emailInput)?.closest('form');
   if (form) {
     try {
+      disableInvalidInputPatterns(form);
       if (typeof form.requestSubmit === 'function') form.requestSubmit();
       else form.submit?.();
       return true;
@@ -590,7 +858,8 @@ function submitLogin(emailInput, passwordInput, submitButton) {
 }
 
 function findSignInOpenAction() {
-  const exactMatches = collectBroadActionCandidates().filter((element) => {
+  const candidates = collectBroadActionCandidates();
+  const exactMatches = candidates.filter((element) => {
     const text = actionText(element);
     const hints = controlHintText(element);
     return text === 'sign in'
@@ -605,7 +874,7 @@ function findSignInOpenAction() {
     })[0];
   }
 
-  const broadMatch = collectBroadActionCandidates().find((element) => {
+  const broadMatch = candidates.find((element) => {
     const text = actionText(element);
     const href = normalizeText(element.getAttribute?.('href') || '');
     const hints = controlHintText(element);
@@ -623,7 +892,7 @@ function findSignInOpenAction() {
   });
   if (broadMatch) return broadMatch;
 
-  return collectBroadActionCandidates().find((element) => {
+  return candidates.find((element) => {
     const text = actionText(element);
     const hints = controlHintText(element);
     return (text.includes('sign in') || text.includes('login'))
@@ -635,21 +904,81 @@ function findSignInOpenAction() {
   }) || null;
 }
 
+function findVisibleActionByExactText(...labels) {
+  const normalizedLabels = labels.map((label) => normalizeText(label)).filter(Boolean);
+  return Array.from(document.querySelectorAll([
+    ACTION_SELECTORS,
+    '[tabindex]',
+    '[onclick]',
+    '[aria-label]',
+    '[data-testid]',
+    '[class*="button"]',
+    '[class*="btn"]',
+    '[class*="login"]',
+    '[class*="sign"]',
+    'div',
+    'span',
+  ].join(',')))
+    .map((element) => findClickableAncestor(element) || element)
+    .find((element) => {
+      if (!element || !isVisible(element) || isDisabled(element)) return false;
+      const text = actionText(element) || normalizeText(element.textContent || element.getAttribute?.('aria-label') || '');
+      if (!normalizedLabels.includes(text)) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.top < Math.max(window.innerHeight, 1) * 0.35;
+    }) || null;
+}
+
+function findVisibleActionByExactTextAnywhere(...labels) {
+  const normalizedLabels = labels.map((label) => normalizeText(label)).filter(Boolean);
+  return Array.from(document.querySelectorAll([
+    ACTION_SELECTORS,
+    '[tabindex]',
+    '[onclick]',
+    '[aria-label]',
+    '[data-testid]',
+    '[class*="button"]',
+    '[class*="btn"]',
+    'div',
+    'span',
+  ].join(',')))
+    .map((element) => findClickableAncestor(element) || element)
+    .find((element) => {
+      if (!element || !isVisible(element) || isDisabled(element)) return false;
+      const text = actionText(element) || normalizeText(element.textContent || element.getAttribute?.('aria-label') || '');
+      return normalizedLabels.includes(text);
+    }) || null;
+}
+
 function findMoreOptionsAction() {
-  for (const root of getAuthRoots()) {
-    const match = collectBroadActionCandidates()
-      .find((element) => root.contains(element) && actionText(element).includes('more options'));
-    if (match) return match;
-  }
+  const roots = getAuthRoots();
+  const broadMatch = collectBroadActionCandidates()
+    .find((element) => {
+      if (!roots.some((root) => rootContains(root, element))) return false;
+      const text = actionText(element);
+      const hints = controlHintText(element);
+      return text.includes('more options')
+        || text.includes('load more')
+        || text.includes('show more')
+        || text.includes('more sign-in')
+        || hints.includes('more options')
+        || hints.includes('load more');
+    });
+  if (broadMatch) return broadMatch;
+
+  const exactMatch = findVisibleActionByExactTextAnywhere('more options', 'load more', 'show more');
+  if (exactMatch && roots.some((root) => rootContains(root, exactMatch))) return exactMatch;
   return null;
 }
 
 function findGoogleLoginAction() {
   const isLoginHost = window.location.hostname === 'login.genspark.ai';
+  const roots = getAuthRoots();
+  const candidates = collectBroadActionCandidates();
 
-  for (const root of getAuthRoots()) {
-    const exact = collectBroadActionCandidates().find((element) => {
-      if (!root.contains(element)) return false;
+  for (const root of roots) {
+    const exact = candidates.find((element) => {
+      if (!rootContains(root, element)) return false;
       const text = actionText(element);
       return text === 'continue with google'
         || text === 'sign in with google'
@@ -659,9 +988,9 @@ function findGoogleLoginAction() {
   }
 
   if (isLoginHost) {
-    for (const root of getAuthRoots()) {
-      const exactGoogle = collectBroadActionCandidates().find((element) => {
-        if (!root.contains(element)) return false;
+    for (const root of roots) {
+      const exactGoogle = candidates.find((element) => {
+        if (!rootContains(root, element)) return false;
         const text = actionText(element);
         const hints = controlHintText(element);
         return text === 'google'
@@ -676,9 +1005,11 @@ function findGoogleLoginAction() {
 }
 
 function findEmailLoginAction() {
-  for (const root of getAuthRoots()) {
-    const match = collectBroadActionCandidates().find((element) => {
-      if (!root.contains(element)) return false;
+  const roots = getAuthRoots();
+  const candidates = collectBroadActionCandidates();
+  for (const root of roots) {
+    const match = candidates.find((element) => {
+      if (!rootContains(root, element)) return false;
       const text = actionText(element);
       return text.includes('login with email')
         || text.includes('continue with email')
@@ -704,6 +1035,7 @@ function requestCredential() {
       hostname: window.location.hostname,
       pageUrl: window.location.href,
       extensionTicket: getStoredLaunchTicket(),
+      requireDirectTicket: true,
     },
     (response) => {
       STATE.requestedCredential = false;
@@ -746,7 +1078,7 @@ function isReadyForSubmit(emailInput, passwordInput) {
 }
 
 function attemptOpenGensparkAuth() {
-  const signInAction = findSignInOpenAction();
+  const signInAction = findSignInOpenAction() || findVisibleActionByExactText('sign in', 'login', 'log in');
   if (!signInAction) return false;
   if (!canActNow()) return true;
 
@@ -794,6 +1126,24 @@ function attemptOpenEmailLogin() {
 }
 
 function attemptFlow() {
+  if (isAuthenticatedGensparkPage()) {
+    if (!STATE.authenticatedSeenAt) {
+      STATE.authenticatedSeenAt = Date.now();
+      setStatus('Checking Genspark login state');
+      scheduleAttempt(AUTHENTICATED_CONFIRM_MS);
+      return;
+    }
+
+    if (Date.now() - STATE.authenticatedSeenAt >= AUTHENTICATED_CONFIRM_MS) {
+      stop('Genspark login complete');
+      return;
+    }
+
+    scheduleAttempt(AUTHENTICATED_CONFIRM_MS - (Date.now() - STATE.authenticatedSeenAt));
+    return;
+  }
+  STATE.authenticatedSeenAt = 0;
+
   if (!STATE.launchChecked) {
     setStatus('Checking launch authorization');
     return;
@@ -808,15 +1158,17 @@ function attemptFlow() {
   const passwordInput = findInput(PASSWORD_SELECTORS);
   const hasCredentialInputs = Boolean(emailInput || passwordInput);
 
+  if (!hasCredentialInputs && dismissUpgradeDialog()) return;
+
   if (!STATE.credential) {
     requestCredential();
   }
 
   if (!hasCredentialInputs) {
     if (attemptOpenMoreOptions()) return;
+    if (attemptOpenGensparkAuth()) return;
     if (isGoogleCredential() && attemptOpenGoogle()) return;
     if (!isGoogleCredential() && attemptOpenEmailLogin()) return;
-    if (attemptOpenGensparkAuth()) return;
 
     setStatus(isGoogleCredential()
       ? 'Waiting for Genspark Google sign-in option'

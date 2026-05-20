@@ -9,6 +9,16 @@ const EXTENSION_WINDOW_LAUNCH_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_WINDOW_LAUN
 const EXTENSION_WINDOW_LAUNCH_RESULT_MESSAGE_TYPE = 'RMW_TOOL_HUB_EXTENSION_WINDOW_LAUNCH_RESULT';
 const EXTENSION_AUTH_SYNC_MESSAGE_TYPE = 'TOOL_HUB_SYNC_AUTH_CONTEXT';
 const MAX_LAUNCH_USES = 3;
+const DASHBOARD_HOSTS = new Set([
+  'dashboard.ritzmediaworld.in',
+  'localhost',
+  '127.0.0.1',
+  '192.168.1.15',
+]);
+
+function isAllowedDashboardPage() {
+  return DASHBOARD_HOSTS.has(window.location.hostname);
+}
 
 function normalizeToolSlug(value) {
   const normalized = `${value || ''}`.trim().toLowerCase();
@@ -95,6 +105,8 @@ function emitWindowLaunchResult(detail) {
 }
 
 function handleLaunchDetail(detail) {
+  if (!isAllowedDashboardPage()) return;
+
   Promise.resolve()
     .then(() => syncSessionToken())
     .catch(() => {})
@@ -156,6 +168,15 @@ function appendExtensionLaunchParams(launchUrl, detail) {
 }
 
 function requestIncognitoWindow(detail) {
+  if (!isAllowedDashboardPage()) {
+    emitWindowLaunchResult({
+      toolSlug: normalizeToolSlug(detail?.toolSlug),
+      ok: false,
+      error: 'Tool launches are only allowed from the dashboard.',
+    });
+    return;
+  }
+
   const toolSlug = normalizeToolSlug(detail?.toolSlug);
   const launchUrl = appendExtensionLaunchParams(detail?.launchUrl, detail);
   const toolName = `${detail?.toolName || ''}`.trim() || getIncognitoLaunchToolName(toolSlug);
@@ -244,6 +265,8 @@ async function syncSessionToken() {
 }
 
 function queueSync() {
+  if (!isAllowedDashboardPage()) return;
+
   window.setTimeout(() => {
     syncSessionToken().catch(() => {});
   }, 250);
@@ -252,12 +275,15 @@ function queueSync() {
 window.addEventListener('load', queueSync);
 window.addEventListener('focus', queueSync);
 window.addEventListener(EXTENSION_LAUNCH_EVENT, (event) => {
+  if (!isAllowedDashboardPage()) return;
   handleLaunchDetail(event.detail);
 });
 window.addEventListener(EXTENSION_WINDOW_LAUNCH_EVENT, (event) => {
+  if (!isAllowedDashboardPage()) return;
   requestIncognitoWindow(event.detail);
 });
 window.addEventListener('message', (event) => {
+  if (!isAllowedDashboardPage()) return;
   if (event.source !== window) return;
   if (event.origin !== window.location.origin) return;
   if (event.data?.source !== 'rmw-tool-hub-page') return;

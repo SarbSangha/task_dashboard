@@ -380,7 +380,6 @@ async function loadLaunchState() {
     });
 
     if (activation?.ok && activation.authorized) {
-      clearStoredLaunchTicket();
       STATE.launchChecked = true;
       STATE.launchAuthorized = true;
       STATE.launchExpiresAt = Number(activation.expiresAt || 0);
@@ -486,6 +485,7 @@ function requestCredential() {
       hostname: window.location.hostname,
       pageUrl: window.location.href,
       extensionTicket: getStoredLaunchTicket(),
+      requireDirectTicket: true,
     },
     (response) => {
       STATE.requested = false;

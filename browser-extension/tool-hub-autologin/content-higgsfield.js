@@ -35,6 +35,8 @@ const STATE = {
 
 const MIN_RUN_GAP_MS = 900;
 const KEEP_ALIVE_MS = 4000;
+const OTP_FETCH_RETRY_MS = 2500;
+const OTP_SUBMIT_RETRY_MS = 900;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -234,9 +236,60 @@ function setInputValue(input, value) {
   else input.value = value;
 
   input.setAttribute('value', value);
+  try {
+    input.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      data: value,
+      inputType: 'insertText',
+    }));
+  } catch {}
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
+  try {
+    input.dispatchEvent(new KeyboardEvent('keyup', {
+      key: `${value}`.slice(-1),
+      bubbles: true,
+      cancelable: true,
+    }));
+  } catch {}
   input.dispatchEvent(new Event('blur', { bubbles: true }));
+}
+
+function clickAction(element) {
+  if (!element || isDisabled(element) || !isVisible(element)) return false;
+
+  try {
+    element.scrollIntoView({ block: 'center', inline: 'nearest' });
+  } catch {}
+  try {
+    element.focus({ preventScroll: true });
+  } catch {}
+
+  const pointerCtor = typeof window.PointerEvent === 'function' ? window.PointerEvent : window.MouseEvent;
+  [
+    ['pointerdown', pointerCtor],
+    ['mousedown', window.MouseEvent],
+    ['pointerup', pointerCtor],
+    ['mouseup', window.MouseEvent],
+    ['click', window.MouseEvent],
+  ].forEach(([type, EventCtor]) => {
+    try {
+      element.dispatchEvent(new EventCtor(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+      }));
+    } catch {}
+  });
+
+  try {
+    element.click();
+    return true;
+  } catch {
+    return true;
+  }
 }
 
 function dispatchEnterKey(input) {
@@ -686,38 +739,47 @@ function stopAutomation(message, hideBadgeAfterMs = 2500) {
   }
 }
 
-function requestOtp() {
+async function requestOtp() {
   const now = Date.now();
   if (STATE.otpFetching || STATE.otpValue) return;
-  if (STATE.otpRequestAttempts >= 3) {
-    setStatus('OTP fetch failed after 3 attempts');
+  if (STATE.otpRequestAttempts >= 4) {
+    setStatus('OTP fetch failed after 4 attempts');
     return;
   }
-  if (now - STATE.otpLastRequestAt < 3000) return;
+  if (now - STATE.otpLastRequestAt < OTP_FETCH_RETRY_MS) return;
 
   STATE.otpFetching = true;
   STATE.otpLastRequestAt = now;
   STATE.otpRequestAttempts += 1;
   setStatus(`Fetching OTP from email (attempt ${STATE.otpRequestAttempts})`);
 
-  sendRuntimeMessage({
+  const response = await sendRuntimeMessage({
     type: 'TOOL_HUB_FETCH_OTP',
     toolSlug: TOOL_SLUG,
     hostname: window.location.hostname,
     pageUrl: window.location.href,
     extensionTicket: getStoredLaunchTicket(),
-  }).then((response) => {
-    STATE.otpFetching = false;
+  });
 
-    if (!response?.ok || !response.otp) {
-      setStatus(response?.error || 'OTP not received yet');
-      scheduleAttempt(1500);
+  STATE.otpFetching = false;
+
+  if (!response?.ok || !response.otp) {
+    const errorMessage = `${response?.error || 'OTP not received yet'}`;
+    if (errorMessage.includes('OTP already fetched')) {
+      if (STATE.otpValue) {
+        scheduleAttempt(100);
+        return;
+      }
+      setStatus('OTP was already fetched for this launch. Relaunch Higgsfield from the dashboard if the code field was refreshed.');
       return;
     }
+    setStatus(errorMessage);
+    scheduleAttempt(2000);
+    return;
+  }
 
-    STATE.otpValue = `${response.otp}`.trim();
-    scheduleAttempt(100);
-  });
+  STATE.otpValue = `${response.otp}`.trim();
+  scheduleAttempt(100);
 }
 
 function fillOtp(otpInput, otp) {
@@ -733,24 +795,31 @@ function fillOtp(otpInput, otp) {
 
   const submitButton = findSubmitButton(otpInput, null) || document.querySelector('button[type="submit"]');
   const now = Date.now();
-  if (now - Number(STATE.otpSubmittedAt || 0) > 3000) {
+  if (now - Number(STATE.otpSubmittedAt || 0) > OTP_SUBMIT_RETRY_MS) {
     STATE.lastSubmitAt = now;
     STATE.otpSubmittedAt = now;
     markAuthTransition();
 
     if (submitButton) {
       setStatus('OTP filled, verifying');
-      window.setTimeout(() => submitButton.click(), 300);
+      window.setTimeout(() => {
+        if (!clickAction(submitButton)) {
+          submitNearestForm(otpInput) || dispatchEnterKey(otpInput);
+        }
+        scheduleAttempt(OTP_SUBMIT_RETRY_MS);
+      }, 120);
       return;
     }
 
     if (submitNearestForm(otpInput)) {
       setStatus('OTP filled, submitting form');
+      scheduleAttempt(OTP_SUBMIT_RETRY_MS);
       return;
     }
 
     if (dispatchEnterKey(otpInput)) {
       setStatus('OTP filled, submitting with Enter');
+      scheduleAttempt(OTP_SUBMIT_RETRY_MS);
       return;
     }
 
@@ -758,7 +827,8 @@ function fillOtp(otpInput, otp) {
     return;
   }
 
-  setStatus('OTP filled, waiting to retry submit');
+  setStatus('OTP filled, retrying submit');
+  scheduleAttempt(OTP_SUBMIT_RETRY_MS);
 }
 
 function attemptFill() {

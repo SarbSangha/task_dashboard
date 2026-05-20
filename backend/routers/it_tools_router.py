@@ -1309,8 +1309,10 @@ def _usage_tracking_ticket_error() -> HTTPException:
 
 
 OTP_POLL_INTERVAL_SEC = 5
+OTP_CODE_POLL_INTERVAL_SEC = 2
 OTP_MAX_WAIT_SEC = 60
 OTP_EMAIL_MAX_AGE_SEC = 120
+OTP_EMAIL_SCAN_LIMIT = 25
 OTP_TICKET_TTL_SEC = 600
 _otp_consumed_tickets: dict[str, float] = {}
 AUTH_LINK_MAX_WAIT_SEC = 60
@@ -1929,7 +1931,7 @@ async def get_extension_otp(
     if not app_password:
         raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
 
-    attempts = max(1, OTP_MAX_WAIT_SEC // OTP_POLL_INTERVAL_SEC)
+    attempts = max(1, OTP_MAX_WAIT_SEC // OTP_CODE_POLL_INTERVAL_SEC)
     otp = None
     last_fetch_error = None
     for attempt_index in range(attempts):
@@ -1942,6 +1944,7 @@ async def get_extension_otp(
                 mailbox_entry.get("otp_sender_filter"),
                 mailbox_entry.get("otp_subject_pattern"),
                 OTP_EMAIL_MAX_AGE_SEC,
+                OTP_EMAIL_SCAN_LIMIT,
             )
             last_fetch_error = None
         except imaplib.IMAP4.error as exc:
@@ -1957,7 +1960,7 @@ async def get_extension_otp(
             break
 
         if attempt_index < attempts - 1:
-            await asyncio.sleep(OTP_POLL_INTERVAL_SEC)
+            await asyncio.sleep(OTP_CODE_POLL_INTERVAL_SEC)
 
     if not otp:
         if last_fetch_error is not None:

@@ -1,5 +1,6 @@
 const TOOL_SLUG = 'pinterest';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
+const FRESH_SESSION_PREPARED_KEY = 'rmw_pinterest_fresh_session_prepared';
 
 const MIN_RUN_GAP_MS = 450;
 const KEEP_ALIVE_MS = 2000;
@@ -60,6 +61,8 @@ const STATE = {
   passwordSavingBypass: false,
   passwordSavingRestoreTimer: null,
   revealGuardAttached: false,
+  launchPrepared: false,
+  freshSessionPreparing: false,
 };
 
 function normalizeLoginMethod(value) {
@@ -285,6 +288,7 @@ async function loadLaunchState() {
       STATE.launchChecked = true;
       STATE.launchAuthorized = true;
       STATE.launchExpiresAt = Number(activation.expiresAt || 0);
+      STATE.launchPrepared = Boolean(activation.prepared);
       return;
     }
   }
@@ -299,6 +303,61 @@ async function loadLaunchState() {
   STATE.launchChecked = true;
   STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
+  STATE.launchPrepared = Boolean(response?.ok && response.authorized && response.prepared);
+}
+
+function getFreshSessionPreparedTicket() {
+  try {
+    return `${window.sessionStorage.getItem(FRESH_SESSION_PREPARED_KEY) || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function setFreshSessionPreparedTicket(ticket) {
+  try {
+    if (ticket) window.sessionStorage.setItem(FRESH_SESSION_PREPARED_KEY, ticket);
+    else window.sessionStorage.removeItem(FRESH_SESSION_PREPARED_KEY);
+  } catch {}
+}
+
+function clearLocalPinterestStorage() {
+  try {
+    window.localStorage.clear();
+  } catch {}
+}
+
+async function clearToolSession(options = {}) {
+  clearLocalPinterestStorage();
+  await sendRuntimeMessage({
+    type: 'TOOL_HUB_CLEAR_TOOL_SESSION',
+    toolSlug: TOOL_SLUG,
+    preserveLaunch: Boolean(options.preserveLaunch),
+    includeGoogle: Boolean(options.includeGoogle),
+  });
+}
+
+async function ensureFreshLaunchSession() {
+  const ticket = getStoredLaunchTicket() || `${STATE.launchExpiresAt || ''}`.trim();
+  if (!STATE.launchAuthorized) return true;
+  if (STATE.launchPrepared || (ticket && getFreshSessionPreparedTicket() === ticket)) return true;
+  if (STATE.freshSessionPreparing) return false;
+
+  STATE.freshSessionPreparing = true;
+  setStatus('Preparing fresh Pinterest session');
+  await clearToolSession({ preserveLaunch: true, includeGoogle: true });
+  const preparedResponse = await sendRuntimeMessage({
+    type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED',
+    toolSlug: TOOL_SLUG,
+  });
+  if (preparedResponse?.ok) {
+    STATE.launchPrepared = true;
+  }
+  setFreshSessionPreparedTicket(ticket || 'prepared');
+  STATE.freshSessionPreparing = false;
+
+  window.location.replace(getPinterestLoginUrl());
+  return false;
 }
 
 function isVisible(element) {
@@ -918,6 +977,17 @@ function attemptFlow() {
 
   if (!STATE.launchAuthorized) {
     stop('Launch this tool from the dashboard first');
+    return;
+  }
+
+  if (!STATE.launchPrepared) {
+    ensureFreshLaunchSession()
+      .then((ready) => {
+        if (ready) scheduleAttempt(0);
+      })
+      .catch((error) => {
+        stop(`Session cleanup failed: ${error?.message || 'Unknown error'}`);
+      });
     return;
   }
 
