@@ -8,7 +8,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -128,6 +128,7 @@ class OtpRequestPayload(BaseModel):
     hostname: Optional[str] = Field(None, max_length=255)
     page_url: Optional[str] = Field(None, max_length=2000)
     extension_ticket: Optional[str] = Field(None, max_length=4000)
+    otp_not_before_epoch_ms: Optional[int] = Field(None, ge=0)
 
 
 class ExtensionUsageEventPayload(BaseModel):
@@ -1931,6 +1932,13 @@ async def get_extension_otp(
     if not app_password:
         raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
 
+    otp_not_before_dt = None
+    if payload.otp_not_before_epoch_ms:
+        otp_not_before_dt = datetime.fromtimestamp(
+            max(0, payload.otp_not_before_epoch_ms - 5000) / 1000,
+            tz=timezone.utc,
+        )
+
     otp = None
     last_fetch_error = None
     try:
@@ -1945,6 +1953,7 @@ async def get_extension_otp(
             OTP_EMAIL_SCAN_LIMIT,
             OTP_MAX_WAIT_SEC,
             OTP_CODE_POLL_INTERVAL_SEC,
+            otp_not_before_dt,
         )
         last_fetch_error = None
     except imaplib.IMAP4.error as exc:

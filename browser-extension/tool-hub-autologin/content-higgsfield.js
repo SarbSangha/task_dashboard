@@ -759,6 +759,7 @@ async function requestOtp() {
     hostname: window.location.hostname,
     pageUrl: window.location.href,
     extensionTicket: getStoredLaunchTicket(),
+    otpNotBeforeMs: Number(STATE.lastSubmitAt || STATE.authTransitionAt || 0) || Date.now(),
   });
 
   STATE.otpFetching = false;

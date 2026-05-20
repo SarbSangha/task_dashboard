@@ -1149,6 +1149,7 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
       hostname: message.hostname,
       page_url: message.pageUrl,
       extension_ticket: extensionTicket || null,
+      otp_not_before_epoch_ms: Number.isFinite(Number(message.otpNotBeforeMs)) ? Number(message.otpNotBeforeMs) : undefined,
     }),
   });
 

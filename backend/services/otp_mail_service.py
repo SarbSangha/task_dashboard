@@ -225,8 +225,11 @@ def fetch_otp_from_gmail(
     max_messages: int = 25,
     poll_timeout_seconds: int = 0,
     poll_interval_seconds: int = 2,
+    not_before_dt: Optional[datetime] = None,
 ) -> Optional[str]:
     cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+    if not_before_dt is not None:
+        cutoff_dt = max(cutoff_dt, not_before_dt.astimezone(timezone.utc))
     since_dt = cutoff_dt - timedelta(days=1)
     pattern = otp_regex or r"\b(\d{4,8})\b"
     deadline = time.monotonic() + max(0, poll_timeout_seconds)
