@@ -632,6 +632,8 @@ function findGoogleEmailInput() {
 }
 
 function findGooglePasswordInput() {
+  if (isFlowAuthenticatorScreen() || findFlowTotpInput() || findFlowAuthenticatorChoiceButton()) return null;
+
   const direct = findInput(PASSWORD_SELECTORS);
   if (direct) return direct;
 
@@ -655,6 +657,8 @@ function findGooglePasswordInput() {
 }
 
 function findGooglePasswordFallbackInput() {
+  if (isFlowAuthenticatorScreen() || findFlowTotpInput() || findFlowAuthenticatorChoiceButton()) return null;
+
   if (!isGooglePasswordPageLikely()) return null;
 
   const candidates = queryAllDeep(['input', 'textarea', '[role="textbox"]'])
@@ -3061,6 +3065,15 @@ async function handleGoogleTransitionLock() {
     return true;
   }
 
+  if (findFlowTotpInput() || findFlowAuthenticatorChoiceButton()) {
+    clearGoogleTransitionLock();
+    STATE.passwordSubmitted = false;
+    STATE.passwordSubmitReadyAt = 0;
+    setStatus(`${getToolDisplayName()} authenticator challenge detected`);
+    scheduleAttempt(0);
+    return true;
+  }
+
   const passwordInput = findGooglePasswordInput();
   if (passwordInput && hasGooglePasswordRejectedError(passwordInput)) {
     clearProtectedGooglePasswordMaskLoop();
@@ -3294,6 +3307,7 @@ async function attemptKlingGoogleEmailStep(credential) {
 }
 
 async function attemptKlingGooglePasswordStep(credential) {
+  if (findFlowTotpInput() || findFlowAuthenticatorChoiceButton()) return false;
   if (!(isKlingGooglePasswordScreen() || isGooglePasswordUrl() || document.querySelector('#passwordNext'))) return false;
 
   STATE.emailSubmitted = false;
@@ -3440,6 +3454,7 @@ async function attemptKlingGooglePopupFlow(credential) {
 }
 
 async function attemptFlowGooglePasswordStep(credential) {
+  if (findFlowTotpInput() || findFlowAuthenticatorChoiceButton()) return false;
   if (!(isKlingGooglePasswordScreen() || isGooglePasswordUrl() || document.querySelector('#passwordNext'))) return false;
 
   STATE.emailSubmitted = false;
@@ -3592,6 +3607,7 @@ async function attemptEnhancorGooglePopupFlow(credential) {
   // Enhancor uses Google's standard chooser/password pages; reuse the stable
   // Kling sequence but keep this route isolated from Kling itself.
   if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptFlowTotpStep()) return true;
   if (await attemptKlingGooglePasswordStep(credential)) return true;
   if (await attemptGoogleConsentContinueStep()) return true;
   if (await attemptKlingGoogleEmailStep(credential)) return true;
@@ -3921,6 +3937,7 @@ async function attemptFreepikGoogleEmailStep(credential) {
 }
 
 async function attemptFreepikGooglePasswordStep(credential) {
+  if (findFlowTotpInput() || findFlowAuthenticatorChoiceButton()) return false;
   if (!(isFreepikGooglePasswordScreen() || isGooglePasswordUrl() || document.querySelector('#passwordNext'))) return false;
 
   STATE.emailSubmitted = false;
@@ -4239,6 +4256,7 @@ async function attemptEmailStep(credential) {
 }
 
 async function attemptPasswordStep(credential) {
+  if (findFlowTotpInput() || findFlowAuthenticatorChoiceButton()) return false;
   const input = findGooglePasswordInput();
   if (!input) return false;
   const passwordValue = `${credential?.password || ''}`;
@@ -4762,10 +4780,10 @@ async function attemptFill() {
     return;
   }
 
+  if (await attemptFlowTotpStep()) return;
   if (await attemptPasswordStep(credential)) return;
   if (await attemptGoogleConsentContinueStep()) return;
   if (await attemptEmailStep(credential)) return;
-  if (await attemptFlowTotpStep()) return;
   if (await attemptFlowBackupCodeStep(credential)) return;
 
   setStatus('Waiting for Google sign-in fields');
