@@ -1,13 +1,20 @@
 backend/.env
 backend/.env.*
 backend/.env.example
+backend/.env.production
+backend/.env.production.example
+
 my-dashboard/.env
 my-dashboard/.env.* 
 my-dashboard/.env.example
 my-dashboard/.env.production
+my-dashboard/.env.production.example
 
 *.sqlite
 *.sqlite3
+*.dump
+*.sql
+*.zip
 
 backend/venv/
 backend/__pycache__/
@@ -15,4 +22,3 @@ backend/uploads/
 
 my-dashboard/node_modules/
 my-dashboard/dist/
-

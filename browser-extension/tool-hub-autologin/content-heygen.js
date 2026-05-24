@@ -60,6 +60,7 @@ const ACTION_SELECTORS = [
   'input[type="submit"]',
   'input[type="button"]',
   '[role="button"]',
+  '[tabindex]',
 ];
 
 function ensureStatusBadge() {
@@ -181,6 +182,14 @@ function normalizeText(value) {
   return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+function normalizeLoginMethod(value) {
+  const method = normalizeText(value).replace(/[-\s]+/g, '_');
+  if (!method) return 'email_password';
+  if (method === 'google' || method.includes('google')) return 'google';
+  if (method === 'email' || method.includes('email') || method.includes('password')) return 'email_password';
+  return method;
+}
+
 function buttonText(button) {
   return normalizeText(
     `${button?.innerText || button?.textContent || button?.value || button?.getAttribute?.('aria-label') || ''}`
@@ -200,8 +209,28 @@ function descriptorText(element) {
 }
 
 function collectActionCandidates(root = document) {
-  return Array.from(root.querySelectorAll(ACTION_SELECTORS.join(',')))
-    .filter((element) => !isDisabled(element) && isVisible(element));
+  const directCandidates = Array.from(root.querySelectorAll(ACTION_SELECTORS.join(',')));
+  const textCandidates = Array.from(root.querySelectorAll('button, a[href], [role="button"], [tabindex], div, span, p'))
+    .map((element) => findClickableAncestor(element));
+
+  return Array.from(new Set([...directCandidates, ...textCandidates]))
+    .filter((element) => element && !isDisabled(element) && isVisible(element));
+}
+
+function isActionLikeElement(element) {
+  if (!element || !isVisible(element) || isDisabled(element)) return false;
+  if (element.matches?.(ACTION_SELECTORS.join(','))) return true;
+  const style = window.getComputedStyle(element);
+  return style.cursor === 'pointer' || typeof element.onclick === 'function';
+}
+
+function findClickableAncestor(element) {
+  let current = element;
+  while (current && current !== document.body) {
+    if (isActionLikeElement(current)) return current;
+    current = current.parentElement;
+  }
+  return isVisible(element) ? element : null;
 }
 
 function findActionByText({ exact = [], partial = [], exclude = [] } = {}) {
@@ -271,7 +300,32 @@ function safeClick(element) {
   } catch {}
 
   try {
-    element.click();
+    if (typeof PointerEvent === 'function') {
+      ['pointerdown', 'pointerup'].forEach((eventName) => {
+        try {
+          element.dispatchEvent(new PointerEvent(eventName, {
+            bubbles: true,
+            cancelable: true,
+            pointerType: 'mouse',
+            isPrimary: true,
+            view: window,
+          }));
+        } catch {}
+      });
+    }
+    ['mousedown', 'mouseup', 'click'].forEach((eventName) => {
+      try {
+        element.dispatchEvent(new MouseEvent(eventName, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+        }));
+      } catch {}
+    });
+    if (typeof element.click === 'function') {
+      element.click();
+    }
     return true;
   } catch {
     try {
@@ -306,9 +360,26 @@ function findHomeSignInAction() {
 
 function findEmailOptionAction() {
   return findActionByText({
-    exact: ['sign in with email'],
-    partial: ['sign in with email', 'continue with email'],
+    exact: ['sign in with email', 'use email', 'email'],
+    partial: [
+      'sign in with email',
+      'continue with email',
+      'use email',
+      'email sign-in',
+      'email login',
+    ],
   });
+}
+
+function findGoogleOptionAction() {
+  return findActionByText({
+    exact: ['sign in with google', 'continue with google'],
+    partial: ['sign in with google', 'continue with google'],
+  });
+}
+
+function isGoogleCredential() {
+  return normalizeLoginMethod(STATE.credential?.loginMethod) === 'google';
 }
 
 function findUsePasswordInsteadAction() {
@@ -600,6 +671,20 @@ function attemptOpenHeyGenLogin() {
   const passwordInput = findPasswordInput();
   if (emailInput || passwordInput) return false;
 
+  if (isGoogleCredential()) {
+    const googleOption = findGoogleOptionAction();
+    if (googleOption) {
+      if (canActNow()) {
+        markActionTaken();
+        STATE.loginOpenAttempts += 1;
+        setStatus('Opening HeyGen Google sign-in');
+        window.setTimeout(() => safeClick(googleOption), 250);
+        scheduleAttempt(500);
+      }
+      return true;
+    }
+  }
+
   const emailOption = findEmailOptionAction();
   if (emailOption) {
     if (canActNow()) {
@@ -720,10 +805,23 @@ function attemptFill() {
   const emailInput = findEmailInput();
   const passwordInput = findPasswordInput();
 
-  if (!STATE.credential?.loginIdentifier || !STATE.credential?.password) {
+  if (!STATE.credential?.loginIdentifier || (!STATE.credential?.password && !isGoogleCredential())) {
     if (emailInput || passwordInput || findEmailOptionAction() || findUsePasswordInsteadAction() || onAuthHost()) {
       requestCredential();
     }
+    attemptOpenHeyGenLogin();
+    return;
+  }
+
+  if (isGoogleCredential()) {
+    if (attemptOpenHeyGenLogin()) {
+      return;
+    }
+    setStatus('Waiting for HeyGen Google sign-in option');
+    return;
+  }
+
+  if (!passwordInput && findEmailOptionAction()) {
     attemptOpenHeyGenLogin();
     return;
   }

@@ -154,6 +154,7 @@ const toolSupportsCredentialLoginMethodSelection = (value) => {
     || normalizedToolSlug === 'flow'
     || normalizedToolSlug === 'freepik'
     || normalizedToolSlug === 'genspark'
+    || normalizedToolSlug === 'heygen'
     || normalizedToolSlug === 'pinterest'
     || normalizedToolSlug === 'kling-ai'
     || normalizedToolSlug === 'klingai'
@@ -194,6 +195,7 @@ const getAuthenticatorSeedToolLabel = (toolSlug) => {
   if (normalizedToolSlug === 'elevenlabs') return 'ElevenLabs';
   if (normalizedToolSlug === 'freepik') return 'Freepik';
   if (normalizedToolSlug === 'genspark') return 'Genspark';
+  if (normalizedToolSlug === 'heygen') return 'HeyGen';
   if (normalizedToolSlug === 'pinterest') return 'Pinterest';
   if (normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai') return 'Kling';
   return 'Google';
@@ -2485,6 +2487,8 @@ export default function Tools({ view = 'tools' }) {
                         ? 'This ElevenLabs credential can use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                       : activeCredentialToolSlug === 'freepik'
                         ? 'This Freepik credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                      : activeCredentialToolSlug === 'heygen'
+                        ? 'This HeyGen credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                         : activeCredentialToolSlug === 'genspark'
                           ? 'This Genspark credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                         : activeCredentialToolSlug === 'pinterest'

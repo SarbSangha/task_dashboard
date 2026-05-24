@@ -58,6 +58,7 @@ TOOL_CREDENTIAL_LOGIN_METHODS = {
     "flow": {"email_password", "google"},
     "freepik": {"email_password", "google"},
     "genspark": {"email_password", "google"},
+    "heygen": {"email_password", "google"},
     "kling": {"email_password", "google"},
     "kling-ai": {"email_password", "google"},
     "klingai": {"email_password", "google"},
@@ -2355,7 +2356,7 @@ async def upsert_credential(
                     "New shared Claude credentials require the sign-in email address."
                     if canonical_tool_slug == "claude"
                     else "New shared Google-login credentials require the Google email address."
-                    if canonical_tool_slug in {"behance", "enhancor", "freepik", "genspark", "kling", "kling-ai", "klingai", "pinterest"} and login_method == "google"
+                    if canonical_tool_slug in {"behance", "enhancor", "freepik", "genspark", "heygen", "kling", "kling-ai", "klingai", "pinterest"} and login_method == "google"
                     else "New shared company credentials require both username/email and password"
                 ),
             )

@@ -265,31 +265,6 @@ async function loadLaunchState() {
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
 }
 
-function clearPageStorage() {
-  const preparedLaunch = getPreparedLaunchKey();
-  try {
-    window.localStorage.clear();
-  } catch {}
-  try {
-    const blockedNotice = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY);
-    const extensionTicket = window.sessionStorage.getItem(EXTENSION_TICKET_KEY);
-    window.sessionStorage.clear();
-    if (preparedLaunch) {
-      window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, preparedLaunch);
-    }
-    if (blockedNotice) {
-      window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, blockedNotice);
-    }
-    if (extensionTicket) {
-      window.sessionStorage.setItem(EXTENSION_TICKET_KEY, extensionTicket);
-    }
-  } catch {}
-  if (preparedLaunch) {
-    try { window.localStorage.setItem(PREPARED_LAUNCH_KEY, preparedLaunch); } catch {}
-    try { window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, preparedLaunch); } catch {}
-  }
-}
-
 function isVisible(element) {
   if (!element) return false;
   const rect = element.getBoundingClientRect();
@@ -1049,15 +1024,6 @@ function submitLogin(emailInput, passwordInput, submitButton) {
   return pressEnter(passwordInput || emailInput);
 }
 
-async function clearToolSession(options = {}) {
-  clearPageStorage();
-  await sendRuntimeMessage({
-    type: 'TOOL_HUB_CLEAR_TOOL_SESSION',
-    toolSlug: TOOL_SLUG,
-    preserveLaunch: Boolean(options.preserveLaunch),
-  });
-}
-
 function requestCredential() {
   if (STATE.requestedCredential || STATE.credential) return;
 
@@ -1107,7 +1073,10 @@ function isReadyForSubmit(emailInput, passwordInput) {
 async function enforceDashboardOnlyAccess() {
   const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
   if (!isLoginPage()) {
-    await clearToolSession();
+    await sendRuntimeMessage({
+      type: 'TOOL_HUB_REVOKE_ACTIVE_LAUNCH',
+      toolSlug: TOOL_SLUG,
+    });
     window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
     window.location.replace(LOGIN_URL);
     return;
@@ -1130,7 +1099,6 @@ async function ensureFreshLaunchSession() {
     return;
   }
 
-  await clearToolSession({ preserveLaunch: true });
   window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
   try { window.localStorage.setItem(PREPARED_LAUNCH_KEY, launchKey); } catch {}
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
@@ -1345,7 +1313,7 @@ function attemptFlow() {
     setInputValue(emailInput, STATE.credential.loginIdentifier);
   }
 
-  if (passwordInput.value !== STATE.credential.password && !STATE.passwordFilled) {
+  if (passwordInput.value !== STATE.credential.password) {
     passwordInput.focus();
     setInputValue(passwordInput, STATE.credential.password);
     STATE.passwordFilled = passwordInput.value === STATE.credential.password;

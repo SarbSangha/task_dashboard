@@ -11,7 +11,7 @@ const FLOW_HOME_URL = 'https://labs.google/fx';
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
 const DIRECT_TICKET_ONLY_TOOLS = new Set(['behance', 'claude', 'genspark', 'pinterest']);
-const CLEAR_SESSION_ON_CLOSE_TOOLS = new Set(['behance', 'claude', 'genspark', 'pinterest', 'flow']);
+const CLEAR_SESSION_ON_CLOSE_TOOLS = new Set(['behance', 'claude', 'freepik', 'genspark', 'pinterest', 'flow']);
 const TOOL_SESSION_DOMAINS = {
   behance: [
     'behance.net',
@@ -109,6 +109,7 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'heygen.com',
     'auth.heygen.com',
     'app.heygen.com',
+    'accounts.google.com',
   ],
   elevenlabs: [
     'elevenlabs.io',
@@ -615,6 +616,7 @@ async function setActiveLaunch(tabId, launch) {
       normalizedToolSlug === 'genspark'
       || normalizedToolSlug === 'claude'
       || normalizedToolSlug === 'behance'
+      || normalizedToolSlug === 'freepik'
       || normalizedToolSlug === 'pinterest'
       || launch.clearSessionOnClose
       || (sameTicket && existingLaunch.clearSessionOnClose)

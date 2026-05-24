@@ -143,6 +143,18 @@ function normalizeText(value) {
   return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+function normalizeLoginMethod(value) {
+  const method = normalizeText(value).replace(/[-\s]+/g, '_');
+  if (!method) return 'email_password';
+  if (method === 'google' || method.includes('google')) return 'google';
+  if (method === 'email' || method.includes('email') || method.includes('password')) return 'email_password';
+  return method;
+}
+
+function isGoogleLoginCredential(credential) {
+  return normalizeLoginMethod(credential?.loginMethod) === 'google';
+}
+
 function isEmbeddedGoogleButtonFrame() {
   try {
     if (window.top === window.self) {
@@ -230,6 +242,11 @@ function isElevenLabsGoogleFlow(toolSlug = STATE.toolSlug) {
   return normalizedToolSlug === 'elevenlabs';
 }
 
+function isHeyGenGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'heygen';
+}
+
 function isPinterestGoogleFlow(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
   return normalizedToolSlug === 'pinterest';
@@ -251,6 +268,7 @@ function shouldProtectGooglePasswordReveal(toolSlug = STATE.toolSlug) {
     || isEnhancorGoogleFlow(toolSlug)
     || isGensparkGoogleFlow(toolSlug)
     || isElevenLabsGoogleFlow(toolSlug)
+    || isHeyGenGoogleFlow(toolSlug)
     || isPinterestGoogleFlow(toolSlug);
 }
 
@@ -271,6 +289,7 @@ function supportsGoogleAuthenticatorAutomation(toolSlug = STATE.toolSlug) {
     || normalizedToolSlug === 'elevenlabs'
     || normalizedToolSlug === 'freepik'
     || normalizedToolSlug === 'genspark'
+    || normalizedToolSlug === 'heygen'
     || normalizedToolSlug === 'pinterest'
     || normalizedToolSlug === 'kling'
     || normalizedToolSlug === 'kling-ai'
@@ -286,6 +305,7 @@ function getToolDisplayName(toolSlug = STATE.toolSlug) {
   if (normalizedToolSlug === 'elevenlabs') return 'ElevenLabs';
   if (normalizedToolSlug === 'freepik') return 'Freepik';
   if (normalizedToolSlug === 'genspark') return 'Genspark';
+  if (normalizedToolSlug === 'heygen') return 'HeyGen';
   if (normalizedToolSlug === 'pinterest') return 'Pinterest';
   if (normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai') return 'Kling';
   return 'Google';
@@ -995,7 +1015,7 @@ function readStoredGoogleLastToolSlug() {
 }
 
 function listKnownGoogleToolSlugs() {
-  return ['flow', 'behance', 'chatgpt', 'enhancor', 'elevenlabs', 'freepik', 'genspark', 'kling-ai', 'pinterest'];
+  return ['flow', 'behance', 'chatgpt', 'enhancor', 'elevenlabs', 'freepik', 'genspark', 'heygen', 'kling-ai', 'pinterest'];
 }
 
 function inferStoredGoogleToolSlug() {
@@ -1144,6 +1164,14 @@ function inferToolSlugFromGooglePage() {
     }
 
     if (values.some((value) => (
+      value.includes('heygen.com')
+      || value.includes('auth.heygen.com')
+      || value.includes('app.heygen.com')
+    ))) {
+      return 'heygen';
+    }
+
+    if (values.some((value) => (
       value.includes('kling.ai')
       || value.includes('klingai.com')
       || value.includes('app.klingai.com')
@@ -1219,6 +1247,17 @@ function inferToolSlugFromGooglePage() {
   }
 
   if (
+    currentPageText.includes('continue to heygen')
+    || currentPageText.includes('to continue to heygen')
+    || currentPageText.includes('review heygen')
+    || currentPageText.includes('signing back in to heygen')
+    || currentPageText.includes('heygen privacy policy')
+    || currentPageText.includes('heygen terms of service')
+  ) {
+    return 'heygen';
+  }
+
+  if (
     currentPageText.includes('continue to kling.ai')
     || currentPageText.includes('continue to kling ai')
     || currentPageText.includes('to continue to kling.ai')
@@ -1274,6 +1313,7 @@ function supportsPasswordOptionalGoogleCredential(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
   return normalizedToolSlug === 'enhancor'
     || normalizedToolSlug === 'genspark'
+    || normalizedToolSlug === 'heygen'
     || normalizedToolSlug === 'kling'
     || normalizedToolSlug === 'kling-ai'
     || normalizedToolSlug === 'klingai';
@@ -3431,7 +3471,7 @@ async function attemptKlingGooglePopupFlow(credential) {
     return false;
   }
 
-  if (`${credential?.loginMethod || ''}`.trim().toLowerCase() && `${credential?.loginMethod || ''}`.trim().toLowerCase() !== 'google') {
+  if (credential?.loginMethod && !isGoogleLoginCredential(credential)) {
     setStatus('Selected credential is not configured for Google sign-in');
     STATE.settled = true;
     return true;
@@ -3684,6 +3724,45 @@ async function attemptElevenLabsGooglePopupFlow(credential) {
   return false;
 }
 
+async function attemptHeyGenGooglePopupFlow(credential) {
+  if (!isHeyGenGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(toolSlug))) {
+    if (isKlingGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (credential?.loginMethod && !isGoogleLoginCredential(credential)) {
+    setStatus('Selected credential is not configured for Google sign-in');
+    STATE.settled = true;
+    return true;
+  }
+
+  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
+  // HeyGen uses Google's standard chooser/password pages; reuse the stable
+  // Kling sequence while keeping this route isolated from Kling itself.
+  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptFlowTotpStep()) return true;
+  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptGoogleConsentContinueStep()) return true;
+  if (await attemptKlingGoogleEmailStep(credential)) return true;
+
+  if (isKlingGoogleRelevantSurface()) {
+    setStatus('Waiting for HeyGen Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
 async function attemptPinterestGooglePopupFlow(credential) {
   if (!isPinterestGoogleFlow()) return false;
 
@@ -3700,7 +3779,7 @@ async function attemptPinterestGooglePopupFlow(credential) {
     return false;
   }
 
-  if (`${credential?.loginMethod || ''}`.trim().toLowerCase() && `${credential?.loginMethod || ''}`.trim().toLowerCase() !== 'google') {
+  if (credential?.loginMethod && !isGoogleLoginCredential(credential)) {
     setStatus('Selected credential is not configured for Google sign-in');
     STATE.settled = true;
     return true;
@@ -3738,7 +3817,7 @@ async function attemptBehanceGooglePopupFlow(credential) {
     return false;
   }
 
-  if (`${credential?.loginMethod || ''}`.trim().toLowerCase() && `${credential?.loginMethod || ''}`.trim().toLowerCase() !== 'google') {
+  if (credential?.loginMethod && !isGoogleLoginCredential(credential)) {
     setStatus('Selected credential is not configured for Google sign-in');
     STATE.settled = true;
     return true;
@@ -4055,7 +4134,7 @@ async function attemptFreepikGooglePopupFlow(credential) {
     return false;
   }
 
-  if (`${credential?.loginMethod || ''}`.trim().toLowerCase() && `${credential?.loginMethod || ''}`.trim().toLowerCase() !== 'google') {
+  if (credential?.loginMethod && !isGoogleLoginCredential(credential)) {
     setStatus('Selected credential is not configured for Google sign-in');
     STATE.settled = true;
     return true;
@@ -4733,7 +4812,7 @@ async function attemptFill() {
       requestCredential();
       return;
     }
-    if (`${credential?.loginMethod || ''}`.trim().toLowerCase() !== 'google') {
+    if (!isGoogleLoginCredential(credential)) {
       STATE.settled = true;
       return;
     }
@@ -4764,6 +4843,7 @@ async function attemptFill() {
   if (await attemptEnhancorGooglePopupFlow(credential)) return;
   if (await attemptGensparkGooglePopupFlow(credential)) return;
   if (await attemptElevenLabsGooglePopupFlow(credential)) return;
+  if (await attemptHeyGenGooglePopupFlow(credential)) return;
   if (await attemptPinterestGooglePopupFlow(credential)) return;
   if (await attemptBehanceGooglePopupFlow(credential)) return;
 
