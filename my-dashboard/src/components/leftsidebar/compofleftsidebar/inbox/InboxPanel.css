@@ -20,6 +20,7 @@
 }
 
 .inbox-panel-container {
+  box-sizing: border-box;
   position: fixed;
   top: var(--leftbar-popup-top-offset);
   left: 50%;
@@ -41,6 +42,12 @@
   transition: width 0.12s ease-out, height 0.12s ease-out, max-width 0.12s ease-out, max-height 0.12s ease-out,
     top 0.12s ease-out, left 0.12s ease-out, right 0.12s ease-out, bottom 0.12s ease-out,
     transform 0.12s ease-out, border-radius 0.12s ease-out, box-shadow 0.12s ease-out;
+}
+
+.inbox-panel-container *,
+.inbox-panel-container *::before,
+.inbox-panel-container *::after {
+  box-sizing: border-box;
 }
 
 /* Header */
@@ -278,6 +285,7 @@
 /* Filters */
 .inbox-filters {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 20px 24px;
   background: #fafafa;
@@ -318,6 +326,7 @@
 .inbox-panel-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px;
   background: #f9f9f9;
   position: relative;
@@ -357,6 +366,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 16px;
+  min-width: 0;
 }
 
 /* Loading State */

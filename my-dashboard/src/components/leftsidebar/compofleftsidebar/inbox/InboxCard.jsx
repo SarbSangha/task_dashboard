@@ -107,7 +107,6 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const actions = isRevoked ? [] : withChat;
   const assignedNames = (task.assignedTo || []).map((x) => x.name).join(', ') || 'Unassigned';
   const description = task.description || '';
-  const shortDescription = description.length > 120 ? `${description.slice(0, 120)}...` : description;
   const requestTypeLabel = (() => {
     const type = (task.taskType || 'task').toLowerCase();
     if (type === 'task_approval') return 'Task Approval';
@@ -125,11 +124,33 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     if (action === 'unhold_task') return 'Unhold Task';
     return action.replace(/_/g, ' ');
   };
-  const editCount = Number(task.editCount ?? ((task.taskVersion || 1) - 1));
-  const showEditBadge = task.myRole !== 'creator' && editCount > 0;
   const activeStageLabel = isWorkflowTask
     ? [task.currentStageOrder ? `Stage ${task.currentStageOrder}` : '', task.currentStageTitle || ''].filter(Boolean).join(': ')
     : '';
+  const displayTaskName = task.taskName || task.title || task.taskNumber || '-';
+  const displayProjectName = task.projectName || task.projectId || '-';
+  const renderActionMenu = () => (
+    <div className="card-menu-wrap">
+      <button className="card-menu-btn" onClick={() => setMenuOpen((s) => !s)}>⋮</button>
+      {menuOpen && (
+        <div className="card-menu">
+          {actions.map((action) => (
+            <button
+              key={action}
+              onClick={() => {
+                setMenuOpen(false);
+                if (action === 'chat') handleOpenChat();
+                else onTaskAction(task, action);
+              }}
+            >
+              {actionLabel(action)}
+            </button>
+          ))}
+          {actions.length === 0 && <span className="card-menu-empty">No actions</span>}
+        </div>
+      )}
+    </div>
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -464,38 +485,6 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
 
   return (
     <div className={`inbox-card ${isRevoked ? 'revoked-card' : ''}`}>
-      <div className="card-header">
-        <div>
-          <div className="card-title-row">
-            <h3 className="card-title">{task.title}</h3>
-            {showEditBadge && (
-              <span className="task-edit-badge">Edit #{editCount}</span>
-            )}
-            {isHeld && <span className="task-hold-badge">Held</span>}
-          </div>
-          <p className="card-subtitle">{shortDescription}</p>
-        </div>
-        <div className="card-menu-wrap">
-          <button className="card-menu-btn" onClick={() => setMenuOpen((s) => !s)}>⋮</button>
-          {menuOpen && (
-            <div className="card-menu">
-              {actions.map((action) => (
-                <button
-                  key={action}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    if (action === 'chat') handleOpenChat();
-                    else onTaskAction(task, action);
-                  }}
-                >
-                  {actionLabel(action)}
-                </button>
-              ))}
-              {actions.length === 0 && <span className="card-menu-empty">No actions</span>}
-            </div>
-          )}
-        </div>
-      </div>
       {isRevoked && (
         <div className="revoked-banner">
           <strong>This task has been revoked (regularised).</strong>
@@ -515,8 +504,8 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
       )}
 
       <div className="card-grid">
-        <span><strong>Task ID:</strong> {task.taskNumber || '-'}</span>
-        <span><strong>Project ID:</strong> {task.projectId || '-'}</span>
+        <span><strong>Task Name:</strong> {displayTaskName}</span>
+        <span><strong>Project Name:</strong> {displayProjectName}</span>
         <span><strong>Creator:</strong> {task.creator?.name || 'Unknown'} ({task.creator?.department || 'N/A'})</span>
         <span><strong>Status:</strong> {(task.status || '').replace(/_/g, ' ')}</span>
         {isWorkflowTask && (
@@ -675,6 +664,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
             {expanded ? 'Hide Details' : 'Show Details'}
           </button>
           <button className="track-btn" onClick={handleTrack}>Track</button>
+          {renderActionMenu()}
         </div>
       </div>
       {toastMessage && <div className="copy-toast">{toastMessage}</div>}
