@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import asyncio
 from collections import defaultdict
@@ -6,16 +6,17 @@ from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 
 from database_config import get_operational_db
-from models_new import GroupChat, GroupChatMember, GroupChatMessage, User
+from models_new import ActivityStatus, ChatMessageReaction, ChatMessageReadReceipt, GroupChat, GroupChatMember, GroupChatMessage, User, UserActivity
 from routers.auth_router import get_current_user
 from routers.tasks_router import notification_hub
 from utils.cache import cache_response
 
 
 router = APIRouter(prefix="/api/groups", tags=["Groups"])
+PRESENCE_STALE_SECONDS = 90
 
 
 class GroupCreatePayload(BaseModel):
@@ -30,6 +31,20 @@ class GroupMembersPayload(BaseModel):
 class GroupMessagePayload(BaseModel):
     message: str = Field(default="", max_length=5000)
     attachments: list[dict] = Field(default_factory=list)
+    reply_to_message_id: Optional[int] = Field(default=None, ge=1)
+    mention_ids: list[int] = Field(default_factory=list)
+
+
+class MessageEditPayload(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
+
+
+class TypingPayload(BaseModel):
+    active: bool = True
+
+
+class ReactionPayload(BaseModel):
+    emoji: str = Field(min_length=1, max_length=32)
 
 
 class GroupRolePayload(BaseModel):
@@ -38,6 +53,48 @@ class GroupRolePayload(BaseModel):
 
 def _utcnow() -> datetime:
     return datetime.utcnow()
+
+
+def _default_presence() -> dict:
+    return {
+        "status": ActivityStatus.OFFLINE.value,
+        "isOnline": False,
+        "lastSeen": None,
+    }
+
+
+def _serialize_presence(activity: Optional[UserActivity], now: Optional[datetime] = None) -> dict:
+    if not activity:
+        return _default_presence()
+
+    current_time = now or _utcnow()
+    last_seen = activity.last_seen
+    is_recent = bool(last_seen and last_seen >= current_time - timedelta(seconds=PRESENCE_STALE_SECONDS))
+    status = activity.status.value if hasattr(activity.status, "value") else activity.status
+    status = status or ActivityStatus.OFFLINE.value
+    if not is_recent:
+        status = ActivityStatus.OFFLINE.value
+
+    return {
+        "status": status,
+        "isOnline": status in {ActivityStatus.ACTIVE.value, ActivityStatus.IDLE.value, ActivityStatus.AWAY.value},
+        "lastSeen": last_seen.isoformat() if last_seen else None,
+    }
+
+
+def _build_presence_lookup(db: Session, user_ids: list[int]) -> dict[int, dict]:
+    unique_user_ids = sorted({user_id for user_id in user_ids if user_id})
+    if not unique_user_ids:
+        return {}
+
+    now = _utcnow()
+    activities = (
+        db.query(UserActivity)
+        .filter(UserActivity.user_id.in_(unique_user_ids), UserActivity.date == now.date())
+        .all()
+    )
+    activity_map = {activity.user_id: activity for activity in activities}
+    return {user_id: _serialize_presence(activity_map.get(user_id), now) for user_id in unique_user_ids}
 
 
 def _group_member_row(db: Session, group_id: int, user_id: int) -> Optional[GroupChatMember]:
@@ -90,6 +147,232 @@ def _normalize_group_message_attachments(items: list[dict]) -> list[dict]:
     return normalized
 
 
+def _serialize_receipt_user(
+    user: User,
+    delivered_at: Optional[datetime] = None,
+    seen_at: Optional[datetime] = None,
+) -> dict:
+    return {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "department": user.department,
+        "position": user.position,
+        "deliveredAt": delivered_at.isoformat() if delivered_at else None,
+        "seenAt": seen_at.isoformat() if seen_at else None,
+    }
+
+
+def _serialize_reactions(
+    reactions: list[tuple[ChatMessageReaction, User]],
+    current_user_id: int,
+) -> dict:
+    grouped = {}
+    my_reaction = None
+    for reaction, user in reactions:
+        entry = grouped.setdefault(
+            reaction.emoji,
+            {
+                "emoji": reaction.emoji,
+                "count": 0,
+                "users": [],
+            },
+        )
+        entry["count"] += 1
+        entry["users"].append({
+            "id": user.id,
+            "name": user.name,
+        })
+        if user.id == current_user_id:
+            my_reaction = reaction.emoji
+
+    return {
+        "reactions": sorted(grouped.values(), key=lambda item: (-item["count"], item["emoji"])),
+        "myReaction": my_reaction,
+    }
+
+
+def _build_reaction_lookup(
+    db: Session,
+    message_scope: str,
+    message_ids: list[int],
+    current_user_id: int,
+) -> dict[int, dict]:
+    unique_message_ids = sorted({message_id for message_id in message_ids if message_id})
+    if not unique_message_ids:
+        return {}
+
+    rows = (
+        db.query(ChatMessageReaction, User)
+        .join(User, User.id == ChatMessageReaction.user_id)
+        .filter(
+            ChatMessageReaction.message_scope == message_scope,
+            ChatMessageReaction.message_id.in_(unique_message_ids),
+            User.is_active == True,
+            User.is_deleted == False,
+        )
+        .order_by(ChatMessageReaction.created_at.asc(), User.name.asc())
+        .all()
+    )
+    grouped = defaultdict(list)
+    for reaction, user in rows:
+        grouped[reaction.message_id].append((reaction, user))
+
+    return {
+        message_id: _serialize_reactions(grouped.get(message_id, []), current_user_id)
+        for message_id in unique_message_ids
+    }
+
+
+def _serialize_group_reply_preview(message: GroupChatMessage, sender: User) -> dict:
+    is_deleted = bool(message.deleted_at)
+    return {
+        "id": message.id,
+        "senderId": message.sender_id,
+        "senderName": sender.name,
+        "message": "" if is_deleted else message.message,
+        "attachments": [] if is_deleted else (message.attachments_json or []),
+        "deletedAt": message.deleted_at.isoformat() if message.deleted_at else None,
+    }
+
+
+def _normalize_mention_token(value: str) -> str:
+    return "".join(char.lower() for char in (value or "") if char.isalnum() or char in ("_", "-"))
+
+
+def _build_user_mention_tokens(user: User) -> set[str]:
+    name_parts = [part for part in (user.name or "").split() if part]
+    tokens = {_normalize_mention_token(part) for part in name_parts}
+    tokens.add(_normalize_mention_token(user.name or ""))
+    if user.email and "@" in user.email:
+        tokens.add(_normalize_mention_token(user.email.split("@", 1)[0]))
+    return {token for token in tokens if token}
+
+
+def _extract_mention_tokens(text: str) -> set[str]:
+    tokens = set()
+    for raw_part in (text or "").split():
+        if "@" not in raw_part:
+            continue
+        for candidate in raw_part.split("@")[1:]:
+            token = _normalize_mention_token(candidate)
+            if token:
+                tokens.add(token)
+    return tokens
+
+
+def _serialize_group_mentions(users: list[User]) -> list[dict]:
+    return [
+        {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+        }
+        for user in users
+    ]
+
+
+def _build_group_reply_lookup(
+    db: Session,
+    messages: list[GroupChatMessage],
+) -> dict[int, dict]:
+    reply_ids = sorted({message.reply_to_message_id for message in messages if message.reply_to_message_id})
+    if not reply_ids:
+        return {}
+
+    rows = (
+        db.query(GroupChatMessage, User)
+        .join(User, User.id == GroupChatMessage.sender_id)
+        .filter(GroupChatMessage.id.in_(reply_ids))
+        .all()
+    )
+    return {
+        message.id: _serialize_group_reply_preview(message, sender)
+        for message, sender in rows
+    }
+
+
+def _notify_receipt_update(user_id: int, payload: dict) -> None:
+    try:
+        asyncio.create_task(notification_hub.push(user_id, payload))
+    except RuntimeError:
+        pass
+
+
+def _build_group_receipt_lookup(
+    db: Session,
+    group_id: int,
+    messages: list[GroupChatMessage],
+    current_user_id: int,
+) -> dict[int, dict]:
+    sent_message_ids = [message.id for message in messages if message.sender_id == current_user_id]
+    if not sent_message_ids:
+        return {}
+
+    total_recipients = (
+        db.query(func.count(GroupChatMember.id))
+        .filter(
+            GroupChatMember.group_id == group_id,
+            GroupChatMember.is_active == True,
+            GroupChatMember.user_id != current_user_id,
+        )
+        .scalar()
+        or 0
+    )
+
+    receipt_rows = (
+        db.query(ChatMessageReadReceipt, User)
+        .join(User, User.id == ChatMessageReadReceipt.user_id)
+        .filter(
+            ChatMessageReadReceipt.message_scope == "group",
+            ChatMessageReadReceipt.message_id.in_(sent_message_ids),
+            User.is_active == True,
+            User.is_deleted == False,
+        )
+        .order_by(ChatMessageReadReceipt.seen_at.asc(), User.name.asc())
+        .all()
+    )
+
+    lookup = {
+        message_id: {
+            "status": "sent",
+            "totalRecipientCount": total_recipients,
+            "deliveredCount": 0,
+            "deliveredBy": [],
+            "readCount": 0,
+            "readBy": [],
+        }
+        for message_id in sent_message_ids
+    }
+    for receipt, user in receipt_rows:
+        entry = lookup.setdefault(
+            receipt.message_id,
+            {
+                "status": "sent",
+                "totalRecipientCount": total_recipients,
+                "deliveredCount": 0,
+                "deliveredBy": [],
+                "readCount": 0,
+                "readBy": [],
+            },
+        )
+        delivered_at = receipt.delivered_at or receipt.seen_at
+        if delivered_at:
+            entry["deliveredBy"].append(_serialize_receipt_user(user, delivered_at, receipt.seen_at))
+        if receipt.seen_at:
+            entry["readBy"].append(_serialize_receipt_user(user, receipt.delivered_at, receipt.seen_at))
+
+    for entry in lookup.values():
+        entry["deliveredCount"] = len(entry["deliveredBy"])
+        entry["readCount"] = len(entry["readBy"])
+        if entry["readCount"] > 0:
+            entry["status"] = "read"
+        elif entry["deliveredCount"] > 0:
+            entry["status"] = "delivered"
+
+    return lookup
+
+
 def _serialize_group(
     db: Session,
     group: GroupChat,
@@ -106,16 +389,31 @@ def _serialize_group(
         )
         .all()
     )
-    return _serialize_group_with_members(group, current_user_id, members)
+    latest_message = (
+        db.query(GroupChatMessage)
+        .filter(GroupChatMessage.group_id == group.id)
+        .order_by(GroupChatMessage.created_at.desc(), GroupChatMessage.id.desc())
+        .first()
+    )
+    return _serialize_group_with_members(
+        group,
+        current_user_id,
+        members,
+        presence_lookup=_build_presence_lookup(db, [user.id for _member, user in members]),
+        latest_message_sender_id=latest_message.sender_id if latest_message else None,
+    )
 
 
 def _serialize_group_with_members(
     group: GroupChat,
     current_user_id: int,
     members: list[tuple[GroupChatMember, User]],
+    presence_lookup: Optional[dict[int, dict]] = None,
+    latest_message_sender_id: Optional[int] = None,
 ) -> dict:
     payload_members = []
     my_role = "member"
+    presence_lookup = presence_lookup or {}
     for m, u in members:
         role = "admin" if (group.created_by == u.id or (m.role or "member") == "admin") else "member"
         if u.id == current_user_id:
@@ -128,6 +426,7 @@ def _serialize_group_with_members(
                 "department": u.department,
                 "position": u.position,
                 "role": role,
+                "presence": presence_lookup.get(u.id) or _default_presence(),
             }
         )
     return {
@@ -136,6 +435,7 @@ def _serialize_group_with_members(
         "createdBy": group.created_by,
         "createdAt": group.created_at.isoformat() if group.created_at else None,
         "lastMessageAt": group.last_message_at.isoformat() if group.last_message_at else None,
+        "lastMessageSenderId": latest_message_sender_id,
         "myRole": my_role,
         "members": payload_members,
         "memberCount": len(payload_members),
@@ -165,11 +465,35 @@ def _serialize_groups(
     )
 
     members_by_group = defaultdict(list)
+    member_user_ids = set()
     for member, user in member_rows:
         members_by_group[member.group_id].append((member, user))
+        member_user_ids.add(user.id)
+    presence_lookup = _build_presence_lookup(db, list(member_user_ids))
+
+    latest_message_ids = (
+        db.query(func.max(GroupChatMessage.id).label("message_id"))
+        .filter(GroupChatMessage.group_id.in_(group_ids))
+        .group_by(GroupChatMessage.group_id)
+        .subquery()
+    )
+    latest_sender_by_group = {
+        message.group_id: message.sender_id
+        for message in (
+            db.query(GroupChatMessage)
+            .join(latest_message_ids, GroupChatMessage.id == latest_message_ids.c.message_id)
+            .all()
+        )
+    }
 
     return [
-        _serialize_group_with_members(group, current_user_id, members_by_group.get(group.id, []))
+        _serialize_group_with_members(
+            group,
+            current_user_id,
+            members_by_group.get(group.id, []),
+            presence_lookup=presence_lookup,
+            latest_message_sender_id=latest_sender_by_group.get(group.id),
+        )
         for group in groups
     ]
 
@@ -227,6 +551,64 @@ async def list_my_groups(
         .all()
     )
     return {"success": True, "data": _serialize_groups(db, groups, current_user.id)}
+
+
+@router.get("/unread-counts")
+async def get_group_unread_counts(
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = (
+        db.query(
+            GroupChatMessage.group_id.label("group_id"),
+            func.count(GroupChatMessage.id).label("unread_count"),
+        )
+        .join(
+            GroupChat,
+            and_(
+                GroupChat.id == GroupChatMessage.group_id,
+                GroupChat.is_archived == False,
+            ),
+        )
+        .join(
+            GroupChatMember,
+            and_(
+                GroupChatMember.group_id == GroupChatMessage.group_id,
+                GroupChatMember.user_id == current_user.id,
+                GroupChatMember.is_active == True,
+            ),
+        )
+        .outerjoin(
+            ChatMessageReadReceipt,
+            and_(
+                ChatMessageReadReceipt.message_scope == "group",
+                ChatMessageReadReceipt.message_id == GroupChatMessage.id,
+                ChatMessageReadReceipt.user_id == current_user.id,
+            ),
+        )
+        .filter(
+            GroupChatMessage.sender_id != current_user.id,
+            GroupChatMessage.deleted_at.is_(None),
+            ChatMessageReadReceipt.seen_at.is_(None),
+        )
+        .group_by(GroupChatMessage.group_id)
+        .all()
+    )
+    groups = [
+        {"groupId": row.group_id, "unreadCount": int(row.unread_count or 0)}
+        for row in rows
+        if int(row.unread_count or 0) > 0
+    ]
+    total_unread_messages = sum(item["unreadCount"] for item in groups)
+    return {
+        "success": True,
+        "data": {
+            "groups": groups,
+            "countsByGroupId": {str(item["groupId"]): item["unreadCount"] for item in groups},
+            "totalUnreadMessages": total_unread_messages,
+            "totalUnreadThreads": len(groups),
+        },
+    }
 
 
 @router.post("")
@@ -391,6 +773,10 @@ async def list_group_messages(
         .all()
     )
     rows.reverse()
+    messages = [msg for msg, _sender in rows]
+    receipt_lookup = _build_group_receipt_lookup(db, group.id, messages, current_user.id)
+    reaction_lookup = _build_reaction_lookup(db, "group", [msg.id for msg in messages], current_user.id)
+    reply_lookup = _build_group_reply_lookup(db, messages)
     return {
         "success": True,
         "data": [
@@ -400,12 +786,497 @@ async def list_group_messages(
                 "senderId": msg.sender_id,
                 "senderName": sender.name,
                 "message": msg.message,
-                "attachments": msg.attachments_json or [],
+                "replyTo": reply_lookup.get(msg.reply_to_message_id),
+                "attachments": [] if msg.deleted_at else (msg.attachments_json or []),
+                "mentions": [] if msg.deleted_at else (msg.mentions_json or []),
                 "createdAt": msg.created_at.isoformat() if msg.created_at else None,
                 "editedAt": msg.edited_at.isoformat() if msg.edited_at else None,
+                "deletedAt": msg.deleted_at.isoformat() if msg.deleted_at else None,
+                "receipt": receipt_lookup.get(msg.id),
+                **({"reactions": [], "myReaction": None} if msg.deleted_at else reaction_lookup.get(msg.id, {"reactions": [], "myReaction": None})),
             }
             for msg, sender in rows
         ],
+    }
+
+
+@router.post("/{group_id}/messages/mark-delivered")
+async def mark_group_messages_delivered(
+    group_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    group, _ = _ensure_group_access(db, group_id, current_user.id)
+    rows = (
+        db.query(GroupChatMessage.id, GroupChatMessage.sender_id)
+        .filter(
+            GroupChatMessage.group_id == group.id,
+            GroupChatMessage.sender_id != current_user.id,
+            GroupChatMessage.deleted_at.is_(None),
+        )
+        .all()
+    )
+    message_ids = [row.id for row in rows]
+    if not message_ids:
+        return {"success": True, "markedCount": 0}
+
+    existing = {
+        row.message_id: row
+        for row in db.query(ChatMessageReadReceipt)
+        .filter(
+            ChatMessageReadReceipt.message_scope == "group",
+            ChatMessageReadReceipt.user_id == current_user.id,
+            ChatMessageReadReceipt.message_id.in_(message_ids),
+        )
+        .all()
+    }
+    now = _utcnow()
+    changed_rows = []
+    for row in rows:
+        receipt = existing.get(row.id)
+        if receipt:
+            if not receipt.delivered_at:
+                receipt.delivered_at = now
+                changed_rows.append(row)
+            continue
+        db.add(
+            ChatMessageReadReceipt(
+                message_scope="group",
+                message_id=row.id,
+                user_id=current_user.id,
+                delivered_at=now,
+            )
+        )
+        changed_rows.append(row)
+    db.commit()
+
+    for sender_id in {row.sender_id for row in changed_rows if row.sender_id != current_user.id}:
+        _notify_receipt_update(sender_id, {
+            "eventType": "message_delivery_receipt",
+            "title": f"{current_user.name} received messages in {group.name}",
+            "message": f"{current_user.name} received your group messages",
+            "metadata": {
+                "scope": "group",
+                "groupId": group.id,
+                "readerId": current_user.id,
+                "readerName": current_user.name,
+                "deliveredAt": now.isoformat(),
+            },
+        })
+
+    return {"success": True, "markedCount": len(changed_rows)}
+
+
+@router.post("/{group_id}/messages/mark-read")
+async def mark_group_messages_read(
+    group_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    group, _ = _ensure_group_access(db, group_id, current_user.id)
+    rows = (
+        db.query(GroupChatMessage.id, GroupChatMessage.sender_id)
+        .filter(
+            GroupChatMessage.group_id == group.id,
+            GroupChatMessage.sender_id != current_user.id,
+            GroupChatMessage.deleted_at.is_(None),
+        )
+        .all()
+    )
+    message_ids = [row.id for row in rows]
+    if not message_ids:
+        return {"success": True, "markedCount": 0}
+
+    existing = {
+        row.message_id: row
+        for row in db.query(ChatMessageReadReceipt)
+        .filter(
+            ChatMessageReadReceipt.message_scope == "group",
+            ChatMessageReadReceipt.user_id == current_user.id,
+            ChatMessageReadReceipt.message_id.in_(message_ids),
+        )
+        .all()
+    }
+    now = _utcnow()
+    changed_rows = []
+    for row in rows:
+        receipt = existing.get(row.id)
+        if receipt:
+            changed = False
+            if not receipt.delivered_at:
+                receipt.delivered_at = now
+                changed = True
+            if not receipt.seen_at:
+                receipt.seen_at = now
+                changed = True
+            if changed:
+                changed_rows.append(row)
+            continue
+        db.add(
+            ChatMessageReadReceipt(
+                message_scope="group",
+                message_id=row.id,
+                user_id=current_user.id,
+                delivered_at=now,
+                seen_at=now,
+            )
+        )
+        changed_rows.append(row)
+    db.commit()
+
+    affected_sender_ids = {row.sender_id for row in changed_rows if row.sender_id != current_user.id}
+    for sender_id in affected_sender_ids:
+        _notify_receipt_update(sender_id, {
+            "eventType": "message_read_receipt",
+            "title": f"{current_user.name} read messages in {group.name}",
+            "message": f"{current_user.name} read your group messages",
+            "metadata": {
+                "scope": "group",
+                "groupId": group.id,
+                "readerId": current_user.id,
+                "readerName": current_user.name,
+                "deliveredAt": now.isoformat(),
+                "seenAt": now.isoformat(),
+            },
+        })
+
+    return {"success": True, "markedCount": len(changed_rows)}
+
+
+@router.post("/{group_id}/typing")
+async def send_group_typing_indicator(
+    group_id: int,
+    payload: TypingPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    group, _ = _ensure_group_access(db, group_id, current_user.id)
+    member_ids = [
+        row.user_id
+        for row in db.query(GroupChatMember).filter(
+            GroupChatMember.group_id == group.id,
+            GroupChatMember.is_active == True,
+        ).all()
+    ]
+    ws_payload = {
+        "eventType": "chat_typing",
+        "title": "",
+        "message": "",
+        "metadata": {
+            "scope": "group",
+            "active": bool(payload.active),
+            "groupId": group.id,
+            "groupName": group.name,
+            "senderId": current_user.id,
+            "senderName": current_user.name,
+            "updatedAt": _utcnow().isoformat(),
+        },
+    }
+    for member_id in member_ids:
+        if member_id == current_user.id:
+            continue
+        try:
+            asyncio.create_task(notification_hub.push(member_id, ws_payload))
+        except RuntimeError:
+            pass
+
+    return {"success": True}
+
+
+@router.post("/{group_id}/messages/{message_id}/reaction")
+async def set_group_message_reaction(
+    group_id: int,
+    message_id: int,
+    payload: ReactionPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    group, _ = _ensure_group_access(db, group_id, current_user.id)
+    message = (
+        db.query(GroupChatMessage)
+        .filter(GroupChatMessage.id == message_id, GroupChatMessage.group_id == group.id)
+        .first()
+    )
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message.deleted_at:
+        raise HTTPException(status_code=400, detail="Deleted messages cannot be reacted to")
+
+    emoji = payload.emoji.strip()
+    if not emoji:
+        raise HTTPException(status_code=400, detail="Reaction is required")
+
+    now = _utcnow()
+    reaction = (
+        db.query(ChatMessageReaction)
+        .filter(
+            ChatMessageReaction.message_scope == "group",
+            ChatMessageReaction.message_id == message.id,
+            ChatMessageReaction.user_id == current_user.id,
+        )
+        .first()
+    )
+    if reaction:
+        reaction.emoji = emoji
+        reaction.updated_at = now
+    else:
+        db.add(ChatMessageReaction(
+            message_scope="group",
+            message_id=message.id,
+            user_id=current_user.id,
+            emoji=emoji,
+            created_at=now,
+            updated_at=now,
+        ))
+    db.commit()
+
+    reaction_data = _build_reaction_lookup(db, "group", [message.id], current_user.id).get(
+        message.id,
+        {"reactions": [], "myReaction": None},
+    )
+    member_ids = [
+        row.user_id
+        for row in db.query(GroupChatMember).filter(
+            GroupChatMember.group_id == group.id,
+            GroupChatMember.is_active == True,
+        ).all()
+    ]
+    for member_id in member_ids:
+        if member_id == current_user.id:
+            continue
+        _notify_receipt_update(member_id, {
+            "eventType": "message_reaction",
+            "title": f"{current_user.name} reacted in {group.name}",
+            "message": f"{current_user.name} reacted to a message",
+            "metadata": {
+                "scope": "group",
+                "groupId": group.id,
+                "messageId": message.id,
+                "userId": current_user.id,
+                "userName": current_user.name,
+                "emoji": emoji,
+                "removed": False,
+                "updatedAt": now.isoformat(),
+            },
+        })
+
+    return {"success": True, "data": reaction_data}
+
+
+@router.delete("/{group_id}/messages/{message_id}/reaction")
+async def remove_group_message_reaction(
+    group_id: int,
+    message_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    group, _ = _ensure_group_access(db, group_id, current_user.id)
+    message = (
+        db.query(GroupChatMessage)
+        .filter(GroupChatMessage.id == message_id, GroupChatMessage.group_id == group.id)
+        .first()
+    )
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message.deleted_at:
+        raise HTTPException(status_code=400, detail="Deleted messages cannot be reacted to")
+
+    reaction = (
+        db.query(ChatMessageReaction)
+        .filter(
+            ChatMessageReaction.message_scope == "group",
+            ChatMessageReaction.message_id == message.id,
+            ChatMessageReaction.user_id == current_user.id,
+        )
+        .first()
+    )
+    if reaction:
+        db.delete(reaction)
+        db.commit()
+
+    now = _utcnow()
+    reaction_data = _build_reaction_lookup(db, "group", [message.id], current_user.id).get(
+        message.id,
+        {"reactions": [], "myReaction": None},
+    )
+    member_ids = [
+        row.user_id
+        for row in db.query(GroupChatMember).filter(
+            GroupChatMember.group_id == group.id,
+            GroupChatMember.is_active == True,
+        ).all()
+    ]
+    for member_id in member_ids:
+        if member_id == current_user.id:
+            continue
+        _notify_receipt_update(member_id, {
+            "eventType": "message_reaction",
+            "title": f"{current_user.name} updated a reaction in {group.name}",
+            "message": f"{current_user.name} updated a reaction",
+            "metadata": {
+                "scope": "group",
+                "groupId": group.id,
+                "messageId": message.id,
+                "userId": current_user.id,
+                "userName": current_user.name,
+                "removed": True,
+                "updatedAt": now.isoformat(),
+            },
+        })
+
+    return {"success": True, "data": reaction_data}
+
+
+@router.patch("/{group_id}/messages/{message_id}")
+async def edit_group_message(
+    group_id: int,
+    message_id: int,
+    payload: MessageEditPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    group, _ = _ensure_group_access(db, group_id, current_user.id)
+    message = (
+        db.query(GroupChatMessage)
+        .filter(GroupChatMessage.id == message_id, GroupChatMessage.group_id == group.id)
+        .first()
+    )
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message.sender_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only edit your own messages")
+    if message.deleted_at:
+        raise HTTPException(status_code=400, detail="Deleted messages cannot be edited")
+
+    text = payload.message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    member_rows = (
+        db.query(GroupChatMember, User)
+        .join(User, User.id == GroupChatMember.user_id)
+        .filter(
+            GroupChatMember.group_id == group.id,
+            GroupChatMember.is_active == True,
+            User.is_active == True,
+            User.is_deleted == False,
+        )
+        .all()
+    )
+    mention_tokens = _extract_mention_tokens(text)
+    mentioned_users = [
+        member_user
+        for _member, member_user in member_rows
+        if member_user.id != current_user.id and mention_tokens.intersection(_build_user_mention_tokens(member_user))
+    ]
+    mentions = _serialize_group_mentions(mentioned_users)
+    mentioned_user_ids = {user.id for user in mentioned_users}
+
+    now = _utcnow()
+    message.message = text
+    message.mentions_json = mentions
+    message.edited_at = now
+    db.commit()
+    db.refresh(message)
+
+    member_ids = [member.user_id for member, _user in member_rows]
+    for member_id in member_ids:
+        if member_id == current_user.id:
+            continue
+        _notify_receipt_update(member_id, {
+            "eventType": "message_updated",
+            "title": f"{current_user.name} edited a message in {group.name}",
+            "message": f"{current_user.name} edited a message",
+            "metadata": {
+                "scope": "group",
+                "groupId": group.id,
+                "messageId": message.id,
+                "senderId": current_user.id,
+                "messageText": message.message,
+                "mentions": mentions,
+                "mentionIds": sorted(mentioned_user_ids),
+                "editedAt": message.edited_at.isoformat() if message.edited_at else None,
+            },
+        })
+
+    return {
+        "success": True,
+        "data": {
+            "id": message.id,
+            "message": message.message,
+            "mentions": message.mentions_json or [],
+            "editedAt": message.edited_at.isoformat() if message.edited_at else None,
+            "deletedAt": None,
+        },
+    }
+
+
+@router.delete("/{group_id}/messages/{message_id}")
+async def delete_group_message(
+    group_id: int,
+    message_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    group, _ = _ensure_group_access(db, group_id, current_user.id)
+    message = (
+        db.query(GroupChatMessage)
+        .filter(GroupChatMessage.id == message_id, GroupChatMessage.group_id == group.id)
+        .first()
+    )
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message.sender_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only delete your own messages")
+
+    now = _utcnow()
+    if not message.deleted_at:
+        message.message = ""
+        message.attachments_json = []
+        message.mentions_json = []
+        message.deleted_at = now
+        message.edited_at = None
+        db.query(ChatMessageReaction).filter(
+            ChatMessageReaction.message_scope == "group",
+            ChatMessageReaction.message_id == message.id,
+        ).delete(synchronize_session=False)
+        db.commit()
+        db.refresh(message)
+
+    member_ids = [
+        row.user_id
+        for row in db.query(GroupChatMember).filter(
+            GroupChatMember.group_id == group.id,
+            GroupChatMember.is_active == True,
+        ).all()
+    ]
+    for member_id in member_ids:
+        if member_id == current_user.id:
+            continue
+        _notify_receipt_update(member_id, {
+            "eventType": "message_deleted",
+            "title": f"{current_user.name} deleted a message in {group.name}",
+            "message": f"{current_user.name} deleted a message",
+            "metadata": {
+                "scope": "group",
+                "groupId": group.id,
+                "messageId": message.id,
+                "senderId": current_user.id,
+                "deletedAt": message.deleted_at.isoformat() if message.deleted_at else now.isoformat(),
+            },
+        })
+
+    return {
+        "success": True,
+        "data": {
+            "id": message.id,
+            "message": "",
+            "attachments": [],
+            "editedAt": None,
+            "deletedAt": message.deleted_at.isoformat() if message.deleted_at else now.isoformat(),
+            "reactions": [],
+            "myReaction": None,
+        },
     }
 
 
@@ -421,13 +1292,52 @@ async def send_group_message(
     attachments = _normalize_group_message_attachments(payload.attachments)
     if not text and not attachments:
         raise HTTPException(status_code=400, detail="Message or attachment is required")
+    reply_row = None
+    if payload.reply_to_message_id:
+        reply_row = (
+            db.query(GroupChatMessage, User)
+            .join(User, User.id == GroupChatMessage.sender_id)
+            .filter(
+                GroupChatMessage.id == payload.reply_to_message_id,
+                GroupChatMessage.group_id == group.id,
+            )
+            .first()
+        )
+        if not reply_row:
+            raise HTTPException(status_code=404, detail="Reply target message not found")
+
+    member_rows = (
+        db.query(GroupChatMember, User)
+        .join(User, User.id == GroupChatMember.user_id)
+        .filter(
+            GroupChatMember.group_id == group.id,
+            GroupChatMember.is_active == True,
+            User.is_active == True,
+            User.is_deleted == False,
+        )
+        .all()
+    )
+    mention_id_candidates = {int(user_id) for user_id in (payload.mention_ids or []) if user_id}
+    mention_tokens = _extract_mention_tokens(text)
+    mentioned_users = []
+    for _member, member_user in member_rows:
+        if member_user.id == current_user.id:
+            continue
+        is_payload_match = member_user.id in mention_id_candidates
+        is_text_match = bool(mention_tokens.intersection(_build_user_mention_tokens(member_user)))
+        if is_payload_match or is_text_match:
+            mentioned_users.append(member_user)
+    mentions = _serialize_group_mentions(mentioned_users)
+    mentioned_user_ids = {user.id for user in mentioned_users}
 
     now = _utcnow()
     msg = GroupChatMessage(
         group_id=group.id,
         sender_id=current_user.id,
+        reply_to_message_id=payload.reply_to_message_id,
         message=text,
         attachments_json=attachments,
+        mentions_json=mentions,
         created_at=now,
     )
     group.last_message_at = now
@@ -437,13 +1347,7 @@ async def send_group_message(
     db.refresh(msg)
 
     # Push realtime event to active group members via shared notifications socket.
-    member_ids = [
-        row.user_id
-        for row in db.query(GroupChatMember).filter(
-            GroupChatMember.group_id == group.id,
-            GroupChatMember.is_active == True,
-        ).all()
-    ]
+    member_ids = [member.user_id for member, _user in member_rows]
     ws_payload = {
         "eventType": "group_message",
         "title": f"New message in {group.name}",
@@ -456,15 +1360,30 @@ async def send_group_message(
             "senderId": current_user.id,
             "senderName": current_user.name,
             "messageText": text,
+            "replyTo": _serialize_group_reply_preview(*reply_row) if reply_row else None,
             "attachmentCount": len(attachments),
+            "mentions": mentions,
+            "mentionIds": sorted(mentioned_user_ids),
             "createdAt": msg.created_at.isoformat() if msg.created_at else None,
         },
     }
     for member_id in member_ids:
         if member_id == current_user.id:
             continue
+        member_payload = ws_payload
+        if member_id in mentioned_user_ids:
+            member_payload = {
+                **ws_payload,
+                "title": f"{current_user.name} mentioned you in {group.name}",
+                "message": (text or "You were mentioned in a group message")[:180],
+                "metadata": {
+                    **ws_payload["metadata"],
+                    "mentionedUserId": member_id,
+                    "isMention": True,
+                },
+            }
         try:
-            asyncio.create_task(notification_hub.push(member_id, ws_payload))
+            asyncio.create_task(notification_hub.push(member_id, member_payload))
         except RuntimeError:
             # If event loop scheduling is unavailable, skip realtime push gracefully.
             pass
@@ -477,8 +1396,11 @@ async def send_group_message(
             "senderId": msg.sender_id,
             "senderName": current_user.name,
             "message": msg.message,
+            "replyTo": _serialize_group_reply_preview(*reply_row) if reply_row else None,
             "attachments": msg.attachments_json or [],
+            "mentions": msg.mentions_json or [],
             "createdAt": msg.created_at.isoformat() if msg.created_at else None,
             "editedAt": msg.edited_at.isoformat() if msg.edited_at else None,
+            "deletedAt": msg.deleted_at.isoformat() if msg.deleted_at else None,
         },
     }

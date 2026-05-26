@@ -49,9 +49,19 @@ export function useSendGroupMessage(
         senderId: user?.id ?? null,
         senderName: user?.name || 'You',
         message: payload?.message || '',
+        replyTo: payload?.replyTo || null,
         attachments: Array.isArray(payload?.attachments) ? payload.attachments : [],
+        mentions: Array.isArray(payload?.mentions) ? payload.mentions : [],
         createdAt: new Date().toISOString(),
         editedAt: null,
+        receipt: {
+          status: 'sending',
+          totalRecipientCount: 0,
+          deliveredCount: 0,
+          deliveredBy: [],
+          readCount: 0,
+          readBy: [],
+        },
         isOptimistic: true,
       };
 

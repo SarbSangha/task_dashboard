@@ -737,10 +737,13 @@ class GroupChatMessage(Base):
     id = Column(Integer, primary_key=True)
     group_id = Column(Integer, ForeignKey("group_chats.id"), nullable=False, index=True)
     sender_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    reply_to_message_id = Column(Integer, ForeignKey("group_chat_messages.id"), index=True)
     message = Column(Text, nullable=False)
     attachments_json = Column(JSON)
+    mentions_json = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     edited_at = Column(DateTime)
+    deleted_at = Column(DateTime, index=True)
 
 
 class DirectMessage(Base):
@@ -749,10 +752,45 @@ class DirectMessage(Base):
     id = Column(Integer, primary_key=True)
     sender_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     recipient_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    reply_to_message_id = Column(Integer, ForeignKey("direct_messages.id"), index=True)
     message = Column(Text, nullable=False)
     attachments_json = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     edited_at = Column(DateTime)
+    deleted_at = Column(DateTime, index=True)
+
+
+class ChatMessageReadReceipt(Base):
+    __tablename__ = "chat_message_read_receipts"
+    __table_args__ = (
+        UniqueConstraint("message_scope", "message_id", "user_id", name="ux_chat_message_read_receipts_scope_message_user"),
+        Index("ix_chat_message_read_receipts_scope_message", "message_scope", "message_id"),
+        Index("ix_chat_message_read_receipts_user_scope", "user_id", "message_scope"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    message_scope = Column(String(20), nullable=False, index=True)
+    message_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    delivered_at = Column(DateTime, index=True)
+    seen_at = Column(DateTime, index=True)
+
+
+class ChatMessageReaction(Base):
+    __tablename__ = "chat_message_reactions"
+    __table_args__ = (
+        UniqueConstraint("message_scope", "message_id", "user_id", name="ux_chat_message_reactions_scope_message_user"),
+        Index("ix_chat_message_reactions_scope_message", "message_scope", "message_id"),
+        Index("ix_chat_message_reactions_user_scope", "user_id", "message_scope"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    message_scope = Column(String(20), nullable=False, index=True)
+    message_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    emoji = Column(String(32), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
 
 # ==================== ARCHIVE DATABASE MODELS ====================

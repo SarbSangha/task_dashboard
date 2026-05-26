@@ -11,34 +11,6 @@ import {
 const MESSAGE_BADGE_CACHE_TTL_MS = 90 * 1000;
 const INITIAL_MESSAGE_FETCH_DELAY_MS = 3000;
 
-const getMessageSeenStorageKey = (userId) => `rmw_message_system_last_seen_${userId}`;
-
-const parseTimestamp = (value) => {
-  if (!value) return 0;
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) ? timestamp : 0;
-};
-
-const ensureLastSeenTimestamp = (userId) => {
-  if (!userId || typeof window === 'undefined') return Date.now();
-  const storageKey = getMessageSeenStorageKey(userId);
-  const existingValue = window.localStorage.getItem(storageKey);
-  if (existingValue) {
-    const parsed = Number(existingValue);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return 0;
-};
-
-const markMessageSystemSeen = (userId) => {
-  if (!userId || typeof window === 'undefined') return Date.now();
-  const now = Date.now();
-  window.localStorage.setItem(getMessageSeenStorageKey(userId), `${now}`);
-  return now;
-};
-
 const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
   const { user } = useAuth();
   const [unseenCount, setUnseenCount] = useState(0);
@@ -65,8 +37,6 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
       setUnseenCount(cachedBadge.unseenCount);
     }
 
-    ensureLastSeenTimestamp(user.id);
-
     const scheduleRefresh = () => {
       if (refreshTimerRef.current) return;
       refreshTimerRef.current = window.setTimeout(() => {
@@ -76,7 +46,7 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
     };
 
     if (isOpen) {
-      clearUnseenCount();
+      fetchUnseenCount();
     } else {
       const initialTimer = window.setTimeout(() => {
         if (document.visibilityState !== 'visible') return;
@@ -87,9 +57,18 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
         onMessage: (payload) => {
           if (!payload) return;
           const eventType = `${payload.eventType || ''}`.toLowerCase();
-          if (eventType !== 'group_message' && eventType !== 'direct_message') return;
+          if (
+            eventType !== 'group_message' &&
+            eventType !== 'direct_message' &&
+            eventType !== 'message_read_receipt'
+          ) return;
           if (isOpen) {
-            clearUnseenCount();
+            scheduleRefresh();
+            return;
+          }
+
+          if (eventType === 'message_read_receipt') {
+            scheduleRefresh();
             return;
           }
 
@@ -141,8 +120,12 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
       onMessage: (payload) => {
         if (!payload) return;
         const eventType = `${payload.eventType || ''}`.toLowerCase();
-        if (eventType !== 'group_message' && eventType !== 'direct_message') return;
-        clearUnseenCount();
+        if (
+          eventType !== 'group_message' &&
+          eventType !== 'direct_message' &&
+          eventType !== 'message_read_receipt'
+        ) return;
+        scheduleRefresh();
       },
     });
 
@@ -157,44 +140,26 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
 
   useEffect(() => {
     if (!user?.id || !isOpen) return;
-    clearUnseenCount();
+    fetchUnseenCount();
   }, [isOpen, user?.id]);
-
-  const clearUnseenCount = () => {
-    if (!user?.id) return;
-    unseenGroupIdsRef.current = new Set();
-    unseenSenderIdsRef.current = new Set();
-    setsHydratedRef.current = true;
-    markMessageSystemSeen(user.id);
-    setUnseenCount(0);
-    if (badgeCacheKey) {
-      setTaskPanelCache(badgeCacheKey, { unseenCount: 0 });
-    }
-  };
 
   const fetchUnseenCount = async () => {
     if (!user?.id || !badgeCacheKey || inFlightRef.current) return;
     inFlightRef.current = true;
     try {
-      const seenAt = ensureLastSeenTimestamp(user.id);
-      const [groupsResponse, directResponse] = await Promise.all([
-        groupAPI.listGroups(),
-        directMessageAPI.listConversations(),
+      const [groupUnreadResponse, directUnreadResponse] = await Promise.all([
+        groupAPI.listUnreadCounts(),
+        directMessageAPI.listUnreadCounts(),
       ]);
 
       const unseenGroupIds = new Set(
-        (groupsResponse?.data || [])
-          .filter((group) => parseTimestamp(group?.lastMessageAt) > seenAt)
-          .map((group) => group?.id)
+        (groupUnreadResponse?.data?.groups || [])
+          .map((group) => group?.groupId)
           .filter(Boolean)
       );
       const unseenSenderIds = new Set(
-        (directResponse?.data || [])
-          .filter((conversation) => {
-            const lastMessageAt = parseTimestamp(conversation?.lastMessageAt);
-            return lastMessageAt > seenAt && conversation?.lastMessageSenderId !== user.id;
-          })
-          .map((conversation) => conversation?.user?.id)
+        (directUnreadResponse?.data?.conversations || [])
+          .map((conversation) => conversation?.userId)
           .filter(Boolean)
       );
 
@@ -202,7 +167,9 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
       unseenSenderIdsRef.current = unseenSenderIds;
       setsHydratedRef.current = true;
 
-      const nextCount = unseenGroupIds.size + unseenSenderIds.size;
+      const nextCount =
+        Number(groupUnreadResponse?.data?.totalUnreadThreads || 0) +
+        Number(directUnreadResponse?.data?.totalUnreadThreads || 0);
       setUnseenCount(nextCount);
       setTaskPanelCache(badgeCacheKey, { unseenCount: nextCount });
     } catch (error) {
@@ -213,8 +180,8 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
   };
 
   const handleClick = () => {
-    clearUnseenCount();
     onClick?.();
+    fetchUnseenCount();
   };
 
   return (

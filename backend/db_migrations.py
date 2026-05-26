@@ -253,6 +253,11 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "linked_credential_id", "INTEGER")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "login_method", "VARCHAR(40) DEFAULT 'email_password'")
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
+    _pg_add_column_if_missing(conn, "group_chat_messages", "mentions_json", "JSON")
+    _pg_add_column_if_missing(conn, "group_chat_messages", "deleted_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "group_chat_messages", "reply_to_message_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "direct_messages", "deleted_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "direct_messages", "reply_to_message_id", "INTEGER")
     _pg_add_column_if_missing(conn, "task_comments", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "tasks", "workflow_enabled", "BOOLEAN DEFAULT FALSE")
     _pg_add_column_if_missing(conn, "tasks", "workflow_status", "VARCHAR")
@@ -365,6 +370,67 @@ def _ensure_postgres_schema(conn) -> None:
             """
         )
     )
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS chat_message_read_receipts (
+                id SERIAL PRIMARY KEY,
+                message_scope VARCHAR(20) NOT NULL,
+                message_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                delivered_at TIMESTAMP,
+                seen_at TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_message_read_receipts_scope_message_user
+            ON chat_message_read_receipts(message_scope, message_id, user_id)
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_chat_message_read_receipts_scope_message
+            ON chat_message_read_receipts(message_scope, message_id)
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_chat_message_read_receipts_user_scope
+            ON chat_message_read_receipts(user_id, message_scope)
+            """
+        )
+    )
+    _pg_add_column_if_missing(conn, "chat_message_read_receipts", "delivered_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "chat_message_read_receipts", "seen_at", "TIMESTAMP")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_read_receipts_delivered_at ON chat_message_read_receipts(delivered_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_read_receipts_seen_at ON chat_message_read_receipts(seen_at)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS chat_message_reactions (
+                id SERIAL PRIMARY KEY,
+                message_scope VARCHAR(20) NOT NULL,
+                message_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                emoji VARCHAR(32) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_message_reactions_scope_message_user ON chat_message_reactions(message_scope, message_id, user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_scope_message ON chat_message_reactions(message_scope, message_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_user_scope ON chat_message_reactions(user_id, message_scope)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_emoji ON chat_message_reactions(emoji)"))
     conn.execute(
         text(
             """
@@ -804,22 +870,32 @@ def ensure_operational_schema(engine) -> None:
                     id INTEGER PRIMARY KEY,
                     group_id INTEGER NOT NULL,
                     sender_id INTEGER NOT NULL,
+                    reply_to_message_id INTEGER,
                     message TEXT NOT NULL,
                     created_at DATETIME,
                     edited_at DATETIME,
+                    deleted_at DATETIME,
                     FOREIGN KEY(group_id) REFERENCES group_chats (id),
-                    FOREIGN KEY(sender_id) REFERENCES users (id)
+                    FOREIGN KEY(sender_id) REFERENCES users (id),
+                    FOREIGN KEY(reply_to_message_id) REFERENCES group_chat_messages (id)
                 )
                 """
             )
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_group_chat_messages_group_id ON group_chat_messages(group_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_group_chat_messages_sender_id ON group_chat_messages(sender_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_group_chat_messages_reply_to_message_id ON group_chat_messages(reply_to_message_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_group_chat_messages_created_at ON group_chat_messages(created_at)"))
         if _table_exists(conn, "group_chat_messages"):
             cols = _table_columns(conn, "group_chat_messages")
             if "attachments_json" not in cols:
                 conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN attachments_json JSON"))
+            if "mentions_json" not in cols:
+                conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN mentions_json JSON"))
+            if "deleted_at" not in cols:
+                conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN deleted_at DATETIME"))
+            if "reply_to_message_id" not in cols:
+                conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN reply_to_message_id INTEGER"))
 
         conn.execute(
             text(
@@ -828,17 +904,21 @@ def ensure_operational_schema(engine) -> None:
                     id INTEGER PRIMARY KEY,
                     sender_id INTEGER NOT NULL,
                     recipient_id INTEGER NOT NULL,
+                    reply_to_message_id INTEGER,
                     message TEXT NOT NULL,
                     created_at DATETIME,
                     edited_at DATETIME,
+                    deleted_at DATETIME,
                     FOREIGN KEY(sender_id) REFERENCES users (id),
-                    FOREIGN KEY(recipient_id) REFERENCES users (id)
+                    FOREIGN KEY(recipient_id) REFERENCES users (id),
+                    FOREIGN KEY(reply_to_message_id) REFERENCES direct_messages (id)
                 )
                 """
             )
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_sender_id ON direct_messages(sender_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_recipient_id ON direct_messages(recipient_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_reply_to_message_id ON direct_messages(reply_to_message_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_created_at ON direct_messages(created_at)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_sender_created ON direct_messages(sender_id, created_at DESC, id DESC)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_recipient_created ON direct_messages(recipient_id, created_at DESC, id DESC)"))
@@ -846,6 +926,58 @@ def ensure_operational_schema(engine) -> None:
             cols = _table_columns(conn, "direct_messages")
             if "attachments_json" not in cols:
                 conn.execute(text("ALTER TABLE direct_messages ADD COLUMN attachments_json JSON"))
+            if "deleted_at" not in cols:
+                conn.execute(text("ALTER TABLE direct_messages ADD COLUMN deleted_at DATETIME"))
+            if "reply_to_message_id" not in cols:
+                conn.execute(text("ALTER TABLE direct_messages ADD COLUMN reply_to_message_id INTEGER"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS chat_message_read_receipts (
+                    id INTEGER PRIMARY KEY,
+                    message_scope VARCHAR(20) NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    delivered_at DATETIME,
+                    seen_at DATETIME,
+                    FOREIGN KEY(user_id) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_message_read_receipts_scope_message_user ON chat_message_read_receipts(message_scope, message_id, user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_read_receipts_scope_message ON chat_message_read_receipts(message_scope, message_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_read_receipts_user_scope ON chat_message_read_receipts(user_id, message_scope)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_read_receipts_delivered_at ON chat_message_read_receipts(delivered_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_read_receipts_seen_at ON chat_message_read_receipts(seen_at)"))
+        if _table_exists(conn, "chat_message_read_receipts"):
+            cols = _table_columns(conn, "chat_message_read_receipts")
+            if "delivered_at" not in cols:
+                conn.execute(text("ALTER TABLE chat_message_read_receipts ADD COLUMN delivered_at DATETIME"))
+            if "seen_at" not in cols:
+                conn.execute(text("ALTER TABLE chat_message_read_receipts ADD COLUMN seen_at DATETIME"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS chat_message_reactions (
+                    id INTEGER PRIMARY KEY,
+                    message_scope VARCHAR(20) NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    emoji VARCHAR(32) NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_message_reactions_scope_message_user ON chat_message_reactions(message_scope, message_id, user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_scope_message ON chat_message_reactions(message_scope, message_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_user_scope ON chat_message_reactions(user_id, message_scope)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_emoji ON chat_message_reactions(emoji)"))
 
         if _table_exists(conn, "it_portal_tool_credentials"):
             credential_cols = _table_columns(conn, "it_portal_tool_credentials")

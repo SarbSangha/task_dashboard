@@ -1024,6 +1024,13 @@ export const groupAPI = {
     return response.data;
   },
 
+  listUnreadCounts: async () => {
+    const response = await api.get('/api/groups/unread-counts', {
+      timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+    });
+    return response.data;
+  },
+
   createGroup: async (name, memberIds = []) => {
     const response = await api.post('/api/groups', {
       name,
@@ -1061,6 +1068,43 @@ export const groupAPI = {
     const response = await api.post(`/api/groups/${groupId}/messages`, payload);
     return response.data;
   },
+
+  editMessage: async (groupId, messageId, message) => {
+    const response = await api.patch(`/api/groups/${groupId}/messages/${messageId}`, { message });
+    return response.data;
+  },
+
+  deleteMessage: async (groupId, messageId) => {
+    const response = await api.delete(`/api/groups/${groupId}/messages/${messageId}`);
+    return response.data;
+  },
+
+  markMessagesDelivered: async (groupId) => {
+    const response = await api.post(`/api/groups/${groupId}/messages/mark-delivered`);
+    return response.data;
+  },
+
+  markMessagesRead: async (groupId) => {
+    const response = await api.post(`/api/groups/${groupId}/messages/mark-read`);
+    return response.data;
+  },
+
+  sendTyping: async (groupId, active = true) => {
+    const response = await api.post(`/api/groups/${groupId}/typing`, { active }, {
+      timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+    });
+    return response.data;
+  },
+
+  setReaction: async (groupId, messageId, emoji) => {
+    const response = await api.post(`/api/groups/${groupId}/messages/${messageId}/reaction`, { emoji });
+    return response.data;
+  },
+
+  removeReaction: async (groupId, messageId) => {
+    const response = await api.delete(`/api/groups/${groupId}/messages/${messageId}/reaction`);
+    return response.data;
+  },
 };
 
 export const directMessageAPI = {
@@ -1074,6 +1118,13 @@ export const directMessageAPI = {
     return response.data;
   },
 
+  listUnreadCounts: async () => {
+    const response = await api.get('/api/direct-messages/unread-counts', {
+      timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+    });
+    return response.data;
+  },
+
   listMessages: async (userId) => {
     const response = await api.get(`/api/direct-messages/conversations/${userId}/messages`);
     return response.data;
@@ -1084,6 +1135,43 @@ export const directMessageAPI = {
       ? messageOrPayload
       : { message: messageOrPayload };
     const response = await api.post(`/api/direct-messages/conversations/${userId}/messages`, payload);
+    return response.data;
+  },
+
+  editMessage: async (userId, messageId, message) => {
+    const response = await api.patch(`/api/direct-messages/conversations/${userId}/messages/${messageId}`, { message });
+    return response.data;
+  },
+
+  deleteMessage: async (userId, messageId) => {
+    const response = await api.delete(`/api/direct-messages/conversations/${userId}/messages/${messageId}`);
+    return response.data;
+  },
+
+  markMessagesDelivered: async (userId) => {
+    const response = await api.post(`/api/direct-messages/conversations/${userId}/messages/mark-delivered`);
+    return response.data;
+  },
+
+  markMessagesRead: async (userId) => {
+    const response = await api.post(`/api/direct-messages/conversations/${userId}/messages/mark-read`);
+    return response.data;
+  },
+
+  sendTyping: async (userId, active = true) => {
+    const response = await api.post(`/api/direct-messages/conversations/${userId}/typing`, { active }, {
+      timeout: BACKGROUND_REQUEST_TIMEOUT_MS,
+    });
+    return response.data;
+  },
+
+  setReaction: async (userId, messageId, emoji) => {
+    const response = await api.post(`/api/direct-messages/conversations/${userId}/messages/${messageId}/reaction`, { emoji });
+    return response.data;
+  },
+
+  removeReaction: async (userId, messageId) => {
+    const response = await api.delete(`/api/direct-messages/conversations/${userId}/messages/${messageId}/reaction`);
     return response.data;
   },
 };

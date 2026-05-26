@@ -162,6 +162,43 @@ function formatTaskDate(value) {
   return formatDateIndia(value);
 }
 
+function formatTaskPersonList(people = []) {
+  const names = people
+    .map((person) => `${person?.name || ''}`.trim())
+    .filter(Boolean);
+
+  if (names.length === 0) return '';
+  if (names.length <= 2) return names.join(', ');
+  return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+}
+
+function getOutboxRecipientName(task, memberId) {
+  const assignedPeople = Array.isArray(task?.assignedTo) ? task.assignedTo : [];
+  const selectedMemberIsCreator = isSameUserId(task?.creatorId, memberId);
+  const selectedMemberSubmitted = isSameUserId(task?.submittedBy, memberId);
+
+  if (selectedMemberIsCreator) {
+    const assignedNames = formatTaskPersonList(assignedPeople);
+    if (assignedNames) return assignedNames;
+  }
+
+  if (selectedMemberSubmitted && !selectedMemberIsCreator) {
+    const creatorName = `${task?.creator?.name || ''}`.trim();
+    if (creatorName) return creatorName;
+  }
+
+  const latestForward = Array.isArray(task?.forwardHistory)
+    ? [...task.forwardHistory].reverse().find((entry) => entry?.toUser || entry?.toDepartment) || null
+    : null;
+
+  return (
+    formatTaskPersonList(assignedPeople) ||
+    `${latestForward?.toUser || ''}`.trim() ||
+    `${task?.toDepartment || ''}`.trim() ||
+    'N/A'
+  );
+}
+
 function formatAttachmentName(item, index = 0) {
   if (typeof item === 'string') {
     const cleanValue = item.split('?')[0];
@@ -906,7 +943,7 @@ export default function CompanyMemberPreview({
                   scrollable
                   actionMenuBuilder={buildTrackingTaskActions}
                   metaBuilder={(task) => [
-                    { label: 'To', value: task.toDepartment || 'N/A' },
+                    { label: 'To', value: getOutboxRecipientName(task, normalizedMember.id) },
                     { label: 'Workflow', value: formatTaskStatus(task.workflowStage || task.status) },
                     { label: 'Updated', value: formatTaskDate(task.updatedAt || task.createdAt) },
                   ]}
