@@ -2010,11 +2010,6 @@
   transition: opacity 0.16s ease, max-height 0.16s ease;
 }
 
-.message-edit-actions.mine {
-  opacity: 1;
-  max-height: 24px;
-}
-
 .group-message-bubble:hover .message-edit-actions,
 .group-message-bubble:focus-within .message-edit-actions {
   opacity: 1;
