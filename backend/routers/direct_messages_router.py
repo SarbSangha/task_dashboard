@@ -12,6 +12,7 @@ from database_config import get_operational_db
 from models_new import ActivityStatus, ChatMessageReaction, ChatMessageReadReceipt, DirectMessage, User, UserActivity
 from routers.auth_router import get_current_user
 from routers.tasks_router import notification_hub
+from utils.datetime_utils import normalize_to_utc_naive, utcnow_naive
 
 
 router = APIRouter(prefix="/api/direct-messages", tags=["Direct Messages"])
@@ -38,7 +39,7 @@ class ReactionPayload(BaseModel):
 
 
 def _utcnow() -> datetime:
-    return datetime.utcnow()
+    return utcnow_naive()
 
 
 def _normalize_attachments(items: list[dict]) -> list[dict]:
@@ -73,8 +74,8 @@ def _serialize_presence(activity: Optional[UserActivity], now: Optional[datetime
     if not activity:
         return _default_presence()
 
-    current_time = now or _utcnow()
-    last_seen = activity.last_seen
+    current_time = normalize_to_utc_naive(now) or _utcnow()
+    last_seen = normalize_to_utc_naive(activity.last_seen)
     is_recent = bool(last_seen and last_seen >= current_time - timedelta(seconds=PRESENCE_STALE_SECONDS))
     status = activity.status.value if hasattr(activity.status, "value") else activity.status
     status = status or ActivityStatus.OFFLINE.value
