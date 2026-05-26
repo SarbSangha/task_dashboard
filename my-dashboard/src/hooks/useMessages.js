@@ -52,6 +52,7 @@ export function useSendGroupMessage(
         replyTo: payload?.replyTo || null,
         attachments: Array.isArray(payload?.attachments) ? payload.attachments : [],
         mentions: Array.isArray(payload?.mentions) ? payload.mentions : [],
+        forwardMetadata: payload?.forward_metadata || payload?.forwardMetadata || null,
         createdAt: new Date().toISOString(),
         editedAt: null,
         receipt: {
@@ -68,7 +69,7 @@ export function useSendGroupMessage(
       queryClient.setQueryData(messagesKey, (old = []) => [...old, optimisticMessage]);
       onOptimisticMessage?.(optimisticMessage);
 
-      return { previous, tempId };
+      return { previous, tempId, optimisticMessage };
     },
     onError: (error, payload, context) => {
       queryClient.setQueryData(messagesKey, context?.previous);

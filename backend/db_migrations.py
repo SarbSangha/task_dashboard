@@ -254,10 +254,12 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "login_method", "VARCHAR(40) DEFAULT 'email_password'")
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "group_chat_messages", "mentions_json", "JSON")
+    _pg_add_column_if_missing(conn, "group_chat_messages", "forward_metadata_json", "JSON")
     _pg_add_column_if_missing(conn, "group_chat_messages", "deleted_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "group_chat_messages", "reply_to_message_id", "INTEGER")
     _pg_add_column_if_missing(conn, "direct_messages", "deleted_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "direct_messages", "reply_to_message_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "direct_messages", "forward_metadata_json", "JSON")
     _pg_add_column_if_missing(conn, "task_comments", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "tasks", "workflow_enabled", "BOOLEAN DEFAULT FALSE")
     _pg_add_column_if_missing(conn, "tasks", "workflow_status", "VARCHAR")
@@ -892,6 +894,8 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN attachments_json JSON"))
             if "mentions_json" not in cols:
                 conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN mentions_json JSON"))
+            if "forward_metadata_json" not in cols:
+                conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN forward_metadata_json JSON"))
             if "deleted_at" not in cols:
                 conn.execute(text("ALTER TABLE group_chat_messages ADD COLUMN deleted_at DATETIME"))
             if "reply_to_message_id" not in cols:
@@ -930,6 +934,8 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE direct_messages ADD COLUMN deleted_at DATETIME"))
             if "reply_to_message_id" not in cols:
                 conn.execute(text("ALTER TABLE direct_messages ADD COLUMN reply_to_message_id INTEGER"))
+            if "forward_metadata_json" not in cols:
+                conn.execute(text("ALTER TABLE direct_messages ADD COLUMN forward_metadata_json JSON"))
 
         conn.execute(
             text(

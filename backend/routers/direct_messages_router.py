@@ -22,6 +22,7 @@ class DirectMessagePayload(BaseModel):
     message: str = Field(default="", max_length=5000)
     attachments: list[dict] = Field(default_factory=list)
     reply_to_message_id: Optional[int] = Field(default=None, ge=1)
+    forward_metadata: Optional[dict] = None
 
 
 class MessageEditPayload(BaseModel):
@@ -220,6 +221,7 @@ def _serialize_direct_message(
         "message": message.message,
         "replyTo": reply_to,
         "attachments": [] if message.deleted_at else (message.attachments_json or []),
+        "forwardMetadata": None if message.deleted_at else (message.forward_metadata_json or None),
         "createdAt": message.created_at.isoformat() if message.created_at else None,
         "editedAt": message.edited_at.isoformat() if message.edited_at else None,
         "deletedAt": message.deleted_at.isoformat() if message.deleted_at else None,
@@ -909,6 +911,7 @@ async def delete_direct_message(
     if not message.deleted_at:
         message.message = ""
         message.attachments_json = []
+        message.forward_metadata_json = None
         message.deleted_at = now
         message.edited_at = None
         db.query(ChatMessageReaction).filter(
@@ -984,6 +987,7 @@ async def send_direct_message(
         reply_to_message_id=payload.reply_to_message_id,
         message=text,
         attachments_json=attachments,
+        forward_metadata_json=payload.forward_metadata or None,
         created_at=now,
     )
     db.add(message)
@@ -1003,6 +1007,7 @@ async def send_direct_message(
             "messageText": text,
             "replyTo": _serialize_direct_reply_preview(*reply_row) if reply_row else None,
             "attachmentCount": len(attachments),
+            "forwardMetadata": message.forward_metadata_json or None,
             "createdAt": message.created_at.isoformat() if message.created_at else None,
         },
     }

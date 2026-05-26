@@ -162,10 +162,12 @@ const VirtualMessageRow = React.memo(function VirtualMessageRow({
   items,
   mode,
   onDeleteMessage,
+  onDiscardFailedMessage,
   onEditMessage,
   onOpenReceiptDetails,
   onReactToMessage,
   onReplyToMessage,
+  onRetryFailedMessage,
   selectedIds,
   style,
   toggleMessageSelection,
@@ -192,9 +194,10 @@ const VirtualMessageRow = React.memo(function VirtualMessageRow({
   }
 
   const message = item.message;
-  const mine = message.senderId === currentUserId;
+  const mine = Number(message.senderId) === Number(currentUserId);
   const isSelected = selectedIds.includes(message.id);
   const isDeleted = Boolean(message.deletedAt);
+  const isFailed = Boolean(message.failed);
 
   return (
     <div {...ariaAttributes} style={style} className="group-chat-virtual-row">
@@ -224,7 +227,7 @@ const VirtualMessageRow = React.memo(function VirtualMessageRow({
           </div>
         )}
         <div className={`group-message-bubble ${mine ? 'mine' : 'theirs'} ${message.isOptimistic ? 'optimistic' : ''}`}>
-          {!message.isOptimistic && !isDeleted && !isSelectionActive && (
+          {!message.isOptimistic && !isFailed && !isDeleted && !isSelectionActive && (
             <div className="message-reaction-picker" onClick={(event) => event.stopPropagation()}>
               {QUICK_REACTIONS.map((emoji) => (
                 <button
@@ -240,6 +243,12 @@ const VirtualMessageRow = React.memo(function VirtualMessageRow({
             </div>
           )}
           {!mine && <div className="group-message-sender">{message.senderName}</div>}
+          {!isDeleted && message.forwardMetadata && (
+            <div className="message-forward-badge">
+              <span>Forwarded</span>
+              <strong>{message.forwardMetadata.sourceLabel || 'message'}</strong>
+            </div>
+          )}
           {!isDeleted && message.replyTo && (
             <div className="message-reply-quote">
               <strong>{message.replyTo.senderName}</strong>
@@ -266,8 +275,15 @@ const VirtualMessageRow = React.memo(function VirtualMessageRow({
               <ChatAttachmentGallery attachments={message.attachments} />
             </div>
           )}
-          {!message.isOptimistic && !isDeleted && !isSelectionActive && (
-            <div className="message-edit-actions" onClick={(event) => event.stopPropagation()}>
+          {isFailed && (
+            <div className="message-failed-actions" onClick={(event) => event.stopPropagation()}>
+              <span>Failed to send</span>
+              <button type="button" onClick={() => onRetryFailedMessage(mode, message)}>Retry</button>
+              <button type="button" onClick={() => onDiscardFailedMessage(mode, message)}>Discard</button>
+            </div>
+          )}
+          {!message.isOptimistic && !isFailed && !isDeleted && !isSelectionActive && (
+            <div className={`message-edit-actions ${mine ? 'mine' : ''}`} onClick={(event) => event.stopPropagation()}>
               <button type="button" onClick={() => onReplyToMessage(mode, message)}>Reply</button>
               {mine && <button type="button" onClick={() => onEditMessage(mode, message)}>Edit</button>}
               {mine && <button type="button" onClick={() => onDeleteMessage(mode, message)}>Delete</button>}
@@ -276,7 +292,8 @@ const VirtualMessageRow = React.memo(function VirtualMessageRow({
           <div className="group-message-meta">
             <span>{formatMessageTime(message.createdAt)}</span>
             {message.editedAt && !isDeleted && <span>Edited</span>}
-            {mine && (
+            {isFailed && <span className="group-message-status failed">Not sent</span>}
+            {mine && !isFailed && (
               <MessageReceiptIndicator
                 message={message}
                 mode={mode}
@@ -346,6 +363,35 @@ const buildAttachmentCountLabel = (attachments = []) => {
 
 const buildConversationPreview = (message, attachments = []) =>
   `${message || ''}`.trim() || buildAttachmentCountLabel(attachments);
+
+const createFailedMessageFromPayload = ({
+  attachments = [],
+  currentUserId,
+  forwardMetadata = null,
+  id,
+  message = '',
+  mode,
+  payload = null,
+  replyTo = null,
+  senderName = 'You',
+  threadId = null,
+}) => ({
+  id,
+  senderId: currentUserId,
+  senderName,
+  recipientId: mode === 'direct' ? threadId : undefined,
+  message,
+  replyTo,
+  attachments,
+  forwardMetadata,
+  createdAt: new Date().toISOString(),
+  editedAt: null,
+  deletedAt: null,
+  failed: true,
+  failedPayload: payload,
+  failedMode: mode,
+  failedThreadId: threadId,
+});
 
 const normalizeMentionToken = (value = '') =>
   `${value}`.toLowerCase().replace(/[^a-z0-9_-]/g, '');
@@ -441,7 +487,7 @@ const getDeliveredByNames = (message) =>
 
 const getReceiptStatus = (message) => {
   if (message?.isOptimistic || message?.receipt?.status === 'sending') {
-    return { status: 'sending', label: 'Sending', ticks: '✓' };
+    return { status: 'sending', label: 'Sending', tickCount: 1 };
   }
 
   const receipt = message?.receipt || {};
@@ -451,7 +497,7 @@ const getReceiptStatus = (message) => {
     return {
       status: 'read',
       label: readByNames.length ? `Seen by ${readByNames.join(', ')}` : 'Seen',
-      ticks: '✓✓',
+      tickCount: 2,
     };
   }
 
@@ -459,12 +505,21 @@ const getReceiptStatus = (message) => {
     return {
       status: 'delivered',
       label: deliveredByNames.length ? `Delivered to ${deliveredByNames.join(', ')}` : 'Delivered',
-      ticks: '✓✓',
+      tickCount: 2,
     };
   }
 
-  return { status: 'sent', label: 'Sent', ticks: '✓' };
+  return { status: 'sent', label: 'Sent', tickCount: 1 };
 };
+
+function MessageTickIcon({ count = 1 }) {
+  return (
+    <span className={`message-tick-icon message-tick-icon-${count}`} aria-hidden="true">
+      <span>✓</span>
+      {count > 1 && <span>✓</span>}
+    </span>
+  );
+}
 
 function MessageReceiptIndicator({ message, mode, onOpenDetails }) {
   const receipt = getReceiptStatus(message);
@@ -476,7 +531,7 @@ function MessageReceiptIndicator({ message, mode, onOpenDetails }) {
   const seenLabel = overflowCount > 0 ? `${shortNames} +${overflowCount}` : shortNames;
   const content = (
     <>
-      <span className="message-receipt-ticks" aria-hidden="true">{receipt.ticks}</span>
+      <MessageTickIcon count={receipt.tickCount} />
       <span className="message-receipt-label">{receipt.status === 'sending' ? 'Sending' : receipt.label}</span>
       {shouldShowNames && <span className="message-receipt-seen-by">Seen by {seenLabel}</span>}
     </>
@@ -714,6 +769,16 @@ const applyMessageMutationData = (rows, messageId, data = {}) =>
         }
       : message
   ));
+
+const replaceMessageWithFailedMessage = (rows = [], messageId, failedMessage) => {
+  let replaced = false;
+  const nextRows = rows.map((message) => {
+    if (message?.id !== messageId) return message;
+    replaced = true;
+    return failedMessage;
+  });
+  return replaced ? nextRows : appendMessageById(nextRows, failedMessage);
+};
 
 const upsertDirectConversation = (rows = [], conversation) => {
   if (!conversation?.user?.id) return rows;
@@ -1107,8 +1172,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     setEditingMessage((prev) => (prev ? { ...prev, text } : prev));
   };
   const withGroupReceiptDefault = (message, group = selectedGroup) => {
-    if (!message || message.receipt || message.senderId !== currentUserId) return message;
-    const totalRecipientCount = Math.max((group?.members || []).filter((member) => member.id !== currentUserId).length, 0);
+    if (!message || message.receipt || Number(message.senderId) !== Number(currentUserId)) return message;
+    const totalRecipientCount = Math.max((group?.members || []).filter((member) => Number(member.id) !== Number(currentUserId)).length, 0);
     return {
       ...message,
       receipt: {
@@ -1122,7 +1187,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     };
   };
   const withDirectReceiptDefault = (message) => {
-    if (!message || message.receipt || message.senderId !== currentUserId) return message;
+    if (!message || message.receipt || Number(message.senderId) !== Number(currentUserId)) return message;
     return {
       ...message,
       receipt: {
@@ -1450,12 +1515,16 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const selectedForwardMessages = useMemo(() => {
     if (selectionMode === 'group') {
       const selectedIds = new Set(selectedGroupMessageIds);
-      return messages.filter((message) => selectedIds.has(message.id));
+      return messages.filter((message) =>
+        selectedIds.has(message.id) && !message.deletedAt && !message.failed && !message.isOptimistic
+      );
     }
 
     if (selectionMode === 'direct') {
       const selectedIds = new Set(selectedDirectMessageIds);
-      return directMessages.filter((message) => selectedIds.has(message.id));
+      return directMessages.filter((message) =>
+        selectedIds.has(message.id) && !message.deletedAt && !message.failed && !message.isOptimistic
+      );
     }
 
     return [];
@@ -1662,9 +1731,21 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         liveUpdatedAt: Date.now(),
       }));
     },
-    onRollbackMessage: ({ context }) => {
+    onRollbackMessage: ({ payload, context }) => {
       if (!context?.tempId) return;
-      setMessages((prev) => removeMessageById(prev, context.tempId));
+      const failedMessage = createFailedMessageFromPayload({
+        id: `failed-${context.tempId}`,
+        mode: 'group',
+        threadId: selectedGroupIdRef.current,
+        currentUserId,
+        senderName: user?.name || 'You',
+        message: payload?.message || '',
+        attachments: Array.isArray(payload?.attachments) ? payload.attachments : [],
+        replyTo: payload?.replyTo || null,
+        forwardMetadata: payload?.forward_metadata || payload?.forwardMetadata || null,
+        payload,
+      });
+      setMessages((prev) => replaceMessageWithFailedMessage(prev, context.tempId, failedMessage));
     },
     onSettled: async () => {
       await syncGroups({ silent: true }).catch(() => {});
@@ -1708,6 +1789,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           }
           setSelectedGroupId(fallbackGroupId);
         }
+      } catch (error) {
+        if (!silent && isActiveRef.current) {
+          setFeedback(error?.response?.data?.detail || 'Failed to load groups.');
+        }
+        throw error;
       } finally {
         if (silent) setIsRefreshing(false);
       }
@@ -1748,6 +1834,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           cachedAt: prev.cachedAt,
           liveUpdatedAt: Date.now(),
         }));
+      } catch (error) {
+        if (!silent && selectedGroupIdRef.current === groupId && isActiveRef.current) {
+          setFeedback(error?.response?.data?.detail || 'Failed to load group messages.');
+        }
+        throw error;
       } finally {
         if (silent) setIsMessagesRefreshing(false);
       }
@@ -2047,6 +2138,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               userName: metadata.senderName,
               active: metadata.active !== false,
             });
+            scheduleGroupIndexRefresh(800);
           } else if (scope === 'direct') {
             updateRemoteTyping({
               scope,
@@ -2055,6 +2147,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               userName: metadata.senderName,
               active: metadata.active !== false,
             });
+            scheduleDirectIndexRefresh(800);
           }
           return;
         }
@@ -2153,6 +2246,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               replyTo: payload?.metadata?.replyTo || null,
               attachments,
               mentions: Array.isArray(payload?.metadata?.mentions) ? payload.metadata.mentions : [],
+              forwardMetadata: payload?.metadata?.forwardMetadata || null,
               createdAt: payload?.metadata?.createdAt || new Date().toISOString(),
             };
             setMessages((prev) => appendMessageById(prev, incomingMessage));
@@ -2189,6 +2283,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
             message: payload?.metadata?.messageText ?? payload?.message ?? '',
             replyTo: payload?.metadata?.replyTo || null,
             attachments,
+            forwardMetadata: payload?.metadata?.forwardMetadata || null,
             createdAt: payload?.metadata?.createdAt || new Date().toISOString(),
           };
           const knownDirectUser =
@@ -2760,19 +2855,45 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     const targetUser = selectedDirectUser;
     const draftAttachments = directPendingAttachments;
     const draftReply = isReplyingDirectMessage ? replyingMessage : null;
+    const draftPayload = {
+      message: trimmedMessage,
+      attachments: draftAttachments,
+      reply_to_message_id: draftReply?.messageId || null,
+      replyTo: draftReply,
+    };
+    const tempId = `temp-direct-${Date.now()}`;
     setSendingDirectMessage(true);
     setReplyingMessage(null);
+    setDirectNewMessage('');
+    setDirectPendingAttachments([]);
+    updateDirectComposerDraft(targetUserId, createInitialComposerDraft());
     stopTyping('direct', targetUserId);
+    setDirectMessages((prev) => appendMessageById(prev, {
+      id: tempId,
+      senderId: currentUserId,
+      senderName: user?.name || 'You',
+      recipientId: targetUserId,
+      message: trimmedMessage,
+      replyTo: draftReply,
+      attachments: draftAttachments,
+      createdAt: new Date().toISOString(),
+      editedAt: null,
+      receipt: {
+        status: 'sending',
+        totalRecipientCount: 1,
+        deliveredCount: 0,
+        deliveredBy: [],
+        readCount: 0,
+        readBy: [],
+      },
+      isOptimistic: true,
+    }));
 
     try {
-      const response = await directMessageAPI.sendMessage(targetUserId, {
-        message: trimmedMessage,
-        attachments: draftAttachments,
-        reply_to_message_id: draftReply?.messageId || null,
-      });
+      const response = await directMessageAPI.sendMessage(targetUserId, draftPayload);
       const sent = response?.data;
       if (sent && selectedDirectUserIdRef.current === targetUserId) {
-        setDirectMessages((prev) => appendMessageById(prev, withDirectReceiptDefault(sent)));
+        setDirectMessages((prev) => replaceMessageById(prev, tempId, withDirectReceiptDefault(sent)));
       }
       if (sent && targetUser) {
         markDirectThreadSeen(targetUserId);
@@ -2788,14 +2909,20 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           liveUpdatedAt: Date.now(),
         }));
       }
-      if (selectedDirectUserIdRef.current === targetUserId) {
-        setDirectNewMessage('');
-        setDirectPendingAttachments([]);
-      }
-      updateDirectComposerDraft(targetUserId, createInitialComposerDraft());
       await syncDirectData({ silent: true });
     } catch (error) {
       setReplyingMessage(draftReply);
+      setDirectMessages((prev) => replaceMessageWithFailedMessage(prev, tempId, createFailedMessageFromPayload({
+        id: `failed-${tempId}`,
+        mode: 'direct',
+        threadId: targetUserId,
+        currentUserId,
+        senderName: user?.name || 'You',
+        message: trimmedMessage,
+        attachments: draftAttachments,
+        replyTo: draftReply,
+        payload: draftPayload,
+      })));
       setFeedback(error?.response?.data?.detail || 'Failed to send message.');
     } finally {
       setSendingDirectMessage(false);
@@ -2912,6 +3039,19 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     return {
       message,
       attachments,
+      forward_metadata: {
+        sourceMode: selectionMode,
+        sourceLabel,
+        forwardedAt: new Date().toISOString(),
+        messageIds: selectedForwardMessages.map((item) => item.id),
+        messages: selectedForwardMessages.map((item) => ({
+          id: item.id,
+          senderId: item.senderId,
+          senderName: item.senderName || 'Unknown',
+          createdAt: item.createdAt,
+          attachmentCount: Array.isArray(item.attachments) ? item.attachments.length : 0,
+        })),
+      },
     };
   };
 
@@ -2983,6 +3123,68 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     } catch (error) {
       setForwardState((prev) => ({ ...prev, sending: false }));
       setFeedback(error?.response?.data?.detail || 'Failed to forward selected messages.');
+    }
+  };
+
+  const discardFailedMessage = (mode, message) => {
+    if (!message?.failed) return;
+    if (mode === 'group') {
+      setMessages((prev) => removeMessageById(prev, message.id));
+      return;
+    }
+    setDirectMessages((prev) => removeMessageById(prev, message.id));
+  };
+
+  const retryFailedMessage = async (mode, message) => {
+    if (!message?.failed || !message.failedPayload) return;
+    if (mode === 'group') {
+      const targetGroupId = message.failedThreadId || selectedGroupIdRef.current;
+      if (!targetGroupId) return;
+      setMessages((prev) => removeMessageById(prev, message.id));
+      try {
+        await sendGroupMessage(message.failedPayload);
+        setFeedback('');
+      } catch (error) {
+        setFeedback(error?.response?.data?.detail || 'Failed to retry message.');
+      }
+      return;
+    }
+
+    const targetUserId = message.failedThreadId || selectedDirectUserIdRef.current;
+    if (!targetUserId) return;
+    const retryId = `retry-${Date.now()}`;
+    const retryMessage = {
+      ...message,
+      id: retryId,
+      failed: false,
+      isOptimistic: true,
+      receipt: {
+        status: 'sending',
+        totalRecipientCount: 1,
+        deliveredCount: 0,
+        deliveredBy: [],
+        readCount: 0,
+        readBy: [],
+      },
+    };
+    setDirectMessages((prev) => appendMessageById(removeMessageById(prev, message.id), retryMessage));
+    try {
+      const response = await directMessageAPI.sendMessage(targetUserId, message.failedPayload);
+      const sent = response?.data;
+      if (sent) {
+        setDirectMessages((prev) => replaceMessageById(prev, retryId, withDirectReceiptDefault(sent)));
+        markDirectThreadSeen(targetUserId);
+        await syncDirectData({ silent: true });
+      }
+      setFeedback('');
+    } catch (error) {
+      setDirectMessages((prev) => replaceMessageWithFailedMessage(prev, retryId, {
+        ...message,
+        id: `failed-${retryId}`,
+        failed: true,
+        isOptimistic: false,
+      }));
+      setFeedback(error?.response?.data?.detail || 'Failed to retry message.');
     }
   };
 
@@ -3380,10 +3582,12 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                         items: messageItems,
                         mode: 'group',
                         onDeleteMessage: handleDeleteMessage,
+                        onDiscardFailedMessage: discardFailedMessage,
                         onEditMessage: handleEditMessage,
                         onOpenReceiptDetails: openGroupReceiptDetails,
                         onReactToMessage: handleMessageReaction,
                         onReplyToMessage: handleReplyToMessage,
+                        onRetryFailedMessage: retryFailedMessage,
                         selectedIds: selectedGroupMessageIds,
                         toggleMessageSelection,
                       }}
@@ -3747,9 +3951,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                           items: directMessageItems,
                           mode: 'direct',
                           onDeleteMessage: handleDeleteMessage,
+                          onDiscardFailedMessage: discardFailedMessage,
                           onEditMessage: handleEditMessage,
                           onReactToMessage: handleMessageReaction,
                           onReplyToMessage: handleReplyToMessage,
+                          onRetryFailedMessage: retryFailedMessage,
                           selectedIds: selectedDirectMessageIds,
                           toggleMessageSelection,
                         }}

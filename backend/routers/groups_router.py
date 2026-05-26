@@ -33,6 +33,7 @@ class GroupMessagePayload(BaseModel):
     attachments: list[dict] = Field(default_factory=list)
     reply_to_message_id: Optional[int] = Field(default=None, ge=1)
     mention_ids: list[int] = Field(default_factory=list)
+    forward_metadata: Optional[dict] = None
 
 
 class MessageEditPayload(BaseModel):
@@ -478,9 +479,9 @@ def _serialize_groups(
         .subquery()
     )
     latest_sender_by_group = {
-        message.group_id: message.sender_id
-        for message in (
-            db.query(GroupChatMessage)
+        row.group_id: row.sender_id
+        for row in (
+            db.query(GroupChatMessage.group_id, GroupChatMessage.sender_id)
             .join(latest_message_ids, GroupChatMessage.id == latest_message_ids.c.message_id)
             .all()
         )
@@ -789,6 +790,7 @@ async def list_group_messages(
                 "replyTo": reply_lookup.get(msg.reply_to_message_id),
                 "attachments": [] if msg.deleted_at else (msg.attachments_json or []),
                 "mentions": [] if msg.deleted_at else (msg.mentions_json or []),
+                "forwardMetadata": None if msg.deleted_at else (msg.forward_metadata_json or None),
                 "createdAt": msg.created_at.isoformat() if msg.created_at else None,
                 "editedAt": msg.edited_at.isoformat() if msg.edited_at else None,
                 "deletedAt": msg.deleted_at.isoformat() if msg.deleted_at else None,
@@ -1234,6 +1236,7 @@ async def delete_group_message(
         message.message = ""
         message.attachments_json = []
         message.mentions_json = []
+        message.forward_metadata_json = None
         message.deleted_at = now
         message.edited_at = None
         db.query(ChatMessageReaction).filter(
@@ -1338,6 +1341,7 @@ async def send_group_message(
         message=text,
         attachments_json=attachments,
         mentions_json=mentions,
+        forward_metadata_json=payload.forward_metadata or None,
         created_at=now,
     )
     group.last_message_at = now
@@ -1364,6 +1368,7 @@ async def send_group_message(
             "attachmentCount": len(attachments),
             "mentions": mentions,
             "mentionIds": sorted(mentioned_user_ids),
+            "forwardMetadata": msg.forward_metadata_json or None,
             "createdAt": msg.created_at.isoformat() if msg.created_at else None,
         },
     }
@@ -1399,6 +1404,7 @@ async def send_group_message(
             "replyTo": _serialize_group_reply_preview(*reply_row) if reply_row else None,
             "attachments": msg.attachments_json or [],
             "mentions": msg.mentions_json or [],
+            "forwardMetadata": msg.forward_metadata_json or None,
             "createdAt": msg.created_at.isoformat() if msg.created_at else None,
             "editedAt": msg.edited_at.isoformat() if msg.edited_at else None,
             "deletedAt": msg.deleted_at.isoformat() if msg.deleted_at else None,

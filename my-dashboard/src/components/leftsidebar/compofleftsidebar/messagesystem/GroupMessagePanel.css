@@ -1875,6 +1875,59 @@
   font-style: italic;
 }
 
+.group-message-status.failed {
+  color: #fecaca;
+}
+
+.message-forward-badge {
+  margin-bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.16);
+  color: #dbeafe;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.message-forward-badge strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+  color: rgba(248, 250, 252, 0.9);
+}
+
+.message-failed-actions {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: #fecaca;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.message-failed-actions button {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.3);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.message-failed-actions button:hover {
+  background: rgba(15, 23, 42, 0.5);
+}
+
 .group-message-attachments {
   margin-top: 10px;
 }
@@ -1957,6 +2010,11 @@
   transition: opacity 0.16s ease, max-height 0.16s ease;
 }
 
+.message-edit-actions.mine {
+  opacity: 1;
+  max-height: 24px;
+}
+
 .group-message-bubble:hover .message-edit-actions,
 .group-message-bubble:focus-within .message-edit-actions {
   opacity: 1;
@@ -2011,9 +2069,9 @@
 .message-receipt {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
-  color: rgba(203, 213, 225, 0.8);
+  color: rgba(203, 213, 225, 0.86);
   white-space: nowrap;
 }
 
@@ -2030,11 +2088,26 @@
   text-decoration: underline;
 }
 
-.message-receipt-ticks {
+.message-tick-icon {
+  position: relative;
+  width: 15px;
+  height: 12px;
+  display: inline-block;
+  flex: 0 0 15px;
+  color: rgba(203, 213, 225, 0.82);
   font-size: 13px;
   font-weight: 900;
-  letter-spacing: 0;
   line-height: 1;
+}
+
+.message-tick-icon span {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.message-tick-icon span + span {
+  left: 6px;
 }
 
 .message-receipt-label {
@@ -2050,7 +2123,12 @@
   color: rgba(191, 219, 254, 0.92);
 }
 
-.message-receipt-read .message-receipt-ticks,
+.message-receipt-delivered .message-tick-icon,
+.message-receipt-delivered .message-receipt-label {
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.message-receipt-read .message-tick-icon,
 .message-receipt-read .message-receipt-label {
   color: #60a5fa;
 }
