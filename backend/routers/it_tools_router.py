@@ -8,7 +8,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -1466,6 +1466,13 @@ def _parse_report_date(value: Optional[str], field_name: str) -> Optional[date]:
         return date.fromisoformat(normalized)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"{field_name} must be in YYYY-MM-DD format") from exc
+
+
+def _serialize_utc_datetime(value: Optional[datetime]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return normalized.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _normalize_status_label(value: Optional[str], fallback: str = "captured") -> str:
@@ -2940,6 +2947,54 @@ async def get_tool_launch_history(
         .all()
     )
 
+    related_events_by_audit_id = {}
+    if history_rows:
+        launch_audits = [audit for audit, _, _ in history_rows if audit.created_at]
+        launch_user_ids = {int(audit.actor_id) for audit in launch_audits if audit.actor_id}
+        launch_tool_ids = {int(audit.tool_id) for audit in launch_audits if audit.tool_id}
+        min_launch_at = min((audit.created_at for audit in launch_audits), default=None)
+        max_launch_at = max((audit.created_at for audit in launch_audits), default=None)
+
+        usage_events = []
+        if launch_user_ids and launch_tool_ids and min_launch_at and max_launch_at:
+            usage_events = (
+                db.query(ITPortalToolUsageEvent)
+                .filter(ITPortalToolUsageEvent.user_id.in_(launch_user_ids))
+                .filter(ITPortalToolUsageEvent.tool_id.in_(launch_tool_ids))
+                .filter(ITPortalToolUsageEvent.created_at >= min_launch_at)
+                .filter(ITPortalToolUsageEvent.created_at <= max_launch_at + timedelta(hours=2))
+                .order_by(ITPortalToolUsageEvent.created_at.asc())
+                .all()
+            )
+
+        audits_by_pair = {}
+        for audit in launch_audits:
+            audits_by_pair.setdefault((int(audit.actor_id), int(audit.tool_id)), []).append(audit)
+        for audits in audits_by_pair.values():
+            audits.sort(key=lambda item: item.created_at or datetime.min)
+
+        for event in usage_events:
+            if not event.created_at:
+                continue
+            matching_audits = audits_by_pair.get((int(event.user_id), int(event.tool_id)), [])
+            for index, audit in enumerate(matching_audits):
+                launch_at = audit.created_at
+                if not launch_at or event.created_at < launch_at:
+                    continue
+                next_launch_at = matching_audits[index + 1].created_at if index + 1 < len(matching_audits) else None
+                session_end_at = min(
+                    [candidate for candidate in (next_launch_at, launch_at + timedelta(hours=2)) if candidate]
+                )
+                if event.created_at >= session_end_at:
+                    continue
+                related_events_by_audit_id.setdefault(audit.id, []).append(event)
+                break
+
+        related_events_by_audit_id = {
+            audit_id: sorted(events, key=lambda item: item.created_at or datetime.min, reverse=True)[:5]
+            for audit_id, events in related_events_by_audit_id.items()
+        }
+
     summary_query = (
         db.query(
             func.count(ITPortalToolAudit.id).label("launch_count"),
@@ -2979,7 +3034,11 @@ async def get_tool_launch_history(
                 "launchMode": (audit.details_json or {}).get("launchMode") or "",
                 "effectiveLaunchMode": (audit.details_json or {}).get("effectiveLaunchMode") or "",
                 "credentialScope": (audit.details_json or {}).get("credentialScope") or "",
-                "clickedAt": audit.created_at.isoformat() if audit.created_at else None,
+                "clickedAt": _serialize_utc_datetime(audit.created_at),
+                "relatedActivity": [
+                    event.to_dict()
+                    for event in related_events_by_audit_id.get(audit.id, [])
+                ],
             }
             for audit, user, tool in history_rows
         ],
@@ -2987,7 +3046,7 @@ async def get_tool_launch_history(
             "launchCount": int(summary_row.launch_count or 0),
             "userCount": int(summary_row.user_count or 0),
             "toolCount": int(summary_row.tool_count or 0),
-            "lastLaunchedAt": summary_row.last_launched_at.isoformat() if summary_row.last_launched_at else None,
+            "lastLaunchedAt": _serialize_utc_datetime(summary_row.last_launched_at),
         },
     }
 

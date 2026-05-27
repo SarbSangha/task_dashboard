@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { authAPI, isRequestCanceled, itToolsAPI } from '../../../../services/api';
+import { formatDateTimeIndia } from '../../../../utils/dateTime';
 import './Tools.css';
 
 const EXTENSION_LAUNCH_EVENT = 'rmw:tool-hub-extension-launch';
@@ -454,15 +455,7 @@ const formatUsageDate = (value) => {
 
 const formatUsageDateTime = (value) => {
   if (!value) return 'N/A';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString([], {
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return formatDateTimeIndia(value);
 };
 
 const formatUsageCredentialTitle = (credentialLabel, credentialId) => {
@@ -602,6 +595,7 @@ export default function Tools({ view = 'tools' }) {
   const [toolLaunchRows, setToolLaunchRows] = useState([]);
   const [toolLaunchSummary, setToolLaunchSummary] = useState(EMPTY_TOOL_LAUNCH_SUMMARY);
   const [toolLaunchError, setToolLaunchError] = useState('');
+  const [expandedToolLaunchId, setExpandedToolLaunchId] = useState(null);
   const resolvedCurrentCredits = useMemo(
     () => resolveCurrentCreditsValue(usageSummary, recentUsageEvents),
     [usageSummary, recentUsageEvents],
@@ -1009,6 +1003,12 @@ export default function Tools({ view = 'tools' }) {
   const toolLaunchToolOptions = useMemo(() => {
     return [...tools].sort((left, right) => `${left?.name || ''}`.localeCompare(`${right?.name || ''}`));
   }, [tools]);
+
+  useEffect(() => {
+    if (!expandedToolLaunchId) return;
+    if (toolLaunchRows.some((row) => row.id === expandedToolLaunchId)) return;
+    setExpandedToolLaunchId(null);
+  }, [expandedToolLaunchId, toolLaunchRows]);
 
   const availableToolLaunchToolIds = useMemo(() => {
     return new Set(toolLaunchToolOptions.map((tool) => `${tool.id}`));
@@ -3161,28 +3161,100 @@ export default function Tools({ view = 'tools' }) {
                   ) : toolLaunchRows.length ? (
                     toolLaunchRows.map((row) => {
                       const launchModeLabel = `${row.effectiveLaunchMode || row.launchMode || 'manual'}`.replace(/_/g, ' ');
+                      const isExpanded = expandedToolLaunchId === row.id;
+                      const relatedActivity = Array.isArray(row.relatedActivity) ? row.relatedActivity : [];
                       return (
-                        <tr key={row.id}>
-                          <td>
-                            <div className="it-usage-user-cell">
-                              <strong>{row.userName || row.userEmail || `User #${row.userId}`}</strong>
-                              <small>{row.userEmail || ''}</small>
-                            </div>
-                          </td>
-                          <td>
-                            <div className="it-usage-user-cell">
-                              <strong>{row.toolName || `Tool #${row.toolId}`}</strong>
-                              <small>{row.toolCategory || row.toolSlug || ''}</small>
-                            </div>
-                          </td>
-                          <td>{formatUsageDateTime(row.clickedAt)}</td>
-                          <td>
-                            <div className="it-usage-stat-stack">
-                              <strong>{launchModeLabel}</strong>
-                              <small>{row.credentialScope ? `${row.credentialScope} credential` : 'credential checked'}</small>
-                            </div>
-                          </td>
-                        </tr>
+                        <React.Fragment key={row.id}>
+                          <tr
+                            className={`it-tool-launch-row ${isExpanded ? 'is-expanded' : ''}`}
+                            role="button"
+                            tabIndex={0}
+                            aria-expanded={isExpanded}
+                            onClick={() => setExpandedToolLaunchId((current) => (current === row.id ? null : row.id))}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                setExpandedToolLaunchId((current) => (current === row.id ? null : row.id));
+                              }
+                            }}
+                          >
+                            <td>
+                              <div className="it-usage-user-cell">
+                                <strong>{row.userName || row.userEmail || `User #${row.userId}`}</strong>
+                                <small>{row.userEmail || ''}</small>
+                              </div>
+                            </td>
+                            <td>
+                              <div className="it-usage-user-cell">
+                                <strong>{row.toolName || `Tool #${row.toolId}`}</strong>
+                                <small>{row.toolCategory || row.toolSlug || ''}</small>
+                              </div>
+                            </td>
+                            <td>{formatUsageDateTime(row.clickedAt)}</td>
+                            <td>
+                              <div className="it-usage-stat-stack">
+                                <strong>{launchModeLabel}</strong>
+                                <small>{row.credentialScope ? `${row.credentialScope} credential` : 'credential checked'}</small>
+                              </div>
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="it-tool-launch-detail-row">
+                              <td colSpan={4}>
+                                <div className="it-tool-launch-detail">
+                                  <div className="it-tool-launch-detail-grid">
+                                    <div className="it-usage-recent-meta">
+                                      <span>User</span>
+                                      <strong>{row.userName || row.userEmail || `User #${row.userId}`}</strong>
+                                      <small>{row.userEmail || ''}</small>
+                                    </div>
+                                    <div className="it-usage-recent-meta">
+                                      <span>Tool</span>
+                                      <strong>{row.toolName || `Tool #${row.toolId}`}</strong>
+                                      <small>{row.toolCategory || row.toolSlug || ''}</small>
+                                    </div>
+                                    <div className="it-usage-recent-meta">
+                                      <span>Opened at</span>
+                                      <strong>{formatUsageDateTime(row.clickedAt)}</strong>
+                                      <small>{launchModeLabel}</small>
+                                    </div>
+                                  </div>
+
+                                  <div className="it-tool-launch-activity">
+                                    <div className="it-tool-launch-activity-head">
+                                      <strong>Captured activity during this session</strong>
+                                      <span>{relatedActivity.length} event{relatedActivity.length === 1 ? '' : 's'}</span>
+                                    </div>
+                                    {relatedActivity.length ? (
+                                      <div className="it-tool-launch-activity-list">
+                                        {relatedActivity.map((event) => (
+                                          <div key={event.id} className="it-tool-launch-activity-item">
+                                            <div>
+                                              <strong>{`${event.eventType || 'tool activity'}`.replace(/_/g, ' ')}</strong>
+                                              <small>{formatUsageDateTime(event.createdAt)}</small>
+                                            </div>
+                                            <div className="it-usage-stat-stack">
+                                              <strong>{event.creditsBurned != null ? `${formatUsageNumber(event.creditsBurned)} credits` : event.status || 'captured'}</strong>
+                                              <small>
+                                                {[event.modelLabel, event.durationLabel, event.resolutionLabel]
+                                                  .filter(Boolean)
+                                                  .join(' - ') || 'No generation metadata captured'}
+                                              </small>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <div className="it-tool-launch-empty-detail">
+                                        No inside-tool activity was captured for this launch. This usually means the user opened the tool, but the extension did not capture a generation or credit event for that session.
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })
                   ) : (
