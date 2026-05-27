@@ -662,6 +662,13 @@ class ITPortalToolUsageEvent(Base):
     credits_before = Column(Float)
     credits_after = Column(Float)
     credits_burned = Column(Float)
+    external_event_id = Column(String(160), index=True)
+    generation_id = Column(String(160), index=True)
+    request_id = Column(String(160), index=True)
+    fingerprint = Column(String(160), index=True)
+    source = Column(String(80), index=True)
+    schema_version = Column(Integer)
+    confidence = Column(Float)
     metadata_json = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
@@ -682,6 +689,13 @@ class ITPortalToolUsageEvent(Base):
             "creditsBefore": self.credits_before,
             "creditsAfter": self.credits_after,
             "creditsBurned": self.credits_burned,
+            "externalEventId": self.external_event_id,
+            "generationId": self.generation_id,
+            "requestId": self.request_id,
+            "fingerprint": self.fingerprint,
+            "source": self.source,
+            "schemaVersion": self.schema_version,
+            "confidence": self.confidence,
             "metadata": self.metadata_json or {},
             "createdAt": serialize_utc_datetime(self.created_at),
         }

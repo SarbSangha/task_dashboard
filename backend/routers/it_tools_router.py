@@ -152,6 +152,13 @@ class ExtensionUsageEventPayload(BaseModel):
     credits_before: Optional[float] = None
     credits_after: Optional[float] = None
     credits_burned: Optional[float] = None
+    external_event_id: Optional[str] = Field(None, max_length=160)
+    generation_id: Optional[str] = Field(None, max_length=160)
+    request_id: Optional[str] = Field(None, max_length=160)
+    fingerprint: Optional[str] = Field(None, max_length=160)
+    source: Optional[str] = Field(None, max_length=80)
+    schema_version: Optional[int] = Field(None, ge=1)
+    confidence: Optional[float] = Field(None, ge=0, le=1)
     metadata: Optional[dict] = None
 
 
@@ -1492,6 +1499,13 @@ def _normalize_usage_float(value: Optional[float]) -> Optional[float]:
     return normalized
 
 
+def _normalize_usage_text(value: Optional[str], max_length: int = 160) -> Optional[str]:
+    normalized = f"{value or ''}".strip()
+    if not normalized:
+        return None
+    return normalized[:max_length]
+
+
 def _normalize_prompt_text(value: Optional[str]) -> Optional[str]:
     normalized = (value or "").strip()
     return normalized or None
@@ -1842,8 +1856,22 @@ async def report_extension_usage_event(
         extension_ticket=extension_ticket,
     )
 
-    credential = _resolve_tool_credential(db, tool.id, current_user.id)
+    credential = _resolve_usage_event_credential(
+        db,
+        tool_id=tool.id,
+        user_id=current_user.id,
+        explicit_credential_id=payload.credential_id,
+    )
     parsed_event_date = _parse_report_date(payload.event_date, "event_date") if payload.event_date else None
+    normalized_event_type = (payload.event_type or "generate_click").strip().lower() or "generate_click"
+    normalized_status = _normalize_status_label(payload.status)
+    external_event_id = _normalize_usage_text(payload.external_event_id, 160)
+    generation_id = _normalize_usage_text(payload.generation_id, 160)
+    request_id = _normalize_usage_text(payload.request_id, 160)
+    fingerprint = _normalize_usage_text(payload.fingerprint, 160)
+    source = _normalize_usage_text(payload.source, 80)
+    schema_version = int(payload.schema_version or 0) or None
+    confidence = _normalize_usage_float(payload.confidence)
     expected_credits = _normalize_usage_float(payload.expected_credits)
     credits_before = _normalize_usage_float(payload.credits_before)
     credits_after = _normalize_usage_float(payload.credits_after)
@@ -1851,13 +1879,11 @@ async def report_extension_usage_event(
     if credits_burned is None:
         if credits_before is not None and credits_after is not None:
             credits_burned = max(0.0, credits_before - credits_after)
-        else:
+        elif normalized_status in {"settled", "completed"}:
             credits_burned = expected_credits
 
     usage_event = None
     action_name = "tool_usage_reported"
-    normalized_event_type = (payload.event_type or "generate_click").strip().lower() or "generate_click"
-    normalized_status = _normalize_status_label(payload.status)
     merged_metadata = payload.metadata or {}
 
     if payload.event_id:
@@ -1872,7 +1898,36 @@ async def report_extension_usage_event(
         )
         if not usage_event:
             raise HTTPException(status_code=404, detail="Usage event not found")
+    else:
+        dedupe_filters = []
+        if generation_id:
+            dedupe_filters.append(ITPortalToolUsageEvent.generation_id == generation_id)
+        if external_event_id:
+            dedupe_filters.append(ITPortalToolUsageEvent.external_event_id == external_event_id)
+        if request_id:
+            dedupe_filters.append(ITPortalToolUsageEvent.request_id == request_id)
+        if fingerprint:
+            dedupe_filters.append(ITPortalToolUsageEvent.fingerprint == fingerprint)
 
+        if dedupe_filters:
+            dedupe_query = (
+                db.query(ITPortalToolUsageEvent)
+                .filter(
+                    ITPortalToolUsageEvent.tool_id == tool.id,
+                    ITPortalToolUsageEvent.user_id == current_user.id,
+                    or_(*dedupe_filters),
+                )
+            )
+            if credential:
+                dedupe_query = dedupe_query.filter(
+                    or_(
+                        ITPortalToolUsageEvent.credential_id == credential.id,
+                        ITPortalToolUsageEvent.credential_id.is_(None),
+                    )
+                )
+            usage_event = dedupe_query.order_by(ITPortalToolUsageEvent.created_at.desc()).first()
+
+    if usage_event:
         usage_event.credential_id = credential.id if credential else usage_event.credential_id
         usage_event.event_type = normalized_event_type
         usage_event.status = normalized_status
@@ -1885,6 +1940,13 @@ async def report_extension_usage_event(
         usage_event.credits_before = credits_before if credits_before is not None else usage_event.credits_before
         usage_event.credits_after = credits_after if credits_after is not None else usage_event.credits_after
         usage_event.credits_burned = credits_burned if credits_burned is not None else usage_event.credits_burned
+        usage_event.external_event_id = external_event_id or usage_event.external_event_id
+        usage_event.generation_id = generation_id or usage_event.generation_id
+        usage_event.request_id = request_id or usage_event.request_id
+        usage_event.fingerprint = fingerprint or usage_event.fingerprint
+        usage_event.source = source or usage_event.source
+        usage_event.schema_version = schema_version or usage_event.schema_version
+        usage_event.confidence = confidence if confidence is not None else usage_event.confidence
         usage_event.metadata_json = _merge_usage_metadata(usage_event.metadata_json, merged_metadata)
         action_name = "tool_usage_updated"
     else:
@@ -1903,6 +1965,13 @@ async def report_extension_usage_event(
             credits_before=credits_before,
             credits_after=credits_after,
             credits_burned=credits_burned,
+            external_event_id=external_event_id,
+            generation_id=generation_id,
+            request_id=request_id,
+            fingerprint=fingerprint,
+            source=source,
+            schema_version=schema_version,
+            confidence=confidence,
             metadata_json=merged_metadata,
         )
         db.add(usage_event)
@@ -1921,6 +1990,10 @@ async def report_extension_usage_event(
             "expectedCredits": expected_credits,
             "creditsBurned": credits_burned,
             "hostname": _normalize_hostname(payload.hostname or payload.page_url),
+            "source": source,
+            "generationId": generation_id,
+            "requestId": request_id,
+            "fingerprint": fingerprint,
         },
     )
     db.commit()

@@ -1583,6 +1583,13 @@ async function reportUsageEvent(message, senderTabId = 0, openerTabId = 0) {
     credits_before: message.creditsBefore,
     credits_after: message.creditsAfter,
     credits_burned: message.creditsBurned,
+    external_event_id: message.externalEventId,
+    generation_id: message.generationId,
+    request_id: message.requestId,
+    fingerprint: message.fingerprint,
+    source: message.source,
+    schema_version: message.schemaVersion,
+    confidence: message.confidence,
     metadata: message.metadata || {},
   });
 }

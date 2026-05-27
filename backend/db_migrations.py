@@ -252,6 +252,13 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "totp_secret_encrypted", "TEXT")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "linked_credential_id", "INTEGER")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "login_method", "VARCHAR(40) DEFAULT 'email_password'")
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "external_event_id", "VARCHAR(160)")
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "generation_id", "VARCHAR(160)")
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "request_id", "VARCHAR(160)")
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "fingerprint", "VARCHAR(160)")
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "source", "VARCHAR(80)")
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "schema_version", "INTEGER")
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "confidence", "DOUBLE PRECISION")
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "group_chat_messages", "mentions_json", "JSON")
     _pg_add_column_if_missing(conn, "group_chat_messages", "forward_metadata_json", "JSON")
@@ -271,6 +278,11 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_linked_credential_id ON it_portal_tool_credentials(linked_credential_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_external_event_id ON it_portal_tool_usage_events(external_event_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_generation_id ON it_portal_tool_usage_events(generation_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_request_id ON it_portal_tool_usage_events(request_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_fingerprint ON it_portal_tool_usage_events(fingerprint)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_source ON it_portal_tool_usage_events(source)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_enabled ON tasks(workflow_enabled)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_status ON tasks(workflow_status)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_current_stage_order ON tasks(current_stage_order)"))
@@ -849,6 +861,13 @@ def ensure_operational_schema(engine) -> None:
                     credits_before FLOAT,
                     credits_after FLOAT,
                     credits_burned FLOAT,
+                    external_event_id VARCHAR(160),
+                    generation_id VARCHAR(160),
+                    request_id VARCHAR(160),
+                    fingerprint VARCHAR(160),
+                    source VARCHAR(80),
+                    schema_version INTEGER,
+                    confidence FLOAT,
                     metadata_json JSON,
                     created_at DATETIME,
                     FOREIGN KEY(tool_id) REFERENCES it_portal_tools (id),
@@ -864,6 +883,25 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_event_type ON it_portal_tool_usage_events(event_type)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_event_date ON it_portal_tool_usage_events(event_date)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_created_at ON it_portal_tool_usage_events(created_at)"))
+        if _table_exists(conn, "it_portal_tool_usage_events"):
+            usage_cols = _table_columns(conn, "it_portal_tool_usage_events")
+            usage_add_columns = {
+                "external_event_id": "VARCHAR(160)",
+                "generation_id": "VARCHAR(160)",
+                "request_id": "VARCHAR(160)",
+                "fingerprint": "VARCHAR(160)",
+                "source": "VARCHAR(80)",
+                "schema_version": "INTEGER",
+                "confidence": "FLOAT",
+            }
+            for column, sql_type in usage_add_columns.items():
+                if column not in usage_cols:
+                    conn.execute(text(f"ALTER TABLE it_portal_tool_usage_events ADD COLUMN {column} {sql_type}"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_external_event_id ON it_portal_tool_usage_events(external_event_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_generation_id ON it_portal_tool_usage_events(generation_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_request_id ON it_portal_tool_usage_events(request_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_fingerprint ON it_portal_tool_usage_events(fingerprint)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_source ON it_portal_tool_usage_events(source)"))
 
         conn.execute(
             text(

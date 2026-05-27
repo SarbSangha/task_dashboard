@@ -160,6 +160,8 @@ const USAGE_CTX = {
   lastGenerateKey     : '',
   lastGenerateAt      : 0,
   pendingReportTimer  : null,
+  networkListenerAttached: false,
+  networkEventKeys    : new Map(),
 };
 
 function normalizeLoginMethod(value) {
@@ -457,9 +459,11 @@ function collectGenerateTextCandidates(generateButton) {
 }
 
 function buildLocalDateValue(offsetDays = 0) {
-  const date = new Date();
+  const date = offsetDays instanceof Date ? new Date(offsetDays.getTime()) : new Date();
   date.setHours(12, 0, 0, 0);
-  date.setDate(date.getDate() + offsetDays);
+  if (!(offsetDays instanceof Date)) {
+    date.setDate(date.getDate() + offsetDays);
+  }
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, '0');
   const day = `${date.getDate()}`.padStart(2, '0');
@@ -800,6 +804,9 @@ function buildGenerateUsageSnapshot(generateButton) {
     resolutionLabel: controlContext.resolutionLabel,
     expectedCredits: readExpectedCreditsFromGenerateButton(generateButton),
     creditsBefore,
+    source: 'dom_balance_fallback',
+    schemaVersion: 1,
+    confidence: 0.35,
     metadata: {
       actionLabel: buttonLabel,
       aspectRatioLabel: controlContext.aspectRatioLabel,
@@ -811,6 +818,8 @@ function buildGenerateUsageSnapshot(generateButton) {
       credentialId: credentialUsageMetadata.credentialId,
       linkedCredentialId: credentialUsageMetadata.linkedCredentialId,
       credentialLabel: credentialUsageMetadata.credentialLabel,
+      source: 'dom_balance_fallback',
+      confidence: 0.35,
     },
   };
 }
@@ -839,6 +848,13 @@ async function reportKlingUsage(snapshot) {
     creditsBefore: snapshot.creditsBefore,
     creditsAfter: snapshot.creditsAfter,
     creditsBurned: snapshot.creditsBurned,
+    externalEventId: snapshot.externalEventId,
+    generationId: snapshot.generationId,
+    requestId: snapshot.requestId,
+    fingerprint: snapshot.fingerprint,
+    source: snapshot.source,
+    schemaVersion: snapshot.schemaVersion,
+    confidence: snapshot.confidence,
     metadata: snapshot.metadata,
   });
 
@@ -853,6 +869,128 @@ async function reportKlingUsage(snapshot) {
   return response;
 }
 
+function pruneNetworkEventKeys(now = Date.now()) {
+  for (const [key, capturedAt] of USAGE_CTX.networkEventKeys.entries()) {
+    if (now - capturedAt > 10 * 60 * 1000) {
+      USAGE_CTX.networkEventKeys.delete(key);
+    }
+  }
+}
+
+function normalizeNetworkUsageStatus(value, creditsUsed) {
+  const normalized = `${value || ''}`.trim().toLowerCase();
+  if (/(fail|error|cancel|reject)/.test(normalized)) return 'failed';
+  if (/(complete|success|finish|done|settle)/.test(normalized)) return 'settled';
+  if (creditsUsed != null) return 'settled';
+  if (/(process|running|render)/.test(normalized)) return 'processing';
+  if (/(queue|wait|pending)/.test(normalized)) return 'queued';
+  return 'submitted';
+}
+
+function buildNetworkUsageSnapshot(networkPayload) {
+  const credentialUsageMetadata = readCredentialUsageMetadata();
+  const creditsUsed = Number(networkPayload?.creditsUsed);
+  const hasCreditsUsed = Number.isFinite(creditsUsed);
+  const expectedCredits = Number(networkPayload?.expectedCredits);
+  const hasExpectedCredits = Number.isFinite(expectedCredits);
+  const capturedAt = Number(networkPayload?.capturedAt || Date.now());
+  const source = `${networkPayload?.source || 'network_response'}`.trim() || 'network_response';
+  const status = normalizeNetworkUsageStatus(networkPayload?.status, hasCreditsUsed ? creditsUsed : null);
+  const generationId = `${networkPayload?.generationId || ''}`.trim();
+  const requestId = `${networkPayload?.requestId || ''}`.trim();
+  const fingerprint = `${networkPayload?.fingerprint || ''}`.trim();
+  const externalEventId = `${networkPayload?.externalEventId || generationId || requestId || fingerprint || ''}`.trim();
+  const requestPreview = `${networkPayload?.requestPreview || ''}`.slice(0, 1500);
+  const responsePreview = `${networkPayload?.responsePreview || ''}`.slice(0, 3000);
+
+  return {
+    eventType: 'network_generation',
+    eventDate: buildLocalDateValue(new Date(capturedAt)),
+    status,
+    promptText: `${networkPayload?.promptText || ''}`.trim() || readPromptText(),
+    modelLabel: `${networkPayload?.modelLabel || ''}`.trim() || readSelectedModelLabel(),
+    durationLabel: `${networkPayload?.durationLabel || ''}`.trim(),
+    resolutionLabel: `${networkPayload?.resolutionLabel || ''}`.trim(),
+    expectedCredits: hasExpectedCredits ? expectedCredits : null,
+    creditsBefore: null,
+    creditsAfter: null,
+    creditsBurned: hasCreditsUsed ? Math.max(0, creditsUsed) : null,
+    externalEventId,
+    generationId,
+    requestId,
+    fingerprint,
+    source,
+    schemaVersion: Number(networkPayload?.schemaVersion || 1) || 1,
+    confidence: hasCreditsUsed || generationId || requestId ? 0.95 : 0.8,
+    metadata: {
+      stage: status,
+      source,
+      capture: 'network',
+      networkUrl: `${networkPayload?.url || ''}`.slice(0, 1000),
+      networkMethod: `${networkPayload?.method || ''}`.slice(0, 16),
+      httpStatus: Number(networkPayload?.httpStatus || 0) || null,
+      ok: Boolean(networkPayload?.ok),
+      requestPreview,
+      responsePreview,
+      generationId,
+      requestId,
+      fingerprint,
+      externalEventId,
+      credentialId: credentialUsageMetadata.credentialId,
+      linkedCredentialId: credentialUsageMetadata.linkedCredentialId,
+      credentialLabel: credentialUsageMetadata.credentialLabel,
+      klingAccountLabel: readTrackedKlingAccountLabel(),
+    },
+  };
+}
+
+function handleKlingNetworkUsageMessage(event) {
+  if (event?.source !== window) return;
+  if (event?.origin !== location.origin) return;
+  if (event?.data?.source !== 'rmw-kling-network-telemetry') return;
+  if (event?.data?.type !== 'KLING_NETWORK_USAGE') return;
+
+  const payload = event.data.payload || {};
+  const now = Date.now();
+  pruneNetworkEventKeys(now);
+
+  const dedupeKey = [
+    payload.externalEventId,
+    payload.generationId,
+    payload.requestId,
+    payload.fingerprint,
+    payload.status,
+    payload.creditsUsed,
+  ].filter(Boolean).join('|');
+
+  if (dedupeKey && USAGE_CTX.networkEventKeys.has(dedupeKey)) {
+    return;
+  }
+  if (dedupeKey) {
+    USAGE_CTX.networkEventKeys.set(dedupeKey, now);
+  }
+
+  const snapshot = buildNetworkUsageSnapshot(payload);
+  resolveTrackedKlingAccountLabel()
+    .then((klingAccountLabel) => {
+      snapshot.metadata = {
+        ...(snapshot.metadata || {}),
+        klingAccountLabel: klingAccountLabel || snapshot.metadata?.klingAccountLabel || '',
+      };
+      return reportKlingUsage(snapshot);
+    })
+    .then((response) => {
+      const eventId = Number(response?.event?.id || 0);
+      setStatus(`Network usage captured${eventId > 0 ? ` #${eventId}` : ''}`, { hideAfterMs: 2500 });
+    })
+    .catch((error) => {
+      if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) {
+        return;
+      }
+      console.warn('[RMW Kling] Network usage report failed', error);
+    });
+}
+
 function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason) {
   snapshot.creditsAfter = creditsAfter;
   snapshot.creditsBurned = (
@@ -864,7 +1002,12 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
     ...(snapshot.metadata || {}),
     currentCredits: creditsAfter != null ? creditsAfter : snapshot.creditsBefore,
     settlementReason,
+    source: 'dom_balance_fallback',
+    confidence: 0.35,
   };
+  snapshot.source = 'dom_balance_fallback';
+  snapshot.schemaVersion = 1;
+  snapshot.confidence = 0.35;
   return snapshot;
 }
 
@@ -1017,6 +1160,10 @@ function startUsageTracking() {
   document.addEventListener('pointerdown', handleGenerateInteraction, true);
   document.addEventListener('click', handleGenerateInteraction, true);
   window.addEventListener('pagehide', clearPendingUsageReport, true);
+  if (!USAGE_CTX.networkListenerAttached) {
+    USAGE_CTX.networkListenerAttached = true;
+    window.addEventListener('message', handleKlingNetworkUsageMessage, false);
+  }
   if (!USAGE_CTX.debugReadyShown) {
     USAGE_CTX.debugReadyShown = true;
     setStatus('Kling usage tracker ready', { hideAfterMs: 2500 });

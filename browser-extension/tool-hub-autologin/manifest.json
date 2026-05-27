@@ -207,6 +207,17 @@
         "https://klingai.com/*",
         "https://*.klingai.com/*"
       ],
+      "js": ["content-kling-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://kling.ai/*",
+        "https://*.kling.ai/*",
+        "https://klingai.com/*",
+        "https://*.klingai.com/*"
+      ],
       "js": ["content-kling.js"],
       "run_at": "document_idle"
     },
