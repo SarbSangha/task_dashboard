@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_, func, case
 from sqlalchemy.orm import Session
 
 from auth import get_request_session_token, resolve_session_user
@@ -32,6 +32,7 @@ router = APIRouter(prefix="/api/it-tools", tags=["IT Tools"])
 VALID_SCOPES = {"company", "user"}
 VALID_LAUNCH_MODES = {"external_link", "manual_credential", "sso", "api_proxy", "automation", "extension_autofill"}
 EXTENSION_AUTOFILL_TICKET_TTL_SEC = 20 * 60
+MAX_REASONABLE_KLING_CREDIT_BURN = 200
 HOSTNAME_EQUIVALENT_GROUPS = (
     {"canva.com", "www.canva.com"},
     {"behance.net", "www.behance.net", "auth.services.adobe.com", "adobeid-na1.services.adobe.com", "ims-na1.adobelogin.com"},
@@ -1506,6 +1507,54 @@ def _normalize_usage_text(value: Optional[str], max_length: int = 160) -> Option
     return normalized[:max_length]
 
 
+def _safe_credits_burned_value(
+    credits_burned: Optional[float],
+    expected_credits: Optional[float] = None,
+) -> Optional[float]:
+    burned = _normalize_usage_float(credits_burned)
+    expected = _normalize_usage_float(expected_credits)
+    if burned is None:
+        return None
+    if 0 <= burned <= MAX_REASONABLE_KLING_CREDIT_BURN:
+        return burned
+    if expected is not None and 0 < expected <= MAX_REASONABLE_KLING_CREDIT_BURN:
+        return expected
+    return None
+
+
+def _safe_usage_credits_expression():
+    return case(
+        (
+            and_(
+                ITPortalToolUsageEvent.credits_burned >= 0,
+                ITPortalToolUsageEvent.credits_burned <= MAX_REASONABLE_KLING_CREDIT_BURN,
+            ),
+            ITPortalToolUsageEvent.credits_burned,
+        ),
+        (
+            and_(
+                ITPortalToolUsageEvent.expected_credits > 0,
+                ITPortalToolUsageEvent.expected_credits <= MAX_REASONABLE_KLING_CREDIT_BURN,
+                ITPortalToolUsageEvent.credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN,
+            ),
+            ITPortalToolUsageEvent.expected_credits,
+        ),
+        else_=0,
+    )
+
+
+def _usage_event_to_safe_dict(event: ITPortalToolUsageEvent) -> dict:
+    data = event.to_dict()
+    safe_credits = _safe_credits_burned_value(event.credits_burned, event.expected_credits)
+    if safe_credits != event.credits_burned:
+        metadata = dict(data.get("metadata") or {})
+        metadata["ignoredCreditsBurned"] = event.credits_burned
+        metadata["ignoredCreditsReason"] = "outside_reasonable_kling_credit_range"
+        data["creditsBurned"] = safe_credits
+        data["metadata"] = metadata
+    return data
+
+
 def _normalize_prompt_text(value: Optional[str]) -> Optional[str]:
     normalized = (value or "").strip()
     return normalized or None
@@ -1877,13 +1926,13 @@ async def report_extension_usage_event(
     credits_after = _normalize_usage_float(payload.credits_after)
     credits_burned = _normalize_usage_float(payload.credits_burned)
     is_network_usage_event = normalized_event_type.startswith("network") or (source or "") in {"fetch_response", "xhr_response", "network_response"}
-    if is_network_usage_event and credits_burned is not None and credits_burned > 200:
-        merged_metadata = payload.metadata or {}
+    if credits_burned is not None and credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN:
+        merged_metadata = dict(payload.metadata or {})
         merged_metadata["ignoredCreditsBurned"] = credits_burned
-        merged_metadata["ignoredCreditsReason"] = "above_network_credit_sanity_limit"
-        credits_burned = None
+        merged_metadata["ignoredCreditsReason"] = "above_credit_sanity_limit"
+        credits_burned = _safe_credits_burned_value(credits_burned, expected_credits)
     else:
-        merged_metadata = payload.metadata or {}
+        merged_metadata = dict(payload.metadata or {})
     if credits_burned is None:
         if credits_before is not None and credits_after is not None:
             credits_burned = max(0.0, credits_before - credits_after)
@@ -1892,6 +1941,10 @@ async def report_extension_usage_event(
             or (expected_credits is not None and 0 < expected_credits <= 200)
         ):
             credits_burned = expected_credits
+    if credits_burned is not None and credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN:
+        merged_metadata["ignoredCreditsBurned"] = credits_burned
+        merged_metadata["ignoredCreditsReason"] = "above_credit_sanity_limit"
+        credits_burned = _safe_credits_burned_value(credits_burned, expected_credits)
 
     usage_event = None
     action_name = "tool_usage_reported"
@@ -2011,7 +2064,7 @@ async def report_extension_usage_event(
 
     return {
         "success": True,
-        "event": usage_event.to_dict(),
+        "event": _usage_event_to_safe_dict(usage_event),
     }
 
 
@@ -2796,6 +2849,8 @@ async def get_tool_usage_report(
     else:
         base_query = base_query.filter(ITPortalToolUsageEvent.user_id == current_user.id)
 
+    safe_credits_burned = _safe_usage_credits_expression()
+
     aggregate_rows = (
         db.query(
             ITPortalToolUsageEvent.event_date.label("event_date"),
@@ -2804,7 +2859,7 @@ async def get_tool_usage_report(
             User.name.label("user_name"),
             User.email.label("user_email"),
             func.count(ITPortalToolUsageEvent.id).label("generate_clicks"),
-            func.coalesce(func.sum(ITPortalToolUsageEvent.credits_burned), 0).label("total_credits_burned"),
+            func.coalesce(func.sum(safe_credits_burned), 0).label("total_credits_burned"),
             func.coalesce(func.sum(ITPortalToolUsageEvent.expected_credits), 0).label("total_expected_credits"),
             func.max(ITPortalToolUsageEvent.created_at).label("last_event_at"),
         )
@@ -2849,7 +2904,7 @@ async def get_tool_usage_report(
         db.query(
             func.count(ITPortalToolUsageEvent.id).label("event_count"),
             func.count(func.distinct(ITPortalToolUsageEvent.user_id)).label("user_count"),
-            func.coalesce(func.sum(ITPortalToolUsageEvent.credits_burned), 0).label("total_credits_burned"),
+            func.coalesce(func.sum(safe_credits_burned), 0).label("total_credits_burned"),
             func.coalesce(func.sum(ITPortalToolUsageEvent.expected_credits), 0).label("total_expected_credits"),
         )
         .join(ITPortalTool, ITPortalTool.id == ITPortalToolUsageEvent.tool_id)
@@ -2968,7 +3023,7 @@ async def get_tool_usage_report(
         },
         "recentEvents": [
             {
-                **event.to_dict(),
+                **_usage_event_to_safe_dict(event),
                 "toolName": tool_item.name,
                 "toolSlug": tool_item.slug,
                 "credentialScope": (credential_map.get(event.credential_id) or {}).get("scope", ""),
@@ -3119,7 +3174,7 @@ async def get_tool_launch_history(
                 "credentialScope": (audit.details_json or {}).get("credentialScope") or "",
                 "clickedAt": _serialize_utc_datetime(audit.created_at),
                 "relatedActivity": [
-                    event.to_dict()
+                    _usage_event_to_safe_dict(event)
                     for event in related_events_by_audit_id.get(audit.id, [])
                 ],
             }

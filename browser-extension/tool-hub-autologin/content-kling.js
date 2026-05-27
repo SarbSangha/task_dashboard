@@ -38,6 +38,7 @@ const CHECKPOINT_RESUME_MS   = 400;    // was 1200
 const POST_SUBMIT_WAIT_MS    = 300;    // was 700
 const USAGE_REPORT_POLL_MS   = 1200;
 const USAGE_REPORT_MAX_WAIT_MS = 30000;
+const MAX_REASONABLE_KLING_CREDIT_BURN = 200;
 const BADGE_HIDE_DONE_MS     = 4000;
 const BADGE_HIDE_BLOCKED_MS  = 12000;
 
@@ -1002,15 +1003,27 @@ function handleKlingNetworkUsageMessage(event) {
 
 function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason) {
   snapshot.creditsAfter = creditsAfter;
-  snapshot.creditsBurned = (
+  const rawCreditsBurned = (
     snapshot.creditsBefore != null && creditsAfter != null
       ? Math.max(0, snapshot.creditsBefore - creditsAfter)
-      : snapshot.expectedCredits
+      : null
   );
+  const expectedCredits = Number(snapshot.expectedCredits);
+  const hasExpectedCredits = Number.isFinite(expectedCredits) && expectedCredits > 0;
+  const hasReasonableRawBurn = Number.isFinite(rawCreditsBurned)
+    && rawCreditsBurned > 0
+    && rawCreditsBurned <= MAX_REASONABLE_KLING_CREDIT_BURN
+    && (!hasExpectedCredits || rawCreditsBurned <= Math.max(expectedCredits * 3, expectedCredits + 5));
+  const usedExpectedFallback = !hasReasonableRawBurn && hasExpectedCredits;
+  snapshot.creditsBurned = hasReasonableRawBurn
+    ? rawCreditsBurned
+    : (usedExpectedFallback ? expectedCredits : null);
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
     currentCredits: creditsAfter != null ? creditsAfter : snapshot.creditsBefore,
     settlementReason,
+    rawCreditsBurned,
+    usedExpectedCreditFallback: usedExpectedFallback,
     source: 'dom_balance_fallback',
     confidence: 0.35,
   };
