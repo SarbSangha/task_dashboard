@@ -1512,6 +1512,11 @@ export const itToolsAPI = {
     const response = await api.get('/api/it-tools/usage-report', { params, signal });
     return response.data;
   },
+
+  getLaunchHistory: async ({ signal, ...params } = {}) => {
+    const response = await api.get('/api/it-tools/launch-history', { params, signal });
+    return response.data;
+  },
 };
 
 export default api;

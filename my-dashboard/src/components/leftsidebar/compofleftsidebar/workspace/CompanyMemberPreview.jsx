@@ -916,6 +916,7 @@ export default function CompanyMemberPreview({
                   metaBuilder={(task) => [
                     { label: 'From', value: task.creator?.name || 'Unknown' },
                     { label: 'Workflow', value: formatTaskStatus(task.workflowStage || task.status) },
+                    { label: 'Created', value: formatTaskDate(task.createdAt) },
                     { label: 'Updated', value: formatTaskDate(task.updatedAt || task.createdAt) },
                   ]}
                   extraContentBuilder={(task) => <TrackingMetroLine task={task} />}
@@ -945,6 +946,7 @@ export default function CompanyMemberPreview({
                   metaBuilder={(task) => [
                     { label: 'To', value: getOutboxRecipientName(task, normalizedMember.id) },
                     { label: 'Workflow', value: formatTaskStatus(task.workflowStage || task.status) },
+                    { label: 'Created', value: formatTaskDate(task.createdAt) },
                     { label: 'Updated', value: formatTaskDate(task.updatedAt || task.createdAt) },
                   ]}
                   extraContentBuilder={(task) => <TrackingMetroLine task={task} />}

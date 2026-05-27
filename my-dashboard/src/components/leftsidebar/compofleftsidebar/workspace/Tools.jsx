@@ -27,6 +27,19 @@ const EMPTY_USAGE_FILTERS = {
   credentialId: '',
 };
 
+const EMPTY_TOOL_LAUNCH_FILTERS = {
+  selectedDate: buildDateInputValue(0),
+  userId: '',
+  toolId: '',
+};
+
+const EMPTY_TOOL_LAUNCH_SUMMARY = {
+  launchCount: 0,
+  userCount: 0,
+  toolCount: 0,
+  lastLaunchedAt: null,
+};
+
 const ASSIGNMENT_USER_PAGE_SIZE = 20;
 
 const Icons = {
@@ -536,11 +549,18 @@ const compareUsageAggregateTotals = (left, right) => {
   return getUsageTimestamp(right?.lastEventAt) - getUsageTimestamp(left?.lastEventAt);
 };
 
+const TOOL_ADMIN_SECTIONS = [
+  { key: 'assigned', label: 'Tool' },
+  { key: 'access', label: 'Access' },
+  { key: 'add', label: 'Add Tool' },
+];
+
 export default function Tools({ view = 'tools' }) {
   const activeView = view === 'credits' ? 'credits' : 'tools';
   const containerRef = useRef(null);
   const headerRef = useRef(null);
   const usageRefreshControllerRef = useRef(null);
+  const toolLaunchRefreshControllerRef = useRef(null);
   const [tools, setTools] = useState([]);
   const [users, setUsers] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -551,6 +571,7 @@ export default function Tools({ view = 'tools' }) {
   const [notice, setNotice] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
+  const [toolAdminSection, setToolAdminSection] = useState('assigned');
   const [selectedTool, setSelectedTool] = useState(null);
   const [launchingToolId, setLaunchingToolId] = useState('');
   const [editToolId, setEditToolId] = useState('');
@@ -576,6 +597,11 @@ export default function Tools({ view = 'tools' }) {
     currentCredits: null,
   });
   const [recentUsageEvents, setRecentUsageEvents] = useState([]);
+  const [toolLaunchFilters, setToolLaunchFilters] = useState(EMPTY_TOOL_LAUNCH_FILTERS);
+  const [toolLaunchLoading, setToolLaunchLoading] = useState(false);
+  const [toolLaunchRows, setToolLaunchRows] = useState([]);
+  const [toolLaunchSummary, setToolLaunchSummary] = useState(EMPTY_TOOL_LAUNCH_SUMMARY);
+  const [toolLaunchError, setToolLaunchError] = useState('');
   const resolvedCurrentCredits = useMemo(
     () => resolveCurrentCreditsValue(usageSummary, recentUsageEvents),
     [usageSummary, recentUsageEvents],
@@ -827,6 +853,41 @@ export default function Tools({ view = 'tools' }) {
 
   useEffect(() => {
     if (activeView !== 'credits') return undefined;
+    const controller = new AbortController();
+    setToolLaunchLoading(true);
+    setToolLaunchError('');
+    void itToolsAPI.getLaunchHistory({
+      selected_date: toolLaunchFilters.selectedDate,
+      user_id: toolLaunchFilters.userId || undefined,
+      tool_id: toolLaunchFilters.toolId || undefined,
+      signal: controller.signal,
+    }).then((response) => {
+      if (controller.signal.aborted) return;
+      if (typeof response.isAdmin === 'boolean') {
+        setIsAdmin(response.isAdmin);
+      }
+      setToolLaunchRows(response.rows || []);
+      setToolLaunchSummary(response.summary || EMPTY_TOOL_LAUNCH_SUMMARY);
+    }).catch((err) => {
+      if (isRequestCanceled(err) || controller.signal.aborted) return;
+      setToolLaunchRows([]);
+      setToolLaunchSummary(EMPTY_TOOL_LAUNCH_SUMMARY);
+      if (err?.response?.status === 404) {
+        setToolLaunchError('Tool Used report is not available on the running backend yet. Restart the backend to load the new launch-history endpoint.');
+        return;
+      }
+      setToolLaunchError(err?.response?.data?.detail || 'Unable to load tool used report.');
+    }).finally(() => {
+      if (!controller.signal.aborted) {
+        setToolLaunchLoading(false);
+      }
+    });
+
+    return () => controller.abort();
+  }, [activeView, toolLaunchFilters.selectedDate, toolLaunchFilters.userId, toolLaunchFilters.toolId]);
+
+  useEffect(() => {
+    if (activeView !== 'credits') return undefined;
 
     const refreshUsage = () => {
       if (usageRefreshControllerRef.current) return usageRefreshControllerRef.current;
@@ -880,6 +941,59 @@ export default function Tools({ view = 'tools' }) {
     };
   }, [activeView, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
 
+  useEffect(() => {
+    if (activeView !== 'credits') return undefined;
+
+    const refreshToolLaunchReport = () => {
+      if (toolLaunchRefreshControllerRef.current) return toolLaunchRefreshControllerRef.current;
+      const controller = new AbortController();
+      toolLaunchRefreshControllerRef.current = controller;
+      void itToolsAPI.getLaunchHistory({
+        selected_date: toolLaunchFilters.selectedDate,
+        user_id: toolLaunchFilters.userId || undefined,
+        tool_id: toolLaunchFilters.toolId || undefined,
+        signal: controller.signal,
+      }).then((response) => {
+        if (controller.signal.aborted) return;
+        setToolLaunchError('');
+        if (typeof response.isAdmin === 'boolean') {
+          setIsAdmin(response.isAdmin);
+        }
+        setToolLaunchRows(response.rows || []);
+        setToolLaunchSummary(response.summary || EMPTY_TOOL_LAUNCH_SUMMARY);
+      }).catch((err) => {
+        if (isRequestCanceled(err) || controller.signal.aborted) return;
+        if (err?.response?.status === 404) {
+          setToolLaunchError('Tool Used report is not available on the running backend yet. Restart the backend to load the new launch-history endpoint.');
+          return;
+        }
+        setToolLaunchError(err?.response?.data?.detail || 'Unable to refresh tool used report.');
+      }).finally(() => {
+        if (toolLaunchRefreshControllerRef.current === controller) {
+          toolLaunchRefreshControllerRef.current = null;
+        }
+      });
+      return controller;
+    };
+
+    const intervalId = window.setInterval(() => {
+      refreshToolLaunchReport();
+    }, USAGE_REPORT_REFRESH_MS);
+
+    const handleFocus = () => {
+      refreshToolLaunchReport();
+    };
+
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      toolLaunchRefreshControllerRef.current?.abort();
+      toolLaunchRefreshControllerRef.current = null;
+    };
+  }, [activeView, toolLaunchFilters.selectedDate, toolLaunchFilters.userId, toolLaunchFilters.toolId]);
+
   const categories = useMemo(() => {
     return ['All', ...new Set(tools.map((tool) => tool.category || 'General'))];
   }, [tools]);
@@ -891,6 +1005,36 @@ export default function Tools({ view = 'tools' }) {
       return leftLabel.localeCompare(rightLabel);
     });
   }, [users]);
+
+  const toolLaunchToolOptions = useMemo(() => {
+    return [...tools].sort((left, right) => `${left?.name || ''}`.localeCompare(`${right?.name || ''}`));
+  }, [tools]);
+
+  const availableToolLaunchToolIds = useMemo(() => {
+    return new Set(toolLaunchToolOptions.map((tool) => `${tool.id}`));
+  }, [toolLaunchToolOptions]);
+
+  const availableToolLaunchUserIds = useMemo(() => {
+    return new Set(sortedUsers.map((user) => `${user.id}`));
+  }, [sortedUsers]);
+
+  useEffect(() => {
+    const normalizedToolId = `${toolLaunchFilters.toolId || ''}`.trim();
+    if (!normalizedToolId || availableToolLaunchToolIds.has(normalizedToolId)) return;
+    setToolLaunchFilters((current) => ({
+      ...current,
+      toolId: '',
+    }));
+  }, [availableToolLaunchToolIds, toolLaunchFilters.toolId]);
+
+  useEffect(() => {
+    const normalizedUserId = `${toolLaunchFilters.userId || ''}`.trim();
+    if (!normalizedUserId || !sortedUsers.length || availableToolLaunchUserIds.has(normalizedUserId)) return;
+    setToolLaunchFilters((current) => ({
+      ...current,
+      userId: '',
+    }));
+  }, [availableToolLaunchUserIds, sortedUsers.length, toolLaunchFilters.userId]);
 
   const toolById = useMemo(() => {
     const nextMap = new Map();
@@ -1205,6 +1349,15 @@ export default function Tools({ view = 'tools' }) {
     });
   }, [searchQuery, selectedCategory, tools]);
 
+  const accessMatrixTools = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return tools;
+    return tools.filter((tool) => (
+      tool.name?.toLowerCase().includes(query)
+      || tool.category?.toLowerCase().includes(query)
+    ));
+  }, [searchQuery, tools]);
+
   const activeCredentialTool = useMemo(() => {
     const toolId = `${credentialForm.toolId || selectedTool?.id || ''}`.trim();
     if (!toolId) return null;
@@ -1487,6 +1640,7 @@ export default function Tools({ view = 'tools' }) {
 
       if (!currentlyAssigned && !hasSourceCredential) {
         setSelectedTool(tool);
+        setToolAdminSection('add');
         setCredentialForm({
           ...EMPTY_CREDENTIAL_FORM,
           toolId: `${toolId}`,
@@ -1530,7 +1684,7 @@ export default function Tools({ view = 'tools' }) {
     }
   };
 
-  const assignmentColumns = useMemo(() => filteredTools, [filteredTools]);
+  const assignmentColumns = useMemo(() => accessMatrixTools, [accessMatrixTools]);
   const assignmentColumnKey = useMemo(
     () => assignmentColumns.map((tool) => `${tool.id}`).join('|'),
     [assignmentColumns],
@@ -2098,11 +2252,7 @@ export default function Tools({ view = 'tools' }) {
       <header ref={headerRef} className="app-header is-visible">
         <div className="header-wrapper">
           <div>
-            <p className="it-profile-eyebrow">IT Profile</p>
-            <h1 className="app-title">Company Tool Hub</h1>
-            <p className="app-subtitle">
-              Manage company tools, launch links, and assigned credentials from one secure place.
-            </p>
+            <h1 className="app-title">RMW Tools Hub</h1>
           </div>
 
           <div className="search-wrapper">
@@ -2125,12 +2275,28 @@ export default function Tools({ view = 'tools' }) {
         {notice && <div className="tool-alert success">{notice}</div>}
 
         {activeView === 'tools' && isAdmin && (
+          <div className="it-tool-submenu" role="tablist" aria-label="Tool admin sections">
+            {TOOL_ADMIN_SECTIONS.map((section) => (
+              <button
+                key={section.key}
+                type="button"
+                role="tab"
+                aria-selected={toolAdminSection === section.key}
+                className={`it-tool-submenu-btn ${toolAdminSection === section.key ? 'is-active' : ''}`}
+                onClick={() => setToolAdminSection(section.key)}
+              >
+                {section.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {activeView === 'tools' && isAdmin && toolAdminSection === 'add' && (
           <section className="it-admin-grid">
             <form className="it-admin-card" onSubmit={handleSaveTool} autoComplete="off">
               <div className="it-admin-card-header">
                 <div>
                   <h2>{editToolId ? 'Edit Tool' : 'Add Tool'}</h2>
-                  <p className="it-card-copy">Set the launch target, access mode, and presentation details for each company tool.</p>
                 </div>
                 <span>{editToolId ? 'Update setup' : 'Admin only'}</span>
               </div>
@@ -2209,7 +2375,6 @@ export default function Tools({ view = 'tools' }) {
               <div className="it-admin-card-header">
                 <div>
                   <h2>Add Credential</h2>
-                  <p className="it-card-copy">Store the assigned company login securely for extension autofill, magic-link flows, and manual launch support.</p>
                 </div>
                 <span>Encrypted</span>
               </div>
@@ -2553,7 +2718,6 @@ export default function Tools({ view = 'tools' }) {
               <div className="it-admin-card-header">
                 <div>
                   <h2>Verification Mailbox</h2>
-                  <p className="it-card-copy">Manage the Gmail inboxes used for OTP codes or magic sign-in links. The extension will automatically match the mailbox email to the saved credential email for tools like ChatGPT and Claude.</p>
                 </div>
                 <span>{mailboxEntries.length ? `${mailboxEntries.length} saved` : 'Optional'}</span>
               </div>
@@ -2680,7 +2844,7 @@ export default function Tools({ view = 'tools' }) {
           </section>
         )}
 
-        {activeView === 'tools' && isAdmin && (
+        {activeView === 'tools' && isAdmin && toolAdminSection === 'access' && (
           <section className="it-assignment-card">
             <div className="it-admin-card-header">
               <div>
@@ -2917,6 +3081,125 @@ export default function Tools({ view = 'tools' }) {
           <section className="it-usage-card">
             <div className="it-usage-header">
               <div className="it-usage-heading">
+                <p className="it-profile-eyebrow">Tool Used</p>
+              </div>
+              <div className="it-usage-filters">
+                <input
+                  className="it-usage-filter-control"
+                  type="date"
+                  aria-label="Filter tool usage by date"
+                  value={toolLaunchFilters.selectedDate}
+                  onChange={(event) => setToolLaunchFilters((current) => ({ ...current, selectedDate: event.target.value }))}
+                />
+                <select
+                  className="it-usage-filter-control"
+                  aria-label="Filter tool usage by user"
+                  value={toolLaunchFilters.userId}
+                  onChange={(event) => setToolLaunchFilters((current) => ({ ...current, userId: event.target.value }))}
+                >
+                  <option value="">All users</option>
+                  {sortedUsers.map((user) => (
+                    <option key={`tool-launch-user-${user.id}`} value={user.id}>
+                      {user.name || user.email}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="it-usage-filter-control"
+                  aria-label="Filter tool usage by tool"
+                  value={toolLaunchFilters.toolId}
+                  onChange={(event) => setToolLaunchFilters((current) => ({ ...current, toolId: event.target.value }))}
+                >
+                  <option value="">All tools</option>
+                  {toolLaunchToolOptions.map((tool) => (
+                    <option key={`tool-launch-tool-${tool.id}`} value={tool.id}>
+                      {tool.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="it-usage-summary-grid">
+              <div className="it-usage-summary-pill">
+                <span>Total clicks</span>
+                <strong>{toolLaunchLoading ? '...' : toolLaunchSummary.launchCount}</strong>
+              </div>
+              <div className="it-usage-summary-pill">
+                <span>Users</span>
+                <strong>{toolLaunchLoading ? '...' : toolLaunchSummary.userCount}</strong>
+              </div>
+              <div className="it-usage-summary-pill">
+                <span>Tools used</span>
+                <strong>{toolLaunchLoading ? '...' : toolLaunchSummary.toolCount}</strong>
+              </div>
+              <div className="it-usage-summary-pill">
+                <span>Last click</span>
+                <strong>{toolLaunchLoading ? '...' : formatUsageDateTime(toolLaunchSummary.lastLaunchedAt)}</strong>
+              </div>
+            </div>
+
+            {toolLaunchError && (
+              <div className="tool-alert error">{toolLaunchError}</div>
+            )}
+
+            <div className="it-usage-table-wrap">
+              <table className="it-usage-table">
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Tool</th>
+                    <th>Clicked when</th>
+                    <th>Launch type</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {toolLaunchLoading ? (
+                    <tr>
+                      <td colSpan={4}>Loading tool usage...</td>
+                    </tr>
+                  ) : toolLaunchRows.length ? (
+                    toolLaunchRows.map((row) => {
+                      const launchModeLabel = `${row.effectiveLaunchMode || row.launchMode || 'manual'}`.replace(/_/g, ' ');
+                      return (
+                        <tr key={row.id}>
+                          <td>
+                            <div className="it-usage-user-cell">
+                              <strong>{row.userName || row.userEmail || `User #${row.userId}`}</strong>
+                              <small>{row.userEmail || ''}</small>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="it-usage-user-cell">
+                              <strong>{row.toolName || `Tool #${row.toolId}`}</strong>
+                              <small>{row.toolCategory || row.toolSlug || ''}</small>
+                            </div>
+                          </td>
+                          <td>{formatUsageDateTime(row.clickedAt)}</td>
+                          <td>
+                            <div className="it-usage-stat-stack">
+                              <strong>{launchModeLabel}</strong>
+                              <small>{row.credentialScope ? `${row.credentialScope} credential` : 'credential checked'}</small>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    <tr>
+                      <td colSpan={4}>No tool clicks found for these filters.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {activeView === 'credits' && isAdmin && (
+          <section className="it-usage-card">
+            <div className="it-usage-header">
+              <div className="it-usage-heading">
                 <p className="it-profile-eyebrow">Kling Usage</p>
               </div>
               <div className="it-usage-filters">
@@ -3013,7 +3296,7 @@ export default function Tools({ view = 'tools' }) {
           </section>
         )}
 
-        {activeView === 'tools' && (
+        {activeView === 'tools' && (!isAdmin || toolAdminSection === 'assigned') && (
           <>
             <div className="category-container">
               {categories.map((category) => (

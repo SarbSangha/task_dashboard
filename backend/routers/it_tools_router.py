@@ -2891,6 +2891,107 @@ async def get_tool_usage_report(
     }
 
 
+@router.get("/launch-history")
+async def get_tool_launch_history(
+    selected_date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user_id: Optional[int] = None,
+    tool_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db),
+):
+    is_admin = has_any_role(current_user, {"admin"})
+    if user_id and not is_admin and int(user_id) != int(current_user.id):
+        raise HTTPException(status_code=403, detail="You can only view your own tool usage.")
+
+    parsed_selected_date = _parse_report_date(selected_date, "selected_date")
+    parsed_date_from = _parse_report_date(date_from, "date_from")
+    parsed_date_to = _parse_report_date(date_to, "date_to")
+    if parsed_selected_date:
+        parsed_date_from = parsed_selected_date
+        parsed_date_to = parsed_selected_date
+    if parsed_date_from and parsed_date_to and parsed_date_from > parsed_date_to:
+        raise HTTPException(status_code=400, detail="date_from cannot be later than date_to")
+
+    query = (
+        db.query(ITPortalToolAudit, User, ITPortalTool)
+        .join(User, User.id == ITPortalToolAudit.actor_id)
+        .join(ITPortalTool, ITPortalTool.id == ITPortalToolAudit.tool_id)
+        .filter(ITPortalToolAudit.action == "tool_launched")
+    )
+
+    if parsed_date_from:
+        query = query.filter(ITPortalToolAudit.created_at >= datetime.combine(parsed_date_from, datetime.min.time()))
+    if parsed_date_to:
+        query = query.filter(ITPortalToolAudit.created_at <= datetime.combine(parsed_date_to, datetime.max.time()))
+    if tool_id:
+        query = query.filter(ITPortalToolAudit.tool_id == int(tool_id))
+    if is_admin:
+        if user_id:
+            query = query.filter(ITPortalToolAudit.actor_id == int(user_id))
+    else:
+        query = query.filter(ITPortalToolAudit.actor_id == current_user.id)
+
+    history_rows = (
+        query
+        .order_by(ITPortalToolAudit.created_at.desc())
+        .limit(200)
+        .all()
+    )
+
+    summary_query = (
+        db.query(
+            func.count(ITPortalToolAudit.id).label("launch_count"),
+            func.count(func.distinct(ITPortalToolAudit.actor_id)).label("user_count"),
+            func.count(func.distinct(ITPortalToolAudit.tool_id)).label("tool_count"),
+            func.max(ITPortalToolAudit.created_at).label("last_launched_at"),
+        )
+        .join(ITPortalTool, ITPortalTool.id == ITPortalToolAudit.tool_id)
+        .filter(ITPortalToolAudit.action == "tool_launched")
+    )
+    if parsed_date_from:
+        summary_query = summary_query.filter(ITPortalToolAudit.created_at >= datetime.combine(parsed_date_from, datetime.min.time()))
+    if parsed_date_to:
+        summary_query = summary_query.filter(ITPortalToolAudit.created_at <= datetime.combine(parsed_date_to, datetime.max.time()))
+    if tool_id:
+        summary_query = summary_query.filter(ITPortalToolAudit.tool_id == int(tool_id))
+    if is_admin:
+        if user_id:
+            summary_query = summary_query.filter(ITPortalToolAudit.actor_id == int(user_id))
+    else:
+        summary_query = summary_query.filter(ITPortalToolAudit.actor_id == current_user.id)
+    summary_row = summary_query.one()
+
+    return {
+        "success": True,
+        "isAdmin": is_admin,
+        "rows": [
+            {
+                "id": audit.id,
+                "toolId": audit.tool_id,
+                "toolName": tool.name,
+                "toolSlug": tool.slug,
+                "toolCategory": tool.category,
+                "userId": user.id,
+                "userName": user.name or "",
+                "userEmail": user.email or "",
+                "launchMode": (audit.details_json or {}).get("launchMode") or "",
+                "effectiveLaunchMode": (audit.details_json or {}).get("effectiveLaunchMode") or "",
+                "credentialScope": (audit.details_json or {}).get("credentialScope") or "",
+                "clickedAt": audit.created_at.isoformat() if audit.created_at else None,
+            }
+            for audit, user, tool in history_rows
+        ],
+        "summary": {
+            "launchCount": int(summary_row.launch_count or 0),
+            "userCount": int(summary_row.user_count or 0),
+            "toolCount": int(summary_row.tool_count or 0),
+            "lastLaunchedAt": summary_row.last_launched_at.isoformat() if summary_row.last_launched_at else None,
+        },
+    }
+
+
 @router.get("/launch/{ticket}", response_class=HTMLResponse)
 async def launch_with_ticket(
     ticket: str,
