@@ -896,6 +896,8 @@ function buildNetworkUsageSnapshot(networkPayload) {
   const capturedAt = Number(networkPayload?.capturedAt || Date.now());
   const source = `${networkPayload?.source || 'network_response'}`.trim() || 'network_response';
   const status = normalizeNetworkUsageStatus(networkPayload?.status, hasCreditsUsed ? creditsUsed : null);
+  const isCompleted = Boolean(networkPayload?.isCompleted) || status === 'settled';
+  const isReasonableCreditBurn = hasCreditsUsed && creditsUsed > 0 && creditsUsed <= 200;
   const generationId = `${networkPayload?.generationId || ''}`.trim();
   const requestId = `${networkPayload?.requestId || ''}`.trim();
   const fingerprint = `${networkPayload?.fingerprint || ''}`.trim();
@@ -914,14 +916,14 @@ function buildNetworkUsageSnapshot(networkPayload) {
     expectedCredits: hasExpectedCredits ? expectedCredits : null,
     creditsBefore: null,
     creditsAfter: null,
-    creditsBurned: hasCreditsUsed ? Math.max(0, creditsUsed) : null,
+    creditsBurned: isReasonableCreditBurn ? Math.max(0, creditsUsed) : null,
     externalEventId,
     generationId,
     requestId,
     fingerprint,
     source,
     schemaVersion: Number(networkPayload?.schemaVersion || 1) || 1,
-    confidence: hasCreditsUsed || generationId || requestId ? 0.95 : 0.8,
+    confidence: isReasonableCreditBurn || (isCompleted && (generationId || requestId)) ? 0.95 : 0.8,
     metadata: {
       stage: status,
       source,
@@ -930,6 +932,8 @@ function buildNetworkUsageSnapshot(networkPayload) {
       networkMethod: `${networkPayload?.method || ''}`.slice(0, 16),
       httpStatus: Number(networkPayload?.httpStatus || 0) || null,
       ok: Boolean(networkPayload?.ok),
+      isCompleted,
+      isReasonableCreditBurn,
       requestPreview,
       responsePreview,
       generationId,
@@ -951,6 +955,11 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.data?.type !== 'KLING_NETWORK_USAGE') return;
 
   const payload = event.data.payload || {};
+  const creditsUsed = Number(payload?.creditsUsed);
+  const hasReasonableCreditBurn = Number.isFinite(creditsUsed) && creditsUsed > 0 && creditsUsed <= 200;
+  if (!payload?.isCompleted && !hasReasonableCreditBurn) return;
+  if (!payload?.generationId && !payload?.requestId) return;
+
   const now = Date.now();
   pruneNetworkEventKeys(now);
 
@@ -1081,34 +1090,29 @@ function scheduleGenerateUsageReport(generateButton) {
           ...(snapshot.metadata || {}),
           klingAccountLabel: klingAccountLabel || snapshot.metadata?.klingAccountLabel || '',
         };
+        return waitForGenerateUsageSettlement(snapshot);
+      })
+      .then((settledSnapshot) => {
+        if (
+          settledSnapshot.metadata?.settlementReason !== 'balance_decreased'
+          || !(Number(settledSnapshot.creditsBurned || 0) > 0)
+        ) {
+          setStatus('Usage not saved: no confirmed credit burn', { hideAfterMs: 3000 });
+          return null;
+        }
         return reportKlingUsage({
-          ...snapshot,
-          status: 'submitted',
+          ...settledSnapshot,
+          status: 'settled',
           metadata: {
-            ...(snapshot.metadata || {}),
-            stage: 'submitted',
+            ...(settledSnapshot.metadata || {}),
+            stage: 'settled',
           },
         });
       })
       .then((response) => {
-        const eventId = Number(response?.event?.id || 0);
-        if (eventId > 0) {
-          snapshot.eventId = eventId;
-        }
-        setStatus(`Usage saved: ${eventId > 0 ? `#${eventId}` : 'submitted'}`, { hideAfterMs: 3500 });
-        return waitForGenerateUsageSettlement(snapshot);
-      })
-      .then((settledSnapshot) => reportKlingUsage({
-        ...settledSnapshot,
-        status: 'settled',
-        metadata: {
-          ...(settledSnapshot.metadata || {}),
-          stage: 'settled',
-        },
-      }))
-      .then((response) => {
+        if (!response) return;
         const eventId = Number(response?.event?.id || snapshot.eventId || 0);
-        setStatus(`Usage updated: ${eventId > 0 ? `#${eventId}` : 'settled'}`, { hideAfterMs: 3500 });
+        setStatus(`Usage saved: ${eventId > 0 ? `#${eventId}` : 'settled'}`, { hideAfterMs: 3500 });
       })
       .catch((error) => {
         if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) {

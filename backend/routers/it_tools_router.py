@@ -1876,15 +1876,25 @@ async def report_extension_usage_event(
     credits_before = _normalize_usage_float(payload.credits_before)
     credits_after = _normalize_usage_float(payload.credits_after)
     credits_burned = _normalize_usage_float(payload.credits_burned)
+    is_network_usage_event = normalized_event_type.startswith("network") or (source or "") in {"fetch_response", "xhr_response", "network_response"}
+    if is_network_usage_event and credits_burned is not None and credits_burned > 200:
+        merged_metadata = payload.metadata or {}
+        merged_metadata["ignoredCreditsBurned"] = credits_burned
+        merged_metadata["ignoredCreditsReason"] = "above_network_credit_sanity_limit"
+        credits_burned = None
+    else:
+        merged_metadata = payload.metadata or {}
     if credits_burned is None:
         if credits_before is not None and credits_after is not None:
             credits_burned = max(0.0, credits_before - credits_after)
-        elif normalized_status in {"settled", "completed"}:
+        elif normalized_status in {"settled", "completed"} and (
+            not is_network_usage_event
+            or (expected_credits is not None and 0 < expected_credits <= 200)
+        ):
             credits_burned = expected_credits
 
     usage_event = None
     action_name = "tool_usage_reported"
-    merged_metadata = payload.metadata or {}
 
     if payload.event_id:
         usage_event = (

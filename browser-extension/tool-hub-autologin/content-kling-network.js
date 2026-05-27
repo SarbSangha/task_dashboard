@@ -5,8 +5,10 @@
   const SOURCE = 'rmw-kling-network-telemetry';
   const MAX_TEXT_LENGTH = 120000;
   const MAX_BODY_LENGTH = 12000;
-  const MATCH_RE = /(generate|generation|task|submit|create|credit|cost|consume|infer|aigc|video)/i;
+  const GENERATION_URL_RE = /(generate|generation|submit|create|infer|aigc|image|video|task)/i;
+  const EXCLUDED_URL_RE = /(balance|wallet|account|user|profile|history|list|records?|assets?|works?|notifications?|message|comment|feed|search|recommend|config|price|pricing|package|membership|subscription)/i;
   const URL_RE = /(kling\.ai|klingai\.com)/i;
+  const MAX_REASONABLE_CREDIT_BURN = 200;
 
   function toText(value) {
     try {
@@ -61,10 +63,11 @@
     return '';
   }
 
-  function shouldInspect(url, requestText, responseText) {
+  function shouldInspect(url, requestText) {
     if (!URL_RE.test(url)) return false;
-    const haystack = `${url}\n${requestText || ''}\n${responseText || ''}`;
-    return MATCH_RE.test(haystack);
+    if (EXCLUDED_URL_RE.test(url)) return false;
+    const haystack = `${url}\n${requestText || ''}`;
+    return GENERATION_URL_RE.test(haystack);
   }
 
   function isObject(value) {
@@ -105,9 +108,12 @@
     return direct || '';
   }
 
-  function pickNumber(value, matcher) {
-    const direct = walk(value, (key, item) => {
+  function pickNumber(value, matcher, options = {}) {
+    const excludeMatcher = options.excludeMatcher || /^(balance|current|remaining|remain|total|available|obtained|purchase|quota|limit|package|price|pricing|wallet)$/i;
+    const direct = walk(value, (key, item, parent) => {
       if (!matcher.test(key)) return undefined;
+      const parentKeys = isObject(parent) ? Object.keys(parent).join('_') : '';
+      if (excludeMatcher.test(key) || excludeMatcher.test(parentKeys)) return undefined;
       if (typeof item === 'number' && Number.isFinite(item)) return item;
       if (typeof item === 'string' && /^-?\d+(?:\.\d+)?$/.test(item.trim())) return Number(item);
       return undefined;
@@ -133,12 +139,18 @@
     const responseText = payload.responseText || '';
     const requestText = payload.requestText || '';
 
-    const generationId = pickString(merged, /^(generation_?id|generate_?id|task_?id|job_?id|work_?id|id)$/i)
+    const generationId = pickString(merged, /^(generation_?id|generate_?id|task_?id|job_?id|work_?id)$/i)
       || pickString(requestObject, /^(generation_?id|generate_?id|task_?id|job_?id|work_?id)$/i);
     const requestId = pickString(merged, /^(request_?id|trace_?id|log_?id)$/i)
       || pickString(requestObject, /^(request_?id|trace_?id)$/i);
-    const creditsUsed = pickNumber(merged, /^(credits?_?used|credit_?used|consume_?credits?|consumed_?credits?|cost_?credits?|credit_?cost|cost)$/i);
-    const expectedCredits = pickNumber(requestObject, /^(credits?|credit_?cost|cost|consume_?credits?)$/i);
+    const creditsUsed = pickNumber(
+      merged,
+      /^(credits?_?used|credit_?used|consume_?credits?|consumed_?credits?|cost_?credits?|credit_?cost|actual_?credits?)$/i
+    );
+    const expectedCredits = pickNumber(
+      requestObject,
+      /^(expected_?credits?|credits?_?cost|credit_?cost|consume_?credits?)$/i
+    );
     const modelLabel = pickString(merged, /^(model|model_?name|model_?label|scene)$/i)
       || pickString(requestObject, /^(model|model_?name|model_?label|scene)$/i);
     const durationLabel = pickString(merged, /^(duration|duration_?label|video_?duration)$/i)
@@ -148,6 +160,10 @@
     const promptText = pickString(requestObject, /^(prompt|text|query|positive_?prompt)$/i)
       || pickString(merged, /^(prompt|text|query|positive_?prompt)$/i);
     const status = pickString(merged, /^(status|state|task_?status)$/i);
+    const isCompleted = /(complete|success|finish|done|settle)/i.test(status);
+    const isCreditBurnReasonable = creditsUsed != null
+      && creditsUsed > 0
+      && creditsUsed <= MAX_REASONABLE_CREDIT_BURN;
 
     const fingerprint = makeHash([
       payload.method,
@@ -170,20 +186,17 @@
       resolutionLabel,
       promptText,
       status,
+      isCompleted,
+      isCreditBurnReasonable,
     };
   }
 
   function postTelemetry(payload) {
     try {
-      if (!shouldInspect(payload.url, payload.requestText, payload.responseText)) return;
+      if (!shouldInspect(payload.url, payload.requestText)) return;
       const extracted = extractTelemetry(payload);
-      const hasGenerationSignal = Boolean(
-        extracted.generationId
-        || extracted.requestId
-        || extracted.creditsUsed != null
-        || /(generate|generation|task|submit|create|infer|video)/i.test(payload.url)
-      );
-      if (!hasGenerationSignal) return;
+      if (!extracted.generationId && !extracted.requestId) return;
+      if (!extracted.isCompleted && !extracted.isCreditBurnReasonable) return;
 
       window.postMessage({
         source: SOURCE,
