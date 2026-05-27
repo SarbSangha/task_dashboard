@@ -1555,6 +1555,46 @@ def _usage_event_to_safe_dict(event: ITPortalToolUsageEvent) -> dict:
     return data
 
 
+def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
+    metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
+    safe_credits = _safe_credits_burned_value(event.credits_burned, event.expected_credits)
+    stable_key = (
+        event.generation_id
+        or event.request_id
+        or event.external_event_id
+        or event.fingerprint
+        or metadata.get("domDedupeKey")
+    )
+    if stable_key:
+        return ("stable", f"{stable_key}")
+    created_at = event.created_at or datetime.min
+    bucket = int(created_at.timestamp() // 5) if created_at != datetime.min else 0
+    return (
+        "fallback",
+        int(event.tool_id or 0),
+        int(event.user_id or 0),
+        int(event.credential_id or 0),
+        f"{event.event_type or ''}".strip().lower(),
+        f"{event.model_label or ''}".strip().lower(),
+        f"{event.duration_label or ''}".strip().lower(),
+        f"{event.resolution_label or ''}".strip().lower(),
+        safe_credits,
+        bucket,
+    )
+
+
+def _dedupe_usage_events(events: list[ITPortalToolUsageEvent]) -> list[ITPortalToolUsageEvent]:
+    deduped = []
+    seen = set()
+    for event in sorted(events, key=lambda item: item.created_at or datetime.min, reverse=True):
+        key = _usage_event_duplicate_key(event)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(event)
+    return deduped
+
+
 def _normalize_prompt_text(value: Optional[str]) -> Optional[str]:
     normalized = (value or "").strip()
     return normalized or None
@@ -1989,6 +2029,31 @@ async def report_extension_usage_event(
                     )
                 )
             usage_event = dedupe_query.order_by(ITPortalToolUsageEvent.created_at.desc()).first()
+        elif normalized_event_type == "generate_click":
+            duplicate_window_start = datetime.utcnow() - timedelta(seconds=8)
+            duplicate_query = (
+                db.query(ITPortalToolUsageEvent)
+                .filter(
+                    ITPortalToolUsageEvent.tool_id == tool.id,
+                    ITPortalToolUsageEvent.user_id == current_user.id,
+                    ITPortalToolUsageEvent.event_type == normalized_event_type,
+                    ITPortalToolUsageEvent.created_at >= duplicate_window_start,
+                )
+            )
+            if credential:
+                duplicate_query = duplicate_query.filter(
+                    or_(
+                        ITPortalToolUsageEvent.credential_id == credential.id,
+                        ITPortalToolUsageEvent.credential_id.is_(None),
+                    )
+                )
+            if credits_burned is not None:
+                duplicate_query = duplicate_query.filter(ITPortalToolUsageEvent.credits_burned == credits_burned)
+            if expected_credits is not None:
+                duplicate_query = duplicate_query.filter(ITPortalToolUsageEvent.expected_credits == expected_credits)
+            if payload.model_label:
+                duplicate_query = duplicate_query.filter(ITPortalToolUsageEvent.model_label == payload.model_label.strip())
+            usage_event = duplicate_query.order_by(ITPortalToolUsageEvent.created_at.desc()).first()
 
     if usage_event:
         usage_event.credential_id = credential.id if credential else usage_event.credential_id
@@ -2927,12 +2992,19 @@ async def get_tool_usage_report(
         summary_row = summary_row.filter(ITPortalToolUsageEvent.user_id == current_user.id)
     summary_row = summary_row.one()
 
-    recent_events = (
+    recent_event_rows = (
         base_query
         .order_by(ITPortalToolUsageEvent.created_at.desc())
-        .limit(30)
+        .limit(80)
         .all()
     )
+    deduped_recent_events = _dedupe_usage_events([event for event, _, _ in recent_event_rows])
+    deduped_recent_event_ids = {event.id for event in deduped_recent_events[:30]}
+    recent_events = [
+        row
+        for row in recent_event_rows
+        if row[0].id in deduped_recent_event_ids
+    ][:30]
 
     grouped_event_meta = {}
     for event, _, _ in recent_events:
@@ -3129,7 +3201,7 @@ async def get_tool_launch_history(
                 break
 
         related_events_by_audit_id = {
-            audit_id: sorted(events, key=lambda item: item.created_at or datetime.min, reverse=True)[:5]
+            audit_id: _dedupe_usage_events(events)[:5]
             for audit_id, events in related_events_by_audit_id.items()
         }
 

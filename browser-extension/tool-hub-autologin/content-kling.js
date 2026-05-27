@@ -163,6 +163,7 @@ const USAGE_CTX = {
   pendingReportTimer  : null,
   networkListenerAttached: false,
   networkEventKeys    : new Map(),
+  domSettlementKeys   : new Map(),
 };
 
 function normalizeLoginMethod(value) {
@@ -878,6 +879,14 @@ function pruneNetworkEventKeys(now = Date.now()) {
   }
 }
 
+function pruneDomSettlementKeys(now = Date.now()) {
+  for (const [key, capturedAt] of USAGE_CTX.domSettlementKeys.entries()) {
+    if (now - capturedAt > 2 * 60 * 1000) {
+      USAGE_CTX.domSettlementKeys.delete(key);
+    }
+  }
+}
+
 function normalizeNetworkUsageStatus(value, creditsUsed) {
   const normalized = `${value || ''}`.trim().toLowerCase();
   if (/(fail|error|cancel|reject)/.test(normalized)) return 'failed';
@@ -1084,12 +1093,22 @@ function scheduleGenerateUsageReport(generateButton) {
     snapshot.expectedCredits,
   ]);
   const now = Date.now();
-  if (USAGE_CTX.lastGenerateKey === dedupeKey && now - USAGE_CTX.lastGenerateAt < 1500) {
+  pruneDomSettlementKeys(now);
+  if (
+    (USAGE_CTX.lastGenerateKey === dedupeKey && now - USAGE_CTX.lastGenerateAt < 3000)
+    || (USAGE_CTX.domSettlementKeys.has(dedupeKey) && now - USAGE_CTX.domSettlementKeys.get(dedupeKey) < 90000)
+  ) {
     return;
   }
 
   USAGE_CTX.lastGenerateKey = dedupeKey;
   USAGE_CTX.lastGenerateAt = now;
+  USAGE_CTX.domSettlementKeys.set(dedupeKey, now);
+  snapshot.fingerprint = `dom_${dedupeKey}`;
+  snapshot.metadata = {
+    ...(snapshot.metadata || {}),
+    domDedupeKey: dedupeKey,
+  };
   if (USAGE_CTX.pendingReportTimer) {
     clearTimeout(USAGE_CTX.pendingReportTimer);
     USAGE_CTX.pendingReportTimer = null;
@@ -1110,9 +1129,11 @@ function scheduleGenerateUsageReport(generateButton) {
           settledSnapshot.metadata?.settlementReason !== 'balance_decreased'
           || !(Number(settledSnapshot.creditsBurned || 0) > 0)
         ) {
+          USAGE_CTX.domSettlementKeys.delete(dedupeKey);
           setStatus('Usage not saved: no confirmed credit burn', { hideAfterMs: 3000 });
           return null;
         }
+        USAGE_CTX.domSettlementKeys.set(dedupeKey, Date.now());
         return reportKlingUsage({
           ...settledSnapshot,
           status: 'settled',
