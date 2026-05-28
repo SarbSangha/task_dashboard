@@ -484,6 +484,8 @@ const formatUsageSourceLabel = (value) => {
   if (normalized === 'websocket_message') return 'WebSocket';
   if (normalized === 'eventsource_message') return 'SSE';
   if (normalized === 'dom_balance_fallback') return 'DOM fallback';
+  if (normalized === 'expected_credit_lock') return 'Expected lock';
+  if (normalized === 'wallet_reconciled') return 'Wallet';
   if (normalized === 'network_response') return 'Network';
   return normalized ? normalized.replace(/_/g, ' ') : '';
 };
@@ -513,10 +515,17 @@ const buildUsageDiagnosticChips = (event) => {
   const totalTime = formatUsageDurationMs(lifecycleTimings.totalTimeMs);
   const queueTime = formatUsageDurationMs(lifecycleTimings.queueTimeMs);
   const processingTime = formatUsageDurationMs(lifecycleTimings.processingTimeMs);
+  const walletSnapshot = metadata.walletSnapshot || {};
   return [
     sourceLabel ? `Source: ${sourceLabel}` : '',
     confidenceLabel ? `Confidence: ${confidenceLabel}` : '',
+    metadata.creditSourcePriority ? `Priority: ${metadata.creditSourcePriority}` : '',
     metadata.generationMode ? `Mode: ${metadata.generationMode}` : '',
+    metadata.outputCount ? `Outputs: ${metadata.outputCount}` : '',
+    metadata.nativeAudio ? 'Native audio' : '',
+    metadata.multiShot ? 'Multi-shot' : '',
+    metadata.creditDrift ? `Drift: ${metadata.creditDriftAmount > 0 ? '+' : ''}${metadata.creditDriftAmount}` : '',
+    walletSnapshot.delta != null ? `Wallet delta: ${walletSnapshot.delta}` : '',
     lifecycleTimings.terminalStage ? `Stage: ${lifecycleTimings.terminalStage}` : '',
     totalTime ? `Total: ${totalTime}` : '',
     queueTime ? `Queue: ${queueTime}` : '',

@@ -44,6 +44,11 @@ const USAGE_REPORT_MAX_WAIT_MS = 30000;
 const MAX_REASONABLE_KLING_CREDIT_BURN = 3000;
 const MAX_REASONABLE_KLING_CREDIT_BALANCE = 1000000;
 const SUPPORTED_KLING_USAGE_FALLBACK_MODES = new Set(['image', 'video', 'motion-control', 'avatar']);
+const CREDIT_SOURCE_PROFILES = {
+  wallet: { source: 'wallet_reconciled', priority: 100, confidence: 1 },
+  dom: { source: 'dom_balance_fallback', priority: 80, confidence: 0.8 },
+  expected: { source: 'expected_credit_lock', priority: 60, confidence: 0.6 },
+};
 const BADGE_HIDE_DONE_MS     = 4000;
 const BADGE_HIDE_BLOCKED_MS  = 12000;
 
@@ -173,6 +178,7 @@ const USAGE_CTX = {
   tabSessionId        : '',
   extensionTabId      : 0,
   broadcastChannel    : null,
+  latestWalletBalance : null,
 };
 
 function normalizeLoginMethod(value) {
@@ -744,6 +750,12 @@ function readGenerateControlContext(generateButton) {
   const modeContextText = normalizeSpace(`${scopeText} ${bodyText}`);
   const generationMode = inferGenerationModeFromText(modeContextText);
   const modelLabel = extractModelLabelFromText(modeContextText, generationMode);
+  const outputCountMatch = scopeText.match(/\b(?:360p|540p|720p|1080p|4k)\b\s*[·|/,-]\s*\d+\s*s\s*[·|/,-]\s*(\d+)\b/i)
+    || modeContextText.match(/\bnumber\s+of\s+outputs?\s*(\d+)\b/i)
+    || modeContextText.match(/\boutputs?\s*[:=-]?\s*(\d+)\b/i);
+  const outputCount = outputCountMatch ? Number(outputCountMatch[1]) : null;
+  const nativeAudioEnabled = /\bnative\s+audio\b/i.test(modeContextText);
+  const multiShotEnabled = /\bmulti-?shot\b/i.test(modeContextText);
 
   return {
     modelLabel,
@@ -751,6 +763,9 @@ function readGenerateControlContext(generateButton) {
     durationLabel: durationMatch?.[0] || '',
     resolutionLabel: resolutionMatch?.[0] || '',
     aspectRatioLabel: ratioMatch?.[0] || '',
+    outputCount: Number.isInteger(outputCount) && outputCount > 0 ? outputCount : null,
+    nativeAudioEnabled,
+    multiShotEnabled,
     scopeText,
   };
 }
@@ -846,6 +861,22 @@ function readCredentialUsageMetadata() {
   };
 }
 
+function announceKlingGenerateIntent(snapshot) {
+  try {
+    window.postMessage({
+      source: 'rmw-kling-content-telemetry',
+      type: 'KLING_GENERATE_INTENT',
+      payload: {
+        expectedCredits: snapshot?.expectedCredits ?? null,
+        modelLabel: snapshot?.modelLabel || '',
+        generationMode: snapshot?.metadata?.generationMode || '',
+        fingerprint: snapshot?.fingerprint || '',
+        capturedAt: Date.now(),
+      },
+    }, location.origin);
+  } catch {}
+}
+
 function makeUsageSessionId(prefix) {
   try {
     if (crypto?.randomUUID) return `${prefix}_${crypto.randomUUID()}`;
@@ -888,6 +919,13 @@ function initUsageIdentity() {
       })
       .catch(() => {});
   }
+}
+
+function debugUsageTelemetry(label, payload = {}) {
+  try {
+    if (!window.__RMW_DEBUG_USAGE) return;
+    console.debug('[RMW Kling Usage]', label, payload);
+  } catch {}
 }
 
 function getUsageIdentityMetadata() {
@@ -947,7 +985,9 @@ function buildGenerateUsageSnapshot(generateButton) {
   const controlContext = readGenerateControlContext(generateButton);
   const generationMode = controlContext.generationMode || readGenerationMode(controlContext.scopeText);
   const expectedCredits = readExpectedCreditsFromGenerateButton(generateButton);
-  const creditsBefore = readVisibleCreditBalance();
+  const latestWalletBalance = USAGE_CTX.latestWalletBalance;
+  const walletBalanceIsRecent = latestWalletBalance?.capturedAt && Date.now() - latestWalletBalance.capturedAt < 60000;
+  const creditsBefore = readVisibleCreditBalance() ?? (walletBalanceIsRecent ? latestWalletBalance.balance : null);
   const klingAccountLabel = readTrackedKlingAccountLabel();
   const credentialUsageMetadata = readCredentialUsageMetadata();
   const usageIdentityMetadata = getUsageIdentityMetadata();
@@ -973,10 +1013,14 @@ function buildGenerateUsageSnapshot(generateButton) {
     metadata: {
       actionLabel: buttonLabel,
       aspectRatioLabel: controlContext.aspectRatioLabel,
+      outputCount: controlContext.outputCount,
+      nativeAudio: controlContext.nativeAudioEnabled,
+      multiShot: controlContext.multiShotEnabled,
       generationMode,
       pathname: location.pathname,
       controlContext: controlContext.scopeText,
       currentCredits: creditsBefore,
+      creditsBeforeSource: creditsBefore === latestWalletBalance?.balance && walletBalanceIsRecent ? 'wallet_api' : 'visible_dom',
       klingAccountLabel,
       credentialId: credentialUsageMetadata.credentialId,
       linkedCredentialId: credentialUsageMetadata.linkedCredentialId,
@@ -1113,6 +1157,9 @@ function buildNetworkUsageSnapshot(networkPayload) {
       isCompleted,
       isReasonableCreditBurn,
       generationMode: `${networkPayload?.generationMode || ''}`.trim(),
+      outputCount: Number(networkPayload?.outputCount || 0) || null,
+      nativeAudio: Boolean(networkPayload?.nativeAudioEnabled),
+      multiShot: Boolean(networkPayload?.multiShotEnabled),
       expectedCredits: hasExpectedCredits ? expectedCredits : null,
       requestPreview,
       responsePreview,
@@ -1140,6 +1187,19 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.source !== window) return;
   if (event?.origin !== location.origin) return;
   if (event?.data?.source !== 'rmw-kling-network-telemetry') return;
+  if (event?.data?.type === 'KLING_WALLET_BALANCE') {
+    const balance = Number(event.data.payload?.balance);
+    if (Number.isInteger(balance) && balance >= 0 && balance <= MAX_REASONABLE_KLING_CREDIT_BALANCE) {
+      USAGE_CTX.latestWalletBalance = {
+        balance,
+        capturedAt: Number(event.data.payload?.capturedAt || Date.now()),
+        source: event.data.payload?.source || 'wallet_api',
+        url: `${event.data.payload?.url || ''}`.slice(0, 1000),
+      };
+      debugUsageTelemetry('wallet_balance_captured', USAGE_CTX.latestWalletBalance);
+    }
+    return;
+  }
   if (event?.data?.type !== 'KLING_NETWORK_USAGE') return;
 
   const payload = event.data.payload || {};
@@ -1203,24 +1263,54 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
     && rawCreditsBurned <= MAX_REASONABLE_KLING_CREDIT_BURN
     && hasStrongGenerateCost
     && rawCreditsBurned <= Math.max(expectedCredits * 3, expectedCredits + 5);
+  const sourceKind = settlementReason === 'wallet_balance_decreased'
+    ? 'wallet'
+    : (hasReasonableRawBurn ? 'dom' : 'expected');
+  const creditSourceProfile = CREDIT_SOURCE_PROFILES[sourceKind];
   const usedExpectedFallback = !hasReasonableRawBurn && hasStrongGenerateCost && isSupportedFallbackMode;
   snapshot.creditsBurned = hasReasonableRawBurn
     ? rawCreditsBurned
     : (usedExpectedFallback ? expectedCredits : null);
+  const walletSnapshot = {
+    before: snapshot.creditsBefore,
+    after: creditsAfter,
+    delta: rawCreditsBurned,
+    expected: hasExpectedCredits ? expectedCredits : null,
+    source: creditSourceProfile.source,
+    capturedAt: Date.now(),
+  };
+  const driftAmount = hasReasonableRawBurn && hasExpectedCredits ? rawCreditsBurned - expectedCredits : 0;
+  const hasCreditDrift = hasReasonableRawBurn && hasExpectedCredits && driftAmount !== 0;
+  const confidenceLevel = snapshot.creditsBurned != null ? creditSourceProfile.confidence : 0.35;
+  debugUsageTelemetry('settlement_finalized', {
+    settlementReason,
+    sourceKind,
+    expectedCredits,
+    rawCreditsBurned,
+    creditsBurned: snapshot.creditsBurned,
+    walletSnapshot,
+    hasCreditDrift,
+  });
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
     currentCredits: creditsAfter != null ? creditsAfter : snapshot.creditsBefore,
     settlementReason,
     rawCreditsBurned,
+    walletSnapshot,
+    creditSource: creditSourceProfile.source,
+    creditSourcePriority: creditSourceProfile.priority,
+    confidenceLevel,
+    creditDrift: hasCreditDrift,
+    creditDriftAmount: hasCreditDrift ? driftAmount : 0,
     usedExpectedCreditFallback: usedExpectedFallback,
     supportedFallbackMode: isSupportedFallbackMode,
     strongGenerateCost: hasStrongGenerateCost,
-    source: 'dom_balance_fallback',
-    confidence: 0.35,
+    source: creditSourceProfile.source,
+    confidence: confidenceLevel,
   };
-  snapshot.source = 'dom_balance_fallback';
+  snapshot.source = creditSourceProfile.source;
   snapshot.schemaVersion = 1;
-  snapshot.confidence = 0.35;
+  snapshot.confidence = confidenceLevel;
   return snapshot;
 }
 
@@ -1230,6 +1320,24 @@ function waitForGenerateUsageSettlement(snapshot) {
     let lastObservedCredits = snapshot.creditsBefore;
     let settled = false;
     let intervalId = 0;
+
+    snapshot.status = 'reconciling';
+    snapshot.metadata = {
+      ...(snapshot.metadata || {}),
+      stage: 'reconciling',
+      lifecycleEvent: {
+        stage: 'reconciling',
+        source: 'dom_balance_fallback',
+        transport: 'settlement_poll',
+        capturedAt: startedAt,
+        creditsUsed: null,
+      },
+    };
+    debugUsageTelemetry('reconciliation_started', {
+      expectedCredits: snapshot.expectedCredits,
+      creditsBefore: snapshot.creditsBefore,
+      fingerprint: snapshot.fingerprint,
+    });
 
     const finish = (creditsAfter, settlementReason) => {
       if (settled) return;
@@ -1241,7 +1349,9 @@ function waitForGenerateUsageSettlement(snapshot) {
     };
 
     const check = () => {
-      const creditsAfter = readVisibleCreditBalance();
+      const walletBalance = USAGE_CTX.latestWalletBalance;
+      const walletBalanceIsFresh = walletBalance?.capturedAt && walletBalance.capturedAt >= startedAt - 250;
+      const creditsAfter = walletBalanceIsFresh ? walletBalance.balance : readVisibleCreditBalance();
       if (creditsAfter != null) {
         lastObservedCredits = creditsAfter;
       }
@@ -1251,7 +1361,7 @@ function waitForGenerateUsageSettlement(snapshot) {
         && creditsAfter != null
         && creditsAfter < snapshot.creditsBefore
       ) {
-        finish(creditsAfter, 'balance_decreased');
+        finish(creditsAfter, walletBalanceIsFresh ? 'wallet_balance_decreased' : 'balance_decreased');
         return;
       }
 
@@ -1263,6 +1373,63 @@ function waitForGenerateUsageSettlement(snapshot) {
     intervalId = window.setInterval(check, USAGE_REPORT_POLL_MS);
     check();
   });
+}
+
+function reportGenerateCreditLock(snapshot) {
+  const expectedCredits = Number(snapshot.expectedCredits);
+  if (
+    !Number.isInteger(expectedCredits)
+    || expectedCredits <= 0
+    || expectedCredits > MAX_REASONABLE_KLING_CREDIT_BURN
+  ) {
+    return Promise.resolve(null);
+  }
+
+  const lockedSnapshot = {
+    ...snapshot,
+    status: 'submitted',
+    creditsAfter: null,
+    creditsBurned: expectedCredits,
+    source: CREDIT_SOURCE_PROFILES.expected.source,
+    confidence: CREDIT_SOURCE_PROFILES.expected.confidence,
+    metadata: {
+      ...(snapshot.metadata || {}),
+      stage: 'submitted',
+      creditLocked: true,
+      reservedCredits: expectedCredits,
+      creditSource: CREDIT_SOURCE_PROFILES.expected.source,
+      creditSourcePriority: CREDIT_SOURCE_PROFILES.expected.priority,
+      confidenceLevel: CREDIT_SOURCE_PROFILES.expected.confidence,
+      settlementReason: 'credit_locked_on_click',
+      lifecycleEvent: {
+        stage: 'submitted',
+        source: CREDIT_SOURCE_PROFILES.expected.source,
+        transport: 'click',
+        capturedAt: Date.now(),
+        creditsUsed: expectedCredits,
+      },
+    },
+  };
+
+  return reportKlingUsage(lockedSnapshot)
+    .then((response) => {
+      const eventId = Number(response?.event?.id || 0);
+      if (eventId > 0) {
+        snapshot.eventId = eventId;
+      }
+      snapshot.metadata = {
+        ...(snapshot.metadata || {}),
+        creditLocked: true,
+        reservedCredits: expectedCredits,
+        lockedEventId: eventId || snapshot.metadata?.lockedEventId || null,
+      };
+      debugUsageTelemetry('credit_locked', {
+        eventId,
+        expectedCredits,
+        fingerprint: snapshot.fingerprint,
+      });
+      return response;
+    });
 }
 
 function scheduleGenerateUsageReport(generateButton) {
@@ -1302,6 +1469,20 @@ function scheduleGenerateUsageReport(generateButton) {
     ...(snapshot.metadata || {}),
     domDedupeKey: dedupeKey,
   };
+  announceKlingGenerateIntent(snapshot);
+  reportGenerateCreditLock(snapshot)
+    .then((response) => {
+      const eventId = Number(response?.event?.id || 0);
+      if (eventId > 0) {
+        setStatus(`Credits locked: ${expectedCredits} credit${expectedCredits === 1 ? '' : 's'}${eventId > 0 ? ` (#${eventId})` : ''}`, { hideAfterMs: 2500 });
+      }
+    })
+    .catch((error) => {
+      if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) {
+        return;
+      }
+      console.warn('[RMW Kling] Credit lock report failed', error);
+    });
   if (USAGE_CTX.pendingReportTimer) {
     clearTimeout(USAGE_CTX.pendingReportTimer);
     USAGE_CTX.pendingReportTimer = null;

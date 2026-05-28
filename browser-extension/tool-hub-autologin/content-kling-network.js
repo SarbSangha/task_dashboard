@@ -6,9 +6,12 @@
   const MAX_TEXT_LENGTH = 120000;
   const MAX_BODY_LENGTH = 12000;
   const GENERATION_URL_RE = /(generate|generation|submit|create|infer|aigc|image|video|task)/i;
+  const WALLET_URL_RE = /(balance|wallet|credits?|credit)/i;
   const EXCLUDED_URL_RE = /(balance|wallet|account|user|profile|history|list|records?|assets?|works?|notifications?|message|comment|feed|search|recommend|config|price|pricing|package|membership|subscription)/i;
   const URL_RE = /(kling\.ai|klingai\.com)/i;
   const MAX_REASONABLE_CREDIT_BURN = 3000;
+  const GENERATE_INTENT_WINDOW_MS = 30000;
+  let recentGenerateIntentUntil = 0;
 
   function toText(value) {
     try {
@@ -65,6 +68,7 @@
 
   function shouldInspect(url, requestText) {
     if (!URL_RE.test(url)) return false;
+    if (WALLET_URL_RE.test(url) && Date.now() <= recentGenerateIntentUntil) return true;
     if (EXCLUDED_URL_RE.test(url)) return false;
     const haystack = `${url}\n${requestText || ''}`;
     return GENERATION_URL_RE.test(haystack);
@@ -141,6 +145,27 @@
       : null;
   }
 
+  function normalizeWalletBalanceValue(value) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 0 && parsed <= 1000000
+      ? parsed
+      : null;
+  }
+
+  function pickWalletBalance(value) {
+    return walk(value, (key, item, parent) => {
+      if (!/^(balance|current_?credits?|remaining_?credits?|remain_?credits?|available_?credits?|credits?|credit_?balance|wallet_?balance)$/i.test(key)) {
+        return undefined;
+      }
+      const parentKeys = isObject(parent) ? Object.keys(parent).join('_') : '';
+      if (/(used|consume|consumed|cost|price|pricing|package|total_spent|history)/i.test(`${key}_${parentKeys}`)) {
+        return undefined;
+      }
+      const normalized = normalizeWalletBalanceValue(item);
+      return normalized != null ? normalized : undefined;
+    });
+  }
+
   function pickCreditValue(value, matcher) {
     return normalizeCreditValue(pickNumber(value, matcher));
   }
@@ -185,6 +210,14 @@
     const raw = `${value || ''}`.trim();
     if (/^(360p|540p|720p|1080p|2k|4k)$/i.test(raw)) return raw;
     return pickFirstTextMatch(text, /\b(360p|540p|720p|1080p|2k|4k)\b/i);
+  }
+
+  function extractOutputCountFromTelemetry(text) {
+    const match = `${text || ''}`.match(/\b(?:360p|540p|720p|1080p|2k|4k)\b\s*[·|/,-]\s*\d+\s*s\s*[·|/,-]\s*(\d+)\b/i)
+      || `${text || ''}`.match(/\bnumber\s+of\s+outputs?\s*(\d+)\b/i)
+      || `${text || ''}`.match(/\boutputs?\s*[:=-]?\s*(\d+)\b/i);
+    const parsed = Number(match?.[1]);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
   function makeHash(value) {
@@ -243,6 +276,12 @@
       || pickString(requestObject, /^(resolution|resolution_?label|quality|video_?quality)$/i);
     const durationLabel = normalizeDurationLabel(rawDurationLabel, telemetryText);
     const resolutionLabel = normalizeResolutionLabel(rawResolutionLabel, telemetryText);
+    const outputCount = pickNumber(requestObject, /^(output_?count|outputs?|n|num|count)$/i, { excludeMatcher: /^(balance|current|remaining|remain|total|available|obtained|purchase|quota|limit|package|price|pricing|wallet)$/i })
+      || extractOutputCountFromTelemetry(telemetryText);
+    const nativeAudioEnabled = /\bnative\s+audio\b/i.test(telemetryText)
+      || Boolean(pickString(requestObject, /^(native_?audio|audio_?native|with_?audio)$/i));
+    const multiShotEnabled = /\bmulti-?shot\b/i.test(telemetryText)
+      || Boolean(pickString(requestObject, /^(multi_?shot|multi_?image)$/i));
     const promptText = pickString(requestObject, /^(prompt|text|query|positive_?prompt)$/i)
       || pickString(merged, /^(prompt|text|query|positive_?prompt)$/i);
     const status = normalizeLifecycleStatus(
@@ -272,6 +311,9 @@
       modelLabel,
       durationLabel,
       resolutionLabel,
+      outputCount,
+      nativeAudioEnabled,
+      multiShotEnabled,
       promptText,
       status,
       isCompleted,
@@ -306,6 +348,40 @@
     } catch {}
   }
 
+  function postWalletTelemetry(payload) {
+    try {
+      if (!URL_RE.test(payload.url) || !WALLET_URL_RE.test(payload.url)) return;
+      if (Date.now() > recentGenerateIntentUntil) return;
+      const balance = pickWalletBalance(payload.responseJson);
+      if (balance == null) return;
+      window.postMessage({
+        source: SOURCE,
+        type: 'KLING_WALLET_BALANCE',
+        payload: {
+          balance,
+          method: payload.method,
+          url: payload.url,
+          ok: payload.ok,
+          httpStatus: payload.httpStatus,
+          source: payload.source,
+          transport: payload.transport || payload.source,
+          schemaVersion: 1,
+          capturedAt: Date.now(),
+        },
+      }, location.origin);
+    } catch {}
+  }
+
+  window.addEventListener('message', (event) => {
+    try {
+      if (event?.source !== window) return;
+      if (event?.origin !== location.origin) return;
+      if (event?.data?.source !== 'rmw-kling-content-telemetry') return;
+      if (event?.data?.type !== 'KLING_GENERATE_INTENT') return;
+      recentGenerateIntentUntil = Math.max(recentGenerateIntentUntil, Date.now() + GENERATE_INTENT_WINDOW_MS);
+    } catch {}
+  }, false);
+
   const originalFetch = window.fetch;
   if (typeof originalFetch === 'function') {
     window.fetch = async function rmwKlingFetch(input, init) {
@@ -325,6 +401,14 @@
             requestText,
             requestJson: parseJson(requestText),
             responseText,
+            responseJson: parseJson(responseText),
+            ok: response.ok,
+            httpStatus: response.status,
+          });
+          postWalletTelemetry({
+            source: 'wallet_fetch_response',
+            method,
+            url,
             responseJson: parseJson(responseText),
             ok: response.ok,
             httpStatus: response.status,
@@ -359,6 +443,14 @@
             requestText,
             requestJson: parseJson(requestText),
             responseText,
+            responseJson: parseJson(responseText),
+            ok: this.status >= 200 && this.status < 400,
+            httpStatus: this.status,
+          });
+          postWalletTelemetry({
+            source: 'wallet_xhr_response',
+            method: this.__rmwKlingMethod || 'GET',
+            url: this.__rmwKlingUrl || '',
             responseJson: parseJson(responseText),
             ok: this.status >= 200 && this.status < 400,
             httpStatus: this.status,

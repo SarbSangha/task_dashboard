@@ -1542,10 +1542,14 @@ def _normalize_usage_text(value: Optional[str], max_length: int = 160) -> Option
 
 def _usage_source_rank(value: Optional[str]) -> int:
     normalized = f"{value or ''}".strip().lower()
+    if normalized == "wallet_reconciled":
+        return 5
     if normalized in {"fetch_response", "xhr_response"}:
         return 4
     if normalized in {"websocket_message", "eventsource_message", "network_response"}:
         return 3
+    if normalized == "expected_credit_lock":
+        return 2
     if normalized == "dom_balance_fallback":
         return 1
     return 2 if normalized else 0
@@ -1604,6 +1608,8 @@ def _safe_credits_burned_value(
     is_dom_fallback = normalized_source == "dom_balance_fallback"
     is_kling_network_or_fallback = normalized_source in {
         "dom_balance_fallback",
+        "expected_credit_lock",
+        "wallet_reconciled",
         "fetch_response",
         "xhr_response",
         "websocket_message",
