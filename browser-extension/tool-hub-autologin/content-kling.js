@@ -12,6 +12,9 @@ const USAGE_TICKET_KEY        = 'rmw_kling_usage_ticket';
 const PREPARED_LAUNCH_KEY     = 'rmw_kling_prepared_launch';
 const BLOCKED_NOTICE_KEY      = 'rmw_kling_blocked_notice';
 const SESSION_CHECKPOINT_KEY  = 'rmw_kling_checkpoint';
+const USAGE_BROWSER_SESSION_KEY = 'rmw_kling_usage_browser_session';
+const USAGE_TAB_SESSION_KEY = 'rmw_kling_usage_tab_session';
+const USAGE_BROADCAST_CHANNEL = 'rmw-kling-usage';
 
 // ── Timing constants ──────────────────────────────────────────
 const KEEP_ALIVE_MS          = 10000;
@@ -38,7 +41,9 @@ const CHECKPOINT_RESUME_MS   = 400;    // was 1200
 const POST_SUBMIT_WAIT_MS    = 300;    // was 700
 const USAGE_REPORT_POLL_MS   = 1200;
 const USAGE_REPORT_MAX_WAIT_MS = 30000;
-const MAX_REASONABLE_KLING_CREDIT_BURN = 200;
+const MAX_REASONABLE_KLING_CREDIT_BURN = 3000;
+const MAX_REASONABLE_KLING_CREDIT_BALANCE = 1000000;
+const SUPPORTED_KLING_USAGE_FALLBACK_MODES = new Set(['image', 'video', 'motion-control', 'avatar']);
 const BADGE_HIDE_DONE_MS     = 4000;
 const BADGE_HIDE_BLOCKED_MS  = 12000;
 
@@ -164,6 +169,10 @@ const USAGE_CTX = {
   networkListenerAttached: false,
   networkEventKeys    : new Map(),
   domSettlementKeys   : new Map(),
+  browserSessionId    : '',
+  tabSessionId        : '',
+  extensionTabId      : 0,
+  broadcastChannel    : null,
 };
 
 function normalizeLoginMethod(value) {
@@ -436,10 +445,12 @@ function parseCreditNumber(value) {
 function parseExpectedCreditsFromGenerateText(value) {
   const normalized = normalizeGenerateActionLabel(value);
   if (!normalized) return null;
-  const match = normalized.match(/(?:^|\s)(\d+(?:\.\d+)?)\s+generate(?:\s|$)/i);
+  const match = normalized.match(/(?:^|\s)(\d+)\s+(?:generate|credits?)(?:\s|$)/i)
+    || normalized.match(/(?:^|\s)generate\s+(\d+)(?:\s|$)/i)
+    || normalized.match(/(?:^|\s)credits?\s*[:=-]?\s*(\d+)(?:\s|$)/i);
   if (!match) return null;
   const parsed = Number(match[1]);
-  return Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_REASONABLE_KLING_CREDIT_BURN
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= MAX_REASONABLE_KLING_CREDIT_BURN
     ? parsed
     : null;
 }
@@ -498,6 +509,8 @@ function extractModelLabelFromText(value, generationMode = '') {
   const patterns = [
     /\b(video\s*\d+(?:\.\d+)?\s*(?:turbo|master|pro)?)/i,
     /\b(image\s*\d+(?:\.\d+)?(?:\s*[a-z][a-z0-9-]*)?)/i,
+    /\b(motion\s*control\s*(?:turbo|master|pro)?)/i,
+    /\b(avatar\s*(?:basic|pro|realistic)?)/i,
     /\b(motion\s*control)\b/i,
     /\bavatar\b/i,
     /\b(master|turbo)\b/i,
@@ -528,12 +541,40 @@ function readSelectedModelLabel(generationMode = '', scopedText = '') {
   return bodyLabel;
 }
 
-function readGenerationMode() {
+function inferGenerationModeFromText(value) {
+  const text = normalizeSpace(value || '');
+  if (!text) return '';
+
+  const hasVideoModel = /\bvideo\s*\d+(?:\.\d+)?\b/i.test(text);
+  const hasImageModel = /\bimage\s*\d+(?:\.\d+)?\b/i.test(text);
+  const hasAvatarMode = /\bavatar\b/i.test(text);
+  const hasMotionControlMode = /\bmotion\s*control\b/i.test(text);
+  const hasVideoControls = /\b(360p|540p|720p|1080p|4k|2k|hd)\b/i.test(text)
+    || /\b\d+\s*s\b/i.test(text)
+    || /\bnative\s+audio\b/i.test(text)
+    || /\bmulti-?shot\b/i.test(text)
+    || /\bend\s+frame\b/i.test(text);
+  if (hasVideoModel) return 'video';
+  if (hasImageModel || /\b(image generation|strengthen|image-to-image|text-to-image)\b/i.test(text)) return 'image';
+  if (hasAvatarMode) return 'avatar';
+  if (hasMotionControlMode) return 'motion-control';
+  if (hasVideoControls) return 'video';
+  return '';
+}
+
+function readGenerationMode(scopedText = '') {
+  const scopedMode = inferGenerationModeFromText(scopedText);
+  if (scopedMode) return scopedMode;
+
+  const bodyText = normalizeSpace(document.body?.innerText || '');
+  const bodyMode = inferGenerationModeFromText(bodyText);
+  if (bodyMode) return bodyMode;
+
   const pathname = `${location.pathname || ''}`.toLowerCase();
   if (pathname.includes('/image/')) return 'image';
   if (pathname.includes('/video/')) return 'video';
-  if (pathname.includes('/motion/')) return 'motion-control';
   if (pathname.includes('/avatar/')) return 'avatar';
+  if (pathname.includes('/motion/')) return 'motion-control';
 
   const activeTab = Array.from(document.querySelectorAll('button,a,[role="button"],div,span'))
     .find((el) => {
@@ -699,10 +740,14 @@ function readGenerateControlContext(generateButton) {
   const durationMatch = scopeText.match(/\b(\d+)\s*s\b/i);
   const resolutionMatch = scopeText.match(/\b(360p|540p|720p|1080p|4k)\b/i);
   const ratioMatch = scopeText.match(/\b\d+\s*[:x]\s*\d+\b/i);
-  const modelLabel = extractModelLabelFromText(scopeText, '');
+  const bodyText = normalizeSpace(document.body?.innerText || '');
+  const modeContextText = normalizeSpace(`${scopeText} ${bodyText}`);
+  const generationMode = inferGenerationModeFromText(modeContextText);
+  const modelLabel = extractModelLabelFromText(modeContextText, generationMode);
 
   return {
     modelLabel,
+    generationMode,
     durationLabel: durationMatch?.[0] || '',
     resolutionLabel: resolutionMatch?.[0] || '',
     aspectRatioLabel: ratioMatch?.[0] || '',
@@ -723,6 +768,7 @@ function readVisibleCreditBalance() {
 
     const parsedValue = parseCreditNumber(text);
     if (parsedValue == null) continue;
+    if (parsedValue < 0 || parsedValue > MAX_REASONABLE_KLING_CREDIT_BALANCE) continue;
 
     const normalizedText = normalizeSpace(text);
     const rect = el.getBoundingClientRect();
@@ -800,20 +846,123 @@ function readCredentialUsageMetadata() {
   };
 }
 
+function makeUsageSessionId(prefix) {
+  try {
+    if (crypto?.randomUUID) return `${prefix}_${crypto.randomUUID()}`;
+  } catch {}
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function initUsageIdentity() {
+  if (!USAGE_CTX.browserSessionId) {
+    try {
+      let browserSessionId = localStorage.getItem(USAGE_BROWSER_SESSION_KEY);
+      if (!browserSessionId) {
+        browserSessionId = makeUsageSessionId('ksess');
+        localStorage.setItem(USAGE_BROWSER_SESSION_KEY, browserSessionId);
+      }
+      USAGE_CTX.browserSessionId = browserSessionId;
+    } catch {
+      USAGE_CTX.browserSessionId = makeUsageSessionId('ksess');
+    }
+  }
+
+  if (!USAGE_CTX.tabSessionId) {
+    try {
+      let tabSessionId = sessionStorage.getItem(USAGE_TAB_SESSION_KEY);
+      if (!tabSessionId) {
+        tabSessionId = makeUsageSessionId('ktab');
+        sessionStorage.setItem(USAGE_TAB_SESSION_KEY, tabSessionId);
+      }
+      USAGE_CTX.tabSessionId = tabSessionId;
+    } catch {
+      USAGE_CTX.tabSessionId = makeUsageSessionId('ktab');
+    }
+  }
+
+  if (!USAGE_CTX.extensionTabId) {
+    msg({ type: 'TOOL_HUB_GET_TAB_ID' })
+      .then((response) => {
+        const tabId = Number(response?.tabId || 0);
+        if (tabId > 0) USAGE_CTX.extensionTabId = tabId;
+      })
+      .catch(() => {});
+  }
+}
+
+function getUsageIdentityMetadata() {
+  initUsageIdentity();
+  return {
+    browserSessionId: USAGE_CTX.browserSessionId || null,
+    tabSessionId: USAGE_CTX.tabSessionId || null,
+    extensionTabId: Number(USAGE_CTX.extensionTabId || 0) || null,
+  };
+}
+
+function buildNetworkUsageDedupeKey(payload) {
+  return [
+    payload?.externalEventId,
+    payload?.generationId,
+    payload?.requestId,
+    payload?.fingerprint,
+    payload?.status,
+    payload?.creditsUsed,
+  ].filter(Boolean).join('|');
+}
+
+function setupUsageBroadcastChannel() {
+  if (USAGE_CTX.broadcastChannel || typeof BroadcastChannel !== 'function') return;
+  try {
+    const channel = new BroadcastChannel(USAGE_BROADCAST_CHANNEL);
+    channel.addEventListener('message', (event) => {
+      const data = event?.data || {};
+      if (data.type !== 'network-event-claimed' || !data.key) return;
+      if (data.tabSessionId && data.tabSessionId === USAGE_CTX.tabSessionId) return;
+      USAGE_CTX.networkEventKeys.set(data.key, Number(data.claimedAt || Date.now()));
+      pruneNetworkEventKeys();
+    });
+    USAGE_CTX.broadcastChannel = channel;
+  } catch {
+    USAGE_CTX.broadcastChannel = null;
+  }
+}
+
+function broadcastNetworkUsageClaim(key) {
+  if (!key) return;
+  setupUsageBroadcastChannel();
+  try {
+    USAGE_CTX.broadcastChannel?.postMessage({
+      type: 'network-event-claimed',
+      key,
+      browserSessionId: USAGE_CTX.browserSessionId,
+      tabSessionId: USAGE_CTX.tabSessionId,
+      extensionTabId: Number(USAGE_CTX.extensionTabId || 0) || null,
+      claimedAt: Date.now(),
+    });
+  } catch {}
+}
+
 function buildGenerateUsageSnapshot(generateButton) {
   const buttonLabel = readGenerateButtonLabel(generateButton);
   const controlContext = readGenerateControlContext(generateButton);
-  const generationMode = readGenerationMode();
+  const generationMode = controlContext.generationMode || readGenerationMode(controlContext.scopeText);
   const expectedCredits = readExpectedCreditsFromGenerateButton(generateButton);
   const creditsBefore = readVisibleCreditBalance();
   const klingAccountLabel = readTrackedKlingAccountLabel();
   const credentialUsageMetadata = readCredentialUsageMetadata();
+  const usageIdentityMetadata = getUsageIdentityMetadata();
+  const modelLabel = (
+    controlContext.modelLabel
+    && !(generationMode === 'video' && /motion\s*control/i.test(controlContext.modelLabel))
+      ? controlContext.modelLabel
+      : readSelectedModelLabel(generationMode, controlContext.scopeText)
+  );
   return {
     eventType: 'generate_click',
     eventDate: buildLocalDateValue(),
     status: 'captured',
     promptText: readPromptText(),
-    modelLabel: controlContext.modelLabel || readSelectedModelLabel(generationMode, controlContext.scopeText),
+    modelLabel,
     durationLabel: controlContext.durationLabel,
     resolutionLabel: controlContext.resolutionLabel,
     expectedCredits,
@@ -832,6 +981,7 @@ function buildGenerateUsageSnapshot(generateButton) {
       credentialId: credentialUsageMetadata.credentialId,
       linkedCredentialId: credentialUsageMetadata.linkedCredentialId,
       credentialLabel: credentialUsageMetadata.credentialLabel,
+      ...usageIdentityMetadata,
       source: 'dom_balance_fallback',
       confidence: 0.35,
     },
@@ -904,13 +1054,15 @@ function normalizeNetworkUsageStatus(value, creditsUsed) {
   if (/(fail|error|cancel|reject)/.test(normalized)) return 'failed';
   if (/(complete|success|finish|done|settle)/.test(normalized)) return 'settled';
   if (creditsUsed != null) return 'settled';
-  if (/(process|running|render)/.test(normalized)) return 'processing';
+  if (/(process|running|render|start|progress)/.test(normalized)) return 'processing';
   if (/(queue|wait|pending)/.test(normalized)) return 'queued';
+  if (/(submit|create|init|received)/.test(normalized)) return 'submitted';
   return 'submitted';
 }
 
 function buildNetworkUsageSnapshot(networkPayload) {
   const credentialUsageMetadata = readCredentialUsageMetadata();
+  const usageIdentityMetadata = getUsageIdentityMetadata();
   const creditsUsed = Number(networkPayload?.creditsUsed);
   const hasCreditsUsed = Number.isFinite(creditsUsed);
   const expectedCredits = Number(networkPayload?.expectedCredits);
@@ -919,7 +1071,10 @@ function buildNetworkUsageSnapshot(networkPayload) {
   const source = `${networkPayload?.source || 'network_response'}`.trim() || 'network_response';
   const status = normalizeNetworkUsageStatus(networkPayload?.status, hasCreditsUsed ? creditsUsed : null);
   const isCompleted = Boolean(networkPayload?.isCompleted) || status === 'settled';
-  const isReasonableCreditBurn = hasCreditsUsed && creditsUsed > 0 && creditsUsed <= 200;
+  const isReasonableCreditBurn = hasCreditsUsed
+    && Number.isInteger(creditsUsed)
+    && creditsUsed > 0
+    && creditsUsed <= MAX_REASONABLE_KLING_CREDIT_BURN;
   const generationId = `${networkPayload?.generationId || ''}`.trim();
   const requestId = `${networkPayload?.requestId || ''}`.trim();
   const fingerprint = `${networkPayload?.fingerprint || ''}`.trim();
@@ -952,19 +1107,30 @@ function buildNetworkUsageSnapshot(networkPayload) {
       capture: 'network',
       networkUrl: `${networkPayload?.url || ''}`.slice(0, 1000),
       networkMethod: `${networkPayload?.method || ''}`.slice(0, 16),
+      networkTransport: `${networkPayload?.transport || source || ''}`.slice(0, 80),
       httpStatus: Number(networkPayload?.httpStatus || 0) || null,
       ok: Boolean(networkPayload?.ok),
       isCompleted,
       isReasonableCreditBurn,
+      generationMode: `${networkPayload?.generationMode || ''}`.trim(),
+      expectedCredits: hasExpectedCredits ? expectedCredits : null,
       requestPreview,
       responsePreview,
       generationId,
       requestId,
       fingerprint,
       externalEventId,
+      lifecycleEvent: {
+        stage: status,
+        source,
+        transport: `${networkPayload?.transport || source || ''}`.slice(0, 80),
+        capturedAt,
+        creditsUsed: isReasonableCreditBurn ? creditsUsed : null,
+      },
       credentialId: credentialUsageMetadata.credentialId,
       linkedCredentialId: credentialUsageMetadata.linkedCredentialId,
       credentialLabel: credentialUsageMetadata.credentialLabel,
+      ...usageIdentityMetadata,
       klingAccountLabel: readTrackedKlingAccountLabel(),
     },
   };
@@ -978,27 +1144,24 @@ function handleKlingNetworkUsageMessage(event) {
 
   const payload = event.data.payload || {};
   const creditsUsed = Number(payload?.creditsUsed);
-  const hasReasonableCreditBurn = Number.isFinite(creditsUsed) && creditsUsed > 0 && creditsUsed <= 200;
-  if (!payload?.isCompleted && !hasReasonableCreditBurn) return;
+  const hasReasonableCreditBurn = Number.isFinite(creditsUsed)
+    && Number.isInteger(creditsUsed)
+    && creditsUsed > 0
+    && creditsUsed <= MAX_REASONABLE_KLING_CREDIT_BURN;
+  if (!payload?.status && !payload?.isCompleted && !hasReasonableCreditBurn) return;
   if (!payload?.generationId && !payload?.requestId) return;
 
   const now = Date.now();
   pruneNetworkEventKeys(now);
 
-  const dedupeKey = [
-    payload.externalEventId,
-    payload.generationId,
-    payload.requestId,
-    payload.fingerprint,
-    payload.status,
-    payload.creditsUsed,
-  ].filter(Boolean).join('|');
+  const dedupeKey = buildNetworkUsageDedupeKey(payload);
 
   if (dedupeKey && USAGE_CTX.networkEventKeys.has(dedupeKey)) {
     return;
   }
   if (dedupeKey) {
     USAGE_CTX.networkEventKeys.set(dedupeKey, now);
+    broadcastNetworkUsageClaim(dedupeKey);
   }
 
   const snapshot = buildNetworkUsageSnapshot(payload);
@@ -1032,9 +1195,8 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
   const expectedCredits = Number(snapshot.expectedCredits);
   const hasExpectedCredits = Number.isFinite(expectedCredits) && expectedCredits > 0;
   const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
-  const isSupportedFallbackMode = generationMode === 'image' || generationMode === 'video';
+  const isSupportedFallbackMode = SUPPORTED_KLING_USAGE_FALLBACK_MODES.has(generationMode);
   const hasStrongGenerateCost = hasExpectedCredits
-    && Number.isInteger(expectedCredits)
     && expectedCredits <= MAX_REASONABLE_KLING_CREDIT_BURN;
   const hasReasonableRawBurn = Number.isFinite(rawCreditsBurned)
     && rawCreditsBurned > 0
@@ -1108,9 +1270,9 @@ function scheduleGenerateUsageReport(generateButton) {
   const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
   const expectedCredits = Number(snapshot.expectedCredits);
   if (
-    !['image', 'video'].includes(generationMode)
-    || !Number.isInteger(expectedCredits)
-    || expectedCredits < 1
+    !SUPPORTED_KLING_USAGE_FALLBACK_MODES.has(generationMode)
+    || !Number.isFinite(expectedCredits)
+    || expectedCredits <= 0
     || expectedCredits > MAX_REASONABLE_KLING_CREDIT_BURN
   ) {
     setStatus('Usage fallback skipped: unsupported or unclear generation cost', { hideAfterMs: 2500 });
@@ -1156,8 +1318,12 @@ function scheduleGenerateUsageReport(generateButton) {
         return waitForGenerateUsageSettlement(snapshot);
       })
       .then((settledSnapshot) => {
+        const usedExpectedFallback = Boolean(settledSnapshot.metadata?.usedExpectedCreditFallback);
         if (
-          settledSnapshot.metadata?.settlementReason !== 'balance_decreased'
+          (
+            settledSnapshot.metadata?.settlementReason !== 'balance_decreased'
+            && !usedExpectedFallback
+          )
           || !(Number(settledSnapshot.creditsBurned || 0) > 0)
         ) {
           USAGE_CTX.domSettlementKeys.delete(dedupeKey);
@@ -1224,6 +1390,8 @@ function handleGenerateInteraction(event) {
 
 function startUsageTracking() {
   captureTicket();
+  initUsageIdentity();
+  setupUsageBroadcastChannel();
   if (USAGE_CTX.listenerAttached) return;
   USAGE_CTX.listenerAttached = true;
   document.addEventListener('pointerdown', handleGenerateInteraction, true);

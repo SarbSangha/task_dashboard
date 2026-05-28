@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api/it-tools", tags=["IT Tools"])
 VALID_SCOPES = {"company", "user"}
 VALID_LAUNCH_MODES = {"external_link", "manual_credential", "sso", "api_proxy", "automation", "extension_autofill"}
 EXTENSION_AUTOFILL_TICKET_TTL_SEC = 20 * 60
-MAX_REASONABLE_KLING_CREDIT_BURN = 200
+MAX_REASONABLE_KLING_CREDIT_BURN = 3000
 HOSTNAME_EQUIVALENT_GROUPS = (
     {"canva.com", "www.canva.com"},
     {"behance.net", "www.behance.net", "auth.services.adobe.com", "adobeid-na1.services.adobe.com", "ims-na1.adobelogin.com"},
@@ -1488,6 +1488,39 @@ def _normalize_status_label(value: Optional[str], fallback: str = "captured") ->
     return normalized or fallback
 
 
+USAGE_STATUS_RANK = {
+    "captured": 0,
+    "submitted": 1,
+    "queued": 2,
+    "processing": 3,
+    "failed": 4,
+    "settled": 5,
+}
+
+
+def _canonical_usage_status(value: Optional[str], fallback: str = "captured") -> str:
+    normalized = _normalize_status_label(value, fallback)
+    if normalized in {"completed", "complete", "success", "succeeded", "finished", "done"}:
+        return "settled"
+    if normalized in {"error", "cancelled", "canceled", "rejected"}:
+        return "failed"
+    if normalized in {"pending", "waiting"}:
+        return "queued"
+    if normalized in {"running", "rendering", "progress"}:
+        return "processing"
+    return normalized
+
+
+def _usage_status_rank(value: Optional[str]) -> int:
+    return USAGE_STATUS_RANK.get(_canonical_usage_status(value), 0)
+
+
+def _choose_usage_status(existing: Optional[str], incoming: Optional[str]) -> str:
+    existing_status = _canonical_usage_status(existing)
+    incoming_status = _canonical_usage_status(incoming, existing_status)
+    return incoming_status if _usage_status_rank(incoming_status) >= _usage_status_rank(existing_status) else existing_status
+
+
 def _normalize_usage_float(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
@@ -1507,6 +1540,56 @@ def _normalize_usage_text(value: Optional[str], max_length: int = 160) -> Option
     return normalized[:max_length]
 
 
+def _usage_source_rank(value: Optional[str]) -> int:
+    normalized = f"{value or ''}".strip().lower()
+    if normalized in {"fetch_response", "xhr_response"}:
+        return 4
+    if normalized in {"websocket_message", "eventsource_message", "network_response"}:
+        return 3
+    if normalized == "dom_balance_fallback":
+        return 1
+    return 2 if normalized else 0
+
+
+def _choose_usage_source(existing: Optional[str], incoming: Optional[str]) -> Optional[str]:
+    if not incoming:
+        return existing
+    if not existing:
+        return incoming
+    return incoming if _usage_source_rank(incoming) >= _usage_source_rank(existing) else existing
+
+
+def _choose_usage_confidence(existing: Optional[float], incoming: Optional[float]) -> Optional[float]:
+    if incoming is None:
+        return existing
+    if existing is None:
+        return incoming
+    return max(existing, incoming)
+
+
+def _choose_usage_credits_burned(
+    existing: Optional[float],
+    incoming: Optional[float],
+    existing_source: Optional[str],
+    incoming_source: Optional[str],
+    existing_confidence: Optional[float],
+    incoming_confidence: Optional[float],
+) -> Optional[float]:
+    if incoming is None:
+        return existing
+    if existing is None:
+        return incoming
+    if existing > 0 and incoming <= 0:
+        return existing
+    if existing <= 0 and incoming > 0:
+        return incoming
+    if _usage_source_rank(incoming_source) > _usage_source_rank(existing_source):
+        return incoming
+    if (incoming_confidence or 0) > (existing_confidence or 0):
+        return incoming
+    return existing
+
+
 def _safe_credits_burned_value(
     credits_burned: Optional[float],
     expected_credits: Optional[float] = None,
@@ -1519,15 +1602,25 @@ def _safe_credits_burned_value(
     normalized_source = f"{source or metadata.get('source') or ''}".strip().lower()
     generation_mode = f"{metadata.get('generationMode') or ''}".strip().lower()
     is_dom_fallback = normalized_source == "dom_balance_fallback"
-    if is_dom_fallback and generation_mode not in {"image", "video"}:
+    is_kling_network_or_fallback = normalized_source in {
+        "dom_balance_fallback",
+        "fetch_response",
+        "xhr_response",
+        "websocket_message",
+        "eventsource_message",
+        "network_response",
+    }
+    if is_dom_fallback and generation_mode not in {"image", "video", "motion-control", "avatar"}:
         return None
     if is_dom_fallback and not metadata.get("strongGenerateCost", expected is not None and expected >= 1):
         return None
     if burned is None:
         return None
+    if is_kling_network_or_fallback and not float(burned).is_integer():
+        return expected if expected is not None and float(expected).is_integer() and 0 < expected <= MAX_REASONABLE_KLING_CREDIT_BURN else None
     if 0 <= burned <= MAX_REASONABLE_KLING_CREDIT_BURN:
         return burned
-    if expected is not None and 0 < expected <= MAX_REASONABLE_KLING_CREDIT_BURN:
+    if expected is not None and float(expected).is_integer() and 0 < expected <= MAX_REASONABLE_KLING_CREDIT_BURN:
         return expected
     return None
 
@@ -1621,10 +1714,100 @@ def _normalize_prompt_text(value: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+def _normalize_usage_stage(value: Optional[str]) -> str:
+    return _canonical_usage_status(value)
+
+
+def _normalize_lifecycle_timestamp(value) -> Optional[int]:
+    try:
+        timestamp = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if timestamp <= 0:
+        return None
+    # Extension events use epoch milliseconds; tolerate seconds just in case.
+    if timestamp < 10_000_000_000:
+        timestamp *= 1000
+    return timestamp
+
+
+def _compute_usage_lifecycle_timings(lifecycle_events: list[dict]) -> dict:
+    stage_times: dict[str, int] = {}
+    normalized_events = []
+    for item in lifecycle_events:
+        if not isinstance(item, dict):
+            continue
+        stage = _normalize_usage_stage(item.get("stage"))
+        captured_at = _normalize_lifecycle_timestamp(item.get("capturedAt"))
+        if not stage or captured_at is None:
+            continue
+        normalized_events.append({**item, "stage": stage, "capturedAt": captured_at})
+        if stage not in stage_times or captured_at < stage_times[stage]:
+            stage_times[stage] = captured_at
+
+    start_at = (
+        stage_times.get("submitted")
+        or stage_times.get("queued")
+        or stage_times.get("processing")
+        or stage_times.get("captured")
+    )
+    queued_at = stage_times.get("queued")
+    processing_at = stage_times.get("processing")
+    settled_at = stage_times.get("settled")
+    failed_at = stage_times.get("failed")
+    end_at = settled_at or failed_at
+
+    def elapsed(start: Optional[int], end: Optional[int]) -> Optional[int]:
+        if start is None or end is None or end < start:
+            return None
+        return end - start
+
+    timings = {
+        "submittedAt": stage_times.get("submitted"),
+        "queuedAt": queued_at,
+        "processingAt": processing_at,
+        "settledAt": settled_at,
+        "failedAt": failed_at,
+        "queueTimeMs": elapsed(queued_at or start_at, processing_at),
+        "processingTimeMs": elapsed(processing_at, end_at),
+        "totalTimeMs": elapsed(start_at, end_at),
+        "terminalStage": "settled" if settled_at else ("failed" if failed_at else None),
+        "stageCount": len(normalized_events),
+    }
+    return {key: value for key, value in timings.items() if value is not None}
+
+
 def _merge_usage_metadata(existing: Optional[dict], incoming: Optional[dict]) -> dict:
     merged = dict(existing or {})
+    existing_lifecycle_events = list(merged.get("lifecycleEvents") or [])
+    incoming_lifecycle_event = None
     for key, value in (incoming or {}).items():
+        if key == "lifecycleEvent" and isinstance(value, dict):
+            incoming_lifecycle_event = value
+            continue
         merged[key] = value
+    if incoming_lifecycle_event:
+        lifecycle_key = (
+            incoming_lifecycle_event.get("stage"),
+            incoming_lifecycle_event.get("source"),
+            incoming_lifecycle_event.get("transport"),
+            incoming_lifecycle_event.get("capturedAt"),
+        )
+        existing_keys = {
+            (
+                item.get("stage"),
+                item.get("source"),
+                item.get("transport"),
+                item.get("capturedAt"),
+            )
+            for item in existing_lifecycle_events
+            if isinstance(item, dict)
+        }
+        if lifecycle_key not in existing_keys:
+            existing_lifecycle_events.append(incoming_lifecycle_event)
+        merged["lifecycleEvent"] = incoming_lifecycle_event
+        merged["lifecycleEvents"] = existing_lifecycle_events[-25:]
+        merged["lifecycleTimings"] = _compute_usage_lifecycle_timings(merged["lifecycleEvents"])
     return merged
 
 
@@ -1974,7 +2157,7 @@ async def report_extension_usage_event(
     )
     parsed_event_date = _parse_report_date(payload.event_date, "event_date") if payload.event_date else None
     normalized_event_type = (payload.event_type or "generate_click").strip().lower() or "generate_click"
-    normalized_status = _normalize_status_label(payload.status)
+    normalized_status = _canonical_usage_status(payload.status)
     external_event_id = _normalize_usage_text(payload.external_event_id, 160)
     generation_id = _normalize_usage_text(payload.generation_id, 160)
     request_id = _normalize_usage_text(payload.request_id, 160)
@@ -1986,7 +2169,13 @@ async def report_extension_usage_event(
     credits_before = _normalize_usage_float(payload.credits_before)
     credits_after = _normalize_usage_float(payload.credits_after)
     credits_burned = _normalize_usage_float(payload.credits_burned)
-    is_network_usage_event = normalized_event_type.startswith("network") or (source or "") in {"fetch_response", "xhr_response", "network_response"}
+    is_network_usage_event = normalized_event_type.startswith("network") or (source or "") in {
+        "fetch_response",
+        "xhr_response",
+        "websocket_message",
+        "eventsource_message",
+        "network_response",
+    }
     if credits_burned is not None and credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN:
         merged_metadata = dict(payload.metadata or {})
         merged_metadata["ignoredCreditsBurned"] = credits_burned
@@ -1999,7 +2188,7 @@ async def report_extension_usage_event(
             credits_burned = max(0.0, credits_before - credits_after)
         elif normalized_status in {"settled", "completed"} and (
             not is_network_usage_event
-            or (expected_credits is not None and 0 < expected_credits <= 200)
+            or (expected_credits is not None and 0 < expected_credits <= MAX_REASONABLE_KLING_CREDIT_BURN)
         ):
             credits_burned = expected_credits
     if credits_burned is not None and credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN:
@@ -2077,9 +2266,26 @@ async def report_extension_usage_event(
             usage_event = duplicate_query.order_by(ITPortalToolUsageEvent.created_at.desc()).first()
 
     if usage_event:
+        final_status = _choose_usage_status(usage_event.status, normalized_status)
+        final_source = _choose_usage_source(usage_event.source, source)
+        final_confidence = _choose_usage_confidence(usage_event.confidence, confidence)
+        final_credits_burned = _choose_usage_credits_burned(
+            usage_event.credits_burned,
+            credits_burned,
+            usage_event.source,
+            source,
+            usage_event.confidence,
+            confidence,
+        )
+        if final_status != normalized_status:
+            merged_metadata["ignoredStatusUpdate"] = normalized_status
+            merged_metadata["ignoredStatusReason"] = "older_lifecycle_stage"
+        if credits_burned is not None and final_credits_burned != credits_burned:
+            merged_metadata["ignoredCreditsUpdate"] = credits_burned
+            merged_metadata["ignoredCreditsReason"] = "lower_confidence_or_older_source"
         usage_event.credential_id = credential.id if credential else usage_event.credential_id
         usage_event.event_type = normalized_event_type
-        usage_event.status = normalized_status
+        usage_event.status = final_status
         usage_event.event_date = parsed_event_date or usage_event.event_date
         usage_event.model_label = (payload.model_label or "").strip() or usage_event.model_label
         usage_event.duration_label = (payload.duration_label or "").strip() or usage_event.duration_label
@@ -2088,14 +2294,14 @@ async def report_extension_usage_event(
         usage_event.expected_credits = expected_credits if expected_credits is not None else usage_event.expected_credits
         usage_event.credits_before = credits_before if credits_before is not None else usage_event.credits_before
         usage_event.credits_after = credits_after if credits_after is not None else usage_event.credits_after
-        usage_event.credits_burned = credits_burned if credits_burned is not None else usage_event.credits_burned
+        usage_event.credits_burned = final_credits_burned
         usage_event.external_event_id = external_event_id or usage_event.external_event_id
         usage_event.generation_id = generation_id or usage_event.generation_id
         usage_event.request_id = request_id or usage_event.request_id
         usage_event.fingerprint = fingerprint or usage_event.fingerprint
-        usage_event.source = source or usage_event.source
+        usage_event.source = final_source
         usage_event.schema_version = schema_version or usage_event.schema_version
-        usage_event.confidence = confidence if confidence is not None else usage_event.confidence
+        usage_event.confidence = final_confidence
         usage_event.metadata_json = _merge_usage_metadata(usage_event.metadata_json, merged_metadata)
         action_name = "tool_usage_updated"
     else:

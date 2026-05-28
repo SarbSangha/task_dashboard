@@ -8,7 +8,7 @@
   const GENERATION_URL_RE = /(generate|generation|submit|create|infer|aigc|image|video|task)/i;
   const EXCLUDED_URL_RE = /(balance|wallet|account|user|profile|history|list|records?|assets?|works?|notifications?|message|comment|feed|search|recommend|config|price|pricing|package|membership|subscription)/i;
   const URL_RE = /(kling\.ai|klingai\.com)/i;
-  const MAX_REASONABLE_CREDIT_BURN = 200;
+  const MAX_REASONABLE_CREDIT_BURN = 3000;
 
   function toText(value) {
     try {
@@ -108,6 +108,19 @@
     return direct || '';
   }
 
+  function pickContextualId(value) {
+    return walk(value, (key, item, parent) => {
+      if (!/^id$/i.test(key)) return undefined;
+      const parentKeys = isObject(parent) ? Object.keys(parent).join('_') : '';
+      if (!/(generation|generate|task|job|work)/i.test(parentKeys)) return undefined;
+      if (typeof item === 'string' || typeof item === 'number') {
+        const text = `${item}`.trim();
+        return text || undefined;
+      }
+      return undefined;
+    }) || '';
+  }
+
   function pickNumber(value, matcher, options = {}) {
     const excludeMatcher = options.excludeMatcher || /^(balance|current|remaining|remain|total|available|obtained|purchase|quota|limit|package|price|pricing|wallet)$/i;
     const direct = walk(value, (key, item, parent) => {
@@ -121,6 +134,59 @@
     return Number.isFinite(direct) ? direct : null;
   }
 
+  function normalizeCreditValue(value) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 && parsed <= MAX_REASONABLE_CREDIT_BURN
+      ? parsed
+      : null;
+  }
+
+  function pickCreditValue(value, matcher) {
+    return normalizeCreditValue(pickNumber(value, matcher));
+  }
+
+  function pickFirstTextMatch(text, matcher) {
+    const match = `${text || ''}`.match(matcher);
+    return match ? `${match[1] || match[0]}`.trim() : '';
+  }
+
+  function inferGenerationModeFromTelemetry(text) {
+    const normalized = `${text || ''}`;
+    if (/\bvideo\s*\d+(?:\.\d+)?\b/i.test(normalized) || /\b(image[_-]?to[_-]?video|text[_-]?to[_-]?video|video_generation)\b/i.test(normalized)) {
+      return 'video';
+    }
+    if (/\bimage\s*\d+(?:\.\d+)?\b/i.test(normalized) || /\b(image_generation|text[_-]?to[_-]?image|image[_-]?to[_-]?image|strengthen)\b/i.test(normalized)) {
+      return 'image';
+    }
+    if (/\bavatar\b/i.test(normalized) || /\b(lip[_-]?sync|talking[_-]?avatar|digital[_-]?human)\b/i.test(normalized)) {
+      return 'avatar';
+    }
+    if (/\bmotion\s*control\b/i.test(normalized) || /\b(pose[_-]?tracking|trajectory|camera[_-]?motion|motion[_-]?brush)\b/i.test(normalized)) {
+      return 'motion-control';
+    }
+    return '';
+  }
+
+  function extractModelLabelFromTelemetry(text) {
+    return pickFirstTextMatch(text, /\b(video\s*\d+(?:\.\d+)?\s*(?:turbo|master|pro)?)/i)
+      || pickFirstTextMatch(text, /\b(image\s*\d+(?:\.\d+)?(?:\s*[a-z][a-z0-9-]*)?)/i)
+      || pickFirstTextMatch(text, /\b(motion\s*control\s*(?:turbo|master|pro)?)/i)
+      || pickFirstTextMatch(text, /\b(avatar\s*(?:basic|pro|realistic)?)/i);
+  }
+
+  function normalizeDurationLabel(value, text = '') {
+    const raw = `${value || ''}`.trim();
+    if (/^\d+\s*s$/i.test(raw)) return raw.replace(/\s+/g, '');
+    if (/^\d+$/.test(raw)) return `${raw}s`;
+    return pickFirstTextMatch(text, /\b(\d+\s*s)\b/i).replace(/\s+/g, '');
+  }
+
+  function normalizeResolutionLabel(value, text = '') {
+    const raw = `${value || ''}`.trim();
+    if (/^(360p|540p|720p|1080p|2k|4k)$/i.test(raw)) return raw;
+    return pickFirstTextMatch(text, /\b(360p|540p|720p|1080p|2k|4k)\b/i);
+  }
+
   function makeHash(value) {
     let hash = 2166136261;
     const text = `${value || ''}`;
@@ -131,6 +197,17 @@
     return (hash >>> 0).toString(36);
   }
 
+  function normalizeLifecycleStatus(value, creditsUsed) {
+    const normalized = `${value || ''}`.trim().toLowerCase();
+    if (/(fail|error|cancel|reject)/.test(normalized)) return 'failed';
+    if (/(complete|success|finish|done|settle)/.test(normalized)) return 'settled';
+    if (creditsUsed != null) return 'settled';
+    if (/(process|running|render|start|progress)/.test(normalized)) return 'processing';
+    if (/(queue|wait|pending)/.test(normalized)) return 'queued';
+    if (/(submit|create|init|received)/.test(normalized)) return 'submitted';
+    return normalized || '';
+  }
+
   function extractTelemetry(payload) {
     const responseJson = payload.responseJson;
     const requestJson = payload.requestJson;
@@ -139,31 +216,41 @@
     const responseText = payload.responseText || '';
     const requestText = payload.requestText || '';
 
-    const generationId = pickString(merged, /^(generation_?id|generate_?id|task_?id|job_?id|work_?id)$/i)
-      || pickString(requestObject, /^(generation_?id|generate_?id|task_?id|job_?id|work_?id)$/i);
-    const requestId = pickString(merged, /^(request_?id|trace_?id|log_?id)$/i)
-      || pickString(requestObject, /^(request_?id|trace_?id)$/i);
-    const creditsUsed = pickNumber(
+    const telemetryText = `${requestText}\n${responseText}`;
+    const generationId = pickString(merged, /^(generation_?id|generate_?id|task_?id|job_?id|work_?id|project_?id)$/i)
+      || pickString(requestObject, /^(generation_?id|generate_?id|task_?id|job_?id|work_?id|project_?id)$/i)
+      || pickContextualId(merged)
+      || pickContextualId(requestObject);
+    const requestId = pickString(merged, /^(request_?id|trace_?id|log_?id|req_?id|x_?request_?id)$/i)
+      || pickString(requestObject, /^(request_?id|trace_?id|req_?id|x_?request_?id)$/i);
+    const creditsUsed = pickCreditValue(
       merged,
-      /^(credits?_?used|credit_?used|consume_?credits?|consumed_?credits?|cost_?credits?|credit_?cost|actual_?credits?)$/i
+      /^(credits?_?used|credit_?used|consume_?credits?|consumed_?credits?|cost_?credits?|credit_?cost|actual_?credits?|credits?_?burned|burned_?credits?)$/i
     );
-    const expectedCredits = pickNumber(
+    const expectedCredits = pickCreditValue(
       requestObject,
-      /^(expected_?credits?|credits?_?cost|credit_?cost|consume_?credits?)$/i
-    );
-    const modelLabel = pickString(merged, /^(model|model_?name|model_?label|scene)$/i)
-      || pickString(requestObject, /^(model|model_?name|model_?label|scene)$/i);
-    const durationLabel = pickString(merged, /^(duration|duration_?label|video_?duration)$/i)
-      || pickString(requestObject, /^(duration|duration_?label|video_?duration)$/i);
-    const resolutionLabel = pickString(merged, /^(resolution|resolution_?label|quality)$/i)
-      || pickString(requestObject, /^(resolution|resolution_?label|quality)$/i);
+      /^(expected_?credits?|credits?_?cost|credit_?cost|consume_?credits?|cost|credit|credits?)$/i
+    ) || normalizeCreditValue(pickFirstTextMatch(telemetryText, /\b(\d+)\s*credits?\b/i));
+    const generationMode = pickString(merged, /^(mode|generation_?mode|task_?type|scenario|type)$/i)
+      || pickString(requestObject, /^(mode|generation_?mode|task_?type|scenario|type)$/i)
+      || inferGenerationModeFromTelemetry(telemetryText);
+    const modelLabel = pickString(merged, /^(model|model_?name|model_?label|model_?version|model_?type|scene)$/i)
+      || pickString(requestObject, /^(model|model_?name|model_?label|model_?version|model_?type|scene)$/i)
+      || extractModelLabelFromTelemetry(telemetryText);
+    const rawDurationLabel = pickString(merged, /^(duration|duration_?label|video_?duration|seconds|second|duration_?seconds)$/i)
+      || pickString(requestObject, /^(duration|duration_?label|video_?duration|seconds|second|duration_?seconds)$/i);
+    const rawResolutionLabel = pickString(merged, /^(resolution|resolution_?label|quality|video_?quality)$/i)
+      || pickString(requestObject, /^(resolution|resolution_?label|quality|video_?quality)$/i);
+    const durationLabel = normalizeDurationLabel(rawDurationLabel, telemetryText);
+    const resolutionLabel = normalizeResolutionLabel(rawResolutionLabel, telemetryText);
     const promptText = pickString(requestObject, /^(prompt|text|query|positive_?prompt)$/i)
       || pickString(merged, /^(prompt|text|query|positive_?prompt)$/i);
-    const status = pickString(merged, /^(status|state|task_?status)$/i);
-    const isCompleted = /(complete|success|finish|done|settle)/i.test(status);
-    const isCreditBurnReasonable = creditsUsed != null
-      && creditsUsed > 0
-      && creditsUsed <= MAX_REASONABLE_CREDIT_BURN;
+    const status = normalizeLifecycleStatus(
+      pickString(merged, /^(status|state|task_?status|stage|phase|event|event_?type)$/i),
+      creditsUsed
+    );
+    const isCompleted = status === 'settled';
+    const isCreditBurnReasonable = creditsUsed != null;
 
     const fingerprint = makeHash([
       payload.method,
@@ -181,6 +268,7 @@
       fingerprint,
       creditsUsed,
       expectedCredits,
+      generationMode,
       modelLabel,
       durationLabel,
       resolutionLabel,
@@ -193,10 +281,10 @@
 
   function postTelemetry(payload) {
     try {
-      if (!shouldInspect(payload.url, payload.requestText)) return;
+      if (!payload.forceInspect && !shouldInspect(payload.url, payload.requestText)) return;
       const extracted = extractTelemetry(payload);
       if (!extracted.generationId && !extracted.requestId) return;
-      if (!extracted.isCompleted && !extracted.isCreditBurnReasonable) return;
+      if (!extracted.status && !extracted.isCompleted && !extracted.isCreditBurnReasonable) return;
 
       window.postMessage({
         source: SOURCE,
@@ -208,6 +296,7 @@
           ok: payload.ok,
           httpStatus: payload.httpStatus,
           source: payload.source,
+          transport: payload.transport || payload.source,
           schemaVersion: 1,
           capturedAt: Date.now(),
           requestPreview: limitText(payload.requestText, 1500),
@@ -278,5 +367,84 @@
       });
       return originalSend.apply(this, arguments);
     };
+  }
+
+  function shouldInspectLiveMessage(url, messageText) {
+    if (!URL_RE.test(url)) return false;
+    if (!messageText || messageText.length > MAX_TEXT_LENGTH) return false;
+    const haystack = `${url}\n${messageText}`;
+    return /(generation|generate|task|job|work|status|state|credit|consume|cost|settle|complete|queue|process)/i.test(haystack);
+  }
+
+  function postLiveTelemetry({ source, url, messageText, ok = true }) {
+    try {
+      const responseText = limitText(messageText);
+      if (!shouldInspectLiveMessage(url, responseText)) return;
+      postTelemetry({
+        source,
+        transport: source,
+        method: source === 'eventsource_message' ? 'SSE' : 'WS',
+        url,
+        requestText: '',
+        requestJson: null,
+        responseText,
+        responseJson: parseJson(responseText),
+        ok,
+        httpStatus: null,
+        forceInspect: true,
+      });
+    } catch {}
+  }
+
+  const OriginalWebSocket = window.WebSocket;
+  if (typeof OriginalWebSocket === 'function') {
+    window.WebSocket = function rmwKlingWebSocket(url, protocols) {
+      const socket = protocols === undefined
+        ? new OriginalWebSocket(url)
+        : new OriginalWebSocket(url, protocols);
+      const normalizedUrl = normalizeUrl(url);
+
+      try {
+        socket.addEventListener('message', (event) => {
+          if (typeof event?.data !== 'string') return;
+          postLiveTelemetry({
+            source: 'websocket_message',
+            url: normalizedUrl,
+            messageText: event.data,
+            ok: socket.readyState === OriginalWebSocket.OPEN,
+          });
+        });
+      } catch {}
+
+      return socket;
+    };
+    window.WebSocket.prototype = OriginalWebSocket.prototype;
+    Object.defineProperty(window.WebSocket, 'OPEN', { value: OriginalWebSocket.OPEN });
+    Object.defineProperty(window.WebSocket, 'CONNECTING', { value: OriginalWebSocket.CONNECTING });
+    Object.defineProperty(window.WebSocket, 'CLOSING', { value: OriginalWebSocket.CLOSING });
+    Object.defineProperty(window.WebSocket, 'CLOSED', { value: OriginalWebSocket.CLOSED });
+  }
+
+  const OriginalEventSource = window.EventSource;
+  if (typeof OriginalEventSource === 'function') {
+    window.EventSource = function rmwKlingEventSource(url, eventSourceInitDict) {
+      const eventSource = new OriginalEventSource(url, eventSourceInitDict);
+      const normalizedUrl = normalizeUrl(url);
+      try {
+        eventSource.addEventListener('message', (event) => {
+          postLiveTelemetry({
+            source: 'eventsource_message',
+            url: normalizedUrl,
+            messageText: event?.data || '',
+            ok: eventSource.readyState !== OriginalEventSource.CLOSED,
+          });
+        });
+      } catch {}
+      return eventSource;
+    };
+    window.EventSource.prototype = OriginalEventSource.prototype;
+    Object.defineProperty(window.EventSource, 'CONNECTING', { value: OriginalEventSource.CONNECTING });
+    Object.defineProperty(window.EventSource, 'OPEN', { value: OriginalEventSource.OPEN });
+    Object.defineProperty(window.EventSource, 'CLOSED', { value: OriginalEventSource.CLOSED });
   }
 })();

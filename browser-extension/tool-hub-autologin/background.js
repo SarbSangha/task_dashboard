@@ -1,6 +1,11 @@
 const DEFAULT_API_BASE = 'https://dashboard.ritzmediaworld.in';
 const ACTIVE_TAB_LAUNCHES_STORAGE_KEY = 'activeExtensionTabLaunches';
 const PASSWORD_SAVING_STATE_STORAGE_KEY = 'passwordSavingSuppressionState';
+const USAGE_EVENT_RETRY_QUEUE_STORAGE_KEY = 'pendingUsageEventReports';
+const USAGE_EVENT_RETRY_ALARM = 'retryPendingUsageEvents';
+const USAGE_EVENT_RETRY_QUEUE_LIMIT = 200;
+const USAGE_EVENT_RETRY_MAX_ATTEMPTS = 8;
+const USAGE_EVENT_RETRY_BATCH_LIMIT = 20;
 const DASHBOARD_HOSTS = new Set([
   'dashboard.ritzmediaworld.in',
   'localhost',
@@ -1398,10 +1403,160 @@ async function postUsageEvent(settings, payload) {
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.success) {
-    throw new Error(buildApiErrorMessage(data, response, 'Usage event request failed', settings));
+    const error = new Error(buildApiErrorMessage(data, response, 'Usage event request failed', settings));
+    error.status = response.status;
+    throw error;
   }
 
   return data;
+}
+
+function buildUsageEventPayload(message, activeLaunch) {
+  return {
+    event_id: message.eventId,
+    credential_id: message.credentialId,
+    tool_slug: message.toolSlug,
+    hostname: message.hostname,
+    page_url: message.pageUrl,
+    event_date: message.eventDate,
+    extension_ticket: `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim() || null,
+    usage_ticket: `${message.usageTicket || activeLaunch?.usageTrackingTicket || ''}`.trim() || null,
+    event_type: message.eventType,
+    status: message.status,
+    model_label: message.modelLabel,
+    duration_label: message.durationLabel,
+    resolution_label: message.resolutionLabel,
+    prompt_text: message.promptText,
+    expected_credits: message.expectedCredits,
+    credits_before: message.creditsBefore,
+    credits_after: message.creditsAfter,
+    credits_burned: message.creditsBurned,
+    external_event_id: message.externalEventId,
+    generation_id: message.generationId,
+    request_id: message.requestId,
+    fingerprint: message.fingerprint,
+    source: message.source,
+    schema_version: message.schemaVersion,
+    confidence: message.confidence,
+    metadata: message.metadata || {},
+  };
+}
+
+function usageRetryKey(payload) {
+  return [
+    payload.tool_slug,
+    payload.credential_id,
+    payload.generation_id,
+    payload.request_id,
+    payload.external_event_id,
+    payload.fingerprint,
+    payload.status,
+    payload.credits_burned,
+  ].filter((value) => value !== undefined && value !== null && `${value}`.trim() !== '').join('|');
+}
+
+function isRetryableUsageEventError(error) {
+  const status = Number(error?.status || 0);
+  if (!status) return true;
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function getUsageRetryDelayMs(attempts) {
+  const baseMs = 30 * 1000;
+  const exponent = Math.max(0, Math.min(Number(attempts || 0), 6));
+  return Math.min(baseMs * (2 ** exponent), 30 * 60 * 1000);
+}
+
+async function readUsageRetryQueue() {
+  const stored = await chrome.storage.local.get([USAGE_EVENT_RETRY_QUEUE_STORAGE_KEY]);
+  const queue = stored[USAGE_EVENT_RETRY_QUEUE_STORAGE_KEY];
+  return Array.isArray(queue) ? queue.filter((item) => item && typeof item === 'object') : [];
+}
+
+async function writeUsageRetryQueue(queue) {
+  const trimmed = queue.slice(-USAGE_EVENT_RETRY_QUEUE_LIMIT);
+  await chrome.storage.local.set({ [USAGE_EVENT_RETRY_QUEUE_STORAGE_KEY]: trimmed });
+  return trimmed;
+}
+
+function scheduleUsageRetry(delayMs = 60 * 1000) {
+  try {
+    if (chrome?.alarms?.create) {
+      chrome.alarms.create(USAGE_EVENT_RETRY_ALARM, { when: Date.now() + Math.max(5000, delayMs) });
+      return;
+    }
+  } catch {}
+  setTimeout(() => flushPendingUsageEvents().catch(() => {}), Math.max(5000, delayMs));
+}
+
+async function enqueueUsageEventRetry(payload, error) {
+  const now = Date.now();
+  const queue = await readUsageRetryQueue();
+  const key = usageRetryKey(payload) || `usage_${now}_${Math.random().toString(36).slice(2)}`;
+  const existingIndex = queue.findIndex((item) => item.key === key);
+  const existing = existingIndex >= 0 ? queue[existingIndex] : null;
+  const attempts = Number(existing?.attempts || 0);
+  const queuedItem = {
+    key,
+    payload,
+    attempts,
+    firstQueuedAt: Number(existing?.firstQueuedAt || now),
+    lastError: `${error?.message || error || 'Usage event request failed'}`.slice(0, 500),
+    nextAttemptAt: now + getUsageRetryDelayMs(attempts),
+  };
+
+  if (existingIndex >= 0) {
+    queue[existingIndex] = queuedItem;
+  } else {
+    queue.push(queuedItem);
+  }
+
+  await writeUsageRetryQueue(queue);
+  scheduleUsageRetry(getUsageRetryDelayMs(attempts));
+  return queuedItem;
+}
+
+async function flushPendingUsageEvents() {
+  const queue = await readUsageRetryQueue();
+  if (!queue.length) return { attempted: 0, remaining: 0 };
+
+  const settings = await getSettings();
+  const now = Date.now();
+  const remaining = [];
+  let attempted = 0;
+
+  for (const item of queue) {
+    if (attempted >= USAGE_EVENT_RETRY_BATCH_LIMIT || Number(item.nextAttemptAt || 0) > now) {
+      remaining.push(item);
+      continue;
+    }
+
+    attempted += 1;
+    try {
+      await postUsageEvent(settings, item.payload);
+    } catch (error) {
+      const attempts = Number(item.attempts || 0) + 1;
+      if (attempts < USAGE_EVENT_RETRY_MAX_ATTEMPTS && isRetryableUsageEventError(error)) {
+        remaining.push({
+          ...item,
+          attempts,
+          lastError: `${error?.message || error || 'Usage event retry failed'}`.slice(0, 500),
+          nextAttemptAt: now + getUsageRetryDelayMs(attempts),
+        });
+      }
+    }
+  }
+
+  await writeUsageRetryQueue(remaining);
+  const nextDueAt = remaining.reduce((min, item) => {
+    const nextAttemptAt = Number(item.nextAttemptAt || 0);
+    return nextAttemptAt > 0 ? Math.min(min, nextAttemptAt) : min;
+  }, Number.POSITIVE_INFINITY);
+  if (Number.isFinite(nextDueAt)) {
+    scheduleUsageRetry(Math.max(5000, nextDueAt - Date.now()));
+  }
+
+  return { attempted, remaining: remaining.length };
 }
 
 async function getToolsForCurrentUser(settings) {
@@ -1563,35 +1718,23 @@ async function reportUsageEvent(message, senderTabId = 0, openerTabId = 0) {
   const directLaunch = await getActiveLaunch(tabId, message.toolSlug);
   const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, message.toolSlug);
   const activeLaunch = directLaunch || inheritedLaunch;
+  const payload = buildUsageEventPayload(message, activeLaunch);
 
-  return postUsageEvent(settings, {
-    event_id: message.eventId,
-    credential_id: message.credentialId,
-    tool_slug: message.toolSlug,
-    hostname: message.hostname,
-    page_url: message.pageUrl,
-    event_date: message.eventDate,
-    extension_ticket: `${message.extensionTicket || activeLaunch?.ticket || ''}`.trim() || null,
-    usage_ticket: `${message.usageTicket || activeLaunch?.usageTrackingTicket || ''}`.trim() || null,
-    event_type: message.eventType,
-    status: message.status,
-    model_label: message.modelLabel,
-    duration_label: message.durationLabel,
-    resolution_label: message.resolutionLabel,
-    prompt_text: message.promptText,
-    expected_credits: message.expectedCredits,
-    credits_before: message.creditsBefore,
-    credits_after: message.creditsAfter,
-    credits_burned: message.creditsBurned,
-    external_event_id: message.externalEventId,
-    generation_id: message.generationId,
-    request_id: message.requestId,
-    fingerprint: message.fingerprint,
-    source: message.source,
-    schema_version: message.schemaVersion,
-    confidence: message.confidence,
-    metadata: message.metadata || {},
-  });
+  try {
+    return await postUsageEvent(settings, payload);
+  } catch (error) {
+    if (!isRetryableUsageEventError(error)) {
+      throw error;
+    }
+    const queued = await enqueueUsageEventRetry(payload, error);
+    return {
+      success: true,
+      queued: true,
+      retryKey: queued.key,
+      retryAttempts: queued.attempts,
+      retryAt: queued.nextAttemptAt,
+    };
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1650,6 +1793,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         hostname: normalizeHostname(launch?.hostname),
       }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_GET_TAB_ID') {
+    sendResponse({
+      ok: true,
+      tabId: senderTabId || 0,
+      openerTabId: senderOpenerTabId || 0,
+    });
     return true;
   }
 
@@ -1787,6 +1939,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.storage.local.remove('rememberedToolLaunches').catch(() => {});
+flushPendingUsageEvents().catch(() => {});
+
+if (chrome?.runtime?.onStartup) {
+  chrome.runtime.onStartup.addListener(() => {
+    flushPendingUsageEvents().catch(() => {});
+  });
+}
+
+if (chrome?.runtime?.onInstalled) {
+  chrome.runtime.onInstalled.addListener(() => {
+    flushPendingUsageEvents().catch(() => {});
+  });
+}
+
+if (chrome?.alarms?.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm?.name === USAGE_EVENT_RETRY_ALARM) {
+      flushPendingUsageEvents().catch(() => {});
+    }
+  });
+}
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   setPasswordSavingSuppressedForTab(tabId, false).catch(() => {});

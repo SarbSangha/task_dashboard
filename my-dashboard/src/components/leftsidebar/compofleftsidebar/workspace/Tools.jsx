@@ -477,6 +477,53 @@ const formatUsageCredentialMeta = (credentialId, credentialScope) => {
   ].filter(Boolean).join(' · ');
 };
 
+const formatUsageSourceLabel = (value) => {
+  const normalized = `${value || ''}`.trim().toLowerCase();
+  if (normalized === 'fetch_response') return 'Fetch';
+  if (normalized === 'xhr_response') return 'XHR';
+  if (normalized === 'websocket_message') return 'WebSocket';
+  if (normalized === 'eventsource_message') return 'SSE';
+  if (normalized === 'dom_balance_fallback') return 'DOM fallback';
+  if (normalized === 'network_response') return 'Network';
+  return normalized ? normalized.replace(/_/g, ' ') : '';
+};
+
+const formatUsageConfidence = (value) => {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return '';
+  return `${Math.round(Math.max(0, Math.min(1, numericValue)) * 100)}%`;
+};
+
+const formatUsageDurationMs = (value) => {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue < 0) return '';
+  if (numericValue < 1000) return `${Math.round(numericValue)}ms`;
+  const seconds = numericValue / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return `${minutes}m ${remainder}s`;
+};
+
+const buildUsageDiagnosticChips = (event) => {
+  const metadata = event?.metadata || {};
+  const lifecycleTimings = metadata.lifecycleTimings || {};
+  const sourceLabel = formatUsageSourceLabel(event?.source || metadata.source);
+  const confidenceLabel = formatUsageConfidence(event?.confidence ?? metadata.confidence);
+  const totalTime = formatUsageDurationMs(lifecycleTimings.totalTimeMs);
+  const queueTime = formatUsageDurationMs(lifecycleTimings.queueTimeMs);
+  const processingTime = formatUsageDurationMs(lifecycleTimings.processingTimeMs);
+  return [
+    sourceLabel ? `Source: ${sourceLabel}` : '',
+    confidenceLabel ? `Confidence: ${confidenceLabel}` : '',
+    metadata.generationMode ? `Mode: ${metadata.generationMode}` : '',
+    lifecycleTimings.terminalStage ? `Stage: ${lifecycleTimings.terminalStage}` : '',
+    totalTime ? `Total: ${totalTime}` : '',
+    queueTime ? `Queue: ${queueTime}` : '',
+    processingTime ? `Render: ${processingTime}` : '',
+  ].filter(Boolean);
+};
+
 const resolveCurrentCreditsValue = (summary, recentEvents = []) => {
   if (summary?.currentCredits != null) {
     return summary.currentCredits;
@@ -3227,22 +3274,32 @@ export default function Tools({ view = 'tools' }) {
                                     </div>
                                     {relatedActivity.length ? (
                                       <div className="it-tool-launch-activity-list">
-                                        {relatedActivity.map((event) => (
-                                          <div key={event.id} className="it-tool-launch-activity-item">
-                                            <div>
-                                              <strong>{`${event.eventType || 'tool activity'}`.replace(/_/g, ' ')}</strong>
-                                              <small>{formatUsageDateTime(event.createdAt)}</small>
+                                        {relatedActivity.map((event) => {
+                                          const diagnosticChips = buildUsageDiagnosticChips(event);
+                                          return (
+                                            <div key={event.id} className="it-tool-launch-activity-item">
+                                              <div>
+                                                <strong>{`${event.eventType || 'tool activity'}`.replace(/_/g, ' ')}</strong>
+                                                <small>{formatUsageDateTime(event.createdAt)}</small>
+                                                {!!diagnosticChips.length && (
+                                                  <div className="it-usage-diagnostic-chips">
+                                                    {diagnosticChips.map((chip) => (
+                                                      <span key={`${event.id}-${chip}`}>{chip}</span>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                              </div>
+                                              <div className="it-usage-stat-stack">
+                                                <strong>{event.creditsBurned != null ? `${formatUsageNumber(event.creditsBurned)} credits` : event.status || 'captured'}</strong>
+                                                <small>
+                                                  {[event.modelLabel, event.durationLabel, event.resolutionLabel]
+                                                    .filter(Boolean)
+                                                    .join(' - ') || 'No generation metadata captured'}
+                                                </small>
+                                              </div>
                                             </div>
-                                            <div className="it-usage-stat-stack">
-                                              <strong>{event.creditsBurned != null ? `${formatUsageNumber(event.creditsBurned)} credits` : event.status || 'captured'}</strong>
-                                              <small>
-                                                {[event.modelLabel, event.durationLabel, event.resolutionLabel]
-                                                  .filter(Boolean)
-                                                  .join(' - ') || 'No generation metadata captured'}
-                                              </small>
-                                            </div>
-                                          </div>
-                                        ))}
+                                          );
+                                        })}
                                       </div>
                                     ) : (
                                       <div className="it-tool-launch-empty-detail">
@@ -3327,41 +3384,51 @@ export default function Tools({ view = 'tools' }) {
               <div className="it-usage-recent">
                 <h3>Recent captured events</h3>
                 <div className="it-usage-recent-list">
-                  {filteredRecentUsageEvents.slice(0, 8).map((event) => (
-                    <div key={event.id} className="it-usage-recent-item">
-                      <div className="it-usage-recent-top">
-                        <div className="it-usage-user-cell">
-                          <strong>{event.userName || event.userEmail || `User #${event.userId}`}</strong>
-                          <small>{event.userEmail || ''}</small>
+                  {filteredRecentUsageEvents.slice(0, 8).map((event) => {
+                    const diagnosticChips = buildUsageDiagnosticChips(event);
+                    return (
+                      <div key={event.id} className="it-usage-recent-item">
+                        <div className="it-usage-recent-top">
+                          <div className="it-usage-user-cell">
+                            <strong>{event.userName || event.userEmail || `User #${event.userId}`}</strong>
+                            <small>{event.userEmail || ''}</small>
+                          </div>
+                          <div className="it-usage-recent-burn">
+                            <span>Credits burned</span>
+                            <strong>{event.creditsBurned != null ? formatUsageNumber(event.creditsBurned) : '-'}</strong>
+                          </div>
                         </div>
-                        <div className="it-usage-recent-burn">
-                          <span>Credits burned</span>
-                          <strong>{event.creditsBurned != null ? formatUsageNumber(event.creditsBurned) : '-'}</strong>
+                        <div className="it-usage-recent-grid">
+                          <div className="it-usage-recent-meta">
+                            <span>Date & time</span>
+                            <strong>{formatUsageDateTime(event.createdAt)}</strong>
+                          </div>
+                          <div className="it-usage-recent-meta">
+                            <span>Kling ID used</span>
+                            <strong>{formatUsageCredentialTitle(event.credentialLabel, event.credentialId)}</strong>
+                            <small>{event.credentialScope || ''}</small>
+                          </div>
+                          <div className="it-usage-recent-meta">
+                            <span>Generation</span>
+                            <strong>{event.modelLabel || 'Kling'}</strong>
+                            <small>
+                              {[
+                                event.resolutionLabel,
+                                event.durationLabel,
+                              ].filter(Boolean).join(' · ') || 'No extra generation details'}
+                            </small>
+                          </div>
                         </div>
+                        {!!diagnosticChips.length && (
+                          <div className="it-usage-diagnostic-chips">
+                            {diagnosticChips.map((chip) => (
+                              <span key={`${event.id}-${chip}`}>{chip}</span>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <div className="it-usage-recent-grid">
-                        <div className="it-usage-recent-meta">
-                          <span>Date & time</span>
-                          <strong>{formatUsageDateTime(event.createdAt)}</strong>
-                        </div>
-                        <div className="it-usage-recent-meta">
-                          <span>Kling ID used</span>
-                          <strong>{formatUsageCredentialTitle(event.credentialLabel, event.credentialId)}</strong>
-                          <small>{event.credentialScope || ''}</small>
-                        </div>
-                        <div className="it-usage-recent-meta">
-                          <span>Generation</span>
-                          <strong>{event.modelLabel || 'Kling'}</strong>
-                          <small>
-                            {[
-                              event.resolutionLabel,
-                              event.durationLabel,
-                            ].filter(Boolean).join(' · ') || 'No extra generation details'}
-                          </small>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
