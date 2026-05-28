@@ -517,6 +517,64 @@ const formatUsageDurationMs = (value) => {
   return `${minutes}m ${remainder}s`;
 };
 
+const formatUsagePromptPreview = (value) => {
+  const normalized = `${value || ''}`.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > 220 ? `${normalized.slice(0, 217)}...` : normalized;
+};
+
+const formatUsageAssetUrl = (value) => {
+  const normalized = `${value || ''}`.trim();
+  if (!normalized) return '';
+  if (normalized.length <= 84) return normalized;
+  return `${normalized.slice(0, 44)}...${normalized.slice(-28)}`;
+};
+
+const getUsageMediaAssets = (event) => {
+  const assets = Array.isArray(event?.metadata?.mediaAssets) ? event.metadata.mediaAssets : [];
+  const seen = new Set();
+  return assets
+    .filter((asset) => {
+      const url = `${asset?.url || ''}`.trim();
+      if (!url || seen.has(url)) return false;
+      seen.add(url);
+      return true;
+    })
+    .slice(0, 5);
+};
+
+const renderUsageAssetLinks = (event) => {
+  const mediaAssets = getUsageMediaAssets(event);
+  if (!mediaAssets.length) return null;
+
+  return (
+    <div className="it-usage-asset-links">
+      {mediaAssets.map((asset, index) => {
+        const url = `${asset?.url || ''}`.trim();
+        const isOpenableUrl = /^https?:\/\//i.test(url);
+        const label = `${asset?.assetType || 'asset'} ${index + 1}`;
+        return isOpenableUrl ? (
+          <a
+            key={`${event?.id || 'event'}-${url}`}
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            title={url}
+          >
+            <span>{label}</span>
+            <small>{formatUsageAssetUrl(url)}</small>
+          </a>
+        ) : (
+          <span key={`${event?.id || 'event'}-${url}`} title={url}>
+            <strong>{label}</strong>
+            <small>{formatUsageAssetUrl(url)}</small>
+          </span>
+        );
+      })}
+    </div>
+  );
+};
+
 const buildUsageDiagnosticChips = (event) => {
   const metadata = event?.metadata || {};
   const lifecycleTimings = metadata.lifecycleTimings || {};
@@ -527,6 +585,8 @@ const buildUsageDiagnosticChips = (event) => {
   const processingTime = formatUsageDurationMs(lifecycleTimings.processingTimeMs);
   const walletSnapshot = metadata.walletSnapshot || {};
   const modeLabel = formatUsageModeLabel(metadata.generationMode);
+  const mediaAssets = Array.isArray(metadata.mediaAssets) ? metadata.mediaAssets : [];
+  const assetTypeSummary = [...new Set(mediaAssets.map((asset) => `${asset?.assetType || ''}`.trim()).filter(Boolean))].join(', ');
   return [
     sourceLabel ? `Source: ${sourceLabel}` : '',
     confidenceLabel ? `Confidence: ${confidenceLabel}` : '',
@@ -535,6 +595,10 @@ const buildUsageDiagnosticChips = (event) => {
     metadata.outputCount ? `Outputs: ${metadata.outputCount}` : '',
     metadata.nativeAudio ? 'Native audio' : '',
     metadata.multiShot ? 'Multi-shot' : '',
+    metadata.promptCapture?.source ? `Prompt: ${metadata.promptCapture.source}` : '',
+    metadata.mediaAssetCount ? `Assets: ${metadata.mediaAssetCount}` : '',
+    assetTypeSummary ? `Asset type: ${assetTypeSummary}` : '',
+    metadata.assetCapture?.source ? `Asset source: ${metadata.assetCapture.source}` : '',
     metadata.creditDrift ? `Drift: ${metadata.creditDriftAmount > 0 ? '+' : ''}${metadata.creditDriftAmount}` : '',
     walletSnapshot.delta != null ? `Wallet delta: ${walletSnapshot.delta}` : '',
     lifecycleTimings.terminalStage ? `Stage: ${lifecycleTimings.terminalStage}` : '',
@@ -3296,11 +3360,16 @@ export default function Tools({ view = 'tools' }) {
                                       <div className="it-tool-launch-activity-list">
                                         {relatedActivity.map((event) => {
                                           const diagnosticChips = buildUsageDiagnosticChips(event);
+                                          const promptPreview = formatUsagePromptPreview(event.promptText || event.metadata?.promptCapture?.text);
                                           return (
                                             <div key={event.id} className="it-tool-launch-activity-item">
                                               <div>
                                                 <strong>{`${event.eventType || 'tool activity'}`.replace(/_/g, ' ')}</strong>
                                                 <small>{formatUsageDateTime(event.createdAt)}</small>
+                                                {promptPreview && (
+                                                  <p className="it-usage-prompt-preview">{promptPreview}</p>
+                                                )}
+                                                {renderUsageAssetLinks(event)}
                                                 {!!diagnosticChips.length && (
                                                   <div className="it-usage-diagnostic-chips">
                                                     {diagnosticChips.map((chip) => (
@@ -3406,6 +3475,7 @@ export default function Tools({ view = 'tools' }) {
                 <div className="it-usage-recent-list">
                   {filteredRecentUsageEvents.slice(0, 8).map((event) => {
                     const diagnosticChips = buildUsageDiagnosticChips(event);
+                    const promptPreview = formatUsagePromptPreview(event.promptText || event.metadata?.promptCapture?.text);
                     return (
                       <div key={event.id} className="it-usage-recent-item">
                         <div className="it-usage-recent-top">
@@ -3439,6 +3509,10 @@ export default function Tools({ view = 'tools' }) {
                             </small>
                           </div>
                         </div>
+                        {promptPreview && (
+                          <p className="it-usage-prompt-preview">{promptPreview}</p>
+                        )}
+                        {renderUsageAssetLinks(event)}
                         {!!diagnosticChips.length && (
                           <div className="it-usage-diagnostic-chips">
                             {diagnosticChips.map((chip) => (

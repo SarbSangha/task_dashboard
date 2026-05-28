@@ -43,6 +43,8 @@ const USAGE_REPORT_POLL_MS   = 1200;
 const USAGE_REPORT_MAX_WAIT_MS = 30000;
 const MAX_REASONABLE_KLING_CREDIT_BURN = 3000;
 const MAX_REASONABLE_KLING_CREDIT_BALANCE = 1000000;
+const MAX_PROMPT_CAPTURE_LENGTH = 4000;
+const MAX_PROMPT_CANDIDATES = 3;
 const SUPPORTED_KLING_USAGE_FALLBACK_MODES = new Set(['image', 'video', 'motion-control', 'avatar']);
 const CREDIT_SOURCE_PROFILES = {
   wallet: { source: 'wallet_reconciled', priority: 100, confidence: 1 },
@@ -502,11 +504,86 @@ function findVisiblePromptField() {
   ]).find((el) => isVisible(el) && !el.disabled && !el.readOnly) || null;
 }
 
+function normalizePromptCaptureValue(value) {
+  const text = `${value || ''}`
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+\n/g, '\n')
+    .replace(/\n\s+/g, '\n')
+    .trim();
+  if (!text || text.length < 2) return '';
+  if (/^https?:\/\//i.test(text)) return '';
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(text)) return '';
+  if (/^(generate|image generation|video generation|motion control|avatar|native audio|styles?)$/i.test(text)) return '';
+  return text.slice(0, MAX_PROMPT_CAPTURE_LENGTH);
+}
+
+function readPromptCaptureSnapshot() {
+  const candidates = [];
+  const seen = new Set();
+  const fields = collectUniqueElements([
+    ...Array.from(document.querySelectorAll('textarea')),
+    ...Array.from(document.querySelectorAll('[contenteditable="true"]')),
+    ...Array.from(document.querySelectorAll('input[type="text"], input:not([type])')),
+  ]);
+
+  for (const field of fields) {
+    if (!isVisible(field) || field.disabled || field.readOnly) continue;
+    const rawValue = 'value' in field ? field.value : (field.innerText || field.textContent || '');
+    const text = normalizePromptCaptureValue(rawValue);
+    if (!text) continue;
+    const lowered = text.toLowerCase();
+    if (seen.has(lowered)) continue;
+    seen.add(lowered);
+
+    const labelText = normalizeSpace([
+      field.getAttribute?.('placeholder'),
+      field.getAttribute?.('aria-label'),
+      field.getAttribute?.('name'),
+      field.getAttribute?.('id'),
+      field.closest?.('label')?.textContent,
+      field.parentElement?.textContent?.slice(0, 200),
+    ].filter(Boolean).join(' '));
+    const tagName = `${field.tagName || ''}`.toLowerCase();
+    const score = [
+      tagName === 'textarea' ? 30 : 0,
+      field.isContentEditable ? 25 : 0,
+      /\b(prompt|describe|content|idea|text)\b/i.test(labelText) ? 20 : 0,
+      text.length > 20 ? 10 : 0,
+      text.length > 80 ? 10 : 0,
+    ].reduce((sum, value) => sum + value, 0);
+
+    candidates.push({
+      text,
+      source: tagName || (field.isContentEditable ? 'contenteditable' : 'field'),
+      label: labelText.slice(0, 160),
+      length: text.length,
+      score,
+    });
+  }
+
+  candidates.sort((left, right) => right.score - left.score || right.length - left.length);
+  const limitedCandidates = candidates.slice(0, MAX_PROMPT_CANDIDATES);
+  return {
+    text: limitedCandidates[0]?.text || '',
+    source: limitedCandidates[0]?.source || '',
+    candidateCount: candidates.length,
+    candidates: limitedCandidates.map((candidate) => ({
+      text: candidate.text,
+      source: candidate.source,
+      label: candidate.label,
+      length: candidate.length,
+      score: candidate.score,
+    })),
+  };
+}
+
 function readPromptText() {
+  const promptCapture = readPromptCaptureSnapshot();
+  if (promptCapture.text) return promptCapture.text;
   const input = findVisiblePromptField();
   if (!input) return '';
   const value = 'value' in input ? input.value : (input.innerText || input.textContent || '');
-  return `${value || ''}`.trim();
+  return normalizePromptCaptureValue(value);
 }
 
 function extractModelLabelFromText(value, generationMode = '') {
@@ -767,6 +844,32 @@ function readGenerateControlContext(generateButton) {
     nativeAudioEnabled,
     multiShotEnabled,
     scopeText,
+  };
+}
+
+function buildGenerationSettingsMetadata({
+  modelLabel = '',
+  generationMode = '',
+  durationLabel = '',
+  resolutionLabel = '',
+  aspectRatioLabel = '',
+  outputCount = null,
+  nativeAudio = false,
+  multiShot = false,
+  expectedCredits = null,
+  actionLabel = '',
+} = {}) {
+  return {
+    modelLabel: `${modelLabel || ''}`.trim(),
+    generationMode: `${generationMode || ''}`.trim(),
+    durationLabel: `${durationLabel || ''}`.trim(),
+    resolutionLabel: `${resolutionLabel || ''}`.trim(),
+    aspectRatioLabel: `${aspectRatioLabel || ''}`.trim(),
+    outputCount: Number(outputCount || 0) || null,
+    nativeAudio: Boolean(nativeAudio),
+    multiShot: Boolean(multiShot),
+    expectedCredits: Number(expectedCredits || 0) || null,
+    actionLabel: `${actionLabel || ''}`.trim(),
   };
 }
 
@@ -1040,6 +1143,7 @@ function broadcastNetworkUsageClaim(key) {
 function buildGenerateUsageSnapshot(generateButton) {
   const buttonLabel = readGenerateButtonLabel(generateButton);
   const controlContext = readGenerateControlContext(generateButton);
+  const promptCapture = readPromptCaptureSnapshot();
   const generationMode = controlContext.generationMode || readGenerationMode(controlContext.scopeText);
   const expectedCredits = readExpectedCreditsFromGenerateButton(generateButton);
   const latestWalletBalance = USAGE_CTX.latestWalletBalance;
@@ -1058,7 +1162,7 @@ function buildGenerateUsageSnapshot(generateButton) {
     eventType: 'generate_click',
     eventDate: buildLocalDateValue(),
     status: 'captured',
-    promptText: readPromptText(),
+    promptText: promptCapture.text || readPromptText(),
     modelLabel,
     durationLabel: controlContext.durationLabel,
     resolutionLabel: controlContext.resolutionLabel,
@@ -1074,6 +1178,19 @@ function buildGenerateUsageSnapshot(generateButton) {
       nativeAudio: controlContext.nativeAudioEnabled,
       multiShot: controlContext.multiShotEnabled,
       generationMode,
+      promptCapture,
+      generationSettings: buildGenerationSettingsMetadata({
+        modelLabel,
+        generationMode,
+        durationLabel: controlContext.durationLabel,
+        resolutionLabel: controlContext.resolutionLabel,
+        aspectRatioLabel: controlContext.aspectRatioLabel,
+        outputCount: controlContext.outputCount,
+        nativeAudio: controlContext.nativeAudioEnabled,
+        multiShot: controlContext.multiShotEnabled,
+        expectedCredits,
+        actionLabel: buttonLabel,
+      }),
       pathname: location.pathname,
       controlContext: controlContext.scopeText,
       currentCredits: creditsBefore,
@@ -1213,12 +1330,14 @@ function buildNetworkUsageSnapshot(networkPayload) {
   const externalEventId = `${networkFallbackDedupeKey || networkPayload?.externalEventId || generationId || requestId || fingerprint || ''}`.trim();
   const requestPreview = `${networkPayload?.requestPreview || ''}`.slice(0, 1500);
   const responsePreview = `${networkPayload?.responsePreview || ''}`.slice(0, 3000);
+  const promptCapture = readPromptCaptureSnapshot();
+  const networkPromptText = normalizePromptCaptureValue(networkPayload?.promptText) || promptCapture.text;
 
   return {
     eventType: 'network_generation',
     eventDate: buildLocalDateValue(new Date(capturedAt)),
     status,
-    promptText: `${networkPayload?.promptText || ''}`.trim() || readPromptText(),
+    promptText: networkPromptText || readPromptText(),
     modelLabel: `${networkPayload?.modelLabel || ''}`.trim() || readSelectedModelLabel(),
     durationLabel: `${networkPayload?.durationLabel || ''}`.trim(),
     resolutionLabel: `${networkPayload?.resolutionLabel || ''}`.trim(),
@@ -1257,6 +1376,21 @@ function buildNetworkUsageSnapshot(networkPayload) {
       nativeAudio: Boolean(networkPayload?.nativeAudioEnabled),
       multiShot: Boolean(networkPayload?.multiShotEnabled),
       expectedCredits: hasExpectedCredits ? expectedCredits : null,
+      promptCapture: {
+        ...promptCapture,
+        source: normalizePromptCaptureValue(networkPayload?.promptText) ? 'network_request' : promptCapture.source,
+        candidateCount: promptCapture.candidateCount,
+      },
+      generationSettings: buildGenerationSettingsMetadata({
+        modelLabel: `${networkPayload?.modelLabel || ''}`.trim() || readSelectedModelLabel(),
+        generationMode,
+        durationLabel: `${networkPayload?.durationLabel || ''}`.trim(),
+        resolutionLabel: `${networkPayload?.resolutionLabel || ''}`.trim(),
+        outputCount: Number(networkPayload?.outputCount || 0) || null,
+        nativeAudio: Boolean(networkPayload?.nativeAudioEnabled),
+        multiShot: Boolean(networkPayload?.multiShotEnabled),
+        expectedCredits: hasExpectedCredits ? expectedCredits : null,
+      }),
       requestPreview,
       responsePreview,
       generationId,
