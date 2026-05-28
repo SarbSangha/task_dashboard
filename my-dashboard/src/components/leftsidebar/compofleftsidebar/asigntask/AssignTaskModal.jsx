@@ -860,7 +860,10 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         }))
       : [];
 
-    if (formData.workflowEnabled) {
+    const hasWorkflowStagesForSubmit = normalizedWorkflowStages.length > 0;
+    const shouldValidateWorkflow = formData.workflowEnabled && (!isTaskEditMode || hasWorkflowStagesForSubmit);
+
+    if (shouldValidateWorkflow) {
       if (normalizedWorkflowStages.length === 0) {
         showMessage('Add at least one workflow stage before creating the task.', 'error');
         return;
@@ -948,6 +951,18 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       const finalAttachments = [...existingAttachmentMeta, ...uploadedAttachments];
 
       // ✅ Map form data to backend schema
+      const workflowPayload = formData.workflowEnabled
+        ? (
+            hasWorkflowStagesForSubmit
+              ? {
+                  enabled: true,
+                  finalApprovalRequired: Boolean(formData.finalApprovalRequired),
+                  stages: normalizedWorkflowStages,
+                }
+              : undefined
+          )
+        : null;
+
       const taskPayload = {
         title: formData.taskName,
         description: formData.taskDetails || '',
@@ -966,25 +981,13 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         reference: formData.reference || '',
         links: formData.links || [],
         attachments: finalAttachments,
-        workflow: formData.workflowEnabled
-          ? {
-              enabled: true,
-              finalApprovalRequired: Boolean(formData.finalApprovalRequired),
-              stages: normalizedWorkflowStages,
-            }
-          : null,
+        workflow: workflowPayload,
       };
 
       console.log('📤 Sending task payload:', taskPayload);
 
       if (isTaskEditMode && editingTask?.id) {
-        const updatePayload = {
-          title: taskPayload.title,
-          description: taskPayload.description,
-          priority: taskPayload.priority,
-          deadline: taskPayload.deadline
-        };
-        const response = await taskAPI.editTask(editingTask.id, updatePayload);
+        const response = await taskAPI.editTask(editingTask.id, taskPayload);
         console.log('✅ Task updated:', response);
         showMessage('Task updated successfully!', 'success');
       } else {
@@ -1313,7 +1316,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                 type="text" 
                 placeholder="Project Alpha" 
                 value={formData.projectName}
-                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('projectName', e.target.value)}
                 list="project-name-suggestions"
               />
@@ -1329,7 +1331,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                 type="text"
                 placeholder="Customer / Client"
                 value={formData.customerName}
-                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('customerName', e.target.value)}
               />
             </div>
@@ -1351,7 +1352,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                 type="text"
                 placeholder="TASK-XXXX-YYYYMMDD-ZZZZ"
                 value={formData.taskId}
-                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('taskId', e.target.value)}
                 list="task-id-suggestions"
               />
@@ -1367,10 +1367,10 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
             <div className="assign-field project-id-actions">
               <label>&nbsp;</label>
               <div className="project-id-btn-row">
-                <button type="button" className="assign-secondary-btn" onClick={handleValidateTaskId} disabled={isTaskEditMode}>
+                <button type="button" className="assign-secondary-btn" onClick={handleValidateTaskId}>
                   Validate Task ID
                 </button>
-                <button type="button" className="assign-draft-btn" onClick={handleGenerateTaskId} disabled={isTaskEditMode}>
+                <button type="button" className="assign-draft-btn" onClick={handleGenerateTaskId}>
                   Generate Task ID
                 </button>
               </div>
@@ -1384,7 +1384,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                 type="text"
                 placeholder="PROJ-XXXX-YYYYMMDD-ZZZZ"
                 value={formData.projectId}
-                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('projectId', e.target.value)}
                 list="project-id-suggestions"
               />
@@ -1400,10 +1399,10 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
             <div className="assign-field project-id-actions">
               <label>&nbsp;</label>
               <div className="project-id-btn-row">
-                <button type="button" className="assign-secondary-btn" onClick={handleValidateProjectId} disabled={isTaskEditMode}>
+                <button type="button" className="assign-secondary-btn" onClick={handleValidateProjectId}>
                   Validate Proj ID
                 </button>
-                <button type="button" className="assign-draft-btn" onClick={handleGenerateProjectId} disabled={isTaskEditMode}>
+                <button type="button" className="assign-draft-btn" onClick={handleGenerateProjectId}>
                   Generate Proj ID
                 </button>
               </div>
@@ -1418,15 +1417,13 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                 type="text" 
                 placeholder="PN/TN/REF" 
                 value={formData.reference}
-                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('reference', e.target.value)}
               />
             </div>
           </div>
 
-          {!isTaskEditMode && (
-            <div className="assign-row">
-              <div className="assign-card full-width assignment-flow-card">
+          <div className="assign-row">
+            <div className="assign-card full-width assignment-flow-card">
                 <div className="assignment-flow-header">
                   <div>
                     <h3>Assignment Flow</h3>
@@ -1486,12 +1483,11 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                     </div>
                   )}
                 </div>
-              </div>
             </div>
-          )}
+          </div>
 
           <div className="assign-receiver-shell">
-            {formData.workflowEnabled && !isTaskEditMode && (
+            {formData.workflowEnabled && (
               <div className="workflow-step-banner">
                 <span className="workflow-step-badge">Step 1</span>
                 <div>
@@ -1512,11 +1508,11 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                     readOnly
                     disabled
                   />
-                  <label className={`assign-self-toggle ${isTaskEditMode ? 'disabled' : ''}`}>
+                  <label className="assign-self-toggle">
                     <input
                       type="checkbox"
                       checked={isSelfAssigned}
-                      disabled={isTaskEditMode || !user?.id}
+                      disabled={!user?.id}
                       onChange={toggleSelfAssignment}
                     />
                     <span>
@@ -1533,7 +1529,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                   <label>Browse Department</label>
                   <select 
                     value={formData.toDepartment}
-                    disabled={isTaskEditMode}
                     onChange={(e) => handleChange('toDepartment', e.target.value)}
                   >
                     <option value="">-- Select Department --</option>
@@ -1571,7 +1566,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                         <button
                           type="button"
                           className="selected-receiver-remove"
-                          disabled={isTaskEditMode}
                           onClick={() => toggleUserSelection(receiver.id)}
                         >
                           Remove
@@ -1613,7 +1607,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                           <input 
                             type="checkbox"
                             checked={formData.selectedUserIds.includes(user.id)}
-                            disabled={isTaskEditMode}
                             onChange={() => toggleUserSelection(user.id)}
                           />
                           <span className="user-checkbox-label">
@@ -1635,9 +1628,8 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
             </div>
           </div>
 
-          {!isTaskEditMode && (
-            <div className="assign-row">
-              <div className="assign-card full-width workflow-builder-card">
+          <div className="assign-row">
+            <div className="assign-card full-width workflow-builder-card">
                 <div className="workflow-builder-header">
                   <div>
                     <div className="workflow-builder-title-row">
@@ -1777,9 +1769,8 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                     This task will follow the normal single-step assignment flow unless staged workflow is enabled.
                   </div>
                 )}
-              </div>
             </div>
-          )}
+          </div>
 
           {/* Timeline & Priority */}
           <div className="assign-row">
@@ -1847,7 +1838,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               <label>Request Type</label>
               <select
                 value={formData.taskType}
-                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('taskType', e.target.value)}
               >
                 <option value="task">Task</option>
@@ -1859,7 +1849,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               <label>Tag of Task</label>
               <select 
                 value={formData.taskTag}
-                disabled={isTaskEditMode}
                 onChange={(e) => handleChange('taskTag', e.target.value)}
               >
                 {TASK_TAG_OPTIONS.map((tag) => (
@@ -1874,7 +1863,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
             <AttachmentBox 
               attachments={formData.attachments}
               onChange={handleAttachmentsChange}
-              disabled={isTaskEditMode}
             />
           </div>
 
@@ -1910,7 +1898,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
             <TaskForm 
               links={formData.links}
               onChange={handleLinksChange}
-              disabled={isTaskEditMode}
             />
           </div>
 

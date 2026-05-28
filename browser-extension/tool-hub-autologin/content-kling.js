@@ -419,8 +419,9 @@ function clearUsageTicket() {
 function parseCreditNumber(value) {
   const normalizedValue = `${value || ''}`.replace(/,/g, '').trim().toLowerCase();
   if (!normalizedValue) return null;
+  if (!/^\d+(?:\.\d+)?\s*[km]?$/.test(normalizedValue)) return null;
 
-  const match = normalizedValue.match(/(\d+(?:\.\d+)?)\s*([km])?/i);
+  const match = normalizedValue.match(/^(\d+(?:\.\d+)?)\s*([km])?$/i);
   if (!match?.[1]) return null;
 
   const numericValue = Number(match[1]);
@@ -436,7 +437,11 @@ function parseExpectedCreditsFromGenerateText(value) {
   const normalized = normalizeGenerateActionLabel(value);
   if (!normalized) return null;
   const match = normalized.match(/(?:^|\s)(\d+(?:\.\d+)?)\s+generate(?:\s|$)/i);
-  return match ? Number(match[1]) : null;
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_REASONABLE_KLING_CREDIT_BURN
+    ? parsed
+    : null;
 }
 
 function collectGenerateTextCandidates(generateButton) {
@@ -487,21 +492,40 @@ function readPromptText() {
   return `${value || ''}`.trim();
 }
 
-function readSelectedModelLabel() {
-  const text = normalizeSpace(document.body?.innerText || '');
+function extractModelLabelFromText(value, generationMode = '') {
+  const text = normalizeSpace(value || '');
+  if (!text) return '';
   const patterns = [
-    /\b(image\s*\d+(?:\.\d+)?(?:\s*[a-z][a-z0-9-]*)?)/i,
     /\b(video\s*\d+(?:\.\d+)?\s*(?:turbo|master|pro)?)/i,
+    /\b(image\s*\d+(?:\.\d+)?(?:\s*[a-z][a-z0-9-]*)?)/i,
     /\b(motion\s*control)\b/i,
     /\bavatar\b/i,
     /\b(master|turbo)\b/i,
   ];
+
+  if (generationMode === 'video') {
+    patterns.sort((left, right) => `${right}`.includes('video') - `${left}`.includes('video'));
+  }
+  if (generationMode === 'image') {
+    patterns.sort((left, right) => `${right}`.includes('image') - `${left}`.includes('image'));
+  }
+
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match?.[1]) return match[1].trim();
     if (match?.[0]) return match[0].trim();
   }
   return '';
+}
+
+function readSelectedModelLabel(generationMode = '', scopedText = '') {
+  const scopedLabel = extractModelLabelFromText(scopedText, generationMode);
+  if (scopedLabel && !(generationMode === 'video' && /motion\s*control/i.test(scopedLabel))) {
+    return scopedLabel;
+  }
+  const bodyLabel = extractModelLabelFromText(document.body?.innerText || '', generationMode);
+  if (generationMode === 'video' && /motion\s*control/i.test(bodyLabel)) return 'video';
+  return bodyLabel;
 }
 
 function readGenerationMode() {
@@ -675,8 +699,10 @@ function readGenerateControlContext(generateButton) {
   const durationMatch = scopeText.match(/\b(\d+)\s*s\b/i);
   const resolutionMatch = scopeText.match(/\b(360p|540p|720p|1080p|4k)\b/i);
   const ratioMatch = scopeText.match(/\b\d+\s*[:x]\s*\d+\b/i);
+  const modelLabel = extractModelLabelFromText(scopeText, '');
 
   return {
+    modelLabel,
     durationLabel: durationMatch?.[0] || '',
     resolutionLabel: resolutionMatch?.[0] || '',
     aspectRatioLabel: ratioMatch?.[0] || '',
@@ -750,22 +776,7 @@ function readVisibleCreditBalance() {
     return creditCandidates[0].parsedValue;
   }
 
-  const candidates = collectUniqueElements(Array.from(document.querySelectorAll('div,span,button,strong,b')))
-    .filter((el) => isVisible(el))
-    .filter((el) => /^\d+(?:\.\d+)?$/.test(`${el.textContent || ''}`.trim()))
-    .map((el) => {
-      const rect = el.getBoundingClientRect();
-      let score = 0;
-      if (rect.left < 220) score += 3;
-      if (rect.top > window.innerHeight * 0.55) score += 3;
-      if (rect.width < 80) score += 1;
-      const parentText = normalizeSpace(el.parentElement?.innerText || '');
-      if (parentText.includes('upgrade')) score += 2;
-      return { el, score };
-    })
-    .sort((left, right) => right.score - left.score);
-
-  return candidates.length ? parseCreditNumber(candidates[0].el.textContent) : null;
+  return null;
 }
 
 function showCurrentCreditsDebug(reason = '') {
@@ -793,6 +804,7 @@ function buildGenerateUsageSnapshot(generateButton) {
   const buttonLabel = readGenerateButtonLabel(generateButton);
   const controlContext = readGenerateControlContext(generateButton);
   const generationMode = readGenerationMode();
+  const expectedCredits = readExpectedCreditsFromGenerateButton(generateButton);
   const creditsBefore = readVisibleCreditBalance();
   const klingAccountLabel = readTrackedKlingAccountLabel();
   const credentialUsageMetadata = readCredentialUsageMetadata();
@@ -801,10 +813,10 @@ function buildGenerateUsageSnapshot(generateButton) {
     eventDate: buildLocalDateValue(),
     status: 'captured',
     promptText: readPromptText(),
-    modelLabel: readSelectedModelLabel(),
+    modelLabel: controlContext.modelLabel || readSelectedModelLabel(generationMode, controlContext.scopeText),
     durationLabel: controlContext.durationLabel,
     resolutionLabel: controlContext.resolutionLabel,
-    expectedCredits: readExpectedCreditsFromGenerateButton(generateButton),
+    expectedCredits,
     creditsBefore,
     source: 'dom_balance_fallback',
     schemaVersion: 1,
@@ -1019,11 +1031,17 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
   );
   const expectedCredits = Number(snapshot.expectedCredits);
   const hasExpectedCredits = Number.isFinite(expectedCredits) && expectedCredits > 0;
+  const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
+  const isSupportedFallbackMode = generationMode === 'image' || generationMode === 'video';
+  const hasStrongGenerateCost = hasExpectedCredits
+    && Number.isInteger(expectedCredits)
+    && expectedCredits <= MAX_REASONABLE_KLING_CREDIT_BURN;
   const hasReasonableRawBurn = Number.isFinite(rawCreditsBurned)
     && rawCreditsBurned > 0
     && rawCreditsBurned <= MAX_REASONABLE_KLING_CREDIT_BURN
-    && (!hasExpectedCredits || rawCreditsBurned <= Math.max(expectedCredits * 3, expectedCredits + 5));
-  const usedExpectedFallback = !hasReasonableRawBurn && hasExpectedCredits;
+    && hasStrongGenerateCost
+    && rawCreditsBurned <= Math.max(expectedCredits * 3, expectedCredits + 5);
+  const usedExpectedFallback = !hasReasonableRawBurn && hasStrongGenerateCost && isSupportedFallbackMode;
   snapshot.creditsBurned = hasReasonableRawBurn
     ? rawCreditsBurned
     : (usedExpectedFallback ? expectedCredits : null);
@@ -1033,6 +1051,8 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
     settlementReason,
     rawCreditsBurned,
     usedExpectedCreditFallback: usedExpectedFallback,
+    supportedFallbackMode: isSupportedFallbackMode,
+    strongGenerateCost: hasStrongGenerateCost,
     source: 'dom_balance_fallback',
     confidence: 0.35,
   };
@@ -1085,6 +1105,17 @@ function waitForGenerateUsageSettlement(snapshot) {
 
 function scheduleGenerateUsageReport(generateButton) {
   const snapshot = buildGenerateUsageSnapshot(generateButton);
+  const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
+  const expectedCredits = Number(snapshot.expectedCredits);
+  if (
+    !['image', 'video'].includes(generationMode)
+    || !Number.isInteger(expectedCredits)
+    || expectedCredits < 1
+    || expectedCredits > MAX_REASONABLE_KLING_CREDIT_BURN
+  ) {
+    setStatus('Usage fallback skipped: unsupported or unclear generation cost', { hideAfterMs: 2500 });
+    return;
+  }
   const dedupeKey = JSON.stringify([
     snapshot.promptText,
     snapshot.modelLabel,
@@ -2391,8 +2422,16 @@ async function tick() {
         return;
       }
 
-      // FIX: sessionClearDone guard — only clears cookies on FIRST launch prep
+      // Only prepare a fresh browser session before login. If Kling is already
+      // authenticated, clearing site data here would log the working session out.
       if (CTX.expiresAt && !CTX.prepared && !CTX.sessionClearDone) {
+        if (isAuthenticated()) {
+          setStatus('Kling session already active — keeping it signed in.');
+          await markFreshSessionPrepared();
+          CTX.phase = P.DONE;
+          stop(buildSignedInStatusMessage(), P.DONE);
+          return;
+        }
         setStatus('Preparing fresh Kling session…');
         await clearToolSessionSafe({ preserveLaunch: true });
         await markFreshSessionPrepared();

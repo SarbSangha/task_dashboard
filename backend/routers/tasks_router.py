@@ -395,8 +395,22 @@ class TaskWorkflowCreatePayload(BaseModel):
 class TaskUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
+    projectName: Optional[str] = None
+    projectId: Optional[str] = None
+    taskId: Optional[str] = None
+    projectIdRaw: Optional[str] = None
+    projectIdHex: Optional[str] = None
+    customerName: Optional[str] = None
+    taskType: Optional[str] = None
+    taskTag: Optional[str] = None
     priority: Optional[str] = None
+    toDepartment: Optional[str] = None
     deadline: Optional[str] = None
+    assigneeIds: Optional[List[int]] = None
+    reference: Optional[str] = None
+    links: Optional[List[str]] = None
+    attachments: Optional[List[dict]] = None
+    workflow: Optional["TaskWorkflowCreatePayload"] = None
 
 
 class TaskActionPayload(BaseModel):
@@ -498,6 +512,11 @@ if hasattr(TaskCreate, "model_rebuild"):
 else:
     TaskCreate.update_forward_refs()
 
+if hasattr(TaskUpdate, "model_rebuild"):
+    TaskUpdate.model_rebuild()
+else:
+    TaskUpdate.update_forward_refs()
+
 
 def parse_deadline(deadline_str: Optional[str]) -> Optional[datetime]:
     if not deadline_str:
@@ -511,6 +530,34 @@ def parse_deadline(deadline_str: Optional[str]) -> Optional[datetime]:
         except Exception:
             continue
     return None
+
+
+def payload_field_was_set(payload: BaseModel, field_name: str) -> bool:
+    fields_set = getattr(payload, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(payload, "__fields_set__", set())
+    return field_name in fields_set
+
+
+def normalize_task_links(links: Optional[List[str]]) -> List[str]:
+    return [str(x).strip() for x in (links or []) if str(x).strip()]
+
+
+def normalize_task_attachments(attachments: Optional[List[dict]]) -> List[dict]:
+    return [
+        {
+            "filename": item.get("filename"),
+            "originalName": item.get("originalName"),
+            "relativePath": item.get("relativePath"),
+            "path": item.get("path"),
+            "url": item.get("url"),
+            "mimetype": item.get("mimetype"),
+            "size": item.get("size"),
+            "storage": item.get("storage"),
+        }
+        for item in (attachments or [])
+        if isinstance(item, dict)
+    ]
 
 
 def slug_text(value: str) -> str:
@@ -5128,22 +5175,238 @@ async def edit_task_details(
     if task.task_edit_locked:
         raise HTTPException(status_code=400, detail="Task editing is locked")
 
+    update_fields = {
+        field_name
+        for field_name in (
+            "title",
+            "description",
+            "projectName",
+            "projectId",
+            "taskId",
+            "projectIdRaw",
+            "projectIdHex",
+            "customerName",
+            "taskType",
+            "taskTag",
+            "priority",
+            "toDepartment",
+            "deadline",
+            "assigneeIds",
+            "reference",
+            "links",
+            "attachments",
+            "workflow",
+        )
+        if payload_field_was_set(payload, field_name)
+    }
+    meta = dict(task.metadata_json or {})
+
     before = {
+        "taskNumber": task.task_number,
         "title": task.title,
         "description": task.description,
+        "projectName": task.project_name,
+        "projectId": task.project_id,
+        "projectIdRaw": task.project_id_raw,
+        "projectIdHex": task.project_id_hex,
+        "customerName": meta.get("customerName"),
+        "taskType": task.task_type,
+        "taskTag": task.task_tag,
         "priority": task.priority.value if task.priority else None,
+        "toDepartment": task.to_department,
         "deadline": serialize_utc_datetime(task.deadline),
+        "reference": meta.get("reference"),
+        "links": meta.get("links", []),
+        "attachments": meta.get("attachments", []),
+        "assigneeIds": [
+            participant.user_id
+            for participant in (task.participants or [])
+            if participant.is_active and participant.role == ParticipantRole.ASSIGNEE
+        ],
+        "workflowEnabled": bool(task.workflow_enabled),
+        "finalApprovalRequired": bool(task.final_approval_required),
         "taskVersion": task.task_version,
     }
 
-    if payload.title is not None:
-        task.title = payload.title
-    if payload.description is not None:
+    if "title" in update_fields and payload.title is not None:
+        task.title = payload.title.strip()
+    if "description" in update_fields:
         task.description = payload.description
-    if payload.priority is not None:
-        task.priority = Priority[payload.priority.upper()]
-    if payload.deadline is not None:
+    if "projectName" in update_fields:
+        task.project_name = (payload.projectName or "").strip() or None
+        task.task_id_project_hex = to_hex4(task.project_name or task.title)
+    if "projectId" in update_fields:
+        next_project_id = (payload.projectId or "").strip() or None
+        if next_project_id and not (payload.projectIdRaw or payload.projectIdHex or task.project_id == next_project_id):
+            existing = (
+                db.query(Task)
+                .filter(Task.project_id == next_project_id, Task.id != task.id)
+                .first()
+            )
+            if not existing:
+                raise HTTPException(status_code=400, detail="Project ID not found. Generate a new one or check the ID.")
+        task.project_id = next_project_id
+    if "projectIdRaw" in update_fields:
+        task.project_id_raw = payload.projectIdRaw
+    if "projectIdHex" in update_fields:
+        task.project_id_hex = payload.projectIdHex
+    if "taskId" in update_fields:
+        next_task_number = (payload.taskId or "").strip() or None
+        if next_task_number:
+            exists_task_id = (
+                db.query(Task)
+                .filter(Task.task_number == next_task_number, Task.id != task.id)
+                .first()
+            )
+            if exists_task_id:
+                raise HTTPException(status_code=400, detail="Task ID already exists. Use a different ID.")
+        task.task_number = next_task_number
+    if "customerName" in update_fields:
+        meta["customerName"] = payload.customerName
+        task.task_id_customer_hex = to_hex4(payload.customerName or task.creator.name or "user")
+    if "taskType" in update_fields:
+        task.task_type = (payload.taskType or "task").strip() or "task"
+    if "taskTag" in update_fields:
+        task.task_tag = payload.taskTag
+    if "priority" in update_fields and payload.priority is not None:
+        priority_key = payload.priority.upper()
+        if priority_key not in Priority.__members__:
+            raise HTTPException(status_code=400, detail="Invalid priority")
+        task.priority = Priority[priority_key]
+    if "toDepartment" in update_fields:
+        task.to_department = payload.toDepartment
+    if "deadline" in update_fields:
         task.deadline = parse_deadline(payload.deadline)
+    if "reference" in update_fields:
+        meta["reference"] = (payload.reference or "").strip() or None
+    if "links" in update_fields:
+        meta["links"] = normalize_task_links(payload.links)
+    if "attachments" in update_fields:
+        meta["attachments"] = normalize_task_attachments(payload.attachments)
+
+    assignee_ids_to_apply: Optional[List[int]] = None
+    if "assigneeIds" in update_fields:
+        assignee_ids_to_apply = sorted({int(user_id) for user_id in (payload.assigneeIds or []) if user_id})
+        meta["suggestedAssigneeIds"] = assignee_ids_to_apply
+
+    if "workflow" in update_fields:
+        workflow_config = (
+            payload.workflow
+            if payload.workflow and payload.workflow.enabled and payload.workflow.stages
+            else None
+        )
+        existing_stage_ids = [stage.id for stage in (task.stages or []) if stage.id]
+        has_stage_submissions = bool(
+            existing_stage_ids
+            and db.query(TaskStageSubmission)
+            .filter(TaskStageSubmission.stage_id.in_(existing_stage_ids))
+            .first()
+        )
+        if has_stage_submissions:
+            raise HTTPException(status_code=400, detail="Workflow stages cannot be edited after submissions exist")
+
+        for stage in list(task.stages or []):
+            db.delete(stage)
+        db.flush()
+
+        normalized_workflow_stages = (
+            _normalize_stage_payload(payload.workflow.stages)
+            if workflow_config
+            else []
+        )
+        initial_stage_payload = normalized_workflow_stages[0] if normalized_workflow_stages else None
+        workflow_assignee_ids = sorted(
+            {
+                assignee_id
+                for stage_payload in normalized_workflow_stages
+                for assignee_id in (stage_payload.assigneeIds or [])
+                if assignee_id
+            }
+        )
+        task.workflow_enabled = bool(workflow_config)
+        task.workflow_status = TaskWorkflowStatus.ACTIVE.value if workflow_config else None
+        task.workflow_stage = "workflow_stage_1_active" if workflow_config else "pending_creator_hod"
+        task.current_stage_id = None
+        task.current_stage_order = initial_stage_payload.order if initial_stage_payload else None
+        task.current_stage_title = initial_stage_payload.title if initial_stage_payload else None
+        task.final_approval_required = bool(workflow_config.finalApprovalRequired) if workflow_config else False
+        task.current_assignee_ids_json = sorted({user_id for user_id in ((initial_stage_payload.assigneeIds if initial_stage_payload else []) or []) if user_id})
+        meta[WORKFLOW_FINAL_PENDING_META_KEY] = False
+        meta[WORKFLOW_SUMMARY_APPROVAL_META_KEY] = bool(initial_stage_payload.approvalRequired) if initial_stage_payload else False
+        meta[WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY] = []
+        assignee_ids_to_apply = workflow_assignee_ids
+
+        if workflow_config:
+            assignee_users = (
+                db.query(User)
+                .filter(User.id.in_(workflow_assignee_ids), User.is_active == True)
+                .all()
+            ) if workflow_assignee_ids else []
+            assignee_users_by_id = {user.id: user for user in assignee_users}
+            missing_assignee_ids = sorted(set(workflow_assignee_ids) - set(assignee_users_by_id))
+            if missing_assignee_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Workflow assignees not found or inactive: {', '.join(str(user_id) for user_id in missing_assignee_ids)}",
+                )
+            created_stages: List[TaskStage] = []
+            for index, stage_payload in enumerate(normalized_workflow_stages):
+                stage = TaskStage(
+                    task_id=task.id,
+                    stage_order=stage_payload.order,
+                    title=stage_payload.title,
+                    description=stage_payload.description,
+                    status=TaskStageStatus.ACTIVE.value if index == 0 else TaskStageStatus.NOT_STARTED.value,
+                    approval_required=bool(stage_payload.approvalRequired),
+                    is_final_stage=index == len(normalized_workflow_stages) - 1,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(stage)
+                db.flush()
+                if index == 0:
+                    task.current_stage_id = stage.id
+                for assignee_index, assignee_id in enumerate(sorted(set(stage_payload.assigneeIds or []))):
+                    db.add(
+                        TaskStageAssignee(
+                            stage_id=stage.id,
+                            user_id=assignee_id,
+                            role=WORKFLOW_ASSIGNEE_ROLE,
+                            is_primary=assignee_index == 0,
+                            is_active=True,
+                            assigned_at=datetime.utcnow(),
+                        )
+                    )
+                created_stages.append(stage)
+            db.flush()
+            _sync_task_workflow_summary(task, db)
+
+    if assignee_ids_to_apply is not None:
+        valid_assignee_ids = set()
+        if assignee_ids_to_apply:
+            valid_assignee_ids = {
+                user.id
+                for user in db.query(User).filter(User.id.in_(assignee_ids_to_apply), User.is_active == True).all()
+            }
+            missing_assignee_ids = sorted(set(assignee_ids_to_apply) - valid_assignee_ids)
+            if missing_assignee_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Assignees not found or inactive: {', '.join(str(user_id) for user_id in missing_assignee_ids)}",
+                )
+        existing_assignee_rows = db.query(TaskParticipant).filter(
+            TaskParticipant.task_id == task.id,
+            TaskParticipant.role == ParticipantRole.ASSIGNEE,
+        ).all()
+        for participant in existing_assignee_rows:
+            participant.is_active = participant.user_id in valid_assignee_ids
+            if participant.is_active:
+                participant.is_read = False
+                participant.read_at = None
+        for assignee_id in sorted(valid_assignee_ids):
+            ensure_participant(db, task.id, assignee_id, ParticipantRole.ASSIGNEE)
+
+    task.metadata_json = meta
 
     task.task_version = (task.task_version or 1) + 1
     task.updated_at = datetime.utcnow()
@@ -5155,10 +5418,25 @@ async def edit_task_details(
             edit_scope="task",
             before_json=before,
             after_json={
+                "taskNumber": task.task_number,
                 "title": task.title,
                 "description": task.description,
+                "projectName": task.project_name,
+                "projectId": task.project_id,
+                "projectIdRaw": task.project_id_raw,
+                "projectIdHex": task.project_id_hex,
+                "customerName": meta.get("customerName"),
+                "taskType": task.task_type,
+                "taskTag": task.task_tag,
                 "priority": task.priority.value if task.priority else None,
+                "toDepartment": task.to_department,
                 "deadline": serialize_utc_datetime(task.deadline),
+                "reference": meta.get("reference"),
+                "links": meta.get("links", []),
+                "attachments": meta.get("attachments", []),
+                "assigneeIds": assignee_ids_to_apply,
+                "workflowEnabled": bool(task.workflow_enabled),
+                "finalApprovalRequired": bool(task.final_approval_required),
                 "taskVersion": task.task_version,
             },
             created_at=datetime.utcnow(),

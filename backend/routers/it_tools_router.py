@@ -1510,9 +1510,19 @@ def _normalize_usage_text(value: Optional[str], max_length: int = 160) -> Option
 def _safe_credits_burned_value(
     credits_burned: Optional[float],
     expected_credits: Optional[float] = None,
+    metadata: Optional[dict] = None,
+    source: Optional[str] = None,
 ) -> Optional[float]:
     burned = _normalize_usage_float(credits_burned)
     expected = _normalize_usage_float(expected_credits)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    normalized_source = f"{source or metadata.get('source') or ''}".strip().lower()
+    generation_mode = f"{metadata.get('generationMode') or ''}".strip().lower()
+    is_dom_fallback = normalized_source == "dom_balance_fallback"
+    if is_dom_fallback and generation_mode not in {"image", "video"}:
+        return None
+    if is_dom_fallback and not metadata.get("strongGenerateCost", expected is not None and expected >= 1):
+        return None
     if burned is None:
         return None
     if 0 <= burned <= MAX_REASONABLE_KLING_CREDIT_BURN:
@@ -1528,6 +1538,11 @@ def _safe_usage_credits_expression():
             and_(
                 ITPortalToolUsageEvent.credits_burned >= 0,
                 ITPortalToolUsageEvent.credits_burned <= MAX_REASONABLE_KLING_CREDIT_BURN,
+                or_(
+                    ITPortalToolUsageEvent.source.is_(None),
+                    ITPortalToolUsageEvent.source != "dom_balance_fallback",
+                    ITPortalToolUsageEvent.expected_credits >= 1,
+                ),
             ),
             ITPortalToolUsageEvent.credits_burned,
         ),
@@ -1545,7 +1560,12 @@ def _safe_usage_credits_expression():
 
 def _usage_event_to_safe_dict(event: ITPortalToolUsageEvent) -> dict:
     data = event.to_dict()
-    safe_credits = _safe_credits_burned_value(event.credits_burned, event.expected_credits)
+    safe_credits = _safe_credits_burned_value(
+        event.credits_burned,
+        event.expected_credits,
+        event.metadata_json,
+        event.source,
+    )
     if safe_credits != event.credits_burned:
         metadata = dict(data.get("metadata") or {})
         metadata["ignoredCreditsBurned"] = event.credits_burned
@@ -1557,18 +1577,19 @@ def _usage_event_to_safe_dict(event: ITPortalToolUsageEvent) -> dict:
 
 def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
     metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
-    safe_credits = _safe_credits_burned_value(event.credits_burned, event.expected_credits)
+    safe_credits = _safe_credits_burned_value(event.credits_burned, event.expected_credits, metadata, event.source)
     stable_key = (
         event.generation_id
         or event.request_id
         or event.external_event_id
-        or event.fingerprint
         or metadata.get("domDedupeKey")
     )
+    if not stable_key and event.event_type != "generate_click":
+        stable_key = event.fingerprint
     if stable_key:
         return ("stable", f"{stable_key}")
     created_at = event.created_at or datetime.min
-    bucket = int(created_at.timestamp() // 5) if created_at != datetime.min else 0
+    bucket = int(created_at.timestamp() // 20) if created_at != datetime.min else 0
     return (
         "fallback",
         int(event.tool_id or 0),
@@ -1970,7 +1991,7 @@ async def report_extension_usage_event(
         merged_metadata = dict(payload.metadata or {})
         merged_metadata["ignoredCreditsBurned"] = credits_burned
         merged_metadata["ignoredCreditsReason"] = "above_credit_sanity_limit"
-        credits_burned = _safe_credits_burned_value(credits_burned, expected_credits)
+        credits_burned = _safe_credits_burned_value(credits_burned, expected_credits, merged_metadata, source)
     else:
         merged_metadata = dict(payload.metadata or {})
     if credits_burned is None:
@@ -1984,7 +2005,7 @@ async def report_extension_usage_event(
     if credits_burned is not None and credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN:
         merged_metadata["ignoredCreditsBurned"] = credits_burned
         merged_metadata["ignoredCreditsReason"] = "above_credit_sanity_limit"
-        credits_burned = _safe_credits_burned_value(credits_burned, expected_credits)
+        credits_burned = _safe_credits_burned_value(credits_burned, expected_credits, merged_metadata, source)
 
     usage_event = None
     action_name = "tool_usage_reported"
