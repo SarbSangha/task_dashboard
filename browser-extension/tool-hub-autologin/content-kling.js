@@ -45,6 +45,10 @@ const MAX_REASONABLE_KLING_CREDIT_BURN = 3000;
 const MAX_REASONABLE_KLING_CREDIT_BALANCE = 1000000;
 const MAX_PROMPT_CAPTURE_LENGTH = 4000;
 const MAX_PROMPT_CANDIDATES = 3;
+const MAX_CAPTURED_MEDIA_ASSETS = 8;
+const GENERATED_ASSET_SCAN_MS = 4000;
+const GENERATED_ASSET_SCAN_MAX_MS = 120000;
+const MAX_EXPECTED_LOCK_AUTO_BURN = 300;
 const SUPPORTED_KLING_USAGE_FALLBACK_MODES = new Set(['image', 'video', 'motion-control', 'avatar']);
 const CREDIT_SOURCE_PROFILES = {
   wallet: { source: 'wallet_reconciled', priority: 100, confidence: 1 },
@@ -181,6 +185,10 @@ const USAGE_CTX = {
   extensionTabId      : 0,
   broadcastChannel    : null,
   latestWalletBalance : null,
+  generatedAssetUrls  : new Set(),
+  assetScanTimer      : null,
+  assetScanStartedAt  : 0,
+  assetScanSnapshot   : null,
 };
 
 function normalizeLoginMethod(value) {
@@ -873,6 +881,181 @@ function buildGenerationSettingsMetadata({
   };
 }
 
+function inferCapturedAssetType(url = '', hint = '') {
+  const text = `${hint || ''}\n${url || ''}`.toLowerCase();
+  if (/\.(mp4|webm|mov|m4v|m3u8)(?:[?#]|$)/i.test(text) || /\b(video|mp4|m3u8)\b/i.test(text)) return 'video';
+  if (/\.(png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(text) || /\b(image|img|cover|thumbnail|poster)\b/i.test(text)) return 'image';
+  return 'media';
+}
+
+function normalizeCapturedAssetUrl(value) {
+  const text = `${value || ''}`.trim();
+  if (!text || text.length > 4000) return '';
+  if (/^data:/i.test(text)) return '';
+  if (/^(https?:|blob:)/i.test(text)) return text;
+  if (/^\/\//.test(text)) return `${location.protocol}${text}`;
+  if (/^\/[^/]/.test(text)) {
+    try {
+      return new URL(text, location.href).href;
+    } catch {}
+  }
+  return '';
+}
+
+function normalizeCapturedMediaAssets(value, source = 'network') {
+  const inputAssets = Array.isArray(value) ? value : [];
+  const assets = [];
+  const seen = new Set();
+  for (const asset of inputAssets) {
+    const rawUrl = typeof asset === 'string' ? asset : asset?.url;
+    const url = normalizeCapturedAssetUrl(rawUrl);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    assets.push({
+      assetType: `${asset?.assetType || inferCapturedAssetType(url, asset?.key || '')}`.trim() || 'media',
+      source: `${asset?.source || source || 'network'}`.trim(),
+      url,
+      key: `${asset?.key || ''}`.slice(0, 120),
+      width: Number(asset?.width || 0) || null,
+      height: Number(asset?.height || 0) || null,
+      detectedAt: Number(asset?.detectedAt || Date.now()),
+    });
+    if (assets.length >= MAX_CAPTURED_MEDIA_ASSETS) break;
+  }
+  return assets;
+}
+
+function collectVisibleGeneratedMediaAssets() {
+  const assets = [];
+  const seen = new Set();
+  const selectors = [
+    'img[src]',
+    'img[currentSrc]',
+    'video[src]',
+    'video[poster]',
+    'video source[src]',
+  ];
+
+  for (const el of collectUniqueElements(Array.from(document.querySelectorAll(selectors.join(','))))) {
+    const mediaEl = el.closest?.('video') || el;
+    if (!isVisible(mediaEl)) continue;
+    if (mediaEl.closest?.('#rmw-kling-badge')) continue;
+
+    const rect = mediaEl.getBoundingClientRect();
+    if (rect.width < 96 || rect.height < 96) continue;
+
+    const rawUrl = el.currentSrc || el.src || el.getAttribute?.('src') || el.getAttribute?.('poster') || mediaEl.poster || '';
+    const url = normalizeCapturedAssetUrl(rawUrl);
+    if (!url || seen.has(url)) continue;
+    if (/\/(logo|icon|avatar|sprite|placeholder|loading)[^/]*\.(?:png|jpe?g|webp|gif|svg)/i.test(url)) continue;
+
+    seen.add(url);
+    assets.push({
+      assetType: mediaEl.tagName?.toLowerCase() === 'video' || el.tagName?.toLowerCase() === 'video'
+        ? 'video'
+        : inferCapturedAssetType(url, mediaEl.tagName || el.tagName),
+      source: 'dom',
+      url,
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      detectedAt: Date.now(),
+    });
+    if (assets.length >= MAX_CAPTURED_MEDIA_ASSETS) break;
+  }
+  return assets;
+}
+
+function mergeCapturedMediaAssets(existingAssets = [], incomingAssets = []) {
+  const merged = [];
+  const seen = new Set();
+  for (const asset of [...normalizeCapturedMediaAssets(existingAssets), ...normalizeCapturedMediaAssets(incomingAssets, 'dom')]) {
+    if (!asset.url || seen.has(asset.url)) continue;
+    seen.add(asset.url);
+    merged.push(asset);
+    if (merged.length >= MAX_CAPTURED_MEDIA_ASSETS) break;
+  }
+  return merged;
+}
+
+function stopGeneratedAssetDetection() {
+  if (USAGE_CTX.assetScanTimer) {
+    clearInterval(USAGE_CTX.assetScanTimer);
+    USAGE_CTX.assetScanTimer = null;
+  }
+  USAGE_CTX.assetScanSnapshot = null;
+  USAGE_CTX.assetScanStartedAt = 0;
+}
+
+function reportGeneratedAssetCandidates(snapshot, assets) {
+  if (!snapshot || !assets.length) return;
+  const mergedAssets = mergeCapturedMediaAssets(snapshot.metadata?.mediaAssets, assets);
+  if (!mergedAssets.length) return;
+  snapshot.metadata = {
+    ...(snapshot.metadata || {}),
+    assetCapture: {
+      source: 'dom',
+      assetCount: mergedAssets.length,
+      capturedAt: Date.now(),
+    },
+    mediaAssets: mergedAssets,
+    mediaAssetCount: mergedAssets.length,
+    lifecycleEvent: {
+      stage: 'asset_captured',
+      source: 'dom_asset_scan',
+      transport: 'dom',
+      capturedAt: Date.now(),
+    },
+  };
+
+  reportKlingUsage({
+    ...snapshot,
+    status: snapshot.status || 'submitted',
+    creditsBurned: snapshot.creditsBurned ?? null,
+    metadata: snapshot.metadata,
+  })
+    .then(() => debugUsageTelemetry('generated_assets_captured', {
+      eventId: snapshot.eventId,
+      assetCount: mergedAssets.length,
+    }))
+    .catch((error) => {
+      if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) return;
+      console.warn('[RMW Kling] Generated asset capture report failed', error);
+    });
+}
+
+function startGeneratedAssetDetection(snapshot) {
+  if (!snapshot) return;
+  stopGeneratedAssetDetection();
+  USAGE_CTX.generatedAssetUrls = new Set(
+    collectVisibleGeneratedMediaAssets()
+      .map((asset) => asset.url)
+      .filter(Boolean)
+  );
+  USAGE_CTX.assetScanStartedAt = Date.now();
+  USAGE_CTX.assetScanSnapshot = snapshot;
+
+  const scan = () => {
+    const scanStartedAt = USAGE_CTX.assetScanStartedAt;
+    if (!scanStartedAt || Date.now() - scanStartedAt > GENERATED_ASSET_SCAN_MAX_MS) {
+      stopGeneratedAssetDetection();
+      return;
+    }
+    const candidates = collectVisibleGeneratedMediaAssets()
+      .filter((asset) => {
+        if (!asset.url || USAGE_CTX.generatedAssetUrls.has(asset.url)) return false;
+        USAGE_CTX.generatedAssetUrls.add(asset.url);
+        return true;
+      });
+    if (candidates.length) {
+      reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, candidates);
+    }
+  };
+
+  USAGE_CTX.assetScanTimer = window.setInterval(scan, GENERATED_ASSET_SCAN_MS);
+  window.setTimeout(scan, 1500);
+  window.setTimeout(scan, 8000);
+}
+
 function readVisibleCreditBalance() {
   const creditCandidates = [];
 
@@ -977,12 +1160,7 @@ function readVisibleExpectedGenerateCredits() {
   if (Number.isInteger(buttonCredits) && buttonCredits > 0 && buttonCredits <= MAX_REASONABLE_KLING_CREDIT_BURN) {
     return buttonCredits;
   }
-
-  const bodyText = normalizeSpace(document.body?.innerText || '');
-  const parsed = parseExpectedCreditsFromGenerateText(bodyText);
-  return Number.isInteger(parsed) && parsed > 0 && parsed <= MAX_REASONABLE_KLING_CREDIT_BURN
-    ? parsed
-    : null;
+  return null;
 }
 
 function showCurrentCreditsDebug(reason = '') {
@@ -1089,7 +1267,9 @@ function buildNetworkUsageDedupeKey(payload) {
   const canUseExpectedFallback = status === 'settled'
     && (!Number.isInteger(creditsUsed) || creditsUsed <= 0)
     && Number.isInteger(visibleExpectedCredits)
-    && visibleExpectedCredits > 0;
+    && visibleExpectedCredits > 0
+    && visibleExpectedCredits <= MAX_EXPECTED_LOCK_AUTO_BURN
+    && Date.now() - Number(USAGE_CTX.lastGenerateAt || 0) < 30000;
   if (canUseExpectedFallback && USAGE_CTX.lastGenerateKey) {
     return [
       'network-expected-fallback',
@@ -1311,7 +1491,8 @@ function buildNetworkUsageSnapshot(networkPayload) {
     && isCompleted
     && Number.isInteger(expectedCredits)
     && expectedCredits > 0
-    && expectedCredits <= MAX_REASONABLE_KLING_CREDIT_BURN;
+    && expectedCredits <= MAX_EXPECTED_LOCK_AUTO_BURN
+    && Date.now() - Number(USAGE_CTX.lastGenerateAt || 0) < 30000;
   const creditsBurned = isReasonableCreditBurn
     ? Math.max(0, creditsUsed)
     : (canUseExpectedNetworkFallback ? expectedCredits : null);
@@ -1332,6 +1513,7 @@ function buildNetworkUsageSnapshot(networkPayload) {
   const responsePreview = `${networkPayload?.responsePreview || ''}`.slice(0, 3000);
   const promptCapture = readPromptCaptureSnapshot();
   const networkPromptText = normalizePromptCaptureValue(networkPayload?.promptText) || promptCapture.text;
+  const mediaAssets = normalizeCapturedMediaAssets(networkPayload?.mediaAssets, networkPayload?.source || 'network');
 
   return {
     eventType: 'network_generation',
@@ -1372,6 +1554,13 @@ function buildNetworkUsageSnapshot(networkPayload) {
       confidenceLevel: isReasonableCreditBurn ? 0.95 : (canUseExpectedNetworkFallback ? CREDIT_SOURCE_PROFILES.expected.confidence : 0.8),
       generationMode,
       rawGenerationMode: `${networkPayload?.generationMode || ''}`.trim(),
+      assetCapture: {
+        source: 'network',
+        assetCount: mediaAssets.length,
+        capturedAt,
+      },
+      mediaAssets,
+      mediaAssetCount: mediaAssets.length,
       outputCount: Number(networkPayload?.outputCount || 0) || null,
       nativeAudio: Boolean(networkPayload?.nativeAudioEnabled),
       multiShot: Boolean(networkPayload?.multiShotEnabled),
@@ -1488,6 +1677,8 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
   const isSupportedFallbackMode = SUPPORTED_KLING_USAGE_FALLBACK_MODES.has(generationMode);
   const hasStrongGenerateCost = hasExpectedCredits
     && expectedCredits <= MAX_REASONABLE_KLING_CREDIT_BURN;
+  const canAutoBurnExpectedFallback = hasExpectedCredits
+    && expectedCredits <= MAX_EXPECTED_LOCK_AUTO_BURN;
   const hasReasonableRawBurn = Number.isFinite(rawCreditsBurned)
     && rawCreditsBurned > 0
     && rawCreditsBurned <= MAX_REASONABLE_KLING_CREDIT_BURN
@@ -1497,7 +1688,7 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
     ? 'wallet'
     : (hasReasonableRawBurn ? 'dom' : 'expected');
   const creditSourceProfile = CREDIT_SOURCE_PROFILES[sourceKind];
-  const usedExpectedFallback = !hasReasonableRawBurn && hasStrongGenerateCost && isSupportedFallbackMode;
+  const usedExpectedFallback = !hasReasonableRawBurn && hasStrongGenerateCost && canAutoBurnExpectedFallback && isSupportedFallbackMode;
   snapshot.creditsBurned = hasReasonableRawBurn
     ? rawCreditsBurned
     : (usedExpectedFallback ? expectedCredits : null);
@@ -1535,6 +1726,8 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
     usedExpectedCreditFallback: usedExpectedFallback,
     supportedFallbackMode: isSupportedFallbackMode,
     strongGenerateCost: hasStrongGenerateCost,
+    expectedFallbackAutoBurn: canAutoBurnExpectedFallback,
+    expectedFallbackAutoBurnLimit: MAX_EXPECTED_LOCK_AUTO_BURN,
     source: creditSourceProfile.source,
     confidence: confidenceLevel,
   };
@@ -1605,63 +1798,6 @@ function waitForGenerateUsageSettlement(snapshot) {
   });
 }
 
-function reportGenerateCreditLock(snapshot) {
-  const expectedCredits = Number(snapshot.expectedCredits);
-  if (
-    !Number.isInteger(expectedCredits)
-    || expectedCredits <= 0
-    || expectedCredits > MAX_REASONABLE_KLING_CREDIT_BURN
-  ) {
-    return Promise.resolve(null);
-  }
-
-  const lockedSnapshot = {
-    ...snapshot,
-    status: 'submitted',
-    creditsAfter: null,
-    creditsBurned: expectedCredits,
-    source: CREDIT_SOURCE_PROFILES.expected.source,
-    confidence: CREDIT_SOURCE_PROFILES.expected.confidence,
-    metadata: {
-      ...(snapshot.metadata || {}),
-      stage: 'submitted',
-      creditLocked: true,
-      reservedCredits: expectedCredits,
-      creditSource: CREDIT_SOURCE_PROFILES.expected.source,
-      creditSourcePriority: CREDIT_SOURCE_PROFILES.expected.priority,
-      confidenceLevel: CREDIT_SOURCE_PROFILES.expected.confidence,
-      settlementReason: 'credit_locked_on_click',
-      lifecycleEvent: {
-        stage: 'submitted',
-        source: CREDIT_SOURCE_PROFILES.expected.source,
-        transport: 'click',
-        capturedAt: Date.now(),
-        creditsUsed: expectedCredits,
-      },
-    },
-  };
-
-  return reportKlingUsage(lockedSnapshot)
-    .then((response) => {
-      const eventId = Number(response?.event?.id || 0);
-      if (eventId > 0) {
-        snapshot.eventId = eventId;
-      }
-      snapshot.metadata = {
-        ...(snapshot.metadata || {}),
-        creditLocked: true,
-        reservedCredits: expectedCredits,
-        lockedEventId: eventId || snapshot.metadata?.lockedEventId || null,
-      };
-      debugUsageTelemetry('credit_locked', {
-        eventId,
-        expectedCredits,
-        fingerprint: snapshot.fingerprint,
-      });
-      return response;
-    });
-}
-
 function scheduleGenerateUsageReport(generateButton) {
   const snapshot = buildGenerateUsageSnapshot(generateButton);
   const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
@@ -1700,19 +1836,17 @@ function scheduleGenerateUsageReport(generateButton) {
     domDedupeKey: dedupeKey,
   };
   announceKlingGenerateIntent(snapshot);
-  reportGenerateCreditLock(snapshot)
-    .then((response) => {
-      const eventId = Number(response?.event?.id || 0);
-      if (eventId > 0) {
-        setStatus(`Credits locked: ${expectedCredits} credit${expectedCredits === 1 ? '' : 's'}${eventId > 0 ? ` (#${eventId})` : ''}`, { hideAfterMs: 2500 });
-      }
-    })
-    .catch((error) => {
-      if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) {
-        return;
-      }
-      console.warn('[RMW Kling] Credit lock report failed', error);
-    });
+  snapshot.metadata = {
+    ...(snapshot.metadata || {}),
+    creditIntentCaptured: true,
+    reservedCredits: expectedCredits,
+  };
+  startGeneratedAssetDetection(snapshot);
+  setStatus(`Generate intent detected: ${expectedCredits} credit${expectedCredits === 1 ? '' : 's'}`, { hideAfterMs: 2500 });
+  debugUsageTelemetry('credit_intent_captured', {
+    expectedCredits,
+    fingerprint: snapshot.fingerprint,
+  });
   if (USAGE_CTX.pendingReportTimer) {
     clearTimeout(USAGE_CTX.pendingReportTimer);
     USAGE_CTX.pendingReportTimer = null;
@@ -1771,6 +1905,7 @@ function clearPendingUsageReport() {
     clearTimeout(USAGE_CTX.pendingReportTimer);
     USAGE_CTX.pendingReportTimer = null;
   }
+  stopGeneratedAssetDetection();
 }
 
 function handleGenerateInteraction(event) {

@@ -5,10 +5,12 @@
   const SOURCE = 'rmw-kling-network-telemetry';
   const MAX_TEXT_LENGTH = 120000;
   const MAX_BODY_LENGTH = 12000;
+  const MAX_MEDIA_ASSETS = 8;
   const GENERATION_URL_RE = /(generate|generation|submit|create|infer|aigc|image|video|task)/i;
   const WALLET_URL_RE = /(balance|wallet|credits?|credit)/i;
   const EXCLUDED_URL_RE = /(balance|wallet|account|user|profile|history|list|records?|assets?|works?|notifications?|message|comment|feed|search|recommend|config|price|pricing|package|membership|subscription)/i;
   const URL_RE = /(kling\.ai|klingai\.com)/i;
+  const MEDIA_URL_RE = /\.(?:png|jpe?g|webp|gif|avif|mp4|webm|mov|m4v|m3u8)(?:[?#]|$)/i;
   const MAX_REASONABLE_CREDIT_BURN = 3000;
   const GENERATE_INTENT_WINDOW_MS = 30000;
   let recentGenerateIntentUntil = 0;
@@ -100,6 +102,26 @@
     return undefined;
   }
 
+  function walkAll(value, visitor, depth = 0, seen = new Set()) {
+    if (depth > 8 || value == null || typeof value !== 'object') return;
+    if (seen.has(value)) return;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, 120)) {
+        walkAll(item, visitor, depth + 1, seen);
+      }
+      return;
+    }
+
+    for (const [key, item] of Object.entries(value)) {
+      visitor(key, item, value);
+      if (item && typeof item === 'object') {
+        walkAll(item, visitor, depth + 1, seen);
+      }
+    }
+  }
+
   function pickString(value, matcher) {
     const direct = walk(value, (key, item) => {
       if (!matcher.test(key)) return undefined;
@@ -173,6 +195,66 @@
   function pickFirstTextMatch(text, matcher) {
     const match = `${text || ''}`.match(matcher);
     return match ? `${match[1] || match[0]}`.trim() : '';
+  }
+
+  function inferMediaType(value, key = '') {
+    const haystack = `${key || ''}\n${value || ''}`.toLowerCase();
+    if (/\.(mp4|webm|mov|m4v|m3u8)(?:[?#]|$)/i.test(haystack) || /\b(video|mp4|m3u8)\b/i.test(haystack)) return 'video';
+    if (/\.(png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(haystack) || /\b(image|img|cover|thumbnail|poster)\b/i.test(haystack)) return 'image';
+    return 'media';
+  }
+
+  function normalizeMediaAssetUrl(value) {
+    const text = `${value || ''}`.trim();
+    if (!text || text.length > 4000) return '';
+    if (/^data:/i.test(text)) return '';
+    if (/^(https?:|blob:)/i.test(text)) {
+      try {
+        return text.startsWith('blob:') ? text : new URL(text, location.href).href;
+      } catch {
+        return text;
+      }
+    }
+    if (/^\/\//.test(text)) return `${location.protocol}${text}`;
+    if (MEDIA_URL_RE.test(text) && /^\/[^/]/.test(text)) {
+      try {
+        return new URL(text, location.href).href;
+      } catch {}
+    }
+    return '';
+  }
+
+  function collectMediaAssetsFromPayload(...roots) {
+    const assets = [];
+    const seen = new Set();
+    const addAsset = (url, key = '', source = 'payload') => {
+      const normalizedUrl = normalizeMediaAssetUrl(url);
+      if (!normalizedUrl || seen.has(normalizedUrl)) return;
+      const keyLooksMedia = /(url|uri|src|download|resource|asset|image|img|video|cover|thumbnail|poster|watermark|origin|result|media)/i.test(key);
+      if (!keyLooksMedia && !MEDIA_URL_RE.test(normalizedUrl) && !/^blob:/i.test(normalizedUrl)) return;
+      seen.add(normalizedUrl);
+      assets.push({
+        assetType: inferMediaType(normalizedUrl, key),
+        source,
+        url: normalizedUrl,
+        key: `${key || ''}`.slice(0, 120),
+      });
+    };
+
+    for (const root of roots) {
+      if (typeof root === 'string') {
+        const matches = root.match(/(?:https?:\/\/|blob:)[^\s"'<>\\]+/gi) || [];
+        for (const match of matches) addAsset(match, 'text', 'text');
+        continue;
+      }
+      if (!root || typeof root !== 'object') continue;
+      walkAll(root, (key, item) => {
+        if (assets.length >= MAX_MEDIA_ASSETS) return;
+        if (typeof item === 'string') addAsset(item, key, 'json');
+      });
+    }
+
+    return assets.slice(0, MAX_MEDIA_ASSETS);
   }
 
   function inferGenerationModeFromTelemetry(text) {
@@ -291,6 +373,7 @@
       || Boolean(pickString(requestObject, /^(multi_?shot|multi_?image)$/i));
     const promptText = pickString(requestObject, /^(prompt|text|query|positive_?prompt)$/i)
       || pickString(merged, /^(prompt|text|query|positive_?prompt)$/i);
+    const mediaAssets = collectMediaAssetsFromPayload(merged, responseText);
     const status = normalizeLifecycleStatus(
       pickString(merged, /^(status|state|task_?status|stage|phase|event|event_?type)$/i),
       creditsUsed
@@ -322,6 +405,7 @@
       nativeAudioEnabled,
       multiShotEnabled,
       promptText,
+      mediaAssets,
       status,
       isCompleted,
       isCreditBurnReasonable,
@@ -348,6 +432,7 @@
           transport: payload.transport || payload.source,
           schemaVersion: 1,
           capturedAt: Date.now(),
+          mediaAssets: extracted.mediaAssets,
           requestPreview: limitText(payload.requestText, 1500),
           responsePreview: limitText(payload.responseText, 3000),
         },

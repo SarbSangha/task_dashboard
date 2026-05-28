@@ -33,6 +33,7 @@ VALID_SCOPES = {"company", "user"}
 VALID_LAUNCH_MODES = {"external_link", "manual_credential", "sso", "api_proxy", "automation", "extension_autofill"}
 EXTENSION_AUTOFILL_TICKET_TTL_SEC = 20 * 60
 MAX_REASONABLE_KLING_CREDIT_BURN = 3000
+MAX_EXPECTED_LOCK_AUTO_BURN = 300
 HOSTNAME_EQUIVALENT_GROUPS = (
     {"canva.com", "www.canva.com"},
     {"behance.net", "www.behance.net", "auth.services.adobe.com", "adobeid-na1.services.adobe.com", "ims-na1.adobelogin.com"},
@@ -1622,6 +1623,13 @@ def _safe_credits_burned_value(
         return None
     if burned is None:
         return None
+    if (
+        normalized_source == "expected_credit_lock"
+        and burned > MAX_EXPECTED_LOCK_AUTO_BURN
+        and metadata.get("creditSource") != "wallet_reconciled"
+        and not metadata.get("isReasonableCreditBurn")
+    ):
+        return None
     if is_kling_network_or_fallback and not float(burned).is_integer():
         return expected if expected is not None and float(expected).is_integer() and 0 < expected <= MAX_REASONABLE_KLING_CREDIT_BURN else None
     if 0 <= burned <= MAX_REASONABLE_KLING_CREDIT_BURN:
@@ -1629,6 +1637,18 @@ def _safe_credits_burned_value(
     if expected is not None and float(expected).is_integer() and 0 < expected <= MAX_REASONABLE_KLING_CREDIT_BURN:
         return expected
     return None
+
+
+def _is_unconfirmed_expected_lock_event(event: ITPortalToolUsageEvent) -> bool:
+    metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
+    return (
+        f"{event.source or ''}".strip().lower() == "expected_credit_lock"
+        and f"{event.event_type or ''}".strip().lower() == "generate_click"
+        and metadata.get("creditLocked") is True
+        and metadata.get("settlementReason") == "credit_locked_on_click"
+        and not metadata.get("isReasonableCreditBurn")
+        and not metadata.get("walletSnapshot", {}).get("delta")
+    )
 
 
 def _safe_usage_credits_expression():
@@ -1642,13 +1662,18 @@ def _safe_usage_credits_expression():
                     ITPortalToolUsageEvent.source != "dom_balance_fallback",
                     ITPortalToolUsageEvent.expected_credits >= 1,
                 ),
+                or_(
+                    ITPortalToolUsageEvent.source.is_(None),
+                    ITPortalToolUsageEvent.source != "expected_credit_lock",
+                    ITPortalToolUsageEvent.credits_burned <= MAX_EXPECTED_LOCK_AUTO_BURN,
+                ),
             ),
             ITPortalToolUsageEvent.credits_burned,
         ),
         (
             and_(
                 ITPortalToolUsageEvent.expected_credits > 0,
-                ITPortalToolUsageEvent.expected_credits <= MAX_REASONABLE_KLING_CREDIT_BURN,
+                ITPortalToolUsageEvent.expected_credits <= MAX_EXPECTED_LOCK_AUTO_BURN,
                 ITPortalToolUsageEvent.credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN,
             ),
             ITPortalToolUsageEvent.expected_credits,
@@ -1677,6 +1702,27 @@ def _usage_event_to_safe_dict(event: ITPortalToolUsageEvent) -> dict:
 def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
     metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
     safe_credits = _safe_credits_burned_value(event.credits_burned, event.expected_credits, metadata, event.source)
+    if (
+        event.event_type == "network_generation"
+        and f"{event.source or ''}".strip().lower() == "expected_credit_lock"
+        and metadata.get("usedExpectedCreditFallback")
+    ):
+        created_at = event.created_at or datetime.min
+        bucket = int(created_at.timestamp() // 60) if created_at != datetime.min else 0
+        stable_expected_key = metadata.get("networkFallbackDedupeKey")
+        if stable_expected_key:
+            return ("network_expected_fallback", f"{stable_expected_key}")
+        return (
+            "network_expected_fallback",
+            int(event.tool_id or 0),
+            int(event.user_id or 0),
+            int(event.credential_id or 0),
+            f"{event.model_label or ''}".strip().lower(),
+            f"{event.duration_label or ''}".strip().lower(),
+            f"{event.resolution_label or ''}".strip().lower(),
+            safe_credits,
+            bucket,
+        )
     stable_key = (
         event.generation_id
         or event.request_id
@@ -3164,6 +3210,10 @@ async def get_tool_usage_report(
         )
         .join(User, User.id == ITPortalToolUsageEvent.user_id)
         .join(ITPortalTool, ITPortalTool.id == ITPortalToolUsageEvent.tool_id)
+        .filter(~and_(
+            ITPortalToolUsageEvent.event_type == "generate_click",
+            ITPortalToolUsageEvent.source == "expected_credit_lock",
+        ))
     )
     if normalized_tool_slug and normalized_tool_slug != "tool":
         aggregate_rows = aggregate_rows.filter(ITPortalTool.slug.in_({
@@ -3207,6 +3257,10 @@ async def get_tool_usage_report(
             func.coalesce(func.sum(ITPortalToolUsageEvent.expected_credits), 0).label("total_expected_credits"),
         )
         .join(ITPortalTool, ITPortalTool.id == ITPortalToolUsageEvent.tool_id)
+        .filter(~and_(
+            ITPortalToolUsageEvent.event_type == "generate_click",
+            ITPortalToolUsageEvent.source == "expected_credit_lock",
+        ))
     )
     if normalized_tool_slug and normalized_tool_slug != "tool":
         summary_row = summary_row.filter(ITPortalTool.slug.in_({
@@ -3232,7 +3286,10 @@ async def get_tool_usage_report(
         .limit(80)
         .all()
     )
-    deduped_recent_events = _dedupe_usage_events([event for event, _, _ in recent_event_rows])
+    deduped_recent_events = _dedupe_usage_events([
+        event for event, _, _ in recent_event_rows
+        if not _is_unconfirmed_expected_lock_event(event)
+    ])
     deduped_recent_event_ids = {event.id for event in deduped_recent_events[:30]}
     recent_events = [
         row
@@ -3418,6 +3475,8 @@ async def get_tool_launch_history(
             audits.sort(key=lambda item: item.created_at or datetime.min)
 
         for event in usage_events:
+            if _is_unconfirmed_expected_lock_event(event):
+                continue
             if not event.created_at:
                 continue
             matching_audits = audits_by_pair.get((int(event.user_id), int(event.tool_id)), [])
