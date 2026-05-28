@@ -177,6 +177,12 @@
 
   function inferGenerationModeFromTelemetry(text) {
     const normalized = `${text || ''}`;
+    if (/\bmnu[_-]?img[_-]?aiweb\b/i.test(normalized)) {
+      return 'image';
+    }
+    if (/\bmnu[_-]?video[_-]?aiweb\b/i.test(normalized)) {
+      return 'video';
+    }
     if (/\bvideo\s*\d+(?:\.\d+)?\b/i.test(normalized) || /\b(image[_-]?to[_-]?video|text[_-]?to[_-]?video|video_generation)\b/i.test(normalized)) {
       return 'video';
     }
@@ -264,9 +270,10 @@
       requestObject,
       /^(expected_?credits?|credits?_?cost|credit_?cost|consume_?credits?|cost|credit|credits?)$/i
     ) || normalizeCreditValue(pickFirstTextMatch(telemetryText, /\b(\d+)\s*credits?\b/i));
-    const generationMode = pickString(merged, /^(mode|generation_?mode|task_?type|scenario|type)$/i)
+    const rawGenerationMode = pickString(merged, /^(mode|generation_?mode|task_?type|scenario|type)$/i)
       || pickString(requestObject, /^(mode|generation_?mode|task_?type|scenario|type)$/i)
       || inferGenerationModeFromTelemetry(telemetryText);
+    const generationMode = inferGenerationModeFromTelemetry(rawGenerationMode) || rawGenerationMode;
     const modelLabel = pickString(merged, /^(model|model_?name|model_?label|model_?version|model_?type|scene)$/i)
       || pickString(requestObject, /^(model|model_?name|model_?label|model_?version|model_?type|scene)$/i)
       || extractModelLabelFromTelemetry(telemetryText);

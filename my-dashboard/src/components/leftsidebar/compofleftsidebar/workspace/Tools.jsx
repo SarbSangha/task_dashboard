@@ -496,6 +496,16 @@ const formatUsageConfidence = (value) => {
   return `${Math.round(Math.max(0, Math.min(1, numericValue)) * 100)}%`;
 };
 
+const formatUsageModeLabel = (value) => {
+  const normalized = `${value || ''}`.trim().toLowerCase();
+  if (!normalized) return '';
+  if (normalized.includes('mnu_img') || normalized.includes('image')) return 'image';
+  if (normalized.includes('mnu_video') || normalized.includes('video')) return 'video';
+  if (normalized.includes('avatar')) return 'avatar';
+  if (normalized.includes('motion')) return 'motion-control';
+  return normalized.replace(/_/g, ' ');
+};
+
 const formatUsageDurationMs = (value) => {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue) || numericValue < 0) return '';
@@ -516,11 +526,12 @@ const buildUsageDiagnosticChips = (event) => {
   const queueTime = formatUsageDurationMs(lifecycleTimings.queueTimeMs);
   const processingTime = formatUsageDurationMs(lifecycleTimings.processingTimeMs);
   const walletSnapshot = metadata.walletSnapshot || {};
+  const modeLabel = formatUsageModeLabel(metadata.generationMode);
   return [
     sourceLabel ? `Source: ${sourceLabel}` : '',
     confidenceLabel ? `Confidence: ${confidenceLabel}` : '',
     metadata.creditSourcePriority ? `Priority: ${metadata.creditSourcePriority}` : '',
-    metadata.generationMode ? `Mode: ${metadata.generationMode}` : '',
+    modeLabel ? `Mode: ${modeLabel}` : '',
     metadata.outputCount ? `Outputs: ${metadata.outputCount}` : '',
     metadata.nativeAudio ? 'Native audio' : '',
     metadata.multiShot ? 'Multi-shot' : '',

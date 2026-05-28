@@ -1681,6 +1681,7 @@ def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
         event.generation_id
         or event.request_id
         or event.external_event_id
+        or metadata.get("networkFallbackDedupeKey")
         or metadata.get("domDedupeKey")
     )
     if not stable_key and event.event_type != "generate_click":

@@ -840,6 +840,48 @@ function readVisibleCreditBalance() {
   return null;
 }
 
+function findVisibleGenerateActionButton() {
+  const candidates = collectUniqueElements(Array.from(document.querySelectorAll(ACTION_SELECTORS.join(','))));
+  let bestCandidate = null;
+  let bestScore = -1;
+
+  for (const candidate of candidates) {
+    if (!candidate || !isVisible(candidate) || !isEnabled(candidate)) continue;
+    const text = readGenerateButtonLabel(candidate);
+    if (!/(^|\s)generate($|\s)/.test(text)) continue;
+    if (text.includes('create in omni')) continue;
+    const expectedCredits = readExpectedCreditsFromGenerateButton(candidate);
+    if (!Number.isInteger(expectedCredits) || expectedCredits <= 0) continue;
+
+    const rect = candidate.getBoundingClientRect();
+    let score = expectedCredits;
+    if (rect.top > window.innerHeight * 0.45) score += 1000;
+    if (candidate.matches?.('button,[role="button"],input[type="button"],input[type="submit"]')) score += 100;
+    if (rect.width >= 120) score += 10;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidate = candidate;
+    }
+  }
+
+  return bestCandidate;
+}
+
+function readVisibleExpectedGenerateCredits() {
+  const generateButton = findVisibleGenerateActionButton();
+  const buttonCredits = readExpectedCreditsFromGenerateButton(generateButton);
+  if (Number.isInteger(buttonCredits) && buttonCredits > 0 && buttonCredits <= MAX_REASONABLE_KLING_CREDIT_BURN) {
+    return buttonCredits;
+  }
+
+  const bodyText = normalizeSpace(document.body?.innerText || '');
+  const parsed = parseExpectedCreditsFromGenerateText(bodyText);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= MAX_REASONABLE_KLING_CREDIT_BURN
+    ? parsed
+    : null;
+}
+
 function showCurrentCreditsDebug(reason = '') {
   const credits = readVisibleCreditBalance();
   const suffix = reason ? ` (${reason})` : '';
@@ -938,6 +980,21 @@ function getUsageIdentityMetadata() {
 }
 
 function buildNetworkUsageDedupeKey(payload) {
+  const creditsUsed = Number(payload?.creditsUsed);
+  const visibleExpectedCredits = readVisibleExpectedGenerateCredits();
+  const status = normalizeNetworkUsageStatus(payload?.status, Number.isFinite(creditsUsed) ? creditsUsed : null);
+  const canUseExpectedFallback = status === 'settled'
+    && (!Number.isInteger(creditsUsed) || creditsUsed <= 0)
+    && Number.isInteger(visibleExpectedCredits)
+    && visibleExpectedCredits > 0;
+  if (canUseExpectedFallback && USAGE_CTX.lastGenerateKey) {
+    return [
+      'network-expected-fallback',
+      USAGE_CTX.lastGenerateKey,
+      status,
+      visibleExpectedCredits,
+    ].join('|');
+  }
   return [
     payload?.externalEventId,
     payload?.generationId,
@@ -1104,13 +1161,27 @@ function normalizeNetworkUsageStatus(value, creditsUsed) {
   return 'submitted';
 }
 
+function normalizeNetworkGenerationMode(value) {
+  const normalized = `${value || ''}`.trim().toLowerCase();
+  if (!normalized) return '';
+  if (normalized.includes('mnu_img') || normalized.includes('image')) return 'image';
+  if (normalized.includes('mnu_video') || normalized.includes('video')) return 'video';
+  if (normalized.includes('avatar')) return 'avatar';
+  if (normalized.includes('motion')) return 'motion-control';
+  return normalized;
+}
+
 function buildNetworkUsageSnapshot(networkPayload) {
   const credentialUsageMetadata = readCredentialUsageMetadata();
   const usageIdentityMetadata = getUsageIdentityMetadata();
   const creditsUsed = Number(networkPayload?.creditsUsed);
   const hasCreditsUsed = Number.isFinite(creditsUsed);
-  const expectedCredits = Number(networkPayload?.expectedCredits);
-  const hasExpectedCredits = Number.isFinite(expectedCredits);
+  const networkExpectedCredits = Number(networkPayload?.expectedCredits);
+  const visibleExpectedCredits = readVisibleExpectedGenerateCredits();
+  const expectedCredits = Number.isFinite(networkExpectedCredits) && networkExpectedCredits > 0
+    ? networkExpectedCredits
+    : (Number.isInteger(visibleExpectedCredits) ? visibleExpectedCredits : null);
+  const hasExpectedCredits = Number.isInteger(expectedCredits) && expectedCredits > 0;
   const capturedAt = Number(networkPayload?.capturedAt || Date.now());
   const source = `${networkPayload?.source || 'network_response'}`.trim() || 'network_response';
   const status = normalizeNetworkUsageStatus(networkPayload?.status, hasCreditsUsed ? creditsUsed : null);
@@ -1119,10 +1190,27 @@ function buildNetworkUsageSnapshot(networkPayload) {
     && Number.isInteger(creditsUsed)
     && creditsUsed > 0
     && creditsUsed <= MAX_REASONABLE_KLING_CREDIT_BURN;
+  const canUseExpectedNetworkFallback = !isReasonableCreditBurn
+    && isCompleted
+    && Number.isInteger(expectedCredits)
+    && expectedCredits > 0
+    && expectedCredits <= MAX_REASONABLE_KLING_CREDIT_BURN;
+  const creditsBurned = isReasonableCreditBurn
+    ? Math.max(0, creditsUsed)
+    : (canUseExpectedNetworkFallback ? expectedCredits : null);
+  const generationMode = normalizeNetworkGenerationMode(networkPayload?.generationMode) || inferGenerationModeFromText(document.body?.innerText || '');
   const generationId = `${networkPayload?.generationId || ''}`.trim();
   const requestId = `${networkPayload?.requestId || ''}`.trim();
   const fingerprint = `${networkPayload?.fingerprint || ''}`.trim();
-  const externalEventId = `${networkPayload?.externalEventId || generationId || requestId || fingerprint || ''}`.trim();
+  const networkFallbackDedupeKey = canUseExpectedNetworkFallback && USAGE_CTX.lastGenerateKey
+    ? [
+      'network-expected-fallback',
+      USAGE_CTX.lastGenerateKey,
+      status,
+      expectedCredits,
+    ].join('|')
+    : '';
+  const externalEventId = `${networkFallbackDedupeKey || networkPayload?.externalEventId || generationId || requestId || fingerprint || ''}`.trim();
   const requestPreview = `${networkPayload?.requestPreview || ''}`.slice(0, 1500);
   const responsePreview = `${networkPayload?.responsePreview || ''}`.slice(0, 3000);
 
@@ -1137,17 +1225,19 @@ function buildNetworkUsageSnapshot(networkPayload) {
     expectedCredits: hasExpectedCredits ? expectedCredits : null,
     creditsBefore: null,
     creditsAfter: null,
-    creditsBurned: isReasonableCreditBurn ? Math.max(0, creditsUsed) : null,
+    creditsBurned,
     externalEventId,
     generationId,
     requestId,
     fingerprint,
-    source,
+    source: canUseExpectedNetworkFallback ? CREDIT_SOURCE_PROFILES.expected.source : source,
     schemaVersion: Number(networkPayload?.schemaVersion || 1) || 1,
-    confidence: isReasonableCreditBurn || (isCompleted && (generationId || requestId)) ? 0.95 : 0.8,
+    confidence: isReasonableCreditBurn
+      ? 0.95
+      : (canUseExpectedNetworkFallback ? CREDIT_SOURCE_PROFILES.expected.confidence : (isCompleted && (generationId || requestId) ? 0.95 : 0.8)),
     metadata: {
       stage: status,
-      source,
+      source: canUseExpectedNetworkFallback ? CREDIT_SOURCE_PROFILES.expected.source : source,
       capture: 'network',
       networkUrl: `${networkPayload?.url || ''}`.slice(0, 1000),
       networkMethod: `${networkPayload?.method || ''}`.slice(0, 16),
@@ -1156,7 +1246,13 @@ function buildNetworkUsageSnapshot(networkPayload) {
       ok: Boolean(networkPayload?.ok),
       isCompleted,
       isReasonableCreditBurn,
-      generationMode: `${networkPayload?.generationMode || ''}`.trim(),
+      usedExpectedCreditFallback: canUseExpectedNetworkFallback,
+      networkFallbackDedupeKey,
+      creditSource: canUseExpectedNetworkFallback ? CREDIT_SOURCE_PROFILES.expected.source : source,
+      creditSourcePriority: canUseExpectedNetworkFallback ? CREDIT_SOURCE_PROFILES.expected.priority : 90,
+      confidenceLevel: isReasonableCreditBurn ? 0.95 : (canUseExpectedNetworkFallback ? CREDIT_SOURCE_PROFILES.expected.confidence : 0.8),
+      generationMode,
+      rawGenerationMode: `${networkPayload?.generationMode || ''}`.trim(),
       outputCount: Number(networkPayload?.outputCount || 0) || null,
       nativeAudio: Boolean(networkPayload?.nativeAudioEnabled),
       multiShot: Boolean(networkPayload?.multiShotEnabled),
@@ -1169,10 +1265,10 @@ function buildNetworkUsageSnapshot(networkPayload) {
       externalEventId,
       lifecycleEvent: {
         stage: status,
-        source,
+        source: canUseExpectedNetworkFallback ? CREDIT_SOURCE_PROFILES.expected.source : source,
         transport: `${networkPayload?.transport || source || ''}`.slice(0, 80),
         capturedAt,
-        creditsUsed: isReasonableCreditBurn ? creditsUsed : null,
+        creditsUsed: creditsBurned,
       },
       credentialId: credentialUsageMetadata.credentialId,
       linkedCredentialId: credentialUsageMetadata.linkedCredentialId,
