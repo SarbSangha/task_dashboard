@@ -1704,6 +1704,25 @@ def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
     safe_credits = _safe_credits_burned_value(event.credits_burned, event.expected_credits, metadata, event.source)
     if (
         event.event_type == "network_generation"
+        and safe_credits is None
+        and not metadata.get("mediaAssetCount")
+        and f"{event.source or ''}".strip().lower() in {"fetch_response", "xhr_response", "network_response", "websocket_message", "eventsource_message"}
+    ):
+        created_at = event.created_at or datetime.min
+        bucket = int(created_at.timestamp() // 60) if created_at != datetime.min else 0
+        return (
+            "network_status_echo",
+            int(event.tool_id or 0),
+            int(event.user_id or 0),
+            int(event.credential_id or 0),
+            f"{event.model_label or ''}".strip().lower(),
+            f"{event.duration_label or ''}".strip().lower(),
+            f"{event.resolution_label or ''}".strip().lower(),
+            hashlib.sha1(f"{event.prompt_text or ''}".strip().lower().encode("utf-8")).hexdigest()[:16],
+            bucket,
+        )
+    if (
+        event.event_type == "network_generation"
         and f"{event.source or ''}".strip().lower() == "expected_credit_lock"
         and metadata.get("usedExpectedCreditFallback")
     ):
@@ -2265,6 +2284,14 @@ async def report_extension_usage_event(
         if not usage_event:
             raise HTTPException(status_code=404, detail="Usage event not found")
     else:
+        stable_dedupe_filters = []
+        if generation_id:
+            stable_dedupe_filters.append(ITPortalToolUsageEvent.generation_id == generation_id)
+        if external_event_id:
+            stable_dedupe_filters.append(ITPortalToolUsageEvent.external_event_id == external_event_id)
+        if request_id:
+            stable_dedupe_filters.append(ITPortalToolUsageEvent.request_id == request_id)
+
         dedupe_filters = []
         if generation_id:
             dedupe_filters.append(ITPortalToolUsageEvent.generation_id == generation_id)
@@ -2275,7 +2302,19 @@ async def report_extension_usage_event(
         if fingerprint:
             dedupe_filters.append(ITPortalToolUsageEvent.fingerprint == fingerprint)
 
-        if dedupe_filters:
+        if stable_dedupe_filters and credential:
+            usage_event = (
+                db.query(ITPortalToolUsageEvent)
+                .filter(
+                    ITPortalToolUsageEvent.tool_id == tool.id,
+                    ITPortalToolUsageEvent.credential_id == credential.id,
+                    or_(*stable_dedupe_filters),
+                )
+                .order_by(ITPortalToolUsageEvent.created_at.desc())
+                .first()
+            )
+
+        if not usage_event and dedupe_filters:
             dedupe_query = (
                 db.query(ITPortalToolUsageEvent)
                 .filter(
@@ -2319,6 +2358,42 @@ async def report_extension_usage_event(
             usage_event = duplicate_query.order_by(ITPortalToolUsageEvent.created_at.desc()).first()
 
     if usage_event:
+        if usage_event.user_id != current_user.id:
+            existing_metadata = usage_event.metadata_json if isinstance(usage_event.metadata_json, dict) else {}
+            duplicate_reporters = [
+                item for item in list(existing_metadata.get("duplicateReporters") or [])
+                if isinstance(item, dict)
+            ]
+            reporter = {
+                "userId": current_user.id,
+                "credentialId": credential.id if credential else None,
+                "reportedAt": _serialize_utc_datetime(datetime.utcnow()),
+                "source": source,
+                "generationId": generation_id,
+                "requestId": request_id,
+                "externalEventId": external_event_id,
+            }
+            reporter_key = (
+                reporter.get("userId"),
+                reporter.get("generationId"),
+                reporter.get("requestId"),
+                reporter.get("externalEventId"),
+            )
+            existing_reporter_keys = {
+                (
+                    item.get("userId"),
+                    item.get("generationId"),
+                    item.get("requestId"),
+                    item.get("externalEventId"),
+                )
+                for item in duplicate_reporters
+            }
+            if reporter_key not in existing_reporter_keys:
+                duplicate_reporters.append(reporter)
+            merged_metadata["crossUserDuplicate"] = True
+            merged_metadata["ownerUserId"] = usage_event.user_id
+            merged_metadata["duplicateReporters"] = duplicate_reporters[-20:]
+            merged_metadata["duplicateReporterCount"] = len(merged_metadata["duplicateReporters"])
         final_status = _choose_usage_status(usage_event.status, normalized_status)
         final_source = _choose_usage_source(usage_event.source, source)
         final_confidence = _choose_usage_confidence(usage_event.confidence, confidence)

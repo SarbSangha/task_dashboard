@@ -189,6 +189,7 @@ const USAGE_CTX = {
   assetScanTimer      : null,
   assetScanStartedAt  : 0,
   assetScanSnapshot   : null,
+  activeGenerationIds : new Map(),
 };
 
 function normalizeLoginMethod(value) {
@@ -1437,6 +1438,11 @@ function pruneNetworkEventKeys(now = Date.now()) {
       USAGE_CTX.networkEventKeys.delete(key);
     }
   }
+  for (const [key, capturedAt] of USAGE_CTX.activeGenerationIds.entries()) {
+    if (now - capturedAt > 30 * 60 * 1000) {
+      USAGE_CTX.activeGenerationIds.delete(key);
+    }
+  }
 }
 
 function pruneDomSettlementKeys(now = Date.now()) {
@@ -1466,6 +1472,24 @@ function normalizeNetworkGenerationMode(value) {
   if (normalized.includes('avatar')) return 'avatar';
   if (normalized.includes('motion')) return 'motion-control';
   return normalized;
+}
+
+function rememberActiveNetworkGeneration(payload) {
+  const now = Date.now();
+  const hasSubmitPrompt = Boolean(normalizePromptCaptureValue(payload?.promptText));
+  if (!hasSubmitPrompt) return;
+  for (const id of [payload?.generationId, payload?.requestId, payload?.externalEventId]) {
+    const normalizedId = `${id || ''}`.trim();
+    if (normalizedId) USAGE_CTX.activeGenerationIds.set(normalizedId, now);
+  }
+}
+
+function isActiveNetworkGeneration(payload) {
+  for (const id of [payload?.generationId, payload?.requestId, payload?.externalEventId]) {
+    const normalizedId = `${id || ''}`.trim();
+    if (normalizedId && USAGE_CTX.activeGenerationIds.has(normalizedId)) return true;
+  }
+  return false;
 }
 
 function buildNetworkUsageSnapshot(networkPayload) {
@@ -1512,7 +1536,13 @@ function buildNetworkUsageSnapshot(networkPayload) {
   const requestPreview = `${networkPayload?.requestPreview || ''}`.slice(0, 1500);
   const responsePreview = `${networkPayload?.responsePreview || ''}`.slice(0, 3000);
   const promptCapture = readPromptCaptureSnapshot();
-  const networkPromptText = normalizePromptCaptureValue(networkPayload?.promptText) || promptCapture.text;
+  const activeIntentIsRecent = Date.now() - Number(USAGE_CTX.lastGenerateAt || 0) < 5 * 60 * 1000;
+  const activeIntentPrompt = activeIntentIsRecent
+    ? normalizePromptCaptureValue(USAGE_CTX.assetScanSnapshot?.promptText)
+    : '';
+  const networkPromptText = normalizePromptCaptureValue(networkPayload?.promptText)
+    || activeIntentPrompt
+    || promptCapture.text;
   const mediaAssets = normalizeCapturedMediaAssets(networkPayload?.mediaAssets, networkPayload?.source || 'network');
 
   return {
@@ -1567,7 +1597,9 @@ function buildNetworkUsageSnapshot(networkPayload) {
       expectedCredits: hasExpectedCredits ? expectedCredits : null,
       promptCapture: {
         ...promptCapture,
-        source: normalizePromptCaptureValue(networkPayload?.promptText) ? 'network_request' : promptCapture.source,
+        source: normalizePromptCaptureValue(networkPayload?.promptText)
+          ? 'network_request'
+          : (activeIntentPrompt ? 'generate_intent' : promptCapture.source),
         candidateCount: promptCapture.candidateCount,
       },
       generationSettings: buildGenerationSettingsMetadata({
@@ -1627,11 +1659,13 @@ function handleKlingNetworkUsageMessage(event) {
     && Number.isInteger(creditsUsed)
     && creditsUsed > 0
     && creditsUsed <= MAX_REASONABLE_KLING_CREDIT_BURN;
+  const mediaAssetCount = Array.isArray(payload?.mediaAssets) ? payload.mediaAssets.length : 0;
   if (!payload?.status && !payload?.isCompleted && !hasReasonableCreditBurn) return;
   if (!payload?.generationId && !payload?.requestId) return;
 
   const now = Date.now();
   pruneNetworkEventKeys(now);
+  rememberActiveNetworkGeneration(payload);
 
   const dedupeKey = buildNetworkUsageDedupeKey(payload);
 
@@ -1644,6 +1678,31 @@ function handleKlingNetworkUsageMessage(event) {
   }
 
   const snapshot = buildNetworkUsageSnapshot(payload);
+  const hasSubmitPrompt = Boolean(normalizePromptCaptureValue(payload?.promptText));
+  const matchesActiveGeneration = isActiveNetworkGeneration(payload);
+  if (mediaAssetCount > 0 && !hasReasonableCreditBurn && !hasSubmitPrompt && !matchesActiveGeneration) {
+    debugUsageTelemetry('network_usage_skipped_unmatched_assets', {
+      generationId: payload.generationId,
+      requestId: payload.requestId,
+      status: payload.status,
+      source: payload.source,
+    });
+    return;
+  }
+  if (
+    !hasReasonableCreditBurn
+    && !(Number(snapshot.creditsBurned || 0) > 0)
+    && mediaAssetCount <= 0
+    && !snapshot.metadata?.usedExpectedCreditFallback
+  ) {
+    debugUsageTelemetry('network_usage_skipped_empty_status', {
+      generationId: payload.generationId,
+      requestId: payload.requestId,
+      status: payload.status,
+      source: payload.source,
+    });
+    return;
+  }
   resolveTrackedKlingAccountLabel()
     .then((klingAccountLabel) => {
       snapshot.metadata = {
@@ -1866,7 +1925,7 @@ function scheduleGenerateUsageReport(generateButton) {
         const usedExpectedFallback = Boolean(settledSnapshot.metadata?.usedExpectedCreditFallback);
         if (
           (
-            settledSnapshot.metadata?.settlementReason !== 'balance_decreased'
+            !['balance_decreased', 'wallet_balance_decreased'].includes(settledSnapshot.metadata?.settlementReason)
             && !usedExpectedFallback
           )
           || !(Number(settledSnapshot.creditsBurned || 0) > 0)

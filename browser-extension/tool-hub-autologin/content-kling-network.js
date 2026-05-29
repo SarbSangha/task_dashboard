@@ -371,8 +371,7 @@
       || Boolean(pickString(requestObject, /^(native_?audio|audio_?native|with_?audio)$/i));
     const multiShotEnabled = /\bmulti-?shot\b/i.test(telemetryText)
       || Boolean(pickString(requestObject, /^(multi_?shot|multi_?image)$/i));
-    const promptText = pickString(requestObject, /^(prompt|text|query|positive_?prompt)$/i)
-      || pickString(merged, /^(prompt|text|query|positive_?prompt)$/i);
+    const promptText = pickString(requestObject, /^(prompt|text|query|positive_?prompt)$/i);
     const mediaAssets = collectMediaAssetsFromPayload(merged, responseText);
     const status = normalizeLifecycleStatus(
       pickString(merged, /^(status|state|task_?status|stage|phase|event|event_?type)$/i),
