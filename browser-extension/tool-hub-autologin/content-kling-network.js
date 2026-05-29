@@ -338,8 +338,8 @@
     const requestText = payload.requestText || '';
 
     const telemetryText = `${requestText}\n${responseText}`;
-    const generationId = pickString(merged, /^(generation_?id|generate_?id|task_?id|job_?id|work_?id|project_?id)$/i)
-      || pickString(requestObject, /^(generation_?id|generate_?id|task_?id|job_?id|work_?id|project_?id)$/i)
+    const generationId = pickString(merged, /^(generation_?id|generate_?id|task_?id|job_?id)$/i)
+      || pickString(requestObject, /^(generation_?id|generate_?id|task_?id|job_?id)$/i)
       || pickContextualId(merged)
       || pickContextualId(requestObject);
     const requestId = pickString(merged, /^(request_?id|trace_?id|log_?id|req_?id|x_?request_?id)$/i)
@@ -415,7 +415,19 @@
     try {
       if (!payload.forceInspect && !shouldInspect(payload.url, payload.requestText)) return;
       const extracted = extractTelemetry(payload);
-      if (!extracted.generationId && !extracted.requestId) return;
+      const hasRecentGenerateIntent = Date.now() <= recentGenerateIntentUntil;
+      const hasCorrelatableSignal = Boolean(
+        extracted.generationId
+        || extracted.requestId
+        || (hasRecentGenerateIntent && (
+          extracted.isCreditBurnReasonable
+          || extracted.expectedCredits
+          || extracted.isCompleted
+          || extracted.mediaAssets?.length
+          || extracted.promptText
+        ))
+      );
+      if (!hasCorrelatableSignal) return;
       if (!extracted.status && !extracted.isCompleted && !extracted.isCreditBurnReasonable) return;
 
       window.postMessage({

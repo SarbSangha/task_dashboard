@@ -175,8 +175,10 @@ const USAGE_CTX = {
   lastInteractionAt   : 0,
   lastInteractionType : '',
   lastGenerateKey     : '',
+  lastGenerateIntentId: '',
   lastGenerateAt      : 0,
   pendingReportTimer  : null,
+  pendingReportTimers : new Set(),
   networkListenerAttached: false,
   networkEventKeys    : new Map(),
   domSettlementKeys   : new Map(),
@@ -767,8 +769,8 @@ function findGenerateActionTarget(target) {
 
     const text = readGenerateButtonLabel(candidate);
     if (!text) continue;
-    if (!/(^|\s)generate($|\s)/.test(text)) continue;
-    if (text.includes('create in omni')) continue;
+    if (!/(^|\s)generate($|\s)/i.test(text)) continue;
+    if (/create\s+in\s+omni/i.test(text)) continue;
 
     const rect = candidate.getBoundingClientRect();
     if (rect.width < 90 || rect.height < 32) continue;
@@ -804,7 +806,7 @@ function readGenerateLikeClickLabel(target) {
   const candidates = collectUniqueElements([...pathElements, ...fallback]);
   for (const candidate of candidates) {
     const text = normalizeSpace(buttonDescriptorText(candidate) || buttonText(candidate));
-    if (text.includes('generate')) {
+    if (/\bgenerate\b/i.test(text)) {
       return text;
     }
   }
@@ -1135,8 +1137,8 @@ function findVisibleGenerateActionButton() {
   for (const candidate of candidates) {
     if (!candidate || !isVisible(candidate) || !isEnabled(candidate)) continue;
     const text = readGenerateButtonLabel(candidate);
-    if (!/(^|\s)generate($|\s)/.test(text)) continue;
-    if (text.includes('create in omni')) continue;
+    if (!/(^|\s)generate($|\s)/i.test(text)) continue;
+    if (/create\s+in\s+omni/i.test(text)) continue;
     const expectedCredits = readExpectedCreditsFromGenerateButton(candidate);
     if (!Number.isInteger(expectedCredits) || expectedCredits <= 0) continue;
 
@@ -1271,10 +1273,10 @@ function buildNetworkUsageDedupeKey(payload) {
     && visibleExpectedCredits > 0
     && visibleExpectedCredits <= MAX_EXPECTED_LOCK_AUTO_BURN
     && Date.now() - Number(USAGE_CTX.lastGenerateAt || 0) < 30000;
-  if (canUseExpectedFallback && USAGE_CTX.lastGenerateKey) {
+  if (canUseExpectedFallback && (USAGE_CTX.lastGenerateIntentId || USAGE_CTX.lastGenerateKey)) {
     return [
       'network-expected-fallback',
-      USAGE_CTX.lastGenerateKey,
+      USAGE_CTX.lastGenerateIntentId || USAGE_CTX.lastGenerateKey,
       status,
       visibleExpectedCredits,
     ].join('|');
@@ -1429,6 +1431,11 @@ async function reportKlingUsage(snapshot) {
     throw new Error(response?.error || 'Usage event request failed');
   }
 
+  const eventId = Number(response?.event?.id || 0);
+  if (eventId > 0) {
+    snapshot.eventId = eventId;
+  }
+
   return response;
 }
 
@@ -1516,6 +1523,7 @@ function buildNetworkUsageSnapshot(networkPayload) {
     && Number.isInteger(expectedCredits)
     && expectedCredits > 0
     && expectedCredits <= MAX_EXPECTED_LOCK_AUTO_BURN
+    && USAGE_CTX.pendingReportTimers.size <= 1
     && Date.now() - Number(USAGE_CTX.lastGenerateAt || 0) < 30000;
   const creditsBurned = isReasonableCreditBurn
     ? Math.max(0, creditsUsed)
@@ -1524,10 +1532,10 @@ function buildNetworkUsageSnapshot(networkPayload) {
   const generationId = `${networkPayload?.generationId || ''}`.trim();
   const requestId = `${networkPayload?.requestId || ''}`.trim();
   const fingerprint = `${networkPayload?.fingerprint || ''}`.trim();
-  const networkFallbackDedupeKey = canUseExpectedNetworkFallback && USAGE_CTX.lastGenerateKey
+  const networkFallbackDedupeKey = canUseExpectedNetworkFallback && (USAGE_CTX.lastGenerateIntentId || USAGE_CTX.lastGenerateKey)
     ? [
       'network-expected-fallback',
-      USAGE_CTX.lastGenerateKey,
+      USAGE_CTX.lastGenerateIntentId || USAGE_CTX.lastGenerateKey,
       status,
       expectedCredits,
     ].join('|')
@@ -1654,16 +1662,28 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.data?.type !== 'KLING_NETWORK_USAGE') return;
 
   const payload = event.data.payload || {};
+  const now = Date.now();
   const creditsUsed = Number(payload?.creditsUsed);
   const hasReasonableCreditBurn = Number.isFinite(creditsUsed)
     && Number.isInteger(creditsUsed)
     && creditsUsed > 0
     && creditsUsed <= MAX_REASONABLE_KLING_CREDIT_BURN;
   const mediaAssetCount = Array.isArray(payload?.mediaAssets) ? payload.mediaAssets.length : 0;
+  const hasRecentGenerateIntent = now - Number(USAGE_CTX.lastGenerateAt || 0) < 30000;
+  const hasStableNetworkId = Boolean(payload?.generationId || payload?.requestId);
   if (!payload?.status && !payload?.isCompleted && !hasReasonableCreditBurn) return;
-  if (!payload?.generationId && !payload?.requestId) return;
+  if (!hasStableNetworkId && !hasRecentGenerateIntent) return;
+  if (!hasStableNetworkId && USAGE_CTX.pendingReportTimers.size > 1) {
+    debugUsageTelemetry('network_usage_skipped_ambiguous_idless_concurrent', {
+      pendingCount: USAGE_CTX.pendingReportTimers.size,
+      status: payload.status,
+      source: payload.source,
+      mediaAssetCount,
+      hasReasonableCreditBurn,
+    });
+    return;
+  }
 
-  const now = Date.now();
   pruneNetworkEventKeys(now);
   rememberActiveNetworkGeneration(payload);
 
@@ -1738,11 +1758,14 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
     && expectedCredits <= MAX_REASONABLE_KLING_CREDIT_BURN;
   const canAutoBurnExpectedFallback = hasExpectedCredits
     && expectedCredits <= MAX_EXPECTED_LOCK_AUTO_BURN;
+  const maxSingleGenerationDelta = hasExpectedCredits
+    ? Math.max(expectedCredits + 5, Math.ceil(expectedCredits * 1.25))
+    : 0;
   const hasReasonableRawBurn = Number.isFinite(rawCreditsBurned)
     && rawCreditsBurned > 0
     && rawCreditsBurned <= MAX_REASONABLE_KLING_CREDIT_BURN
     && hasStrongGenerateCost
-    && rawCreditsBurned <= Math.max(expectedCredits * 3, expectedCredits + 5);
+    && rawCreditsBurned <= maxSingleGenerationDelta;
   const sourceKind = settlementReason === 'wallet_balance_decreased'
     ? 'wallet'
     : (hasReasonableRawBurn ? 'dom' : 'expected');
@@ -1770,12 +1793,14 @@ function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason)
     creditsBurned: snapshot.creditsBurned,
     walletSnapshot,
     hasCreditDrift,
+    maxSingleGenerationDelta,
   });
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
     currentCredits: creditsAfter != null ? creditsAfter : snapshot.creditsBefore,
     settlementReason,
     rawCreditsBurned,
+    maxSingleGenerationDelta,
     walletSnapshot,
     creditSource: creditSourceProfile.source,
     creditSourcePriority: creditSourceProfile.priority,
@@ -1878,21 +1903,26 @@ function scheduleGenerateUsageReport(generateButton) {
     snapshot.expectedCredits,
   ]);
   const now = Date.now();
+  const intentId = makeUsageSessionId('kgen');
   pruneDomSettlementKeys(now);
   if (
-    (USAGE_CTX.lastGenerateKey === dedupeKey && now - USAGE_CTX.lastGenerateAt < 3000)
-    || (USAGE_CTX.domSettlementKeys.has(dedupeKey) && now - USAGE_CTX.domSettlementKeys.get(dedupeKey) < 90000)
+    USAGE_CTX.lastGenerateKey === dedupeKey
+    && now - USAGE_CTX.lastGenerateAt < 3000
   ) {
     return;
   }
 
   USAGE_CTX.lastGenerateKey = dedupeKey;
+  USAGE_CTX.lastGenerateIntentId = intentId;
   USAGE_CTX.lastGenerateAt = now;
-  USAGE_CTX.domSettlementKeys.set(dedupeKey, now);
-  snapshot.fingerprint = `dom_${dedupeKey}`;
+  USAGE_CTX.domSettlementKeys.set(intentId, now);
+  snapshot.fingerprint = `dom_${intentId}`;
+  snapshot.externalEventId = intentId;
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
-    domDedupeKey: dedupeKey,
+    domDedupeKey: intentId,
+    generateDedupeBase: dedupeKey,
+    generateIntentId: intentId,
   };
   announceKlingGenerateIntent(snapshot);
   snapshot.metadata = {
@@ -1901,18 +1931,53 @@ function scheduleGenerateUsageReport(generateButton) {
     reservedCredits: expectedCredits,
   };
   startGeneratedAssetDetection(snapshot);
+  reportKlingUsage({
+    ...snapshot,
+    status: 'submitted',
+    creditsBurned: null,
+    source: 'generate_intent',
+    confidence: 0.55,
+    metadata: {
+      ...(snapshot.metadata || {}),
+      stage: 'submitted',
+      source: 'generate_intent',
+      creditSource: 'generate_intent',
+      creditSourcePriority: 50,
+      confidenceLevel: 0.55,
+      lifecycleEvent: {
+        stage: 'submitted',
+        source: 'generate_intent',
+        transport: 'click',
+        capturedAt: now,
+        creditsUsed: null,
+      },
+    },
+  })
+    .then((response) => {
+      const eventId = Number(response?.event?.id || 0);
+      if (eventId > 0) {
+        snapshot.eventId = eventId;
+      }
+      debugUsageTelemetry('generate_intent_saved', {
+        eventId,
+        expectedCredits,
+        fingerprint: snapshot.fingerprint,
+      });
+    })
+    .catch((error) => {
+      if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) return;
+      console.warn('[RMW Kling] Generate intent report failed', error);
+    });
   setStatus(`Generate intent detected: ${expectedCredits} credit${expectedCredits === 1 ? '' : 's'}`, { hideAfterMs: 2500 });
   debugUsageTelemetry('credit_intent_captured', {
     expectedCredits,
     fingerprint: snapshot.fingerprint,
   });
-  if (USAGE_CTX.pendingReportTimer) {
-    clearTimeout(USAGE_CTX.pendingReportTimer);
-    USAGE_CTX.pendingReportTimer = null;
-  }
-
-  USAGE_CTX.pendingReportTimer = window.setTimeout(() => {
-    USAGE_CTX.pendingReportTimer = null;
+  const reportTimer = window.setTimeout(() => {
+    USAGE_CTX.pendingReportTimers.delete(reportTimer);
+    if (USAGE_CTX.pendingReportTimer === reportTimer) {
+      USAGE_CTX.pendingReportTimer = null;
+    }
     resolveTrackedKlingAccountLabel()
       .then((klingAccountLabel) => {
         snapshot.metadata = {
@@ -1930,11 +1995,11 @@ function scheduleGenerateUsageReport(generateButton) {
           )
           || !(Number(settledSnapshot.creditsBurned || 0) > 0)
         ) {
-          USAGE_CTX.domSettlementKeys.delete(dedupeKey);
+          USAGE_CTX.domSettlementKeys.delete(intentId);
           setStatus('Usage not saved: no confirmed credit burn', { hideAfterMs: 3000 });
           return null;
         }
-        USAGE_CTX.domSettlementKeys.set(dedupeKey, Date.now());
+        USAGE_CTX.domSettlementKeys.set(intentId, Date.now());
         return reportKlingUsage({
           ...settledSnapshot,
           status: 'settled',
@@ -1957,9 +2022,15 @@ function scheduleGenerateUsageReport(generateButton) {
         console.warn('[RMW Kling] Usage report failed', error);
       });
   }, 1200);
+  USAGE_CTX.pendingReportTimer = reportTimer;
+  USAGE_CTX.pendingReportTimers.add(reportTimer);
 }
 
 function clearPendingUsageReport() {
+  for (const timer of USAGE_CTX.pendingReportTimers) {
+    clearTimeout(timer);
+  }
+  USAGE_CTX.pendingReportTimers.clear();
   if (USAGE_CTX.pendingReportTimer) {
     clearTimeout(USAGE_CTX.pendingReportTimer);
     USAGE_CTX.pendingReportTimer = null;

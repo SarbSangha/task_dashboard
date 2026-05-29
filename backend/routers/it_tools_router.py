@@ -5,6 +5,7 @@ import hmac
 import html
 import imaplib
 import json
+import math
 import os
 import re
 import time
@@ -2257,7 +2258,22 @@ async def report_extension_usage_event(
         merged_metadata = dict(payload.metadata or {})
     if credits_burned is None:
         if credits_before is not None and credits_after is not None:
-            credits_burned = max(0.0, credits_before - credits_after)
+            inferred_delta = max(0.0, credits_before - credits_after)
+            max_single_generation_delta = None
+            if expected_credits is not None and expected_credits > 0:
+                max_single_generation_delta = max(expected_credits + 5, math.ceil(expected_credits * 1.25))
+            if (
+                inferred_delta > 0
+                and max_single_generation_delta is not None
+                and inferred_delta > max_single_generation_delta
+                and f"{source or ''}".strip().lower() in {"wallet_reconciled", "dom_balance_fallback", "generate_intent", "expected_credit_lock"}
+            ):
+                merged_metadata["ignoredWalletDelta"] = inferred_delta
+                merged_metadata["ignoredWalletDeltaReason"] = "above_single_generation_expected_delta"
+                merged_metadata["maxSingleGenerationDelta"] = max_single_generation_delta
+                credits_burned = expected_credits if expected_credits <= MAX_EXPECTED_LOCK_AUTO_BURN else None
+            else:
+                credits_burned = inferred_delta
         elif normalized_status in {"settled", "completed"} and (
             not is_network_usage_event
             or (expected_credits is not None and 0 < expected_credits <= MAX_REASONABLE_KLING_CREDIT_BURN)
