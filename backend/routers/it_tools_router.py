@@ -1535,6 +1535,15 @@ def _normalize_usage_float(value: Optional[float]) -> Optional[float]:
     return normalized
 
 
+def _normalize_usage_integer(value: Optional[float]) -> Optional[int]:
+    normalized = _normalize_usage_float(value)
+    if normalized is None:
+        return None
+    if not normalized.is_integer():
+        return None
+    return int(normalized)
+
+
 def _normalize_usage_text(value: Optional[str], max_length: int = 160) -> Optional[str]:
     normalized = f"{value or ''}".strip()
     if not normalized:
@@ -1623,6 +1632,14 @@ def _safe_credits_burned_value(
     if is_dom_fallback and not metadata.get("strongGenerateCost", expected is not None and expected >= 1):
         return None
     if burned is None:
+        if (
+            normalized_source == "generate_intent"
+            and metadata.get("creditIntentCaptured") is True
+            and expected is not None
+            and float(expected).is_integer()
+            and 0 < expected <= MAX_EXPECTED_LOCK_AUTO_BURN
+        ):
+            return expected
         return None
     if (
         normalized_source == "expected_credit_lock"
@@ -1676,6 +1693,15 @@ def _safe_usage_credits_expression():
                 ITPortalToolUsageEvent.expected_credits > 0,
                 ITPortalToolUsageEvent.expected_credits <= MAX_EXPECTED_LOCK_AUTO_BURN,
                 ITPortalToolUsageEvent.credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN,
+            ),
+            ITPortalToolUsageEvent.expected_credits,
+        ),
+        (
+            and_(
+                ITPortalToolUsageEvent.source == "generate_intent",
+                ITPortalToolUsageEvent.expected_credits > 0,
+                ITPortalToolUsageEvent.expected_credits <= MAX_EXPECTED_LOCK_AUTO_BURN,
+                ITPortalToolUsageEvent.credits_burned.is_(None),
             ),
             ITPortalToolUsageEvent.expected_credits,
         ),
@@ -2277,6 +2303,13 @@ async def report_extension_usage_event(
         elif normalized_status in {"settled", "completed"} and (
             not is_network_usage_event
             or (expected_credits is not None and 0 < expected_credits <= MAX_REASONABLE_KLING_CREDIT_BURN)
+        ):
+            credits_burned = expected_credits
+        elif (
+            f"{source or ''}".strip().lower() == "generate_intent"
+            and expected_credits is not None
+            and 0 < expected_credits <= MAX_EXPECTED_LOCK_AUTO_BURN
+            and merged_metadata.get("creditIntentCaptured") is True
         ):
             credits_burned = expected_credits
     if credits_burned is not None and credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN:
@@ -3396,17 +3429,19 @@ async def get_tool_usage_report(
 
     latest_current_credits = None
     for event, _, _ in recent_events:
-        if event.credits_after is not None:
-            latest_current_credits = float(event.credits_after)
+        credits_after = _normalize_usage_integer(event.credits_after)
+        if credits_after is not None:
+            latest_current_credits = credits_after
             break
-        if event.credits_before is not None:
-            latest_current_credits = float(event.credits_before)
+        credits_before = _normalize_usage_integer(event.credits_before)
+        if credits_before is not None:
+            latest_current_credits = credits_before
             break
         metadata_current_credits = None
         if isinstance(event.metadata_json, dict):
-            metadata_current_credits = _normalize_usage_float(event.metadata_json.get("currentCredits"))
+            metadata_current_credits = _normalize_usage_integer(event.metadata_json.get("currentCredits"))
         if metadata_current_credits is not None:
-            latest_current_credits = float(metadata_current_credits)
+            latest_current_credits = metadata_current_credits
             break
 
     credential_ids = set()

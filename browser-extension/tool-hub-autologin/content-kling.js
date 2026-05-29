@@ -461,6 +461,11 @@ function parseCreditNumber(value) {
   return numericValue;
 }
 
+function parseIntegerCreditNumber(value) {
+  const parsed = parseCreditNumber(value);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
 function parseExpectedCreditsFromGenerateText(value) {
   const normalized = normalizeGenerateActionLabel(value);
   if (!normalized) return null;
@@ -1070,7 +1075,7 @@ function readVisibleCreditBalance() {
     if (!text || text.length > 32) continue;
     if (text.includes('-')) continue;
 
-    const parsedValue = parseCreditNumber(text);
+    const parsedValue = parseIntegerCreditNumber(text);
     if (parsedValue == null) continue;
     if (parsedValue < 0 || parsedValue > MAX_REASONABLE_KLING_CREDIT_BALANCE) continue;
 
