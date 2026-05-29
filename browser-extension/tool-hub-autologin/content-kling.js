@@ -491,13 +491,19 @@ function collectGenerateTextCandidates(generateButton) {
     ...Array.from(generateButton.querySelectorAll('span,strong,b,div')).map((el) => el.textContent),
   ];
 
+  const wholeCandidates = rawCandidates
+    .filter(Boolean)
+    .map((value) => normalizeGenerateActionLabel(value))
+    .filter(Boolean);
+
   const splitCandidates = rawCandidates
     .filter(Boolean)
     .flatMap((value) => `${value}`.split(/\r?\n+/))
     .map((value) => normalizeGenerateActionLabel(value))
     .filter(Boolean);
 
-  return collectUniqueElements(splitCandidates).sort((left, right) => left.length - right.length);
+  return collectUniqueElements([...wholeCandidates, ...splitCandidates])
+    .sort((left, right) => left.length - right.length);
 }
 
 function buildLocalDateValue(offsetDays = 0) {
@@ -908,6 +914,24 @@ function normalizeCapturedAssetUrl(value) {
     } catch {}
   }
   return '';
+}
+
+function inferGenerateDetectionSource(generateButton) {
+  if (!generateButton) return 'unknown';
+  const parts = [
+    ['inner_text', generateButton.innerText],
+    ['text_content', generateButton.textContent],
+    ['value', generateButton.value],
+    ['aria_label', generateButton.getAttribute?.('aria-label')],
+    ['title', generateButton.getAttribute?.('title')],
+    ['data_testid', generateButton.getAttribute?.('data-testid')],
+  ];
+  const matched = parts.find(([, value]) => /\bgenerate\b/i.test(normalizeSpace(value || '')));
+  if (matched) return matched[0];
+  const descendantText = Array.from(generateButton.querySelectorAll?.('span,strong,b,div,img[alt]') || [])
+    .map((el) => el.getAttribute?.('alt') || el.textContent || '')
+    .find((value) => /\bgenerate\b/i.test(normalizeSpace(value || '')));
+  return descendantText ? 'descendant_text' : 'button_descriptor';
 }
 
 function normalizeCapturedMediaAssets(value, source = 'network') {
@@ -1891,21 +1915,26 @@ function scheduleGenerateUsageReport(generateButton) {
   const snapshot = buildGenerateUsageSnapshot(generateButton);
   const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
   const expectedCredits = Number(snapshot.expectedCredits);
-  if (
-    !SUPPORTED_KLING_USAGE_FALLBACK_MODES.has(generationMode)
-    || !Number.isFinite(expectedCredits)
-    || expectedCredits <= 0
-    || expectedCredits > MAX_REASONABLE_KLING_CREDIT_BURN
-  ) {
-    setStatus('Usage fallback skipped: unsupported or unclear generation cost', { hideAfterMs: 2500 });
-    return;
+  const hasSupportedMode = SUPPORTED_KLING_USAGE_FALLBACK_MODES.has(generationMode);
+  const hasExpectedCredits = Number.isFinite(expectedCredits)
+    && expectedCredits > 0
+    && expectedCredits <= MAX_REASONABLE_KLING_CREDIT_BURN;
+  const canSettleCredits = hasSupportedMode && hasExpectedCredits;
+  const missingCaptureFields = [
+    !hasSupportedMode ? 'generationMode' : '',
+    !hasExpectedCredits ? 'expectedCredits' : '',
+    !normalizePromptCaptureValue(snapshot.promptText) ? 'promptText' : '',
+  ].filter(Boolean);
+  const generateDetectionSource = inferGenerateDetectionSource(generateButton);
+  if (!hasExpectedCredits) {
+    snapshot.expectedCredits = null;
   }
   const dedupeKey = JSON.stringify([
     snapshot.promptText,
     snapshot.modelLabel,
     snapshot.durationLabel,
     snapshot.resolutionLabel,
-    snapshot.expectedCredits,
+    hasExpectedCredits ? snapshot.expectedCredits : null,
   ]);
   const now = Date.now();
   const intentId = makeUsageSessionId('kgen');
@@ -1928,12 +1957,19 @@ function scheduleGenerateUsageReport(generateButton) {
     domDedupeKey: intentId,
     generateDedupeBase: dedupeKey,
     generateIntentId: intentId,
+    generateDetectionSource,
   };
   announceKlingGenerateIntent(snapshot);
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
     creditIntentCaptured: true,
-    reservedCredits: expectedCredits,
+    reservedCredits: hasExpectedCredits ? expectedCredits : null,
+    usageCaptureIncomplete: !canSettleCredits,
+    captureIncomplete: !canSettleCredits || missingCaptureFields.length > 0,
+    missingCaptureFields,
+    usageCaptureIncompleteReason: !hasSupportedMode
+      ? 'unsupported_or_unknown_generation_mode'
+      : (!hasExpectedCredits ? 'unclear_generate_credit_cost' : ''),
   };
   startGeneratedAssetDetection(snapshot);
   reportKlingUsage({
@@ -1949,6 +1985,10 @@ function scheduleGenerateUsageReport(generateButton) {
       creditSource: 'generate_intent',
       creditSourcePriority: 50,
       confidenceLevel: 0.55,
+      canSettleCredits,
+      generateDetectionSource,
+      captureIncomplete: !canSettleCredits || missingCaptureFields.length > 0,
+      missingCaptureFields,
       lifecycleEvent: {
         stage: 'submitted',
         source: 'generate_intent',
@@ -1965,7 +2005,11 @@ function scheduleGenerateUsageReport(generateButton) {
       }
       debugUsageTelemetry('generate_intent_saved', {
         eventId,
-        expectedCredits,
+        expectedCredits: hasExpectedCredits ? expectedCredits : null,
+        generationMode,
+        canSettleCredits,
+        generateDetectionSource,
+        missingCaptureFields,
         fingerprint: snapshot.fingerprint,
       });
     })
@@ -1973,11 +2017,31 @@ function scheduleGenerateUsageReport(generateButton) {
       if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) return;
       console.warn('[RMW Kling] Generate intent report failed', error);
     });
-  setStatus(`Generate intent detected: ${expectedCredits} credit${expectedCredits === 1 ? '' : 's'}`, { hideAfterMs: 2500 });
+  setStatus(
+    hasExpectedCredits
+      ? `Generate intent detected: ${expectedCredits} credit${expectedCredits === 1 ? '' : 's'}`
+      : 'Generate intent detected: credit cost unclear',
+    { hideAfterMs: 2500 }
+  );
   debugUsageTelemetry('credit_intent_captured', {
-    expectedCredits,
+    expectedCredits: hasExpectedCredits ? expectedCredits : null,
+    generationMode,
+    canSettleCredits,
+    generateDetectionSource,
+    missingCaptureFields,
     fingerprint: snapshot.fingerprint,
   });
+  if (!canSettleCredits) {
+    debugUsageTelemetry('credit_settlement_skipped_unclear_generation', {
+      generationMode,
+      expectedCredits: hasExpectedCredits ? expectedCredits : null,
+      actionLabel: snapshot.metadata?.actionLabel,
+      promptCaptured: Boolean(snapshot.promptText),
+      generateDetectionSource,
+      missingCaptureFields,
+    });
+    return;
+  }
   const reportTimer = window.setTimeout(() => {
     USAGE_CTX.pendingReportTimers.delete(reportTimer);
     if (USAGE_CTX.pendingReportTimer === reportTimer) {
