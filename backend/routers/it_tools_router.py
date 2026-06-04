@@ -1880,9 +1880,49 @@ def _merge_usage_metadata(existing: Optional[dict], incoming: Optional[dict]) ->
     merged = dict(existing or {})
     existing_lifecycle_events = list(merged.get("lifecycleEvents") or [])
     incoming_lifecycle_event = None
+    existing_media_assets = merged.get("mediaAssets") if isinstance(merged.get("mediaAssets"), list) else []
+
+    def merge_media_assets(incoming_assets: Optional[list]) -> list:
+        assets_by_key = {}
+        order = []
+        for item in [*existing_media_assets, *(incoming_assets or [])]:
+            if not isinstance(item, dict):
+                continue
+            url = f"{item.get('url') or ''}".strip()
+            blob_url = f"{item.get('blobUrl') or ''}".strip()
+            key = blob_url or url
+            if not key:
+                continue
+            existing_item = assets_by_key.get(key)
+            if existing_item is None:
+                assets_by_key[key] = item
+                order.append(key)
+                continue
+            existing_url = f"{existing_item.get('url') or ''}".strip()
+            if existing_url.startswith("blob:") and url.startswith(("http://", "https://")):
+                replacement = dict(existing_item)
+                replacement.update(item)
+                replacement["blobUrl"] = blob_url or f"{existing_item.get('blobUrl') or ''}".strip()
+                assets_by_key[key] = replacement
+
+        assets = [assets_by_key[key] for key in order if key in assets_by_key]
+        return assets[:12]
+
     for key, value in (incoming or {}).items():
         if key == "lifecycleEvent" and isinstance(value, dict):
             incoming_lifecycle_event = value
+            continue
+        if key == "mediaAssets":
+            if isinstance(value, list) and value:
+                merged_media_assets = merge_media_assets(value)
+                merged["mediaAssets"] = merged_media_assets
+                merged["mediaAssetCount"] = len(merged_media_assets)
+            elif existing_media_assets:
+                merged["mediaAssets"] = existing_media_assets
+                merged["mediaAssetCount"] = len(existing_media_assets)
+            continue
+        if key == "mediaAssetCount" and existing_media_assets and not value:
+            merged[key] = len(existing_media_assets)
             continue
         merged[key] = value
     if incoming_lifecycle_event:

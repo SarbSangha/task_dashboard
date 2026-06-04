@@ -955,6 +955,15 @@ function rememberBlobSourceUrl(blobUrl = '', sourceUrl = '') {
     const oldestKey = USAGE_CTX.blobSourceUrls.keys().next().value;
     if (oldestKey) USAGE_CTX.blobSourceUrls.delete(oldestKey);
   }
+  USAGE_CTX.generatedAssetUrls.delete(normalizedBlobUrl);
+  reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, [{
+    assetType: inferCapturedAssetType(normalizedSourceUrl),
+    assetRole: 'output',
+    source: 'blob_source',
+    url: normalizedSourceUrl,
+    blobUrl: normalizedBlobUrl,
+    detectedAt: Date.now(),
+  }]);
 }
 
 function resolveCapturedAssetUrl(value) {
@@ -1065,15 +1074,24 @@ function collectVisibleGeneratedMediaAssets() {
 }
 
 function mergeCapturedMediaAssets(existingAssets = [], incomingAssets = []) {
-  const merged = [];
-  const seen = new Set();
+  const mergedByKey = new Map();
+  const order = [];
   for (const asset of [...normalizeCapturedMediaAssets(existingAssets), ...normalizeCapturedMediaAssets(incomingAssets, 'dom')]) {
-    if (!asset.url || seen.has(asset.url)) continue;
-    seen.add(asset.url);
-    merged.push(asset);
-    if (merged.length >= MAX_CAPTURED_MEDIA_ASSETS) break;
+    if (!asset.url) continue;
+    const key = asset.blobUrl || asset.url;
+    const existing = mergedByKey.get(key);
+    if (!existing) {
+      mergedByKey.set(key, asset);
+      order.push(key);
+      continue;
+    }
+    const existingIsBlobOnly = /^blob:/i.test(existing.url || '');
+    const incomingIsHttp = /^https?:\/\//i.test(asset.url || '');
+    if (existingIsBlobOnly && incomingIsHttp) {
+      mergedByKey.set(key, { ...existing, ...asset, blobUrl: asset.blobUrl || existing.blobUrl });
+    }
   }
-  return merged;
+  return order.map((key) => mergedByKey.get(key)).filter(Boolean).slice(0, MAX_CAPTURED_MEDIA_ASSETS);
 }
 
 function stopGeneratedAssetDetection() {

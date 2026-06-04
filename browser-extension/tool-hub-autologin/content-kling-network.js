@@ -350,6 +350,31 @@
     return assets.slice(0, MAX_MEDIA_ASSETS);
   }
 
+  function mergeMediaAssetLists(...assetLists) {
+    const merged = [];
+    const seen = new Set();
+    for (const list of assetLists) {
+      for (const asset of Array.isArray(list) ? list : []) {
+        const url = `${asset?.url || ''}`.trim();
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        merged.push(asset);
+        if (merged.length >= MAX_MEDIA_ASSETS) return merged;
+      }
+    }
+    return merged;
+  }
+
+  function markMediaAssetsAsRequestInputs(assets) {
+    return (Array.isArray(assets) ? assets : []).map((asset) => ({
+      ...asset,
+      assetRole: 'input',
+      source: asset?.source === 'json'
+        ? 'request_payload'
+        : (asset?.source === 'text' ? 'request_text' : asset?.source),
+    }));
+  }
+
   function inferGenerationModeFromTelemetry(text) {
     const normalized = `${text || ''}`;
     if (/\bmnu[_-]?img[_-]?aiweb\b/i.test(normalized)) {
@@ -465,7 +490,10 @@
     const multiShotEnabled = /\bmulti-?shot\b/i.test(telemetryText)
       || Boolean(pickString(requestObject, /^(multi_?shot|multi_?image)$/i));
     const promptText = pickString(requestObject, /^(prompt|text|query|positive_?prompt)$/i);
-    const mediaAssets = collectMediaAssetsFromPayload(merged, responseText);
+    const mediaAssets = mergeMediaAssetLists(
+      markMediaAssetsAsRequestInputs(collectMediaAssetsFromPayload(requestObject, requestText)),
+      collectMediaAssetsFromPayload(merged, responseText)
+    );
     const status = normalizeLifecycleStatus(
       pickString(merged, /^(status|state|task_?status|stage|phase|event|event_?type)$/i),
       creditsUsed
