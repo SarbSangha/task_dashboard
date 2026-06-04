@@ -1308,18 +1308,34 @@ body {
 
 .it-usage-prompt-preview {
   max-width: 720px;
-  margin: 0.45rem 0 0;
+  margin: 0.25rem 0 0;
   color: #dbeafe;
   font-size: 0.82rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.it-usage-io-block {
+  display: grid;
+  gap: 0.3rem;
+  max-width: 760px;
+  margin-top: 0.55rem;
+}
+
+.it-usage-io-block > span {
+  color: #bfdbfe;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
 
 .it-usage-asset-links {
   display: grid;
   gap: 0.35rem;
   max-width: 760px;
-  margin-top: 0.5rem;
+  margin-top: 0.15rem;
 }
 
 .it-usage-asset-links a,
@@ -1334,7 +1350,35 @@ body {
   text-decoration: none;
 }
 
+.it-usage-asset-links .it-usage-io-block {
+  margin-top: 0.25rem;
+}
+
+.it-usage-asset-links .it-usage-io-block > span:first-child {
+  color: #bfdbfe;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.it-usage-asset-links .it-usage-io-block > a,
+.it-usage-asset-links .it-usage-io-block > span:not(:first-child) {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.52);
+  color: #bfdbfe;
+  text-decoration: none;
+}
+
 .it-usage-asset-links a:hover {
+  border-color: rgba(147, 197, 253, 0.55);
+  color: #eff6ff;
+}
+
+.it-usage-asset-links .it-usage-io-block > a:hover {
   border-color: rgba(147, 197, 253, 0.55);
   color: #eff6ff;
 }
@@ -1352,6 +1396,11 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 0.72rem;
   overflow-wrap: anywhere;
+}
+
+.it-usage-asset-links .is-browser-only small {
+  color: #c4b5fd;
+  font-family: inherit;
 }
 
 .it-usage-user-cell {

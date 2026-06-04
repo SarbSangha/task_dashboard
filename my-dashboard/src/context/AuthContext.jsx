@@ -20,6 +20,9 @@ const isNetworkLikeError = (error) =>
     || error?.message?.toLowerCase?.().includes('timeout')
   );
 
+const isAuthServiceUnavailable = (error) =>
+  isNetworkLikeError(error) || error?.response?.status === 503;
+
 const resetAuthBootstrapCache = () => {
   authBootstrapPromise = null;
   authBootstrapCachedResult = null;
@@ -37,7 +40,7 @@ const getCurrentUserWithRetry = async () => {
       return await authAPI.getCurrentUser();
     } catch (error) {
       lastError = error;
-      if (!isNetworkLikeError(error) || attempt === AUTH_BOOTSTRAP_RETRY_COUNT - 1) {
+      if (!isAuthServiceUnavailable(error) || attempt === AUTH_BOOTSTRAP_RETRY_COUNT - 1) {
         throw error;
       }
       await wait(AUTH_BOOTSTRAP_RETRY_DELAY_MS);
@@ -134,7 +137,7 @@ export const AuthProvider = ({ children }) => {
         setAuthIssue(null);
       }
     } catch (error) {
-      if (isNetworkLikeError(error)) {
+      if (isAuthServiceUnavailable(error)) {
         console.warn('⚠️ Auth check failed because the auth service is unreachable or timed out.');
         setAuthIssue({
           code: 'AUTH_UNREACHABLE',

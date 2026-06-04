@@ -205,6 +205,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .card-footer-actions .card-menu {
@@ -286,6 +288,16 @@
   color: #fff;
   cursor: pointer;
   font-weight: 600;
+}
+
+.approve-inline-btn {
+  background: linear-gradient(180deg, #22c55e, #16a34a);
+  border: 1px solid rgba(134, 239, 172, 0.65);
+  color: #f8fafc;
+}
+
+.approve-inline-btn:hover {
+  background: linear-gradient(180deg, #34d399, #16a34a);
 }
 
 .detail-head {

@@ -1,6 +1,7 @@
 # routers/auth_router.py - Authentication endpoints
 from fastapi import APIRouter, Depends, HTTPException, Response, Cookie, Request, Header
 from sqlalchemy import func, or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime
@@ -672,9 +673,12 @@ async def get_current_user_profile(
         }
     except HTTPException:
         raise
+    except SQLAlchemyError as e:
+        _log_exception("Database error getting current user", e)
+        raise HTTPException(status_code=503, detail="Auth database unavailable")
     except Exception as e:
         _log_exception("Error getting current user", e)
-        raise HTTPException(status_code=401, detail="Invalid session")
+        raise HTTPException(status_code=500, detail="Unable to verify session")
 
 
 @router.get("/profile")

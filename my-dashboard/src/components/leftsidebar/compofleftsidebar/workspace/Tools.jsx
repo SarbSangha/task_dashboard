@@ -518,9 +518,13 @@ const formatUsageDurationMs = (value) => {
 };
 
 const formatUsagePromptPreview = (value) => {
-  const normalized = `${value || ''}`.replace(/\s+/g, ' ').trim();
+  const normalized = `${value || ''}`
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+\n/g, '\n')
+    .replace(/\n\s+/g, '\n')
+    .trim();
   if (!normalized) return '';
-  return normalized.length > 220 ? `${normalized.slice(0, 217)}...` : normalized;
+  return normalized;
 };
 
 const formatUsageAssetUrl = (value) => {
@@ -530,6 +534,49 @@ const formatUsageAssetUrl = (value) => {
   return `${normalized.slice(0, 44)}...${normalized.slice(-28)}`;
 };
 
+const formatUsageAssetSourceLabel = (asset) => {
+  const source = `${asset?.source || ''}`.trim().toLowerCase();
+  if (!source) return '';
+  if (source === 'dom') return 'page preview';
+  if (source === 'blob_source') return 'recovered output link';
+  if (source === 'json') return 'network data';
+  if (source === 'text') return 'network text';
+  if (source === 'payload') return 'request payload';
+  return source.replace(/_/g, ' ');
+};
+
+const inferUsageAssetRole = (asset) => {
+  const explicitRole = `${asset?.assetRole || asset?.role || ''}`.trim().toLowerCase();
+  if (explicitRole === 'input' || explicitRole === 'output') return explicitRole;
+
+  const source = `${asset?.source || ''}`.trim().toLowerCase();
+  const key = `${asset?.key || ''}`.trim().toLowerCase();
+  const url = `${asset?.url || ''}`.trim().toLowerCase();
+  const descriptor = `${key} ${url}`;
+
+  if (source === 'dom' || url.startsWith('blob:')) return 'output';
+  if (/\b(input|reference|ref|origin|upload|source|start|end|first|last|init|mask|image_url|imageurl)\b/.test(descriptor)) {
+    return 'input';
+  }
+  if (/\b(output|result|generated|final|download|resource|works?|task|video_url|videourl|cover|poster|thumbnail)\b/.test(descriptor)) {
+    return 'output';
+  }
+  return 'output';
+};
+
+const isInternalKlingPreviewAsset = (asset) => {
+  const url = `${asset?.url || ''}`.trim().toLowerCase();
+  const key = `${asset?.key || ''}`.trim().toLowerCase();
+  if (!url) return false;
+  if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web-[^?#]*\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(url)) return true;
+  if (!/\.webp(?:[?#]|$)/i.test(url)) return false;
+  if (/\borigin\b/.test(key)) return false;
+  if (/\bupload\b/.test(key)) return false;
+  if (/(omni-stream-loading|stream-loading|loading)/i.test(url)) return true;
+  if (/\/kimg\//i.test(url)) return true;
+  return false;
+};
+
 const getUsageMediaAssets = (event) => {
   const assets = Array.isArray(event?.metadata?.mediaAssets) ? event.metadata.mediaAssets : [];
   const seen = new Set();
@@ -537,38 +584,80 @@ const getUsageMediaAssets = (event) => {
     .filter((asset) => {
       const url = `${asset?.url || ''}`.trim();
       if (!url || seen.has(url)) return false;
+      if (isInternalKlingPreviewAsset(asset)) return false;
       seen.add(url);
       return true;
     })
     .slice(0, 5);
 };
 
+const renderUsagePromptBlock = (event) => {
+  const promptPreview = formatUsagePromptPreview(event?.promptText || event?.metadata?.promptCapture?.text);
+  if (!promptPreview) return null;
+  return (
+    <div className="it-usage-io-block">
+      <span>Input prompt</span>
+      <p className="it-usage-prompt-preview">{promptPreview}</p>
+    </div>
+  );
+};
+
 const renderUsageAssetLinks = (event) => {
   const mediaAssets = getUsageMediaAssets(event);
   if (!mediaAssets.length) return null;
+  const groupedAssets = [
+    {
+      key: 'input',
+      label: 'Input media',
+      assets: mediaAssets.filter((asset) => inferUsageAssetRole(asset) === 'input'),
+    },
+    {
+      key: 'output',
+      label: 'Output media',
+      assets: mediaAssets.filter((asset) => inferUsageAssetRole(asset) !== 'input'),
+    },
+  ].filter((group) => group.assets.length);
 
   return (
     <div className="it-usage-asset-links">
-      {mediaAssets.map((asset, index) => {
-        const url = `${asset?.url || ''}`.trim();
-        const isOpenableUrl = /^https?:\/\//i.test(url);
-        const label = `${asset?.assetType || 'asset'} ${index + 1}`;
-        return isOpenableUrl ? (
-          <a
-            key={`${event?.id || 'event'}-${url}`}
-            href={url}
-            target="_blank"
-            rel="noreferrer"
-            title={url}
-          >
-            <span>{label}</span>
-            <small>{formatUsageAssetUrl(url)}</small>
-          </a>
-        ) : (
-          <span key={`${event?.id || 'event'}-${url}`} title={url}>
-            <strong>{label}</strong>
-            <small>{formatUsageAssetUrl(url)}</small>
-          </span>
+      {groupedAssets.map((group) => {
+        let groupIndex = 0;
+        return (
+          <div key={`${event?.id || 'event'}-${group.key}`} className="it-usage-io-block">
+            <span>{group.label}</span>
+            {group.assets.map((asset) => {
+              groupIndex += 1;
+              const url = `${asset?.url || ''}`.trim();
+              const isOpenableUrl = /^https?:\/\//i.test(url);
+              const isBlobUrl = /^blob:/i.test(url);
+              const sourceLabel = formatUsageAssetSourceLabel(asset);
+              const label = `${asset?.assetType || 'asset'} ${groupIndex}`;
+              const detail = isBlobUrl
+                ? 'Browser-only preview. Blob links cannot be opened outside the captured Kling tab.'
+                : formatUsageAssetUrl(url);
+              return isOpenableUrl ? (
+                <a
+                  key={`${event?.id || 'event'}-${url}`}
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={url}
+                >
+                  <span>{label}{sourceLabel ? ` - ${sourceLabel}` : ''}</span>
+                  <small>{detail}</small>
+                </a>
+              ) : (
+                <span
+                  key={`${event?.id || 'event'}-${url}`}
+                  className={isBlobUrl ? 'is-browser-only' : ''}
+                  title={isBlobUrl ? detail : url}
+                >
+                  <strong>{label}{sourceLabel ? ` - ${sourceLabel}` : ''}</strong>
+                  <small>{detail}</small>
+                </span>
+              );
+            })}
+          </div>
         );
       })}
     </div>
@@ -3360,15 +3449,12 @@ export default function Tools({ view = 'tools' }) {
                                       <div className="it-tool-launch-activity-list">
                                         {relatedActivity.map((event) => {
                                           const diagnosticChips = buildUsageDiagnosticChips(event);
-                                          const promptPreview = formatUsagePromptPreview(event.promptText || event.metadata?.promptCapture?.text);
                                           return (
                                             <div key={event.id} className="it-tool-launch-activity-item">
                                               <div>
                                                 <strong>{`${event.eventType || 'tool activity'}`.replace(/_/g, ' ')}</strong>
                                                 <small>{formatUsageDateTime(event.createdAt)}</small>
-                                                {promptPreview && (
-                                                  <p className="it-usage-prompt-preview">{promptPreview}</p>
-                                                )}
+                                                {renderUsagePromptBlock(event)}
                                                 {renderUsageAssetLinks(event)}
                                                 {!!diagnosticChips.length && (
                                                   <div className="it-usage-diagnostic-chips">
@@ -3475,7 +3561,6 @@ export default function Tools({ view = 'tools' }) {
                 <div className="it-usage-recent-list">
                   {filteredRecentUsageEvents.slice(0, 8).map((event) => {
                     const diagnosticChips = buildUsageDiagnosticChips(event);
-                    const promptPreview = formatUsagePromptPreview(event.promptText || event.metadata?.promptCapture?.text);
                     return (
                       <div key={event.id} className="it-usage-recent-item">
                         <div className="it-usage-recent-top">
@@ -3509,9 +3594,7 @@ export default function Tools({ view = 'tools' }) {
                             </small>
                           </div>
                         </div>
-                        {promptPreview && (
-                          <p className="it-usage-prompt-preview">{promptPreview}</p>
-                        )}
+                        {renderUsagePromptBlock(event)}
                         {renderUsageAssetLinks(event)}
                         {!!diagnosticChips.length && (
                           <div className="it-usage-diagnostic-chips">

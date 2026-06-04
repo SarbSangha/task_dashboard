@@ -14,6 +14,7 @@
   const MAX_REASONABLE_CREDIT_BURN = 3000;
   const GENERATE_INTENT_WINDOW_MS = 30000;
   let recentGenerateIntentUntil = 0;
+  const blobSourceUrls = new WeakMap();
 
   function toText(value) {
     try {
@@ -56,6 +57,40 @@
     return `${input || ''}`;
   }
 
+  function isLikelyMediaResponse(url = '', contentType = '') {
+    return MEDIA_URL_RE.test(url)
+      || /^image\//i.test(contentType)
+      || /^video\//i.test(contentType)
+      || /application\/(?:octet-stream|x-mpegurl|vnd\.apple\.mpegurl)/i.test(contentType);
+  }
+
+  function rememberBlobSource(blob, sourceUrl = '') {
+    if (!blob || typeof blob !== 'object') return;
+    const normalizedSourceUrl = normalizeMediaAssetUrl(sourceUrl);
+    if (!/^https?:\/\//i.test(normalizedSourceUrl)) return;
+    try {
+      blobSourceUrls.set(blob, normalizedSourceUrl);
+    } catch {}
+  }
+
+  function postBlobSourceMapping(blobUrl = '', sourceUrl = '') {
+    const normalizedBlobUrl = `${blobUrl || ''}`.trim();
+    const normalizedSourceUrl = normalizeMediaAssetUrl(sourceUrl);
+    if (!/^blob:/i.test(normalizedBlobUrl) || !/^https?:\/\//i.test(normalizedSourceUrl)) return;
+    try {
+      window.postMessage({
+        source: SOURCE,
+        type: 'KLING_BLOB_MEDIA_SOURCE',
+        payload: {
+          blobUrl: normalizedBlobUrl,
+          sourceUrl: normalizedSourceUrl,
+          assetType: inferMediaType(normalizedSourceUrl),
+          capturedAt: Date.now(),
+        },
+      }, location.origin);
+    } catch {}
+  }
+
   function requestBodyFromFetchArgs(input, init) {
     if (init && Object.prototype.hasOwnProperty.call(init, 'body')) {
       return limitText(init.body, MAX_BODY_LENGTH);
@@ -67,6 +102,36 @@
     } catch {}
     return '';
   }
+
+  try {
+    const originalCreateObjectURL = URL?.createObjectURL;
+    if (typeof originalCreateObjectURL === 'function') {
+      URL.createObjectURL = function rmwKlingCreateObjectURL(value) {
+        const blobUrl = originalCreateObjectURL.apply(this, arguments);
+        try {
+          const sourceUrl = blobSourceUrls.get(value);
+          if (sourceUrl) postBlobSourceMapping(blobUrl, sourceUrl);
+        } catch {}
+        return blobUrl;
+      };
+    }
+  } catch {}
+
+  try {
+    const originalResponseBlob = Response?.prototype?.blob;
+    if (typeof originalResponseBlob === 'function') {
+      Response.prototype.blob = function rmwKlingResponseBlob() {
+        const responseUrl = normalizeUrl(this?.url || '');
+        const contentType = `${this?.headers?.get?.('content-type') || ''}`;
+        return originalResponseBlob.apply(this, arguments).then((blob) => {
+          if (isLikelyMediaResponse(responseUrl, contentType)) {
+            rememberBlobSource(blob, responseUrl);
+          }
+          return blob;
+        });
+      };
+    }
+  } catch {}
 
   function shouldInspect(url, requestText) {
     if (!URL_RE.test(url)) return false;
@@ -204,6 +269,32 @@
     return 'media';
   }
 
+  function inferMediaRole(value, key = '', source = '') {
+    const normalizedSource = `${source || ''}`.trim().toLowerCase();
+    const haystack = `${key || ''}\n${value || ''}`.toLowerCase();
+    if (normalizedSource === 'dom' || /^blob:/i.test(`${value || ''}`)) return 'output';
+    if (/\b(input|reference|ref|origin|source|start|end|first|last|init|mask|image_url|imageurl)\b/.test(haystack)) {
+      return 'input';
+    }
+    if (/\b(output|result|generated|final|download|resource|works?|task|video_url|videourl|cover|poster|thumbnail)\b/.test(haystack)) {
+      return 'output';
+    }
+    return 'output';
+  }
+
+  function isInternalKlingPreviewAsset(value = '', key = '') {
+    const url = `${value || ''}`.trim().toLowerCase();
+    const normalizedKey = `${key || ''}`.trim().toLowerCase();
+    if (!url) return false;
+    if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web-[^?#]*\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(url)) return true;
+    if (!/\.webp(?:[?#]|$)/i.test(url)) return false;
+    if (/\borigin\b/.test(normalizedKey)) return false;
+    if (/\bupload\b/.test(normalizedKey)) return true;
+    if (/(omni-stream-loading|stream-loading|loading)/i.test(url)) return true;
+    if (/\/kimg\//i.test(url)) return true;
+    return false;
+  }
+
   function normalizeMediaAssetUrl(value) {
     const text = `${value || ''}`.trim();
     if (!text || text.length > 4000) return '';
@@ -230,11 +321,13 @@
     const addAsset = (url, key = '', source = 'payload') => {
       const normalizedUrl = normalizeMediaAssetUrl(url);
       if (!normalizedUrl || seen.has(normalizedUrl)) return;
+      if (isInternalKlingPreviewAsset(normalizedUrl, key)) return;
       const keyLooksMedia = /(url|uri|src|download|resource|asset|image|img|video|cover|thumbnail|poster|watermark|origin|result|media)/i.test(key);
       if (!keyLooksMedia && !MEDIA_URL_RE.test(normalizedUrl) && !/^blob:/i.test(normalizedUrl)) return;
       seen.add(normalizedUrl);
       assets.push({
         assetType: inferMediaType(normalizedUrl, key),
+        assetRole: inferMediaRole(normalizedUrl, key, source),
         source,
         url: normalizedUrl,
         key: `${key || ''}`.slice(0, 120),
@@ -538,6 +631,10 @@
       const requestText = limitText(body, MAX_BODY_LENGTH);
       this.addEventListener('loadend', () => {
         try {
+          const contentType = `${this.getResponseHeader?.('content-type') || ''}`;
+          if (this.response instanceof Blob && isLikelyMediaResponse(this.__rmwKlingUrl || this.responseURL || '', contentType)) {
+            rememberBlobSource(this.response, this.__rmwKlingUrl || this.responseURL || '');
+          }
           const responseText = limitText(this.responseType && this.responseType !== 'text' ? '' : this.responseText);
           postTelemetry({
             source: 'xhr_response',

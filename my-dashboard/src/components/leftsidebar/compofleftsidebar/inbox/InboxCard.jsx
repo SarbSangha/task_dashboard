@@ -105,6 +105,8 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     ? ['chat', ...dedupedActions]
     : dedupedActions;
   const actions = isRevoked ? [] : withChat;
+  const showInlineApprove = actions.includes('approve');
+  const menuActions = showInlineApprove ? actions.filter((action) => action !== 'approve') : actions;
   const assignedNames = (task.assignedTo || []).map((x) => x.name).join(', ') || 'Unassigned';
   const description = task.description || '';
   const requestTypeLabel = (() => {
@@ -134,7 +136,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
       <button className="card-menu-btn" onClick={() => setMenuOpen((s) => !s)}>⋮</button>
       {menuOpen && (
         <div className="card-menu">
-          {actions.map((action) => (
+          {menuActions.map((action) => (
             <button
               key={action}
               onClick={() => {
@@ -146,7 +148,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
               {actionLabel(action)}
             </button>
           ))}
-          {actions.length === 0 && <span className="card-menu-empty">No actions</span>}
+          {menuActions.length === 0 && <span className="card-menu-empty">No actions</span>}
         </div>
       )}
     </div>
@@ -664,6 +666,15 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
             {expanded ? 'Hide Details' : 'Show Details'}
           </button>
           <button className="track-btn" onClick={handleTrack}>Track</button>
+          {showInlineApprove && (
+            <button
+              type="button"
+              className="track-btn approve-inline-btn"
+              onClick={() => onTaskAction(task, 'approve')}
+            >
+              {actionLabel('approve')}
+            </button>
+          )}
           {renderActionMenu()}
         </div>
       </div>

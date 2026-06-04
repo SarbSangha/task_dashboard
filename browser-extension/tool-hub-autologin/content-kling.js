@@ -188,6 +188,7 @@ const USAGE_CTX = {
   broadcastChannel    : null,
   latestWalletBalance : null,
   generatedAssetUrls  : new Set(),
+  blobSourceUrls      : new Map(),
   assetScanTimer      : null,
   assetScanStartedAt  : 0,
   assetScanSnapshot   : null,
@@ -902,6 +903,32 @@ function inferCapturedAssetType(url = '', hint = '') {
   return 'media';
 }
 
+function inferCapturedAssetRole(url = '', hint = '', source = '') {
+  const normalizedSource = `${source || ''}`.trim().toLowerCase();
+  const text = `${hint || ''}\n${url || ''}`.toLowerCase();
+  if (normalizedSource === 'dom' || /^blob:/i.test(`${url || ''}`)) return 'output';
+  if (/\b(input|reference|ref|origin|source|start|end|first|last|init|mask|image_url|imageurl)\b/.test(text)) {
+    return 'input';
+  }
+  if (/\b(output|result|generated|final|download|resource|works?|task|video_url|videourl|cover|poster|thumbnail)\b/.test(text)) {
+    return 'output';
+  }
+  return 'output';
+}
+
+function isInternalKlingPreviewAsset(url = '', hint = '') {
+  const normalizedUrl = `${url || ''}`.trim().toLowerCase();
+  const normalizedHint = `${hint || ''}`.trim().toLowerCase();
+  if (!normalizedUrl) return false;
+  if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web-[^?#]*\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(normalizedUrl)) return true;
+  if (!/\.webp(?:[?#]|$)/i.test(normalizedUrl)) return false;
+  if (/\borigin\b/.test(normalizedHint)) return false;
+  if (/\bupload\b/.test(normalizedHint)) return true;
+  if (/(omni-stream-loading|stream-loading|loading)/i.test(normalizedUrl)) return true;
+  if (/\/kimg\//i.test(normalizedUrl)) return true;
+  return false;
+}
+
 function normalizeCapturedAssetUrl(value) {
   const text = `${value || ''}`.trim();
   if (!text || text.length > 4000) return '';
@@ -914,6 +941,38 @@ function normalizeCapturedAssetUrl(value) {
     } catch {}
   }
   return '';
+}
+
+function rememberBlobSourceUrl(blobUrl = '', sourceUrl = '') {
+  const normalizedBlobUrl = `${blobUrl || ''}`.trim();
+  const normalizedSourceUrl = normalizeCapturedAssetUrl(sourceUrl);
+  if (!/^blob:/i.test(normalizedBlobUrl) || !/^https?:\/\//i.test(normalizedSourceUrl)) return;
+  USAGE_CTX.blobSourceUrls.set(normalizedBlobUrl, {
+    sourceUrl: normalizedSourceUrl,
+    capturedAt: Date.now(),
+  });
+  if (USAGE_CTX.blobSourceUrls.size > 80) {
+    const oldestKey = USAGE_CTX.blobSourceUrls.keys().next().value;
+    if (oldestKey) USAGE_CTX.blobSourceUrls.delete(oldestKey);
+  }
+}
+
+function resolveCapturedAssetUrl(value) {
+  const url = normalizeCapturedAssetUrl(value);
+  if (!/^blob:/i.test(url)) {
+    return {
+      url,
+      blobUrl: '',
+      source: '',
+    };
+  }
+  const mapped = USAGE_CTX.blobSourceUrls.get(url);
+  const sourceUrl = normalizeCapturedAssetUrl(mapped?.sourceUrl);
+  return {
+    url: /^https?:\/\//i.test(sourceUrl) ? sourceUrl : url,
+    blobUrl: url,
+    source: /^https?:\/\//i.test(sourceUrl) ? 'blob_source' : '',
+  };
 }
 
 function inferGenerateDetectionSource(generateButton) {
@@ -940,13 +999,17 @@ function normalizeCapturedMediaAssets(value, source = 'network') {
   const seen = new Set();
   for (const asset of inputAssets) {
     const rawUrl = typeof asset === 'string' ? asset : asset?.url;
-    const url = normalizeCapturedAssetUrl(rawUrl);
+    const resolvedAssetUrl = resolveCapturedAssetUrl(rawUrl);
+    const url = resolvedAssetUrl.url;
     if (!url || seen.has(url)) continue;
+    if (isInternalKlingPreviewAsset(url, asset?.key || '')) continue;
     seen.add(url);
     assets.push({
       assetType: `${asset?.assetType || inferCapturedAssetType(url, asset?.key || '')}`.trim() || 'media',
-      source: `${asset?.source || source || 'network'}`.trim(),
+      assetRole: `${asset?.assetRole || inferCapturedAssetRole(url, asset?.key || '', asset?.source || source)}`.trim() || 'output',
+      source: `${resolvedAssetUrl.source || asset?.source || source || 'network'}`.trim(),
       url,
+      blobUrl: `${asset?.blobUrl || resolvedAssetUrl.blobUrl || ''}`.slice(0, 4000),
       key: `${asset?.key || ''}`.slice(0, 120),
       width: Number(asset?.width || 0) || null,
       height: Number(asset?.height || 0) || null,
@@ -977,8 +1040,10 @@ function collectVisibleGeneratedMediaAssets() {
     if (rect.width < 96 || rect.height < 96) continue;
 
     const rawUrl = el.currentSrc || el.src || el.getAttribute?.('src') || el.getAttribute?.('poster') || mediaEl.poster || '';
-    const url = normalizeCapturedAssetUrl(rawUrl);
+    const resolvedAssetUrl = resolveCapturedAssetUrl(rawUrl);
+    const url = resolvedAssetUrl.url;
     if (!url || seen.has(url)) continue;
+    if (isInternalKlingPreviewAsset(url, mediaEl.tagName || el.tagName)) continue;
     if (/\/(logo|icon|avatar|sprite|placeholder|loading)[^/]*\.(?:png|jpe?g|webp|gif|svg)/i.test(url)) continue;
 
     seen.add(url);
@@ -986,8 +1051,10 @@ function collectVisibleGeneratedMediaAssets() {
       assetType: mediaEl.tagName?.toLowerCase() === 'video' || el.tagName?.toLowerCase() === 'video'
         ? 'video'
         : inferCapturedAssetType(url, mediaEl.tagName || el.tagName),
-      source: 'dom',
+      assetRole: 'output',
+      source: resolvedAssetUrl.source || 'dom',
       url,
+      blobUrl: resolvedAssetUrl.blobUrl,
       width: Math.round(rect.width),
       height: Math.round(rect.height),
       detectedAt: Date.now(),
@@ -1675,6 +1742,14 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.source !== window) return;
   if (event?.origin !== location.origin) return;
   if (event?.data?.source !== 'rmw-kling-network-telemetry') return;
+  if (event?.data?.type === 'KLING_BLOB_MEDIA_SOURCE') {
+    rememberBlobSourceUrl(event.data.payload?.blobUrl, event.data.payload?.sourceUrl);
+    debugUsageTelemetry('blob_media_source_captured', {
+      sourceUrl: `${event.data.payload?.sourceUrl || ''}`.slice(0, 1000),
+      assetType: event.data.payload?.assetType || '',
+    });
+    return;
+  }
   if (event?.data?.type === 'KLING_WALLET_BALANCE') {
     const balance = Number(event.data.payload?.balance);
     if (Number.isInteger(balance) && balance >= 0 && balance <= MAX_REASONABLE_KLING_CREDIT_BALANCE) {
