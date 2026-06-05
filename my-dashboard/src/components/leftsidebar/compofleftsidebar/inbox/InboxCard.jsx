@@ -156,7 +156,9 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     const diffDays = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
     const label = formatDateTimeIndia(task.deadline);
 
-    if (diffMs < 0 && !terminalStatuses.has(normalizedStatus)) {
+    const isDeadlineMissed = diffMs < 0;
+
+    if (isDeadlineMissed && !terminalStatuses.has(normalizedStatus)) {
       return {
         className: 'deadline-overdue',
         label,
@@ -165,9 +167,9 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     }
     if (terminalStatuses.has(normalizedStatus)) {
       return {
-        className: 'deadline-complete',
+        className: isDeadlineMissed ? 'deadline-closed-missed' : 'deadline-complete',
         label,
-        meta: 'Closed',
+        meta: isDeadlineMissed ? 'Closed late' : 'Closed',
       };
     }
     if (diffDays <= 1) {
