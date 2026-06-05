@@ -2979,6 +2979,20 @@ async def create_task(
             if workflow_config
             else sorted({user_id for user_id in (task_data.assigneeIds or []) if user_id})
         )
+        non_workflow_assignee_users_by_id = {}
+        if not workflow_config and initial_assignee_ids:
+            non_workflow_assignee_users = (
+                db.query(User)
+                .filter(User.id.in_(initial_assignee_ids), User.is_active == True)
+                .all()
+            )
+            non_workflow_assignee_users_by_id = {user.id: user for user in non_workflow_assignee_users}
+            missing_assignee_ids = sorted(set(initial_assignee_ids) - set(non_workflow_assignee_users_by_id))
+            if missing_assignee_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Assignees not found or inactive: {', '.join(str(user_id) for user_id in missing_assignee_ids)}",
+                )
         metadata_json = {
             "customerName": task_data.customerName,
             "suggestedAssigneeIds": initial_assignee_ids,
@@ -3106,7 +3120,7 @@ async def create_task(
             # Add selected receivers so they can see this in Inbox immediately.
             # They remain passive until approval/assignment actions progress workflow.
             for receiver_id in (task_data.assigneeIds or []):
-                receiver = db.query(User).filter(User.id == receiver_id, User.is_active == True).first()
+                receiver = non_workflow_assignee_users_by_id.get(receiver_id)
                 if not receiver:
                     continue
                 ensure_participant(db, new_task.id, receiver.id, ParticipantRole.ASSIGNEE)
@@ -4419,13 +4433,41 @@ async def assign_task_members(
         task.project_id_raw = f"{project_name}{date_part}{customer}"
         task.project_id_hex = hashlib.sha1(task.project_id_raw.encode("utf-8")).hexdigest().upper()[:16]
 
+    requested_assignee_ids = sorted({int(user_id) for user_id in (payload.assignee_ids or []) if int(user_id or 0) > 0})
+    if not requested_assignee_ids:
+        raise HTTPException(status_code=400, detail="Select at least one assignee")
+
+    assignee_users = (
+        db.query(User)
+        .filter(User.id.in_(requested_assignee_ids), User.is_active == True)
+        .all()
+    )
+    assignee_users_by_id = {user.id: user for user in assignee_users}
+    missing_assignee_ids = [user_id for user_id in requested_assignee_ids if user_id not in assignee_users_by_id]
+    department_mismatch_ids = [
+        user.id
+        for user in assignee_users
+        if task.to_department and user.department != task.to_department
+    ]
+    valid_assignee_users = [
+        assignee_users_by_id[user_id]
+        for user_id in requested_assignee_ids
+        if user_id in assignee_users_by_id and user_id not in set(department_mismatch_ids)
+    ]
+
+    if not valid_assignee_users:
+        skipped_parts = []
+        if missing_assignee_ids:
+            skipped_parts.append(f"inactive/not found: {', '.join(str(user_id) for user_id in missing_assignee_ids)}")
+        if department_mismatch_ids:
+            skipped_parts.append(f"outside task department {task.to_department}: {', '.join(str(user_id) for user_id in department_mismatch_ids)}")
+        detail = "No selected assignees can receive this task"
+        if skipped_parts:
+            detail = f"{detail} ({'; '.join(skipped_parts)})"
+        raise HTTPException(status_code=400, detail=detail)
+
     added = []
-    for user_id in payload.assignee_ids:
-        user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
-        if not user:
-            continue
-        if task.to_department and user.department != task.to_department:
-            continue
+    for user in valid_assignee_users:
 
         ensure_participant(db, task.id, user.id, ParticipantRole.ASSIGNEE)
         added.append(user.id)
@@ -4462,6 +4504,10 @@ async def assign_task_members(
         "success": True,
         "message": "Task assigned",
         "assignedUserIds": added,
+        "skippedUserIds": {
+            "inactiveOrMissing": missing_assignee_ids,
+            "departmentMismatch": department_mismatch_ids,
+        },
         "taskNumber": task.task_number,
         "projectId": task.project_id,
     }
