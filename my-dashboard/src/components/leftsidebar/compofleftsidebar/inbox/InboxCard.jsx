@@ -17,7 +17,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const isWorkflowTask = Boolean(task.workflowEnabled);
   const normalizedStatus = `${task.status || ''}`.toLowerCase();
   const normalizedWorkflowStatus = `${task.workflowStatus || ''}`.toLowerCase();
-  const isCreatorTask = task.creator?.id === task.creatorId || task.myRole === 'creator';
+  const isCreatorTask = Boolean(task.isCreator) || task.myRole === 'creator';
   const isRevoked = task.status === 'cancelled' && !!(task.revocation || `${task.workflowStage || ''}`.includes('revoked'));
   const isHeld = Boolean(task.isHeld || task.holdInfo?.active);
   const holdUntilLabel = task.holdInfo?.until ? formatDateTimeIndia(task.holdInfo.until) : '';
@@ -105,8 +105,9 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     ? ['chat', ...dedupedActions]
     : dedupedActions;
   const actions = isRevoked ? [] : withChat;
-  const showInlineApprove = actions.includes('approve');
-  const menuActions = showInlineApprove ? actions.filter((action) => action !== 'approve') : actions;
+  const visibleActions = isCreatorTask ? actions : actions.filter((action) => action !== 'approve');
+  const showInlineApprove = isCreatorTask && visibleActions.includes('approve');
+  const menuActions = showInlineApprove ? visibleActions.filter((action) => action !== 'approve') : visibleActions;
   const assignedNames = (task.assignedTo || []).map((x) => x.name).join(', ') || 'Unassigned';
   const description = task.description || '';
   const requestTypeLabel = (() => {

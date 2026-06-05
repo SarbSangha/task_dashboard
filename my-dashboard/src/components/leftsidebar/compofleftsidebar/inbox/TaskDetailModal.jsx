@@ -115,7 +115,10 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
     );
   }
 
-  const availableActions = taskDetails.availableActions || [];
+  const isCreatorTask = Boolean(taskDetails.isCreator) || taskDetails.myRole === 'creator';
+  const availableActions = isCreatorTask
+    ? (taskDetails.availableActions || [])
+    : (taskDetails.availableActions || []).filter((action) => action !== 'approve');
   const activeStageLabel = getActiveStageLabel(taskDetails);
   const normalizedStatus = `${taskDetails.status || ''}`.replace(/_/g, ' ');
   const attachments = Array.isArray(taskDetails.attachments) ? taskDetails.attachments : [];
