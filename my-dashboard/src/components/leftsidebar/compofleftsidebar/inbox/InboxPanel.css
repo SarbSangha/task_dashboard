@@ -1002,8 +1002,10 @@
 
 .submit-modal {
   width: min(94vw, 760px);
+  max-width: calc(100vw - 32px);
   max-height: 90vh;
   overflow-y: auto;
+  overflow-x: hidden;
   background: #1f2937;
   border: 1px solid #334155;
   border-radius: 12px;
@@ -1013,6 +1015,11 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.submit-modal,
+.submit-modal * {
+  box-sizing: border-box;
 }
 
 .submit-modal-subtitle {
@@ -1057,6 +1064,7 @@
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
+  min-width: 0;
 }
 
 .submit-link-row button {
@@ -1100,6 +1108,7 @@
   border-radius: 8px;
   border: 1px solid #334155;
   background: rgba(255, 255, 255, 0.04);
+  min-width: 0;
 }
 
 .submit-attachment-copy {
@@ -1123,7 +1132,8 @@
 .submit-link-item a {
   color: #93c5fd;
   text-decoration: none;
-  max-width: 500px;
+  max-width: 100%;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1131,10 +1141,35 @@
 
 .submit-link-item button,
 .submit-attachment-item button {
+  flex-shrink: 0;
   border: 1px solid #7f1d1d;
   background: rgba(239, 68, 68, 0.14);
   color: #fecaca;
   border-radius: 6px;
   padding: 4px 8px;
   cursor: pointer;
+}
+
+@media (max-width: 560px) {
+  .submit-modal {
+    width: calc(100vw - 20px);
+    max-width: calc(100vw - 20px);
+    padding: 12px;
+  }
+
+  .submit-link-row {
+    grid-template-columns: 1fr;
+  }
+
+  .submit-link-row button,
+  .submit-file-actions button,
+  .submit-modal .forward-modal-actions button {
+    width: 100%;
+  }
+
+  .submit-link-item,
+  .submit-attachment-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }

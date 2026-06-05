@@ -48,6 +48,16 @@ const getTaskSearchText = (task) => [
   ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
 ].filter(Boolean).join(' ').toLowerCase();
 
+const getTaskWorkerNames = (task) => {
+  const names = Array.isArray(task?.assignedTo)
+    ? task.assignedTo
+        .map((person) => `${person?.name || person?.email || ''}`.trim())
+        .filter(Boolean)
+    : [];
+
+  return names.join(', ') || 'Unassigned';
+};
+
 const getLocalDateKey = (value) => {
   if (!value) return '';
   const date = new Date(value);
@@ -652,6 +662,13 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                             <circle cx="12" cy="12" r="10" />
                           </svg>
                           {task.priority?.toUpperCase() || 'MEDIUM'}
+                        </span>
+                        <span className="meta-item worker-meta" title={`Worker: ${getTaskWorkerNames(task)}`}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M20 21a8 8 0 0 0-16 0" />
+                            <circle cx="12" cy="7" r="4" />
+                          </svg>
+                          {getTaskWorkerNames(task)}
                         </span>
                       </div>
                     </div>

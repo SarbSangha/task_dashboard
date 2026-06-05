@@ -14,17 +14,26 @@
   align-items: flex-start;
   justify-content: center;
   padding-top: var(--leftbar-popup-top-offset);
+  padding-left: 16px;
+  padding-right: 16px;
   z-index: 3000;
+  overflow-x: hidden;
 }
 
 .submit-modal {
   background: #1e293b;
   border-radius: 16px;
   width: 600px;
-  max-width: 90%;
+  max-width: 100%;
   max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
+
+.submit-modal * {
+  box-sizing: border-box;
 }
 
 .submit-header {
@@ -45,6 +54,7 @@
 .submit-form {
   padding: 24px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* Tracking Theme Override */
@@ -139,15 +149,21 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   padding: 8px 12px;
   background: rgba(255, 255, 255, 0.05);
   border-radius: 6px;
   margin-bottom: 6px;
+  min-width: 0;
 }
 
 .attachment-preview-item span {
   color: rgba(255, 255, 255, 0.8);
   font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .remove-btn {
@@ -170,6 +186,7 @@
   display: flex;
   gap: 12px;
   margin-top: 24px;
+  flex-wrap: wrap;
 }
 
 .submit-btn {
@@ -209,4 +226,26 @@
 
 .cancel-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.15);
+}
+
+@media (max-width: 560px) {
+  .submit-overlay {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .submit-header,
+  .submit-form {
+    padding: 16px;
+  }
+
+  .submit-header h2 {
+    font-size: 18px;
+  }
+
+  .submit-btn,
+  .cancel-btn {
+    width: 100%;
+    flex: 1 1 100%;
+  }
 }

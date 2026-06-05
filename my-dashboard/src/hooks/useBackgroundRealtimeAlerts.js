@@ -1,10 +1,26 @@
 import { useEffect, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
 import { subscribeRealtimeNotifications } from '../services/api';
+import { buildTaskPanelCacheKey, invalidateTaskPanelCache } from '../utils/taskPanelCache';
 
 const RECENT_EVENT_TTL_MS = 15000;
 const SESSION_PERMISSION_KEY = 'rmw_browser_notifications_prompted_v1';
 const ALWAYS_NOTIFY_EVENT_TYPES = new Set(['group_message', 'direct_message']);
+const TASK_EVENT_TYPES = new Set([
+  'assigned',
+  'approved',
+  'completed',
+  'forwarded',
+  'need_improvement',
+  'rejected',
+  'started',
+  'submitted',
+  'task_received',
+  'workflow_stage_assigned',
+  'workflow_stage_approved',
+  'workflow_stage_submitted',
+]);
 
 const trimText = (value, fallback = '') => `${value || fallback}`.trim();
 
@@ -27,6 +43,7 @@ const buildAlertPayload = (payload) => {
 
 export default function useBackgroundRealtimeAlerts() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const baseTitleRef = useRef('');
   const hiddenAlertCountRef = useRef(0);
   const recentEventsRef = useRef(new Map());
@@ -131,9 +148,30 @@ export default function useBackgroundRealtimeAlerts() {
       }
     };
 
+    const refreshTaskLanes = () => {
+      const userKey = user?.id ?? 'anonymous';
+      ['inbox', 'tracking', 'outbox'].forEach((lane) => {
+        queryClient.invalidateQueries({ queryKey: [lane, userKey] });
+      });
+      if (user?.id) {
+        [
+          'inbox',
+          'inbox_unread_count',
+          'tracking',
+          'outbox',
+          'outbox_badge',
+        ].forEach((panelKey) => {
+          invalidateTaskPanelCache(buildTaskPanelCacheKey(user.id, panelKey));
+        });
+      }
+    };
+
     const unsubscribe = subscribeRealtimeNotifications({
       onMessage: (payload) => {
         if (!payload?.eventType) return;
+        if (TASK_EVENT_TYPES.has(payload.eventType) || payload.taskId) {
+          refreshTaskLanes();
+        }
 
         const forceBrowserAlert = ALWAYS_NOTIFY_EVENT_TYPES.has(payload.eventType);
         const isHidden = document.visibilityState !== 'visible';
@@ -170,7 +208,7 @@ export default function useBackgroundRealtimeAlerts() {
       window.removeEventListener('focus', handleVisibleAgain);
       restoreTitle();
     };
-  }, [user]);
+  }, [queryClient, user]);
 
   useEffect(() => {
     if (!user || typeof window === 'undefined' || !('Notification' in window)) {

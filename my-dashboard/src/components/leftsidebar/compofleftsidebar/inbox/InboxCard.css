@@ -186,6 +186,54 @@
   color: #d7e2f3;
 }
 
+.card-grid .deadline-tile {
+  border-width: 1px;
+}
+
+.deadline-tile em {
+  font-style: normal;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.deadline-tile small {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: inherit;
+}
+
+.deadline-tile.deadline-overdue {
+  background: rgba(127, 29, 29, 0.42);
+  border-color: rgba(248, 113, 113, 0.78);
+  color: #fecaca;
+}
+
+.deadline-tile.deadline-today {
+  background: rgba(146, 64, 14, 0.42);
+  border-color: rgba(251, 191, 36, 0.78);
+  color: #fde68a;
+}
+
+.deadline-tile.deadline-soon {
+  background: rgba(113, 63, 18, 0.38);
+  border-color: rgba(245, 158, 11, 0.58);
+  color: #fed7aa;
+}
+
+.deadline-tile.deadline-ok,
+.deadline-tile.deadline-complete {
+  background: rgba(20, 83, 45, 0.35);
+  border-color: rgba(74, 222, 128, 0.54);
+  color: #bbf7d0;
+}
+
+.deadline-tile.deadline-none {
+  background: rgba(15, 23, 42, 0.26);
+  border-color: rgba(148, 163, 184, 0.28);
+  color: #cbd5e1;
+}
+
 .card-grid strong {
   font-size: 11px;
   letter-spacing: 0.08em;

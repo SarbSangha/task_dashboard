@@ -132,6 +132,64 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     : '';
   const displayTaskName = task.taskName || task.title || task.taskNumber || '-';
   const displayProjectName = task.projectName || task.projectId || '-';
+  const deadlineInfo = (() => {
+    if (!task.deadline) {
+      return {
+        className: 'deadline-none',
+        label: 'Not set',
+        meta: 'No deadline',
+      };
+    }
+
+    const deadlineDate = new Date(task.deadline);
+    if (Number.isNaN(deadlineDate.getTime())) {
+      return {
+        className: 'deadline-none',
+        label: formatDateTimeIndia(task.deadline) || 'Invalid date',
+        meta: 'Check date',
+      };
+    }
+
+    const terminalStatuses = new Set(['completed', 'cancelled', 'rejected']);
+    const now = Date.now();
+    const diffMs = deadlineDate.getTime() - now;
+    const diffDays = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+    const label = formatDateTimeIndia(task.deadline);
+
+    if (diffMs < 0 && !terminalStatuses.has(normalizedStatus)) {
+      return {
+        className: 'deadline-overdue',
+        label,
+        meta: 'Overdue',
+      };
+    }
+    if (terminalStatuses.has(normalizedStatus)) {
+      return {
+        className: 'deadline-complete',
+        label,
+        meta: 'Closed',
+      };
+    }
+    if (diffDays <= 1) {
+      return {
+        className: 'deadline-today',
+        label,
+        meta: diffDays <= 0 ? 'Due today' : 'Due tomorrow',
+      };
+    }
+    if (diffDays <= 3) {
+      return {
+        className: 'deadline-soon',
+        label,
+        meta: `${diffDays} days left`,
+      };
+    }
+    return {
+      className: 'deadline-ok',
+      label,
+      meta: `${diffDays} days left`,
+    };
+  })();
   const renderActionMenu = () => (
     <div className="card-menu-wrap">
       <button className="card-menu-btn" onClick={() => setMenuOpen((s) => !s)}>⋮</button>
@@ -519,6 +577,11 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         <span><strong>Chat:</strong> {task.chatCount || 0}</span>
         <span><strong>Created:</strong> {task.createdAt ? formatDateTimeIndia(task.createdAt) : '-'}</span>
         <span><strong>Updated:</strong> {task.updatedAt ? formatDateTimeIndia(task.updatedAt) : '-'}</span>
+        <span className={`deadline-tile ${deadlineInfo.className}`}>
+          <strong>Deadline:</strong>
+          <em>{deadlineInfo.label}</em>
+          <small>{deadlineInfo.meta}</small>
+        </span>
       </div>
 
       {expanded && (
