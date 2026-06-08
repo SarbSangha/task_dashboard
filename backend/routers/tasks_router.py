@@ -2065,6 +2065,10 @@ def serialize_task_with_context(
     ]
 
     if current_user:
+        current_user_has_seen = any(
+            user.id == current_user.id
+            for _view, user in (seen_by_rows or [])
+        )
         my_participation_by_task = (context or {}).get("my_participation_by_task") or {}
         my_participation = my_participation_by_task.get(task.id) if has_context else None
         if not has_context:
@@ -2074,7 +2078,7 @@ def serialize_task_with_context(
                 TaskParticipant.is_active == True,
             ).all()
             my_participation = _select_primary_participation(my_participation_rows)
-        task_dict["isRead"] = my_participation.is_read if my_participation else False
+        task_dict["isRead"] = bool((my_participation and my_participation.is_read) or current_user_has_seen)
         task_dict["myRole"] = my_participation.role.value if my_participation else "creator"
         task_dict["availableActions"] = compute_available_actions(
             task,

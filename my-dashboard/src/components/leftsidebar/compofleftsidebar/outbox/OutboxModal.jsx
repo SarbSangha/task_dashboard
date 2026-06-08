@@ -262,6 +262,13 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
     return Array.from(seen.values());
   };
 
+  const isTaskHeld = (task) => Boolean(task?.isHeld || task?.holdInfo?.active);
+
+  const isTaskRevoked = (task) => {
+    const normalizedStatus = `${task?.status || ''}`.toLowerCase();
+    return normalizedStatus === 'cancelled';
+  };
+
   const getFilteredData = () => {
     if (filterStatus === 'draft') {
       let draftData = mergeUniqueById([
@@ -286,6 +293,10 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
         data = data.filter((item) => ['pending', 'forwarded', 'assigned'].includes(`${item.status || ''}`.toLowerCase()));
       } else if (normalizedFilter === 'completed') {
         data = data.filter((item) => ['approved', 'completed'].includes(`${item.status || ''}`.toLowerCase()));
+      } else if (normalizedFilter === 'task_hold') {
+        data = data.filter(isTaskHeld);
+      } else if (normalizedFilter === 'revoked') {
+        data = data.filter(isTaskRevoked);
       } else {
         data = data.filter(item => item.status?.toLowerCase() === normalizedFilter);
       }
@@ -308,6 +319,8 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   const inProgressCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'in_progress').length;
   const submittedCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'submitted').length;
   const needsImprovementCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'need_improvement').length;
+  const taskHoldCount = nonDraftTasks.filter(isTaskHeld).length;
+  const revokedCount = nonDraftTasks.filter(isTaskRevoked).length;
   const completedCount = tasks.filter((t) => (
     ['approved', 'completed'].includes(`${t.status || ''}`.toLowerCase()) && doesTaskMatchDate(t, taskDateFilter)
   )).length;
@@ -479,6 +492,18 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
               onClick={() => setFilterStatus('draft')}
             >
               Drafts ({draftCount})
+            </button>
+            <button
+              className={`secondary-filter-btn ${filterStatus === 'task_hold' ? 'active' : ''}`}
+              onClick={() => setFilterStatus('task_hold')}
+            >
+              Task Hold ({taskHoldCount})
+            </button>
+            <button
+              className={`secondary-filter-btn ${filterStatus === 'revoked' ? 'active' : ''}`}
+              onClick={() => setFilterStatus('revoked')}
+            >
+              Revoked ({revokedCount})
             </button>
           </div>
           

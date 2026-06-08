@@ -200,6 +200,12 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       && submittedBy != null
       && String(submittedBy) === currentUserId;
     const isSelfAssignedTask = isCreatorTask && isAssignedToMe;
+    const isHeld = Boolean(task?.isHeld || task?.holdInfo?.active);
+    const isRevoked = normalizedStatus === 'cancelled'
+      && Boolean(task?.revocation || `${task?.workflowStage || ''}`.toLowerCase().includes('revoked'));
+    const seenBy = Array.isArray(task?.seenBy) ? task.seenBy : [];
+    const isSeenByMe = currentUserId !== ''
+      && seenBy.some((person) => person?.id != null && String(person.id) === currentUserId);
 
     return {
       normalizedStatus,
@@ -208,6 +214,9 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       isAssignedToMe,
       isSubmittedByMe,
       isParticipantTask: !isCreatorTask,
+      isHeld,
+      isRevoked: isRevoked || normalizedStatus === 'cancelled',
+      isSeenByMe,
     };
   }, [currentUserId]);
 
@@ -219,9 +228,12 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       isAssignedToMe,
       isSubmittedByMe,
       isParticipantTask,
+      isHeld,
+      isRevoked,
+      isSeenByMe,
     } = getTaskFilterMeta(task);
 
-    if (currentFilter === 'unread') return !(task?.isRead ?? false);
+    if (currentFilter === 'unread') return !(task?.isRead || isSeenByMe);
     if (currentFilter === 'self_assigned') return isSelfAssignedTask;
     if (currentFilter === 'work' || currentFilter === 'working') {
       return isAssignedToMe && !isSelfAssignedTask;
@@ -236,6 +248,8 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     }
     if (currentFilter === 'need_improvement') return normalizedStatus === 'need_improvement';
     if (currentFilter === 'final_result') return ['approved', 'completed'].includes(normalizedStatus);
+    if (currentFilter === 'task_hold') return isHeld;
+    if (currentFilter === 'revoked') return isRevoked;
     return true;
   }, [getTaskFilterMeta]);
 
@@ -281,9 +295,23 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
           return entry;
         }
         changed = true;
+        const seenBy = Array.isArray(entry.seenBy) ? entry.seenBy : [];
+        const hasCurrentUserSeen = user?.id != null
+          && seenBy.some((person) => person?.id != null && String(person.id) === String(user.id));
         return {
           ...entry,
           isRead: true,
+          seenBy: hasCurrentUserSeen || user?.id == null
+            ? seenBy
+            : [
+                ...seenBy,
+                {
+                  id: user.id,
+                  name: user.name || user.email || 'You',
+                  department: user.department,
+                  seenAt: new Date().toISOString(),
+                },
+              ],
         };
       });
 
@@ -1069,6 +1097,18 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
             onClick={() => setFilter('final_result')}
           >
             Completed ({getFilterCount('final_result')})
+          </button>
+          <button
+            className={`filter-btn ${filter === 'task_hold' ? 'active' : ''}`}
+            onClick={() => setFilter('task_hold')}
+          >
+            Task Hold ({getFilterCount('task_hold')})
+          </button>
+          <button
+            className={`filter-btn ${filter === 'revoked' ? 'active' : ''}`}
+            onClick={() => setFilter('revoked')}
+          >
+            Revoked ({getFilterCount('revoked')})
           </button>
         </div>
         )}
