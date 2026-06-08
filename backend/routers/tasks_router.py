@@ -40,7 +40,7 @@ from models_new import (
 from auth import verify_session_token, get_request_session_token, resolve_session_user
 from task_helpers import TaskHelpers
 from utils.cache import cache_response, invalidate_pattern
-from utils.datetime_utils import normalize_deadline_to_utc_naive, serialize_utc_datetime
+from utils.datetime_utils import normalize_deadline_to_utc_naive, normalize_to_utc_naive, serialize_utc_datetime
 from utils.edge_cache import queue_edge_cache_purge
 
 try:
@@ -535,7 +535,11 @@ def parse_deadline(deadline_str: Optional[str]) -> Optional[datetime]:
 def validate_deadline(deadline: Optional[datetime], *, created_at: Optional[datetime] = None, now: Optional[datetime] = None) -> None:
     if deadline is None:
         return
-    now = now or datetime.utcnow()
+    # Deadline inputs can arrive with timezone offsets while older database
+    # rows may be offset-naive. Normalize all comparison values before checking.
+    deadline = normalize_to_utc_naive(deadline)
+    created_at = normalize_to_utc_naive(created_at)
+    now = normalize_to_utc_naive(now or datetime.utcnow())
     if created_at and deadline < created_at:
         raise HTTPException(status_code=400, detail="Deadline cannot be before the task creation date.")
     if deadline < now - timedelta(minutes=1):

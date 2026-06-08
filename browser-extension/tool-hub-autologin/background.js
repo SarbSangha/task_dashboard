@@ -1452,11 +1452,41 @@ async function uploadCapturedMedia(message) {
   }
 
   const uploaded = Array.isArray(data.data) ? data.data[0] : null;
-  if (!uploaded?.url) {
+  if (!uploaded?.url && !uploaded?.path) {
     throw new Error('Captured media upload did not return a permanent URL.');
   }
 
-  return uploaded;
+  const apiBase = `${settings.apiBase || ''}`.replace(/\/+$/, '');
+  const openParams = new URLSearchParams();
+  if (uploaded.path) {
+    openParams.set('path', uploaded.path);
+  } else if (uploaded.url) {
+    openParams.set('url', uploaded.url);
+  }
+
+  const downloadParams = new URLSearchParams(openParams);
+  downloadParams.set('filename', uploaded.originalName || uploaded.filename || filename);
+
+  const openUrl = apiBase && openParams.toString()
+    ? `${apiBase}/api/files/open?${openParams.toString()}`
+    : '';
+  const downloadUrl = apiBase && downloadParams.toString()
+    ? `${apiBase}/api/files/download?${downloadParams.toString()}`
+    : '';
+  const storageUrl = `${uploaded.url || ''}`;
+
+  return {
+    ...uploaded,
+    rawUrl: storageUrl,
+    storageUrl,
+    openUrl,
+    downloadUrl,
+    // MediaSource uploads are private R2 objects. Use the app endpoint so the
+    // dashboard opens a fresh signed URL instead of storing an expiring blob or
+    // an unsigned R2 endpoint that fails with Authorization XML.
+    url: openUrl || storageUrl,
+    permanentUrl: openUrl || storageUrl,
+  };
 }
 
 function buildUsageEventPayload(message, activeLaunch) {

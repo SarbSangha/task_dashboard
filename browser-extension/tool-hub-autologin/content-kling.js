@@ -1090,11 +1090,17 @@ async function uploadMediaSourceVideoAsset(asset) {
   }
 
   const uploaded = response.uploaded;
+  const playableUrl = `${uploaded.permanentUrl || uploaded.openUrl || uploaded.url || ''}`;
+  const rawUrl = `${uploaded.rawUrl || uploaded.storageUrl || ''}`;
   return {
     ...asset,
     source: 'mediasource_upload',
-    url: `${uploaded.url || ''}`.slice(0, 4000),
-    permanentUrl: `${uploaded.url || ''}`.slice(0, 4000),
+    url: playableUrl.slice(0, 4000),
+    permanentUrl: playableUrl.slice(0, 4000),
+    openUrl: `${uploaded.openUrl || playableUrl || ''}`.slice(0, 4000),
+    downloadUrl: `${uploaded.downloadUrl || ''}`.slice(0, 4000),
+    rawUrl: rawUrl.slice(0, 4000),
+    storageUrl: `${uploaded.storageUrl || rawUrl || ''}`.slice(0, 4000),
     path: `${uploaded.path || ''}`.slice(0, 2048),
     filename: `${uploaded.filename || stored.fileName || ''}`.slice(0, 512),
     originalName: `${uploaded.originalName || stored.fileName || ''}`.slice(0, 512),
@@ -1105,7 +1111,10 @@ async function uploadMediaSourceVideoAsset(asset) {
       uploadedAt: Date.now(),
       storage: `${uploaded.storage || 'r2'}`.slice(0, 80),
       path: `${uploaded.path || ''}`.slice(0, 2048),
-      url: `${uploaded.url || ''}`.slice(0, 4000),
+      url: playableUrl.slice(0, 4000),
+      rawUrl: rawUrl.slice(0, 4000),
+      openUrl: `${uploaded.openUrl || playableUrl || ''}`.slice(0, 4000),
+      downloadUrl: `${uploaded.downloadUrl || ''}`.slice(0, 4000),
     },
   };
 }
@@ -1213,6 +1222,10 @@ function normalizeCapturedMediaAssets(value, source = 'network') {
       mimeType: `${asset?.mimeType || ''}`.slice(0, 120),
       mediaSourceSessionId: `${asset?.mediaSourceSessionId || ''}`.slice(0, 120),
       permanentUrl: `${asset?.permanentUrl || ''}`.slice(0, 4000),
+      openUrl: `${asset?.openUrl || ''}`.slice(0, 4000),
+      downloadUrl: `${asset?.downloadUrl || ''}`.slice(0, 4000),
+      rawUrl: `${asset?.rawUrl || ''}`.slice(0, 4000),
+      storageUrl: `${asset?.storageUrl || ''}`.slice(0, 4000),
       path: `${asset?.path || ''}`.slice(0, 2048),
       filename: `${asset?.filename || ''}`.slice(0, 512),
       originalName: `${asset?.originalName || ''}`.slice(0, 512),
@@ -1225,6 +1238,9 @@ function normalizeCapturedMediaAssets(value, source = 'network') {
           storage: `${asset.upload.storage || ''}`.slice(0, 80),
           path: `${asset.upload.path || ''}`.slice(0, 2048),
           url: `${asset.upload.url || ''}`.slice(0, 4000),
+          rawUrl: `${asset.upload.rawUrl || ''}`.slice(0, 4000),
+          openUrl: `${asset.upload.openUrl || ''}`.slice(0, 4000),
+          downloadUrl: `${asset.upload.downloadUrl || ''}`.slice(0, 4000),
           error: `${asset.upload.error || ''}`.slice(0, 500),
           failedAt: Number(asset.upload.failedAt || 0) || null,
         }
