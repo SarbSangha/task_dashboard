@@ -44,6 +44,49 @@ const createEmptyWorkflowStage = (order = 1) => ({
   assigneeIds: [],
 });
 
+const normalizeUserId = (value) => {
+  const numericValue = Number(value);
+  return Number.isInteger(numericValue) && numericValue > 0 ? numericValue : null;
+};
+
+const normalizeUserIds = (values = []) => (
+  Array.from(new Set(
+    (Array.isArray(values) ? values : [])
+      .map(normalizeUserId)
+      .filter(Boolean)
+  ))
+);
+
+const getMinimumDeadlineInputValue = () => formatDateTimeLocalInputIndia(new Date());
+
+const validateDeadlineNotInPast = (deadlineValue) => {
+  const value = `${deadlineValue || ''}`.trim();
+  if (!value) return true;
+  const selectedDate = new Date(value);
+  if (Number.isNaN(selectedDate.getTime())) return false;
+  return selectedDate.getTime() >= Date.now() - 60 * 1000;
+};
+
+const getStageAssigneeIds = (stage = {}) => normalizeUserIds([
+  ...(Array.isArray(stage.assigneeIds) ? stage.assigneeIds : []),
+  ...(Array.isArray(stage.assignees) ? stage.assignees.map((assignee) => assignee?.id) : []),
+]);
+
+const buildWorkflowSnapshot = (formData = {}) => {
+  const workflowStages = Array.isArray(formData.workflowStages) ? formData.workflowStages : [];
+  return JSON.stringify({
+    workflowEnabled: Boolean(formData.workflowEnabled),
+    finalApprovalRequired: Boolean(formData.finalApprovalRequired),
+    workflowStages: workflowStages.map((stage, index) => ({
+      order: Number(stage?.order || index + 1),
+      title: `${stage?.title || ''}`.trim(),
+      description: `${stage?.description || ''}`.trim(),
+      approvalRequired: Boolean(stage?.approvalRequired),
+      assigneeIds: getStageAssigneeIds(stage).sort((left, right) => left - right),
+    })),
+  });
+};
+
 const buildDirtySnapshot = (formData = {}) => {
   const attachments = Array.isArray(formData.attachments) ? formData.attachments : [];
   const links = Array.isArray(formData.links) ? formData.links : [];
@@ -89,9 +132,7 @@ const buildDirtySnapshot = (formData = {}) => {
       title: `${stage?.title || ''}`.trim(),
       description: `${stage?.description || ''}`.trim(),
       approvalRequired: Boolean(stage?.approvalRequired),
-      assigneeIds: (Array.isArray(stage?.assigneeIds) ? stage.assigneeIds : [])
-        .map((value) => `${value || ''}`)
-        .sort(),
+      assigneeIds: getStageAssigneeIds(stage).sort((left, right) => left - right),
     })),
   });
 };
@@ -204,6 +245,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
   const [isMaximized, setIsMaximized] = useState(false);
   const allowNavigationRef = useRef(false);
   const initialFormSnapshotRef = useRef(buildDirtySnapshot(createEmptyFormData()));
+  const initialWorkflowSnapshotRef = useRef(buildWorkflowSnapshot(createEmptyFormData()));
   const latestFormDataRef = useRef(formData);
   const currentDraftIdRef = useRef(null);
   const draftSaveInFlightRef = useRef(false);
@@ -254,8 +296,9 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     setKnownUsersById((prev) => {
       const next = { ...prev };
       users.forEach((entry) => {
-        if (!entry?.id) return;
-        next[entry.id] = entry;
+        const userId = normalizeUserId(entry?.id);
+        if (!userId) return;
+        next[userId] = { ...entry, id: userId };
       });
       return next;
     });
@@ -417,6 +460,39 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     if (!isOpen) return;
 
     if (editingTask) {
+      const selectedUserIds = Array.isArray(editingTask.selectedUserIds)
+        ? normalizeUserIds(editingTask.selectedUserIds)
+        : normalizeUserIds((editingTask.assignedTo || []).map((u) => u.id));
+      const mappedWorkflowStages = Array.isArray(editingTask.workflowStages) && editingTask.workflowStages.length > 0
+        ? editingTask.workflowStages.map((stage, index) => ({
+            order: Number(stage.order || stage.stageOrder || index + 1),
+            title: stage.title || stage.stageTitle || `Stage ${index + 1}`,
+            description: stage.description || '',
+            approvalRequired: Boolean(stage.approvalRequired),
+            assigneeIds: getStageAssigneeIds(stage),
+          }))
+        : (
+            editingTask.workflowEnabled
+              ? [{
+                  order: Number(editingTask.currentStageOrder || 1),
+                  title: editingTask.currentStageTitle || 'Current Stage',
+                  description: '',
+                  approvalRequired: Boolean(editingTask.currentStageApprovalRequired),
+                  assigneeIds: normalizeUserIds(
+                    Array.isArray(editingTask.currentStageAssigneeIds) && editingTask.currentStageAssigneeIds.length > 0
+                      ? editingTask.currentStageAssigneeIds
+                      : selectedUserIds
+                  ),
+                }]
+              : []
+          );
+      const workflowAssigneeIds = normalizeUserIds(
+        mappedWorkflowStages.flatMap((stage) => stage.assigneeIds || [])
+      );
+      const editSelectedUserIds = normalizeUserIds([
+        ...selectedUserIds,
+        ...workflowAssigneeIds,
+      ]);
       const mappedEditData = {
         projectName: editingTask.projectName || '',
         taskId: editingTask.taskId || editingTask.taskNumber || '',
@@ -427,9 +503,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         taskName: editingTask.title || '',
         reference: editingTask.reference || '',
         myDepartment: editingTask.fromDepartment || currentUserDepartment || '',
-        selectedUserIds: Array.isArray(editingTask.selectedUserIds)
-          ? editingTask.selectedUserIds
-          : (editingTask.assignedTo || []).map((u) => u.id),
+        selectedUserIds: editSelectedUserIds,
         toDepartment: normalizeDepartmentName(editingTask.toDepartment || 'Gen Ai'),
         deadline: editingTask.deadline ? formatDateTimeLocalInputIndia(editingTask.deadline) : '',
         priority: editingTask.priority
@@ -442,19 +516,19 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         links: editingTask.links || [],
         workflowEnabled: Boolean(editingTask.workflowEnabled),
         finalApprovalRequired: Boolean(editingTask.finalApprovalRequired),
-        workflowStages: Array.isArray(editingTask.workflowStages)
-          ? editingTask.workflowStages.map((stage, index) => ({
-              order: Number(stage.order || index + 1),
-              title: stage.title || `Stage ${index + 1}`,
-              description: stage.description || '',
-              approvalRequired: Boolean(stage.approvalRequired),
-              assigneeIds: Array.isArray(stage.assigneeIds) ? stage.assigneeIds : [],
-            }))
-          : [],
+        workflowStages: mappedWorkflowStages,
       };
       setFormData(mappedEditData);
       initialFormSnapshotRef.current = buildDirtySnapshot(mappedEditData);
-      rememberUsers(editingTask.assignedTo || []);
+      initialWorkflowSnapshotRef.current = buildWorkflowSnapshot(mappedEditData);
+      rememberUsers([
+        ...(Array.isArray(editingTask.assignedTo) ? editingTask.assignedTo : []),
+        ...(Array.isArray(editingTask.workflowStages)
+          ? editingTask.workflowStages.flatMap((stage) => (
+              Array.isArray(stage?.assignees) ? stage.assignees : []
+            ))
+          : []),
+      ]);
       updateCurrentDraftId(isDraftEdit ? editingTask.id : null);
       lastAutoSaveSnapshotRef.current = '';
       return;
@@ -463,6 +537,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     const emptyForm = createEmptyFormData(currentUserDepartment);
     setFormData(emptyForm);
     initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
+    initialWorkflowSnapshotRef.current = buildWorkflowSnapshot(emptyForm);
     updateCurrentDraftId(null);
     lastAutoSaveSnapshotRef.current = '';
     setProjectIdState({ status: 'idle', message: '' });
@@ -567,17 +642,31 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
 
   // NEW: Toggle user selection
   const toggleUserSelection = (userId) => {
+    const normalizedUserId = normalizeUserId(userId);
+    if (!normalizedUserId) return;
     setFormData(prev => ({
       ...prev,
-      selectedUserIds: prev.selectedUserIds.includes(userId)
-        ? prev.selectedUserIds.filter(id => id !== userId)
-        : [...prev.selectedUserIds, userId]
+      selectedUserIds: normalizeUserIds(prev.selectedUserIds).includes(normalizedUserId)
+        ? normalizeUserIds(prev.selectedUserIds).filter(id => id !== normalizedUserId)
+        : [...normalizeUserIds(prev.selectedUserIds), normalizedUserId]
     }));
   };
 
   const toggleSelfAssignment = () => {
-    if (!user?.id) return;
-    toggleUserSelection(user.id);
+    const normalizedUserId = normalizeUserId(user?.id);
+    if (!normalizedUserId) return;
+    const ownDepartment = normalizeDepartmentName(user?.department || currentUserDepartment || formData.myDepartment);
+    setFormData((prev) => {
+      const selectedUserIds = normalizeUserIds(prev.selectedUserIds);
+      const isSelected = selectedUserIds.includes(normalizedUserId);
+      return {
+        ...prev,
+        selectedUserIds: isSelected
+          ? selectedUserIds.filter((id) => id !== normalizedUserId)
+          : [...selectedUserIds, normalizedUserId],
+        toDepartment: !isSelected && ownDepartment ? ownDepartment : prev.toDepartment,
+      };
+    });
   };
 
   const setWorkflowEnabled = (enabled) => {
@@ -629,20 +718,23 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
   };
 
   const toggleStageAssignee = (stageIndex, userId) => {
+    const normalizedUserId = normalizeUserId(userId);
+    if (!normalizedUserId) return;
     setFormData((prev) => ({
       ...prev,
       workflowStages: prev.workflowStages.map((stage, index) => {
         if (index !== stageIndex) return stage;
-        const assigneeIds = stage.assigneeIds.includes(userId)
-          ? stage.assigneeIds.filter((id) => id !== userId)
-          : [...stage.assigneeIds, userId];
+        const currentAssigneeIds = normalizeUserIds(stage.assigneeIds);
+        const assigneeIds = currentAssigneeIds.includes(normalizedUserId)
+          ? currentAssigneeIds.filter((id) => id !== normalizedUserId)
+          : [...currentAssigneeIds, normalizedUserId];
         return { ...stage, assigneeIds };
       }),
     }));
   };
 
   const selectedReceivers = useMemo(
-    () => formData.selectedUserIds.map((userId) => (
+    () => normalizeUserIds(formData.selectedUserIds).map((userId) => (
       knownUsersById[userId] || {
         id: userId,
         name: `User #${userId}`,
@@ -652,10 +744,10 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     )),
     [formData.selectedUserIds, knownUsersById]
   );
-  const isSelfAssigned = Boolean(user?.id && formData.selectedUserIds.includes(user.id));
+  const isSelfAssigned = Boolean(user?.id && normalizeUserIds(formData.selectedUserIds).includes(normalizeUserId(user.id)));
 
   const workflowAssignedStageCount = useMemo(
-    () => formData.workflowStages.filter((stage) => Array.isArray(stage.assigneeIds) && stage.assigneeIds.length > 0).length,
+    () => formData.workflowStages.filter((stage) => normalizeUserIds(stage.assigneeIds).length > 0).length,
     [formData.workflowStages]
   );
 
@@ -670,7 +762,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       ...prev,
       workflowStages: prev.workflowStages.map((stage) => ({
         ...stage,
-        assigneeIds: (stage.assigneeIds || []).filter((userId) => prev.selectedUserIds.includes(userId)),
+        assigneeIds: normalizeUserIds(stage.assigneeIds).filter((userId) => normalizeUserIds(prev.selectedUserIds).includes(userId)),
       })),
     }));
   }, [formData.selectedUserIds, formData.workflowEnabled]);
@@ -705,6 +797,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     const emptyForm = createEmptyFormData(currentUserDepartment);
     setFormData(emptyForm);
     initialFormSnapshotRef.current = buildDirtySnapshot(emptyForm);
+    initialWorkflowSnapshotRef.current = buildWorkflowSnapshot(emptyForm);
     latestFormDataRef.current = emptyForm;
     updateCurrentDraftId(null);
     lastAutoSaveSnapshotRef.current = '';
@@ -769,7 +862,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         taskTag: draftFormData.taskTag || 'Audio',
         priority: (draftFormData.priority || 'medium').toLowerCase(),
         toDepartment: draftFormData.toDepartment || '',
-        selectedUserIds: draftFormData.selectedUserIds || [],
+        selectedUserIds: normalizeUserIds(draftFormData.selectedUserIds),
         deadline: draftFormData.deadline || null,
         links: Array.isArray(draftFormData.links) ? draftFormData.links : [],
         attachments: Array.isArray(draftFormData.attachments) ? draftFormData.attachments : [],
@@ -781,7 +874,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               title: `${stage.title || ''}`.trim(),
               description: `${stage.description || ''}`.trim(),
               approvalRequired: Boolean(stage.approvalRequired),
-              assigneeIds: Array.isArray(stage.assigneeIds) ? stage.assigneeIds : [],
+              assigneeIds: normalizeUserIds(stage.assigneeIds),
             }))
           : [],
       };
@@ -848,6 +941,11 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       return;
     }
 
+    if (!validateDeadlineNotInPast(formData.deadline)) {
+      showMessage('Deadline cannot be in the past. Select a future date and time.', 'error');
+      return;
+    }
+
     const normalizedWorkflowStages = formData.workflowEnabled
       ? formData.workflowStages.map((stage, index) => ({
           order: index + 1,
@@ -861,7 +959,8 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       : [];
 
     const hasWorkflowStagesForSubmit = normalizedWorkflowStages.length > 0;
-    const shouldValidateWorkflow = formData.workflowEnabled && (!isTaskEditMode || hasWorkflowStagesForSubmit);
+    const workflowChanged = buildWorkflowSnapshot(formData) !== initialWorkflowSnapshotRef.current;
+    const shouldValidateWorkflow = formData.workflowEnabled && (!isTaskEditMode || workflowChanged || hasWorkflowStagesForSubmit);
 
     if (shouldValidateWorkflow) {
       if (normalizedWorkflowStages.length === 0) {
@@ -962,6 +1061,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               : undefined
           )
         : null;
+      const shouldSendWorkflow = !isTaskEditMode || workflowChanged;
 
       const taskPayload = {
         title: formData.taskName,
@@ -977,11 +1077,11 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         priority: formData.priority.toLowerCase(),
         toDepartment: formData.toDepartment,
         deadline: formData.deadline || null,
-        assigneeIds: formData.selectedUserIds || [],
+        assigneeIds: normalizeUserIds(formData.selectedUserIds),
         reference: formData.reference || '',
         links: formData.links || [],
         attachments: finalAttachments,
-        workflow: workflowPayload,
+        ...(shouldSendWorkflow ? { workflow: workflowPayload } : {}),
       };
 
       console.log('📤 Sending task payload:', taskPayload);
@@ -1537,7 +1637,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                     ))}
                   </select>
                   <small className="assign-help-text">
-                    Switch departments to keep building one mixed receiver list. Remove anyone anytime from the selected panel.
+                    This controls the user list below. Selected receivers can come from more than one department.
                   </small>
                 </div>
               </div>
@@ -1590,9 +1690,9 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                         : 'Select a department above to browse and add available users.'}
                     </p>
                   </div>
-                  {formData.selectedUserIds.length > 0 && (
+                  {normalizeUserIds(formData.selectedUserIds).length > 0 && (
                     <span className="receiver-selection-badge">
-                      {formData.selectedUserIds.length} selected
+                      {normalizeUserIds(formData.selectedUserIds).length} selected
                     </span>
                   )}
                 </div>
@@ -1602,12 +1702,14 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                     <div className="receiver-panel-state">Loading users...</div>
                   ) : departmentUsers.length > 0 ? (
                     <div className="department-users-list">
-                      {departmentUsers.map(user => (
-                        <label key={user.id} className="user-checkbox-item">
+                      {departmentUsers.map(user => {
+                        const userId = normalizeUserId(user.id);
+                        return (
+                        <label key={userId || user.id} className="user-checkbox-item">
                           <input 
                             type="checkbox"
-                            checked={formData.selectedUserIds.includes(user.id)}
-                            onChange={() => toggleUserSelection(user.id)}
+                            checked={Boolean(userId && normalizeUserIds(formData.selectedUserIds).includes(userId))}
+                            onChange={() => toggleUserSelection(userId)}
                           />
                           <span className="user-checkbox-label">
                             <strong>{user.name}</strong>
@@ -1616,7 +1718,8 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                             </small>
                           </span>
                         </label>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="receiver-panel-state">No users found in this department.</div>
@@ -1737,7 +1840,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                                 <label key={`${stageIndex}-${receiver.id}`} className="workflow-stage-assignee-option">
                                   <input
                                     type="checkbox"
-                                    checked={stage.assigneeIds.includes(receiver.id)}
+                                    checked={normalizeUserIds(stage.assigneeIds).includes(receiver.id)}
                                     onChange={() => toggleStageAssignee(stageIndex, receiver.id)}
                                   />
                                   <span>
@@ -1782,6 +1885,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                   <input 
                     type="datetime-local" 
                     value={formData.deadline}
+                    min={getMinimumDeadlineInputValue()}
                     onChange={(e) => handleChange('deadline', e.target.value)}
                   />
                 </div>

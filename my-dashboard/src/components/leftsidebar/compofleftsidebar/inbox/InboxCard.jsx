@@ -24,8 +24,22 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const revokedBy = task.revocation?.revokedBy || task.creator?.name || 'Creator';
   const revokedAt = task.revocation?.revokedAt ? formatDateTimeIndia(task.revocation.revokedAt) : '';
   const revokedReason = task.revocation?.reason || '';
+  const startableStatuses = ['pending', 'forwarded', 'assigned', 'need_improvement'];
+  const submittableStatuses = ['pending', 'forwarded', 'assigned', 'in_progress', 'need_improvement'];
+  const approvableStatuses = ['submitted', 'under_review', 'approved'];
+  const workflowWaitingApproval =
+    approvableStatuses.includes(normalizedStatus)
+    && (normalizedWorkflowStatus === 'waiting_approval'
+    || (normalizedStatus === 'submitted' && Boolean(task.currentStageApprovalRequired))
+    || (normalizedStatus === 'approved' && Boolean(task.finalApprovalRequired) && isCreatorTask));
+  const canReviewTask = isWorkflowTask
+    ? workflowWaitingApproval
+    : approvableStatuses.includes(normalizedStatus);
 
   const baseActions = (task.availableActions || []).filter((action) => {
+    if (action === 'start') return startableStatuses.includes(normalizedStatus);
+    if (action === 'submit') return submittableStatuses.includes(normalizedStatus);
+    if (action === 'approve' || action === 'need_improvement') return canReviewTask;
     if (action !== 'edit_task') return true;
     return task.status === 'need_improvement';
   });
@@ -33,12 +47,12 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     !isWorkflowTask &&
     task.myRole === 'assignee' &&
     !isHeld &&
-    !['completed', 'cancelled', 'rejected'].includes(task.status);
+    startableStatuses.includes(normalizedStatus);
   const canShowSubmitTask =
     !isWorkflowTask &&
     task.myRole === 'assignee' &&
     !isHeld &&
-    !['completed', 'cancelled', 'rejected', 'submitted'].includes(task.status);
+    submittableStatuses.includes(normalizedStatus);
   const withStart = canShowStartTask && !baseActions.includes('start')
     ? ['start', ...baseActions]
     : baseActions;
@@ -51,11 +65,6 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     if (isHeld) return inferred;
 
     if (isWorkflowTask) {
-      const workflowWaitingApproval =
-        normalizedWorkflowStatus === 'waiting_approval'
-        || (normalizedStatus === 'submitted' && Boolean(task.currentStageApprovalRequired))
-        || (normalizedStatus === 'approved' && Boolean(task.finalApprovalRequired) && isCreatorTask);
-
       if (
         task.myRole === 'assignee'
         && ['active', 'revision_requested'].includes(normalizedWorkflowStatus)
@@ -82,7 +91,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         inferred.push('edit_task');
       }
     } else {
-      if (isCreatorTask && ['submitted', 'approved'].includes(normalizedStatus)) {
+      if (isCreatorTask && canReviewTask) {
         inferred.push('approve', 'need_improvement');
       }
       if (isCreatorTask && !terminalStatuses.includes(normalizedStatus)) {
@@ -152,8 +161,12 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
 
     const terminalStatuses = new Set(['completed', 'cancelled', 'rejected']);
     const now = Date.now();
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const deadlineDayStart = new Date(deadlineDate);
+    deadlineDayStart.setHours(0, 0, 0, 0);
     const diffMs = deadlineDate.getTime() - now;
-    const diffDays = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+    const diffDays = Math.round((deadlineDayStart.getTime() - todayStart.getTime()) / (24 * 60 * 60 * 1000));
     const label = formatDateTimeIndia(task.deadline);
 
     const isDeadlineMissed = diffMs < 0;

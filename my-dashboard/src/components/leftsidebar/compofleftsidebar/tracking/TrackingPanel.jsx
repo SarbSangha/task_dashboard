@@ -5,11 +5,12 @@ import { useSearchParams } from 'react-router-dom';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import { taskAPI } from '../../../../services/api';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
-import SubmitSection from '../inbox/SubmitSection';
+import SubmitTaskModal from '../inbox/SubmitTaskModal';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
 import { useTracking } from '../../../../hooks/useTracking';
 import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
+import { formatDateIndia } from '../../../../utils/dateTime';
 import { TrackingPanelSkeleton } from '../../../ui/TrackingPanelSkeleton';
 import './TrackingPanel.css';
 
@@ -28,6 +29,8 @@ const getActionLabel = (task, action) => {
   if (action === 'need_improvement') return isWorkflowTask(task) ? 'request revision' : 'need improvement';
   if (action === 'submit') return isWorkflowTask(task) ? 'submit stage' : 'submit';
   if (action === 'start') return isWorkflowTask(task) ? 'start stage' : 'start task';
+  if (action === 'hold_task') return 'hold task';
+  if (action === 'unhold_task') return 'unhold task';
   if (action === 'edit_task') return 'edit task';
   if (action === 'revoke_task') return 'revoke task';
   return action.replace(/_/g, ' ');
@@ -56,6 +59,69 @@ const getTaskWorkerNames = (task) => {
     : [];
 
   return names.join(', ') || 'Unassigned';
+};
+
+const getSelectionTargetName = (target) => {
+  const displayName = `${target?.name || target?.fullName || target?.username || target?.email || ''}`.trim();
+  return displayName || (target?.id != null ? `User #${target.id}` : 'Unknown user');
+};
+
+const getSelectionTargetMeta = (target) => (
+  [
+    target?.position,
+    target?.email && target.email !== target?.name ? target.email : '',
+  ].filter(Boolean).join(' | ') || 'User'
+);
+
+const formatTaskStatus = (status = '') => {
+  const normalized = `${status || ''}`.trim();
+  if (!normalized) return 'Unknown';
+  return normalized
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+};
+
+const getPriorityClassName = (priority = '') => {
+  const normalized = `${priority || 'medium'}`.trim().toLowerCase();
+  if (normalized === 'high') return 'high';
+  if (normalized === 'low') return 'low';
+  return 'medium';
+};
+
+const canStartTaskStatus = (status = '') => (
+  ['pending', 'forwarded', 'assigned', 'need_improvement'].includes(`${status || ''}`.toLowerCase())
+);
+
+const canSubmitTaskStatus = (status = '') => (
+  ['pending', 'forwarded', 'assigned', 'in_progress', 'need_improvement'].includes(`${status || ''}`.toLowerCase())
+);
+
+const canReviewTaskStatus = (status = '') => (
+  ['submitted', 'under_review', 'approved'].includes(`${status || ''}`.toLowerCase())
+);
+
+const buildHoldUntil = (dateTimeText) => {
+  const value = `${dateTimeText || ''}`.trim();
+  if (!value) return null;
+  const selectedDate = new Date(value);
+  if (Number.isNaN(selectedDate.getTime())) {
+    throw new Error('Select a valid date and time, or leave it blank for a manual hold.');
+  }
+  if (selectedDate.getTime() <= Date.now()) {
+    throw new Error('Select a future date and time, or leave it blank for a manual hold.');
+  }
+  return selectedDate.toISOString();
+};
+
+const canReviewTask = (task) => {
+  const normalizedStatus = `${task?.status || ''}`.toLowerCase();
+  if (!isWorkflowTask(task)) return canReviewTaskStatus(normalizedStatus);
+  if (!canReviewTaskStatus(normalizedStatus)) return false;
+  return (
+    `${task?.workflowStatus || ''}`.toLowerCase() === 'waiting_approval'
+    || (normalizedStatus === 'submitted' && Boolean(task?.currentStageApprovalRequired))
+    || (normalizedStatus === 'approved' && Boolean(task?.finalApprovalRequired))
+  );
 };
 
 const getLocalDateKey = (value) => {
@@ -251,7 +317,15 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
     setWorkflowOpen(true);
   }, [isOpen, routeTaskId, tasks]);
 
-  const handleSubmitComplete = async () => {
+  const submitTaskFromModal = async (task, payload) => {
+    await updateTaskStatus({
+      taskId: task.id,
+      status: 'submitted',
+      execute: () =>
+        (isWorkflowTask(task) && task.currentStageId
+          ? taskAPI.submitStage(task.id, task.currentStageId, payload)
+          : taskAPI.submitTask(task.id, payload)),
+    });
     setSubmitTask(null);
     invalidateTrackingCaches();
     await refetch();
@@ -261,6 +335,15 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
     setSelectedTask(task);
     setWorkflowOpen(true);
   };
+
+  const getVisibleTaskActions = (task) => (
+    (task.availableActions || []).filter((action) => {
+      if (action === 'start') return canStartTaskStatus(task.status);
+      if (action === 'submit') return canSubmitTaskStatus(task.status);
+      if (action === 'approve' || action === 'need_improvement') return canReviewTask(task);
+      return true;
+    })
+  );
 
   const openSelectionModal = async (task, mode) => {
     setSelectionModal({
@@ -367,6 +450,11 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
         return;
       }
       if (action === 'approve') {
+        if (!canReviewTask(task)) {
+          await showAlert('This task is not ready for approval yet.', { title: 'Approval Not Available' });
+          return;
+        }
+
         const stageLabel = getActiveStageLabel(task);
         const comments = (await showPrompt('Approval comment (optional):', {
           title: stageLabel ? `Approve ${stageLabel}` : 'Approve Task',
@@ -381,6 +469,13 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
               : taskAPI.approveTask(task.id, comments)),
         });
       } else if (action === 'start') {
+        if (!canStartTaskStatus(task.status)) {
+          await showAlert('This task is already in progress or cannot be started from its current status.', {
+            title: 'Start Not Available',
+          });
+          return;
+        }
+
         const confirmed = await showConfirm(
           isWorkflowTask(task) ? 'Start this workflow stage?' : 'Start working on this task?',
           { title: isWorkflowTask(task) ? 'Start Stage' : 'Start Task' }
@@ -392,6 +487,11 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
           execute: () => taskAPI.startTask(task.id),
         });
       } else if (action === 'need_improvement') {
+        if (!canReviewTask(task)) {
+          await showAlert('This task is not ready for review yet.', { title: 'Review Not Available' });
+          return;
+        }
+
         const stageLabel = getActiveStageLabel(task);
         const comments = (await showPrompt('Need Improvement note:', {
           title: stageLabel ? `Request Revision For ${stageLabel}` : 'Need Improvement',
@@ -428,6 +528,26 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
         });
         if (result === null) return;
         await taskAPI.editResult(task.id, result);
+      } else if (action === 'hold_task') {
+        const holdUntilText = await showPrompt(
+          'Optional auto-unhold date and time. Leave blank if you want to unhold manually:',
+          { title: 'Hold Until', defaultValue: '', inputType: 'datetime-local' }
+        );
+        if (holdUntilText === null) return;
+        const comments = (await showPrompt('Optional reason for holding this task:', {
+          title: 'Hold Reason',
+          defaultValue: '',
+        })) ?? '';
+        await taskAPI.holdTask(task.id, {
+          comments: comments.trim(),
+          hold_until: buildHoldUntil(holdUntilText),
+        });
+      } else if (action === 'unhold_task') {
+        const comments = (await showPrompt('Optional note for resuming this task:', {
+          title: 'Unhold Task',
+          defaultValue: '',
+        })) ?? '';
+        await taskAPI.unholdTask(task.id, comments.trim());
       } else if (action === 'revoke_task') {
         const confirmed = await showConfirm(
           'Revoke this task? This will mark it as revoked for receivers.',
@@ -645,29 +765,52 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
 
                     {/* Task Info */}
                     <div className="task-info">
-                      <h4 className="task-title">{task.title}</h4>
+                      <div className="task-title-row">
+                        <h4 className="task-title">{task.title}</h4>
+                        <span
+                          className={`task-status-badge status-${`${task.status || 'unknown'}`.replace(/_/g, '-')}`}
+                          style={{ '--task-status-color': getStatusColor(task.status) }}
+                        >
+                          <span className="task-status-dot" aria-hidden="true" />
+                          {formatTaskStatus(task.status)}
+                        </span>
+                      </div>
                       <p className="task-number">{task.taskNumber}</p>
                       {isWorkflowTask(task) && (
                         <p className="task-number">{getActiveStageLabel(task) || 'Workflow task'}</p>
                       )}
                       <div className="task-meta">
-                        <span className="meta-item">
+                        <span className="meta-item task-project-meta">
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
                           </svg>
                           {task.projectName || 'N/A'}
                         </span>
-                        <span className="meta-item">
+                        <span className={`meta-item task-priority-badge priority-${getPriorityClassName(task.priority)}`}>
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <circle cx="12" cy="12" r="10" />
                           </svg>
-                          {task.priority?.toUpperCase() || 'MEDIUM'}
+                          <span>Priority</span>
+                          <strong>{task.priority?.toUpperCase() || 'MEDIUM'}</strong>
                         </span>
+                        {task.deadline && (
+                          <span className="meta-item task-deadline-badge" title={`Deadline: ${formatDateIndia(task.deadline)}`}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <rect x="3" y="4" width="18" height="18" rx="2" />
+                              <path d="M16 2v4" />
+                              <path d="M8 2v4" />
+                              <path d="M3 10h18" />
+                            </svg>
+                            <span>Deadline</span>
+                            <strong>{formatDateIndia(task.deadline)}</strong>
+                          </span>
+                        )}
                         <span className="meta-item worker-meta" title={`Worker: ${getTaskWorkerNames(task)}`}>
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <path d="M20 21a8 8 0 0 0-16 0" />
                             <circle cx="12" cy="7" r="4" />
                           </svg>
+                          <span>Worker</span>
                           {getTaskWorkerNames(task)}
                         </span>
                       </div>
@@ -693,12 +836,12 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                       </button>
                       {openActionMenuId === task.id && (
                         <div className="task-action-menu">
-                          {(task.availableActions || []).map((action) => (
+                          {getVisibleTaskActions(task).map((action) => (
                             <button key={action} onClick={() => runTaskAction(task, action)}>
                               {getActionLabel(task, action)}
                             </button>
                           ))}
-                          {(!task.availableActions || task.availableActions.length === 0) && (
+                          {getVisibleTaskActions(task).length === 0 && (
                             <span className="task-action-empty">No actions</span>
                           )}
                         </div>
@@ -726,14 +869,12 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
         isOpen={!!chatTask}
         onClose={() => setChatTask(null)}
       />
-      {submitTask && (
-        <SubmitSection
-          taskId={submitTask.id}
-          task={submitTask}
-          onClose={() => setSubmitTask(null)}
-          onSubmitComplete={() => void handleSubmitComplete()}
-        />
-      )}
+      <SubmitTaskModal
+        isOpen={!!submitTask}
+        task={submitTask}
+        onClose={() => setSubmitTask(null)}
+        onSubmit={submitTaskFromModal}
+      />
 
       {selectionModal.open && (
         <div className="tracking-selection-overlay" onClick={closeSelectionModal}>
@@ -779,8 +920,9 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                           checked={selectionModal.selectedUserIds.includes(target.id)}
                           onChange={() => toggleSelectionUser(target.id)}
                         />
-                        <span>
-                          {target.name} ({target.position || 'User'})
+                        <span className="tracking-selection-user-copy">
+                          <strong>{getSelectionTargetName(target)}</strong>
+                          <small>{getSelectionTargetMeta(target)}</small>
                         </span>
                       </label>
                     ))}

@@ -8,7 +8,7 @@ from sqlalchemy import or_, and_, func, case, inspect, cast, Text as SQLText
 from sqlalchemy.exc import SQLAlchemyError
 from typing import Optional, List, Set, Dict
 from pydantic import BaseModel, Field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import asyncio
 import hashlib
 import os
@@ -532,6 +532,16 @@ def parse_deadline(deadline_str: Optional[str]) -> Optional[datetime]:
     return None
 
 
+def validate_deadline(deadline: Optional[datetime], *, created_at: Optional[datetime] = None, now: Optional[datetime] = None) -> None:
+    if deadline is None:
+        return
+    now = now or datetime.utcnow()
+    if created_at and deadline < created_at:
+        raise HTTPException(status_code=400, detail="Deadline cannot be before the task creation date.")
+    if deadline < now - timedelta(minutes=1):
+        raise HTTPException(status_code=400, detail="Deadline cannot be in the past.")
+
+
 def payload_field_was_set(payload: BaseModel, field_name: str) -> bool:
     fields_set = getattr(payload, "model_fields_set", None)
     if fields_set is None:
@@ -598,23 +608,44 @@ def has_any_role(user: User, allowed: Set[str]) -> bool:
     return len(role_set(user).intersection(allowed)) > 0
 
 
+APPROVABLE_TASK_STATUSES = {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW, TaskStatus.APPROVED}
+
+
+def task_is_ready_for_approval(task: Task) -> bool:
+    workflow_meta = dict(task.metadata_json or {})
+    if _is_workflow_task(task):
+        if _workflow_submission_needs_repair(task):
+            return True
+        if task.status not in APPROVABLE_TASK_STATUSES:
+            return False
+        return (
+            (task.workflow_status or "").strip().lower() == TaskWorkflowStatus.WAITING_APPROVAL.value
+            or bool(workflow_meta.get(WORKFLOW_FINAL_PENDING_META_KEY))
+        )
+    return task.status in APPROVABLE_TASK_STATUSES
+
+
 def can_approve(user: User, task: Task) -> bool:
+    if not task_is_ready_for_approval(task):
+        return False
+
     roles = role_set(user)
     workflow_meta = dict(task.metadata_json or {})
     workflow_waiting_approval = _is_workflow_task(task) and (
         (task.workflow_status or "").strip().lower() == TaskWorkflowStatus.WAITING_APPROVAL.value
         or bool(workflow_meta.get(WORKFLOW_FINAL_PENDING_META_KEY))
+        or _workflow_submission_needs_repair(task)
     )
     if "super_admin" in roles:
         return True
     if user.id == task.creator_id and (
         workflow_waiting_approval
-        or task.status in {TaskStatus.APPROVED, TaskStatus.SUBMITTED, TaskStatus.NEED_IMPROVEMENT}
+        or task.status in APPROVABLE_TASK_STATUSES
     ):
         return True
-    if "spoc" in roles and user.department == task.to_department:
+    if "spoc" in roles and user.department == task.to_department and task.status in APPROVABLE_TASK_STATUSES:
         return True
-    if "hod" in roles:
+    if "hod" in roles and task.status in APPROVABLE_TASK_STATUSES:
         return True
     return False
 
@@ -1162,6 +1193,40 @@ def _serialize_task_stage(
     }
 
 
+def _serialize_task_workflow_stages_for_edit(task: Task) -> List[dict]:
+    stages = sorted(
+        [stage for stage in (task.stages or []) if stage],
+        key=lambda stage: (stage.stage_order or 0, stage.id or 0),
+    )
+    return [
+        {
+            "id": stage.id,
+            "order": stage.stage_order,
+            "title": stage.title,
+            "description": stage.description,
+            "approvalRequired": bool(stage.approval_required),
+            "status": stage.status,
+            "assigneeIds": [
+                assignee.user_id
+                for assignee in (stage.assignees or [])
+                if assignee.is_active and assignee.role == WORKFLOW_ASSIGNEE_ROLE
+            ],
+            "assignees": [
+                {
+                    "id": assignee.user_id,
+                    "name": assignee.user.name if assignee.user else "Unknown",
+                    "department": assignee.user.department if assignee.user else None,
+                    "role": assignee.role,
+                    "isPrimary": bool(assignee.is_primary),
+                }
+                for assignee in (stage.assignees or [])
+                if assignee.is_active and assignee.role == WORKFLOW_ASSIGNEE_ROLE
+            ],
+        }
+        for stage in stages
+    ]
+
+
 def get_current_user_from_session(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
@@ -1501,13 +1566,13 @@ def compute_available_actions(
         actions.append("hold_task")
 
     if not is_held and has_any_role(user, {"hod", "super_admin"}):
-        if task.status in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.NEED_IMPROVEMENT, TaskStatus.SUBMITTED}:
+        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW, TaskStatus.APPROVED}:
             actions.extend(["approve", "need_improvement", "forward"])
         if can_assign(user, task):
             actions.append("assign")
 
     if not is_held and "spoc" in roles and user.department == task.to_department:
-        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW, TaskStatus.NEED_IMPROVEMENT}:
+        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW, TaskStatus.APPROVED}:
             actions.extend(["approve", "need_improvement", "forward"])
 
     if not is_held and is_assignee:
@@ -1896,6 +1961,7 @@ def serialize_task_with_context(
     task_dict["currentStageAssigneeIds"] = task.current_assignee_ids_json or []
     task_dict["currentStageApprovalRequired"] = bool(meta.get(WORKFLOW_SUMMARY_APPROVAL_META_KEY))
     task_dict["currentStageAssigneeNames"] = meta.get(WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY, [])
+    task_dict["workflowStages"] = _serialize_task_workflow_stages_for_edit(task) if _is_workflow_task(task) else []
     creators = (context or {}).get("creators") or {}
     creator = creators.get(task.creator_id)
     if creator is None and "creator" not in inspect(task).unloaded:
@@ -2926,7 +2992,11 @@ async def create_task(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
+        now = datetime.utcnow()
         deadline = parse_deadline(task_data.deadline)
+        if task_data.deadline and deadline is None:
+            raise HTTPException(status_code=400, detail="Invalid deadline date.")
+        validate_deadline(deadline, created_at=now, now=now)
         workflow_config = (
             task_data.workflow
             if task_data.workflow and task_data.workflow.enabled and task_data.workflow.stages
@@ -3045,8 +3115,8 @@ async def create_task(
             task_edit_locked=False,
             result_edit_locked=True,
             metadata_json=metadata_json,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=now,
+            updated_at=now,
         )
 
         db.add(new_task)
@@ -4355,7 +4425,8 @@ async def get_forward_targets(
         "users": [
             {
                 "id": u.id,
-                "name": u.name,
+                "name": (u.name or u.email or f"User #{u.id}"),
+                "email": u.email,
                 "department": u.department,
                 "position": u.position,
                 "roles": sorted(list(role_set(u))),
@@ -5322,7 +5393,11 @@ async def edit_task_details(
     if "toDepartment" in update_fields:
         task.to_department = payload.toDepartment
     if "deadline" in update_fields:
-        task.deadline = parse_deadline(payload.deadline)
+        next_deadline = parse_deadline(payload.deadline)
+        if payload.deadline and next_deadline is None:
+            raise HTTPException(status_code=400, detail="Invalid deadline date.")
+        validate_deadline(next_deadline, created_at=task.created_at, now=datetime.utcnow())
+        task.deadline = next_deadline
     if "reference" in update_fields:
         meta["reference"] = (payload.reference or "").strip() or None
     if "links" in update_fields:

@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import './Outbox.css';
 import OutboxTaskCard from './OutboxTaskCard';
 
-const FILTERS = ['All Dispatched', 'Awaiting Acceptance', 'Needs Reimprovement', 'Drafts'];
+const FILTERS = ['All Dispatched', 'In Pending', 'Needs Reimprovement', 'Drafts'];
 
 const mockOutboxTasks = [
   {

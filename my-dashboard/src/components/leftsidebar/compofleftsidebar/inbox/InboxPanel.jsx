@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import InboxCard from './InboxCard';
+import SubmitTaskModal from './SubmitTaskModal';
 import TaskWorkflow from '../../../taskWorkflow/TaskWorkflow';
 import TaskChatPanel from '../messagesystem/TaskChatPanel';
 import { fileAPI, isRequestCanceled, taskAPI, subscribeRealtimeNotifications } from '../../../../services/api';
@@ -70,6 +71,25 @@ const doesTaskMatchDate = (task, selectedDate) => {
   ].some((value) => getLocalDateKey(value) === selectedDate);
 };
 
+const STARTABLE_TASK_STATUSES = new Set(['pending', 'forwarded', 'assigned', 'need_improvement']);
+
+const canStartTaskFromStatus = (status = '') => (
+  STARTABLE_TASK_STATUSES.has(`${status || ''}`.toLowerCase())
+);
+
+const getTargetDisplayName = (target) => {
+  const displayName = `${target?.name || target?.fullName || target?.username || target?.email || ''}`.trim();
+  return displayName || (target?.id != null ? `User #${target.id}` : 'Unknown user');
+};
+
+const getTargetMetaLabel = (target) => (
+  [
+    target?.department,
+    target?.position,
+    target?.email,
+  ].filter(Boolean).join(' | ') || 'User'
+);
+
 const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange, onActivate }) => {
   const { showAlert, showPrompt } = useCustomDialogs();
   const { user } = useAuth();
@@ -87,6 +107,18 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     task: null,
     targets: [],
     searchQuery: '',
+    selectedUserIds: [],
+    comments: '',
+    loading: false,
+    submitting: false,
+    error: ''
+  });
+  const [assignModal, setAssignModal] = useState({
+    open: false,
+    task: null,
+    targets: [],
+    departments: [],
+    selectedDepartment: '',
     selectedUserIds: [],
     comments: '',
     loading: false,
@@ -387,6 +419,58 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     });
   };
 
+  const openAssignModal = async (task) => {
+    setAssignModal({
+      open: true,
+      task,
+      targets: [],
+      departments: [],
+      selectedDepartment: '',
+      selectedUserIds: [],
+      comments: '',
+      loading: true,
+      submitting: false,
+      error: ''
+    });
+
+    try {
+      const response = await taskAPI.getForwardTargets(task.id);
+      const targets = response?.users || [];
+      const departments = Array.from(
+        new Set(targets.map((target) => (target.department || '').trim()).filter(Boolean))
+      ).sort((a, b) => a.localeCompare(b));
+
+      setAssignModal((prev) => ({
+        ...prev,
+        targets,
+        departments,
+        selectedDepartment: departments[0] || '',
+        loading: false,
+      }));
+    } catch (error) {
+      setAssignModal((prev) => ({
+        ...prev,
+        loading: false,
+        error: error?.response?.data?.detail || 'Failed to load departments/users',
+      }));
+    }
+  };
+
+  const closeAssignModal = () => {
+    setAssignModal({
+      open: false,
+      task: null,
+      targets: [],
+      departments: [],
+      selectedDepartment: '',
+      selectedUserIds: [],
+      comments: '',
+      loading: false,
+      submitting: false,
+      error: ''
+    });
+  };
+
   const openSubmitModal = (task) => {
     setSubmitModal({
       open: true,
@@ -651,7 +735,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
   const filteredForwardTargets = (forwardModal.targets || []).filter((target) => {
     const search = (forwardModal.searchQuery || '').trim().toLowerCase();
     if (!search) return true;
-    const haystack = `${target.name || ''} ${target.department || ''} ${target.position || ''}`.toLowerCase();
+    const haystack = `${getTargetDisplayName(target)} ${getTargetMetaLabel(target)}`.toLowerCase();
     return haystack.includes(search);
   });
   const selectedForwardTargets = (forwardModal.targets || []).filter((target) =>
@@ -672,6 +756,42 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     });
   };
 
+  const toggleAssignRecipient = (targetId) => {
+    const normalizedId = String(targetId);
+    setAssignModal((prev) => ({
+      ...prev,
+      selectedUserIds: prev.selectedUserIds.includes(normalizedId)
+        ? prev.selectedUserIds.filter((id) => id !== normalizedId)
+        : [...prev.selectedUserIds, normalizedId],
+    }));
+  };
+
+  const submitAssignTask = async () => {
+    if (!assignModal.task) return;
+    if (assignModal.selectedUserIds.length === 0) {
+      setAssignModal((prev) => ({ ...prev, error: 'Select at least one member.' }));
+      return;
+    }
+
+    setAssignModal((prev) => ({ ...prev, submitting: true, error: '' }));
+    try {
+      const userIds = assignModal.selectedUserIds.map((id) => Number(id)).filter(Boolean);
+      await taskAPI.assignTaskMembers(
+        assignModal.task.id,
+        userIds,
+        assignModal.comments.trim() || 'Assigned from inbox'
+      );
+      closeAssignModal();
+      await refreshTaskQueries();
+    } catch (error) {
+      setAssignModal((prev) => ({
+        ...prev,
+        submitting: false,
+        error: error?.response?.data?.detail || error?.message || 'Assign failed',
+      }));
+    }
+  };
+
   const runTaskAction = async (task, action) => {
     try {
       void markTaskSeen(task);
@@ -690,6 +810,13 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
               : taskAPI.approveTask(task.id, comments)),
         });
       } else if (action === 'start') {
+        if (!canStartTaskFromStatus(task.status)) {
+          await showAlert('This task is already in progress or cannot be started from its current status.', {
+            title: 'Start Not Available',
+          });
+          return;
+        }
+
         try {
           await updateTaskStatus({
             taskId: task.id,
@@ -698,11 +825,16 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
           });
         } catch (error) {
           console.warn('Start task API failed:', error);
+          await showAlert(error?.response?.data?.detail || error?.message || 'Unable to start this task.', {
+            title: 'Start Failed',
+          });
+          return;
         }
+
         if (typeof onStartTaskToWorkspace === 'function') {
           onStartTaskToWorkspace({ ...task, status: 'in_progress' });
         }
-        // Move to Tools immediately after trying to persist status change.
+        // Move to Tools only after the backend accepts the start transition.
         return;
       } else if (action === 'need_improvement') {
         const stageLabel = getActiveStageLabel(task);
@@ -726,13 +858,8 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         openSubmitModal(task);
         return;
       } else if (action === 'assign') {
-        const idsRaw = (await showPrompt('Enter assignee user IDs (comma-separated):', {
-          title: 'Assign Members',
-          defaultValue: '',
-        })) ?? '';
-        if (!idsRaw.trim()) return;
-        const ids = idsRaw.split(',').map((x) => Number(x.trim())).filter(Boolean);
-        await taskAPI.assignTaskMembers(task.id, ids, 'Assigned from inbox');
+        await openAssignModal(task);
+        return;
       } else if (action === 'forward') {
         await openForwardModal(task);
         return;
@@ -1023,9 +1150,9 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
                       {selectedForwardTargets.map((target) => (
                         <div key={target.id} className="forward-modal-target-card active">
                           <div className="forward-modal-target-copy">
-                            <strong>{target.name}</strong>
+                            <strong>{getTargetDisplayName(target)}</strong>
                             <span>
-                              {[target.department, target.position].filter(Boolean).join(' | ') || 'User'}
+                              {getTargetMetaLabel(target)}
                             </span>
                           </div>
                           <button
@@ -1054,10 +1181,10 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
                             key={target.id}
                             type="button"
                             className={`forward-modal-match-chip ${isActive ? 'active' : ''}`}
-                            onClick={() => toggleForwardRecipient(target.id, target.name || '')}
+                            onClick={() => toggleForwardRecipient(target.id, getTargetDisplayName(target))}
                           >
-                            <strong>{target.name}</strong>
-                            <span>{[target.department, target.position].filter(Boolean).join(' | ') || 'User'}</span>
+                            <strong>{getTargetDisplayName(target)}</strong>
+                            <span>{getTargetMetaLabel(target)}</span>
                             <em>{isActive ? 'Selected' : 'Add member'}</em>
                           </button>
                         );
@@ -1103,144 +1230,114 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         </div>
       )}
 
-      {submitModal.open && (
-        <div className="forward-modal-overlay" onClick={submitModal.submitting ? undefined : closeSubmitModal}>
-          <div className="submit-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>{isWorkflowTask(submitModal.task) ? 'Submit Stage Result' : 'Submit Task Result'}</h3>
-            <p className="submit-modal-subtitle">{submitModal.task?.title}</p>
-
-            <div className="submit-task-info">
-              <p><strong>Task ID:</strong> {submitModal.task?.taskNumber || '-'}</p>
-              <p><strong>Project ID:</strong> {submitModal.task?.projectId || '-'}</p>
-              <p><strong>Creator:</strong> {submitModal.task?.creator?.name || 'Unknown'}</p>
-              {isWorkflowTask(submitModal.task) && (
-                <p><strong>Active Stage:</strong> {getActiveStageLabel(submitModal.task) || 'Current stage'}</p>
-              )}
+      {assignModal.open && (
+        <div className="forward-modal-overlay" onClick={closeAssignModal}>
+          <div className="forward-modal inbox-assign-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="forward-modal-header">
+              <div>
+                <h3>Assign Members</h3>
+                <p className="forward-modal-subtitle">
+                  {assignModal.task?.title || 'Choose who should work on this task.'}
+                </p>
+              </div>
             </div>
 
-            <label htmlFor="submit-result-text">
-              {isWorkflowTask(submitModal.task) ? 'Stage Output Details' : 'Result Details'}
-            </label>
-            <textarea
-              id="submit-result-text"
-              rows={4}
-              value={submitModal.resultText}
-              onChange={(e) => setSubmitModal((prev) => ({ ...prev, resultText: e.target.value }))}
-              placeholder={
-                isWorkflowTask(submitModal.task)
-                  ? 'Summarize what this stage completed, what the next stage should use, and any important handoff notes...'
-                  : 'Add result summary, steps completed, and outcome...'
-              }
-            />
-
-            <label htmlFor="submit-result-notes">
-              {isWorkflowTask(submitModal.task) ? 'Handoff Note (optional)' : 'Submission Note (optional)'}
-            </label>
-            <textarea
-              id="submit-result-notes"
-              rows={2}
-              value={submitModal.comments}
-              onChange={(e) => setSubmitModal((prev) => ({ ...prev, comments: e.target.value }))}
-              placeholder="Optional note for reviewer..."
-            />
-
-            <label htmlFor="submit-link-input">Result Links</label>
-            <div className="submit-link-row">
-              <input
-                id="submit-link-input"
-                type="text"
-                value={submitModal.linkInput}
-                onChange={(e) => setSubmitModal((prev) => ({ ...prev, linkInput: e.target.value }))}
-                placeholder="https://example.com/file-or-resource"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addSubmitLink();
+            {assignModal.loading ? (
+              <p className="forward-modal-loading">Loading departments and members...</p>
+            ) : (
+              <div className="inbox-assign-body">
+                <label htmlFor="inbox-assign-department">Department</label>
+                <select
+                  id="inbox-assign-department"
+                  value={assignModal.selectedDepartment}
+                  onChange={(event) =>
+                    setAssignModal((prev) => ({
+                      ...prev,
+                      selectedDepartment: event.target.value,
+                      selectedUserIds: [],
+                    }))
                   }
-                }}
-              />
-              <button type="button" onClick={addSubmitLink}>Add Link</button>
-            </div>
-            {submitModal.links.length > 0 && (
-              <div className="submit-link-list">
-                {submitModal.links.map((link, idx) => (
-                  <div key={`${link}-${idx}`} className="submit-link-item">
-                    <a href={link} target="_blank" rel="noreferrer">{link}</a>
-                    <button type="button" onClick={() => removeSubmitLink(idx)}>Remove</button>
-                  </div>
-                ))}
+                >
+                  <option value="">Choose department...</option>
+                  {assignModal.departments.map((dept) => (
+                    <option key={dept} value={dept}>{dept}</option>
+                  ))}
+                </select>
+
+                <label>Members</label>
+                <div className="inbox-assign-user-list">
+                  {assignModal.targets
+                    .filter((target) => (
+                      assignModal.selectedDepartment
+                      && (target.department || '') === assignModal.selectedDepartment
+                    ))
+                    .map((target) => {
+                      const targetId = String(target.id);
+                      return (
+                        <label key={target.id} className="inbox-assign-user-item">
+                          <input
+                            type="checkbox"
+                            checked={assignModal.selectedUserIds.includes(targetId)}
+                            onChange={() => toggleAssignRecipient(target.id)}
+                          />
+                          <span>
+                            <strong>{getTargetDisplayName(target)}</strong>
+                            <small>{getTargetMetaLabel(target)}</small>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  {assignModal.selectedDepartment &&
+                    assignModal.targets.filter((target) => (target.department || '') === assignModal.selectedDepartment).length === 0 && (
+                      <p className="forward-modal-loading">No members found in selected department.</p>
+                    )}
+                </div>
+
+                <label htmlFor="inbox-assign-comments">Note (optional)</label>
+                <textarea
+                  id="inbox-assign-comments"
+                  rows={3}
+                  value={assignModal.comments}
+                  onChange={(event) =>
+                    setAssignModal((prev) => ({ ...prev, comments: event.target.value }))
+                  }
+                  placeholder="Add assignment note..."
+                />
+
+                {assignModal.error && <p className="forward-modal-error">{assignModal.error}</p>}
+
+                <div className="forward-modal-actions">
+                  <button type="button" onClick={closeAssignModal} disabled={assignModal.submitting}>Cancel</button>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={assignModal.selectedUserIds.length === 0 || assignModal.submitting}
+                    onClick={submitAssignTask}
+                  >
+                    {assignModal.submitting ? 'Assigning...' : 'Assign'}
+                  </button>
+                </div>
               </div>
             )}
-
-            <label>Attach Files Or Folder (PDF, video, audio, docs)</label>
-            <div className="submit-file-actions">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  openSubmitPicker('files');
-                }}
-                disabled={submitModal.submitting}
-              >
-                Choose Files
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  openSubmitPicker('folder');
-                }}
-                disabled={submitModal.submitting}
-              >
-                Choose Folder
-              </button>
-            </div>
-            {submitModal.attachments.length > 0 && (
-              <div className="submit-attachment-list">
-                {submitModal.attachments.map((file, idx) => {
-                  const attachmentKey = getSubmitAttachmentKey(file);
-                  const uploadStatus = submitModal.uploadStatus?.[attachmentKey] || (submitModal.submitting ? 'queued' : 'pending');
-                  const uploadProgress = submitModal.uploadProgress?.[attachmentKey] || 0;
-                  const uploadLabel = uploadStatus === 'uploading'
-                    ? `Uploading ${uploadProgress}%`
-                    : uploadStatus === 'uploaded'
-                      ? 'Uploaded'
-                      : uploadStatus === 'queued'
-                        ? 'Queued'
-                        : 'Ready';
-
-                  return (
-                  <div key={attachmentKey} className="submit-attachment-item">
-                    <div className="submit-attachment-copy">
-                      <span>{getAttachmentDisplayName(file)} ({Math.max(1, Math.round(file.size / 1024))} KB)</span>
-                      <small>{uploadLabel}</small>
-                    </div>
-                    <button type="button" onClick={() => removeSubmitAttachment(idx)}>
-                      {submitModal.submitting ? (uploadStatus === 'uploading' ? 'Cancel Upload' : 'Cancel File') : 'Remove'}
-                    </button>
-                  </div>
-                )})}
-              </div>
-            )}
-
-            {submitModal.error && <p className="forward-modal-error">{submitModal.error}</p>}
-
-            <div className="forward-modal-actions">
-              <button type="button" onClick={closeSubmitModal} disabled={submitModal.submitting}>Cancel</button>
-              <button
-                type="button"
-                className="primary"
-                disabled={submitModal.submitting}
-                onClick={submitTaskFromModal}
-              >
-                {submitModal.submitting ? 'Submitting...' : (isWorkflowTask(submitModal.task) ? 'Submit Stage' : 'Submit Result')}
-              </button>
-            </div>
           </div>
         </div>
       )}
+
+      <SubmitTaskModal
+        isOpen={submitModal.open}
+        task={submitModal.task}
+        onClose={closeSubmitModal}
+        onSubmit={(task, payload) =>
+          updateTaskStatus({
+            taskId: task.id,
+            status: 'submitted',
+            execute: () =>
+              (isWorkflowTask(task) && task.currentStageId
+                ? taskAPI.submitStage(task.id, task.currentStageId, payload)
+                : taskAPI.submitTask(task.id, payload)),
+          })
+        }
+      />
     </>
   );
 };

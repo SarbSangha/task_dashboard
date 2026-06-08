@@ -569,11 +569,11 @@ const isInternalKlingPreviewAsset = (asset) => {
   const key = `${asset?.key || ''}`.trim().toLowerCase();
   if (!url) return false;
   if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web-[^?#]*\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(url)) return true;
+  if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
   if (!/\.webp(?:[?#]|$)/i.test(url)) return false;
   if (/\borigin\b/.test(key)) return false;
   if (/\bupload\b/.test(key)) return false;
   if (/(omni-stream-loading|stream-loading|loading)/i.test(url)) return true;
-  if (/\/kimg\//i.test(url)) return true;
   return false;
 };
 

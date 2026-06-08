@@ -17,6 +17,22 @@ const getActiveStageLabel = (task) => {
   return title;
 };
 
+const STARTABLE_TASK_STATUSES = new Set(['pending', 'forwarded', 'assigned', 'need_improvement']);
+const SUBMITTABLE_TASK_STATUSES = new Set(['pending', 'forwarded', 'assigned', 'in_progress', 'need_improvement']);
+const REVIEWABLE_TASK_STATUSES = new Set(['submitted', 'under_review', 'approved']);
+
+const canStartTaskFromStatus = (status = '') => (
+  STARTABLE_TASK_STATUSES.has(`${status || ''}`.toLowerCase())
+);
+
+const canSubmitTaskFromStatus = (status = '') => (
+  SUBMITTABLE_TASK_STATUSES.has(`${status || ''}`.toLowerCase())
+);
+
+const canReviewTaskFromStatus = (status = '') => (
+  REVIEWABLE_TASK_STATUSES.has(`${status || ''}`.toLowerCase())
+);
+
 const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
   const [showSubmitSection, setShowSubmitSection] = useState(false);
@@ -26,6 +42,13 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const taskDetails = task || null;
 
   const handleStartWork = async () => {
+    if (!canStartTaskFromStatus(taskDetails?.status)) {
+      await showAlert('This task is already in progress or cannot be started from its current status.', {
+        title: 'Start Not Available',
+      });
+      return;
+    }
+
     const confirmed = await showConfirm('Start working on this task?', { title: 'Start Work' });
     if (!confirmed) return;
 
@@ -44,6 +67,11 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   };
 
   const handleApprove = async () => {
+    if (!canReviewTask) {
+      await showAlert('This task is not ready for approval yet.', { title: 'Approval Not Available' });
+      return;
+    }
+
     const stageLabel = getActiveStageLabel(task);
     const comments = await showPrompt('Add approval comments (optional):', {
       title: stageLabel ? `Approve ${stageLabel}` : 'Approve Task',
@@ -70,6 +98,11 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   };
 
   const handleReject = async () => {
+    if (!canReviewTask) {
+      await showAlert('This task is not ready for review yet.', { title: 'Review Not Available' });
+      return;
+    }
+
     const stageLabel = getActiveStageLabel(task);
     const reason = await showPrompt('Enter revision reason:', {
       title: stageLabel ? `Request Revision For ${stageLabel}` : 'Reject Task',
@@ -116,9 +149,24 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   }
 
   const isCreatorTask = Boolean(taskDetails.isCreator) || taskDetails.myRole === 'creator';
+  const normalizedTaskStatus = `${taskDetails.status || ''}`.toLowerCase();
+  const canStartFromStatus = canStartTaskFromStatus(normalizedTaskStatus);
+  const canSubmitFromStatus = canSubmitTaskFromStatus(normalizedTaskStatus);
+  const workflowWaitingApproval =
+    canReviewTaskFromStatus(normalizedTaskStatus)
+    && (`${taskDetails.workflowStatus || ''}`.toLowerCase() === 'waiting_approval'
+    || (normalizedTaskStatus === 'submitted' && Boolean(taskDetails.currentStageApprovalRequired))
+    || (normalizedTaskStatus === 'approved' && Boolean(taskDetails.finalApprovalRequired) && isCreatorTask));
+  const canReviewTask = isWorkflowTask(taskDetails)
+    ? workflowWaitingApproval
+    : canReviewTaskFromStatus(normalizedTaskStatus);
   const availableActions = isCreatorTask
     ? (taskDetails.availableActions || [])
     : (taskDetails.availableActions || []).filter((action) => action !== 'approve');
+  const visibleActions = availableActions.filter((action) => {
+    if (action === 'approve' || action === 'need_improvement' || action === 'reject') return canReviewTask;
+    return true;
+  });
   const activeStageLabel = getActiveStageLabel(taskDetails);
   const normalizedStatus = `${taskDetails.status || ''}`.replace(/_/g, ' ');
   const attachments = Array.isArray(taskDetails.attachments) ? taskDetails.attachments : [];
@@ -231,7 +279,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
         </div>
 
         <div className="modal-footer">
-          {(availableActions.includes('start') || availableActions.includes('start_work')) && (
+          {canStartFromStatus && (visibleActions.includes('start') || visibleActions.includes('start_work')) && (
             <button
               className="action-btn primary"
               onClick={handleStartWork}
@@ -241,7 +289,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
             </button>
           )}
 
-          {availableActions.includes('submit') && (
+          {canSubmitFromStatus && visibleActions.includes('submit') && (
             <button
               className="action-btn success"
               onClick={() => setShowSubmitSection(true)}
@@ -251,7 +299,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
             </button>
           )}
 
-          {availableActions.includes('approve') && (
+          {visibleActions.includes('approve') && (
             <button
               className="action-btn success"
               onClick={handleApprove}
@@ -261,7 +309,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
             </button>
           )}
 
-          {(availableActions.includes('need_improvement') || availableActions.includes('reject')) && (
+          {(visibleActions.includes('need_improvement') || visibleActions.includes('reject')) && (
             <button
               className="action-btn danger"
               onClick={handleReject}

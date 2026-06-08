@@ -1411,6 +1411,54 @@ async function postUsageEvent(settings, payload) {
   return data;
 }
 
+async function uploadCapturedMedia(message) {
+  const settings = await getSettings();
+  const dataUrl = `${message.dataUrl || ''}`;
+  const filename = `${message.filename || 'kling-mediasource.mp4'}`.trim() || 'kling-mediasource.mp4';
+  const relativePath = `${message.relativePath || 'tool-captures/kling'}`.trim();
+  const contentType = `${message.contentType || 'video/mp4'}`.trim() || 'video/mp4';
+  if (!dataUrl.startsWith('data:')) {
+    throw new Error('Captured media payload is missing file data.');
+  }
+
+  const blob = await fetch(dataUrl).then((response) => response.blob());
+  if (!blob?.size) {
+    throw new Error('Captured media file is empty.');
+  }
+
+  const formData = new FormData();
+  formData.append('files', blob, filename);
+  if (relativePath) {
+    formData.append('relative_paths', relativePath);
+  }
+
+  const headers = {};
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetch(`${settings.apiBase}/upload`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: formData,
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    const error = new Error(buildApiErrorMessage(data, response, 'Captured media upload failed', settings));
+    error.status = response.status;
+    throw error;
+  }
+
+  const uploaded = Array.isArray(data.data) ? data.data[0] : null;
+  if (!uploaded?.url) {
+    throw new Error('Captured media upload did not return a permanent URL.');
+  }
+
+  return uploaded;
+}
+
 function buildUsageEventPayload(message, activeLaunch) {
   return {
     event_id: message.eventId,
@@ -1923,6 +1971,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'TOOL_HUB_REPORT_USAGE_EVENT') {
     reportUsageEvent(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_UPLOAD_CAPTURED_MEDIA') {
+    uploadCapturedMedia(message)
+      .then((uploaded) => sendResponse({ ok: true, uploaded }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

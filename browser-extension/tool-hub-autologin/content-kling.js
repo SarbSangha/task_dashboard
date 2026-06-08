@@ -46,8 +46,9 @@ const MAX_REASONABLE_KLING_CREDIT_BALANCE = 1000000;
 const MAX_PROMPT_CAPTURE_LENGTH = 4000;
 const MAX_PROMPT_CANDIDATES = 3;
 const MAX_CAPTURED_MEDIA_ASSETS = 8;
+const MAX_MEDIASOURCE_CAPTURED_ASSETS = 8;
 const GENERATED_ASSET_SCAN_MS = 4000;
-const GENERATED_ASSET_SCAN_MAX_MS = 120000;
+const GENERATED_ASSET_SCAN_MAX_MS = 150000;
 const MAX_EXPECTED_LOCK_AUTO_BURN = 300;
 const SUPPORTED_KLING_USAGE_FALLBACK_MODES = new Set(['image', 'video', 'motion-control', 'avatar']);
 const CREDIT_SOURCE_PROFILES = {
@@ -189,7 +190,9 @@ const USAGE_CTX = {
   latestWalletBalance : null,
   generatedAssetUrls  : new Set(),
   blobSourceUrls      : new Map(),
+  mediaSourceAssets   : new Map(),
   assetScanTimer      : null,
+  assetScanObserver   : null,
   assetScanStartedAt  : 0,
   assetScanSnapshot   : null,
   activeGenerationIds : new Map(),
@@ -921,11 +924,10 @@ function isInternalKlingPreviewAsset(url = '', hint = '') {
   const normalizedHint = `${hint || ''}`.trim().toLowerCase();
   if (!normalizedUrl) return false;
   if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web-[^?#]*\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(normalizedUrl)) return true;
+  if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(normalizedUrl)) return true;
   if (!/\.webp(?:[?#]|$)/i.test(normalizedUrl)) return false;
   if (/\borigin\b/.test(normalizedHint)) return false;
-  if (/\bupload\b/.test(normalizedHint)) return true;
   if (/(omni-stream-loading|stream-loading|loading)/i.test(normalizedUrl)) return true;
-  if (/\/kimg\//i.test(normalizedUrl)) return true;
   return false;
 }
 
@@ -966,6 +968,148 @@ function rememberBlobSourceUrl(blobUrl = '', sourceUrl = '') {
   }]);
 }
 
+function releaseStoredMediaSourceAsset(key = '') {
+  const normalizedKey = `${key || ''}`.trim();
+  if (!normalizedKey) return;
+  const asset = USAGE_CTX.mediaSourceAssets.get(normalizedKey);
+  if (!asset) return;
+  try {
+    if (asset.objectUrl) URL.revokeObjectURL(asset.objectUrl);
+  } catch {}
+  USAGE_CTX.mediaSourceAssets.delete(normalizedKey);
+}
+
+function pruneStoredMediaSourceAssets() {
+  while (USAGE_CTX.mediaSourceAssets.size > MAX_MEDIASOURCE_CAPTURED_ASSETS) {
+    const oldestKey = USAGE_CTX.mediaSourceAssets.keys().next().value;
+    if (!oldestKey) break;
+    releaseStoredMediaSourceAsset(oldestKey);
+  }
+}
+
+function clearStoredMediaSourceAssets() {
+  for (const key of Array.from(USAGE_CTX.mediaSourceAssets.keys())) {
+    releaseStoredMediaSourceAsset(key);
+  }
+}
+
+function isBlobLike(value) {
+  return Boolean(value)
+    && typeof value === 'object'
+    && typeof value.size === 'number'
+    && typeof value.slice === 'function';
+}
+
+function storeMediaSourceVideoAsset(payload = {}) {
+  const blob = payload?.blob;
+  if (!isBlobLike(blob) || blob.size <= 0) return null;
+  const sessionId = `${payload.sessionId || `kling-mediasource-${Date.now()}`}`.slice(0, 120);
+  const objectUrl = URL.createObjectURL(blob);
+  const completedAt = Number(payload.completedAt || Date.now());
+  const startedAt = Number(payload.startedAt || completedAt);
+  const fileName = `${sessionId}.mp4`.replace(/[^\w.-]+/g, '_');
+  const file = typeof File === 'function'
+    ? new File([blob], fileName, { type: 'video/mp4', lastModified: completedAt })
+    : blob;
+
+  const stored = {
+    sessionId,
+    objectUrl,
+    fileName,
+    file,
+    blob,
+    size: Number(payload.size || blob.size || 0) || blob.size,
+    chunkCount: Number(payload.chunkCount || 0) || null,
+    totalBytes: Number(payload.totalBytes || payload.size || blob.size || 0) || blob.size,
+    startedAt,
+    completedAt,
+    capturedAt: completedAt,
+    mimeType: `${payload.mimeType || blob.type || 'video/mp4'}`.slice(0, 120),
+    sourceMimeType: `${payload.sourceMimeType || ''}`.slice(0, 200),
+  };
+
+  // Store only the completed Blob/File and its object URL. The page-context
+  // chunk arrays are released by content-kling-mediasource.js after this event.
+  releaseStoredMediaSourceAsset(sessionId);
+  USAGE_CTX.mediaSourceAssets.set(sessionId, stored);
+  pruneStoredMediaSourceAssets();
+  USAGE_CTX.generatedAssetUrls.delete(objectUrl);
+
+  return {
+    assetType: 'video',
+    assetRole: 'output',
+    source: 'mediasource',
+    url: objectUrl,
+    blobUrl: objectUrl,
+    key: sessionId,
+    detectedAt: completedAt,
+    size: stored.size,
+    chunkCount: stored.chunkCount,
+    totalBytes: stored.totalBytes,
+    startedAt: stored.startedAt,
+    completedAt: stored.completedAt,
+    mimeType: stored.mimeType,
+    mediaSourceSessionId: sessionId,
+  };
+}
+
+function readBlobAsDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(`${reader.result || ''}`);
+    reader.onerror = () => reject(reader.error || new Error('Unable to read captured video file.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function uploadMediaSourceVideoAsset(asset) {
+  const sessionId = `${asset?.mediaSourceSessionId || asset?.key || ''}`.trim();
+  const stored = sessionId ? USAGE_CTX.mediaSourceAssets.get(sessionId) : null;
+  if (!stored?.blob) return asset;
+
+  const dataUrl = await readBlobAsDataUrl(stored.blob);
+  const response = await msg({
+    type: 'TOOL_HUB_UPLOAD_CAPTURED_MEDIA',
+    toolSlug: TOOL_SLUG,
+    filename: stored.fileName || `${sessionId || 'kling-mediasource'}.mp4`,
+    contentType: stored.mimeType || 'video/mp4',
+    relativePath: `tool-captures/kling/${buildLocalDateValue(new Date(stored.completedAt || Date.now()))}`,
+    dataUrl,
+    metadata: {
+      sessionId,
+      size: stored.size,
+      chunkCount: stored.chunkCount,
+      startedAt: stored.startedAt,
+      completedAt: stored.completedAt,
+      source: 'mediasource',
+    },
+  });
+
+  if (!response?.ok || !response.uploaded?.url) {
+    throw new Error(response?.error || 'Captured MediaSource video upload failed.');
+  }
+
+  const uploaded = response.uploaded;
+  return {
+    ...asset,
+    source: 'mediasource_upload',
+    url: `${uploaded.url || ''}`.slice(0, 4000),
+    permanentUrl: `${uploaded.url || ''}`.slice(0, 4000),
+    path: `${uploaded.path || ''}`.slice(0, 2048),
+    filename: `${uploaded.filename || stored.fileName || ''}`.slice(0, 512),
+    originalName: `${uploaded.originalName || stored.fileName || ''}`.slice(0, 512),
+    storage: `${uploaded.storage || 'r2'}`.slice(0, 80),
+    mimetype: `${uploaded.mimetype || stored.mimeType || 'video/mp4'}`.slice(0, 120),
+    upload: {
+      ok: true,
+      uploadedAt: Date.now(),
+      storage: `${uploaded.storage || 'r2'}`.slice(0, 80),
+      path: `${uploaded.path || ''}`.slice(0, 2048),
+      url: `${uploaded.url || ''}`.slice(0, 4000),
+    },
+  };
+}
+
 function resolveCapturedAssetUrl(value) {
   const url = normalizeCapturedAssetUrl(value);
   if (!/^blob:/i.test(url)) {
@@ -982,6 +1126,44 @@ function resolveCapturedAssetUrl(value) {
     blobUrl: url,
     source: /^https?:\/\//i.test(sourceUrl) ? 'blob_source' : '',
   };
+}
+
+function extractSrcsetUrls(value = '') {
+  return `${value || ''}`
+    .split(',')
+    .map((item) => item.trim().split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+function extractCssUrlValues(value = '') {
+  const urls = [];
+  const text = `${value || ''}`;
+  const re = /url\((['"]?)(.*?)\1\)/gi;
+  let match = re.exec(text);
+  while (match) {
+    if (match[2]) urls.push(match[2]);
+    match = re.exec(text);
+  }
+  return urls;
+}
+
+function getElementMediaUrlCandidates(el, mediaEl) {
+  const candidates = [
+    el.currentSrc,
+    el.src,
+    el.getAttribute?.('src'),
+    el.getAttribute?.('poster'),
+    mediaEl?.poster,
+    el.getAttribute?.('data-src'),
+    el.getAttribute?.('data-original'),
+    el.getAttribute?.('data-url'),
+  ];
+  candidates.push(...extractSrcsetUrls(el.srcset || el.getAttribute?.('srcset') || ''));
+  candidates.push(...extractCssUrlValues(window.getComputedStyle?.(el)?.backgroundImage || ''));
+  if (mediaEl && mediaEl !== el) {
+    candidates.push(...extractCssUrlValues(window.getComputedStyle?.(mediaEl)?.backgroundImage || ''));
+  }
+  return candidates.filter(Boolean);
 }
 
 function inferGenerateDetectionSource(generateButton) {
@@ -1023,22 +1205,63 @@ function normalizeCapturedMediaAssets(value, source = 'network') {
       width: Number(asset?.width || 0) || null,
       height: Number(asset?.height || 0) || null,
       detectedAt: Number(asset?.detectedAt || Date.now()),
+      size: Number(asset?.size || 0) || null,
+      chunkCount: Number(asset?.chunkCount || 0) || null,
+      totalBytes: Number(asset?.totalBytes || 0) || null,
+      startedAt: Number(asset?.startedAt || 0) || null,
+      completedAt: Number(asset?.completedAt || 0) || null,
+      mimeType: `${asset?.mimeType || ''}`.slice(0, 120),
+      mediaSourceSessionId: `${asset?.mediaSourceSessionId || ''}`.slice(0, 120),
+      permanentUrl: `${asset?.permanentUrl || ''}`.slice(0, 4000),
+      path: `${asset?.path || ''}`.slice(0, 2048),
+      filename: `${asset?.filename || ''}`.slice(0, 512),
+      originalName: `${asset?.originalName || ''}`.slice(0, 512),
+      storage: `${asset?.storage || ''}`.slice(0, 80),
+      mimetype: `${asset?.mimetype || ''}`.slice(0, 120),
+      upload: asset?.upload && typeof asset.upload === 'object'
+        ? {
+          ok: Boolean(asset.upload.ok),
+          uploadedAt: Number(asset.upload.uploadedAt || 0) || null,
+          storage: `${asset.upload.storage || ''}`.slice(0, 80),
+          path: `${asset.upload.path || ''}`.slice(0, 2048),
+          url: `${asset.upload.url || ''}`.slice(0, 4000),
+          error: `${asset.upload.error || ''}`.slice(0, 500),
+          failedAt: Number(asset.upload.failedAt || 0) || null,
+        }
+        : null,
     });
     if (assets.length >= MAX_CAPTURED_MEDIA_ASSETS) break;
   }
   return assets;
 }
 
-function collectVisibleGeneratedMediaAssets() {
+function collectVisibleGeneratedMediaAssets(generationMode = '') {
+  const normalizedGenerationMode = `${generationMode || ''}`.trim().toLowerCase();
+  const shouldScanVideo = normalizedGenerationMode !== 'image';
   const assets = [];
   const seen = new Set();
   const selectors = [
     'img[src]',
     'img[currentSrc]',
-    'video[src]',
-    'video[poster]',
-    'video source[src]',
+    'img[srcset]',
+    'img[data-src]',
+    'img[data-original]',
+    'img[data-url]',
+    'picture source[srcset]',
   ];
+  if (normalizedGenerationMode === 'image') {
+    selectors.push(
+      '[style*="background-image"]',
+      '[style*="background:"]',
+    );
+  }
+  if (shouldScanVideo) {
+    selectors.push(
+      'video[src]',
+      'video[poster]',
+      'video source[src]',
+    );
+  }
 
   for (const el of collectUniqueElements(Array.from(document.querySelectorAll(selectors.join(','))))) {
     const mediaEl = el.closest?.('video') || el;
@@ -1048,7 +1271,15 @@ function collectVisibleGeneratedMediaAssets() {
     const rect = mediaEl.getBoundingClientRect();
     if (rect.width < 96 || rect.height < 96) continue;
 
-    const rawUrl = el.currentSrc || el.src || el.getAttribute?.('src') || el.getAttribute?.('poster') || mediaEl.poster || '';
+    const rawUrl = getElementMediaUrlCandidates(el, mediaEl)
+      .find((candidate) => {
+        const resolved = resolveCapturedAssetUrl(candidate);
+        const resolvedUrl = resolved.url;
+        if (!resolvedUrl || seen.has(resolvedUrl)) return false;
+        if (isInternalKlingPreviewAsset(resolvedUrl, mediaEl.tagName || el.tagName)) return false;
+        if (/\/(logo|icon|avatar|sprite|placeholder|loading)[^/]*\.(?:png|jpe?g|webp|gif|svg)/i.test(resolvedUrl)) return false;
+        return true;
+      });
     const resolvedAssetUrl = resolveCapturedAssetUrl(rawUrl);
     const url = resolvedAssetUrl.url;
     if (!url || seen.has(url)) continue;
@@ -1056,10 +1287,11 @@ function collectVisibleGeneratedMediaAssets() {
     if (/\/(logo|icon|avatar|sprite|placeholder|loading)[^/]*\.(?:png|jpe?g|webp|gif|svg)/i.test(url)) continue;
 
     seen.add(url);
+    const isVideoAsset = mediaEl.tagName?.toLowerCase() === 'video' || el.tagName?.toLowerCase() === 'video';
+    if (normalizedGenerationMode === 'image' && isVideoAsset) continue;
+
     assets.push({
-      assetType: mediaEl.tagName?.toLowerCase() === 'video' || el.tagName?.toLowerCase() === 'video'
-        ? 'video'
-        : inferCapturedAssetType(url, mediaEl.tagName || el.tagName),
+      assetType: isVideoAsset ? 'video' : inferCapturedAssetType(url, mediaEl.tagName || el.tagName),
       assetRole: 'output',
       source: resolvedAssetUrl.source || 'dom',
       url,
@@ -1099,6 +1331,12 @@ function stopGeneratedAssetDetection() {
     clearInterval(USAGE_CTX.assetScanTimer);
     USAGE_CTX.assetScanTimer = null;
   }
+  if (USAGE_CTX.assetScanObserver) {
+    try {
+      USAGE_CTX.assetScanObserver.disconnect();
+    } catch {}
+    USAGE_CTX.assetScanObserver = null;
+  }
   USAGE_CTX.assetScanSnapshot = null;
   USAGE_CTX.assetScanStartedAt = 0;
 }
@@ -1107,10 +1345,13 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
   if (!snapshot || !assets.length) return;
   const mergedAssets = mergeCapturedMediaAssets(snapshot.metadata?.mediaAssets, assets);
   if (!mergedAssets.length) return;
+  const captureSource = assets.some((asset) => /^mediasource/i.test(`${asset?.source || ''}`))
+    ? 'mediasource'
+    : 'dom';
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
     assetCapture: {
-      source: 'dom',
+      source: captureSource,
       assetCount: mergedAssets.length,
       capturedAt: Date.now(),
     },
@@ -1118,8 +1359,8 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
     mediaAssetCount: mergedAssets.length,
     lifecycleEvent: {
       stage: 'asset_captured',
-      source: 'dom_asset_scan',
-      transport: 'dom',
+      source: captureSource === 'mediasource' ? 'mediasource_capture' : 'dom_asset_scan',
+      transport: captureSource,
       capturedAt: Date.now(),
     },
   };
@@ -1143,8 +1384,9 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
 function startGeneratedAssetDetection(snapshot) {
   if (!snapshot) return;
   stopGeneratedAssetDetection();
+  const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
   USAGE_CTX.generatedAssetUrls = new Set(
-    collectVisibleGeneratedMediaAssets()
+    collectVisibleGeneratedMediaAssets(generationMode)
       .map((asset) => asset.url)
       .filter(Boolean)
   );
@@ -1157,7 +1399,7 @@ function startGeneratedAssetDetection(snapshot) {
       stopGeneratedAssetDetection();
       return;
     }
-    const candidates = collectVisibleGeneratedMediaAssets()
+    const candidates = collectVisibleGeneratedMediaAssets(generationMode)
       .filter((asset) => {
         if (!asset.url || USAGE_CTX.generatedAssetUrls.has(asset.url)) return false;
         USAGE_CTX.generatedAssetUrls.add(asset.url);
@@ -1169,8 +1411,25 @@ function startGeneratedAssetDetection(snapshot) {
   };
 
   USAGE_CTX.assetScanTimer = window.setInterval(scan, GENERATED_ASSET_SCAN_MS);
+  if (typeof MutationObserver === 'function') {
+    let observerScanTimer = null;
+    USAGE_CTX.assetScanObserver = new MutationObserver(() => {
+      if (observerScanTimer) window.clearTimeout(observerScanTimer);
+      observerScanTimer = window.setTimeout(scan, 250);
+    });
+    try {
+      USAGE_CTX.assetScanObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'srcset', 'style', 'poster', 'data-src', 'data-original', 'data-url'],
+      });
+    } catch {}
+  }
   window.setTimeout(scan, 1500);
   window.setTimeout(scan, 8000);
+  window.setTimeout(scan, 30000);
+  window.setTimeout(scan, 90000);
 }
 
 function readVisibleCreditBalance() {
@@ -1759,6 +2018,49 @@ function buildNetworkUsageSnapshot(networkPayload) {
 function handleKlingNetworkUsageMessage(event) {
   if (event?.source !== window) return;
   if (event?.origin !== location.origin) return;
+  if (event?.data?.source === 'rmw-kling-mediasource-capture') {
+    if (event?.data?.type === 'KLING_MEDIASOURCE_VIDEO_COMPLETE') {
+      const asset = storeMediaSourceVideoAsset(event.data.payload || {});
+      if (asset) {
+        setStatus(`MediaSource video captured (${Math.round((asset.size || 0) / 1024 / 1024)} MB)`, { hideAfterMs: 2500 });
+        uploadMediaSourceVideoAsset(asset)
+          .then((uploadedAsset) => {
+            reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, [uploadedAsset]);
+            debugUsageTelemetry('mediasource_video_uploaded', {
+              sessionId: uploadedAsset.mediaSourceSessionId,
+              size: uploadedAsset.size,
+              chunkCount: uploadedAsset.chunkCount,
+              url: `${uploadedAsset.permanentUrl || uploadedAsset.url || ''}`.slice(0, 1000),
+              startedAt: uploadedAsset.startedAt,
+              completedAt: uploadedAsset.completedAt,
+            });
+            setStatus('MediaSource video uploaded', { hideAfterMs: 2500 });
+          })
+          .catch((error) => {
+            debugUsageTelemetry('mediasource_video_upload_failed', {
+              sessionId: asset.mediaSourceSessionId,
+              size: asset.size,
+              chunkCount: asset.chunkCount,
+              error: `${error?.message || error || ''}`.slice(0, 500),
+            });
+            console.warn('[RMW Kling] MediaSource video upload failed', error);
+          });
+      }
+    } else if (event?.data?.type === 'KLING_MEDIASOURCE_VIDEO_DROPPED') {
+      debugUsageTelemetry('mediasource_video_dropped', {
+        sessionId: `${event.data.payload?.sessionId || ''}`.slice(0, 120),
+        reason: `${event.data.payload?.reason || ''}`.slice(0, 120),
+        chunkCount: Number(event.data.payload?.chunkCount || 0) || null,
+        totalBytes: Number(event.data.payload?.totalBytes || 0) || null,
+      });
+    } else if (event?.data?.type === 'KLING_MEDIASOURCE_SESSION_STARTED') {
+      debugUsageTelemetry('mediasource_session_started', {
+        sessionId: `${event.data.payload?.sessionId || ''}`.slice(0, 120),
+        mimeType: `${event.data.payload?.mimeType || ''}`.slice(0, 200),
+      });
+    }
+    return;
+  }
   if (event?.data?.source !== 'rmw-kling-network-telemetry') return;
   if (event?.data?.type === 'KLING_BLOB_MEDIA_SOURCE') {
     rememberBlobSourceUrl(event.data.payload?.blobUrl, event.data.payload?.sourceUrl);
@@ -2235,6 +2537,7 @@ function startUsageTracking() {
   document.addEventListener('pointerdown', handleGenerateInteraction, true);
   document.addEventListener('click', handleGenerateInteraction, true);
   window.addEventListener('pagehide', clearPendingUsageReport, true);
+  window.addEventListener('pagehide', clearStoredMediaSourceAssets, true);
   if (!USAGE_CTX.networkListenerAttached) {
     USAGE_CTX.networkListenerAttached = true;
     window.addEventListener('message', handleKlingNetworkUsageMessage, false);

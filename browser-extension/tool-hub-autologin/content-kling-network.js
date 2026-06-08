@@ -91,13 +91,13 @@
     } catch {}
   }
 
-  function requestBodyFromFetchArgs(input, init) {
+  async function requestBodyFromFetchArgs(input, init) {
     if (init && Object.prototype.hasOwnProperty.call(init, 'body')) {
       return limitText(init.body, MAX_BODY_LENGTH);
     }
     try {
       if (input && typeof input.clone === 'function') {
-        return '';
+        return limitText(await input.clone().text(), MAX_BODY_LENGTH);
       }
     } catch {}
     return '';
@@ -287,11 +287,10 @@
     const normalizedKey = `${key || ''}`.trim().toLowerCase();
     if (!url) return false;
     if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web-[^?#]*\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(url)) return true;
+    if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
     if (!/\.webp(?:[?#]|$)/i.test(url)) return false;
     if (/\borigin\b/.test(normalizedKey)) return false;
-    if (/\bupload\b/.test(normalizedKey)) return true;
     if (/(omni-stream-loading|stream-loading|loading)/i.test(url)) return true;
-    if (/\/kimg\//i.test(url)) return true;
     return false;
   }
 
@@ -611,7 +610,7 @@
     window.fetch = async function rmwKlingFetch(input, init) {
       const method = `${init?.method || input?.method || 'GET'}`.toUpperCase();
       const url = normalizeUrl(input);
-      const requestText = requestBodyFromFetchArgs(input, init);
+      const requestText = await requestBodyFromFetchArgs(input, init);
       const response = await originalFetch.apply(this, arguments);
 
       try {

@@ -16,7 +16,7 @@
   padding-top: var(--leftbar-popup-top-offset);
   padding-left: 16px;
   padding-right: 16px;
-  z-index: 3000;
+  z-index: 2147483300;
   overflow-x: hidden;
 }
 

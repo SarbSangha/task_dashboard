@@ -448,7 +448,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
               className={`secondary-filter-btn ${filterStatus === 'pending' ? 'active' : ''}`}
               onClick={() => setFilterStatus('pending')}
             >
-              Awaiting Acceptance ({pendingCount})
+              In Pending ({pendingCount})
             </button>
             <button 
               className={`secondary-filter-btn ${filterStatus === 'in_progress' ? 'active' : ''}`}
