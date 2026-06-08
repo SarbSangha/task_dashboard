@@ -767,13 +767,6 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                     <div className="task-info">
                       <div className="task-title-row">
                         <h4 className="task-title">{task.title}</h4>
-                        <span
-                          className={`task-status-badge status-${`${task.status || 'unknown'}`.replace(/_/g, '-')}`}
-                          style={{ '--task-status-color': getStatusColor(task.status) }}
-                        >
-                          <span className="task-status-dot" aria-hidden="true" />
-                          {formatTaskStatus(task.status)}
-                        </span>
                       </div>
                       <p className="task-number">{task.taskNumber}</p>
                       {isWorkflowTask(task) && (
@@ -785,6 +778,13 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
                           </svg>
                           {task.projectName || 'N/A'}
+                        </span>
+                        <span
+                          className={`meta-item task-status-badge status-${`${task.status || 'unknown'}`.replace(/_/g, '-')}`}
+                          style={{ '--task-status-color': getStatusColor(task.status) }}
+                        >
+                          <span className="task-status-dot" aria-hidden="true" />
+                          {formatTaskStatus(task.status)}
                         </span>
                         <span className={`meta-item task-priority-badge priority-${getPriorityClassName(task.priority)}`}>
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

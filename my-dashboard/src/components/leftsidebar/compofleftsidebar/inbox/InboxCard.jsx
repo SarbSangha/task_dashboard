@@ -143,6 +143,16 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     : '';
   const displayTaskName = task.taskName || task.title || task.taskNumber || '-';
   const displayProjectName = task.projectName || task.projectId || '-';
+  const statusTileClass = (() => {
+    if (['pending', 'assigned', 'forwarded'].includes(normalizedStatus)) return 'status-pending';
+    if (normalizedStatus === 'in_progress') return 'status-progress';
+    if (['submitted', 'under_review'].includes(normalizedStatus)) return 'status-submitted';
+    if (normalizedStatus === 'need_improvement') return 'status-improvement';
+    if (['approved', 'completed'].includes(normalizedStatus)) return 'status-complete';
+    if (['cancelled', 'rejected'].includes(normalizedStatus)) return 'status-cancelled';
+    if (normalizedStatus === 'draft') return 'status-draft';
+    return 'status-default';
+  })();
   const deadlineInfo = (() => {
     if (!task.deadline) {
       return {
@@ -585,7 +595,10 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         <span><strong>Task Name:</strong> {displayTaskName}</span>
         <span><strong>Project Name:</strong> {displayProjectName}</span>
         <span><strong>Creator:</strong> {task.creator?.name || 'Unknown'} ({task.creator?.department || 'N/A'})</span>
-        <span><strong>Status:</strong> {(task.status || '').replace(/_/g, ' ')}</span>
+        <span className={`status-tile ${statusTileClass}`}>
+          <strong>Status:</strong>
+          <em>{(task.status || '').replace(/_/g, ' ') || '-'}</em>
+        </span>
         {isWorkflowTask && (
           <span><strong>Active Stage:</strong> {activeStageLabel || '-'}</span>
         )}
