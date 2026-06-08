@@ -18,7 +18,7 @@ const getActiveStageLabel = (task) => {
 };
 
 const STARTABLE_TASK_STATUSES = new Set(['pending', 'forwarded', 'assigned', 'need_improvement']);
-const SUBMITTABLE_TASK_STATUSES = new Set(['pending', 'forwarded', 'assigned', 'in_progress', 'need_improvement']);
+const SUBMITTABLE_TASK_STATUSES = new Set(['in_progress']);
 const REVIEWABLE_TASK_STATUSES = new Set(['submitted', 'under_review', 'approved']);
 
 const canStartTaskFromStatus = (status = '') => (

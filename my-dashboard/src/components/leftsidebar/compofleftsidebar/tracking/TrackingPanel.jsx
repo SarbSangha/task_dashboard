@@ -93,7 +93,7 @@ const canStartTaskStatus = (status = '') => (
 );
 
 const canSubmitTaskStatus = (status = '') => (
-  ['pending', 'forwarded', 'assigned', 'in_progress', 'need_improvement'].includes(`${status || ''}`.toLowerCase())
+  `${status || ''}`.toLowerCase() === 'in_progress'
 );
 
 const canReviewTaskStatus = (status = '') => (
@@ -913,9 +913,12 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                       if (!selectionModal.selectedDepartment) return false;
                       return (target.department || '') === selectionModal.selectedDepartment;
                     })
-                    .map((target) => (
-                      <label key={target.id} className="tracking-selection-user-item">
+                    .map((target) => {
+                      const checkboxId = `tracking-selection-user-${target.id}`;
+                      return (
+                      <label key={target.id} htmlFor={checkboxId} className="tracking-selection-user-item">
                         <input
+                          id={checkboxId}
                           type="checkbox"
                           checked={selectionModal.selectedUserIds.includes(target.id)}
                           onChange={() => toggleSelectionUser(target.id)}
@@ -925,7 +928,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                           <small>{getSelectionTargetMeta(target)}</small>
                         </span>
                       </label>
-                    ))}
+                    )})}
                   {selectionModal.selectedDepartment &&
                     selectionModal.targets.filter((target) => (target.department || '') === selectionModal.selectedDepartment).length === 0 && (
                       <p className="tracking-selection-loading">No members found in selected department.</p>

@@ -1530,7 +1530,8 @@ def compute_available_actions(
         }:
             if task.status in {TaskStatus.ASSIGNED, TaskStatus.PENDING, TaskStatus.NEED_IMPROVEMENT}:
                 actions.append("start")
-            actions.append("submit")
+            if task.status == TaskStatus.IN_PROGRESS:
+                actions.append("submit")
 
         if not is_held and can_approve(user, task) and (
             workflow_status == TaskWorkflowStatus.WAITING_APPROVAL.value
@@ -1578,14 +1579,7 @@ def compute_available_actions(
     if not is_held and is_assignee:
         if task.status in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.ASSIGNED, TaskStatus.NEED_IMPROVEMENT}:
             actions.append("start")
-        if task.status not in {
-            TaskStatus.SUBMITTED,
-            TaskStatus.UNDER_REVIEW,
-            TaskStatus.APPROVED,
-            TaskStatus.REJECTED,
-            TaskStatus.COMPLETED,
-            TaskStatus.CANCELLED,
-        }:
+        if task.status == TaskStatus.IN_PROGRESS:
             actions.append("submit")
         if task.status == TaskStatus.NEED_IMPROVEMENT:
             actions.append("edit_result")
@@ -3277,6 +3271,8 @@ def _submit_workflow_stage(
         raise HTTPException(status_code=400, detail="This workflow stage cannot be submitted right now")
     if not _is_active_stage_assignee(stage.id, current_user.id, db):
         raise HTTPException(status_code=403, detail="Only current stage assignee can submit")
+    if task.status != TaskStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="Start the workflow stage before submitting")
 
     if not stage.started_at:
         stage.started_at = now
@@ -4612,6 +4608,8 @@ async def submit_task(
     is_assignee = user_is_participant(task.id, current_user.id, ParticipantRole.ASSIGNEE, db)
     if not is_assignee:
         raise HTTPException(status_code=403, detail="Only assignee can submit")
+    if task.status != TaskStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="Start the task before submitting")
 
     has_result_update = bool(payload.result_text or payload.result_links or payload.result_attachments)
     if has_result_update:

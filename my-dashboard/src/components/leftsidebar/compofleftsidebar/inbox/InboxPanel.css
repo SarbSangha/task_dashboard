@@ -1225,19 +1225,30 @@
   cursor: pointer;
 }
 
-.inbox-assign-user-item input {
+.inbox-assign-user-item input[type="checkbox"] {
   flex: 0 0 auto;
+  width: 16px;
+  min-width: 16px;
+  max-width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: #6366f1;
 }
 
 .inbox-assign-user-item span {
   display: flex;
   min-width: 0;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 2px;
+  color: #f8fafc;
+  text-align: left;
 }
 
 .inbox-assign-user-item strong,
 .inbox-assign-user-item small {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1245,8 +1256,10 @@
 
 .inbox-assign-user-item strong {
   color: #f8fafc;
+  font-size: 13px;
 }
 
 .inbox-assign-user-item small {
   color: #94a3b8;
+  font-size: 11px;
 }

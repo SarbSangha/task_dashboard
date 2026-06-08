@@ -226,10 +226,14 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     if (currentFilter === 'work' || currentFilter === 'working') {
       return isAssignedToMe && !isSelfAssignedTask;
     }
+    if (currentFilter === 'in_pending') return ['pending', 'assigned', 'forwarded'].includes(normalizedStatus);
+    if (currentFilter === 'in_progress') return normalizedStatus === 'in_progress';
     if (currentFilter === 'submitted') {
-      return normalizedStatus === 'submitted' && !isCreatorTask && (isSubmittedByMe || isParticipantTask);
+      return normalizedStatus === 'submitted' && isSubmittedByMe;
     }
-    if (currentFilter === 'result') return normalizedStatus === 'submitted' && isCreatorTask;
+    if (currentFilter === 'result') {
+      return normalizedStatus === 'submitted' && !isSubmittedByMe && (isCreatorTask || isParticipantTask);
+    }
     if (currentFilter === 'need_improvement') return normalizedStatus === 'need_improvement';
     if (currentFilter === 'final_result') return ['approved', 'completed'].includes(normalizedStatus);
     return true;
@@ -1030,17 +1034,29 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
           >
             Work / My Task ({getFilterCount('work')})
           </button>
+          <button
+            className={`filter-btn ${filter === 'in_pending' ? 'active' : ''}`}
+            onClick={() => setFilter('in_pending')}
+          >
+            In Pending ({getFilterCount('in_pending')})
+          </button>
+          <button
+            className={`filter-btn ${filter === 'in_progress' ? 'active' : ''}`}
+            onClick={() => setFilter('in_progress')}
+          >
+            In Progress ({getFilterCount('in_progress')})
+          </button>
           <button 
             className={`filter-btn ${filter === 'submitted' ? 'active' : ''}`}
             onClick={() => setFilter('submitted')}
           >
-            Submitted ({getFilterCount('submitted')})
+            My Submission ({getFilterCount('submitted')})
           </button>
           <button 
             className={`filter-btn ${filter === 'result' ? 'active' : ''}`}
             onClick={() => setFilter('result')}
           >
-            Result ({getFilterCount('result')})
+            Submissions ({getFilterCount('result')})
           </button>
           <button 
             className={`filter-btn ${filter === 'need_improvement' ? 'active' : ''}`}
@@ -1273,9 +1289,11 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
                     ))
                     .map((target) => {
                       const targetId = String(target.id);
+                      const checkboxId = `inbox-assign-user-${targetId}`;
                       return (
-                        <label key={target.id} className="inbox-assign-user-item">
+                        <label key={target.id} htmlFor={checkboxId} className="inbox-assign-user-item">
                           <input
+                            id={checkboxId}
                             type="checkbox"
                             checked={assignModal.selectedUserIds.includes(targetId)}
                             onChange={() => toggleAssignRecipient(target.id)}

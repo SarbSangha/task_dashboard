@@ -25,7 +25,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const revokedAt = task.revocation?.revokedAt ? formatDateTimeIndia(task.revocation.revokedAt) : '';
   const revokedReason = task.revocation?.reason || '';
   const startableStatuses = ['pending', 'forwarded', 'assigned', 'need_improvement'];
-  const submittableStatuses = ['pending', 'forwarded', 'assigned', 'in_progress', 'need_improvement'];
+  const submittableStatuses = ['in_progress'];
   const approvableStatuses = ['submitted', 'under_review', 'approved'];
   const workflowWaitingApproval =
     approvableStatuses.includes(normalizedStatus)
@@ -72,7 +72,9 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         if (['assigned', 'pending', 'need_improvement'].includes(normalizedStatus)) {
           inferred.push('start');
         }
-        inferred.push('submit');
+        if (normalizedStatus === 'in_progress') {
+          inferred.push('submit');
+        }
       }
 
       if (isCreatorTask && workflowWaitingApproval) {
