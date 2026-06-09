@@ -832,6 +832,105 @@ def _get_current_stage_submission_map(stage_ids: List[int], db: Session) -> Dict
     return {row.stage_id: row for row in rows}
 
 
+def _workflow_stage_view_rank(stage_status: str) -> int:
+    status = (stage_status or "").strip().lower()
+    ranks = {
+        TaskStageStatus.REVISION_REQUESTED.value: 0,
+        TaskStageStatus.ACTIVE.value: 1,
+        TaskStageStatus.SUBMITTED.value: 2,
+        TaskStageStatus.NOT_STARTED.value: 3,
+        TaskStageStatus.APPROVED.value: 4,
+        TaskStageStatus.COMPLETED.value: 5,
+        TaskStageStatus.BLOCKED.value: 6,
+    }
+    return ranks.get(status, 99)
+
+
+def _workflow_stage_view_status(stage: TaskStage, current_submission: Optional[TaskStageSubmission]) -> str:
+    stage_status = (stage.status or "").strip().lower()
+    if stage_status == TaskStageStatus.REVISION_REQUESTED.value:
+        return TaskStatus.NEED_IMPROVEMENT.value
+    if stage_status == TaskStageStatus.ACTIVE.value:
+        return TaskStatus.IN_PROGRESS.value if stage.started_at else TaskStatus.PENDING.value
+    if stage_status == TaskStageStatus.NOT_STARTED.value:
+        return TaskStatus.PENDING.value
+    if stage_status == TaskStageStatus.BLOCKED.value:
+        return TaskStatus.PENDING.value
+    if stage_status in {
+        TaskStageStatus.SUBMITTED.value,
+        TaskStageStatus.APPROVED.value,
+        TaskStageStatus.COMPLETED.value,
+    }:
+        return TaskStatus.SUBMITTED.value if current_submission or stage.submitted_at else TaskStatus.COMPLETED.value
+    return stage_status or TaskStatus.PENDING.value
+
+
+def _serialize_workflow_stage_view(
+    stage: TaskStage,
+    current_submission: Optional[TaskStageSubmission],
+) -> dict:
+    return {
+        "stageId": stage.id,
+        "stageOrder": stage.stage_order,
+        "stageTitle": stage.title,
+        "stageStatus": stage.status,
+        "status": _workflow_stage_view_status(stage, current_submission),
+        "startedAt": serialize_utc_datetime(stage.started_at),
+        "submittedAt": serialize_utc_datetime(
+            current_submission.submitted_at if current_submission else stage.submitted_at
+        ),
+        "completedAt": serialize_utc_datetime(stage.completed_at),
+        "submittedBy": current_submission.submitted_by_user_id if current_submission else None,
+    }
+
+
+def _select_workflow_stage_view(rows: List[tuple]) -> Optional[dict]:
+    best_stage = None
+    best_submission = None
+    best_key = None
+    for stage, current_submission in rows:
+        key = (
+            _workflow_stage_view_rank(stage.status),
+            stage.stage_order or 0,
+            stage.id or 0,
+        )
+        if best_key is None or key < best_key:
+            best_key = key
+            best_stage = stage
+            best_submission = current_submission
+    if not best_stage:
+        return None
+    return _serialize_workflow_stage_view(best_stage, best_submission)
+
+
+def _get_viewer_workflow_stage_view(task: Task, user: User, db: Session) -> Optional[dict]:
+    if not _is_workflow_task(task) or user.id == task.creator_id:
+        return None
+    rows = (
+        db.query(TaskStage, TaskStageSubmission)
+        .join(
+            TaskStageAssignee,
+            and_(
+                TaskStageAssignee.stage_id == TaskStage.id,
+                TaskStageAssignee.user_id == user.id,
+                TaskStageAssignee.is_active == True,
+                TaskStageAssignee.role == WORKFLOW_ASSIGNEE_ROLE,
+            ),
+        )
+        .outerjoin(
+            TaskStageSubmission,
+            and_(
+                TaskStageSubmission.stage_id == TaskStage.id,
+                TaskStageSubmission.is_current == True,
+            ),
+        )
+        .filter(TaskStage.task_id == task.id)
+        .order_by(TaskStage.stage_order.asc(), TaskStage.id.asc())
+        .all()
+    )
+    return _select_workflow_stage_view(rows)
+
+
 def _serialize_task_comment(comment: TaskComment, user: Optional[User]) -> dict:
     return {
         "id": comment.id,
@@ -1796,6 +1895,7 @@ def build_task_serialization_context(
             "user_lookup": {},
             "seen_by_by_task": {},
             "my_participation_by_task": {},
+            "viewer_workflow_stage_by_task": {},
         }
 
     creators = {}
@@ -1918,6 +2018,7 @@ def build_task_serialization_context(
         user_lookup[user.id] = user
 
     my_participation_by_task = {}
+    viewer_workflow_stage_by_task = {}
     if current_user:
         for task_id, participants in participants_by_task.items():
             current_user_participations = []
@@ -1928,6 +2029,44 @@ def build_task_serialization_context(
             if primary_participation:
                 my_participation_by_task[task_id] = primary_participation
 
+        workflow_task_ids = [
+            task.id
+            for task in tasks
+            if task.creator_id != current_user.id and _is_workflow_task(task)
+        ]
+        if workflow_task_ids:
+            workflow_stage_rows = (
+                db.query(TaskStage, TaskStageSubmission)
+                .join(
+                    TaskStageAssignee,
+                    and_(
+                        TaskStageAssignee.stage_id == TaskStage.id,
+                        TaskStageAssignee.user_id == current_user.id,
+                        TaskStageAssignee.is_active == True,
+                        TaskStageAssignee.role == WORKFLOW_ASSIGNEE_ROLE,
+                    ),
+                )
+                .outerjoin(
+                    TaskStageSubmission,
+                    and_(
+                        TaskStageSubmission.stage_id == TaskStage.id,
+                        TaskStageSubmission.is_current == True,
+                    ),
+                )
+                .filter(TaskStage.task_id.in_(workflow_task_ids))
+                .order_by(TaskStage.task_id.asc(), TaskStage.stage_order.asc(), TaskStage.id.asc())
+                .all()
+            )
+            workflow_rows_by_task = defaultdict(list)
+            for stage, current_submission in workflow_stage_rows:
+                workflow_rows_by_task[stage.task_id].append((stage, current_submission))
+            viewer_workflow_stage_by_task = {
+                task_id: stage_view
+                for task_id, rows in workflow_rows_by_task.items()
+                for stage_view in [_select_workflow_stage_view(rows)]
+                if stage_view
+            }
+
     return {
         "creators": creators,
         "participants_by_task": participants_by_task,
@@ -1936,6 +2075,7 @@ def build_task_serialization_context(
         "user_lookup": user_lookup,
         "seen_by_by_task": seen_by_by_task,
         "my_participation_by_task": my_participation_by_task,
+        "viewer_workflow_stage_by_task": viewer_workflow_stage_by_task,
     }
 
 
@@ -2096,6 +2236,23 @@ def serialize_task_with_context(
         task_dict["canHoldTask"] = can_hold_task(current_user, task)
         task_dict["canUnholdTask"] = can_unhold_task(current_user, task)
         task_dict["mySystemRoles"] = sorted(list(role_set(current_user)))
+
+        viewer_workflow_stage_by_task = (context or {}).get("viewer_workflow_stage_by_task") or {}
+        viewer_workflow_stage = viewer_workflow_stage_by_task.get(task.id) if has_context else None
+        if viewer_workflow_stage is None and not has_context and _is_workflow_task(task):
+            viewer_workflow_stage = _get_viewer_workflow_stage_view(task, current_user, db)
+        if viewer_workflow_stage and task.status not in {
+            TaskStatus.COMPLETED,
+            TaskStatus.CANCELLED,
+            TaskStatus.REJECTED,
+        }:
+            task_dict["globalStatus"] = task_dict.get("status")
+            task_dict["status"] = viewer_workflow_stage["status"]
+            task_dict["viewerWorkflowStage"] = viewer_workflow_stage
+            if viewer_workflow_stage.get("submittedAt"):
+                task_dict["submittedAt"] = viewer_workflow_stage["submittedAt"]
+            if viewer_workflow_stage.get("submittedBy") is not None:
+                task_dict["submittedBy"] = viewer_workflow_stage["submittedBy"]
 
     return task_dict
 

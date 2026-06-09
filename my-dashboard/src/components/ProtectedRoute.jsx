@@ -47,10 +47,31 @@ const ProtectedRoute = ({ children }) => {
         justifyContent: 'center',
         alignItems: 'center',
         minHeight: '100vh',
-        padding: '2rem',
+        padding: '5rem 2rem 2rem',
         background: '#0f172a',
         color: '#e2e8f0',
+        position: 'relative',
       }}>
+        <div style={{
+          position: 'absolute',
+          top: '1rem',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: 'min(92vw, 720px)',
+          padding: '0.95rem 1.25rem',
+          borderRadius: '14px',
+          border: '1px solid rgba(250, 204, 21, 0.45)',
+          background: 'rgba(113, 63, 18, 0.92)',
+          color: '#fef3c7',
+          boxShadow: '0 18px 35px rgba(2, 8, 23, 0.3)',
+          textAlign: 'center',
+          fontSize: '1rem',
+          fontWeight: 800,
+          letterSpacing: '0',
+          zIndex: 1,
+        }}>
+          Doing a small update, msg me if urgent
+        </div>
         <div style={{
           width: '100%',
           maxWidth: '480px',
