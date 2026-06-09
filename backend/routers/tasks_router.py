@@ -615,7 +615,26 @@ def has_any_role(user: User, allowed: Set[str]) -> bool:
 APPROVABLE_TASK_STATUSES = {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW, TaskStatus.APPROVED}
 
 
+def _legacy_hod_approval_needs_repair(task: Task) -> bool:
+    if _is_workflow_task(task):
+        return False
+    if task.status != TaskStatus.FORWARDED:
+        return False
+    if (task.workflow_stage or "").strip().lower() != "hod_approved":
+        return False
+    return bool(task.submitted_at or task.submitted_by or task.result_text)
+
+
+def _repair_legacy_hod_approval_if_needed(task: Task) -> bool:
+    if not _legacy_hod_approval_needs_repair(task):
+        return False
+    task.status = TaskStatus.APPROVED
+    return True
+
+
 def task_is_ready_for_approval(task: Task) -> bool:
+    if _legacy_hod_approval_needs_repair(task):
+        return True
     workflow_meta = dict(task.metadata_json or {})
     if _is_workflow_task(task):
         if _workflow_submission_needs_repair(task):
@@ -634,6 +653,7 @@ def can_approve(user: User, task: Task) -> bool:
         return False
 
     roles = role_set(user)
+    legacy_hod_approval_ready = _legacy_hod_approval_needs_repair(task)
     workflow_meta = dict(task.metadata_json or {})
     workflow_waiting_approval = _is_workflow_task(task) and (
         (task.workflow_status or "").strip().lower() == TaskWorkflowStatus.WAITING_APPROVAL.value
@@ -644,6 +664,7 @@ def can_approve(user: User, task: Task) -> bool:
         return True
     if user.id == task.creator_id and (
         workflow_waiting_approval
+        or legacy_hod_approval_ready
         or task.status in APPROVABLE_TASK_STATUSES
     ):
         return True
@@ -4046,6 +4067,15 @@ async def get_inbox(
         TaskStatus.APPROVED,
         TaskStatus.COMPLETED,
     ]
+    legacy_hod_approved_for_creator = and_(
+        Task.status == TaskStatus.FORWARDED,
+        Task.workflow_stage == "hod_approved",
+        or_(
+            Task.submitted_at.isnot(None),
+            Task.submitted_by.isnot(None),
+            Task.result_text.isnot(None),
+        ),
+    )
     tasks = (
         db.query(Task)
         .options(*_task_list_loader_options())
@@ -4069,7 +4099,10 @@ async def get_inbox(
                 # Creator inbox visibility only for review/result states
                 (
                     (Task.creator_id == current_user.id)
-                    & (Task.status.in_(review_statuses_for_creator))
+                    & (
+                        Task.status.in_(review_statuses_for_creator)
+                        | legacy_hod_approved_for_creator
+                    )
                 ),
             ),
         )
@@ -4108,6 +4141,8 @@ async def get_inbox(
     repaired_any = False
     for task in task_rows:
         if _repair_workflow_submission_if_needed(task, db):
+            repaired_any = True
+        if _repair_legacy_hod_approval_if_needed(task):
             repaired_any = True
     if repaired_any:
         db.commit()
@@ -4179,6 +4214,12 @@ async def get_outbox(
     has_more = len(tasks) > limit
     if has_more:
         tasks = tasks[:limit]
+    repaired_any = False
+    for task in tasks:
+        if _repair_legacy_hod_approval_if_needed(task):
+            repaired_any = True
+    if repaired_any:
+        db.commit()
     return {
         "success": True,
         "count": len(tasks),
@@ -4280,6 +4321,12 @@ async def get_all_user_tasks(
     has_more = len(tasks) > limit
     if has_more:
         tasks = tasks[:limit]
+    repaired_any = False
+    for task in tasks:
+        if _repair_legacy_hod_approval_if_needed(task):
+            repaired_any = True
+    if repaired_any:
+        db.commit()
     return {
         "success": True,
         "count": len(tasks),
@@ -4954,6 +5001,7 @@ async def approve_task(
     ensure_task_not_held(task)
     if not can_approve(current_user, task):
         raise HTTPException(status_code=403, detail="Permission denied")
+    _repair_legacy_hod_approval_if_needed(task)
     if _is_workflow_task(task):
         try:
             result = _approve_workflow_stage(task, payload, db, current_user)
@@ -4985,8 +5033,17 @@ async def approve_task(
             actor=current_user,
         )
     elif "hod" in actor_roles:
-        task.status = TaskStatus.FORWARDED
+        task.status = TaskStatus.APPROVED
         task.workflow_stage = "hod_approved"
+        create_notification(
+            db,
+            task,
+            task.creator_id,
+            "approved",
+            f"Task ready for final creator approval: {task.title}",
+            payload.comments or "HOD has approved the submitted result.",
+            actor=current_user,
+        )
     else:
         task.status = TaskStatus.APPROVED
         task.workflow_stage = "approved"
