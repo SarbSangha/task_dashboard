@@ -178,10 +178,10 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const canReviewTask = isWorkflowTask(taskDetails)
     ? workflowWaitingApproval
     : canReviewTaskFromStatus(normalizedTaskStatus);
-  const availableActions = isCreatorTask
+  let availableActions = isCreatorTask
     ? (taskDetails.availableActions || [])
     : (taskDetails.availableActions || []).filter((action) => action !== 'approve');
-  const visibleActions = availableActions.filter((action) => {
+  let visibleActions = availableActions.filter((action) => {
     if (action === 'approve' || action === 'need_improvement' || action === 'reject') return canReviewTask;
     return true;
   });
@@ -200,6 +200,16 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const submissionModeLabel = normalizedSubmissionMode === 'all'
     ? 'All workers must submit'
     : 'Any one worker can submit';
+  if (
+    !isWorkflowTask(taskDetails)
+    && taskDetails.myRole === 'assignee'
+    && workerSubmissionSummary.viewerSubmitted
+    && ['in_progress', 'submitted', 'under_review'].includes(normalizedTaskStatus)
+    && !visibleActions.includes('edit_submit')
+  ) {
+    availableActions = [...availableActions, 'edit_submit'];
+    visibleActions = [...visibleActions, 'edit_submit'];
+  }
 
   return (
     <div className="modal-overlay" onClick={onClose}>

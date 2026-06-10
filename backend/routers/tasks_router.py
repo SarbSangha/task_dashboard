@@ -1928,8 +1928,12 @@ def compute_available_actions(
         if task.status == TaskStatus.IN_PROGRESS:
             if not _task_worker_has_started(task, user.id):
                 actions.append("start")
+            elif _task_worker_has_submitted(task, user.id):
+                actions.append("edit_submit")
             elif _get_task_submission_mode(task) != TASK_SUBMISSION_MODE_ALL or not _task_worker_has_submitted(task, user.id):
                 actions.append("submit")
+        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW} and _task_worker_has_submitted(task, user.id):
+            actions.append("edit_submit")
         if task.status == TaskStatus.NEED_IMPROVEMENT:
             actions.append("edit_result")
 
@@ -5055,9 +5059,6 @@ async def submit_task(
     viewer_already_submitted = _task_worker_has_submitted(task, current_user.id)
     if task.status != TaskStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Start the task before submitting")
-    if _get_task_submission_mode(task) == TASK_SUBMISSION_MODE_ALL and _task_worker_has_submitted(task, current_user.id):
-        raise HTTPException(status_code=400, detail="You have already submitted your part of this task")
-
     has_result_update = bool(payload.result_text or payload.result_links or payload.result_attachments)
     submission_mode = _get_task_submission_mode(task)
     assigned_user_ids = [

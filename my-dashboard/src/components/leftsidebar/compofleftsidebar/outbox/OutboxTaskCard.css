@@ -1107,7 +1107,6 @@
 }
 
 .outbox-task-card .worker-submission-empty {
-<<<<<<< HEAD
   background: #ffffff;
   border: 1px solid #d5dbe5;
   border-radius: 10px;
@@ -1116,10 +1115,6 @@
   font-weight: 600;
   line-height: 1.5;
   padding: 12px 14px;
-=======
-  color: #9fb1c9;
-  font-size: 12px;
->>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
 }
 
 /* Keep text size close to inbox card */

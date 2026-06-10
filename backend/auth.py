@@ -178,10 +178,12 @@ def get_request_session_token(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
 ) -> Optional[str]:
-    token = (session_id or "").strip()
+    # Prefer the explicit dashboard token over cookies. This prevents a stale
+    # browser cookie from overriding the current tab/profile's stored session.
+    token = (x_session_id or "").strip()
     if token:
         return token
-    token = (x_session_id or "").strip()
+    token = (session_id or "").strip()
     return token or None
 
 

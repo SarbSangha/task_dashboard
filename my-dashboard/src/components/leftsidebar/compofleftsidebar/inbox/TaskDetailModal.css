@@ -276,16 +276,11 @@
 
 .worker-result-body p,
 .worker-result-empty {
-<<<<<<< HEAD
-=======
-  color: rgba(255, 255, 255, 0.76);
->>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
   line-height: 1.5;
   margin: 0;
   white-space: pre-wrap;
 }
 
-<<<<<<< HEAD
 .worker-result-empty {
   background: #ffffff;
   border: 1px solid #d5dbe5;
@@ -295,8 +290,6 @@
   padding: 12px 14px;
 }
 
-=======
->>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
 .worker-result-artifacts {
   display: grid;
   gap: 8px;

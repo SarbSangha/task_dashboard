@@ -2159,7 +2159,7 @@ export default function Tools({ view = 'tools' }) {
             <form className="it-admin-card" onSubmit={handleSaveTool} autoComplete="off">
               <div className="it-admin-card-header">
                 <div>
-                  <h2>{editToolId ? 'Edit Tool' : 'Add Tool'}</h2
+                  <h2>{editToolId ? 'Edit Tool' : 'Add Tool'}</h2>
                 </div>
                 <span>{editToolId ? 'Update setup' : 'Admin only'}</span>
               </div>

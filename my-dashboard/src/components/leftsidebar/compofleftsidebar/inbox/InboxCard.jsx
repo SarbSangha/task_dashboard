@@ -42,7 +42,8 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         submitted: false,
       }));
   const viewerStartedPart = Boolean(workerSubmissionSummary.viewerStarted);
-  const viewerSubmittedPart = normalizedSubmissionMode === 'all' && Boolean(workerSubmissionSummary.viewerSubmitted);
+  const viewerHasSubmittedPart = Boolean(workerSubmissionSummary.viewerSubmitted);
+  const viewerSubmittedPart = normalizedSubmissionMode === 'all' && viewerHasSubmittedPart;
   const hasWorkerSubmissionSummary = !isWorkflowTask && workerStatusRows.length > 1;
   const submissionModeLabel = normalizedSubmissionMode === 'all'
     ? 'Every worker must submit'
@@ -77,15 +78,24 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     !isWorkflowTask &&
     task.myRole === 'assignee' &&
     !isHeld &&
-    !viewerSubmittedPart &&
+    !viewerHasSubmittedPart &&
     canSubmitOwnPart &&
     submittableStatuses.includes(normalizedStatus);
+  const canShowEditSubmitTask =
+    !isWorkflowTask &&
+    task.myRole === 'assignee' &&
+    !isHeld &&
+    viewerHasSubmittedPart &&
+    ['in_progress', 'submitted', 'under_review'].includes(normalizedStatus);
   const withStart = canShowStartTask && !baseActions.includes('start')
     ? ['start', ...baseActions]
     : baseActions;
-  const computedActions = canShowSubmitTask && !withStart.includes('submit')
+  const withSubmit = canShowSubmitTask && !withStart.includes('submit')
     ? [...withStart, 'submit']
     : withStart;
+  const computedActions = canShowEditSubmitTask && !withSubmit.includes('edit_submit')
+    ? [...withSubmit, 'edit_submit']
+    : withSubmit;
   const inferFallbackActions = () => {
     const inferred = [];
     const terminalStatuses = ['completed', 'cancelled', 'rejected'];
