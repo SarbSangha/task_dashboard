@@ -505,14 +505,27 @@ function isLoginUiPresent() {
   if (queryDeep(['[role="dialog"]', '[aria-modal="true"]']).filter(isVisible).length > 0) return true;
   // 2. Visible email or password input
   if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS)) return true;
-  // 3. Leaf-node visible text matching login phrases
+  // 3. Logged-out ChatGPT shell/sidebar prompt. ChatGPT can show the chat
+  // composer while still logged out, so this must override chat UI signals.
+  const pageText = `${document.body?.innerText || ''}`.trim().toLowerCase();
+  if (
+    pageText.includes('get responses tailored to you')
+    || pageText.includes('log in to get responses based on saved chats')
+    || pageText.includes('log in to get responses based on saved chats, plus create images and upload files')
+  ) {
+    return true;
+  }
+  // 4. Visible login action outside a modal, such as the left sidebar CTA
+  // shown on logged-out ChatGPT pages.
+  if (findLandingLoginBtn()) return true;
+  // 5. Leaf-node visible text matching login phrases
   const loginPhrases = ['welcome back', 'stay logged out', 'log in or sign up'];
   const visibleText = Array.from(document.querySelectorAll('h1,h2,h3,p,span'))
     .filter((el) => el.childElementCount === 0 && isVisible(el))
     .map((el) => (el.innerText || el.textContent || '').trim().toLowerCase())
     .join(' ');
   if (loginPhrases.some((p) => visibleText.includes(p))) return true;
-  // 4. Auth path
+  // 6. Auth path
   const path = location.pathname;
   if (path.includes('/auth/') || path.includes('/login') || path.includes('/signup')) return true;
   return false;

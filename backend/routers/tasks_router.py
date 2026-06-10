@@ -376,6 +376,7 @@ class TaskCreate(BaseModel):
     links: List[str] = Field(default_factory=list)
     attachments: List[dict] = Field(default_factory=list)
     workflow: Optional["TaskWorkflowCreatePayload"] = None
+    submissionMode: str = Field(default="any")
 
 
 class TaskWorkflowStageCreatePayload(BaseModel):
@@ -411,6 +412,7 @@ class TaskUpdate(BaseModel):
     links: Optional[List[str]] = None
     attachments: Optional[List[dict]] = None
     workflow: Optional["TaskWorkflowCreatePayload"] = None
+    submissionMode: Optional[str] = None
 
 
 class TaskActionPayload(BaseModel):
@@ -1532,6 +1534,238 @@ TASK_DETAIL_EDITABLE_STATUSES = {
 
 TASK_TERMINAL_STATUSES = {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.REJECTED}
 TASK_HOLD_META_KEY = "hold"
+TASK_SUBMISSION_MODE_META_KEY = "submissionMode"
+TASK_WORKER_SUBMISSIONS_META_KEY = "workerSubmissions"
+TASK_WORKER_PROGRESS_META_KEY = "workerProgress"
+TASK_SUBMISSION_MODE_ANY = "any"
+TASK_SUBMISSION_MODE_ALL = "all"
+
+
+def _normalize_task_submission_mode(value: Optional[str]) -> str:
+    normalized = f"{value or ''}".strip().lower().replace("-", "_")
+    if normalized in {"all", "all_assignees", "all_workers", "everyone", "every_assignee"}:
+        return TASK_SUBMISSION_MODE_ALL
+    return TASK_SUBMISSION_MODE_ANY
+
+
+def _get_task_submission_mode(task: Task) -> str:
+    meta = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    return _normalize_task_submission_mode(meta.get(TASK_SUBMISSION_MODE_META_KEY))
+
+
+def _normalize_result_links(items: Optional[List[str]]) -> List[str]:
+    return [str(x).strip() for x in (items or []) if str(x).strip()]
+
+
+def _normalize_result_attachments(items: Optional[List[dict]]) -> List[dict]:
+    normalized_attachments = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        normalized_attachments.append(
+            {
+                "filename": item.get("filename"),
+                "originalName": item.get("originalName"),
+                "relativePath": item.get("relativePath"),
+                "path": item.get("path"),
+                "url": item.get("url"),
+                "mimetype": item.get("mimetype"),
+                "size": item.get("size"),
+                "storage": item.get("storage"),
+            }
+        )
+    return normalized_attachments
+
+
+def _task_worker_submissions(task: Task) -> dict:
+    meta = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    submissions = meta.get(TASK_WORKER_SUBMISSIONS_META_KEY)
+    return submissions if isinstance(submissions, dict) else {}
+
+
+def _task_worker_progress(task: Task) -> dict:
+    meta = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    progress = meta.get(TASK_WORKER_PROGRESS_META_KEY)
+    return progress if isinstance(progress, dict) else {}
+
+
+def _task_worker_has_submitted(task: Task, user_id: int) -> bool:
+    submission = _task_worker_submissions(task).get(str(int(user_id or 0)))
+    return isinstance(submission, dict) and f"{submission.get('status') or ''}".lower() == "submitted"
+
+
+def _task_worker_has_started(task: Task, user_id: int) -> bool:
+    progress = _task_worker_progress(task).get(str(int(user_id or 0)))
+    return isinstance(progress, dict) and f"{progress.get('status') or ''}".lower() in {"in_progress", "submitted"}
+
+
+def _record_task_worker_started(task: Task, current_user: User, now: datetime) -> dict:
+    meta = dict(task.metadata_json or {})
+    progress = dict(meta.get(TASK_WORKER_PROGRESS_META_KEY) or {})
+    started = {
+        "status": "in_progress",
+        "startedByUserId": current_user.id,
+        "startedByName": current_user.name,
+        "startedByDepartment": current_user.department,
+        "startedAt": serialize_utc_datetime(now),
+    }
+    progress[str(current_user.id)] = started
+    meta[TASK_WORKER_PROGRESS_META_KEY] = progress
+    task.metadata_json = meta
+    return started
+
+
+def _repair_task_worker_progress_from_history(task: Task, db: Session) -> bool:
+    if _is_workflow_task(task) or task.status != TaskStatus.IN_PROGRESS:
+        return False
+    meta = dict(task.metadata_json or {})
+    progress = dict(meta.get(TASK_WORKER_PROGRESS_META_KEY) or {})
+    if progress:
+        return False
+
+    started_rows = (
+        db.query(TaskStatusHistory, User)
+        .outerjoin(User, User.id == TaskStatusHistory.user_id)
+        .filter(
+            TaskStatusHistory.task_id == task.id,
+            TaskStatusHistory.action.in_(["started", "start", "start_work", "work_started"]),
+            TaskStatusHistory.user_id.isnot(None),
+        )
+        .order_by(TaskStatusHistory.timestamp.asc())
+        .all()
+    )
+    if not started_rows:
+        return False
+
+    for history, user in started_rows:
+        user_id = int(history.user_id or 0)
+        if not user_id:
+            continue
+        progress[str(user_id)] = {
+            "status": "in_progress",
+            "startedByUserId": user_id,
+            "startedByName": user.name if user else "Unknown",
+            "startedByDepartment": user.department if user else None,
+            "startedAt": serialize_utc_datetime(history.timestamp),
+        }
+
+    if not progress:
+        return False
+    meta[TASK_WORKER_PROGRESS_META_KEY] = progress
+    task.metadata_json = meta
+    return True
+
+
+def _record_task_worker_submission(
+    task: Task,
+    current_user: User,
+    payload: TaskActionPayload,
+    now: datetime,
+    *,
+    sync_global_result: bool = True,
+) -> dict:
+    meta = dict(task.metadata_json or {})
+    submissions = dict(meta.get(TASK_WORKER_SUBMISSIONS_META_KEY) or {})
+    links = _normalize_result_links(payload.result_links)
+    attachments = _normalize_result_attachments(payload.result_attachments)
+    submission = {
+        "status": "submitted",
+        "outputText": payload.result_text,
+        "links": links,
+        "attachments": attachments,
+        "submittedByUserId": current_user.id,
+        "submittedByName": current_user.name,
+        "submittedByDepartment": current_user.department,
+        "submittedAt": serialize_utc_datetime(now),
+    }
+    submissions[str(current_user.id)] = submission
+    progress = dict(meta.get(TASK_WORKER_PROGRESS_META_KEY) or {})
+    existing_progress = progress.get(str(current_user.id)) if isinstance(progress.get(str(current_user.id)), dict) else {}
+    progress[str(current_user.id)] = {
+        **existing_progress,
+        "status": "submitted",
+        "submittedAt": serialize_utc_datetime(now),
+    }
+    meta[TASK_WORKER_SUBMISSIONS_META_KEY] = submissions
+    meta[TASK_WORKER_PROGRESS_META_KEY] = progress
+    meta["lastWorkerSubmission"] = submission
+    task.metadata_json = meta
+    if sync_global_result:
+        meta["resultLinks"] = links
+        meta["resultAttachments"] = attachments
+        task.metadata_json = meta
+        task.result_text = payload.result_text
+    task.result_version = (task.result_version or 0) + 1
+    return submission
+
+
+def _build_worker_submission_summary(
+    task: Task,
+    assigned_to: List[dict],
+    current_user: Optional[User] = None,
+) -> dict:
+    submissions = _task_worker_submissions(task)
+    progress_by_user = _task_worker_progress(task)
+    workers = []
+    viewer_user_id = current_user.id if current_user else None
+    viewer_submitted = False
+    viewer_started = False
+<<<<<<< HEAD
+    viewer_submission = None
+=======
+>>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
+    for worker in assigned_to or []:
+        user_id = worker.get("id")
+        submission = submissions.get(str(int(user_id or 0))) if user_id else None
+        progress = progress_by_user.get(str(int(user_id or 0))) if user_id else None
+        is_submitted = isinstance(submission, dict) and submission.get("status") == "submitted"
+        has_started = bool(
+            is_submitted
+            or (isinstance(progress, dict) and f"{progress.get('status') or ''}".lower() in {"in_progress", "submitted"})
+        )
+        status = "submitted" if is_submitted else ("in_progress" if has_started else "pending")
+        if viewer_user_id and user_id and int(user_id) == int(viewer_user_id):
+            viewer_submitted = bool(is_submitted)
+            viewer_started = bool(has_started)
+<<<<<<< HEAD
+            viewer_submission = submission if is_submitted else None
+=======
+>>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
+        workers.append(
+            {
+                "id": user_id,
+                "name": worker.get("name") or "Unknown",
+                "department": worker.get("department"),
+                "role": worker.get("role"),
+                "status": status,
+                "submitted": bool(is_submitted),
+                "started": bool(has_started),
+                "startedAt": progress.get("startedAt") if isinstance(progress, dict) else None,
+                "submittedAt": submission.get("submittedAt") if is_submitted else None,
+                "submission": submission if is_submitted else None,
+            }
+        )
+    submitted_count = sum(1 for worker in workers if worker["submitted"])
+    submission_mode = _get_task_submission_mode(task)
+    required_count = len(workers) if submission_mode == TASK_SUBMISSION_MODE_ALL else min(1, len(workers))
+    is_complete = submitted_count >= required_count if workers else bool(task.submitted_at)
+    if submission_mode == TASK_SUBMISSION_MODE_ANY and task.submitted_at:
+        is_complete = True
+    return {
+        "mode": submission_mode,
+        "total": len(workers),
+        "submitted": submitted_count,
+        "pending": max(0, len(workers) - submitted_count),
+        "required": required_count,
+        "viewerStarted": viewer_started,
+        "viewerSubmitted": viewer_submitted,
+<<<<<<< HEAD
+        "viewerSubmission": viewer_submission,
+=======
+>>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
+        "workers": workers,
+        "complete": is_complete,
+    }
 
 
 def _parse_task_hold_until(value: Optional[str]) -> Optional[datetime]:
@@ -1704,7 +1938,22 @@ def compute_available_actions(
         if task.status in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.ASSIGNED, TaskStatus.NEED_IMPROVEMENT}:
             actions.append("start")
         if task.status == TaskStatus.IN_PROGRESS:
-            actions.append("submit")
+<<<<<<< HEAD
+            worker_has_submitted = _task_worker_has_submitted(task, user.id)
+            if worker_has_submitted:
+                actions.append("edit_submit")
+            elif not _task_worker_has_started(task, user.id):
+                actions.append("start")
+            else:
+                actions.append("submit")
+        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW} and _task_worker_has_submitted(task, user.id):
+            actions.append("edit_submit")
+=======
+            if not _task_worker_has_started(task, user.id):
+                actions.append("start")
+            elif _get_task_submission_mode(task) != TASK_SUBMISSION_MODE_ALL or not _task_worker_has_submitted(task, user.id):
+                actions.append("submit")
+>>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
         if task.status == TaskStatus.NEED_IMPROVEMENT:
             actions.append("edit_result")
 
@@ -2107,6 +2356,7 @@ def serialize_task_with_context(
     context: Optional[dict] = None,
 ) -> dict:
     has_context = context is not None
+    _repair_task_worker_progress_from_history(task, db)
     task_dict = _serialize_task_list_base(task)
     meta = task.metadata_json or {}
     task_dict["customerName"] = meta.get("customerName")
@@ -2116,6 +2366,7 @@ def serialize_task_with_context(
     task_dict["resultText"] = task.result_text
     task_dict["resultLinks"] = meta.get("resultLinks", [])
     task_dict["resultAttachments"] = meta.get("resultAttachments", [])
+    task_dict["submissionMode"] = _get_task_submission_mode(task)
     task_dict["revocation"] = meta.get("revocation")
     task_dict["currentStageAssigneeIds"] = task.current_assignee_ids_json or []
     task_dict["currentStageApprovalRequired"] = bool(meta.get(WORKFLOW_SUMMARY_APPROVAL_META_KEY))
@@ -2167,6 +2418,7 @@ def serialize_task_with_context(
             }
         )
     task_dict["assignedTo"] = assigned_to
+    task_dict["workerSubmissions"] = _build_worker_submission_summary(task, assigned_to, current_user)
 
     comment_counts = (context or {}).get("comment_counts") or {}
     comments_count = comment_counts.get(task.id, 0) if has_context else None
@@ -3246,6 +3498,9 @@ async def create_task(
         metadata_json = {
             "customerName": task_data.customerName,
             "suggestedAssigneeIds": initial_assignee_ids,
+            TASK_SUBMISSION_MODE_META_KEY: _normalize_task_submission_mode(task_data.submissionMode),
+            TASK_WORKER_SUBMISSIONS_META_KEY: {},
+            TASK_WORKER_PROGRESS_META_KEY: {},
             "reference": (task_data.reference or "").strip() or None,
             "links": [str(x).strip() for x in (task_data.links or []) if str(x).strip()],
             "attachments": [
@@ -4820,48 +5075,86 @@ async def submit_task(
     is_assignee = user_is_participant(task.id, current_user.id, ParticipantRole.ASSIGNEE, db)
     if not is_assignee:
         raise HTTPException(status_code=403, detail="Only assignee can submit")
+    submission_mode = _get_task_submission_mode(task)
+    viewer_already_submitted = _task_worker_has_submitted(task, current_user.id)
     if task.status != TaskStatus.IN_PROGRESS:
-        raise HTTPException(status_code=400, detail="Start the task before submitting")
+<<<<<<< HEAD
+        can_edit_existing_submission = (
+            viewer_already_submitted
+            and task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW}
+        )
+        if not can_edit_existing_submission:
+            raise HTTPException(status_code=400, detail="Start the task before submitting")
 
     has_result_update = bool(payload.result_text or payload.result_links or payload.result_attachments)
+=======
+        raise HTTPException(status_code=400, detail="Start the task before submitting")
+    if _get_task_submission_mode(task) == TASK_SUBMISSION_MODE_ALL and _task_worker_has_submitted(task, current_user.id):
+        raise HTTPException(status_code=400, detail="You have already submitted your part of this task")
+
+    has_result_update = bool(payload.result_text or payload.result_links or payload.result_attachments)
+    submission_mode = _get_task_submission_mode(task)
+>>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
+    assigned_user_ids = [
+        row.user_id
+        for row in db.query(TaskParticipant.user_id)
+        .filter(
+            TaskParticipant.task_id == task.id,
+            TaskParticipant.role == ParticipantRole.ASSIGNEE,
+            TaskParticipant.is_active == True,
+        )
+        .all()
+        if row.user_id
+    ]
+<<<<<<< HEAD
+    if len(set(assigned_user_ids)) > 1 and not _task_worker_has_started(task, current_user.id) and not viewer_already_submitted:
+=======
+    if len(set(assigned_user_ids)) > 1 and not _task_worker_has_started(task, current_user.id):
+>>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
+        raise HTTPException(status_code=400, detail="Start your part of this task before submitting")
+    should_submit_task = submission_mode == TASK_SUBMISSION_MODE_ANY
+    result_before = None
     if has_result_update:
-        meta = dict(task.metadata_json or {})
-        before = {
+        meta_before = dict(task.metadata_json or {})
+        result_before = {
             "resultText": task.result_text,
             "resultVersion": task.result_version,
-            "resultLinks": meta.get("resultLinks", []),
-            "resultAttachments": meta.get("resultAttachments", []),
+            "resultLinks": meta_before.get("resultLinks", []),
+            "resultAttachments": meta_before.get("resultAttachments", []),
         }
-        task.result_text = payload.result_text
-        # Store structured result artifacts in task metadata for receiver-side preview.
-        if payload.result_links:
-            meta["resultLinks"] = [str(x).strip() for x in payload.result_links if str(x).strip()]
-        if payload.result_attachments:
-            normalized_attachments = []
-            for item in payload.result_attachments:
-                if not isinstance(item, dict):
-                    continue
-                normalized_attachments.append(
-                    {
-                        "filename": item.get("filename"),
-                        "originalName": item.get("originalName"),
-                        "relativePath": item.get("relativePath"),
-                        "path": item.get("path"),
-                        "url": item.get("url"),
-                        "mimetype": item.get("mimetype"),
-                        "size": item.get("size"),
-                        "storage": item.get("storage"),
-                    }
-                )
-            meta["resultAttachments"] = normalized_attachments
-        task.metadata_json = meta
-        task.result_version = (task.result_version or 0) + 1
+    if has_result_update:
+        now = datetime.utcnow()
+        _record_task_worker_submission(
+            task,
+            current_user,
+            payload,
+            now,
+            sync_global_result=submission_mode == TASK_SUBMISSION_MODE_ANY,
+        )
+        if submission_mode == TASK_SUBMISSION_MODE_ALL:
+            submitted_user_ids = {
+                int(user_id)
+                for user_id, submission in _task_worker_submissions(task).items()
+                if f"{submission.get('status') or ''}".lower() == "submitted" and str(user_id).isdigit()
+            }
+            should_submit_task = bool(assigned_user_ids) and set(assigned_user_ids).issubset(submitted_user_ids)
+            if should_submit_task:
+                meta = dict(task.metadata_json or {})
+                meta["resultLinks"] = _normalize_result_links(payload.result_links)
+                meta["resultAttachments"] = _normalize_result_attachments(payload.result_attachments)
+                task.metadata_json = meta
+                task.result_text = payload.result_text
+    else:
+        now = datetime.utcnow()
+
+    if has_result_update:
+        meta = dict(task.metadata_json or {})
         db.add(
             TaskEditLog(
                 task_id=task.id,
                 user_id=current_user.id,
                 edit_scope="result",
-                before_json=before,
+                before_json=result_before or {},
                 after_json={
                     "resultText": task.result_text,
                     "resultVersion": task.result_version,
@@ -4872,9 +5165,53 @@ async def submit_task(
             )
         )
 
+    if not should_submit_task:
+        task.status = TaskStatus.IN_PROGRESS
+        task.workflow_stage = "worker_submission_pending"
+        task.submitted_at = None
+        task.submitted_by = None
+        task.result_edit_locked = False
+        task.updated_at = now
+        add_history(
+            db,
+            task,
+            current_user.id,
+            "worker_submitted",
+            TaskStatus.IN_PROGRESS.value,
+            payload.comments or "Worker submitted their part",
+            {
+                "submissionMode": submission_mode,
+                "submittedUserId": current_user.id,
+                "submittedCount": _build_worker_submission_summary(
+                    task,
+                    [{"id": user_id} for user_id in assigned_user_ids],
+                ).get("submitted"),
+                "requiredCount": len(assigned_user_ids),
+            },
+        )
+        create_notification(
+            db,
+            task,
+            task.creator_id,
+            "worker_submitted",
+            f"Worker submitted: {task.title}",
+            "One assigned worker submitted their part. Waiting for the remaining workers.",
+            actor=current_user,
+            metadata_json={
+                "submissionMode": submission_mode,
+                "submittedUserId": current_user.id,
+                "pendingUserIds": [
+                    user_id for user_id in assigned_user_ids if not _task_worker_has_submitted(task, user_id)
+                ],
+            },
+        )
+        db.commit()
+        await invalidate_task_lane_b_cache()
+        return {"success": True, "message": "Your part was submitted. Waiting for the remaining assignees."}
+
     task.status = TaskStatus.SUBMITTED
     task.workflow_stage = "submitted_to_spoc"
-    task.submitted_at = datetime.utcnow()
+    task.submitted_at = now
     task.submitted_by = current_user.id
     task.result_edit_locked = True
     task.updated_at = datetime.utcnow()
@@ -4943,14 +5280,18 @@ async def start_task_work(
     if not is_assignee:
         raise HTTPException(status_code=403, detail="Only assignee can start work")
 
-    if task.status not in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.ASSIGNED, TaskStatus.NEED_IMPROVEMENT}:
+    if task.status == TaskStatus.IN_PROGRESS and _task_worker_has_started(task, current_user.id):
+        raise HTTPException(status_code=400, detail="You have already started your part of this task")
+    if task.status not in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.ASSIGNED, TaskStatus.NEED_IMPROVEMENT, TaskStatus.IN_PROGRESS}:
         raise HTTPException(status_code=400, detail="Task cannot be started in current state")
 
+    now = datetime.utcnow()
+    _record_task_worker_started(task, current_user, now)
     task.status = TaskStatus.IN_PROGRESS
     task.workflow_stage = "in_progress"
-    task.started_at = datetime.utcnow()
+    task.started_at = task.started_at or now
     task.result_edit_locked = False
-    task.updated_at = datetime.utcnow()
+    task.updated_at = now
 
     add_history(
         db,
@@ -5100,6 +5441,13 @@ async def request_improvement(
             raise HTTPException(status_code=400, detail=str(exc))
 
     previous_status = task.status
+    meta = dict(task.metadata_json or {})
+    if TASK_WORKER_SUBMISSIONS_META_KEY in meta:
+        meta[TASK_WORKER_SUBMISSIONS_META_KEY] = {}
+        meta.pop("lastWorkerSubmission", None)
+    if TASK_WORKER_PROGRESS_META_KEY in meta:
+        meta[TASK_WORKER_PROGRESS_META_KEY] = {}
+    task.metadata_json = meta
     task.status = TaskStatus.NEED_IMPROVEMENT
     task.workflow_stage = "need_improvement"
     task.updated_at = datetime.utcnow()
@@ -5533,6 +5881,7 @@ async def edit_task_details(
             "links",
             "attachments",
             "workflow",
+            "submissionMode",
         )
         if payload_field_was_set(payload, field_name)
     }
@@ -5555,6 +5904,7 @@ async def edit_task_details(
         "reference": meta.get("reference"),
         "links": meta.get("links", []),
         "attachments": meta.get("attachments", []),
+        "submissionMode": _normalize_task_submission_mode(meta.get(TASK_SUBMISSION_MODE_META_KEY)),
         "assigneeIds": [
             participant.user_id
             for participant in (task.participants or [])
@@ -5624,6 +5974,20 @@ async def edit_task_details(
         meta["links"] = normalize_task_links(payload.links)
     if "attachments" in update_fields:
         meta["attachments"] = normalize_task_attachments(payload.attachments)
+    if "submissionMode" in update_fields:
+        current_submission_mode = _normalize_task_submission_mode(meta.get(TASK_SUBMISSION_MODE_META_KEY))
+        next_submission_mode = _normalize_task_submission_mode(payload.submissionMode)
+        if next_submission_mode != current_submission_mode and (
+            _task_worker_submissions(task)
+            or task.submitted_at
+            or task.submitted_by
+            or task.result_text
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Submission mode cannot be changed after work has been submitted.",
+            )
+        meta[TASK_SUBMISSION_MODE_META_KEY] = next_submission_mode
 
     assignee_ids_to_apply: Optional[List[int]] = None
     if "assigneeIds" in update_fields:
@@ -5746,6 +6110,20 @@ async def edit_task_details(
                 participant.read_at = None
         for assignee_id in sorted(valid_assignee_ids):
             ensure_participant(db, task.id, assignee_id, ParticipantRole.ASSIGNEE)
+        worker_submissions = meta.get(TASK_WORKER_SUBMISSIONS_META_KEY)
+        if isinstance(worker_submissions, dict):
+            meta[TASK_WORKER_SUBMISSIONS_META_KEY] = {
+                user_id: submission
+                for user_id, submission in worker_submissions.items()
+                if str(user_id).isdigit() and int(user_id) in valid_assignee_ids
+            }
+        worker_progress = meta.get(TASK_WORKER_PROGRESS_META_KEY)
+        if isinstance(worker_progress, dict):
+            meta[TASK_WORKER_PROGRESS_META_KEY] = {
+                user_id: progress
+                for user_id, progress in worker_progress.items()
+                if str(user_id).isdigit() and int(user_id) in valid_assignee_ids
+            }
 
     task.metadata_json = meta
 
@@ -5775,6 +6153,7 @@ async def edit_task_details(
                 "reference": meta.get("reference"),
                 "links": meta.get("links", []),
                 "attachments": meta.get("attachments", []),
+                "submissionMode": _normalize_task_submission_mode(meta.get(TASK_SUBMISSION_MODE_META_KEY)),
                 "assigneeIds": assignee_ids_to_apply,
                 "workflowEnabled": bool(task.workflow_enabled),
                 "finalApprovalRequired": bool(task.final_approval_required),

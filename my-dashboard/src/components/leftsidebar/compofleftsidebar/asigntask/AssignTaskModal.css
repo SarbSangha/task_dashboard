@@ -501,6 +501,27 @@
   color: #4338ca;
 }
 
+.submission-mode-toggle {
+  margin-top: 10px;
+}
+
+.submission-mode-toggle .workflow-toggle {
+  align-items: flex-start;
+  white-space: normal;
+}
+
+.submission-mode-toggle .workflow-toggle span {
+  display: grid;
+  gap: 2px;
+}
+
+.submission-mode-toggle .workflow-toggle small {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
 .workflow-builder-body {
   display: flex;
   flex-direction: column;

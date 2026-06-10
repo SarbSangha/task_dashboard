@@ -194,6 +194,114 @@
   transform: translateX(4px);
 }
 
+.worker-results-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.worker-results-heading h3 {
+  margin-bottom: 0;
+}
+
+.worker-results-heading span {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.worker-results-list {
+  display: grid;
+  gap: 12px;
+}
+
+.worker-result-card {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.72);
+  padding: 14px;
+}
+
+.worker-result-card.submitted {
+  border-color: rgba(34, 197, 94, 0.42);
+}
+
+.worker-result-card.pending {
+  border-color: rgba(250, 204, 21, 0.36);
+}
+
+.worker-result-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.worker-result-card-head strong,
+.worker-result-card-head small {
+  display: block;
+}
+
+.worker-result-card-head small {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.worker-result-card-head span {
+  color: #fde68a;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.worker-result-card.submitted .worker-result-card-head span {
+  color: #86efac;
+}
+
+.worker-result-body {
+  display: grid;
+  gap: 8px;
+}
+
+.worker-result-body label {
+  color: rgba(191, 219, 254, 0.86);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.worker-result-body p,
+.worker-result-empty {
+<<<<<<< HEAD
+=======
+  color: rgba(255, 255, 255, 0.76);
+>>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
+  line-height: 1.5;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+<<<<<<< HEAD
+.worker-result-empty {
+  background: #ffffff;
+  border: 1px solid #d5dbe5;
+  border-radius: 10px;
+  color: #111827;
+  font-weight: 600;
+  padding: 12px 14px;
+}
+
+=======
+>>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
+.worker-result-artifacts {
+  display: grid;
+  gap: 8px;
+}
+
 .journey-timeline {
   display: flex;
   flex-direction: column;

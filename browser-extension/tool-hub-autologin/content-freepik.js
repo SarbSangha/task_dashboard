@@ -8,7 +8,7 @@ const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
 const MIN_RUN_GAP_MS = 400;
 const KEEP_ALIVE_MS = 2000;
 const LOGIN_OPEN_COOLDOWN_MS = 2500;
-const SUBMIT_COOLDOWN_MS = 5000;
+const SUBMIT_COOLDOWN_MS = 1500;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -56,6 +56,7 @@ const STATE = {
   lastRunAt: 0,
   lastLoginOpenAt: 0,
   lastSubmitAt: 0,
+  lastEmailContinueAt: 0,
   passwordFilled: false,
   passwordRevealGuardAttached: false,
   switchingToLoginUntil: 0,
@@ -678,6 +679,41 @@ function findLoginSubmitButton(emailInput, passwordInput, options = {}) {
   return null;
 }
 
+function findEmailContinueButton(emailInput, options = {}) {
+  const exact = findButtonByText(
+    emailInput,
+    null,
+    (text) => text === 'continue',
+    options
+  );
+  if (exact) return exact;
+
+  const partial = findButtonByText(
+    emailInput,
+    null,
+    (text) => (
+      text.includes('continue')
+      && !text.includes('google')
+      && !text.includes('gmail')
+      && !text.includes('apple')
+      && !text.includes('sso')
+      && !text.includes('sign up')
+      && !text.includes('create account')
+      && !text.includes('continue as')
+    ),
+    options
+  );
+  if (partial) return partial;
+
+  for (const root of getFieldRoots(emailInput, null)) {
+    const candidates = collectActionCandidates(root, options);
+    const submit = candidates.find((element) => `${element.type || ''}`.toLowerCase() === 'submit');
+    if (submit) return submit;
+  }
+
+  return null;
+}
+
 function findSignUpSubmitButton(emailInput, passwordInput, options = {}) {
   const exactMatches = new Set(['sign up', 'create account']);
   const exact = findButtonByText(
@@ -1019,7 +1055,7 @@ function clickGoogleLoginAction(element) {
 }
 
 function submitLogin(emailInput, passwordInput, submitButton) {
-  if (clickElement(submitButton)) return true;
+  if (clickElementAtCenter(submitButton) || clickElement(submitButton)) return true;
   if (submitNearestForm(passwordInput || emailInput)) return true;
   return pressEnter(passwordInput || emailInput);
 }
@@ -1163,6 +1199,8 @@ function attemptFlow() {
   const emailInput = findInput(EMAIL_SELECTORS);
   const passwordInput = findInput(PASSWORD_SELECTORS);
   const hasCredentialInputs = Boolean(emailInput && passwordInput);
+  const hasEmailOnlyCredentialInput = Boolean(emailInput && !passwordInput);
+  const hasPasswordOnlyCredentialInput = Boolean(!emailInput && passwordInput);
   const loginFormVisible = hasCredentialInputs && isLoginSurface(emailInput, passwordInput);
   const signUpFormVisible = hasCredentialInputs && !loginFormVisible && isSignUpSurface(emailInput, passwordInput);
   const unknownCredentialSurface = hasCredentialInputs && !loginFormVisible && !signUpFormVisible;
@@ -1182,6 +1220,90 @@ function attemptFlow() {
 
   if (!STATE.credential) {
     requestCredential();
+  }
+
+  if (hasEmailOnlyCredentialInput && !isGoogleCredential()) {
+    if (!STATE.credential?.loginIdentifier) {
+      setStatus('Waiting for credential');
+      return;
+    }
+
+    if (!isVisible(emailInput)) {
+      setStatus('Waiting for email field');
+      return;
+    }
+
+    if (emailInput.value !== STATE.credential.loginIdentifier) {
+      emailInput.focus();
+      setInputValue(emailInput, STATE.credential.loginIdentifier);
+      STATE.lastEmailContinueAt = 0;
+      setStatus('Entering Magnific email');
+      scheduleAttempt(350);
+      return;
+    }
+
+    const continueButton = findEmailContinueButton(emailInput, { includeDisabled: true });
+    if (continueButton && isDisabled(continueButton)) {
+      setStatus('Waiting for Magnific email continue');
+      scheduleAttempt(350);
+      return;
+    }
+
+    if (Date.now() - STATE.lastEmailContinueAt < LOGIN_OPEN_COOLDOWN_MS) {
+      setStatus('Waiting for Magnific password form');
+      scheduleAttempt(400);
+      return;
+    }
+
+    STATE.lastEmailContinueAt = Date.now();
+    setStatus('Submitting Magnific email');
+    if (clickElement(continueButton) || submitNearestForm(emailInput) || pressEnter(emailInput)) {
+      scheduleAttempt(700);
+      return;
+    }
+
+    setStatus('Waiting for Magnific email continue');
+    scheduleAttempt(400);
+    return;
+  }
+
+  if (hasPasswordOnlyCredentialInput && !isGoogleCredential()) {
+    if (!STATE.credential?.password) {
+      setStatus('Waiting for credential');
+      return;
+    }
+
+    if (!isVisible(passwordInput)) {
+      setStatus('Waiting for password field');
+      return;
+    }
+
+    if (passwordInput.value !== STATE.credential.password) {
+      passwordInput.focus();
+      setInputValue(passwordInput, STATE.credential.password);
+      STATE.passwordFilled = passwordInput.value === STATE.credential.password;
+      setStatus('Filling Magnific password');
+      scheduleAttempt(120);
+      return;
+    }
+
+    if (Date.now() - STATE.lastSubmitAt < SUBMIT_COOLDOWN_MS) {
+      setStatus('Waiting for Magnific sign-in');
+      return;
+    }
+
+    const submitButton = findLoginSubmitButton(null, passwordInput, { includeDisabled: true });
+    if (submitButton && isDisabled(submitButton)) {
+      setStatus('Waiting for Magnific log-in button');
+      scheduleAttempt(150);
+      return;
+    }
+
+    STATE.lastSubmitAt = Date.now();
+    STATE.passwordFilled = true;
+    setStatus('Submitting Magnific login');
+    submitLogin(null, passwordInput, submitButton);
+    return;
   }
 
   if (!hasCredentialInputs) {
@@ -1308,19 +1430,29 @@ function attemptFlow() {
     return;
   }
 
+  let filledCredentialField = false;
   if (emailInput.value !== STATE.credential.loginIdentifier) {
     emailInput.focus();
     setInputValue(emailInput, STATE.credential.loginIdentifier);
+    filledCredentialField = true;
   }
 
   if (passwordInput.value !== STATE.credential.password) {
     passwordInput.focus();
     setInputValue(passwordInput, STATE.credential.password);
     STATE.passwordFilled = passwordInput.value === STATE.credential.password;
+    filledCredentialField = true;
+  }
+
+  if (filledCredentialField) {
+    setStatus('Filling Magnific login form');
+    scheduleAttempt(120);
+    return;
   }
 
   if (!isReadyForSubmit(emailInput, passwordInput)) {
     setStatus('Filling Magnific login form');
+    scheduleAttempt(150);
     return;
   }
 
@@ -1329,7 +1461,13 @@ function attemptFlow() {
     return;
   }
 
-  const submitButton = findLoginSubmitButton(emailInput, passwordInput);
+  const submitButton = findLoginSubmitButton(emailInput, passwordInput, { includeDisabled: true });
+  if (submitButton && isDisabled(submitButton)) {
+    setStatus('Waiting for Magnific log-in button');
+    scheduleAttempt(150);
+    return;
+  }
+
   STATE.lastSubmitAt = Date.now();
   STATE.passwordFilled = true;
   setStatus('Submitting Magnific login');

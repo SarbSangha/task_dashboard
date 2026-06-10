@@ -11,13 +11,23 @@ const EXTENSION_AUTH_SYNC_MESSAGE_TYPE = 'TOOL_HUB_SYNC_AUTH_CONTEXT';
 const MAX_LAUNCH_USES = 3;
 const DASHBOARD_HOSTS = new Set([
   'dashboard.ritzmediaworld.in',
+  'dashboard.ritzmediaworld.com',
   'localhost',
   '127.0.0.1',
   '192.168.1.15',
 ]);
+const DASHBOARD_HOST_SUFFIXES = [
+  '.ritzmediaworld.in',
+  '.ritzmediaworld.com',
+  '.onrender.com',
+  '.workers.dev',
+];
 
 function isAllowedDashboardPage() {
-  return DASHBOARD_HOSTS.has(window.location.hostname);
+  const hostname = `${window.location.hostname || ''}`.toLowerCase();
+  if (DASHBOARD_HOSTS.has(hostname)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+  return DASHBOARD_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
 }
 
 function normalizeToolSlug(value) {
@@ -38,6 +48,12 @@ function normalizeHostname(value) {
     return `${url.hostname || ''}`.replace(/^www\./, '');
   } catch {
     return raw.replace(/^www\./, '').split('/')[0];
+  }
+}
+
+function ignoreChromePromise(result) {
+  if (result && typeof result.catch === 'function') {
+    result.catch(() => {});
   }
 }
 
@@ -305,5 +321,5 @@ window.setInterval(() => {
   syncSessionToken().catch(() => {});
 }, 5000);
 
-chrome.storage.local.remove('rememberedToolLaunches').catch(() => {});
+ignoreChromePromise(chrome.storage?.local?.remove?.('rememberedToolLaunches'));
 queueSync();

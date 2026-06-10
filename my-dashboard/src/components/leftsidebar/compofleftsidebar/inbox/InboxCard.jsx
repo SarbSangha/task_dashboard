@@ -17,6 +17,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const isWorkflowTask = Boolean(task.workflowEnabled);
   const normalizedStatus = `${task.status || ''}`.toLowerCase();
   const normalizedWorkflowStatus = `${task.workflowStatus || ''}`.toLowerCase();
+  const normalizedWorkflowStage = `${task.workflowStage || ''}`.toLowerCase();
   const isCreatorTask = Boolean(task.isCreator) || task.myRole === 'creator';
   const isRevoked = task.status === 'cancelled' && !!(task.revocation || `${task.workflowStage || ''}`.includes('revoked'));
   const isHeld = Boolean(task.isHeld || task.holdInfo?.active);
@@ -24,6 +25,28 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const revokedBy = task.revocation?.revokedBy || task.creator?.name || 'Creator';
   const revokedAt = task.revocation?.revokedAt ? formatDateTimeIndia(task.revocation.revokedAt) : '';
   const revokedReason = task.revocation?.reason || '';
+  const assignedPeople = Array.isArray(task.assignedTo) ? task.assignedTo : [];
+  const workerSubmissionSummary = task.workerSubmissions || {};
+  const workerSubmissionRows = Array.isArray(workerSubmissionSummary.workers) ? workerSubmissionSummary.workers : [];
+  const normalizedSubmissionMode = workerSubmissionSummary.mode === 'all' || task.submissionMode === 'all'
+    ? 'all'
+    : 'any';
+  const workerStatusRows = workerSubmissionRows.length > 0
+    ? workerSubmissionRows
+    : assignedPeople.map((worker) => ({
+        id: worker.id,
+        name: worker.name,
+        department: worker.department,
+        status: 'pending',
+        started: false,
+        submitted: false,
+      }));
+  const viewerStartedPart = Boolean(workerSubmissionSummary.viewerStarted);
+  const viewerSubmittedPart = normalizedSubmissionMode === 'all' && Boolean(workerSubmissionSummary.viewerSubmitted);
+  const hasWorkerSubmissionSummary = !isWorkflowTask && workerStatusRows.length > 1;
+  const submissionModeLabel = normalizedSubmissionMode === 'all'
+    ? 'Every worker must submit'
+    : 'Any one worker can submit';
   const startableStatuses = ['pending', 'forwarded', 'assigned', 'need_improvement'];
   const submittableStatuses = ['in_progress'];
   const approvableStatuses = ['submitted', 'under_review', 'approved'];
@@ -35,10 +58,12 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const canReviewTask = isWorkflowTask
     ? workflowWaitingApproval
     : approvableStatuses.includes(normalizedStatus);
+  const canStartOwnPart = normalizedStatus === 'in_progress' && hasWorkerSubmissionSummary && !viewerStartedPart && !viewerSubmittedPart;
+  const canSubmitOwnPart = !hasWorkerSubmissionSummary || viewerStartedPart || viewerSubmittedPart;
 
   const baseActions = (task.availableActions || []).filter((action) => {
-    if (action === 'start') return startableStatuses.includes(normalizedStatus);
-    if (action === 'submit') return submittableStatuses.includes(normalizedStatus);
+    if (action === 'start') return startableStatuses.includes(normalizedStatus) || canStartOwnPart;
+    if (action === 'submit') return submittableStatuses.includes(normalizedStatus) && canSubmitOwnPart;
     if (action === 'approve' || action === 'need_improvement') return canReviewTask;
     if (action !== 'edit_task') return true;
     return task.status === 'need_improvement';
@@ -47,11 +72,13 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     !isWorkflowTask &&
     task.myRole === 'assignee' &&
     !isHeld &&
-    startableStatuses.includes(normalizedStatus);
+    (startableStatuses.includes(normalizedStatus) || canStartOwnPart);
   const canShowSubmitTask =
     !isWorkflowTask &&
     task.myRole === 'assignee' &&
     !isHeld &&
+    !viewerSubmittedPart &&
+    canSubmitOwnPart &&
     submittableStatuses.includes(normalizedStatus);
   const withStart = canShowStartTask && !baseActions.includes('start')
     ? ['start', ...baseActions]
@@ -119,7 +146,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const visibleActions = isCreatorTask ? actions : actions.filter((action) => action !== 'approve');
   const showInlineApprove = isCreatorTask && visibleActions.includes('approve');
   const menuActions = showInlineApprove ? visibleActions.filter((action) => action !== 'approve') : visibleActions;
-  const assignedNames = (task.assignedTo || []).map((x) => x.name).join(', ') || 'Unassigned';
+  const assignedNames = assignedPeople.map((x) => x.name).join(', ') || 'Unassigned';
   const description = task.description || '';
   const requestTypeLabel = (() => {
     const type = (task.taskType || 'task').toLowerCase();
@@ -131,6 +158,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     if (action === 'chat') return 'Chat';
     if (action === 'start') return isWorkflowTask ? 'Start Stage' : 'Start Task';
     if (action === 'submit') return isWorkflowTask ? 'Submit Stage' : 'Submit Task';
+    if (action === 'edit_submit') return isWorkflowTask ? 'Edit Stage Submit' : 'Edit Submit';
     if (action === 'approve') return isWorkflowTask ? 'Approve Stage' : 'Approve';
     if (action === 'need_improvement') return isWorkflowTask ? 'Request Revision' : 'Need Improvement';
     if (action === 'forward') return 'Forward To';
@@ -152,6 +180,13 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     if (['cancelled', 'rejected'].includes(normalizedStatus)) return 'status-cancelled';
     if (normalizedStatus === 'draft') return 'status-draft';
     return 'status-default';
+  })();
+  const statusDisplayLabel = (() => {
+    if (!isWorkflowTask && normalizedStatus === 'approved' && isCreatorTask) {
+      if (normalizedWorkflowStage === 'hod_approved') return 'HOD approved - final approval pending';
+      if (normalizedWorkflowStage === 'spoc_approved') return 'SPOC approved - final approval pending';
+    }
+    return (task.status || '').replace(/_/g, ' ') || '-';
   })();
   const deadlineInfo = (() => {
     if (!task.deadline) {
@@ -571,6 +606,96 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     );
   };
 
+  const renderWorkerSubmissions = () => {
+    if (!hasWorkerSubmissionSummary) return null;
+
+    return (
+      <div className="worker-submission-block full-span">
+        <div className="worker-submission-head">
+          <strong>Worker Status</strong>
+          <span>
+            {submissionModeLabel} · {workerSubmissionSummary.submitted || 0}/{workerSubmissionSummary.total || workerStatusRows.length} submitted
+          </span>
+        </div>
+        <div className="worker-submission-list">
+          {workerStatusRows.map((worker) => {
+            const submission = worker.submission || {};
+            const submitted = Boolean(worker.submitted);
+            const prefix = `worker-${worker.id || worker.name}`;
+            return (
+              <article
+                key={worker.id || worker.name}
+                className={`worker-submission-card ${submitted ? 'submitted' : 'pending'}`}
+              >
+                <div className="worker-submission-card-head">
+                  <div>
+                    <h4>{worker.name || 'Unknown worker'}</h4>
+                    <p>{worker.department || 'No department'}</p>
+                  </div>
+                  <span className="worker-submission-status">
+                    {submitted ? 'Submitted' : worker.started ? 'In Progress' : 'Not Started'}
+                  </span>
+                </div>
+                {submitted ? (
+                  <>
+                    <div className="workflow-stage-field">
+                      <label>Submitted at</label>
+                      <p>{formatDateTimeIndia(submission.submittedAt) || 'N/A'}</p>
+                    </div>
+                    <div className="workflow-stage-field">
+                      <label>Output text</label>
+                      <p>{submission.outputText || 'No text submitted.'}</p>
+                    </div>
+                    <div className="workflow-stage-field">
+                      <label>Links</label>
+                      {renderLinkList(submission.links || [], `${prefix}-links`)}
+                    </div>
+                    <div className="workflow-stage-field">
+                      <label>Files</label>
+                      {renderFileList(submission.attachments || [], `${prefix}-files`)}
+                    </div>
+                  </>
+                ) : (
+                  <div className="workflow-stage-empty">
+                    {worker.started
+                      ? `Started${worker.startedAt ? ` at ${formatDateTimeIndia(worker.startedAt)}` : ''}. No result submitted yet.`
+                      : 'This worker has not started yet.'}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderWorkerStatusStrip = () => {
+    if (!hasWorkerSubmissionSummary) return null;
+    return (
+      <div className="worker-status-strip">
+        <div className="worker-status-strip-head">
+          <strong>Worker Status</strong>
+          <span>{submissionModeLabel}</span>
+        </div>
+        <div className="worker-status-chip-list">
+          {workerStatusRows.map((worker) => {
+            const status = worker.submitted ? 'Submitted' : worker.started ? 'In Progress' : 'Not Started';
+            return (
+              <span
+                key={worker.id || worker.name}
+                className={`worker-status-chip ${worker.submitted ? 'submitted' : worker.started ? 'progress' : 'pending'}`}
+              >
+                <b>{worker.name || 'Unknown worker'}</b>
+                <em>{status}</em>
+              </span>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className={`inbox-card ${isRevoked ? 'revoked-card' : ''}`}>
       {isRevoked && (
@@ -596,8 +721,8 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         <span><strong>Project Name:</strong> {displayProjectName}</span>
         <span><strong>Creator:</strong> {task.creator?.name || 'Unknown'} ({task.creator?.department || 'N/A'})</span>
         <span className={`status-tile ${statusTileClass}`}>
-          <strong>Status:</strong>
-          <em>{(task.status || '').replace(/_/g, ' ') || '-'}</em>
+          <strong>Overall Status:</strong>
+          <em>{statusDisplayLabel}</em>
         </span>
         {isWorkflowTask && (
           <span><strong>Active Stage:</strong> {activeStageLabel || '-'}</span>
@@ -613,6 +738,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
           <small>{deadlineInfo.meta}</small>
         </span>
       </div>
+      {renderWorkerStatusStrip()}
 
       {expanded && (
         <div className="card-details">
@@ -644,6 +770,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
           <div><strong>Created By:</strong> {task.creator?.name || '-'}</div>
           <div><strong>Last Forwarded By:</strong> {task.lastForwardedBy || '-'}</div>
           {renderWorkflowStages()}
+          {renderWorkerSubmissions()}
           <div className="forward-history">
             <strong>Task Links:</strong>
             {(task.links || []).length === 0 && <div className="forward-item">-</div>}
@@ -698,7 +825,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
               ))}
             </div>
           )}
-          {(task.resultText || (task.resultLinks || []).length > 0 || (task.resultAttachments || []).length > 0) && (
+          {!hasWorkerSubmissionSummary && (task.resultText || (task.resultLinks || []).length > 0 || (task.resultAttachments || []).length > 0) && (
             <div className="forward-history">
               <div className="detail-head">
                 <strong>Submitted Result:</strong>

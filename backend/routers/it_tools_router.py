@@ -1757,7 +1757,13 @@ def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
         bucket = int(created_at.timestamp() // 60) if created_at != datetime.min else 0
         stable_expected_key = metadata.get("networkFallbackDedupeKey")
         if stable_expected_key:
-            return ("network_expected_fallback", f"{stable_expected_key}")
+            return (
+                "network_expected_fallback",
+                int(event.tool_id or 0),
+                int(event.user_id or 0),
+                int(event.credential_id or 0),
+                f"{stable_expected_key}",
+            )
         return (
             "network_expected_fallback",
             int(event.tool_id or 0),
@@ -1779,7 +1785,13 @@ def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
     if not stable_key and event.event_type != "generate_click":
         stable_key = event.fingerprint
     if stable_key:
-        return ("stable", f"{stable_key}")
+        return (
+            "stable",
+            int(event.tool_id or 0),
+            int(event.user_id or 0),
+            int(event.credential_id or 0),
+            f"{stable_key}",
+        )
     created_at = event.created_at or datetime.min
     bucket = int(created_at.timestamp() // 20) if created_at != datetime.min else 0
     return (
@@ -1876,17 +1888,50 @@ def _compute_usage_lifecycle_timings(lifecycle_events: list[dict]) -> dict:
     return {key: value for key, value in timings.items() if value is not None}
 
 
+def _is_internal_kling_preview_asset(item: dict) -> bool:
+    url = f"{item.get('url') or ''}".strip().lower()
+    key = f"{item.get('key') or ''}".strip().lower()
+    if not url:
+        return False
+    if re.search(r"\.origin(?:[?#]|$)", url, flags=re.IGNORECASE):
+        return False
+    match = re.match(r"^https?://[^/]*(?:klingai\.com|kling\.ai)/kimg/[^?#]+:(\d+)x(\d+)\.webp(?:[?#]|$)", url, flags=re.IGNORECASE)
+    if match:
+        width = int(match.group(1) or 0)
+        height = int(match.group(2) or 0)
+        if height > 0 and width / height >= 2.5:
+            return True
+    if re.match(r"^https?://[^/]*(?:klingai\.com|kling\.ai)/kos/[^?#]*/kling-web[-/][^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)", url, flags=re.IGNORECASE):
+        return True
+    if re.match(r"^https?://[^/]*(?:klingai\.com|kling\.ai)/kos/[^?#]*/kling-web/assets/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)", url, flags=re.IGNORECASE):
+        return True
+    if re.search(r"/(?:assets?|static|web-assets?|kling-web)/[^?#]*(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example)[^/]*(?:\.(?:png|jpe?g|webp|gif|avif|svg))?(?:[?#]|$)", url, flags=re.IGNORECASE):
+        return True
+    if re.search(r"\b(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example|template)\b", key, flags=re.IGNORECASE):
+        return True
+    if not re.search(r"\.webp(?:[?#]|$)", url, flags=re.IGNORECASE):
+        return False
+    if re.search(r"\borigin\b|\bupload\b", key, flags=re.IGNORECASE):
+        return False
+    return bool(re.search(r"(omni-stream-loading|stream-loading|loading|placeholder|empty|default|sample|example)", url, flags=re.IGNORECASE))
+
+
 def _merge_usage_metadata(existing: Optional[dict], incoming: Optional[dict]) -> dict:
     merged = dict(existing or {})
     existing_lifecycle_events = list(merged.get("lifecycleEvents") or [])
     incoming_lifecycle_event = None
-    existing_media_assets = merged.get("mediaAssets") if isinstance(merged.get("mediaAssets"), list) else []
+    existing_media_assets = [
+        item for item in (merged.get("mediaAssets") if isinstance(merged.get("mediaAssets"), list) else [])
+        if isinstance(item, dict) and not _is_internal_kling_preview_asset(item)
+    ]
 
     def merge_media_assets(incoming_assets: Optional[list]) -> list:
         assets_by_key = {}
         order = []
         for item in [*existing_media_assets, *(incoming_assets or [])]:
             if not isinstance(item, dict):
+                continue
+            if _is_internal_kling_preview_asset(item):
                 continue
             url = f"{item.get('url') or ''}".strip()
             blob_url = f"{item.get('blobUrl') or ''}".strip()
@@ -2322,6 +2367,36 @@ async def report_extension_usage_event(
         credits_burned = _safe_credits_burned_value(credits_burned, expected_credits, merged_metadata, source)
     else:
         merged_metadata = dict(payload.metadata or {})
+    if (
+        normalized_event_type == "generate_click"
+        and f"{source or ''}".strip().lower() == "generate_intent"
+        and not _normalize_prompt_text(payload.prompt_text)
+    ):
+        media_assets = merged_metadata.get("mediaAssets") if isinstance(merged_metadata.get("mediaAssets"), list) else []
+        if media_assets or merged_metadata.get("mediaAssetCount"):
+            _add_audit(
+                db,
+                actor_id=current_user.id,
+                action="tool_usage_ignored",
+                tool_id=tool.id,
+                credential_id=credential.id if credential else None,
+                target_user_id=current_user.id,
+                details={
+                    "reason": "generate_intent_missing_prompt",
+                    "hostname": _normalize_hostname(payload.hostname or payload.page_url),
+                    "source": source,
+                    "assetCount": len(media_assets),
+                    "externalEventId": external_event_id,
+                    "generationId": generation_id,
+                    "requestId": request_id,
+                },
+            )
+            db.commit()
+            return {
+                "success": True,
+                "ignored": True,
+                "reason": "generate_intent_missing_prompt",
+            }
     if credits_burned is None:
         if credits_before is not None and credits_after is not None:
             inferred_delta = max(0.0, credits_before - credits_after)
@@ -2396,6 +2471,7 @@ async def report_extension_usage_event(
                 db.query(ITPortalToolUsageEvent)
                 .filter(
                     ITPortalToolUsageEvent.tool_id == tool.id,
+                    ITPortalToolUsageEvent.user_id == current_user.id,
                     ITPortalToolUsageEvent.credential_id == credential.id,
                     or_(*stable_dedupe_filters),
                 )

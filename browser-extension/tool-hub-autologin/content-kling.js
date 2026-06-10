@@ -49,6 +49,7 @@ const MAX_CAPTURED_MEDIA_ASSETS = 8;
 const MAX_MEDIASOURCE_CAPTURED_ASSETS = 8;
 const GENERATED_ASSET_SCAN_MS = 4000;
 const GENERATED_ASSET_SCAN_MAX_MS = 150000;
+const ACTIVE_GENERATION_MAX_MS = GENERATED_ASSET_SCAN_MAX_MS;
 const MAX_EXPECTED_LOCK_AUTO_BURN = 300;
 const SUPPORTED_KLING_USAGE_FALLBACK_MODES = new Set(['image', 'video', 'motion-control', 'avatar']);
 const CREDIT_SOURCE_PROFILES = {
@@ -196,6 +197,7 @@ const USAGE_CTX = {
   assetScanStartedAt  : 0,
   assetScanSnapshot   : null,
   activeGenerationIds : new Map(),
+  activeGeneration    : null,
 };
 
 function normalizeLoginMethod(value) {
@@ -923,11 +925,20 @@ function isInternalKlingPreviewAsset(url = '', hint = '') {
   const normalizedUrl = `${url || ''}`.trim().toLowerCase();
   const normalizedHint = `${hint || ''}`.trim().toLowerCase();
   if (!normalizedUrl) return false;
-  if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web-[^?#]*\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(normalizedUrl)) return true;
-  if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(normalizedUrl)) return true;
+  if (/\.origin(?:[?#]|$)/i.test(normalizedUrl)) return false;
+  const klingCdnSizeMatch = normalizedUrl.match(/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kimg\/[^?#]+:(\d+)x(\d+)\.webp(?:[?#]|$)/i);
+  if (klingCdnSizeMatch) {
+    const width = Number(klingCdnSizeMatch[1]);
+    const height = Number(klingCdnSizeMatch[2]);
+    if (Number.isFinite(width) && Number.isFinite(height) && height > 0 && width / height >= 2.5) return true;
+  }
+  if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web[-/][^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(normalizedUrl)) return true;
+  if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(normalizedUrl)) return true;
+  if (/\/(?:assets?|static|web-assets?|kling-web)\/[^?#]*(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example)[^/]*(?:\.(?:png|jpe?g|webp|gif|avif|svg))?(?:[?#]|$)/i.test(normalizedUrl)) return true;
+  if (/\b(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example)\b/i.test(normalizedHint)) return true;
   if (!/\.webp(?:[?#]|$)/i.test(normalizedUrl)) return false;
   if (/\borigin\b/.test(normalizedHint)) return false;
-  if (/(omni-stream-loading|stream-loading|loading)/i.test(normalizedUrl)) return true;
+  if (/(omni-stream-loading|stream-loading|loading|placeholder|empty|default|sample|example)/i.test(normalizedUrl)) return true;
   return false;
 }
 
@@ -1175,6 +1186,22 @@ function getElementMediaUrlCandidates(el, mediaEl) {
   return candidates.filter(Boolean);
 }
 
+function isLikelyKlingUiMediaElement(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE) return true;
+  if (el.closest?.('#rmw-kling-badge')) return true;
+  if (el.closest?.('nav,header,footer,aside,[role="navigation"],[role="menu"],[role="menubar"],[role="dialog"],[aria-modal="true"]')) return true;
+  const contextText = normalizeSpace([
+    el.getAttribute?.('alt'),
+    el.getAttribute?.('aria-label'),
+    el.getAttribute?.('title'),
+    el.getAttribute?.('class'),
+    el.getAttribute?.('id'),
+    el.closest?.('[class]')?.getAttribute?.('class'),
+    el.closest?.('[id]')?.getAttribute?.('id'),
+  ].filter(Boolean).join(' '));
+  return /\b(logo|icon|avatar|badge|watermark|sidebar|navbar|toolbar|menu|button|empty|placeholder|loading|spinner|guide|tutorial|sample|example|template|history|asset-library)\b/i.test(contextText);
+}
+
 function inferGenerateDetectionSource(generateButton) {
   if (!generateButton) return 'unknown';
   const parts = [
@@ -1282,10 +1309,12 @@ function collectVisibleGeneratedMediaAssets(generationMode = '') {
   for (const el of collectUniqueElements(Array.from(document.querySelectorAll(selectors.join(','))))) {
     const mediaEl = el.closest?.('video') || el;
     if (!isVisible(mediaEl)) continue;
-    if (mediaEl.closest?.('#rmw-kling-badge')) continue;
+    if (isLikelyKlingUiMediaElement(mediaEl) || isLikelyKlingUiMediaElement(el)) continue;
 
     const rect = mediaEl.getBoundingClientRect();
-    if (rect.width < 96 || rect.height < 96) continue;
+    if (rect.width < 160 || rect.height < 120) continue;
+    const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+    if ((rect.width * rect.height) / viewportArea < 0.015) continue;
 
     const rawUrl = getElementMediaUrlCandidates(el, mediaEl)
       .find((candidate) => {
@@ -1293,14 +1322,14 @@ function collectVisibleGeneratedMediaAssets(generationMode = '') {
         const resolvedUrl = resolved.url;
         if (!resolvedUrl || seen.has(resolvedUrl)) return false;
         if (isInternalKlingPreviewAsset(resolvedUrl, mediaEl.tagName || el.tagName)) return false;
-        if (/\/(logo|icon|avatar|sprite|placeholder|loading)[^/]*\.(?:png|jpe?g|webp|gif|svg)/i.test(resolvedUrl)) return false;
+        if (/\/(logo|icon|avatar|sprite|placeholder|loading|empty|default|sample|example|template)[^/]*\.(?:png|jpe?g|webp|gif|svg)/i.test(resolvedUrl)) return false;
         return true;
       });
     const resolvedAssetUrl = resolveCapturedAssetUrl(rawUrl);
     const url = resolvedAssetUrl.url;
     if (!url || seen.has(url)) continue;
     if (isInternalKlingPreviewAsset(url, mediaEl.tagName || el.tagName)) continue;
-    if (/\/(logo|icon|avatar|sprite|placeholder|loading)[^/]*\.(?:png|jpe?g|webp|gif|svg)/i.test(url)) continue;
+    if (/\/(logo|icon|avatar|sprite|placeholder|loading|empty|default|sample|example|template)[^/]*\.(?:png|jpe?g|webp|gif|svg)/i.test(url)) continue;
 
     seen.add(url);
     const isVideoAsset = mediaEl.tagName?.toLowerCase() === 'video' || el.tagName?.toLowerCase() === 'video';
@@ -1342,6 +1371,71 @@ function mergeCapturedMediaAssets(existingAssets = [], incomingAssets = []) {
   return order.map((key) => mergedByKey.get(key)).filter(Boolean).slice(0, MAX_CAPTURED_MEDIA_ASSETS);
 }
 
+function isMediaSourceCapturedAsset(asset) {
+  return /^mediasource/i.test(`${asset?.source || ''}`) || `${asset?.mediaSourceSessionId || ''}`.trim();
+}
+
+function shouldDropDomPreviewAfterMediaSource(asset) {
+  const source = `${asset?.source || ''}`.trim().toLowerCase();
+  if (inferCapturedAssetRole(asset?.url, asset?.key, source) === 'input') return false;
+  return source === 'dom' || source === 'blob_source' || /^blob:/i.test(`${asset?.url || ''}`);
+}
+
+function buildActiveGenerationFromSnapshot(snapshot, startedAt = Date.now()) {
+  const promptText = normalizePromptCaptureValue(snapshot?.promptText);
+  const generateIntentId = `${snapshot?.metadata?.generateIntentId || snapshot?.externalEventId || ''}`.trim();
+  if (!promptText || !generateIntentId) return null;
+  return {
+    generateIntentId,
+    externalEventId: `${snapshot?.externalEventId || ''}`.trim(),
+    fingerprint: `${snapshot?.fingerprint || ''}`.trim(),
+    promptText,
+    startedAt,
+    expiresAt: startedAt + ACTIVE_GENERATION_MAX_MS,
+    status: 'active',
+  };
+}
+
+function isActiveGenerationValid(activeGeneration = USAGE_CTX.activeGeneration, now = Date.now()) {
+  return Boolean(
+    activeGeneration
+    && normalizePromptCaptureValue(activeGeneration.promptText)
+    && `${activeGeneration.generateIntentId || ''}`.trim()
+    && Number(activeGeneration.startedAt || 0) > 0
+    && Number(activeGeneration.expiresAt || 0) >= now
+  );
+}
+
+function snapshotMatchesActiveGeneration(snapshot, activeGeneration = USAGE_CTX.activeGeneration) {
+  if (!isActiveGenerationValid(activeGeneration)) return false;
+  const snapshotIntentId = `${snapshot?.metadata?.generateIntentId || snapshot?.externalEventId || ''}`.trim();
+  return Boolean(snapshotIntentId && snapshotIntentId === activeGeneration.generateIntentId);
+}
+
+function assetStartedAfterActiveGeneration(asset, activeGeneration = USAGE_CTX.activeGeneration) {
+  if (!isActiveGenerationValid(activeGeneration)) return false;
+  const startedAt = Number(asset?.startedAt || asset?.detectedAt || Date.now());
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return false;
+  return startedAt >= Number(activeGeneration.startedAt || 0);
+}
+
+function mediaSourcePayloadMatchesActiveGeneration(payload = {}) {
+  if (!isActiveGenerationValid()) return false;
+  const startedAt = Number(payload?.startedAt || 0);
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return false;
+  return startedAt >= Number(USAGE_CTX.activeGeneration.startedAt || 0);
+}
+
+function clearActiveGeneration(reason = '') {
+  if (USAGE_CTX.activeGeneration) {
+    debugUsageTelemetry('active_generation_cleared', {
+      reason,
+      generateIntentId: USAGE_CTX.activeGeneration.generateIntentId,
+    });
+  }
+  USAGE_CTX.activeGeneration = null;
+}
+
 function stopGeneratedAssetDetection() {
   if (USAGE_CTX.assetScanTimer) {
     clearInterval(USAGE_CTX.assetScanTimer);
@@ -1355,15 +1449,44 @@ function stopGeneratedAssetDetection() {
   }
   USAGE_CTX.assetScanSnapshot = null;
   USAGE_CTX.assetScanStartedAt = 0;
+  clearActiveGeneration('asset_detection_stopped');
 }
 
 function reportGeneratedAssetCandidates(snapshot, assets) {
   if (!snapshot || !assets.length) return;
-  const mergedAssets = mergeCapturedMediaAssets(snapshot.metadata?.mediaAssets, assets);
-  if (!mergedAssets.length) return;
-  const captureSource = assets.some((asset) => /^mediasource/i.test(`${asset?.source || ''}`))
+  if (!snapshotMatchesActiveGeneration(snapshot)) {
+    debugUsageTelemetry('generated_assets_skipped_inactive_generation', {
+      snapshotIntentId: `${snapshot?.metadata?.generateIntentId || snapshot?.externalEventId || ''}`.trim(),
+      activeIntentId: `${USAGE_CTX.activeGeneration?.generateIntentId || ''}`.trim(),
+      assetCount: assets.length,
+    });
+    return;
+  }
+  const ownedAssets = assets.filter((asset) => assetStartedAfterActiveGeneration(asset));
+  if (!ownedAssets.length) {
+    debugUsageTelemetry('generated_assets_skipped_before_generation', {
+      generateIntentId: USAGE_CTX.activeGeneration?.generateIntentId,
+      assetCount: assets.length,
+    });
+    return;
+  }
+  const captureSource = ownedAssets.some((asset) => /^mediasource/i.test(`${asset?.source || ''}`))
     ? 'mediasource'
     : 'dom';
+  const existingAssets = Array.isArray(snapshot.metadata?.mediaAssets) ? snapshot.metadata.mediaAssets : [];
+  const hasExistingMediaSource = existingAssets.some(isMediaSourceCapturedAsset);
+  if (captureSource === 'dom' && hasExistingMediaSource) {
+    debugUsageTelemetry('dom_assets_skipped_after_mediasource', {
+      generateIntentId: USAGE_CTX.activeGeneration?.generateIntentId,
+      assetCount: ownedAssets.length,
+    });
+    return;
+  }
+  const mergeBaseAssets = captureSource === 'mediasource'
+    ? existingAssets.filter((asset) => !shouldDropDomPreviewAfterMediaSource(asset))
+    : existingAssets;
+  const mergedAssets = mergeCapturedMediaAssets(mergeBaseAssets, ownedAssets);
+  if (!mergedAssets.length) return;
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
     assetCapture: {
@@ -1400,18 +1523,28 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
 function startGeneratedAssetDetection(snapshot) {
   if (!snapshot) return;
   stopGeneratedAssetDetection();
+  const scanStartedAt = Date.now();
+  const activeGeneration = buildActiveGenerationFromSnapshot(snapshot, scanStartedAt);
+  if (!activeGeneration) {
+    debugUsageTelemetry('asset_detection_skipped_without_active_generation', {
+      promptCaptured: Boolean(normalizePromptCaptureValue(snapshot.promptText)),
+      generateIntentId: `${snapshot?.metadata?.generateIntentId || snapshot?.externalEventId || ''}`.trim(),
+    });
+    return;
+  }
+  USAGE_CTX.activeGeneration = activeGeneration;
   const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
   USAGE_CTX.generatedAssetUrls = new Set(
     collectVisibleGeneratedMediaAssets(generationMode)
       .map((asset) => asset.url)
       .filter(Boolean)
   );
-  USAGE_CTX.assetScanStartedAt = Date.now();
+  USAGE_CTX.assetScanStartedAt = scanStartedAt;
   USAGE_CTX.assetScanSnapshot = snapshot;
 
   const scan = () => {
     const scanStartedAt = USAGE_CTX.assetScanStartedAt;
-    if (!scanStartedAt || Date.now() - scanStartedAt > GENERATED_ASSET_SCAN_MAX_MS) {
+    if (!scanStartedAt || Date.now() - scanStartedAt > GENERATED_ASSET_SCAN_MAX_MS || !isActiveGenerationValid()) {
       stopGeneratedAssetDetection();
       return;
     }
@@ -1938,15 +2071,14 @@ function buildNetworkUsageSnapshot(networkPayload) {
     ? normalizePromptCaptureValue(USAGE_CTX.assetScanSnapshot?.promptText)
     : '';
   const networkPromptText = normalizePromptCaptureValue(networkPayload?.promptText)
-    || activeIntentPrompt
-    || promptCapture.text;
+    || activeIntentPrompt;
   const mediaAssets = normalizeCapturedMediaAssets(networkPayload?.mediaAssets, networkPayload?.source || 'network');
 
   return {
     eventType: 'network_generation',
     eventDate: buildLocalDateValue(new Date(capturedAt)),
     status,
-    promptText: networkPromptText || readPromptText(),
+    promptText: networkPromptText,
     modelLabel: `${networkPayload?.modelLabel || ''}`.trim() || readSelectedModelLabel(),
     durationLabel: `${networkPayload?.durationLabel || ''}`.trim(),
     resolutionLabel: `${networkPayload?.resolutionLabel || ''}`.trim(),
@@ -2036,7 +2168,18 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.origin !== location.origin) return;
   if (event?.data?.source === 'rmw-kling-mediasource-capture') {
     if (event?.data?.type === 'KLING_MEDIASOURCE_VIDEO_COMPLETE') {
-      const asset = storeMediaSourceVideoAsset(event.data.payload || {});
+      const mediaSourcePayload = event.data.payload || {};
+      if (!normalizePromptCaptureValue(USAGE_CTX.assetScanSnapshot?.promptText) || !mediaSourcePayloadMatchesActiveGeneration(mediaSourcePayload)) {
+        debugUsageTelemetry('mediasource_video_skipped_without_active_generation', {
+          sessionId: `${event.data.payload?.sessionId || ''}`.slice(0, 120),
+          size: Number(event.data.payload?.size || 0) || null,
+          sessionStartedAt: Number(event.data.payload?.startedAt || 0) || null,
+          activeStartedAt: Number(USAGE_CTX.activeGeneration?.startedAt || 0) || null,
+          activeIntentId: `${USAGE_CTX.activeGeneration?.generateIntentId || ''}`.trim(),
+        });
+        return;
+      }
+      const asset = storeMediaSourceVideoAsset(mediaSourcePayload);
       if (asset) {
         setStatus(`MediaSource video captured (${Math.round((asset.size || 0) / 1024 / 1024)} MB)`, { hideAfterMs: 2500 });
         uploadMediaSourceVideoAsset(asset)
@@ -2113,6 +2256,21 @@ function handleKlingNetworkUsageMessage(event) {
   const hasStableNetworkId = Boolean(payload?.generationId || payload?.requestId);
   if (!payload?.status && !payload?.isCompleted && !hasReasonableCreditBurn) return;
   if (!hasStableNetworkId && !hasRecentGenerateIntent) return;
+  if (mediaAssetCount > 0) {
+    const capturedAt = Number(payload?.capturedAt || now);
+    if (!isActiveGenerationValid() || capturedAt < Number(USAGE_CTX.activeGeneration?.startedAt || 0)) {
+      debugUsageTelemetry('network_media_skipped_without_active_generation', {
+        generationId: payload.generationId,
+        requestId: payload.requestId,
+        status: payload.status,
+        source: payload.source,
+        mediaAssetCount,
+        capturedAt,
+        activeStartedAt: Number(USAGE_CTX.activeGeneration?.startedAt || 0) || null,
+      });
+      return;
+    }
+  }
   if (!hasStableNetworkId && USAGE_CTX.pendingReportTimers.size > 1) {
     debugUsageTelemetry('network_usage_skipped_ambiguous_idless_concurrent', {
       pendingCount: USAGE_CTX.pendingReportTimers.size,
@@ -2326,6 +2484,24 @@ function scheduleGenerateUsageReport(generateButton) {
   const snapshot = buildGenerateUsageSnapshot(generateButton);
   const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
   const expectedCredits = Number(snapshot.expectedCredits);
+  const promptText = normalizePromptCaptureValue(snapshot.promptText);
+  if (!promptText) {
+    debugUsageTelemetry('generate_intent_skipped_missing_prompt', {
+      generationMode,
+      actionLabel: snapshot.metadata?.actionLabel,
+      generateDetectionSource: inferGenerateDetectionSource(generateButton),
+    });
+    setStatus('Generate ignored: no prompt captured', { hideAfterMs: 2500 });
+    return;
+  }
+  snapshot.promptText = promptText;
+  snapshot.metadata = {
+    ...(snapshot.metadata || {}),
+    promptCapture: {
+      ...(snapshot.metadata?.promptCapture || {}),
+      text: promptText,
+    },
+  };
   const hasSupportedMode = SUPPORTED_KLING_USAGE_FALLBACK_MODES.has(generationMode);
   const hasExpectedCredits = Number.isFinite(expectedCredits)
     && expectedCredits > 0
@@ -2334,7 +2510,6 @@ function scheduleGenerateUsageReport(generateButton) {
   const missingCaptureFields = [
     !hasSupportedMode ? 'generationMode' : '',
     !hasExpectedCredits ? 'expectedCredits' : '',
-    !normalizePromptCaptureValue(snapshot.promptText) ? 'promptText' : '',
   ].filter(Boolean);
   const generateDetectionSource = inferGenerateDetectionSource(generateButton);
   if (!hasExpectedCredits) {

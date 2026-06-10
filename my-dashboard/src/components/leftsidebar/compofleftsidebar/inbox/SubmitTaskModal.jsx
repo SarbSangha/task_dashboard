@@ -18,11 +18,32 @@ const getActiveStageLabel = (task) => {
   return title;
 };
 
+const getViewerSubmission = (task = null) => {
+  const summary = task?.workerSubmissions || {};
+  if (summary.viewerSubmission && typeof summary.viewerSubmission === 'object') {
+    return summary.viewerSubmission;
+  }
+  const workers = Array.isArray(summary.workers) ? summary.workers : [];
+  if (workers.length <= 1) {
+    return workers.find((worker) => worker?.submitted && worker?.submission)?.submission || null;
+  }
+  return null;
+};
+
 const createInitialState = (task = null) => ({
-  resultText: task?.resultText || '',
+  resultText: getViewerSubmission(task)?.outputText || task?.resultText || '',
   comments: '',
-  links: Array.isArray(task?.resultLinks) ? [...task.resultLinks] : [],
+  links: Array.isArray(getViewerSubmission(task)?.links)
+    ? [...getViewerSubmission(task).links]
+    : Array.isArray(task?.resultLinks)
+      ? [...task.resultLinks]
+      : [],
   linkInput: '',
+  existingAttachments: Array.isArray(getViewerSubmission(task)?.attachments)
+    ? [...getViewerSubmission(task).attachments]
+    : Array.isArray(task?.resultAttachments)
+      ? [...task.resultAttachments]
+      : [],
   attachments: [],
   submitting: false,
   error: '',
@@ -131,6 +152,13 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
     }));
   };
 
+  const removeExistingAttachment = (index) => {
+    setFormState((prev) => ({
+      ...prev,
+      existingAttachments: prev.existingAttachments.filter((_, itemIndex) => itemIndex !== index),
+    }));
+  };
+
   const appendAttachments = (selectedFiles) => {
     const selected = Array.from(selectedFiles || []);
     if (!selected.length) return;
@@ -151,6 +179,7 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
     const hasPayload =
       formState.resultText.trim() ||
       formState.links.length > 0 ||
+      formState.existingAttachments.length > 0 ||
       formState.attachments.length > 0;
     if (!hasPayload) {
       setFormState((prev) => ({ ...prev, error: 'Add result text, links, or attachments before submitting.' }));
@@ -229,6 +258,7 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
       const hasFinalPayload =
         formState.resultText.trim() ||
         formState.links.length > 0 ||
+        formState.existingAttachments.length > 0 ||
         uploadedAttachments.length > 0;
       if (!hasFinalPayload) {
         setFormState((prev) => ({
@@ -243,7 +273,7 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
         result_text: formState.resultText.trim(),
         comments: formState.comments.trim(),
         result_links: formState.links,
-        result_attachments: uploadedAttachments,
+        result_attachments: [...formState.existingAttachments, ...uploadedAttachments],
       });
 
       resetUploadState();
@@ -263,7 +293,7 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
   return (
     <div className="forward-modal-overlay" onClick={formState.submitting ? undefined : closeModal}>
       <div className="submit-modal" onClick={(event) => event.stopPropagation()}>
-        <h3>{isWorkflowTask(task) ? 'Submit Stage Result' : 'Submit Task Result'}</h3>
+        <h3>{getViewerSubmission(task) ? 'Edit Submitted Result' : (isWorkflowTask(task) ? 'Submit Stage Result' : 'Submit Task Result')}</h3>
         <p className="submit-modal-subtitle">{task?.title}</p>
 
         <div className="submit-task-info">
@@ -384,6 +414,22 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
           </div>
         )}
 
+        {formState.existingAttachments.length > 0 && (
+          <div className="submit-attachment-list">
+            {formState.existingAttachments.map((file, index) => (
+              <div key={`${getAttachmentDisplayName(file)}-${index}`} className="submit-attachment-item">
+                <div className="submit-attachment-copy">
+                  <span>{getAttachmentDisplayName(file)}</span>
+                  <small>Already submitted</small>
+                </div>
+                <button type="button" onClick={() => removeExistingAttachment(index)} disabled={formState.submitting}>
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {formState.error && <p className="forward-modal-error">{formState.error}</p>}
 
         <div className="forward-modal-actions">
@@ -394,7 +440,7 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
             disabled={formState.submitting}
             onClick={submitFromModal}
           >
-            {formState.submitting ? 'Submitting...' : (isWorkflowTask(task) ? 'Submit Stage' : 'Submit Result')}
+            {formState.submitting ? 'Submitting...' : (getViewerSubmission(task) ? 'Update Submission' : (isWorkflowTask(task) ? 'Submit Stage' : 'Submit Result'))}
           </button>
         </div>
       </div>

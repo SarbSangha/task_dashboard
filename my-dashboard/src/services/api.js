@@ -710,6 +710,7 @@ export const taskAPI = {
       reference: taskData.reference || '',
       links: normalizedLinks,
       attachments: normalizedAttachments,
+      submissionMode: taskData.submissionMode === 'all' ? 'all' : 'any',
       workflow: normalizedWorkflow,
     };
     

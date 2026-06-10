@@ -21,12 +21,30 @@ const STARTABLE_TASK_STATUSES = new Set(['pending', 'forwarded', 'assigned', 'ne
 const SUBMITTABLE_TASK_STATUSES = new Set(['in_progress']);
 const REVIEWABLE_TASK_STATUSES = new Set(['submitted', 'under_review', 'approved']);
 
-const canStartTaskFromStatus = (status = '') => (
-  STARTABLE_TASK_STATUSES.has(`${status || ''}`.toLowerCase())
-);
+const canStartTaskFromStatus = (status = '', task = null) => {
+  const normalizedStatus = `${status || ''}`.toLowerCase();
+  if (STARTABLE_TASK_STATUSES.has(normalizedStatus)) return true;
+  if (normalizedStatus !== 'in_progress') return false;
 
-const canSubmitTaskFromStatus = (status = '') => (
+  const workerRows = Array.isArray(task?.workerSubmissions?.workers)
+    ? task.workerSubmissions.workers
+    : [];
+  const assignedRows = Array.isArray(task?.assignedTo) ? task.assignedTo : [];
+  const hasMultipleWorkers = workerRows.length > 1 || assignedRows.length > 1;
+  if (!hasMultipleWorkers) return false;
+
+  if (workerRows.length === 0) return true;
+  return !task?.workerSubmissions?.viewerStarted && !task?.workerSubmissions?.viewerSubmitted;
+};
+
+const canSubmitTaskFromStatus = (status = '', task = null) => (
   SUBMITTABLE_TASK_STATUSES.has(`${status || ''}`.toLowerCase())
+  && (
+    !Array.isArray(task?.workerSubmissions?.workers)
+    || task.workerSubmissions.workers.length <= 1
+    || task.workerSubmissions.viewerStarted
+    || task.workerSubmissions.viewerSubmitted
+  )
 );
 
 const canReviewTaskFromStatus = (status = '') => (
@@ -42,7 +60,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const taskDetails = task || null;
 
   const handleStartWork = async () => {
-    if (!canStartTaskFromStatus(taskDetails?.status)) {
+    if (!canStartTaskFromStatus(taskDetails?.status, taskDetails)) {
       await showAlert('This task is already in progress or cannot be started from its current status.', {
         title: 'Start Not Available',
       });
@@ -150,8 +168,8 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
 
   const isCreatorTask = Boolean(taskDetails.isCreator) || taskDetails.myRole === 'creator';
   const normalizedTaskStatus = `${taskDetails.status || ''}`.toLowerCase();
-  const canStartFromStatus = canStartTaskFromStatus(normalizedTaskStatus);
-  const canSubmitFromStatus = canSubmitTaskFromStatus(normalizedTaskStatus);
+  const canStartFromStatus = canStartTaskFromStatus(normalizedTaskStatus, taskDetails);
+  const canSubmitFromStatus = canSubmitTaskFromStatus(normalizedTaskStatus, taskDetails);
   const workflowWaitingApproval =
     canReviewTaskFromStatus(normalizedTaskStatus)
     && (`${taskDetails.workflowStatus || ''}`.toLowerCase() === 'waiting_approval'
@@ -171,6 +189,17 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const normalizedStatus = `${taskDetails.status || ''}`.replace(/_/g, ' ');
   const attachments = Array.isArray(taskDetails.attachments) ? taskDetails.attachments : [];
   const links = Array.isArray(taskDetails.links) ? taskDetails.links : [];
+  const workerSubmissionSummary = taskDetails.workerSubmissions || {};
+  const workerSubmissionRows = Array.isArray(workerSubmissionSummary.workers)
+    ? workerSubmissionSummary.workers
+    : [];
+  const hasWorkerSubmissionSummary = !isWorkflowTask(taskDetails) && workerSubmissionRows.length > 1;
+  const normalizedSubmissionMode = workerSubmissionSummary.mode === 'all' || taskDetails.submissionMode === 'all'
+    ? 'all'
+    : 'any';
+  const submissionModeLabel = normalizedSubmissionMode === 'all'
+    ? 'All workers must submit'
+    : 'Any one worker can submit';
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -267,7 +296,91 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
             </div>
           )}
 
-          {taskDetails.resultText && (
+          {hasWorkerSubmissionSummary && (
+            <div className="detail-section worker-results-section">
+              <div className="worker-results-heading">
+                <h3>Worker Results</h3>
+                <span>
+                  {submissionModeLabel} · {workerSubmissionSummary.submitted || 0}/{workerSubmissionSummary.total || workerSubmissionRows.length} submitted
+                </span>
+              </div>
+              <div className="worker-results-list">
+                {workerSubmissionRows.map((worker) => {
+                  const submission = worker.submission || {};
+                  const submitted = Boolean(worker.submitted);
+                  const workerLinks = Array.isArray(submission.links) ? submission.links : [];
+                  const workerFiles = Array.isArray(submission.attachments) ? submission.attachments : [];
+                  return (
+                    <article
+                      key={worker.id || worker.name}
+                      className={`worker-result-card ${submitted ? 'submitted' : 'pending'}`}
+                    >
+                      <div className="worker-result-card-head">
+                        <div>
+                          <strong>{worker.name || 'Unknown worker'}</strong>
+                          <small>{worker.department || 'No department'}</small>
+                        </div>
+                        <span>{submitted ? 'Submitted' : worker.started ? 'In Progress' : 'Not Started'}</span>
+                      </div>
+                      {submitted ? (
+                        <div className="worker-result-body">
+                          <label>Submitted at</label>
+                          <p>{formatDateTimeIndia(submission.submittedAt) || 'N/A'}</p>
+                          <label>Output text</label>
+                          <p>{submission.outputText || 'No text submitted.'}</p>
+                          <label>Links</label>
+                          {workerLinks.length > 0 ? (
+                            <div className="worker-result-artifacts">
+                              {workerLinks.map((link, index) => (
+                                <a
+                                  key={`${link}-${index}`}
+                                  href={link}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="attachment-item"
+                                >
+                                  {link}
+                                </a>
+                              ))}
+                            </div>
+                          ) : (
+                            <p>No links submitted.</p>
+                          )}
+                          <label>Files</label>
+                          {workerFiles.length > 0 ? (
+                            <div className="worker-result-artifacts">
+                              {workerFiles.map((file, index) => (
+                                <button
+                                  key={`${file?.url || file?.filename || index}-${index}`}
+                                  type="button"
+                                  className="attachment-item"
+                                  onClick={() => {
+                                    if (buildFileOpenUrl(file)) setPreviewFile(file);
+                                  }}
+                                >
+                                  {file?.originalName || file?.filename || `Result file ${index + 1}`}
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <p>No files submitted.</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="worker-result-empty">
+                          {worker.started
+                            ? `Started${worker.startedAt ? ` at ${formatDateTimeIndia(worker.startedAt)}` : ''}. No result submitted yet.`
+                            : 'This worker has not started yet.'}
+                        </p>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {!hasWorkerSubmissionSummary && taskDetails.resultText && (
             <div className="detail-section">
               <h3>{isWorkflowTask(taskDetails) ? 'Latest Stage Output' : 'Submitted Result'}</h3>
               <p className="task-details-text">{taskDetails.resultText}</p>
@@ -296,6 +409,16 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
               disabled={actionLoading}
             >
               {isWorkflowTask(taskDetails) ? '📤 Submit Stage' : '📤 Submit Result'}
+            </button>
+          )}
+
+          {visibleActions.includes('edit_submit') && (
+            <button
+              className="action-btn success"
+              onClick={() => setShowSubmitSection(true)}
+              disabled={actionLoading}
+            >
+              {isWorkflowTask(taskDetails) ? '📤 Edit Stage Submit' : '📤 Edit Submit'}
             </button>
           )}
 

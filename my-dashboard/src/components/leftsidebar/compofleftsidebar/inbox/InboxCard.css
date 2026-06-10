@@ -201,6 +201,87 @@
   text-transform: capitalize;
 }
 
+.worker-status-strip {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(91, 112, 150, 0.3);
+  background: rgba(12, 21, 39, 0.34);
+  display: grid;
+  gap: 10px;
+}
+
+.worker-status-strip-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.worker-status-strip-head strong {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9bb0cf;
+}
+
+.worker-status-strip-head span {
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.worker-status-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.worker-status-chip {
+  min-width: 170px;
+  flex: 1 1 170px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 26, 47, 0.72);
+  color: #e5e7eb;
+}
+
+.worker-status-chip b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.worker-status-chip em {
+  flex-shrink: 0;
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.worker-status-chip.pending {
+  border-color: rgba(251, 191, 36, 0.36);
+  color: #fde68a;
+}
+
+.worker-status-chip.progress {
+  border-color: rgba(96, 165, 250, 0.44);
+  color: #bfdbfe;
+}
+
+.worker-status-chip.submitted {
+  border-color: rgba(74, 222, 128, 0.4);
+  color: #bbf7d0;
+}
+
 .status-tile.status-pending {
   background: rgba(146, 64, 14, 0.38);
   border-color: rgba(251, 191, 36, 0.72);
@@ -484,6 +565,84 @@
   color: #fca5a5;
 }
 
+.inbox-card .worker-submission-block {
+  padding: 14px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(20, 31, 55, 0.98), rgba(12, 21, 38, 0.96));
+  border: 1px solid rgba(99, 116, 155, 0.3);
+}
+
+.inbox-card .worker-submission-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.inbox-card .worker-submission-head strong {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #dce8ff;
+}
+
+.inbox-card .worker-submission-head span {
+  color: #9cb0d0;
+  font-size: 12px;
+}
+
+.inbox-card .worker-submission-list {
+  display: grid;
+  gap: 12px;
+}
+
+.inbox-card .worker-submission-card {
+  border: 1px solid rgba(85, 106, 143, 0.26);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(11, 20, 35, 0.72);
+  display: grid;
+  gap: 10px;
+}
+
+.inbox-card .worker-submission-card.submitted {
+  border-color: rgba(74, 222, 128, 0.34);
+}
+
+.inbox-card .worker-submission-card.pending {
+  border-color: rgba(251, 191, 36, 0.34);
+}
+
+.inbox-card .worker-submission-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.inbox-card .worker-submission-card-head h4 {
+  margin: 0 0 3px;
+  color: #f8fafc;
+  font-size: 14px;
+}
+
+.inbox-card .worker-submission-card-head p {
+  margin: 0;
+  color: #9cb0d0;
+}
+
+.inbox-card .worker-submission-status {
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #dbeafe;
+  background: rgba(96, 165, 250, 0.14);
+  border: 1px solid rgba(147, 197, 253, 0.18);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .workflow-stage-card-list {
   display: grid;
   grid-auto-flow: column;
@@ -680,8 +839,13 @@
 }
 
 .workflow-stage-empty {
-  color: #94a9ca;
+  background: #ffffff;
+  border: 1px solid #d5dbe5;
+  border-radius: 10px;
+  color: #111827;
+  font-weight: 600;
   line-height: 1.5;
+  padding: 12px 14px;
 }
 
 .workflow-stage-event-list {

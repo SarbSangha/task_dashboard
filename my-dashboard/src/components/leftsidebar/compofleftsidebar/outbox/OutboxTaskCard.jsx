@@ -63,6 +63,9 @@ const OutboxTaskCard = ({
     isHeld,
     holdInfo
   } = task;
+  const normalizedWorkflowStage = `${workflowStage || ''}`.toLowerCase();
+  const isFinalApprovalPending =
+    normalizedStatus === 'approved' && ['hod_approved', 'spoc_approved'].includes(normalizedWorkflowStage);
   const displayTaskName = taskName || title || 'Untitled Task';
   const displayTaskDetails = taskDetails || description || '';
   const summaryText = displayTaskDetails.length > 160
@@ -76,6 +79,8 @@ const OutboxTaskCard = ({
   const statusLabel = `${status || 'pending'}`
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (char) => char.toUpperCase());
+  const displayStatusLabel = isFinalApprovalPending ? 'Submitted' : statusLabel;
+  const displayStatusForClass = isFinalApprovalPending ? 'submitted' : status;
   const statusFallsThroughReceived = [
     'assigned',
     'forwarded',
@@ -104,7 +109,7 @@ const OutboxTaskCard = ({
     'cancelled',
     'rejected',
   ].includes(normalizedStatus);
-  const statusFallsThroughCompleted = ['approved', 'completed'].includes(normalizedStatus);
+  const statusFallsThroughCompleted = normalizedStatus === 'completed' || (normalizedStatus === 'approved' && !isFinalApprovalPending);
   const submittedDisplayAt = submittedAt || (statusFallsThroughSubmitted ? (completedAt || approvedAt || updatedAt) : null);
   const approvalDisplayAt = completedAt || approvedAt || (statusFallsThroughCompleted ? updatedAt : null);
   const timelineSteps = [
@@ -206,6 +211,15 @@ const OutboxTaskCard = ({
     : null;
   const assignedPeople = Array.isArray(assignedTo) ? assignedTo : [];
   const stagedPeople = Array.isArray(currentStageAssigneeNames) ? currentStageAssigneeNames : [];
+  const workerSubmissionSummary = task.workerSubmissions || {};
+  const workerSubmissionRows = Array.isArray(workerSubmissionSummary.workers) ? workerSubmissionSummary.workers : [];
+  const hasWorkerSubmissionSummary = !task.workflowEnabled && workerSubmissionRows.length > 1;
+  const normalizedSubmissionMode = workerSubmissionSummary.mode === 'all' || task.submissionMode === 'all'
+    ? 'all'
+    : 'any';
+  const submissionModeLabel = normalizedSubmissionMode === 'all'
+    ? 'Every worker must submit'
+    : 'Any one worker can submit';
 
   const senderPrimary = `${createdByName || creator?.name || fromDepartment || 'Unknown sender'}`.trim();
   const senderSecondary = `${fromDepartment || createdByDepartment || creator?.department || ''}`.trim();
@@ -264,6 +278,140 @@ const OutboxTaskCard = ({
     await copyToClipboard(link);
   };
 
+  const renderSubmissionLinks = (linksToRender = []) => {
+    if (!Array.isArray(linksToRender) || linksToRender.length === 0) {
+      return <div className="worker-submission-empty">No links shared.</div>;
+    }
+    return (
+      <ul className="link-list">
+        {linksToRender.map((link, idx) => (
+          <li key={`${link}-${idx}`}>
+            <span>{link.length > 48 ? `${link.substring(0, 48)}...` : link}</span>
+            <span className="attachment-actions">
+              <a
+                href={link}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+              >
+                Open
+              </a>
+              <button
+                type="button"
+                className="mini-action-btn"
+                onClick={(e) => copyLink(link, e)}
+              >
+                Copy Link
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    );
+  };
+
+  const renderSubmissionFiles = (filesToRender = []) => {
+    if (!Array.isArray(filesToRender) || filesToRender.length === 0) {
+      return <div className="worker-submission-empty">No files shared.</div>;
+    }
+    return (
+      <ul className="attachment-list">
+        {filesToRender.map((file, idx) => {
+          const label = file?.originalName || file?.filename || `Attachment ${idx + 1}`;
+          return (
+            <li key={`${file?.url || file?.filename || idx}-${idx}`}>
+              <span>{label}</span>
+              <span className="attachment-actions">
+                <button
+                  type="button"
+                  className="mini-action-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPreviewFile(file);
+                  }}
+                >
+                  Open
+                </button>
+                <button
+                  type="button"
+                  className="mini-action-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    forceDownload(file, label);
+                  }}
+                >
+                  Download
+                </button>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  };
+
+  const renderWorkerSubmissions = () => {
+    if (!hasWorkerSubmissionSummary) return null;
+    return (
+      <div className="extra-col worker-submission-block">
+        <div className="worker-submission-head">
+          <h4>Worker Status</h4>
+          <span>
+            {submissionModeLabel} · {workerSubmissionSummary.submitted || 0}/{workerSubmissionSummary.total || workerSubmissionRows.length} submitted
+          </span>
+        </div>
+        <div className="worker-submission-list">
+          {workerSubmissionRows.map((worker) => {
+            const submission = worker.submission || {};
+            const submitted = Boolean(worker.submitted);
+            return (
+              <article
+                key={worker.id || worker.name}
+                className={`worker-submission-card ${submitted ? 'submitted' : 'pending'}`}
+              >
+                <div className="worker-submission-card-head">
+                  <div>
+                    <h5>{worker.name || 'Unknown worker'}</h5>
+                    <p>{worker.department || 'No department'}</p>
+                  </div>
+                  <span className="worker-submission-status">
+                    {submitted ? 'Submitted' : worker.started ? 'In Progress' : 'Not Started'}
+                  </span>
+                </div>
+                {submitted ? (
+                  <div className="worker-submission-body">
+                    <div>
+                      <label>Submitted at</label>
+                      <p>{formatDate(submission.submittedAt) || 'N/A'} {formatTime(submission.submittedAt) || ''}</p>
+                    </div>
+                    <div>
+                      <label>Output text</label>
+                      <p>{submission.outputText || 'No text submitted.'}</p>
+                    </div>
+                    <div>
+                      <label>Links</label>
+                      {renderSubmissionLinks(submission.links || [])}
+                    </div>
+                    <div>
+                      <label>Files</label>
+                      {renderSubmissionFiles(submission.attachments || [])}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="worker-submission-empty">
+                    {worker.started
+                      ? `Started${worker.startedAt ? ` at ${formatDate(worker.startedAt)} ${formatTime(worker.startedAt)}` : ''}. No result submitted yet.`
+                      : 'This worker has not started yet.'}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   const handleTrackClick = (e) => {
     e.stopPropagation();
     onTrackClick?.(task);
@@ -298,8 +446,8 @@ const OutboxTaskCard = ({
             </div>
           </div>
           <div className="status-and-track">
-            <span className={`outbox-status-pill ${getStatusClass(status)}`}>
-              {statusLabel}
+            <span className={`outbox-status-pill ${getStatusClass(displayStatusForClass)}`}>
+              {displayStatusLabel}
             </span>
             <div className="outbox-card-menu-wrap" onClick={(e) => e.stopPropagation()}>
               <button className="outbox-card-menu-btn" onClick={() => setMenuOpen((prev) => !prev)}>⋮</button>
@@ -431,6 +579,11 @@ const OutboxTaskCard = ({
               ⏳ Deadline: {formatDate(deadline)},{formatTime(deadline)}
             </span>
           )}
+          {hasWorkerSubmissionSummary && (
+            <span className="type-badge worker-submission-badge">
+              {workerSubmissionSummary.submitted || 0}/{workerSubmissionSummary.total || workerSubmissionRows.length} submitted · {submissionModeLabel}
+            </span>
+          )}
         </div>
 
         {summaryText && (
@@ -547,6 +700,7 @@ const OutboxTaskCard = ({
                 </ul>
               </div>
             )}
+            {renderWorkerSubmissions()}
           </div>
         )}
       </div>

@@ -51,6 +51,22 @@ const doesTaskMatchDate = (task, selectedDate) => {
   ].some((value) => getLocalDateKey(value) === selectedDate);
 };
 
+const isFinalApprovalPending = (task) => {
+  const status = `${task?.status || ''}`.toLowerCase();
+  const workflowStage = `${task?.workflowStage || ''}`.toLowerCase();
+  return status === 'approved' && ['hod_approved', 'spoc_approved'].includes(workflowStage);
+};
+
+const isCompletedTask = (task) => {
+  const status = `${task?.status || ''}`.toLowerCase();
+  if (status === 'completed') return true;
+  return status === 'approved' && !isFinalApprovalPending(task);
+};
+
+const isSubmittedTask = (task) => (
+  `${task?.status || ''}`.toLowerCase() === 'submitted' || isFinalApprovalPending(task)
+);
+
 const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivate }) => {
   const queryClient = useQueryClient();
   const { showAlert, showConfirm, showPrompt } = useCustomDialogs();
@@ -292,11 +308,13 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
       if (normalizedFilter === 'pending') {
         data = data.filter((item) => ['pending', 'forwarded', 'assigned'].includes(`${item.status || ''}`.toLowerCase()));
       } else if (normalizedFilter === 'completed') {
-        data = data.filter((item) => ['approved', 'completed'].includes(`${item.status || ''}`.toLowerCase()));
+        data = data.filter(isCompletedTask);
       } else if (normalizedFilter === 'task_hold') {
         data = data.filter(isTaskHeld);
       } else if (normalizedFilter === 'revoked') {
         data = data.filter(isTaskRevoked);
+      } else if (normalizedFilter === 'submitted') {
+        data = data.filter(isSubmittedTask);
       } else {
         data = data.filter(item => item.status?.toLowerCase() === normalizedFilter);
       }
@@ -317,12 +335,12 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   const allCount = nonDraftTasks.length;
   const pendingCount = nonDraftTasks.filter(t => ['pending', 'forwarded', 'assigned'].includes(`${t.status || ''}`.toLowerCase())).length;
   const inProgressCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'in_progress').length;
-  const submittedCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'submitted').length;
+  const submittedCount = nonDraftTasks.filter(isSubmittedTask).length;
   const needsImprovementCount = nonDraftTasks.filter(t => `${t.status || ''}`.toLowerCase() === 'need_improvement').length;
   const taskHoldCount = nonDraftTasks.filter(isTaskHeld).length;
   const revokedCount = nonDraftTasks.filter(isTaskRevoked).length;
   const completedCount = tasks.filter((t) => (
-    ['approved', 'completed'].includes(`${t.status || ''}`.toLowerCase()) && doesTaskMatchDate(t, taskDateFilter)
+    isCompletedTask(t) && doesTaskMatchDate(t, taskDateFilter)
   )).length;
   const draftCount = mergeUniqueById([
     ...tasks.filter((t) => `${t.status || ''}`.toLowerCase() === 'draft'),

@@ -73,9 +73,21 @@ const doesTaskMatchDate = (task, selectedDate) => {
 
 const STARTABLE_TASK_STATUSES = new Set(['pending', 'forwarded', 'assigned', 'need_improvement']);
 
-const canStartTaskFromStatus = (status = '') => (
-  STARTABLE_TASK_STATUSES.has(`${status || ''}`.toLowerCase())
-);
+const canStartTaskFromStatus = (status = '', task = null) => {
+  const normalizedStatus = `${status || ''}`.toLowerCase();
+  if (STARTABLE_TASK_STATUSES.has(normalizedStatus)) return true;
+  if (normalizedStatus !== 'in_progress') return false;
+
+  const workerRows = Array.isArray(task?.workerSubmissions?.workers)
+    ? task.workerSubmissions.workers
+    : [];
+  const assignedRows = Array.isArray(task?.assignedTo) ? task.assignedTo : [];
+  const hasMultipleWorkers = workerRows.length > 1 || assignedRows.length > 1;
+  if (!hasMultipleWorkers) return false;
+
+  if (workerRows.length === 0) return true;
+  return !task?.workerSubmissions?.viewerStarted && !task?.workerSubmissions?.viewerSubmitted;
+};
 
 const getTargetDisplayName = (target) => {
   const displayName = `${target?.name || target?.fullName || target?.username || target?.email || ''}`.trim();
@@ -714,7 +726,9 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
 
       await updateTaskStatus({
         taskId: task.id,
-        status: 'submitted',
+        status: task.submissionMode === 'all' && Number(task.workerSubmissions?.pending || 0) > 1
+          ? 'in_progress'
+          : 'submitted',
         execute: () =>
           (isWorkflowTask(task) && task.currentStageId
             ? taskAPI.submitStage(task.id, task.currentStageId, {
@@ -842,7 +856,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
               : taskAPI.approveTask(task.id, comments)),
         });
       } else if (action === 'start') {
-        if (!canStartTaskFromStatus(task.status)) {
+        if (!canStartTaskFromStatus(task.status, task)) {
           await showAlert('This task is already in progress or cannot be started from its current status.', {
             title: 'Start Not Available',
           });
@@ -863,6 +877,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
           return;
         }
 
+        await refreshTaskQueries();
         if (typeof onStartTaskToWorkspace === 'function') {
           onStartTaskToWorkspace({ ...task, status: 'in_progress' });
         }
@@ -886,7 +901,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
               ? taskAPI.requestStageImprovement(task.id, task.currentStageId, comments)
               : taskAPI.needImprovement(task.id, comments)),
         });
-      } else if (action === 'submit') {
+      } else if (action === 'submit' || action === 'edit_submit') {
         openSubmitModal(task);
         return;
       } else if (action === 'assign') {
@@ -929,6 +944,16 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
           defaultValue: '',
         })) ?? '';
         await taskAPI.unholdTask(task.id, comments.trim());
+      } else if (action === 'revoke_task') {
+        const comments = await showPrompt('Optional reason for revoking this task:', {
+          title: 'Revoke Task',
+          defaultValue: '',
+          multiline: true,
+          rows: 5,
+          placeholder: 'Add a reason for the assigned worker(s)...',
+        });
+        if (comments === null) return;
+        await taskAPI.revokeTask(task.id, `${comments || ''}`.trim());
       }
       if (!['approve', 'need_improvement'].includes(action)) {
         await refreshTaskQueries();
@@ -1388,7 +1413,9 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         onSubmit={(task, payload) =>
           updateTaskStatus({
             taskId: task.id,
-            status: 'submitted',
+            status: task.submissionMode === 'all' && Number(task.workerSubmissions?.pending || 0) > 1
+              ? 'in_progress'
+              : 'submitted',
             execute: () =>
               (isWorkflowTask(task) && task.currentStageId
                 ? taskAPI.submitStage(task.id, task.currentStageId, payload)

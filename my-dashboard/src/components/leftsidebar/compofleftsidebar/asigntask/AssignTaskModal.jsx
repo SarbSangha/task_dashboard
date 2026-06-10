@@ -109,6 +109,7 @@ const buildDirtySnapshot = (formData = {}) => {
     taskType: `${formData.taskType || ''}`.trim(),
     workflowEnabled: Boolean(formData.workflowEnabled),
     finalApprovalRequired: Boolean(formData.finalApprovalRequired),
+    submissionMode: formData.submissionMode === 'all' ? 'all' : 'any',
     selectedUserIds: (Array.isArray(formData.selectedUserIds) ? formData.selectedUserIds : [])
       .map((value) => `${value || ''}`)
       .sort(),
@@ -156,6 +157,7 @@ const createEmptyFormData = (myDepartment = '') => ({
   taskType: 'task',
   attachments: [],
   links: [],
+  submissionMode: 'any',
   workflowEnabled: false,
   finalApprovalRequired: false,
   workflowStages: [],
@@ -514,6 +516,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         taskType: editingTask.taskType || 'task',
         attachments: editingTask.attachments || [],
         links: editingTask.links || [],
+        submissionMode: editingTask.submissionMode === 'all' ? 'all' : 'any',
         workflowEnabled: Boolean(editingTask.workflowEnabled),
         finalApprovalRequired: Boolean(editingTask.finalApprovalRequired),
         workflowStages: mappedWorkflowStages,
@@ -1081,6 +1084,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         reference: formData.reference || '',
         links: formData.links || [],
         attachments: finalAttachments,
+        submissionMode: formData.submissionMode === 'all' ? 'all' : 'any',
         ...(shouldSendWorkflow ? { workflow: workflowPayload } : {}),
       };
 
@@ -1676,6 +1680,25 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                 ) : (
                   <div className="selected-receivers-empty">
                     Start by choosing a department on the right, then pick users to build your receiver list.
+                  </div>
+                )}
+                {!formData.workflowEnabled && (
+                  <div className="submission-mode-toggle">
+                    <label className="workflow-toggle compact">
+                      <input
+                        type="checkbox"
+                        checked={formData.submissionMode === 'all'}
+                        onChange={(event) => handleChange('submissionMode', event.target.checked ? 'all' : 'any')}
+                      />
+                      <span>
+                        Require every selected worker to submit
+                        <small>
+                          {formData.submissionMode === 'all'
+                            ? 'Task goes to review only after all selected workers submit their own result.'
+                            : 'Task goes to review when any one selected worker submits.'}
+                        </small>
+                      </span>
+                    </label>
                   </div>
                 )}
               </div>

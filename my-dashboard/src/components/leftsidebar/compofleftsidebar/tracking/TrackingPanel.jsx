@@ -28,6 +28,7 @@ const getActionLabel = (task, action) => {
   if (action === 'approve') return isWorkflowTask(task) ? 'approve stage' : 'approve';
   if (action === 'need_improvement') return isWorkflowTask(task) ? 'request revision' : 'need improvement';
   if (action === 'submit') return isWorkflowTask(task) ? 'submit stage' : 'submit';
+  if (action === 'edit_submit') return isWorkflowTask(task) ? 'edit stage submit' : 'edit submit';
   if (action === 'start') return isWorkflowTask(task) ? 'start stage' : 'start task';
   if (action === 'hold_task') return 'hold task';
   if (action === 'unhold_task') return 'unhold task';
@@ -88,12 +89,30 @@ const getPriorityClassName = (priority = '') => {
   return 'medium';
 };
 
-const canStartTaskStatus = (status = '') => (
-  ['pending', 'forwarded', 'assigned', 'need_improvement'].includes(`${status || ''}`.toLowerCase())
-);
+const canStartTaskStatus = (status = '', task = null) => {
+  const normalizedStatus = `${status || ''}`.toLowerCase();
+  if (['pending', 'forwarded', 'assigned', 'need_improvement'].includes(normalizedStatus)) return true;
+  if (normalizedStatus !== 'in_progress') return false;
 
-const canSubmitTaskStatus = (status = '') => (
+  const workerRows = Array.isArray(task?.workerSubmissions?.workers)
+    ? task.workerSubmissions.workers
+    : [];
+  const assignedRows = Array.isArray(task?.assignedTo) ? task.assignedTo : [];
+  const hasMultipleWorkers = workerRows.length > 1 || assignedRows.length > 1;
+  if (!hasMultipleWorkers) return false;
+
+  if (workerRows.length === 0) return true;
+  return !task?.workerSubmissions?.viewerStarted && !task?.workerSubmissions?.viewerSubmitted;
+};
+
+const canSubmitTaskStatus = (status = '', task = null) => (
   `${status || ''}`.toLowerCase() === 'in_progress'
+  && (
+    !Array.isArray(task?.workerSubmissions?.workers)
+    || task.workerSubmissions.workers.length <= 1
+    || task.workerSubmissions.viewerStarted
+    || task.workerSubmissions.viewerSubmitted
+  )
 );
 
 const canReviewTaskStatus = (status = '') => (
@@ -320,7 +339,9 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
   const submitTaskFromModal = async (task, payload) => {
     await updateTaskStatus({
       taskId: task.id,
-      status: 'submitted',
+      status: task.submissionMode === 'all' && Number(task.workerSubmissions?.pending || 0) > 1
+        ? 'in_progress'
+        : 'submitted',
       execute: () =>
         (isWorkflowTask(task) && task.currentStageId
           ? taskAPI.submitStage(task.id, task.currentStageId, payload)
@@ -338,8 +359,8 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
 
   const getVisibleTaskActions = (task) => (
     (task.availableActions || []).filter((action) => {
-      if (action === 'start') return canStartTaskStatus(task.status);
-      if (action === 'submit') return canSubmitTaskStatus(task.status);
+      if (action === 'start') return canStartTaskStatus(task.status, task);
+      if (action === 'submit') return canSubmitTaskStatus(task.status, task);
       if (action === 'approve' || action === 'need_improvement') return canReviewTask(task);
       return true;
     })
@@ -469,7 +490,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
               : taskAPI.approveTask(task.id, comments)),
         });
       } else if (action === 'start') {
-        if (!canStartTaskStatus(task.status)) {
+        if (!canStartTaskStatus(task.status, task)) {
           await showAlert('This task is already in progress or cannot be started from its current status.', {
             title: 'Start Not Available',
           });
@@ -509,7 +530,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
               ? taskAPI.requestStageImprovement(task.id, task.currentStageId, comments)
               : taskAPI.needImprovement(task.id, comments)),
         });
-      } else if (action === 'submit') {
+      } else if (action === 'submit' || action === 'edit_submit') {
         setSubmitTask(task);
         return;
       } else if (action === 'assign') {

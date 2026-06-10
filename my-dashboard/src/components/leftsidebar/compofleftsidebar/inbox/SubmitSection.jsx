@@ -19,12 +19,29 @@ const getActiveStageLabel = (task) => {
   return title;
 };
 
+const getViewerSubmission = (task = null) => {
+  const summary = task?.workerSubmissions || {};
+  if (summary.viewerSubmission && typeof summary.viewerSubmission === 'object') {
+    return summary.viewerSubmission;
+  }
+  const workers = Array.isArray(summary.workers) ? summary.workers : [];
+  if (workers.length <= 1) {
+    return workers.find((worker) => worker?.submitted && worker?.submission)?.submission || null;
+  }
+  return null;
+};
+
 const SubmitSection = ({ taskId, task = null, onClose, onSubmitComplete }) => {
   const { showAlert } = useCustomDialogs();
+  const existingSubmission = getViewerSubmission(task);
   const [formData, setFormData] = useState({
     comments: '',
-    resultDetails: '',
-    attachments: []
+    resultDetails: existingSubmission?.outputText || task?.resultText || '',
+    attachments: Array.isArray(existingSubmission?.attachments)
+      ? [...existingSubmission.attachments]
+      : Array.isArray(task?.resultAttachments)
+        ? [...task.resultAttachments]
+        : []
   });
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -107,7 +124,7 @@ const SubmitSection = ({ taskId, task = null, onClose, onSubmitComplete }) => {
     <div className="submit-overlay" onClick={onClose}>
       <div className="submit-modal" onClick={e => e.stopPropagation()}>
         <div className="submit-header">
-          <h2>{isWorkflowTask(task) ? '📤 Submit Stage Result' : '📤 Submit Task Result'}</h2>
+          <h2>{existingSubmission ? '📤 Edit Submitted Result' : (isWorkflowTask(task) ? '📤 Submit Stage Result' : '📤 Submit Task Result')}</h2>
           <button className="close-btn" onClick={onClose}>✕</button>
         </div>
 
@@ -205,7 +222,7 @@ const SubmitSection = ({ taskId, task = null, onClose, onSubmitComplete }) => {
               className="submit-btn"
               disabled={submitting || uploading}
             >
-              {submitting ? '⏳ Submitting...' : (isWorkflowTask(task) ? '✓ Submit Stage' : '✓ Submit Result')}
+              {submitting ? '⏳ Submitting...' : (existingSubmission ? '✓ Update Submission' : (isWorkflowTask(task) ? '✓ Submit Stage' : '✓ Submit Result'))}
             </button>
             <button 
               type="button" 

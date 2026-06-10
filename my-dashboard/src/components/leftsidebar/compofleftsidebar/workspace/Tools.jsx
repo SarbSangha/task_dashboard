@@ -568,12 +568,21 @@ const isInternalKlingPreviewAsset = (asset) => {
   const url = `${asset?.url || ''}`.trim().toLowerCase();
   const key = `${asset?.key || ''}`.trim().toLowerCase();
   if (!url) return false;
-  if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web-[^?#]*\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(url)) return true;
-  if (/^https?:\/\/[^/]*klingai\.com\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
+  if (/\.origin(?:[?#]|$)/i.test(url)) return false;
+  const klingCdnSizeMatch = url.match(/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kimg\/[^?#]+:(\d+)x(\d+)\.webp(?:[?#]|$)/i);
+  if (klingCdnSizeMatch) {
+    const width = Number(klingCdnSizeMatch[1]);
+    const height = Number(klingCdnSizeMatch[2]);
+    if (Number.isFinite(width) && Number.isFinite(height) && height > 0 && width / height >= 2.5) return true;
+  }
+  if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web[-/][^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
+  if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
+  if (/\/(?:assets?|static|web-assets?|kling-web)\/[^?#]*(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example)[^/]*(?:\.(?:png|jpe?g|webp|gif|avif|svg))?(?:[?#]|$)/i.test(url)) return true;
+  if (/\b(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example|template)\b/i.test(key)) return true;
   if (!/\.webp(?:[?#]|$)/i.test(url)) return false;
   if (/\borigin\b/.test(key)) return false;
   if (/\bupload\b/.test(key)) return false;
-  if (/(omni-stream-loading|stream-loading|loading)/i.test(url)) return true;
+  if (/(omni-stream-loading|stream-loading|loading|placeholder|empty|default|sample|example)/i.test(url)) return true;
   return false;
 };
 
@@ -2396,6 +2405,19 @@ export default function Tools({ view = 'tools' }) {
       return;
     }
 
+    let reservedLaunchWindow = null;
+    let reservedLaunchWindowUsed = false;
+    try {
+      reservedLaunchWindow = window.open('about:blank', '_blank');
+      if (reservedLaunchWindow) {
+        reservedLaunchWindow.opener = null;
+        reservedLaunchWindow.document.title = 'Opening tool...';
+        reservedLaunchWindow.document.body.innerHTML = '<p style="font-family:system-ui,sans-serif;padding:24px">Opening tool...</p>';
+      }
+    } catch {
+      reservedLaunchWindow = null;
+    }
+
     setLaunchingToolId(nextToolId);
     setSelectedTool(tool);
     setLaunchResult(null);
@@ -2411,6 +2433,9 @@ export default function Tools({ view = 'tools' }) {
       if (response.extensionAutoFill && response.extensionTicket && response.tool?.slug) {
         const normalizedToolSlug = normalizeToolSlug(response.tool.slug);
         const launchLoginMethod = `${response.credential?.loginMethod || ''}`.trim().toLowerCase();
+        const requiresExtensionWindow =
+          ['flow', 'chatgpt'].includes(normalizedToolSlug)
+          || shouldLaunchExtensionToolInIncognito(normalizedToolSlug, launchLoginMethod);
         const launchDetail = {
           toolSlug: normalizedToolSlug,
           toolName: response.tool.name,
@@ -2428,20 +2453,23 @@ export default function Tools({ view = 'tools' }) {
           type: EXTENSION_LAUNCH_MESSAGE_TYPE,
           ...launchDetail,
         }, window.location.origin);
-        const launchStored = await waitForExtensionLaunchStored(normalizedToolSlug);
-        if (!launchStored.ok) {
-          throw new Error(launchStored.error || 'Extension launch bridge did not respond.');
-        }
         launchUrl = resolveExtensionLaunchUrl(
           response.launchUrl,
           response.extensionTicket,
           normalizedToolSlug,
           response.usageTrackingTicket || ''
         );
-        if (
-          ['flow', 'chatgpt'].includes(normalizedToolSlug)
-          || shouldLaunchExtensionToolInIncognito(normalizedToolSlug, launchLoginMethod)
-        ) {
+        const launchStored = await waitForExtensionLaunchStored(normalizedToolSlug);
+        if (!launchStored.ok && requiresExtensionWindow) {
+          throw new Error(launchStored.error || 'Extension launch bridge did not respond.');
+        }
+        if (!launchStored.ok) {
+          setNotice('Extension bridge did not confirm the launch, so the tool is opening with a direct launch ticket.');
+        }
+        if (requiresExtensionWindow) {
+          if (reservedLaunchWindow && !reservedLaunchWindow.closed) {
+            reservedLaunchWindow.close();
+          }
           const isolatedResult = await openToolInIncognitoWindow({
             toolSlug: normalizedToolSlug,
             toolName: response.tool.name,
@@ -2456,11 +2484,22 @@ export default function Tools({ view = 'tools' }) {
         }
       }
       if (launchUrl) {
-        window.open(launchUrl, '_blank', 'noopener,noreferrer');
+        if (reservedLaunchWindow && !reservedLaunchWindow.closed) {
+          reservedLaunchWindow.location.replace(launchUrl);
+          reservedLaunchWindowUsed = true;
+        } else {
+          window.open(launchUrl, '_blank', 'noopener,noreferrer');
+        }
       }
     } catch (err) {
+      if (reservedLaunchWindow && !reservedLaunchWindowUsed && !reservedLaunchWindow.closed) {
+        reservedLaunchWindow.close();
+      }
       setError(err?.response?.data?.detail || err?.message || 'Unable to launch tool.');
     } finally {
+      if (reservedLaunchWindow && !reservedLaunchWindowUsed && !reservedLaunchWindow.closed) {
+        reservedLaunchWindow.close();
+      }
       setLaunchingToolId('');
     }
   };

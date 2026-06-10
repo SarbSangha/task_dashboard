@@ -897,6 +897,12 @@
   color: #dbeafe;
 }
 
+.worker-submission-badge {
+  background: rgba(16, 185, 129, 0.14);
+  color: #bbf7d0;
+  border: 1px solid rgba(52, 211, 153, 0.22);
+}
+
 .timeline-progress {
   background: rgba(16, 28, 48, 0.92);
   border: 1px solid #334766;
@@ -1013,6 +1019,107 @@
   border: 1px solid rgba(255, 255, 255, 0.25);
   background: rgba(255, 255, 255, 0.08);
   color: #e5e7eb;
+}
+
+.outbox-task-extra .worker-submission-block {
+  grid-column: 1 / -1;
+}
+
+.outbox-task-card .worker-submission-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.outbox-task-card .worker-submission-head h4 {
+  margin: 0;
+}
+
+.outbox-task-card .worker-submission-head span {
+  color: #9fb1c9;
+  font-size: 12px;
+}
+
+.outbox-task-card .worker-submission-list {
+  display: grid;
+  gap: 12px;
+}
+
+.outbox-task-card .worker-submission-card {
+  border: 1px solid rgba(85, 106, 143, 0.28);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(11, 20, 35, 0.54);
+  display: grid;
+  gap: 10px;
+}
+
+.outbox-task-card .worker-submission-card.submitted {
+  border-color: rgba(74, 222, 128, 0.34);
+}
+
+.outbox-task-card .worker-submission-card.pending {
+  border-color: rgba(251, 191, 36, 0.34);
+}
+
+.outbox-task-card .worker-submission-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.outbox-task-card .worker-submission-card-head h5 {
+  margin: 0 0 3px;
+  color: #f8fafc;
+}
+
+.outbox-task-card .worker-submission-card-head p,
+.outbox-task-card .worker-submission-body p {
+  margin: 0;
+}
+
+.outbox-task-card .worker-submission-status {
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #dbeafe;
+  background: rgba(96, 165, 250, 0.14);
+  border: 1px solid rgba(147, 197, 253, 0.18);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.outbox-task-card .worker-submission-body {
+  display: grid;
+  gap: 10px;
+}
+
+.outbox-task-card .worker-submission-body label {
+  display: block;
+  margin-bottom: 5px;
+  color: #9fb1c9;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.outbox-task-card .worker-submission-empty {
+<<<<<<< HEAD
+  background: #ffffff;
+  border: 1px solid #d5dbe5;
+  border-radius: 10px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 12px 14px;
+=======
+  color: #9fb1c9;
+  font-size: 12px;
+>>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
 }
 
 /* Keep text size close to inbox card */
