@@ -133,8 +133,11 @@ def _pool_settings(url: str) -> dict:
         default_pool_size = 1
         default_max_overflow = 0
     else:
-        default_pool_size = 5 if is_supabase_pooler else 10
-        default_max_overflow = 5 if is_supabase_pooler else 20
+        # Keep the default pool conservative for small VPS/PostgreSQL installs.
+        # The dashboard opens several parallel requests per browser profile, and
+        # a large overflow can exhaust Postgres max_connections until restart.
+        default_pool_size = 5
+        default_max_overflow = 5
     return {
         "pool_size": max(1, _int_env("DB_POOL_SIZE", default_pool_size)),
         "max_overflow": max(0, _int_env("DB_MAX_OVERFLOW", default_max_overflow)),

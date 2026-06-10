@@ -102,8 +102,8 @@ class NotificationHub:
     def __init__(self):
         self.connections: dict[int, set[WebSocket]] = {}
 
-    async def connect(self, user_id: int, websocket: WebSocket):
-        await websocket.accept()
+    async def connect(self, user_id: int, websocket: WebSocket, subprotocol: Optional[str] = None):
+        await websocket.accept(subprotocol=subprotocol)
         self.connections.setdefault(user_id, set()).add(websocket)
 
     def disconnect(self, user_id: int, websocket: WebSocket):
@@ -123,6 +123,25 @@ class NotificationHub:
 
 
 notification_hub = NotificationHub()
+
+
+def _extract_websocket_session_token(websocket: WebSocket) -> tuple[Optional[str], Optional[str]]:
+    protocol_header = websocket.headers.get("sec-websocket-protocol") or ""
+    offered_protocols = [
+        value.strip()
+        for value in protocol_header.split(",")
+        if value.strip()
+    ]
+    for protocol in offered_protocols:
+        if protocol.startswith("rmw-token."):
+            return protocol.removeprefix("rmw-token.").strip() or None, "rmw-session"
+
+    return (
+        websocket.cookies.get("session_id")
+        or websocket.query_params.get("session_token")
+        or websocket.query_params.get("session_id"),
+        None,
+    )
 
 WEB_PUSH_PUBLIC_KEY_ENV = "WEB_PUSH_PUBLIC_KEY"
 WEB_PUSH_PRIVATE_KEY_ENV = "WEB_PUSH_PRIVATE_KEY"
@@ -4883,11 +4902,7 @@ async def get_forward_targets(
 
 
 async def notifications_ws(websocket: WebSocket):
-    session_id = (
-        websocket.cookies.get("session_id")
-        or websocket.query_params.get("session_token")
-        or websocket.query_params.get("session_id")
-    )
+    session_id, selected_subprotocol = _extract_websocket_session_token(websocket)
     if not session_id:
         await websocket.close(code=1008)
         return
@@ -4900,7 +4915,7 @@ async def notifications_ws(websocket: WebSocket):
     finally:
         db.close()
 
-    await notification_hub.connect(user_id, websocket)
+    await notification_hub.connect(user_id, websocket, selected_subprotocol)
     try:
         while True:
             await websocket.receive_text()

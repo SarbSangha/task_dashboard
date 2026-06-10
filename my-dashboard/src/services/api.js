@@ -1188,11 +1188,12 @@ const REALTIME_MAX_BACKOFF_MS = 30000;
 const REALTIME_HEARTBEAT_MS = 25000;
 
 const buildRealtimeWsUrl = () => {
-  const baseUrl = `${API_URL.replace(/^http/i, 'ws')}/api/tasks/ws/notifications`;
+  return `${API_URL.replace(/^http/i, 'ws')}/api/tasks/ws/notifications`;
+};
+
+const buildRealtimeWsProtocols = () => {
   const sessionToken = getStoredSessionToken();
-  if (!sessionToken) return baseUrl;
-  const separator = baseUrl.includes('?') ? '&' : '?';
-  return `${baseUrl}${separator}session_token=${encodeURIComponent(sessionToken)}`;
+  return sessionToken ? ['rmw-session', `rmw-token.${sessionToken}`] : undefined;
 };
 
 const broadcastRealtime = (kind, payload) => {
@@ -1253,7 +1254,10 @@ const ensureRealtimeSocket = () => {
   }
 
   clearRealtimeTimers();
-  const socket = new WebSocket(buildRealtimeWsUrl());
+  const protocols = buildRealtimeWsProtocols();
+  const socket = protocols
+    ? new WebSocket(buildRealtimeWsUrl(), protocols)
+    : new WebSocket(buildRealtimeWsUrl());
   realtimeSocket = socket;
 
   socket.onopen = () => {
