@@ -1710,10 +1710,6 @@ def _build_worker_submission_summary(
     viewer_user_id = current_user.id if current_user else None
     viewer_submitted = False
     viewer_started = False
-<<<<<<< HEAD
-    viewer_submission = None
-=======
->>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
     for worker in assigned_to or []:
         user_id = worker.get("id")
         submission = submissions.get(str(int(user_id or 0))) if user_id else None
@@ -1727,10 +1723,6 @@ def _build_worker_submission_summary(
         if viewer_user_id and user_id and int(user_id) == int(viewer_user_id):
             viewer_submitted = bool(is_submitted)
             viewer_started = bool(has_started)
-<<<<<<< HEAD
-            viewer_submission = submission if is_submitted else None
-=======
->>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
         workers.append(
             {
                 "id": user_id,
@@ -1759,10 +1751,6 @@ def _build_worker_submission_summary(
         "required": required_count,
         "viewerStarted": viewer_started,
         "viewerSubmitted": viewer_submitted,
-<<<<<<< HEAD
-        "viewerSubmission": viewer_submission,
-=======
->>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
         "workers": workers,
         "complete": is_complete,
     }
@@ -1938,22 +1926,10 @@ def compute_available_actions(
         if task.status in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.ASSIGNED, TaskStatus.NEED_IMPROVEMENT}:
             actions.append("start")
         if task.status == TaskStatus.IN_PROGRESS:
-<<<<<<< HEAD
-            worker_has_submitted = _task_worker_has_submitted(task, user.id)
-            if worker_has_submitted:
-                actions.append("edit_submit")
-            elif not _task_worker_has_started(task, user.id):
-                actions.append("start")
-            else:
-                actions.append("submit")
-        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW} and _task_worker_has_submitted(task, user.id):
-            actions.append("edit_submit")
-=======
             if not _task_worker_has_started(task, user.id):
                 actions.append("start")
             elif _get_task_submission_mode(task) != TASK_SUBMISSION_MODE_ALL or not _task_worker_has_submitted(task, user.id):
                 actions.append("submit")
->>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
         if task.status == TaskStatus.NEED_IMPROVEMENT:
             actions.append("edit_result")
 
@@ -5078,23 +5054,12 @@ async def submit_task(
     submission_mode = _get_task_submission_mode(task)
     viewer_already_submitted = _task_worker_has_submitted(task, current_user.id)
     if task.status != TaskStatus.IN_PROGRESS:
-<<<<<<< HEAD
-        can_edit_existing_submission = (
-            viewer_already_submitted
-            and task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW}
-        )
-        if not can_edit_existing_submission:
-            raise HTTPException(status_code=400, detail="Start the task before submitting")
-
-    has_result_update = bool(payload.result_text or payload.result_links or payload.result_attachments)
-=======
         raise HTTPException(status_code=400, detail="Start the task before submitting")
     if _get_task_submission_mode(task) == TASK_SUBMISSION_MODE_ALL and _task_worker_has_submitted(task, current_user.id):
         raise HTTPException(status_code=400, detail="You have already submitted your part of this task")
 
     has_result_update = bool(payload.result_text or payload.result_links or payload.result_attachments)
     submission_mode = _get_task_submission_mode(task)
->>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
     assigned_user_ids = [
         row.user_id
         for row in db.query(TaskParticipant.user_id)
@@ -5106,11 +5071,7 @@ async def submit_task(
         .all()
         if row.user_id
     ]
-<<<<<<< HEAD
-    if len(set(assigned_user_ids)) > 1 and not _task_worker_has_started(task, current_user.id) and not viewer_already_submitted:
-=======
     if len(set(assigned_user_ids)) > 1 and not _task_worker_has_started(task, current_user.id):
->>>>>>> 0bd77f8d1a2b115755ad108678b40de7c2a44dc0
         raise HTTPException(status_code=400, detail="Start your part of this task before submitting")
     should_submit_task = submission_mode == TASK_SUBMISSION_MODE_ANY
     result_before = None

@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { authAPI, isRequestCanceled, itToolsAPI } from '../../../../services/api';
-import { formatDateTimeIndia } from '../../../../utils/dateTime';
 import './Tools.css';
 
 const EXTENSION_LAUNCH_EVENT = 'rmw:tool-hub-extension-launch';
@@ -26,19 +25,6 @@ const EMPTY_USAGE_FILTERS = {
   selectedDate: buildDateInputValue(0),
   userId: '',
   credentialId: '',
-};
-
-const EMPTY_TOOL_LAUNCH_FILTERS = {
-  selectedDate: buildDateInputValue(0),
-  userId: '',
-  toolId: '',
-};
-
-const EMPTY_TOOL_LAUNCH_SUMMARY = {
-  launchCount: 0,
-  userCount: 0,
-  toolCount: 0,
-  lastLaunchedAt: null,
 };
 
 const ASSIGNMENT_USER_PAGE_SIZE = 20;
@@ -455,7 +441,15 @@ const formatUsageDate = (value) => {
 
 const formatUsageDateTime = (value) => {
   if (!value) return 'N/A';
-  return formatDateTimeIndia(value);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString([], {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 };
 
 const formatUsageCredentialTitle = (credentialLabel, credentialId) => {
@@ -475,235 +469,6 @@ const formatUsageCredentialMeta = (credentialId, credentialScope) => {
     numericCredentialId > 0 ? `ID ${numericCredentialId}` : '',
     `${credentialScope || ''}`.trim(),
   ].filter(Boolean).join(' · ');
-};
-
-const formatUsageSourceLabel = (value) => {
-  const normalized = `${value || ''}`.trim().toLowerCase();
-  if (normalized === 'fetch_response') return 'Fetch';
-  if (normalized === 'xhr_response') return 'XHR';
-  if (normalized === 'websocket_message') return 'WebSocket';
-  if (normalized === 'eventsource_message') return 'SSE';
-  if (normalized === 'dom_balance_fallback') return 'DOM fallback';
-  if (normalized === 'expected_credit_lock') return 'Expected lock';
-  if (normalized === 'wallet_reconciled') return 'Wallet';
-  if (normalized === 'network_response') return 'Network';
-  return normalized ? normalized.replace(/_/g, ' ') : '';
-};
-
-const formatUsageConfidence = (value) => {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue)) return '';
-  return `${Math.round(Math.max(0, Math.min(1, numericValue)) * 100)}%`;
-};
-
-const formatUsageModeLabel = (value) => {
-  const normalized = `${value || ''}`.trim().toLowerCase();
-  if (!normalized) return '';
-  if (normalized.includes('mnu_img') || normalized.includes('image')) return 'image';
-  if (normalized.includes('mnu_video') || normalized.includes('video')) return 'video';
-  if (normalized.includes('avatar')) return 'avatar';
-  if (normalized.includes('motion')) return 'motion-control';
-  return normalized.replace(/_/g, ' ');
-};
-
-const formatUsageDurationMs = (value) => {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue) || numericValue < 0) return '';
-  if (numericValue < 1000) return `${Math.round(numericValue)}ms`;
-  const seconds = numericValue / 1000;
-  if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainder = Math.round(seconds % 60);
-  return `${minutes}m ${remainder}s`;
-};
-
-const formatUsagePromptPreview = (value) => {
-  const normalized = `${value || ''}`
-    .replace(/\u00a0/g, ' ')
-    .replace(/\s+\n/g, '\n')
-    .replace(/\n\s+/g, '\n')
-    .trim();
-  if (!normalized) return '';
-  return normalized;
-};
-
-const formatUsageAssetUrl = (value) => {
-  const normalized = `${value || ''}`.trim();
-  if (!normalized) return '';
-  if (normalized.length <= 84) return normalized;
-  return `${normalized.slice(0, 44)}...${normalized.slice(-28)}`;
-};
-
-const formatUsageAssetSourceLabel = (asset) => {
-  const source = `${asset?.source || ''}`.trim().toLowerCase();
-  if (!source) return '';
-  if (source === 'dom') return 'page preview';
-  if (source === 'blob_source') return 'recovered output link';
-  if (source === 'json') return 'network data';
-  if (source === 'text') return 'network text';
-  if (source === 'payload') return 'request payload';
-  return source.replace(/_/g, ' ');
-};
-
-const inferUsageAssetRole = (asset) => {
-  const explicitRole = `${asset?.assetRole || asset?.role || ''}`.trim().toLowerCase();
-  if (explicitRole === 'input' || explicitRole === 'output') return explicitRole;
-
-  const source = `${asset?.source || ''}`.trim().toLowerCase();
-  const key = `${asset?.key || ''}`.trim().toLowerCase();
-  const url = `${asset?.url || ''}`.trim().toLowerCase();
-  const descriptor = `${key} ${url}`;
-
-  if (source === 'dom' || url.startsWith('blob:')) return 'output';
-  if (/\b(input|reference|ref|origin|upload|source|start|end|first|last|init|mask|image_url|imageurl)\b/.test(descriptor)) {
-    return 'input';
-  }
-  if (/\b(output|result|generated|final|download|resource|works?|task|video_url|videourl|cover|poster|thumbnail)\b/.test(descriptor)) {
-    return 'output';
-  }
-  return 'output';
-};
-
-const isInternalKlingPreviewAsset = (asset) => {
-  const url = `${asset?.url || ''}`.trim().toLowerCase();
-  const key = `${asset?.key || ''}`.trim().toLowerCase();
-  if (!url) return false;
-  if (/\.origin(?:[?#]|$)/i.test(url)) return false;
-  const klingCdnSizeMatch = url.match(/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kimg\/[^?#]+:(\d+)x(\d+)\.webp(?:[?#]|$)/i);
-  if (klingCdnSizeMatch) {
-    const width = Number(klingCdnSizeMatch[1]);
-    const height = Number(klingCdnSizeMatch[2]);
-    if (Number.isFinite(width) && Number.isFinite(height) && height > 0 && width / height >= 2.5) return true;
-  }
-  if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web[-/][^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
-  if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
-  if (/\/(?:assets?|static|web-assets?|kling-web)\/[^?#]*(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example)[^/]*(?:\.(?:png|jpe?g|webp|gif|avif|svg))?(?:[?#]|$)/i.test(url)) return true;
-  if (/\b(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example|template)\b/i.test(key)) return true;
-  if (!/\.webp(?:[?#]|$)/i.test(url)) return false;
-  if (/\borigin\b/.test(key)) return false;
-  if (/\bupload\b/.test(key)) return false;
-  if (/(omni-stream-loading|stream-loading|loading|placeholder|empty|default|sample|example)/i.test(url)) return true;
-  return false;
-};
-
-const getUsageMediaAssets = (event) => {
-  const assets = Array.isArray(event?.metadata?.mediaAssets) ? event.metadata.mediaAssets : [];
-  const seen = new Set();
-  return assets
-    .filter((asset) => {
-      const url = `${asset?.url || ''}`.trim();
-      if (!url || seen.has(url)) return false;
-      if (isInternalKlingPreviewAsset(asset)) return false;
-      seen.add(url);
-      return true;
-    })
-    .slice(0, 5);
-};
-
-const renderUsagePromptBlock = (event) => {
-  const promptPreview = formatUsagePromptPreview(event?.promptText || event?.metadata?.promptCapture?.text);
-  if (!promptPreview) return null;
-  return (
-    <div className="it-usage-io-block">
-      <span>Input prompt</span>
-      <p className="it-usage-prompt-preview">{promptPreview}</p>
-    </div>
-  );
-};
-
-const renderUsageAssetLinks = (event) => {
-  const mediaAssets = getUsageMediaAssets(event);
-  if (!mediaAssets.length) return null;
-  const groupedAssets = [
-    {
-      key: 'input',
-      label: 'Input media',
-      assets: mediaAssets.filter((asset) => inferUsageAssetRole(asset) === 'input'),
-    },
-    {
-      key: 'output',
-      label: 'Output media',
-      assets: mediaAssets.filter((asset) => inferUsageAssetRole(asset) !== 'input'),
-    },
-  ].filter((group) => group.assets.length);
-
-  return (
-    <div className="it-usage-asset-links">
-      {groupedAssets.map((group) => {
-        let groupIndex = 0;
-        return (
-          <div key={`${event?.id || 'event'}-${group.key}`} className="it-usage-io-block">
-            <span>{group.label}</span>
-            {group.assets.map((asset) => {
-              groupIndex += 1;
-              const url = `${asset?.url || ''}`.trim();
-              const isOpenableUrl = /^https?:\/\//i.test(url);
-              const isBlobUrl = /^blob:/i.test(url);
-              const sourceLabel = formatUsageAssetSourceLabel(asset);
-              const label = `${asset?.assetType || 'asset'} ${groupIndex}`;
-              const detail = isBlobUrl
-                ? 'Browser-only preview. Blob links cannot be opened outside the captured Kling tab.'
-                : formatUsageAssetUrl(url);
-              return isOpenableUrl ? (
-                <a
-                  key={`${event?.id || 'event'}-${url}`}
-                  href={url}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={url}
-                >
-                  <span>{label}{sourceLabel ? ` - ${sourceLabel}` : ''}</span>
-                  <small>{detail}</small>
-                </a>
-              ) : (
-                <span
-                  key={`${event?.id || 'event'}-${url}`}
-                  className={isBlobUrl ? 'is-browser-only' : ''}
-                  title={isBlobUrl ? detail : url}
-                >
-                  <strong>{label}{sourceLabel ? ` - ${sourceLabel}` : ''}</strong>
-                  <small>{detail}</small>
-                </span>
-              );
-            })}
-          </div>
-        );
-      })}
-    </div>
-  );
-};
-
-const buildUsageDiagnosticChips = (event) => {
-  const metadata = event?.metadata || {};
-  const lifecycleTimings = metadata.lifecycleTimings || {};
-  const sourceLabel = formatUsageSourceLabel(event?.source || metadata.source);
-  const confidenceLabel = formatUsageConfidence(event?.confidence ?? metadata.confidence);
-  const totalTime = formatUsageDurationMs(lifecycleTimings.totalTimeMs);
-  const queueTime = formatUsageDurationMs(lifecycleTimings.queueTimeMs);
-  const processingTime = formatUsageDurationMs(lifecycleTimings.processingTimeMs);
-  const walletSnapshot = metadata.walletSnapshot || {};
-  const modeLabel = formatUsageModeLabel(metadata.generationMode);
-  const mediaAssets = Array.isArray(metadata.mediaAssets) ? metadata.mediaAssets : [];
-  const assetTypeSummary = [...new Set(mediaAssets.map((asset) => `${asset?.assetType || ''}`.trim()).filter(Boolean))].join(', ');
-  return [
-    sourceLabel ? `Source: ${sourceLabel}` : '',
-    confidenceLabel ? `Confidence: ${confidenceLabel}` : '',
-    metadata.creditSourcePriority ? `Priority: ${metadata.creditSourcePriority}` : '',
-    modeLabel ? `Mode: ${modeLabel}` : '',
-    metadata.outputCount ? `Outputs: ${metadata.outputCount}` : '',
-    metadata.nativeAudio ? 'Native audio' : '',
-    metadata.multiShot ? 'Multi-shot' : '',
-    metadata.promptCapture?.source ? `Prompt: ${metadata.promptCapture.source}` : '',
-    metadata.mediaAssetCount ? `Assets: ${metadata.mediaAssetCount}` : '',
-    assetTypeSummary ? `Asset type: ${assetTypeSummary}` : '',
-    metadata.assetCapture?.source ? `Asset source: ${metadata.assetCapture.source}` : '',
-    metadata.creditDrift ? `Drift: ${metadata.creditDriftAmount > 0 ? '+' : ''}${metadata.creditDriftAmount}` : '',
-    walletSnapshot.delta != null ? `Wallet delta: ${walletSnapshot.delta}` : '',
-    lifecycleTimings.terminalStage ? `Stage: ${lifecycleTimings.terminalStage}` : '',
-    totalTime ? `Total: ${totalTime}` : '',
-    queueTime ? `Queue: ${queueTime}` : '',
-    processingTime ? `Render: ${processingTime}` : '',
-  ].filter(Boolean);
 };
 
 const resolveCurrentCreditsValue = (summary, recentEvents = []) => {
@@ -782,7 +547,6 @@ export default function Tools({ view = 'tools' }) {
   const containerRef = useRef(null);
   const headerRef = useRef(null);
   const usageRefreshControllerRef = useRef(null);
-  const toolLaunchRefreshControllerRef = useRef(null);
   const [tools, setTools] = useState([]);
   const [users, setUsers] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -819,12 +583,6 @@ export default function Tools({ view = 'tools' }) {
     currentCredits: null,
   });
   const [recentUsageEvents, setRecentUsageEvents] = useState([]);
-  const [toolLaunchFilters, setToolLaunchFilters] = useState(EMPTY_TOOL_LAUNCH_FILTERS);
-  const [toolLaunchLoading, setToolLaunchLoading] = useState(false);
-  const [toolLaunchRows, setToolLaunchRows] = useState([]);
-  const [toolLaunchSummary, setToolLaunchSummary] = useState(EMPTY_TOOL_LAUNCH_SUMMARY);
-  const [toolLaunchError, setToolLaunchError] = useState('');
-  const [expandedToolLaunchId, setExpandedToolLaunchId] = useState(null);
   const resolvedCurrentCredits = useMemo(
     () => resolveCurrentCreditsValue(usageSummary, recentUsageEvents),
     [usageSummary, recentUsageEvents],
@@ -1076,41 +834,6 @@ export default function Tools({ view = 'tools' }) {
 
   useEffect(() => {
     if (activeView !== 'credits') return undefined;
-    const controller = new AbortController();
-    setToolLaunchLoading(true);
-    setToolLaunchError('');
-    void itToolsAPI.getLaunchHistory({
-      selected_date: toolLaunchFilters.selectedDate,
-      user_id: toolLaunchFilters.userId || undefined,
-      tool_id: toolLaunchFilters.toolId || undefined,
-      signal: controller.signal,
-    }).then((response) => {
-      if (controller.signal.aborted) return;
-      if (typeof response.isAdmin === 'boolean') {
-        setIsAdmin(response.isAdmin);
-      }
-      setToolLaunchRows(response.rows || []);
-      setToolLaunchSummary(response.summary || EMPTY_TOOL_LAUNCH_SUMMARY);
-    }).catch((err) => {
-      if (isRequestCanceled(err) || controller.signal.aborted) return;
-      setToolLaunchRows([]);
-      setToolLaunchSummary(EMPTY_TOOL_LAUNCH_SUMMARY);
-      if (err?.response?.status === 404) {
-        setToolLaunchError('Tool Used report is not available on the running backend yet. Restart the backend to load the new launch-history endpoint.');
-        return;
-      }
-      setToolLaunchError(err?.response?.data?.detail || 'Unable to load tool used report.');
-    }).finally(() => {
-      if (!controller.signal.aborted) {
-        setToolLaunchLoading(false);
-      }
-    });
-
-    return () => controller.abort();
-  }, [activeView, toolLaunchFilters.selectedDate, toolLaunchFilters.userId, toolLaunchFilters.toolId]);
-
-  useEffect(() => {
-    if (activeView !== 'credits') return undefined;
 
     const refreshUsage = () => {
       if (usageRefreshControllerRef.current) return usageRefreshControllerRef.current;
@@ -1164,59 +887,6 @@ export default function Tools({ view = 'tools' }) {
     };
   }, [activeView, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
 
-  useEffect(() => {
-    if (activeView !== 'credits') return undefined;
-
-    const refreshToolLaunchReport = () => {
-      if (toolLaunchRefreshControllerRef.current) return toolLaunchRefreshControllerRef.current;
-      const controller = new AbortController();
-      toolLaunchRefreshControllerRef.current = controller;
-      void itToolsAPI.getLaunchHistory({
-        selected_date: toolLaunchFilters.selectedDate,
-        user_id: toolLaunchFilters.userId || undefined,
-        tool_id: toolLaunchFilters.toolId || undefined,
-        signal: controller.signal,
-      }).then((response) => {
-        if (controller.signal.aborted) return;
-        setToolLaunchError('');
-        if (typeof response.isAdmin === 'boolean') {
-          setIsAdmin(response.isAdmin);
-        }
-        setToolLaunchRows(response.rows || []);
-        setToolLaunchSummary(response.summary || EMPTY_TOOL_LAUNCH_SUMMARY);
-      }).catch((err) => {
-        if (isRequestCanceled(err) || controller.signal.aborted) return;
-        if (err?.response?.status === 404) {
-          setToolLaunchError('Tool Used report is not available on the running backend yet. Restart the backend to load the new launch-history endpoint.');
-          return;
-        }
-        setToolLaunchError(err?.response?.data?.detail || 'Unable to refresh tool used report.');
-      }).finally(() => {
-        if (toolLaunchRefreshControllerRef.current === controller) {
-          toolLaunchRefreshControllerRef.current = null;
-        }
-      });
-      return controller;
-    };
-
-    const intervalId = window.setInterval(() => {
-      refreshToolLaunchReport();
-    }, USAGE_REPORT_REFRESH_MS);
-
-    const handleFocus = () => {
-      refreshToolLaunchReport();
-    };
-
-    window.addEventListener('focus', handleFocus);
-
-    return () => {
-      clearInterval(intervalId);
-      window.removeEventListener('focus', handleFocus);
-      toolLaunchRefreshControllerRef.current?.abort();
-      toolLaunchRefreshControllerRef.current = null;
-    };
-  }, [activeView, toolLaunchFilters.selectedDate, toolLaunchFilters.userId, toolLaunchFilters.toolId]);
-
   const categories = useMemo(() => {
     return ['All', ...new Set(tools.map((tool) => tool.category || 'General'))];
   }, [tools]);
@@ -1228,42 +898,6 @@ export default function Tools({ view = 'tools' }) {
       return leftLabel.localeCompare(rightLabel);
     });
   }, [users]);
-
-  const toolLaunchToolOptions = useMemo(() => {
-    return [...tools].sort((left, right) => `${left?.name || ''}`.localeCompare(`${right?.name || ''}`));
-  }, [tools]);
-
-  useEffect(() => {
-    if (!expandedToolLaunchId) return;
-    if (toolLaunchRows.some((row) => row.id === expandedToolLaunchId)) return;
-    setExpandedToolLaunchId(null);
-  }, [expandedToolLaunchId, toolLaunchRows]);
-
-  const availableToolLaunchToolIds = useMemo(() => {
-    return new Set(toolLaunchToolOptions.map((tool) => `${tool.id}`));
-  }, [toolLaunchToolOptions]);
-
-  const availableToolLaunchUserIds = useMemo(() => {
-    return new Set(sortedUsers.map((user) => `${user.id}`));
-  }, [sortedUsers]);
-
-  useEffect(() => {
-    const normalizedToolId = `${toolLaunchFilters.toolId || ''}`.trim();
-    if (!normalizedToolId || availableToolLaunchToolIds.has(normalizedToolId)) return;
-    setToolLaunchFilters((current) => ({
-      ...current,
-      toolId: '',
-    }));
-  }, [availableToolLaunchToolIds, toolLaunchFilters.toolId]);
-
-  useEffect(() => {
-    const normalizedUserId = `${toolLaunchFilters.userId || ''}`.trim();
-    if (!normalizedUserId || !sortedUsers.length || availableToolLaunchUserIds.has(normalizedUserId)) return;
-    setToolLaunchFilters((current) => ({
-      ...current,
-      userId: '',
-    }));
-  }, [availableToolLaunchUserIds, sortedUsers.length, toolLaunchFilters.userId]);
 
   const toolById = useMemo(() => {
     const nextMap = new Map();
@@ -2405,19 +2039,6 @@ export default function Tools({ view = 'tools' }) {
       return;
     }
 
-    let reservedLaunchWindow = null;
-    let reservedLaunchWindowUsed = false;
-    try {
-      reservedLaunchWindow = window.open('about:blank', '_blank');
-      if (reservedLaunchWindow) {
-        reservedLaunchWindow.opener = null;
-        reservedLaunchWindow.document.title = 'Opening tool...';
-        reservedLaunchWindow.document.body.innerHTML = '<p style="font-family:system-ui,sans-serif;padding:24px">Opening tool...</p>';
-      }
-    } catch {
-      reservedLaunchWindow = null;
-    }
-
     setLaunchingToolId(nextToolId);
     setSelectedTool(tool);
     setLaunchResult(null);
@@ -2433,9 +2054,6 @@ export default function Tools({ view = 'tools' }) {
       if (response.extensionAutoFill && response.extensionTicket && response.tool?.slug) {
         const normalizedToolSlug = normalizeToolSlug(response.tool.slug);
         const launchLoginMethod = `${response.credential?.loginMethod || ''}`.trim().toLowerCase();
-        const requiresExtensionWindow =
-          ['flow', 'chatgpt'].includes(normalizedToolSlug)
-          || shouldLaunchExtensionToolInIncognito(normalizedToolSlug, launchLoginMethod);
         const launchDetail = {
           toolSlug: normalizedToolSlug,
           toolName: response.tool.name,
@@ -2453,23 +2071,20 @@ export default function Tools({ view = 'tools' }) {
           type: EXTENSION_LAUNCH_MESSAGE_TYPE,
           ...launchDetail,
         }, window.location.origin);
+        const launchStored = await waitForExtensionLaunchStored(normalizedToolSlug);
+        if (!launchStored.ok) {
+          throw new Error(launchStored.error || 'Extension launch bridge did not respond.');
+        }
         launchUrl = resolveExtensionLaunchUrl(
           response.launchUrl,
           response.extensionTicket,
           normalizedToolSlug,
           response.usageTrackingTicket || ''
         );
-        const launchStored = await waitForExtensionLaunchStored(normalizedToolSlug);
-        if (!launchStored.ok && requiresExtensionWindow) {
-          throw new Error(launchStored.error || 'Extension launch bridge did not respond.');
-        }
-        if (!launchStored.ok) {
-          setNotice('Extension bridge did not confirm the launch, so the tool is opening with a direct launch ticket.');
-        }
-        if (requiresExtensionWindow) {
-          if (reservedLaunchWindow && !reservedLaunchWindow.closed) {
-            reservedLaunchWindow.close();
-          }
+        if (
+          ['flow', 'chatgpt'].includes(normalizedToolSlug)
+          || shouldLaunchExtensionToolInIncognito(normalizedToolSlug, launchLoginMethod)
+        ) {
           const isolatedResult = await openToolInIncognitoWindow({
             toolSlug: normalizedToolSlug,
             toolName: response.tool.name,
@@ -2484,22 +2099,11 @@ export default function Tools({ view = 'tools' }) {
         }
       }
       if (launchUrl) {
-        if (reservedLaunchWindow && !reservedLaunchWindow.closed) {
-          reservedLaunchWindow.location.replace(launchUrl);
-          reservedLaunchWindowUsed = true;
-        } else {
-          window.open(launchUrl, '_blank', 'noopener,noreferrer');
-        }
+        window.open(launchUrl, '_blank', 'noopener,noreferrer');
       }
     } catch (err) {
-      if (reservedLaunchWindow && !reservedLaunchWindowUsed && !reservedLaunchWindow.closed) {
-        reservedLaunchWindow.close();
-      }
       setError(err?.response?.data?.detail || err?.message || 'Unable to launch tool.');
     } finally {
-      if (reservedLaunchWindow && !reservedLaunchWindowUsed && !reservedLaunchWindow.closed) {
-        reservedLaunchWindow.close();
-      }
       setLaunchingToolId('');
     }
   };
@@ -2555,7 +2159,7 @@ export default function Tools({ view = 'tools' }) {
             <form className="it-admin-card" onSubmit={handleSaveTool} autoComplete="off">
               <div className="it-admin-card-header">
                 <div>
-                  <h2>{editToolId ? 'Edit Tool' : 'Add Tool'}</h2>
+                  <h2>{editToolId ? 'Edit Tool' : 'Add Tool'}</h2
                 </div>
                 <span>{editToolId ? 'Update setup' : 'Admin only'}</span>
               </div>
@@ -2634,6 +2238,7 @@ export default function Tools({ view = 'tools' }) {
               <div className="it-admin-card-header">
                 <div>
                   <h2>Add Credential</h2>
+                  <p className="it-card-copy">Store the assigned company login securely for extension autofill, magic-link flows, and manual launch support.</p>
                 </div>
                 <span>Encrypted</span>
               </div>
@@ -2977,6 +2582,7 @@ export default function Tools({ view = 'tools' }) {
               <div className="it-admin-card-header">
                 <div>
                   <h2>Verification Mailbox</h2>
+                  <p className="it-card-copy">Manage the Gmail inboxes used for OTP codes or magic sign-in links. The extension will automatically match the mailbox email to the saved credential email for tools like ChatGPT and Claude.</p>
                 </div>
                 <span>{mailboxEntries.length ? `${mailboxEntries.length} saved` : 'Optional'}</span>
               </div>
@@ -3034,6 +2640,7 @@ export default function Tools({ view = 'tools' }) {
                   autoComplete="email"
                   required
                 />
+                
                 <input
                   type="password"
                   value={mailboxForm.app_password}
@@ -3340,209 +2947,6 @@ export default function Tools({ view = 'tools' }) {
           <section className="it-usage-card">
             <div className="it-usage-header">
               <div className="it-usage-heading">
-                <p className="it-profile-eyebrow">Tool Used</p>
-              </div>
-              <div className="it-usage-filters">
-                <input
-                  className="it-usage-filter-control"
-                  type="date"
-                  aria-label="Filter tool usage by date"
-                  value={toolLaunchFilters.selectedDate}
-                  onChange={(event) => setToolLaunchFilters((current) => ({ ...current, selectedDate: event.target.value }))}
-                />
-                <select
-                  className="it-usage-filter-control"
-                  aria-label="Filter tool usage by user"
-                  value={toolLaunchFilters.userId}
-                  onChange={(event) => setToolLaunchFilters((current) => ({ ...current, userId: event.target.value }))}
-                >
-                  <option value="">All users</option>
-                  {sortedUsers.map((user) => (
-                    <option key={`tool-launch-user-${user.id}`} value={user.id}>
-                      {user.name || user.email}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="it-usage-filter-control"
-                  aria-label="Filter tool usage by tool"
-                  value={toolLaunchFilters.toolId}
-                  onChange={(event) => setToolLaunchFilters((current) => ({ ...current, toolId: event.target.value }))}
-                >
-                  <option value="">All tools</option>
-                  {toolLaunchToolOptions.map((tool) => (
-                    <option key={`tool-launch-tool-${tool.id}`} value={tool.id}>
-                      {tool.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="it-usage-summary-grid">
-              <div className="it-usage-summary-pill">
-                <span>Total clicks</span>
-                <strong>{toolLaunchLoading ? '...' : toolLaunchSummary.launchCount}</strong>
-              </div>
-              <div className="it-usage-summary-pill">
-                <span>Users</span>
-                <strong>{toolLaunchLoading ? '...' : toolLaunchSummary.userCount}</strong>
-              </div>
-              <div className="it-usage-summary-pill">
-                <span>Tools used</span>
-                <strong>{toolLaunchLoading ? '...' : toolLaunchSummary.toolCount}</strong>
-              </div>
-              <div className="it-usage-summary-pill">
-                <span>Last click</span>
-                <strong>{toolLaunchLoading ? '...' : formatUsageDateTime(toolLaunchSummary.lastLaunchedAt)}</strong>
-              </div>
-            </div>
-
-            {toolLaunchError && (
-              <div className="tool-alert error">{toolLaunchError}</div>
-            )}
-
-            <div className="it-usage-table-wrap">
-              <table className="it-usage-table">
-                <thead>
-                  <tr>
-                    <th>User</th>
-                    <th>Tool</th>
-                    <th>Clicked when</th>
-                    <th>Launch type</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {toolLaunchLoading ? (
-                    <tr>
-                      <td colSpan={4}>Loading tool usage...</td>
-                    </tr>
-                  ) : toolLaunchRows.length ? (
-                    toolLaunchRows.map((row) => {
-                      const launchModeLabel = `${row.effectiveLaunchMode || row.launchMode || 'manual'}`.replace(/_/g, ' ');
-                      const isExpanded = expandedToolLaunchId === row.id;
-                      const relatedActivity = Array.isArray(row.relatedActivity) ? row.relatedActivity : [];
-                      return (
-                        <React.Fragment key={row.id}>
-                          <tr
-                            className={`it-tool-launch-row ${isExpanded ? 'is-expanded' : ''}`}
-                            role="button"
-                            tabIndex={0}
-                            aria-expanded={isExpanded}
-                            onClick={() => setExpandedToolLaunchId((current) => (current === row.id ? null : row.id))}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault();
-                                setExpandedToolLaunchId((current) => (current === row.id ? null : row.id));
-                              }
-                            }}
-                          >
-                            <td>
-                              <div className="it-usage-user-cell">
-                                <strong>{row.userName || row.userEmail || `User #${row.userId}`}</strong>
-                                <small>{row.userEmail || ''}</small>
-                              </div>
-                            </td>
-                            <td>
-                              <div className="it-usage-user-cell">
-                                <strong>{row.toolName || `Tool #${row.toolId}`}</strong>
-                                <small>{row.toolCategory || row.toolSlug || ''}</small>
-                              </div>
-                            </td>
-                            <td>{formatUsageDateTime(row.clickedAt)}</td>
-                            <td>
-                              <div className="it-usage-stat-stack">
-                                <strong>{launchModeLabel}</strong>
-                                <small>{row.credentialScope ? `${row.credentialScope} credential` : 'credential checked'}</small>
-                              </div>
-                            </td>
-                          </tr>
-                          {isExpanded && (
-                            <tr className="it-tool-launch-detail-row">
-                              <td colSpan={4}>
-                                <div className="it-tool-launch-detail">
-                                  <div className="it-tool-launch-detail-grid">
-                                    <div className="it-usage-recent-meta">
-                                      <span>User</span>
-                                      <strong>{row.userName || row.userEmail || `User #${row.userId}`}</strong>
-                                      <small>{row.userEmail || ''}</small>
-                                    </div>
-                                    <div className="it-usage-recent-meta">
-                                      <span>Tool</span>
-                                      <strong>{row.toolName || `Tool #${row.toolId}`}</strong>
-                                      <small>{row.toolCategory || row.toolSlug || ''}</small>
-                                    </div>
-                                    <div className="it-usage-recent-meta">
-                                      <span>Opened at</span>
-                                      <strong>{formatUsageDateTime(row.clickedAt)}</strong>
-                                      <small>{launchModeLabel}</small>
-                                    </div>
-                                  </div>
-
-                                  <div className="it-tool-launch-activity">
-                                    <div className="it-tool-launch-activity-head">
-                                      <strong>Captured activity during this session</strong>
-                                      <span>{relatedActivity.length} event{relatedActivity.length === 1 ? '' : 's'}</span>
-                                    </div>
-                                    {relatedActivity.length ? (
-                                      <div className="it-tool-launch-activity-list">
-                                        {relatedActivity.map((event) => {
-                                          const diagnosticChips = buildUsageDiagnosticChips(event);
-                                          return (
-                                            <div key={event.id} className="it-tool-launch-activity-item">
-                                              <div>
-                                                <strong>{`${event.eventType || 'tool activity'}`.replace(/_/g, ' ')}</strong>
-                                                <small>{formatUsageDateTime(event.createdAt)}</small>
-                                                {renderUsagePromptBlock(event)}
-                                                {renderUsageAssetLinks(event)}
-                                                {!!diagnosticChips.length && (
-                                                  <div className="it-usage-diagnostic-chips">
-                                                    {diagnosticChips.map((chip) => (
-                                                      <span key={`${event.id}-${chip}`}>{chip}</span>
-                                                    ))}
-                                                  </div>
-                                                )}
-                                              </div>
-                                              <div className="it-usage-stat-stack">
-                                                <strong>{event.creditsBurned != null ? `${formatUsageNumber(event.creditsBurned)} credits` : event.status || 'captured'}</strong>
-                                                <small>
-                                                  {[event.modelLabel, event.durationLabel, event.resolutionLabel]
-                                                    .filter(Boolean)
-                                                    .join(' - ') || 'No generation metadata captured'}
-                                                </small>
-                                              </div>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    ) : (
-                                      <div className="it-tool-launch-empty-detail">
-                                        No inside-tool activity was captured for this launch. This usually means the user opened the tool, but the extension did not capture a generation or credit event for that session.
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })
-                  ) : (
-                    <tr>
-                      <td colSpan={4}>No tool clicks found for these filters.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        {activeView === 'credits' && isAdmin && (
-          <section className="it-usage-card">
-            <div className="it-usage-header">
-              <div className="it-usage-heading">
                 <p className="it-profile-eyebrow">Kling Usage</p>
               </div>
               <div className="it-usage-filters">
@@ -3598,53 +3002,41 @@ export default function Tools({ view = 'tools' }) {
               <div className="it-usage-recent">
                 <h3>Recent captured events</h3>
                 <div className="it-usage-recent-list">
-                  {filteredRecentUsageEvents.slice(0, 8).map((event) => {
-                    const diagnosticChips = buildUsageDiagnosticChips(event);
-                    return (
-                      <div key={event.id} className="it-usage-recent-item">
-                        <div className="it-usage-recent-top">
-                          <div className="it-usage-user-cell">
-                            <strong>{event.userName || event.userEmail || `User #${event.userId}`}</strong>
-                            <small>{event.userEmail || ''}</small>
-                          </div>
-                          <div className="it-usage-recent-burn">
-                            <span>Credits burned</span>
-                            <strong>{event.creditsBurned != null ? formatUsageNumber(event.creditsBurned) : '-'}</strong>
-                          </div>
+                  {filteredRecentUsageEvents.slice(0, 8).map((event) => (
+                    <div key={event.id} className="it-usage-recent-item">
+                      <div className="it-usage-recent-top">
+                        <div className="it-usage-user-cell">
+                          <strong>{event.userName || event.userEmail || `User #${event.userId}`}</strong>
+                          <small>{event.userEmail || ''}</small>
                         </div>
-                        <div className="it-usage-recent-grid">
-                          <div className="it-usage-recent-meta">
-                            <span>Date & time</span>
-                            <strong>{formatUsageDateTime(event.createdAt)}</strong>
-                          </div>
-                          <div className="it-usage-recent-meta">
-                            <span>Kling ID used</span>
-                            <strong>{formatUsageCredentialTitle(event.credentialLabel, event.credentialId)}</strong>
-                            <small>{event.credentialScope || ''}</small>
-                          </div>
-                          <div className="it-usage-recent-meta">
-                            <span>Generation</span>
-                            <strong>{event.modelLabel || 'Kling'}</strong>
-                            <small>
-                              {[
-                                event.resolutionLabel,
-                                event.durationLabel,
-                              ].filter(Boolean).join(' · ') || 'No extra generation details'}
-                            </small>
-                          </div>
+                        <div className="it-usage-recent-burn">
+                          <span>Credits burned</span>
+                          <strong>{event.creditsBurned != null ? formatUsageNumber(event.creditsBurned) : '-'}</strong>
                         </div>
-                        {renderUsagePromptBlock(event)}
-                        {renderUsageAssetLinks(event)}
-                        {!!diagnosticChips.length && (
-                          <div className="it-usage-diagnostic-chips">
-                            {diagnosticChips.map((chip) => (
-                              <span key={`${event.id}-${chip}`}>{chip}</span>
-                            ))}
-                          </div>
-                        )}
                       </div>
-                    );
-                  })}
+                      <div className="it-usage-recent-grid">
+                        <div className="it-usage-recent-meta">
+                          <span>Date & time</span>
+                          <strong>{formatUsageDateTime(event.createdAt)}</strong>
+                        </div>
+                        <div className="it-usage-recent-meta">
+                          <span>Kling ID used</span>
+                          <strong>{formatUsageCredentialTitle(event.credentialLabel, event.credentialId)}</strong>
+                          <small>{event.credentialScope || ''}</small>
+                        </div>
+                        <div className="it-usage-recent-meta">
+                          <span>Generation</span>
+                          <strong>{event.modelLabel || 'Kling'}</strong>
+                          <small>
+                            {[
+                              event.resolutionLabel,
+                              event.durationLabel,
+                            ].filter(Boolean).join(' · ') || 'No extra generation details'}
+                          </small>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
