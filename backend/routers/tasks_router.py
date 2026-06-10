@@ -1710,6 +1710,7 @@ def _build_worker_submission_summary(
     viewer_user_id = current_user.id if current_user else None
     viewer_submitted = False
     viewer_started = False
+    viewer_submission = None
     for worker in assigned_to or []:
         user_id = worker.get("id")
         submission = submissions.get(str(int(user_id or 0))) if user_id else None
@@ -1723,6 +1724,7 @@ def _build_worker_submission_summary(
         if viewer_user_id and user_id and int(user_id) == int(viewer_user_id):
             viewer_submitted = bool(is_submitted)
             viewer_started = bool(has_started)
+            viewer_submission = submission if is_submitted else None
         workers.append(
             {
                 "id": user_id,
@@ -1751,6 +1753,7 @@ def _build_worker_submission_summary(
         "required": required_count,
         "viewerStarted": viewer_started,
         "viewerSubmitted": viewer_submitted,
+        "viewerSubmission": viewer_submission,
         "workers": workers,
         "complete": is_complete,
     }
