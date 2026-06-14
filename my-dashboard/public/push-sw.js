@@ -9,8 +9,14 @@ self.addEventListener('activate', (event) => {
 self.isDashboardClientUrl = (urlValue) => {
   try {
     const clientUrl = new URL(urlValue);
+    const pathname = `${clientUrl.pathname || ''}`.toLowerCase();
     const hash = `${clientUrl.hash || ''}`.toLowerCase();
-    return hash === '#/dashboard' || hash.startsWith('#/dashboard/');
+    return (
+      pathname === '/dashboard'
+      || pathname.startsWith('/dashboard/')
+      || hash === '#/dashboard'
+      || hash.startsWith('#/dashboard/')
+    );
   } catch {
     return false;
   }
@@ -22,7 +28,7 @@ self.addEventListener('push', (event) => {
       title: 'New update',
       body: 'You have a new notification.',
       tag: 'rmw-notification',
-      url: '/#/dashboard',
+      url: '/dashboard',
       data: {},
     };
 
@@ -61,7 +67,7 @@ self.addEventListener('push', (event) => {
       tag: payload.tag || 'rmw-notification',
       data: {
         ...(payload.data || {}),
-        url: payload.url || '/#/dashboard',
+        url: payload.url || '/dashboard',
       },
       icon: '/rmweye.svg',
       badge: '/rmweye.svg',
@@ -76,7 +82,7 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
   event.waitUntil((async () => {
-    const targetUrl = event.notification?.data?.url || '/#/dashboard';
+    const targetUrl = event.notification?.data?.url || '/dashboard';
     const absoluteTargetUrl = new URL(targetUrl, self.location.origin).toString();
     const clients = await self.clients.matchAll({
       type: 'window',

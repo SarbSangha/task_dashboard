@@ -3,7 +3,7 @@
 import React from 'react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './App.css';
 
 // Auth Components
@@ -20,10 +20,22 @@ import { AuthProvider } from './context/AuthContext';
 import { CustomDialogProvider } from './components/common/CustomDialogs';
 import { queryClient } from './lib/queryClient';
 
+function normalizeLegacyHashRoute() {
+  if (typeof window === 'undefined') return;
+  const hashRoute = window.location.hash || '';
+  if (!hashRoute.startsWith('#/')) return;
+
+  const nextPath = hashRoute.slice(1);
+  const nextUrl = `${nextPath}${window.location.search || ''}`;
+  window.history.replaceState(null, '', nextUrl);
+}
+
 function App() {
+  normalizeLegacyHashRoute();
+
   return (
     <QueryClientProvider client={queryClient}>
-      <HashRouter>
+      <BrowserRouter>
         <AuthProvider>
           <CustomDialogProvider>
             <Routes>
@@ -50,7 +62,7 @@ function App() {
             </Routes>
           </CustomDialogProvider>
         </AuthProvider>
-      </HashRouter>
+      </BrowserRouter>
       {import.meta.env.DEV ? <ReactQueryDevtools initialIsOpen={false} /> : null}
     </QueryClientProvider>
   );

@@ -146,7 +146,7 @@ def _extract_websocket_session_token(websocket: WebSocket) -> tuple[Optional[str
 WEB_PUSH_PUBLIC_KEY_ENV = "WEB_PUSH_PUBLIC_KEY"
 WEB_PUSH_PRIVATE_KEY_ENV = "WEB_PUSH_PRIVATE_KEY"
 WEB_PUSH_SUBJECT_ENV = "WEB_PUSH_SUBJECT"
-WEB_PUSH_DEFAULT_CLICK_URL = "/#/dashboard"
+WEB_PUSH_DEFAULT_CLICK_URL = "/dashboard"
 
 
 def _trim_env(name: str, default: str = "") -> str:
@@ -203,7 +203,7 @@ def _web_push_status_payload() -> dict:
     }
 
 
-def _build_dashboard_hash_url(panel: str = "", query: Optional[dict] = None) -> str:
+def _build_dashboard_url(panel: str = "", query: Optional[dict] = None) -> str:
     base_path = WEB_PUSH_DEFAULT_CLICK_URL
     panel_segment = f"/{panel.strip('/')}" if panel else ""
     query_string = urlencode({key: value for key, value in (query or {}).items() if value not in (None, "")})
@@ -220,23 +220,23 @@ def _build_notification_click_url(payload: dict) -> str:
     sender_id = metadata.get("senderId")
 
     if event_type == "group_message" and group_id:
-        return _build_dashboard_hash_url("messages", {
+        return _build_dashboard_url("messages", {
             "tab": "groups",
             "groupId": group_id,
             "messageId": message_id,
         })
 
     if event_type == "direct_message" and sender_id:
-        return _build_dashboard_hash_url("messages", {
+        return _build_dashboard_url("messages", {
             "tab": "direct",
             "userId": sender_id,
             "messageId": message_id,
         })
 
     if task_id:
-        return _build_dashboard_hash_url("tracking", {"taskId": task_id})
+        return _build_dashboard_url("tracking", {"taskId": task_id})
 
-    return _build_dashboard_hash_url()
+    return _build_dashboard_url()
 
 
 def _coerce_web_push_expiration(value) -> Optional[datetime]:

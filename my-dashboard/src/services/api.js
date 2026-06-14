@@ -392,15 +392,15 @@ api.interceptors.response.use(
         return Promise.reject(error);
       }
 
-      // With HashRouter, route lives in location.hash (e.g. "#/login").
-      const routePath = (window.location.hash || window.location.pathname || '')
-        .replace(/^#/, '')
-        .split('?')[0];
+      const legacyHashPath = window.location.hash?.startsWith('#/')
+        ? window.location.hash.slice(1).split('?')[0]
+        : '';
+      const routePath = legacyHashPath || (window.location.pathname || '').split('?')[0];
       const publicPaths = ['/login', '/register', '/forgot-password', '/reset-password'];
       if (!publicPaths.includes(routePath)) {
         clearStoredSessionToken();
         console.log(`❌ 401 Unauthorized (${requestUrl}) - redirecting to login`);
-        window.location.href = '/#/login';
+        window.location.href = '/login';
       }
     }
     return Promise.reject(error);

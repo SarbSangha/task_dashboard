@@ -78,6 +78,25 @@ function handleCorsPreflight(request, env) {
   return new Response(null, { status: 204, headers })
 }
 
+function isSpaNavigationRequest(request, url) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/edge/')) return false
+  if (url.pathname.includes('.')) return false
+  const accept = request.headers.get('Accept') || ''
+  return accept.includes('text/html') || accept.includes('*/*')
+}
+
+async function fetchAssetOrSpaFallback(request, env, url) {
+  const assetResponse = await env.ASSETS.fetch(request)
+  if (assetResponse.status !== 404 || !isSpaNavigationRequest(request, url)) {
+    return assetResponse
+  }
+
+  const indexUrl = new URL('/index.html', url.origin)
+  const indexRequest = new Request(indexUrl.toString(), request)
+  return env.ASSETS.fetch(indexRequest)
+}
+
 function json(data, init = {}) {
   const headers = new Headers(init.headers || {})
   if (!headers.has('content-type')) {
@@ -319,7 +338,7 @@ export default {
       }
 
       if (env.ASSETS) {
-        return env.ASSETS.fetch(request)
+        return fetchAssetOrSpaFallback(request, env, url)
       }
 
       return new Response('Not found', { status: 404 })
