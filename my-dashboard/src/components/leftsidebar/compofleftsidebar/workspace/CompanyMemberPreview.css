@@ -716,8 +716,8 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  min-width: 84px;
+  gap: 6px;
+  min-width: 92px;
   opacity: 0.45;
   transition: opacity 0.2s ease;
 }
@@ -745,6 +745,12 @@
   box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.2);
 }
 
+.company-member-preview-metro-stop.tone-pending.current .company-member-preview-metro-dot,
+.company-member-preview-metro-stop.tone-active.current .company-member-preview-metro-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18);
+}
+
 .company-member-preview-metro-stop span {
   color: rgba(255, 255, 255, 0.72);
   font-size: 11px;
@@ -752,6 +758,25 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   text-align: center;
+}
+
+.company-member-preview-metro-stop small {
+  max-width: 86px;
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: normal;
+  line-height: 1.25;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.company-member-preview-metro-stop.completed small {
+  color: rgba(187, 247, 208, 0.88);
+}
+
+.company-member-preview-metro-stop.current small {
+  color: rgba(253, 230, 138, 0.96);
 }
 
 .company-member-preview-metro-connector {

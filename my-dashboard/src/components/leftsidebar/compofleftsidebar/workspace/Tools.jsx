@@ -27,6 +27,13 @@ const EMPTY_USAGE_FILTERS = {
   credentialId: '',
 };
 
+const EMPTY_LAUNCH_HISTORY_SUMMARY = {
+  launchCount: 0,
+  userCount: 0,
+  toolCount: 0,
+  lastLaunchedAt: null,
+};
+
 const ASSIGNMENT_USER_PAGE_SIZE = 20;
 
 const Icons = {
@@ -619,6 +626,9 @@ export default function Tools({ view = 'tools' }) {
   const [usageFilters, setUsageFilters] = useState(EMPTY_USAGE_FILTERS);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageRows, setUsageRows] = useState([]);
+  const [launchHistoryLoading, setLaunchHistoryLoading] = useState(false);
+  const [launchHistoryRows, setLaunchHistoryRows] = useState([]);
+  const [launchHistorySummary, setLaunchHistorySummary] = useState(EMPTY_LAUNCH_HISTORY_SUMMARY);
   const [usageSummary, setUsageSummary] = useState({
     generateClicks: 0,
     userCount: 0,
@@ -878,6 +888,30 @@ export default function Tools({ view = 'tools' }) {
   }, [activeView, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
 
   useEffect(() => {
+    if (activeView !== 'credits' || !isAdmin) return undefined;
+    const controller = new AbortController();
+    setLaunchHistoryLoading(true);
+    void itToolsAPI.getLaunchHistory({
+      selected_date: usageFilters.selectedDate,
+      user_id: usageFilters.userId || undefined,
+      signal: controller.signal,
+    }).then((response) => {
+      if (controller.signal.aborted) return;
+      setLaunchHistoryRows(response.rows || []);
+      setLaunchHistorySummary(response.summary || EMPTY_LAUNCH_HISTORY_SUMMARY);
+    }).catch((err) => {
+      if (isRequestCanceled(err) || controller.signal.aborted) return;
+      setError(err?.response?.data?.detail || 'Unable to load all tool launch history.');
+    }).finally(() => {
+      if (!controller.signal.aborted) {
+        setLaunchHistoryLoading(false);
+      }
+    });
+
+    return () => controller.abort();
+  }, [activeView, isAdmin, usageFilters.selectedDate, usageFilters.userId]);
+
+  useEffect(() => {
     if (activeView !== 'credits') return undefined;
 
     const refreshUsage = () => {
@@ -911,6 +945,18 @@ export default function Tools({ view = 'tools' }) {
           usageRefreshControllerRef.current = null;
         }
       });
+      if (isAdmin) {
+        void itToolsAPI.getLaunchHistory({
+          selected_date: usageFilters.selectedDate,
+          user_id: usageFilters.userId || undefined,
+        }).then((response) => {
+          setLaunchHistoryRows(response.rows || []);
+          setLaunchHistorySummary(response.summary || EMPTY_LAUNCH_HISTORY_SUMMARY);
+        }).catch((err) => {
+          if (isRequestCanceled(err)) return;
+          setError(err?.response?.data?.detail || 'Unable to refresh all tool launch history.');
+        });
+      }
       return controller;
     };
 
@@ -930,7 +976,7 @@ export default function Tools({ view = 'tools' }) {
       usageRefreshControllerRef.current?.abort();
       usageRefreshControllerRef.current = null;
     };
-  }, [activeView, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
+  }, [activeView, isAdmin, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
 
   const categories = useMemo(() => {
     return ['All', ...new Set(tools.map((tool) => tool.category || 'General'))];
@@ -2992,7 +3038,9 @@ export default function Tools({ view = 'tools' }) {
           <section className="it-usage-card">
             <div className="it-usage-header">
               <div className="it-usage-heading">
-                <p className="it-profile-eyebrow">Kling Usage</p>
+                <p className="it-profile-eyebrow">Tool Usage</p>
+                <h2>Usage and launch tracking</h2>
+                <span>All tool launches in one place, with deeper Kling generation capture when available.</span>
               </div>
               <div className="it-usage-filters">
                 <input
@@ -3013,6 +3061,73 @@ export default function Tools({ view = 'tools' }) {
                     </option>
                   ))}
                 </select>
+              </div>
+            </div>
+
+            <div className="it-usage-overview-grid">
+              <div className="it-usage-summary-pill">
+                <span>Total launches</span>
+                <strong>{launchHistoryLoading ? '...' : launchHistorySummary.launchCount}</strong>
+              </div>
+              <div className="it-usage-summary-pill">
+                <span>Users active</span>
+                <strong>{launchHistoryLoading ? '...' : launchHistorySummary.userCount}</strong>
+              </div>
+              <div className="it-usage-summary-pill">
+                <span>Tools opened</span>
+                <strong>{launchHistoryLoading ? '...' : launchHistorySummary.toolCount}</strong>
+              </div>
+              <div className="it-usage-summary-pill">
+                <span>Last launch</span>
+                <strong>{launchHistoryLoading ? '...' : formatUsageDateTime(launchHistorySummary.lastLaunchedAt)}</strong>
+              </div>
+            </div>
+
+            <div className="it-usage-split-grid">
+              <div className="it-usage-launch-history">
+                <div className="it-usage-launch-head">
+                  <div>
+                    <h3>All tool launches</h3>
+                    <p>Every dashboard-opened tool, even if deep capture is not available yet.</p>
+                  </div>
+                  <div className="it-usage-launch-stats">
+                    <span>{launchHistoryLoading ? '...' : launchHistorySummary.launchCount} launches</span>
+                  </div>
+                </div>
+
+                {launchHistoryRows.length ? (
+                  <div className="it-usage-launch-list">
+                    {launchHistoryRows.slice(0, 10).map((launch) => (
+                      <div key={launch.id} className="it-usage-launch-item">
+                        <div className="it-usage-launch-main">
+                          <strong>{launch.toolName || launch.toolSlug || `Tool #${launch.toolId}`}</strong>
+                          <small>{launch.userName || launch.userEmail || `User #${launch.userId}`}</small>
+                        </div>
+                        <div className="it-usage-launch-meta">
+                          <span>{formatUsageDateTime(launch.clickedAt)}</span>
+                          <small>{launch.launchMode || launch.effectiveLaunchMode || 'launch'}</small>
+                        </div>
+                        <div className="it-usage-launch-activity">
+                          <span>{Array.isArray(launch.relatedActivity) ? launch.relatedActivity.length : 0}</span>
+                          <small>events</small>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="it-usage-launch-empty">
+                    {launchHistoryLoading ? 'Loading tool launches...' : 'No tool launches found for this filter.'}
+                  </div>
+                )}
+              </div>
+
+              <div className="it-usage-kling-panel">
+                <div className="it-usage-launch-head">
+                  <div>
+                    <h3>Kling generation capture</h3>
+                    <p>Prompt, output, credit, and MediaSource video events captured from Kling.</p>
+                  </div>
+                </div>
                 <select
                   className="it-usage-filter-control"
                   value={usageFilters.credentialId}
@@ -3025,21 +3140,20 @@ export default function Tools({ view = 'tools' }) {
                     </option>
                   ))}
                 </select>
-              </div>
-            </div>
-
-            <div className="it-usage-summary-grid">
-              <div className="it-usage-summary-pill">
-                <span>Generate clicks</span>
-                <strong>{usageLoading ? '...' : usageSummaryForDisplay.generateClicks}</strong>
-              </div>
-              <div className="it-usage-summary-pill">
-                <span>Credits burned</span>
-                <strong>{usageLoading ? '...' : formatUsageNumber(usageSummaryForDisplay.creditsBurned)}</strong>
-              </div>
-              <div className="it-usage-summary-pill">
-                <span>Current credits</span>
-                <strong>{usageLoading ? '...' : (usageSummaryForDisplay.currentCredits != null ? formatUsageNumber(usageSummaryForDisplay.currentCredits) : '-')}</strong>
+                <div className="it-usage-kling-metrics">
+                  <div>
+                    <span>Generate clicks</span>
+                    <strong>{usageLoading ? '...' : usageSummaryForDisplay.generateClicks}</strong>
+                  </div>
+                  <div>
+                    <span>Credits burned</span>
+                    <strong>{usageLoading ? '...' : formatUsageNumber(usageSummaryForDisplay.creditsBurned)}</strong>
+                  </div>
+                  <div>
+                    <span>Current credits</span>
+                    <strong>{usageLoading ? '...' : (usageSummaryForDisplay.currentCredits != null ? formatUsageNumber(usageSummaryForDisplay.currentCredits) : '-')}</strong>
+                  </div>
+                </div>
               </div>
             </div>
 

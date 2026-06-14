@@ -4513,8 +4513,15 @@ async def get_all_user_tasks(
     scoped_user_id = user_id if user_id is not None else current_user.id
     if user_id is not None and user_id != current_user.id and not has_any_role(current_user, {"super_admin", "hod", "faculty"}):
         raise HTTPException(status_code=403, detail="Permission denied")
+    scoped_user = current_user
+    if scoped_user_id != current_user.id:
+        scoped_user = db.query(User).filter(User.id == scoped_user_id).first()
+        if not scoped_user:
+            raise HTTPException(status_code=404, detail="User not found")
 
     tracking_participant = aliased(TaskParticipant)
+    scoped_stage = aliased(TaskStage)
+    scoped_stage_assignee = aliased(TaskStageAssignee)
     query = (
         db.query(Task)
         .options(*_task_list_loader_options())
@@ -4526,6 +4533,16 @@ async def get_all_user_tasks(
                 tracking_participant.is_active == True,
             ),
         )
+        .outerjoin(scoped_stage, scoped_stage.task_id == Task.id)
+        .outerjoin(
+            scoped_stage_assignee,
+            and_(
+                scoped_stage_assignee.stage_id == scoped_stage.id,
+                scoped_stage_assignee.user_id == scoped_user_id,
+                scoped_stage_assignee.is_active == True,
+                scoped_stage_assignee.role == WORKFLOW_ASSIGNEE_ROLE,
+            ),
+        )
         .filter(
             Task.is_deleted == False,
             Task.status != TaskStatus.DRAFT,
@@ -4533,6 +4550,7 @@ async def get_all_user_tasks(
                 Task.creator_id == scoped_user_id,
                 Task.submitted_by == scoped_user_id,
                 tracking_participant.id.isnot(None),
+                scoped_stage_assignee.id.isnot(None),
             ),
         )
         .distinct()
@@ -4590,7 +4608,7 @@ async def get_all_user_tasks(
         "page": page,
         "limit": limit,
         "hasMore": has_more,
-        "tasks": serialize_task_list(tasks, db, current_user),
+        "tasks": serialize_task_list(tasks, db, scoped_user),
     }
 
 

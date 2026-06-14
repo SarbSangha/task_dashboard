@@ -701,10 +701,12 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   }, []);
 
   const buildDownloadUrl = useCallback((asset) => {
+    if (!canDownloadRmwData) return null;
     return buildFileDownloadUrl(asset, asset?.filename || 'download') || null;
-  }, []);
+  }, [canDownloadRmwData]);
 
   const downloadAsset = useCallback((asset) => {
+    if (!canDownloadRmwData) return;
     const downloadUrl = buildDownloadUrl(asset);
     if (!downloadUrl) return;
     const link = document.createElement('a');
@@ -713,7 +715,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  }, [buildDownloadUrl]);
+  }, [buildDownloadUrl, canDownloadRmwData]);
 
   const handlePreviewAsset = useCallback((asset) => {
     setPreviewAsset(asset);

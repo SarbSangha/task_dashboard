@@ -26,6 +26,8 @@ const TASK_STATUS_FILTERS = [
 ];
 
 const MEMBER_TASK_PREVIEW_CACHE_TTL_MS = 60 * 1000;
+const MEMBER_TASK_PREVIEW_PAGE_SIZE = 50;
+const MEMBER_TASK_PREVIEW_MAX_PAGES = 20;
 const TASK_DATA_SECTION_IDS = new Set(['inbox', 'outbox', 'activity']);
 const memberTaskPreviewRequests = new Map();
 function buildMemberTaskPreviewCacheKey(memberId) {
@@ -43,13 +45,22 @@ async function loadMemberPreviewTasks(memberId) {
     return memberTaskPreviewRequests.get(memberId);
   }
 
-  const request = taskAPI
-    .getAllTasks({ user_id: memberId })
-    .then((response) => {
-      const tasks = Array.isArray(response?.tasks) ? response.tasks : [];
-      setTaskPanelCache(cacheKey, { tasks });
-      return tasks;
-    })
+  const request = (async () => {
+    const tasks = [];
+    for (let page = 0; page < MEMBER_TASK_PREVIEW_MAX_PAGES; page += 1) {
+      const response = await taskAPI.getAllTasks({
+        user_id: memberId,
+        page,
+        limit: MEMBER_TASK_PREVIEW_PAGE_SIZE,
+      });
+      const pageTasks = Array.isArray(response?.tasks) ? response.tasks : [];
+      tasks.push(...pageTasks);
+      if (!response?.hasMore || pageTasks.length === 0) break;
+    }
+
+    setTaskPanelCache(cacheKey, { tasks });
+    return tasks;
+  })()
     .finally(() => {
       memberTaskPreviewRequests.delete(memberId);
     });
@@ -93,6 +104,79 @@ function taskMatchesDateFilter(task, dateInputValue) {
   );
 }
 
+function collectTaskAssigneeIds(task) {
+  const ids = new Set();
+  const addId = (value) => {
+    if (value === null || value === undefined || value === '') return;
+    ids.add(String(value));
+  };
+
+  if (Array.isArray(task?.assignedTo)) {
+    task.assignedTo.forEach((assignee) => addId(assignee?.id ?? assignee?.userId));
+  }
+  if (Array.isArray(task?.assigneeIds)) {
+    task.assigneeIds.forEach(addId);
+  }
+  if (Array.isArray(task?.currentStageAssigneeIds)) {
+    task.currentStageAssigneeIds.forEach(addId);
+  }
+  if (Array.isArray(task?.currentAssigneeIds)) {
+    task.currentAssigneeIds.forEach(addId);
+  }
+  if (Array.isArray(task?.workflowStages)) {
+    task.workflowStages.forEach((stage) => {
+      if (Array.isArray(stage?.assigneeIds)) {
+        stage.assigneeIds.forEach(addId);
+      }
+      if (Array.isArray(stage?.assignees)) {
+        stage.assignees.forEach((assignee) => addId(assignee?.id ?? assignee?.userId));
+      }
+    });
+  }
+  if (Array.isArray(task?.stages)) {
+    task.stages.forEach((stage) => {
+      if (Array.isArray(stage?.assigneeIds)) {
+        stage.assigneeIds.forEach(addId);
+      }
+      if (Array.isArray(stage?.assignees)) {
+        stage.assignees.forEach((assignee) => addId(assignee?.id ?? assignee?.userId));
+      }
+    });
+  }
+
+  return ids;
+}
+
+function collectTaskStatusKeys(task) {
+  const keys = new Set();
+  const addStatus = (value) => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) return;
+    keys.add(normalized);
+
+    if (normalized === 'not_started' || normalized.includes('pending')) {
+      keys.add('pending');
+    }
+    if (normalized === 'active' || normalized === 'started' || normalized.includes('in_progress')) {
+      keys.add('in_progress');
+    }
+    if (normalized === 'approved') {
+      keys.add('completed');
+    }
+  };
+
+  addStatus(task?.status);
+  addStatus(task?.globalStatus);
+  addStatus(task?.workflowStatus);
+  addStatus(task?.workflowStage);
+  addStatus(task?.viewerWorkflowStage?.status);
+  if (Array.isArray(task?.workflowStages)) {
+    task.workflowStages.forEach((stage) => addStatus(stage?.status));
+  }
+
+  return keys;
+}
+
 function buildTaskSearchText(task) {
   const assignedNames = Array.isArray(task?.assignedTo)
     ? task.assignedTo.map((assignee) => assignee?.name).filter(Boolean).join(' ')
@@ -128,10 +212,39 @@ function isClosedTaskStatus(status) {
   return ['approved', 'completed', 'cancelled', 'rejected'].includes(String(status || '').toLowerCase());
 }
 
+function normalizeWorkflowStageStatus(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return 'pending';
+  if (['not_started', 'pending', 'assigned'].includes(normalized) || normalized.includes('pending')) {
+    return 'pending';
+  }
+  if (['active', 'started', 'in_progress'].includes(normalized) || normalized.includes('progress')) {
+    return 'active';
+  }
+  if (['submitted', 'under_review'].includes(normalized) || normalized.includes('submitted')) {
+    return 'submitted';
+  }
+  if (['approved', 'completed'].includes(normalized)) {
+    return 'completed';
+  }
+  if (normalized === 'need_improvement') {
+    return 'need_improvement';
+  }
+  return normalized;
+}
+
+function formatWorkflowStageStatus(value) {
+  const normalized = normalizeWorkflowStageStatus(value);
+  if (normalized === 'active') return 'Active';
+  if (normalized === 'need_improvement') return 'Need Improvement';
+  return formatTaskStatus(normalized);
+}
+
 function taskMatchesStatusFilter(task, filterId) {
   const selectedFilter = TASK_STATUS_FILTERS.find((filter) => filter.id === filterId) || TASK_STATUS_FILTERS[0];
   if (selectedFilter.matches.includes('*')) return true;
-  return selectedFilter.matches.includes(String(task?.status || '').toLowerCase());
+  const statusKeys = collectTaskStatusKeys(task);
+  return selectedFilter.matches.some((status) => statusKeys.has(status));
 }
 
 function isSameUserId(left, right) {
@@ -268,6 +381,49 @@ function StatusFilterBar({ tasks, activeFilter, onChange }) {
 }
 
 function buildTrackingStations(task) {
+  const workflowStages = Array.isArray(task?.workflowStages)
+    ? [...task.workflowStages].sort((left, right) => {
+      const leftOrder = Number(left?.order ?? left?.stageOrder ?? 0);
+      const rightOrder = Number(right?.order ?? right?.stageOrder ?? 0);
+      return leftOrder - rightOrder;
+    })
+    : [];
+
+  if (workflowStages.length > 0) {
+    const activeStageId = task?.viewerWorkflowStage?.id ?? task?.currentStageId;
+    const activeStageOrder = task?.viewerWorkflowStage?.order ?? task?.currentStageOrder;
+    const hasCurrentStage = activeStageId !== null && activeStageId !== undefined
+      || activeStageOrder !== null && activeStageOrder !== undefined;
+
+    return [
+      { id: 'created', label: 'Created', detail: formatTaskDate(task?.createdAt), completed: true },
+      ...workflowStages.map((stage, index) => {
+        const order = stage?.order ?? stage?.stageOrder ?? index + 1;
+        const normalizedStageStatus = normalizeWorkflowStageStatus(stage?.status);
+        const isActiveStage = (
+          activeStageId !== null &&
+          activeStageId !== undefined &&
+          String(stage?.id) === String(activeStageId)
+        ) || (
+          activeStageOrder !== null &&
+          activeStageOrder !== undefined &&
+          String(order) === String(activeStageOrder)
+        );
+        const completed = ['submitted', 'completed'].includes(normalizedStageStatus);
+        const current = !completed && (isActiveStage || (!hasCurrentStage && normalizedStageStatus === 'active'));
+
+        return {
+          id: `stage-${stage?.id ?? order}`,
+          label: `Stage ${order}`,
+          detail: formatWorkflowStageStatus(stage?.status),
+          completed,
+          current,
+          tone: normalizedStageStatus,
+        };
+      }),
+    ];
+  }
+
   const normalizedStatus = String(task?.status || '').toLowerCase();
   const hasAssignment = Boolean(task?.toDepartment) || (Array.isArray(task?.assignedTo) && task.assignedTo.length > 0);
   const started = Boolean(task?.startedAt) || ['in_progress', 'submitted', 'under_review', 'need_improvement', 'approved', 'completed', 'rejected'].includes(normalizedStatus);
@@ -306,10 +462,11 @@ function TrackingMetroLine({ task }) {
         return (
           <React.Fragment key={`${task.id}-${station.id}`}>
             <div
-              className={`company-member-preview-metro-stop ${station.completed ? 'completed' : ''} ${station.current ? 'current' : ''}`}
+              className={`company-member-preview-metro-stop ${station.completed ? 'completed' : ''} ${station.current ? 'current' : ''} ${station.tone ? `tone-${station.tone}` : ''}`}
             >
               <div className="company-member-preview-metro-dot" />
               <span>{station.label}</span>
+              {station.detail ? <small>{station.detail}</small> : null}
             </div>
             {nextStation && (
               <div
@@ -720,8 +877,7 @@ export default function CompanyMemberPreview({
     }
 
     const isAssignedToSelectedMember = (task) =>
-      Array.isArray(task.assignedTo) &&
-      task.assignedTo.some((assignee) => String(assignee.id) === String(normalizedMember.id));
+      collectTaskAssigneeIds(task).has(String(normalizedMember.id));
 
     const inboxTasks = taskState.tasks.filter(isAssignedToSelectedMember);
     const createdTasks = taskState.tasks.filter((task) => task.creatorId === normalizedMember.id);

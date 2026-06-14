@@ -44,6 +44,7 @@ export function normalizeRoles(user) {
 export function resolvePermissionSnapshot(user) {
   const roles = normalizeRoles(user);
   const roleSet = new Set(roles);
+  const hasApprovedLoginAccess = Boolean(user && user.isActive !== false && user.isDeleted !== true);
 
   return {
     roles,
@@ -51,6 +52,9 @@ export function resolvePermissionSnapshot(user) {
     isFaculty: roleSet.has('admin') || roleSet.has('faculty'),
     isUser: roleSet.has('user') || roleSet.has('admin') || roleSet.has('faculty'),
     can: (action) => {
+      if (action === 'download_rmw_data' && !hasApprovedLoginAccess) {
+        return false;
+      }
       const allowed = PERMISSION_MATRIX[action] || [];
       return allowed.some((role) => roleSet.has(role));
     },
