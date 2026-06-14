@@ -581,9 +581,21 @@ function isAuthenticatedMagnificPage() {
   const passwordInput = findInput(PASSWORD_SELECTORS);
   if (emailInput || passwordInput) return false;
 
+  const pageText = normalizeText(document.body?.innerText || '');
+  const looksLikeAuthenticatedAppShell = (
+    pageText.includes('hello,')
+    || pageText.includes('good morning, start creating')
+    || pageText.includes('what do you want to create')
+  ) && (
+    pageText.includes('projects')
+    || pageText.includes('all tools')
+    || pageText.includes('chat history')
+    || pageText.includes('personal')
+  );
+  if (looksLikeAuthenticatedAppShell) return true;
+
   if (findGoogleLoginAction() || findGenericLoginAction()) return false;
 
-  const pageText = normalizeText(document.body?.innerText || '');
   return pageText.includes('logout')
     || pageText.includes('profile')
     || pageText.includes('settings')

@@ -10,7 +10,7 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["storage", "cookies", "privacy", "browsingData", "alarms"],
+  "permissions": ["storage", "cookies", "privacy", "browsingData", "alarms", "contentSettings"],
   "host_permissions": [
     "http://localhost/*",
     "http://127.0.0.1/*",

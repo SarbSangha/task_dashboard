@@ -11,7 +11,7 @@ from auth import get_request_session_token, resolve_session_user
 from database_config import get_operational_db
 from models_new import ActivityStatus, Task, User, UserActivity
 from utils.datetime_utils import normalize_to_utc_naive, serialize_utc_datetime, utcnow_naive
-from utils.permissions import require_faculty
+from utils.permissions import require_faculty, resolve_roles
 
 
 router = APIRouter(prefix="/api/activity", tags=["Activity"])
@@ -343,9 +343,9 @@ async def user_activity(
     user_id: int,
     activity_date: Optional[date] = Query(None, alias="date"),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(get_current_user_from_session),
 ):
-    ensure_authenticated(current_user)
+    current_user = ensure_authenticated(current_user)
     target_date = resolve_activity_date(activity_date)
     target_user = (
         db.query(User)
@@ -354,6 +354,12 @@ async def user_activity(
     )
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    roles = resolve_roles(current_user)
+    same_user = current_user.id == target_user.id
+    same_department_hod = "hod" in roles and (current_user.department or "") == (target_user.department or "")
+    if not (same_user or "admin" in roles or "faculty" in roles or same_department_hod):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     row = get_activity_by_date(db, target_user.id, target_date)
     task_counts = get_tasks_done_counts(db, [target_user.id], target_date)

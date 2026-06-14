@@ -523,6 +523,50 @@ const hasDisplayableUsageCredential = (entry) => {
   return Boolean(normalizeUsageCredentialLabel(entry?.credentialLabel));
 };
 
+const getUsageEventMetadata = (event) => (
+  event?.metadata && typeof event.metadata === 'object' ? event.metadata : {}
+);
+
+const getUsageEventPrompt = (event) => (
+  `${event?.promptText || getUsageEventMetadata(event)?.promptCapture?.text || ''}`.trim()
+);
+
+const getUsageEventSettings = (event) => {
+  const metadata = getUsageEventMetadata(event);
+  const settings = metadata.generationSettings && typeof metadata.generationSettings === 'object'
+    ? metadata.generationSettings
+    : {};
+  return [
+    settings.generationMode || metadata.generationMode || event?.metadata?.rawGenerationMode,
+    settings.modelLabel || event?.modelLabel,
+    settings.resolutionLabel || event?.resolutionLabel,
+    settings.durationLabel || event?.durationLabel,
+    settings.aspectRatioLabel || metadata.aspectRatioLabel,
+    settings.outputCount ? `${settings.outputCount} output${Number(settings.outputCount) === 1 ? '' : 's'}` : '',
+    settings.nativeAudio ? 'Native audio' : '',
+    settings.multiShot ? 'Multi-shot' : '',
+  ].filter(Boolean);
+};
+
+const getUsageEventMediaAssets = (event, role) => {
+  const mediaAssets = getUsageEventMetadata(event)?.mediaAssets;
+  if (!Array.isArray(mediaAssets)) return [];
+  return mediaAssets
+    .filter((asset) => asset && typeof asset === 'object' && asset.url)
+    .filter((asset) => {
+      const assetRole = `${asset.assetRole || ''}`.trim().toLowerCase();
+      if (role === 'input') return assetRole === 'input';
+      if (role === 'output') return assetRole !== 'input';
+      return true;
+    });
+};
+
+const formatUsageAssetLabel = (asset, index) => {
+  const type = `${asset?.assetType || asset?.mimetype || ''}`.toLowerCase().includes('video') ? 'Video' : 'Image';
+  const source = `${asset?.source || ''}`.trim();
+  return `${type} ${index + 1}${source ? ` - ${source.replace(/_/g, ' ')}` : ''}`;
+};
+
 const compareUsageAggregateTotals = (left, right) => {
   if (Number(right?.creditsBurned || 0) !== Number(left?.creditsBurned || 0)) {
     return Number(right?.creditsBurned || 0) - Number(left?.creditsBurned || 0);
@@ -759,12 +803,13 @@ export default function Tools({ view = 'tools' }) {
       setIsAdmin(true);
     }).catch((err) => {
       if (isRequestCanceled(err) || controller.signal.aborted) return;
-      if (err?.response?.status === 403) {
+      if (err?.response?.status === 401 || err?.response?.status === 403) {
         setIsAdmin(false);
         setUsers([]);
         return;
       }
-      setError(err?.response?.data?.detail || 'Unable to load credit filters.');
+      console.warn('Unable to load credit filters:', err?.response?.data || err);
+      setUsers([]);
     });
 
     return () => {
@@ -3002,41 +3047,107 @@ export default function Tools({ view = 'tools' }) {
               <div className="it-usage-recent">
                 <h3>Recent captured events</h3>
                 <div className="it-usage-recent-list">
-                  {filteredRecentUsageEvents.slice(0, 8).map((event) => (
-                    <div key={event.id} className="it-usage-recent-item">
-                      <div className="it-usage-recent-top">
-                        <div className="it-usage-user-cell">
-                          <strong>{event.userName || event.userEmail || `User #${event.userId}`}</strong>
-                          <small>{event.userEmail || ''}</small>
+                  {filteredRecentUsageEvents.slice(0, 8).map((event) => {
+                    const promptText = getUsageEventPrompt(event);
+                    const settings = getUsageEventSettings(event);
+                    const inputAssets = getUsageEventMediaAssets(event, 'input');
+                    const outputAssets = getUsageEventMediaAssets(event, 'output');
+
+                    return (
+                      <div key={event.id} className="it-usage-recent-item">
+                        <div className="it-usage-recent-top">
+                          <div className="it-usage-user-cell">
+                            <strong>{event.userName || event.userEmail || `User #${event.userId}`}</strong>
+                            <small>{event.userEmail || ''}</small>
+                          </div>
+                          <div className="it-usage-recent-burn">
+                            <span>Credits burned</span>
+                            <strong>{event.creditsBurned != null ? formatUsageNumber(event.creditsBurned) : '-'}</strong>
+                          </div>
                         </div>
-                        <div className="it-usage-recent-burn">
-                          <span>Credits burned</span>
-                          <strong>{event.creditsBurned != null ? formatUsageNumber(event.creditsBurned) : '-'}</strong>
+                        <div className="it-usage-recent-grid">
+                          <div className="it-usage-recent-meta">
+                            <span>Date & time</span>
+                            <strong>{formatUsageDateTime(event.createdAt)}</strong>
+                          </div>
+                          <div className="it-usage-recent-meta">
+                            <span>Kling ID used</span>
+                            <strong>{formatUsageCredentialTitle(event.credentialLabel, event.credentialId)}</strong>
+                            <small>{event.credentialScope || ''}</small>
+                          </div>
+                          <div className="it-usage-recent-meta">
+                            <span>Generation</span>
+                            <strong>{event.modelLabel || 'Kling'}</strong>
+                            <small>
+                              {[
+                                event.resolutionLabel,
+                                event.durationLabel,
+                              ].filter(Boolean).join(' · ') || 'No extra generation details'}
+                            </small>
+                          </div>
                         </div>
+
+                        {(promptText || settings.length > 0) && (
+                          <div className="it-usage-capture-block">
+                            {promptText && (
+                              <div className="it-usage-prompt">
+                                <span>Prompt</span>
+                                <p>{promptText}</p>
+                              </div>
+                            )}
+                            {!!settings.length && (
+                              <div className="it-usage-setting-list">
+                                {settings.map((setting) => (
+                                  <span key={`${event.id}-setting-${setting}`}>{setting}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {(inputAssets.length > 0 || outputAssets.length > 0) && (
+                          <div className="it-usage-media-groups">
+                            {!!inputAssets.length && (
+                              <div className="it-usage-media-group">
+                                <span>Input media</span>
+                                <div className="it-usage-media-list">
+                                  {inputAssets.slice(0, 4).map((asset, index) => (
+                                    <a
+                                      key={`${event.id}-input-${asset.url}-${index}`}
+                                      href={asset.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      title={asset.url}
+                                    >
+                                      {formatUsageAssetLabel(asset, index)}
+                                    </a>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {!!outputAssets.length && (
+                              <div className="it-usage-media-group">
+                                <span>Output media</span>
+                                <div className="it-usage-media-list">
+                                  {outputAssets.slice(0, 6).map((asset, index) => (
+                                    <a
+                                      key={`${event.id}-output-${asset.url}-${index}`}
+                                      href={asset.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      title={asset.url}
+                                    >
+                                      {formatUsageAssetLabel(asset, index)}
+                                    </a>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <div className="it-usage-recent-grid">
-                        <div className="it-usage-recent-meta">
-                          <span>Date & time</span>
-                          <strong>{formatUsageDateTime(event.createdAt)}</strong>
-                        </div>
-                        <div className="it-usage-recent-meta">
-                          <span>Kling ID used</span>
-                          <strong>{formatUsageCredentialTitle(event.credentialLabel, event.credentialId)}</strong>
-                          <small>{event.credentialScope || ''}</small>
-                        </div>
-                        <div className="it-usage-recent-meta">
-                          <span>Generation</span>
-                          <strong>{event.modelLabel || 'Kling'}</strong>
-                          <small>
-                            {[
-                              event.resolutionLabel,
-                              event.durationLabel,
-                            ].filter(Boolean).join(' · ') || 'No extra generation details'}
-                          </small>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}

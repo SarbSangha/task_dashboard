@@ -198,8 +198,13 @@ export function useWorkspaceTeamDirectory() {
         users = (deptUsersResponse?.users || []).map((member) => ({
           id: member.id,
           name: member.name || `User ${member.id}`,
+          email: member.email || '',
+          employeeId: member.employeeId || 'N/A',
           department: member.department || myDept,
           position: member.position || 'Member',
+          roles: member.roles || [],
+          avatar: member.avatar || null,
+          lastLogin: member.lastLogin || null,
         }));
       }
 

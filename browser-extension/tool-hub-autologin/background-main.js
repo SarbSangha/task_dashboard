@@ -1516,6 +1516,198 @@ async function uploadCapturedMedia(message) {
   };
 }
 
+function isAllowedGoogleOauthRecoveryUrl(value = '') {
+  try {
+    const url = new URL(`${value || ''}`);
+    return url.protocol === 'https:'
+      && url.hostname === 'accounts.google.com'
+      && (
+        /oauth|signin|identifier|servicelogin/i.test(url.pathname)
+        || /client_id|redirect_uri|oauth/i.test(url.search)
+      );
+  } catch {
+    return false;
+  }
+}
+
+function isKlingTabUrl(value = '') {
+  const hostname = normalizeHostname(value || '');
+  return /(^|\.)kling\.ai$|(^|\.)klingai\.com$/.test(hostname);
+}
+
+async function allowKlingGooglePopups() {
+  if (!chrome?.contentSettings?.popups?.set) {
+    throw new Error('Chrome popup content setting API is unavailable.');
+  }
+
+  const primaryPatterns = [
+    'https://kling.ai/*',
+    'https://[*.]kling.ai/*',
+    'https://*.kling.ai/*',
+    'https://klingai.com/*',
+    'https://[*.]klingai.com/*',
+    'https://*.klingai.com/*',
+  ];
+  const secondaryPatterns = [
+    undefined,
+    '<all_urls>',
+    'https://accounts.google.com/*',
+    'https://[*.]google.com/*',
+    'https://*.google.com/*',
+  ];
+  const scopes = ['regular', 'incognito_session_only'];
+  const applied = [];
+  const errors = [];
+
+  for (const primaryPattern of primaryPatterns) {
+    for (const secondaryPattern of secondaryPatterns) {
+      for (const scope of scopes) {
+        const details = {
+          primaryPattern,
+          setting: 'allow',
+          scope,
+        };
+        if (secondaryPattern) details.secondaryPattern = secondaryPattern;
+        try {
+          await chrome.contentSettings.popups.set(details);
+          applied.push(`${primaryPattern}${secondaryPattern ? ` -> ${secondaryPattern}` : ''}:${scope}`);
+        } catch (error) {
+          errors.push({
+            primaryPattern,
+            secondaryPattern: secondaryPattern || '',
+            scope,
+            error: `${error?.message || error || ''}`.slice(0, 240),
+          });
+        }
+      }
+    }
+  }
+
+  if (!applied.length) {
+    throw new Error(errors[0]?.error || 'Chrome rejected all Kling popup content settings.');
+  }
+
+  const probes = [];
+  if (chrome?.contentSettings?.popups?.get) {
+    for (const incognito of [false, true]) {
+      try {
+        const result = await chrome.contentSettings.popups.get({
+          primaryUrl: 'https://kling.ai/app',
+          secondaryUrl: 'https://accounts.google.com/',
+          incognito,
+        });
+        probes.push({ incognito, setting: result?.setting || '', source: result?.source || '' });
+      } catch (error) {
+        probes.push({ incognito, error: `${error?.message || error || ''}`.slice(0, 240) });
+      }
+    }
+  }
+
+  return { applied, errors: errors.slice(0, 12), probes };
+}
+
+const googleOauthRecoveryWindows = new Map();
+
+function buildGoogleOauthRecoveryKey(url, senderTab = null) {
+  return [
+    Number(senderTab?.windowId || 0) || 'window',
+    Number(senderTab?.id || 0) || 'tab',
+    `${url || ''}`.slice(0, 1000),
+  ].join('|');
+}
+
+async function openRecoveredGoogleOauthPopup(url, senderTab = null) {
+  if (!isAllowedGoogleOauthRecoveryUrl(url)) {
+    throw new Error('Blocked non-Google OAuth recovery URL.');
+  }
+  const now = Date.now();
+  const recoveryKey = buildGoogleOauthRecoveryKey(url, senderTab);
+  const existing = googleOauthRecoveryWindows.get(recoveryKey);
+  if (existing?.windowId && now - Number(existing.openedAt || 0) < 60000) {
+    try {
+      const existingWindow = await chrome.windows.get(existing.windowId, { populate: true });
+      const existingTab = Array.isArray(existingWindow?.tabs) ? existingWindow.tabs[0] : null;
+      if (existingTab?.id) {
+        await chrome.tabs.update(existingTab.id, { active: true });
+        await chrome.windows.update(existingWindow.id, { focused: true });
+        return {
+          tabId: Number(existingTab.id || 0) || null,
+          windowId: Number(existingWindow.id || 0) || null,
+          incognito: Boolean(existingTab.incognito),
+          popup: true,
+          reused: true,
+        };
+      }
+    } catch {
+      googleOauthRecoveryWindows.delete(recoveryKey);
+    }
+  }
+  try {
+    const createdWindow = await chrome.windows.create({
+      url,
+      type: 'popup',
+      focused: true,
+      incognito: Boolean(senderTab?.incognito),
+    });
+    const popupTabId = Array.isArray(createdWindow?.tabs) ? Number(createdWindow.tabs[0]?.id || 0) || null : null;
+    if (popupTabId && senderTab?.id) {
+      const openerLaunch = await getActiveLaunch(senderTab.id, 'kling-ai')
+        || await getActiveLaunch(senderTab.id, 'kling');
+      if (openerLaunch?.ticket) {
+        await setActiveLaunch(popupTabId, openerLaunch);
+      }
+    }
+    googleOauthRecoveryWindows.set(recoveryKey, {
+      tabId: popupTabId,
+      windowId: Number(createdWindow?.id || 0) || null,
+      openedAt: now,
+    });
+    return {
+      tabId: popupTabId,
+      windowId: Number(createdWindow?.id || 0) || null,
+      incognito: Boolean(createdWindow?.incognito),
+      popup: true,
+    };
+  } catch (error) {
+    const createParams = {
+      url,
+      active: true,
+    };
+    if (senderTab?.windowId != null) {
+      createParams.windowId = senderTab.windowId;
+    }
+    if (senderTab?.id != null) {
+      createParams.openerTabId = senderTab.id;
+    }
+    const createdTab = await chrome.tabs.create(createParams);
+    if (createdTab?.id && senderTab?.id) {
+      const openerLaunch = await getActiveLaunch(senderTab.id, 'kling-ai')
+        || await getActiveLaunch(senderTab.id, 'kling');
+      if (openerLaunch?.ticket) {
+        await setActiveLaunch(createdTab.id, openerLaunch);
+      }
+    }
+    googleOauthRecoveryWindows.set(recoveryKey, {
+      tabId: Number(createdTab?.id || 0) || null,
+      windowId: Number(createdTab?.windowId || senderTab?.windowId || 0) || null,
+      openedAt: now,
+    });
+    return {
+      tabId: Number(createdTab?.id || 0) || null,
+      windowId: Number(createdTab?.windowId || senderTab?.windowId || 0) || null,
+      incognito: Boolean(createdTab?.incognito || senderTab?.incognito),
+      fallback: true,
+      firstError: `${error?.message || error || ''}`.slice(0, 500),
+    };
+  } finally {
+    for (const [key, entry] of googleOauthRecoveryWindows.entries()) {
+      if (now - Number(entry?.openedAt || 0) > 5 * 60 * 1000) {
+        googleOauthRecoveryWindows.delete(key);
+      }
+    }
+  }
+}
+
 function buildUsageEventPayload(message, activeLaunch) {
   return {
     event_id: message.eventId,
@@ -1992,6 +2184,29 @@ function handleRuntimeMessage(message, sender, sendResponse) {
       message.extensionTicket,
       message.usageTrackingTicket
     )
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_OPEN_GOOGLE_OAUTH_POPUP') {
+    if (!isKlingTabUrl(sender?.tab?.url || '')) {
+      sendResponse({ ok: false, error: 'Google OAuth popup recovery is only allowed from Kling tabs.' });
+      return true;
+    }
+    openRecoveredGoogleOauthPopup(`${message.url || ''}`.trim(), sender?.tab || null)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_ALLOW_KLING_GOOGLE_POPUPS') {
+    if (!isKlingTabUrl(sender?.tab?.url || '')) {
+      sendResponse({ ok: false, error: 'Kling popup allowance is only allowed from Kling tabs.' });
+      return true;
+    }
+
+    allowKlingGooglePopups()
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

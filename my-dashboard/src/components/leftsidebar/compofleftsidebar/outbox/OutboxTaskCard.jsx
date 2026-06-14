@@ -71,10 +71,6 @@ const OutboxTaskCard = ({
   const summaryText = displayTaskDetails.length > 160
     ? `${displayTaskDetails.slice(0, 160)}...`
     : displayTaskDetails;
-  const activeStageLabel = task.workflowEnabled
-    ? [task.currentStageOrder ? `Stage ${task.currentStageOrder}` : '', task.currentStageTitle || ''].filter(Boolean).join(': ')
-    : '';
-  const workflowBadgeStage = getWorkflowBadgeStage(workflowStage, normalizedStatus);
   const isDraft = normalizedStatus === 'draft';
   const statusLabel = `${status || 'pending'}`
     .replace(/_/g, ' ')
@@ -488,16 +484,6 @@ const OutboxTaskCard = ({
           </div>
         </div>
 
-        {/* Workflow Stage Badge */}
-        {workflowBadgeStage && (
-          <div className="workflow-stage-badge">
-            <span className={`stage-indicator stage-${workflowBadgeStage}`}>
-              {getStageIcon(workflowBadgeStage)} {getStageLabel(workflowBadgeStage)}
-            </span>
-            {activeStageLabel && <span className="stage-indicator">{activeStageLabel}</span>}
-          </div>
-        )}
-
         {activeHoldInfo && (
           <div className="task-hold-banner">
             <strong>Task on hold</strong>
@@ -716,98 +702,6 @@ const OutboxTaskCard = ({
 
     </>
   );
-};
-
-// Helper functions for icons
-const getWorkflowBadgeStage = (workflowStage, status) => {
-  const normalizedWorkflowStage = `${workflowStage || ''}`.toLowerCase();
-  const normalizedStatus = `${status || ''}`.toLowerCase();
-  const staleBeforeWorkStages = new Set(['pending_creator_hod', 'assigned', 'forwarded']);
-  const statusDrivenStages = new Set([
-    'in_progress',
-    'submitted',
-    'under_review',
-    'approved',
-    'completed',
-    'need_improvement',
-    'cancelled',
-    'rejected',
-  ]);
-
-  if (staleBeforeWorkStages.has(normalizedWorkflowStage) && statusDrivenStages.has(normalizedStatus)) {
-    return normalizedStatus;
-  }
-  return normalizedWorkflowStage || normalizedStatus;
-};
-
-const getStageIcon = (stage) => {
-  const icons = {
-    'pending_creator_hod': '📌',
-    'sent': '📤',
-    'received': '✅',
-    'assigned': '📌',
-    'forwarded': '📨',
-    'in_progress': '🔄',
-    'submitted_to_spoc': '📤',
-    'submitted': '📤',
-    'under_review': '👁️',
-    'approved': '✅',
-    'creator_approved': '✅',
-    'spoc_approved': '✅',
-    'hod_approved': '✅',
-    'need_improvement': '↺',
-    'cancelled': '🚫',
-    'rejected': '🚫',
-    'revoked_regularised': '🚫',
-    'workflow_not_started': '📌',
-    'workflow_final_waiting_approval': '👁️',
-    'workflow_completed': '🎉',
-    'completed': '🎉'
-  };
-  const normalizedStage = `${stage || ''}`.toLowerCase();
-  if (/^workflow_stage_\d+_active$/.test(normalizedStage)) return '🔄';
-  if (/^workflow_stage_\d+_waiting_approval$/.test(normalizedStage)) return '👁️';
-  if (/^workflow_stage_\d+_revision$/.test(normalizedStage)) return '↺';
-  return icons[normalizedStage] || '📌';
-};
-
-const getStageLabel = (stage) => {
-  const normalizedStage = `${stage || ''}`.toLowerCase();
-  const labels = {
-    pending_creator_hod: 'Waiting for assignment',
-    submitted_to_spoc: 'Submitted for review',
-    submitted: 'Submitted',
-    in_progress: 'In progress',
-    under_review: 'Under review',
-    approved: 'Approved',
-    completed: 'Completed',
-    creator_approved: 'Creator approved',
-    spoc_approved: 'SPOC approved',
-    hod_approved: 'HOD approved',
-    need_improvement: 'Needs improvement',
-    cancelled: 'Cancelled',
-    rejected: 'Rejected',
-    revoked_regularised: 'Revoked',
-    workflow_not_started: 'Workflow not started',
-    workflow_final_waiting_approval: 'Final approval pending',
-    workflow_completed: 'Workflow completed',
-  };
-  if (labels[normalizedStage]) return labels[normalizedStage];
-
-  const workflowStageMatch = normalizedStage.match(/^workflow_stage_(\d+)_(active|waiting_approval|revision)$/);
-  if (workflowStageMatch) {
-    const [, order, state] = workflowStageMatch;
-    const stateLabel = {
-      active: 'active',
-      waiting_approval: 'waiting for approval',
-      revision: 'needs revision',
-    }[state];
-    return `Stage ${order} ${stateLabel}`;
-  }
-
-  return normalizedStage
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase());
 };
 
 const getPriorityIcon = (priority) => {

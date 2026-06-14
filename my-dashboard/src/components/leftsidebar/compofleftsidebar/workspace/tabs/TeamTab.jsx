@@ -3,10 +3,9 @@ import { useCustomDialogs } from '../../../../common/CustomDialogs';
 import CacheStatusBanner from '../../../../common/CacheStatusBanner';
 import { WorkspaceSkeleton } from '../../../../ui/WorkspaceSkeleton';
 import {
-  formatDateTimeIndia,
-  formatSeconds,
   useWorkspaceTeamDirectory,
 } from '../workspaceTabData';
+import CompanyMemberPreview from '../CompanyMemberPreview';
 
 export default function TeamTab() {
   const { showAlert } = useCustomDialogs();
@@ -31,14 +30,29 @@ export default function TeamTab() {
         <div className="team-grid">
           {members.length === 0 && <div className="team-member-card">No members found in your department.</div>}
           {members.map((member) => (
-            <div className="team-member-card" key={member.id}>
+            <div
+              className={`team-member-card ${isHodUser ? 'team-member-card-clickable' : ''}`}
+              key={member.id}
+              role={isHodUser ? 'button' : undefined}
+              tabIndex={isHodUser ? 0 : undefined}
+              onClick={() => {
+                if (isHodUser) setInfoMember(member);
+              }}
+              onKeyDown={(event) => {
+                if (!isHodUser) return;
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  setInfoMember(member);
+                }
+              }}
+            >
               <div className="member-avatar">{member.name?.[0]?.toUpperCase() || 'U'}</div>
               <div className="member-info">
                 <div className="member-name">{member.name}</div>
                 <div className="member-role">{member.department}</div>
                 <div className="member-role">{member.position}</div>
               </div>
-              <div className="outbox-card-menu-wrap" style={{ marginLeft: 'auto' }}>
+              <div className="outbox-card-menu-wrap" style={{ marginLeft: 'auto' }} onClick={(event) => event.stopPropagation()}>
                 <button className="outbox-card-menu-btn" onClick={() => setOpenMenuId(openMenuId === member.id ? null : member.id)}>⋮</button>
                 {openMenuId === member.id && (
                   <div className="outbox-card-menu">
@@ -69,39 +83,13 @@ export default function TeamTab() {
       )}
 
       {infoMember && (
-        <>
-          <div
-            className="admin-queue-overlay"
-            onClick={() => setInfoMember(null)}
-            style={{ zIndex: 1400 }}
-          />
-          <div
-            className="admin-queue-panel"
-            style={{ zIndex: 1401, width: 'min(560px, 92vw)', height: 'auto', maxHeight: '80vh' }}
-          >
-            <div className="admin-queue-header">
-              <h3>Member Info</h3>
-              <button onClick={() => setInfoMember(null)}>✕</button>
-            </div>
-            <div className="admin-queue-content" style={{ gridTemplateColumns: '1fr', gap: '10px' }}>
-              <div className="admin-queue-item">
-                <p><strong>Name:</strong> {infoMember.name}</p>
-                <p><strong>Department:</strong> {infoMember.department}</p>
-                <p><strong>Position:</strong> {infoMember.position}</p>
-                <p><strong>Status:</strong> {activityByUser[infoMember.id]?.status || 'OFFLINE'}</p>
-                <p><strong>Login Time:</strong> {formatDateTimeIndia(activityByUser[infoMember.id]?.loginTime)}</p>
-                <p><strong>Session Duration:</strong> {formatSeconds(activityByUser[infoMember.id]?.totalSessionDuration || 0)}</p>
-                <p><strong>Active Duration:</strong> {formatSeconds(activityByUser[infoMember.id]?.activeTime || 0)}</p>
-                <p><strong>Idle Duration:</strong> {formatSeconds(activityByUser[infoMember.id]?.idleTime || 0)}</p>
-                <p><strong>Away Duration:</strong> {formatSeconds(activityByUser[infoMember.id]?.awayTime || 0)}</p>
-                <p><strong>Last Seen:</strong> {formatDateTimeIndia(activityByUser[infoMember.id]?.lastSeen)}</p>
-                <p><strong>Heartbeat Count:</strong> {activityByUser[infoMember.id]?.heartbeatCount ?? 0}</p>
-                <p><strong>Productivity:</strong> {activityByUser[infoMember.id]?.productivity ?? 0}%</p>
-                <p><strong>Tasks Done Today:</strong> {activityByUser[infoMember.id]?.tasksDone ?? 0}</p>
-              </div>
-            </div>
-          </div>
-        </>
+        <CompanyMemberPreview
+          isOpen={!!infoMember}
+          member={infoMember}
+          selectedDepartment={myDepartment}
+          activity={activityByUser[infoMember.id] || null}
+          onClose={() => setInfoMember(null)}
+        />
       )}
     </div>
   );

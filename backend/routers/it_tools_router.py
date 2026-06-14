@@ -1825,6 +1825,13 @@ def _normalize_prompt_text(value: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+def _safe_decrypt_secret(value: Optional[str]) -> str:
+    try:
+        return decrypt_secret(value) or ""
+    except RuntimeError:
+        return ""
+
+
 def _normalize_usage_stage(value: Optional[str]) -> str:
     return _canonical_usage_status(value)
 
@@ -3578,7 +3585,7 @@ async def get_tool_usage_report(
         credential_map = {
             credential.id: {
                 "scope": credential.scope,
-                "loginIdentifier": decrypt_secret(credential.login_identifier_encrypted) or "",
+                "loginIdentifier": _safe_decrypt_secret(credential.login_identifier_encrypted),
             }
             for credential in credentials
         }

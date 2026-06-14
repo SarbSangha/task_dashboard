@@ -16,6 +16,15 @@ const NAV_ITEMS = [
   { id: 'organization', label: 'Organization Details', group: 'user', description: 'Department, role, and employee information.' },
 ];
 
+const TASK_STATUS_FILTERS = [
+  { id: 'all', label: 'All', matches: ['*'] },
+  { id: 'pending', label: 'Pending', matches: ['pending', 'assigned', 'forwarded'] },
+  { id: 'in_progress', label: 'In Progress', matches: ['in_progress'] },
+  { id: 'submitted', label: 'Submitted', matches: ['submitted', 'under_review'] },
+  { id: 'completed', label: 'Completed', matches: ['completed', 'approved'] },
+  { id: 'need_improvement', label: 'Need Improvement', matches: ['need_improvement'] },
+];
+
 const MEMBER_TASK_PREVIEW_CACHE_TTL_MS = 60 * 1000;
 const TASK_DATA_SECTION_IDS = new Set(['inbox', 'outbox', 'activity']);
 const memberTaskPreviewRequests = new Map();
@@ -117,6 +126,12 @@ function taskMatchesSearch(task, query) {
 
 function isClosedTaskStatus(status) {
   return ['approved', 'completed', 'cancelled', 'rejected'].includes(String(status || '').toLowerCase());
+}
+
+function taskMatchesStatusFilter(task, filterId) {
+  const selectedFilter = TASK_STATUS_FILTERS.find((filter) => filter.id === filterId) || TASK_STATUS_FILTERS[0];
+  if (selectedFilter.matches.includes('*')) return true;
+  return selectedFilter.matches.includes(String(task?.status || '').toLowerCase());
 }
 
 function isSameUserId(left, right) {
@@ -226,6 +241,28 @@ function SummaryMetric({ label, value, tone = 'default' }) {
     <div className={`company-member-preview-metric company-member-preview-metric-${tone}`}>
       <strong>{value}</strong>
       <span>{label}</span>
+    </div>
+  );
+}
+
+function StatusFilterBar({ tasks, activeFilter, onChange }) {
+  return (
+    <div className="company-member-preview-status-filter" aria-label="Filter tasks by status">
+      {TASK_STATUS_FILTERS.map((filter) => {
+        const count = tasks.filter((task) => taskMatchesStatusFilter(task, filter.id)).length;
+
+        return (
+          <button
+            key={filter.id}
+            type="button"
+            className={`company-member-preview-status-filter-btn ${activeFilter === filter.id ? 'active' : ''}`}
+            onClick={() => onChange(filter.id)}
+          >
+            <span>{filter.label}</span>
+            <strong>{count}</strong>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -534,12 +571,14 @@ export default function CompanyMemberPreview({
   });
   const [taskSearchQuery, setTaskSearchQuery] = useState('');
   const [taskDateFilter, setTaskDateFilter] = useState('');
+  const [taskStatusFilter, setTaskStatusFilter] = useState('all');
   const [activityDate, setActivityDate] = useState(getLocalDateInputValue);
   const [activitySnapshotState, setActivitySnapshotState] = useState({
     loading: false,
     error: '',
     data: null,
   });
+  const [liveActivity, setLiveActivity] = useState(null);
   const [workflowTask, setWorkflowTask] = useState(null);
   const [detailTask, setDetailTask] = useState(null);
 
@@ -548,14 +587,16 @@ export default function CompanyMemberPreview({
       setActiveSection('inbox');
       setTaskSearchQuery('');
       setTaskDateFilter('');
+      setTaskStatusFilter('all');
       setActivityDate(getLocalDateInputValue());
       setActivitySnapshotState({
         loading: false,
         error: '',
         data: null,
       });
+      setLiveActivity(activity || null);
     }
-  }, [isOpen, member?.id]);
+  }, [activity, isOpen, member?.id]);
 
   useEffect(() => {
     setWorkflowTask(null);
@@ -627,6 +668,29 @@ export default function CompanyMemberPreview({
     };
   }, [activeSection, isOpen, member?.id]);
 
+  useEffect(() => {
+    if (!isOpen || !member?.id) return;
+
+    const controller = new AbortController();
+
+    const loadLiveActivity = async () => {
+      try {
+        const response = await activityAPI.userActivity(member.id, {}, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setLiveActivity(response?.data || activity || null);
+      } catch (error) {
+        if (isRequestCanceled(error) || controller.signal.aborted) return;
+        setLiveActivity(activity || null);
+      }
+    };
+
+    void loadLiveActivity();
+
+    return () => {
+      controller.abort();
+    };
+  }, [activity, isOpen, member?.id]);
+
   const normalizedMember = useMemo(() => {
     if (!member) return null;
     return {
@@ -635,6 +699,7 @@ export default function CompanyMemberPreview({
       position: member.position || 'Member',
       employeeId: member.employeeId || 'N/A',
       roles: Array.isArray(member.roles) && member.roles.length > 0 ? member.roles.join(', ') : 'User',
+      lastLogin: member.lastLogin || null,
     };
   }, [member, selectedDepartment]);
 
@@ -765,19 +830,27 @@ export default function CompanyMemberPreview({
   const userItems = NAV_ITEMS.filter((item) => item.group === 'user');
   const activeItem = NAV_ITEMS.find((item) => item.id === activeSection) || NAV_ITEMS[0];
   const todayActivityDate = getLocalDateInputValue();
-  const selectedActivity = activitySnapshotState.data || (activityDate === todayActivityDate ? activity : null);
+  const currentActivity = liveActivity || activity || null;
+  const selectedActivity = activitySnapshotState.data || (activityDate === todayActivityDate ? currentActivity : null);
+  const profileStatus =
+    currentActivity?.id || currentActivity?.status !== 'OFFLINE'
+      ? (currentActivity?.status || 'Unavailable')
+      : (normalizedMember.lastLogin ? 'Logged In' : 'Unavailable');
+  const profileLastLogin = currentActivity?.loginTime || normalizedMember.lastLogin;
   const hasActivitySnapshot =
     !!selectedActivity &&
     Object.values(selectedActivity).some((value) => value !== null && value !== undefined && value !== '');
   const selectedActivityDateLabel = formatActivityDateLabel(activityDate);
   const shouldShowTaskFilters = activeSection === 'inbox' || activeSection === 'outbox';
-  const filterPreviewTasks = (tasks) =>
+  const filterPreviewTasksBySearchAndDate = (tasks) =>
     tasks.filter((task) =>
       taskMatchesSearch(task, taskSearchQuery) &&
       taskMatchesDateFilter(task, taskDateFilter)
     );
-  const filteredInboxTasks = filterPreviewTasks(previewData.inboxTasks);
-  const filteredOutboxTasks = filterPreviewTasks(previewData.outboxTasks);
+  const searchFilteredInboxTasks = filterPreviewTasksBySearchAndDate(previewData.inboxTasks);
+  const searchFilteredOutboxTasks = filterPreviewTasksBySearchAndDate(previewData.outboxTasks);
+  const filteredInboxTasks = searchFilteredInboxTasks.filter((task) => taskMatchesStatusFilter(task, taskStatusFilter));
+  const filteredOutboxTasks = searchFilteredOutboxTasks.filter((task) => taskMatchesStatusFilter(task, taskStatusFilter));
   const buildTrackingTaskActions = (task, closeMenu) => (
     <>
       <button
@@ -823,7 +896,7 @@ export default function CompanyMemberPreview({
             </div>
 
             <nav className="company-member-preview-nav">
-              <div className="company-member-preview-nav-group-title">Functional Menu</div>
+              <div className="company-member-preview-nav-group-title">Menu Bar</div>
               {functionalItems.map((item) => (
                 <button
                   key={item.id}
@@ -905,6 +978,11 @@ export default function CompanyMemberPreview({
                   tone="warning"
                 />
               </div>
+              <StatusFilterBar
+                tasks={searchFilteredInboxTasks}
+                activeFilter={taskStatusFilter}
+                onChange={setTaskStatusFilter}
+              />
               {taskState.loading ? (
                 <div className="company-member-preview-empty-state">Loading inbox preview...</div>
               ) : (
@@ -935,6 +1013,11 @@ export default function CompanyMemberPreview({
                   tone="success"
                 />
               </div>
+              <StatusFilterBar
+                tasks={searchFilteredOutboxTasks}
+                activeFilter={taskStatusFilter}
+                onChange={setTaskStatusFilter}
+              />
               {taskState.loading ? (
                 <div className="company-member-preview-empty-state">Loading outbox preview...</div>
               ) : (
@@ -965,9 +1048,9 @@ export default function CompanyMemberPreview({
               </div>
               <div className="company-member-preview-card">
                 <h4>Profile Status</h4>
-                <ReadOnlyField label="Current Status" value={activity?.status || 'Unavailable'} />
-                <ReadOnlyField label="Last Seen" value={formatDateTimeIndia(activity?.lastSeen)} />
-                <ReadOnlyField label="Last Login" value={formatDateTimeIndia(activity?.loginTime)} />
+                <ReadOnlyField label="Current Status" value={profileStatus} />
+                <ReadOnlyField label="Last Seen" value={formatDateTimeIndia(currentActivity?.lastSeen)} />
+                <ReadOnlyField label="Last Login" value={formatDateTimeIndia(profileLastLogin)} />
               </div>
             </div>
           )}
@@ -1034,8 +1117,6 @@ export default function CompanyMemberPreview({
                     <ReadOnlyField label="Active Duration" value={formatSeconds(selectedActivity?.activeTime || 0)} />
                     <ReadOnlyField label="Idle Duration" value={formatSeconds(selectedActivity?.idleTime || 0)} />
                     <ReadOnlyField label="Away Duration" value={formatSeconds(selectedActivity?.awayTime || 0)} />
-                    <ReadOnlyField label="Heartbeat Count" value={selectedActivity?.heartbeatCount ?? 0} />
-                    <ReadOnlyField label="Productivity" value={`${selectedActivity?.productivity ?? 0}%`} />
                     <ReadOnlyField label="Tasks Done" value={selectedActivity?.tasksDone ?? 0} />
                     <ReadOnlyField label="Tasks Assigned" value={previewData.assignedTaskCount} />
                     <ReadOnlyField label="Task Received" value={previewData.receivedTaskCount} />

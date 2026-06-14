@@ -255,7 +255,7 @@ const FunctionalMenu = () => {
     <>
       <aside className={`functional-menu ${isCollapsed ? 'collapsed' : ''}`}>
         <div className="menu-header">
-          <h2 className="menu-title">FUNCTIONAL MENU</h2>
+          <h2 className="menu-title">MENU BAR</h2>
           <button
             className="collapse-btn"
             onClick={toggleCollapse}

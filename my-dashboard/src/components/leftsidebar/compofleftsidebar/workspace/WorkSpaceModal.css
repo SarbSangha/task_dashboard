@@ -878,6 +878,15 @@
   transform: translateY(-2px);
 }
 
+.team-member-card-clickable {
+  cursor: pointer;
+}
+
+.team-member-card-clickable:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.7);
+  outline-offset: 2px;
+}
+
 .company-member-card {
   cursor: pointer;
 }

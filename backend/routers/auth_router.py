@@ -819,7 +819,8 @@ async def get_users_by_department(
                     "department": user.department,
                     "position": user.position,
                     "roles": user.roles_json or [],
-                    "avatar": user.avatar
+                    "avatar": user.avatar,
+                    "lastLogin": user.last_login.isoformat() if user.last_login else None
                 }
                 for user in users
             ],

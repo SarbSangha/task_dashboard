@@ -103,6 +103,9 @@
 }
 
 .menu-title {
+  position: absolute;
+  left: calc(50% - 10px);
+  transform: translateX(-50%);
   font-size: 13px;
   font-weight: 700;
   color: white;
@@ -119,6 +122,9 @@
 }
 
 .collapse-btn {
+  margin-left: auto;
+  position: relative;
+  z-index: 1;
   width: 32px;
   height: 32px;
   background: rgba(255, 255, 255, 0.1);

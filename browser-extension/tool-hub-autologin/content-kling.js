@@ -12,6 +12,7 @@ const USAGE_TICKET_KEY        = 'rmw_kling_usage_ticket';
 const PREPARED_LAUNCH_KEY     = 'rmw_kling_prepared_launch';
 const BLOCKED_NOTICE_KEY      = 'rmw_kling_blocked_notice';
 const SESSION_CHECKPOINT_KEY  = 'rmw_kling_checkpoint';
+const GOOGLE_POPUP_ALLOW_RELOAD_KEY = 'rmw_kling_google_popup_allow_reload';
 const USAGE_BROWSER_SESSION_KEY = 'rmw_kling_usage_browser_session';
 const USAGE_TAB_SESSION_KEY = 'rmw_kling_usage_tab_session';
 const USAGE_BROADCAST_CHANNEL = 'rmw-kling-usage';
@@ -24,6 +25,8 @@ const POST_LOGIN_GRACE_MS    = 7000;   // was 10000
 const AUTH_TRANSITION_TIMEOUT_MS = 45000;
 const AUTH_TRANSITION_INITIAL_QUIET_MS = 3000;
 const AUTH_TRANSITION_POLL_MS = 2000;
+const MAX_KLING_GOOGLE_ERROR_RETRIES = 3;
+const KLING_GOOGLE_ERROR_RETRY_COOLDOWN_MS = 2500;
 const EMAIL_STEP_GRACE_MS    = 5000;   // was 3500
 const MIN_RUN_GAP_MS         = 150;    // was 200
 const LAUNCH_RETRY_DELAY_MS  = 8000;
@@ -47,6 +50,8 @@ const MAX_PROMPT_CAPTURE_LENGTH = 4000;
 const MAX_PROMPT_CANDIDATES = 3;
 const MAX_CAPTURED_MEDIA_ASSETS = 8;
 const MAX_MEDIASOURCE_CAPTURED_ASSETS = 8;
+const MAX_PENDING_MEDIASOURCE_PAYLOADS = 4;
+const PENDING_MEDIASOURCE_MAX_MS = 30000;
 const GENERATED_ASSET_SCAN_MS = 4000;
 const GENERATED_ASSET_SCAN_MAX_MS = 150000;
 const ACTIVE_GENERATION_MAX_MS = GENERATED_ASSET_SCAN_MAX_MS;
@@ -155,6 +160,13 @@ const CTX = {
   passwordSubmitGuardKey: '',
   passwordSubmitGuardUntil: 0,
   manualGoogleHandoff  : false,
+  googleErrorRetryCount: 0,
+  googleErrorLastRetryAt: 0,
+  lastGoogleOauthRecoveryUrl: '',
+  lastGoogleOauthRecoveryAt: 0,
+  googlePopupAllowRequestedAt: 0,
+  googlePopupAllowAppliedAt: 0,
+  googlePopupAllowFailedAt: 0,
   launchRetries        : 0,
   lastRunAt            : 0,
   lastMutationAt       : 0,
@@ -198,6 +210,7 @@ const USAGE_CTX = {
   assetScanSnapshot   : null,
   activeGenerationIds : new Map(),
   activeGeneration    : null,
+  pendingMediaSourcePayloads: [],
 };
 
 function normalizeLoginMethod(value) {
@@ -1386,12 +1399,23 @@ function buildActiveGenerationFromSnapshot(snapshot, startedAt = Date.now()) {
   const generateIntentId = `${snapshot?.metadata?.generateIntentId || snapshot?.externalEventId || ''}`.trim();
   if (!promptText || !generateIntentId) return null;
   return {
+    internalGenerationId: generateIntentId,
     generateIntentId,
     externalEventId: `${snapshot?.externalEventId || ''}`.trim(),
     fingerprint: `${snapshot?.fingerprint || ''}`.trim(),
     promptText,
+    prompt: promptText,
     startedAt,
     expiresAt: startedAt + ACTIVE_GENERATION_MAX_MS,
+    klingTaskId: '',
+    identifierChannel: '',
+    identifierSource: '',
+    identifierKind: '',
+    ownershipConfidence: 0.9,
+    discoveredTaskIds: [],
+    outputFeedSnapshotCount: Number(snapshot?.metadata?.outputFeedSnapshotCount || 0) || 0,
+    ownedOutputDetectedAt: 0,
+    ownedOutputAssetCount: 0,
     status: 'active',
   };
 }
@@ -1426,6 +1450,385 @@ function mediaSourcePayloadMatchesActiveGeneration(payload = {}) {
   return startedAt >= Number(USAGE_CTX.activeGeneration.startedAt || 0);
 }
 
+function normalizeKlingTaskId(value) {
+  const text = `${value || ''}`.trim();
+  if (!text || text.length > 220) return '';
+  if (/^\d{1,3}$/.test(text)) return '';
+  return text;
+}
+
+function collectKlingTaskIdsFromPayload(payload = {}) {
+  const ids = [];
+  const push = (value) => {
+    const normalized = normalizeKlingTaskId(value);
+    if (normalized && !ids.includes(normalized)) ids.push(normalized);
+  };
+  push(payload.klingTaskId);
+  push(payload.generationId);
+  push(payload.requestId);
+  push(payload.externalEventId);
+  if (Array.isArray(payload.identifierCandidates)) {
+    for (const candidate of payload.identifierCandidates) {
+      push(candidate?.value);
+    }
+  }
+  return ids;
+}
+
+function getActiveGenerationTaskIds(activeGeneration = USAGE_CTX.activeGeneration) {
+  const ids = [];
+  const push = (value) => {
+    const normalized = normalizeKlingTaskId(value);
+    if (normalized && !ids.includes(normalized)) ids.push(normalized);
+  };
+  push(activeGeneration?.klingTaskId);
+  if (Array.isArray(activeGeneration?.discoveredTaskIds)) {
+    activeGeneration.discoveredTaskIds.forEach(push);
+  }
+  return ids;
+}
+
+function buildGenerationOwnershipMetadata(activeGeneration = USAGE_CTX.activeGeneration, strategy = '') {
+  if (!isActiveGenerationValid(activeGeneration)) return {};
+  const taskIds = getActiveGenerationTaskIds(activeGeneration);
+  return {
+    internalGenerationId: activeGeneration.internalGenerationId || activeGeneration.generateIntentId,
+    klingTaskId: activeGeneration.klingTaskId || taskIds[0] || '',
+    discoveredTaskIds: taskIds,
+    ownershipStrategy: strategy || (taskIds.length ? 'kling_task_id' : 'dom_new_output_fallback'),
+    ownershipConfidence: Number(activeGeneration.ownershipConfidence || (taskIds.length ? 0.99 : 0.9)),
+    ownershipChannel: activeGeneration.identifierChannel || '',
+    ownershipSource: activeGeneration.identifierSource || '',
+    ownershipKind: activeGeneration.identifierKind || '',
+    outputFeedSnapshotCount: Number(activeGeneration.outputFeedSnapshotCount || 0) || 0,
+    ownedOutputDetectedAt: Number(activeGeneration.ownedOutputDetectedAt || 0) || null,
+  };
+}
+
+function attachActiveGenerationOwnership(snapshot, strategy = '') {
+  if (!snapshot || !isActiveGenerationValid()) return snapshot;
+  const ownership = buildGenerationOwnershipMetadata(USAGE_CTX.activeGeneration, strategy);
+  snapshot.metadata = {
+    ...(snapshot.metadata || {}),
+    ...ownership,
+    ownership,
+  };
+  if (ownership.klingTaskId) {
+    snapshot.generationId = snapshot.generationId || ownership.klingTaskId;
+  }
+  return snapshot;
+}
+
+function associateKlingTaskIdWithActiveGeneration(payload = {}) {
+  if (!isActiveGenerationValid()) return false;
+  const ids = collectKlingTaskIdsFromPayload(payload);
+  if (!ids.length) return false;
+  const activeIds = getActiveGenerationTaskIds();
+  const hasSubmitPrompt = Boolean(normalizePromptCaptureValue(payload?.promptText));
+  if (activeIds.length && !ids.some((id) => activeIds.includes(id)) && !hasSubmitPrompt) {
+    debugUsageTelemetry('kling_task_id_association_skipped_mismatch', {
+      incomingIds: ids.slice(0, 8),
+      activeIds: activeIds.slice(0, 8),
+      source: payload.source,
+    });
+    return false;
+  }
+  const activeGeneration = USAGE_CTX.activeGeneration;
+  activeGeneration.discoveredTaskIds = Array.isArray(activeGeneration.discoveredTaskIds)
+    ? activeGeneration.discoveredTaskIds
+    : [];
+  for (const id of ids) {
+    if (!activeGeneration.discoveredTaskIds.includes(id)) {
+      activeGeneration.discoveredTaskIds.push(id);
+    }
+    USAGE_CTX.activeGenerationIds.set(id, Date.now());
+  }
+  const primaryId = normalizeKlingTaskId(payload.klingTaskId)
+    || ids.find((id) => id && id !== payload.externalEventId)
+    || ids[0];
+  if (primaryId && !activeGeneration.klingTaskId) {
+    activeGeneration.klingTaskId = primaryId;
+  }
+  activeGeneration.identifierChannel = `${payload.identifierChannel || payload.transport || payload.source || activeGeneration.identifierChannel || ''}`.slice(0, 120);
+  activeGeneration.identifierSource = `${payload.identifierSource || activeGeneration.identifierSource || ''}`.slice(0, 120);
+  activeGeneration.identifierKind = `${payload.identifierKind || activeGeneration.identifierKind || ''}`.slice(0, 80);
+  activeGeneration.ownershipConfidence = Math.max(
+    Number(activeGeneration.ownershipConfidence || 0),
+    Number(payload.ownershipConfidence || (activeGeneration.klingTaskId ? 0.99 : 0.85))
+  );
+  if (USAGE_CTX.assetScanSnapshot) {
+    attachActiveGenerationOwnership(USAGE_CTX.assetScanSnapshot, 'kling_task_id');
+  }
+  debugUsageTelemetry('kling_task_id_associated', {
+    internalGenerationId: activeGeneration.internalGenerationId,
+    klingTaskId: activeGeneration.klingTaskId,
+    ids: activeGeneration.discoveredTaskIds.slice(0, 8),
+    channel: activeGeneration.identifierChannel,
+  });
+  return true;
+}
+
+function payloadMatchesActiveGenerationTaskId(payload = {}) {
+  const activeIds = getActiveGenerationTaskIds();
+  if (!activeIds.length) return null;
+  const payloadIds = collectKlingTaskIdsFromPayload(payload);
+  if (!payloadIds.length) return false;
+  return payloadIds.some((id) => activeIds.includes(id));
+}
+
+function markActiveGenerationOwnedOutput(assetCount = 0, source = 'dom_new_output_fallback') {
+  if (!isActiveGenerationValid()) return;
+  const activeGeneration = USAGE_CTX.activeGeneration;
+  activeGeneration.ownedOutputDetectedAt = activeGeneration.ownedOutputDetectedAt || Date.now();
+  activeGeneration.ownedOutputAssetCount += Math.max(0, Number(assetCount || 0));
+  activeGeneration.ownershipConfidence = Math.max(
+    Number(activeGeneration.ownershipConfidence || 0),
+    getActiveGenerationTaskIds(activeGeneration).length ? 0.99 : 0.9
+  );
+  if (USAGE_CTX.assetScanSnapshot) {
+    attachActiveGenerationOwnership(USAGE_CTX.assetScanSnapshot, source);
+  }
+}
+
+function hasOwnedOutputForActiveGeneration() {
+  return Boolean(isActiveGenerationValid() && Number(USAGE_CTX.activeGeneration?.ownedOutputDetectedAt || 0) > 0);
+}
+
+function isGoogleOauthRecoveryUrl(value = '') {
+  try {
+    const url = new URL(`${value || ''}`, location.href);
+    return url.protocol === 'https:'
+      && url.hostname === 'accounts.google.com'
+      && (
+        /oauth|signin|identifier|servicelogin/i.test(url.pathname)
+        || /client_id|redirect_uri|oauth/i.test(url.search)
+      );
+  } catch {
+    return false;
+  }
+}
+
+function requestKlingGooglePopupAllowance() {
+  return msg({
+    type: 'TOOL_HUB_ALLOW_KLING_GOOGLE_POPUPS',
+    toolSlug: TOOL_SLUG,
+  })
+    .then((response) => {
+      if (response?.ok) {
+        CTX.googlePopupAllowAppliedAt = Date.now();
+        CTX.googlePopupAllowFailedAt = 0;
+        debugUsageTelemetry('kling_google_popup_allow_applied', {
+          applied: Array.isArray(response.applied) ? response.applied : [],
+          errors: Array.isArray(response.errors) ? response.errors : [],
+          probes: Array.isArray(response.probes) ? response.probes : [],
+        });
+        return response;
+      }
+      CTX.googlePopupAllowFailedAt = Date.now();
+      debugUsageTelemetry('kling_google_popup_allow_failed', {
+        error: response?.error || 'unknown error',
+      });
+      return response;
+    })
+    .catch((error) => {
+      CTX.googlePopupAllowFailedAt = Date.now();
+      debugUsageTelemetry('kling_google_popup_allow_failed', {
+        error: error?.message || `${error || 'unknown error'}`,
+      });
+      return { ok: false, error: error?.message || `${error || 'unknown error'}` };
+    });
+}
+
+function ensureKlingGooglePopupsAllowed() {
+  const now = Date.now();
+  if (CTX.googlePopupAllowAppliedAt && now - Number(CTX.googlePopupAllowAppliedAt || 0) < 10 * 60 * 1000) {
+    return true;
+  }
+  if (CTX.googlePopupAllowFailedAt && now - Number(CTX.googlePopupAllowFailedAt || 0) < 30000) {
+    return true;
+  }
+  if (CTX.googlePopupAllowRequestedAt && now - Number(CTX.googlePopupAllowRequestedAt || 0) < 2500) {
+    return false;
+  }
+
+  CTX.googlePopupAllowRequestedAt = now;
+  setStatus('Allowing Kling Google popup...');
+  requestKlingGooglePopupAllowance()
+    .then(() => {
+      CTX.lastLandingActionKey = '';
+      CTX.landingActionLockUntil = 0;
+      wake(0);
+    });
+
+  return false;
+}
+
+function retryOriginalKlingGooglePopup(delayMs = 900) {
+  setTimeout(() => {
+    if (CTX.stopped) return;
+    CTX.manualGoogleHandoff = false;
+    CTX.lastLandingActionKey = '';
+    CTX.landingActionLockUntil = 0;
+    const googleButton = findGoogleAuthButton();
+    if (googleButton) {
+      clickGoogleLandingAction(googleButton, 'Opening Google sign-in in Kling popup...');
+      return;
+    }
+    CTX.phase = P.OPEN_LANDING;
+    wake(300);
+  }, Math.max(0, delayMs));
+}
+
+function scheduleKlingPopupAllowanceReload(delayMs = 500) {
+  const now = Date.now();
+  let lastReloadAt = 0;
+  try {
+    lastReloadAt = Number(sessionStorage.getItem(GOOGLE_POPUP_ALLOW_RELOAD_KEY) || 0) || 0;
+  } catch {}
+
+  if (lastReloadAt && now - lastReloadAt < 60000) {
+    retryOriginalKlingGooglePopup(900);
+    return;
+  }
+
+  try {
+    sessionStorage.setItem(GOOGLE_POPUP_ALLOW_RELOAD_KEY, `${now}`);
+  } catch {}
+  writeCheckpoint(P.OPEN_LANDING, {
+    googlePopupAllowedReload: true,
+    submitKind: 'google',
+  });
+  setStatus('Popups allowed for Kling. Refreshing once so Google popup can open...');
+  setTimeout(() => {
+    try {
+      location.reload();
+    } catch {
+      retryOriginalKlingGooglePopup(300);
+    }
+  }, Math.max(0, delayMs));
+}
+
+function recoverBlockedGoogleOauthPopup(payload = {}) {
+  const url = `${payload?.url || ''}`.trim();
+  if (!isGoogleOauthRecoveryUrl(url)) return;
+  const now = Date.now();
+  if (now - Number(CTX.lastGoogleOauthRecoveryAt || 0) < 15000) {
+    return;
+  }
+  CTX.lastGoogleOauthRecoveryUrl = url;
+  CTX.lastGoogleOauthRecoveryAt = now;
+  setStatus('Chrome blocked Kling Google popup. Allowing popups and retrying Kling button...');
+  clearAuthTransition();
+  clearCheckpoint();
+  CTX.manualGoogleHandoff = false;
+  CTX.submitLockUntil = 0;
+  CTX.submitAt = 0;
+  CTX.submitKind = '';
+  CTX.phase = P.OPEN_LANDING;
+  CTX.lastLandingActionKey = '';
+  CTX.landingActionLockUntil = 0;
+  CTX.googlePopupAllowRequestedAt = 0;
+  CTX.googlePopupAllowAppliedAt = 0;
+  CTX.googlePopupAllowFailedAt = 0;
+  requestKlingGooglePopupAllowance()
+    .then((response) => {
+      if (response?.ok) {
+        scheduleKlingPopupAllowanceReload(500);
+        return;
+      }
+      setStatus(`Could not auto-allow Kling popups: ${response?.error || 'unknown error'}`);
+      retryOriginalKlingGooglePopup(1000);
+    });
+}
+
+function prunePendingMediaSourcePayloads(now = Date.now()) {
+  USAGE_CTX.pendingMediaSourcePayloads = (USAGE_CTX.pendingMediaSourcePayloads || [])
+    .filter((entry) => entry?.payload?.blob && now - Number(entry.queuedAt || 0) <= PENDING_MEDIASOURCE_MAX_MS)
+    .slice(-MAX_PENDING_MEDIASOURCE_PAYLOADS);
+}
+
+function processOwnedMediaSourcePayload(mediaSourcePayload = {}) {
+  const asset = storeMediaSourceVideoAsset(mediaSourcePayload);
+  if (!asset) return;
+  attachActiveGenerationOwnership(USAGE_CTX.assetScanSnapshot, 'owned_output_mediasource_enrichment');
+  setStatus(`MediaSource video captured (${Math.round((asset.size || 0) / 1024 / 1024)} MB)`, { hideAfterMs: 2500 });
+  uploadMediaSourceVideoAsset(asset)
+    .then((uploadedAsset) => {
+      const enrichedAsset = {
+        ...uploadedAsset,
+        internalGenerationId: USAGE_CTX.activeGeneration?.internalGenerationId || '',
+        klingTaskId: USAGE_CTX.activeGeneration?.klingTaskId || '',
+      };
+      reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, [enrichedAsset]);
+      debugUsageTelemetry('mediasource_video_uploaded', {
+        sessionId: uploadedAsset.mediaSourceSessionId,
+        size: uploadedAsset.size,
+        chunkCount: uploadedAsset.chunkCount,
+        url: `${uploadedAsset.permanentUrl || uploadedAsset.url || ''}`.slice(0, 1000),
+        startedAt: uploadedAsset.startedAt,
+        completedAt: uploadedAsset.completedAt,
+        ownership: buildGenerationOwnershipMetadata(USAGE_CTX.activeGeneration, 'owned_output_mediasource_enrichment'),
+      });
+      releaseStoredMediaSourceAsset(asset.mediaSourceSessionId);
+      setStatus('MediaSource video uploaded', { hideAfterMs: 2500 });
+    })
+    .catch((error) => {
+      releaseStoredMediaSourceAsset(asset.mediaSourceSessionId);
+      debugUsageTelemetry('mediasource_video_upload_failed', {
+        sessionId: asset.mediaSourceSessionId,
+        size: asset.size,
+        chunkCount: asset.chunkCount,
+        error: `${error?.message || error || ''}`.slice(0, 500),
+      });
+      console.warn('[RMW Kling] MediaSource video upload failed', error);
+    });
+}
+
+function flushPendingMediaSourcePayloads() {
+  prunePendingMediaSourcePayloads();
+  if (!hasOwnedOutputForActiveGeneration()) return;
+  const pending = USAGE_CTX.pendingMediaSourcePayloads.splice(0, MAX_PENDING_MEDIASOURCE_PAYLOADS);
+  for (const entry of pending) {
+    if (mediaSourcePayloadMatchesActiveGeneration(entry.payload)) {
+      processOwnedMediaSourcePayload(entry.payload);
+    }
+  }
+}
+
+function queueOrProcessMediaSourcePayload(mediaSourcePayload = {}) {
+  if (!normalizePromptCaptureValue(USAGE_CTX.assetScanSnapshot?.promptText) || !mediaSourcePayloadMatchesActiveGeneration(mediaSourcePayload)) {
+    debugUsageTelemetry('mediasource_video_skipped_without_active_generation', {
+      sessionId: `${mediaSourcePayload?.sessionId || ''}`.slice(0, 120),
+      size: Number(mediaSourcePayload?.size || 0) || null,
+      sessionStartedAt: Number(mediaSourcePayload?.startedAt || 0) || null,
+      activeStartedAt: Number(USAGE_CTX.activeGeneration?.startedAt || 0) || null,
+      activeIntentId: `${USAGE_CTX.activeGeneration?.generateIntentId || ''}`.trim(),
+    });
+    return;
+  }
+  if (hasOwnedOutputForActiveGeneration()) {
+    processOwnedMediaSourcePayload(mediaSourcePayload);
+    return;
+  }
+  // MediaSource delivers the MP4 bytes, but ownership is decided by task ID or
+  // newly inserted output cards. Keep only a tiny pending set until ownership
+  // lands, then release each Blob after upload.
+  prunePendingMediaSourcePayloads();
+  USAGE_CTX.pendingMediaSourcePayloads.push({
+    payload: mediaSourcePayload,
+    queuedAt: Date.now(),
+  });
+  while (USAGE_CTX.pendingMediaSourcePayloads.length > MAX_PENDING_MEDIASOURCE_PAYLOADS) {
+    USAGE_CTX.pendingMediaSourcePayloads.shift();
+  }
+  debugUsageTelemetry('mediasource_video_waiting_for_owned_output', {
+    sessionId: `${mediaSourcePayload?.sessionId || ''}`.slice(0, 120),
+    size: Number(mediaSourcePayload?.size || 0) || null,
+    pendingCount: USAGE_CTX.pendingMediaSourcePayloads.length,
+    activeIntentId: `${USAGE_CTX.activeGeneration?.generateIntentId || ''}`.trim(),
+  });
+}
+
 function clearActiveGeneration(reason = '') {
   if (USAGE_CTX.activeGeneration) {
     debugUsageTelemetry('active_generation_cleared', {
@@ -1449,6 +1852,7 @@ function stopGeneratedAssetDetection() {
   }
   USAGE_CTX.assetScanSnapshot = null;
   USAGE_CTX.assetScanStartedAt = 0;
+  USAGE_CTX.pendingMediaSourcePayloads = [];
   clearActiveGeneration('asset_detection_stopped');
 }
 
@@ -1487,8 +1891,12 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
     : existingAssets;
   const mergedAssets = mergeCapturedMediaAssets(mergeBaseAssets, ownedAssets);
   if (!mergedAssets.length) return;
+  markActiveGenerationOwnedOutput(ownedAssets.length, captureSource === 'mediasource' ? 'owned_output_mediasource_enrichment' : 'dom_new_output_fallback');
+  const ownershipStrategy = captureSource === 'mediasource' ? 'owned_output_mediasource_enrichment' : '';
+  attachActiveGenerationOwnership(snapshot, ownershipStrategy);
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
+    ...buildGenerationOwnershipMetadata(USAGE_CTX.activeGeneration, ownershipStrategy),
     assetCapture: {
       source: captureSource,
       assetCount: mergedAssets.length,
@@ -1518,6 +1926,9 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
       if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) return;
       console.warn('[RMW Kling] Generated asset capture report failed', error);
     });
+  if (captureSource !== 'mediasource') {
+    flushPendingMediaSourcePayloads();
+  }
 }
 
 function startGeneratedAssetDetection(snapshot) {
@@ -1534,13 +1945,22 @@ function startGeneratedAssetDetection(snapshot) {
   }
   USAGE_CTX.activeGeneration = activeGeneration;
   const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
+  const outputFeedSnapshot = collectVisibleGeneratedMediaAssets(generationMode);
   USAGE_CTX.generatedAssetUrls = new Set(
-    collectVisibleGeneratedMediaAssets(generationMode)
+    outputFeedSnapshot
       .map((asset) => asset.url)
       .filter(Boolean)
   );
+  activeGeneration.outputFeedSnapshotCount = outputFeedSnapshot.length;
   USAGE_CTX.assetScanStartedAt = scanStartedAt;
   USAGE_CTX.assetScanSnapshot = snapshot;
+  snapshot.metadata = {
+    ...(snapshot.metadata || {}),
+    internalGenerationId: activeGeneration.internalGenerationId,
+    outputFeedSnapshotCount: outputFeedSnapshot.length,
+    ownershipStrategy: 'dom_new_output_fallback',
+    ownershipConfidence: 0.9,
+  };
 
   const scan = () => {
     const scanStartedAt = USAGE_CTX.assetScanStartedAt;
@@ -1715,6 +2135,8 @@ function announceKlingGenerateIntent(snapshot) {
       source: 'rmw-kling-content-telemetry',
       type: 'KLING_GENERATE_INTENT',
       payload: {
+        internalGenerationId: snapshot?.metadata?.generateIntentId || snapshot?.externalEventId || '',
+        prompt: snapshot?.promptText || '',
         expectedCredits: snapshot?.expectedCredits ?? null,
         modelLabel: snapshot?.modelLabel || '',
         generationMode: snapshot?.metadata?.generationMode || '',
@@ -1804,6 +2226,7 @@ function buildNetworkUsageDedupeKey(payload) {
     ].join('|');
   }
   return [
+    payload?.klingTaskId,
     payload?.externalEventId,
     payload?.generationId,
     payload?.requestId,
@@ -2007,15 +2430,15 @@ function rememberActiveNetworkGeneration(payload) {
   const now = Date.now();
   const hasSubmitPrompt = Boolean(normalizePromptCaptureValue(payload?.promptText));
   if (!hasSubmitPrompt) return;
-  for (const id of [payload?.generationId, payload?.requestId, payload?.externalEventId]) {
-    const normalizedId = `${id || ''}`.trim();
+  for (const id of collectKlingTaskIdsFromPayload(payload)) {
+    const normalizedId = normalizeKlingTaskId(id);
     if (normalizedId) USAGE_CTX.activeGenerationIds.set(normalizedId, now);
   }
 }
 
 function isActiveNetworkGeneration(payload) {
-  for (const id of [payload?.generationId, payload?.requestId, payload?.externalEventId]) {
-    const normalizedId = `${id || ''}`.trim();
+  for (const id of collectKlingTaskIdsFromPayload(payload)) {
+    const normalizedId = normalizeKlingTaskId(id);
     if (normalizedId && USAGE_CTX.activeGenerationIds.has(normalizedId)) return true;
   }
   return false;
@@ -2053,6 +2476,7 @@ function buildNetworkUsageSnapshot(networkPayload) {
   const generationMode = normalizeNetworkGenerationMode(networkPayload?.generationMode) || inferGenerationModeFromText(document.body?.innerText || '');
   const generationId = `${networkPayload?.generationId || ''}`.trim();
   const requestId = `${networkPayload?.requestId || ''}`.trim();
+  const klingTaskId = normalizeKlingTaskId(networkPayload?.klingTaskId) || generationId || requestId;
   const fingerprint = `${networkPayload?.fingerprint || ''}`.trim();
   const networkFallbackDedupeKey = canUseExpectedNetworkFallback && (USAGE_CTX.lastGenerateIntentId || USAGE_CTX.lastGenerateKey)
     ? [
@@ -2143,6 +2567,14 @@ function buildNetworkUsageSnapshot(networkPayload) {
       }),
       requestPreview,
       responsePreview,
+      klingTaskId,
+      identifierCandidates: Array.isArray(networkPayload?.identifierCandidates)
+        ? networkPayload.identifierCandidates.slice(0, 12)
+        : [],
+      identifierChannel: `${networkPayload?.identifierChannel || networkPayload?.transport || source || ''}`.slice(0, 120),
+      identifierSource: `${networkPayload?.identifierSource || ''}`.slice(0, 120),
+      identifierKind: `${networkPayload?.identifierKind || ''}`.slice(0, 80),
+      ownershipConfidence: Number(networkPayload?.ownershipConfidence || 0) || null,
       generationId,
       requestId,
       fingerprint,
@@ -2169,42 +2601,7 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.data?.source === 'rmw-kling-mediasource-capture') {
     if (event?.data?.type === 'KLING_MEDIASOURCE_VIDEO_COMPLETE') {
       const mediaSourcePayload = event.data.payload || {};
-      if (!normalizePromptCaptureValue(USAGE_CTX.assetScanSnapshot?.promptText) || !mediaSourcePayloadMatchesActiveGeneration(mediaSourcePayload)) {
-        debugUsageTelemetry('mediasource_video_skipped_without_active_generation', {
-          sessionId: `${event.data.payload?.sessionId || ''}`.slice(0, 120),
-          size: Number(event.data.payload?.size || 0) || null,
-          sessionStartedAt: Number(event.data.payload?.startedAt || 0) || null,
-          activeStartedAt: Number(USAGE_CTX.activeGeneration?.startedAt || 0) || null,
-          activeIntentId: `${USAGE_CTX.activeGeneration?.generateIntentId || ''}`.trim(),
-        });
-        return;
-      }
-      const asset = storeMediaSourceVideoAsset(mediaSourcePayload);
-      if (asset) {
-        setStatus(`MediaSource video captured (${Math.round((asset.size || 0) / 1024 / 1024)} MB)`, { hideAfterMs: 2500 });
-        uploadMediaSourceVideoAsset(asset)
-          .then((uploadedAsset) => {
-            reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, [uploadedAsset]);
-            debugUsageTelemetry('mediasource_video_uploaded', {
-              sessionId: uploadedAsset.mediaSourceSessionId,
-              size: uploadedAsset.size,
-              chunkCount: uploadedAsset.chunkCount,
-              url: `${uploadedAsset.permanentUrl || uploadedAsset.url || ''}`.slice(0, 1000),
-              startedAt: uploadedAsset.startedAt,
-              completedAt: uploadedAsset.completedAt,
-            });
-            setStatus('MediaSource video uploaded', { hideAfterMs: 2500 });
-          })
-          .catch((error) => {
-            debugUsageTelemetry('mediasource_video_upload_failed', {
-              sessionId: asset.mediaSourceSessionId,
-              size: asset.size,
-              chunkCount: asset.chunkCount,
-              error: `${error?.message || error || ''}`.slice(0, 500),
-            });
-            console.warn('[RMW Kling] MediaSource video upload failed', error);
-          });
-      }
+      queueOrProcessMediaSourcePayload(mediaSourcePayload);
     } else if (event?.data?.type === 'KLING_MEDIASOURCE_VIDEO_DROPPED') {
       debugUsageTelemetry('mediasource_video_dropped', {
         sessionId: `${event.data.payload?.sessionId || ''}`.slice(0, 120),
@@ -2221,6 +2618,14 @@ function handleKlingNetworkUsageMessage(event) {
     return;
   }
   if (event?.data?.source !== 'rmw-kling-network-telemetry') return;
+  if (event?.data?.type === 'KLING_GOOGLE_OAUTH_POPUP_BLOCKED') {
+    recoverBlockedGoogleOauthPopup(event.data.payload || {});
+    debugUsageTelemetry('google_oauth_popup_blocked_recovered', {
+      url: `${event.data.payload?.url || ''}`.slice(0, 500),
+      target: `${event.data.payload?.target || ''}`.slice(0, 120),
+    });
+    return;
+  }
   if (event?.data?.type === 'KLING_BLOB_MEDIA_SOURCE') {
     rememberBlobSourceUrl(event.data.payload?.blobUrl, event.data.payload?.sourceUrl);
     debugUsageTelemetry('blob_media_source_captured', {
@@ -2253,10 +2658,29 @@ function handleKlingNetworkUsageMessage(event) {
     && creditsUsed <= MAX_REASONABLE_KLING_CREDIT_BURN;
   const mediaAssetCount = Array.isArray(payload?.mediaAssets) ? payload.mediaAssets.length : 0;
   const hasRecentGenerateIntent = now - Number(USAGE_CTX.lastGenerateAt || 0) < 30000;
-  const hasStableNetworkId = Boolean(payload?.generationId || payload?.requestId);
-  if (!payload?.status && !payload?.isCompleted && !hasReasonableCreditBurn) return;
+  const hasStableNetworkId = Boolean(payload?.klingTaskId || payload?.generationId || payload?.requestId);
+  const associationCandidateMatch = payloadMatchesActiveGenerationTaskId(payload);
+  const hasNetworkSubmitPrompt = Boolean(normalizePromptCaptureValue(payload?.promptText));
+  const canAssociateTaskId = hasRecentGenerateIntent
+    && isActiveGenerationValid()
+    && (associationCandidateMatch !== false || !getActiveGenerationTaskIds().length || hasNetworkSubmitPrompt);
+  const associatedTaskId = canAssociateTaskId
+    ? associateKlingTaskIdWithActiveGeneration(payload)
+    : false;
+  if (!payload?.status && !payload?.isCompleted && !hasReasonableCreditBurn && !mediaAssetCount) return;
   if (!hasStableNetworkId && !hasRecentGenerateIntent) return;
   if (mediaAssetCount > 0) {
+    const taskIdMatch = payloadMatchesActiveGenerationTaskId(payload);
+    if (taskIdMatch === false) {
+      debugUsageTelemetry('network_media_skipped_task_id_mismatch', {
+        klingTaskId: payload.klingTaskId,
+        generationId: payload.generationId,
+        requestId: payload.requestId,
+        activeTaskIds: getActiveGenerationTaskIds(),
+        mediaAssetCount,
+      });
+      return;
+    }
     const capturedAt = Number(payload?.capturedAt || now);
     if (!isActiveGenerationValid() || capturedAt < Number(USAGE_CTX.activeGeneration?.startedAt || 0)) {
       debugUsageTelemetry('network_media_skipped_without_active_generation', {
@@ -2296,6 +2720,7 @@ function handleKlingNetworkUsageMessage(event) {
   }
 
   const snapshot = buildNetworkUsageSnapshot(payload);
+  attachActiveGenerationOwnership(snapshot, getActiveGenerationTaskIds().length ? 'kling_task_id' : '');
   const hasSubmitPrompt = Boolean(normalizePromptCaptureValue(payload?.promptText));
   const matchesActiveGeneration = isActiveNetworkGeneration(payload);
   if (mediaAssetCount > 0 && !hasReasonableCreditBurn && !hasSubmitPrompt && !matchesActiveGeneration) {
@@ -2306,6 +2731,11 @@ function handleKlingNetworkUsageMessage(event) {
       source: payload.source,
     });
     return;
+  }
+  if (mediaAssetCount > 0 && (payloadMatchesActiveGenerationTaskId(payload) !== false || associatedTaskId || matchesActiveGeneration)) {
+    markActiveGenerationOwnedOutput(mediaAssetCount, getActiveGenerationTaskIds().length ? 'kling_task_id' : 'network_owned_output');
+    attachActiveGenerationOwnership(snapshot, getActiveGenerationTaskIds().length ? 'kling_task_id' : 'network_owned_output');
+    flushPendingMediaSourcePayloads();
   }
   if (
     !hasReasonableCreditBurn
@@ -2758,6 +3188,23 @@ function isEnabled(el) {
     && el.getAttribute('disabled') === null;
 }
 
+function getClickReadiness(el) {
+  if (!el) {
+    return { ok: false, reason: 'missing' };
+  }
+  const style = getComputedStyle(el);
+  return {
+    ok: Boolean(isVisible(el) && isEnabled(el) && style.pointerEvents !== 'none'),
+    disabled: Boolean(el.disabled),
+    ariaDisabled: `${el.getAttribute?.('aria-disabled') || ''}`,
+    disabledAttr: el.getAttribute?.('disabled') !== null,
+    pointerEvents: style.pointerEvents,
+    visible: isVisible(el),
+    enabled: isEnabled(el),
+    text: normalizeSpace(buttonDescriptorText(el) || buttonText(el)).slice(0, 160),
+  };
+}
+
 function buttonText(el) {
   return `${el?.innerText || el?.textContent || el?.value || el?.getAttribute?.('aria-label') || ''}`
     .trim().toLowerCase();
@@ -2794,7 +3241,13 @@ function isPolicyLikeAction(el) {
 }
 
 function hasKlingNetworkErrorToast() {
-  const text = normalizeSpace(document.body?.innerText || '');
+  const text = normalizeSpace(
+    Array.from(document.body?.querySelectorAll('body *') || [])
+      .filter((element) => isVisible(element) && !element.closest?.('#rmw-kling-badge'))
+      .map((element) => element.innerText || element.textContent || '')
+      .filter(Boolean)
+      .join(' ')
+  );
   return text.includes('network error, please try again');
 }
 
@@ -3356,6 +3809,7 @@ function enhancedSafeClick(el) {
       ['mousedown', window.MouseEvent],
       ['pointerup', pointerCtor],
       ['mouseup', window.MouseEvent],
+      ['click', window.MouseEvent],
       ['pointerout', pointerCtor],
       ['mouseout', window.MouseEvent],
     ].forEach(([type, EventCtor]) => {
@@ -3367,6 +3821,9 @@ function enhancedSafeClick(el) {
           view: window,
           clientX,
           clientY,
+          button: 0,
+          buttons: type.includes('down') ? 1 : 0,
+          detail: type === 'click' ? 1 : 0,
         }));
       } catch {}
     });
@@ -3731,6 +4188,9 @@ function stop(message, phase = P.DONE, options = {}) {
     clearUsageTicket();
   }
   clearCheckpoint();
+  if (phase === P.DONE) {
+    try { sessionStorage.removeItem(GOOGLE_POPUP_ALLOW_RELOAD_KEY); } catch {}
+  }
   if (!preserveLaunch) {
     msg({ type: 'TOOL_HUB_REVOKE_ACTIVE_LAUNCH', toolSlug: TOOL_SLUG }).catch(() => {});
   }
@@ -3797,6 +4257,10 @@ function clickGoogleLandingAction(button, statusMessage) {
     return true;
   }
   if (!button) return false;
+  if (!ensureKlingGooglePopupsAllowed()) {
+    wake(300);
+    return true;
+  }
   const actionKey = landingActionKey(button);
   const now = Date.now();
   const sameActionPending = actionKey
@@ -3813,8 +4277,24 @@ function clickGoogleLandingAction(button, statusMessage) {
   CTX.landingActionLockUntil = now + EMAIL_CHOOSER_WAIT_MS;
 
   const clickTarget = findClickableAncestor(button) || button;
+  const readiness = getClickReadiness(clickTarget);
+  debugUsageTelemetry('google_signin_button_click_attempt', {
+    readiness,
+    phase: CTX.phase,
+    url: location.href,
+    hasKlingNetworkToast: hasKlingNetworkErrorToast(),
+  });
+  if (!readiness.ok) {
+    setStatus(`Google button not ready (${readiness.reason || readiness.pointerEvents || 'blocked'}). Retrying...`);
+    CTX.lastLandingActionKey = '';
+    CTX.landingActionLockUntil = 0;
+    wake(400);
+    return true;
+  }
   if (!enhancedSafeClick(clickTarget)) {
     setStatus('Google button click failed. Retrying…');
+    CTX.lastLandingActionKey = '';
+    CTX.landingActionLockUntil = 0;
     wake(300);
     return true;
   }
@@ -3830,6 +4310,34 @@ function clickGoogleLandingAction(button, statusMessage) {
   CTX.phase = P.WAIT_GOOGLE;
   setStatus(statusMessage || 'Opening Google sign-in…');
   wake(AUTH_TRANSITION_INITIAL_QUIET_MS);
+  return true;
+}
+
+function retryVisibleGoogleLandingButton(statusMessage = 'Clicking visible Google sign-in button…') {
+  const now = Date.now();
+  if (CTX.googleErrorRetryCount >= MAX_KLING_GOOGLE_ERROR_RETRIES) return false;
+  if (
+    CTX.googleErrorLastRetryAt
+    && now - CTX.googleErrorLastRetryAt < KLING_GOOGLE_ERROR_RETRY_COOLDOWN_MS
+  ) {
+    setStatus('Waiting before clicking Google sign-in again…');
+    wake(Math.max(300, KLING_GOOGLE_ERROR_RETRY_COOLDOWN_MS - (now - CTX.googleErrorLastRetryAt)));
+    return true;
+  }
+
+  const googleButton = findGoogleAuthButton();
+  if (!googleButton) return false;
+
+  CTX.manualGoogleHandoff = false;
+  CTX.googleErrorRetryCount += 1;
+  CTX.googleErrorLastRetryAt = now;
+  CTX.submitLockUntil = 0;
+  clearAuthTransition();
+  clearCheckpoint();
+  CTX.lastLandingActionKey = '';
+  CTX.landingActionLockUntil = 0;
+  setStatus(`${statusMessage} (${CTX.googleErrorRetryCount}/${MAX_KLING_GOOGLE_ERROR_RETRIES})`);
+  clickGoogleLandingAction(googleButton, statusMessage);
   return true;
 }
 
@@ -3999,6 +4507,9 @@ async function tick() {
         const googleButton = findGoogleAuthButton();
         if (googleButton) {
           if (CTX.manualGoogleHandoff) {
+            if (findGoogleAuthButton() && retryVisibleGoogleLandingButton('Clicking visible Google sign-in button…')) {
+              return;
+            }
             setStatus('Waiting for manual Google sign-in…', {
               hideAfterMs: BADGE_HIDE_BLOCKED_MS,
               preserveExistingHideTimer: true,
@@ -4059,6 +4570,9 @@ async function tick() {
         const googleButton = findGoogleAuthButton();
         if (googleButton) {
           if (CTX.manualGoogleHandoff) {
+            if (findGoogleAuthButton() && retryVisibleGoogleLandingButton('Clicking visible Google sign-in button…')) {
+              return;
+            }
             setStatus('Waiting for manual Google sign-in…', {
               hideAfterMs: BADGE_HIDE_BLOCKED_MS,
               preserveExistingHideTimer: true,
@@ -4201,6 +4715,8 @@ async function tick() {
 
       if (isAuthenticated()) {
         CTX.manualGoogleHandoff = false;
+        CTX.googleErrorRetryCount = 0;
+        CTX.googleErrorLastRetryAt = 0;
         stop(buildSignedInStatusMessage(), P.DONE);
         return;
       }
@@ -4213,6 +4729,9 @@ async function tick() {
       }
 
       if (hasKlingNetworkErrorToast()) {
+        if (findGoogleAuthButton() && retryVisibleGoogleLandingButton('Clicking visible Google sign-in button…')) {
+          return;
+        }
         CTX.manualGoogleHandoff = true;
         CTX.submitLockUntil = 0;
         clearAuthTransition();
@@ -4274,11 +4793,16 @@ async function tick() {
 
       if (isAuthenticated()) {
         CTX.manualGoogleHandoff = false;
+        CTX.googleErrorRetryCount = 0;
+        CTX.googleErrorLastRetryAt = 0;
         stop(buildSignedInStatusMessage(), P.DONE);
         return;
       }
 
       if (CTX.submitKind === 'google' && hasKlingNetworkErrorToast()) {
+        if (findGoogleAuthButton() && retryVisibleGoogleLandingButton('Clicking visible Google sign-in button…')) {
+          return;
+        }
         CTX.manualGoogleHandoff = true;
         CTX.submitLockUntil = 0;
         clearCheckpoint();

@@ -723,6 +723,7 @@
 }
 
 .trendings-card {
+  position: relative;
   border: 1px solid rgba(132, 163, 228, 0.24);
   background: rgba(255, 255, 255, 0.05);
   border-radius: 14px;
@@ -731,6 +732,12 @@
   contain: layout paint;
   content-visibility: auto;
   contain-intrinsic-size: 370px;
+}
+
+.trendings-card.menu-open {
+  overflow: visible;
+  contain: layout;
+  z-index: 20;
 }
 
 .trendings-virtual-grid-wrap {
@@ -829,39 +836,41 @@
 }
 
 .trendings-card-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
   min-height: 36px;
-  max-height: 42px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .trendings-card-top-left {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px;
   align-items: center;
+  min-width: 0;
+  padding-right: 4px;
 }
 
 .trendings-card-top-right {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-left: auto;
+  display: contents;
 }
 
 .trendings-card-upload-meta {
   display: grid;
-  justify-items: end;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  justify-items: start;
   gap: 2px;
   min-width: 0;
-  text-align: right;
+  text-align: left;
+  max-width: calc(100% - 36px);
 }
 
 .trendings-card-uploader,
 .trendings-card-upload-time {
-  max-width: 220px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -906,6 +915,8 @@
 }
 
 .trendings-card-menu-wrap {
+  grid-column: 2;
+  grid-row: 1;
   position: relative;
   margin-left: auto;
 }

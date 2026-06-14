@@ -7,6 +7,7 @@ const PERMISSION_MATRIX = {
   revoke_tasks: ['admin', 'faculty'],
   view_admin_queue: ['admin'],
   access_workspace: ['admin', 'faculty', 'user'],
+  download_rmw_data: ['admin', 'faculty', 'hod', 'spoc', 'employee', 'user'],
 };
 
 export function normalizeRoles(user) {

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Grid } from 'react-window';
 import { authAPI, taskAPI } from '../../../../services/api';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { usePermissions } from '../../../../hooks/usePermissions';
 import { buildFileDownloadUrl, buildFileOpenUrl, buildFileThumbnailUrl } from '../../../../utils/fileLinks';
 import './TrendingsPanel.css';
 
@@ -75,6 +76,9 @@ const getSourceExtension = (asset) => {
 };
 
 const getAssetActivityTime = (asset) => asset?.updatedAt || asset?.createdAt || null;
+
+const getAssetMenuKey = (asset) =>
+  asset?.id ?? asset?.assetId ?? asset?.relativePath ?? asset?.url ?? asset?.filename;
 
 const getDateFolderKey = (asset) => {
   const source = getAssetActivityTime(asset);
@@ -295,7 +299,9 @@ const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, o
 
 const TrendingsAssetCard = React.memo(function TrendingsAssetCard({
   asset,
+  canDownload,
   isMenuOpen,
+  onDownload,
   onInfo,
   onPreview,
   onToggleMenu,
@@ -304,9 +310,10 @@ const TrendingsAssetCard = React.memo(function TrendingsAssetCard({
 }) {
   const hasMediaPreview = asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music';
   const activityTime = getAssetActivityTime(asset);
+  const assetMenuKey = getAssetMenuKey(asset);
 
   return (
-    <div className="trendings-card">
+    <div className={`trendings-card ${isMenuOpen ? 'menu-open' : ''}`}>
       {hasMediaPreview && (
         <div className="trendings-card-preview" onClick={() => onPreview(asset)}>
           <TrendingsCardPreview asset={asset} openUrl={openUrl} thumbnailUrl={thumbnailUrl} />
@@ -329,16 +336,24 @@ const TrendingsAssetCard = React.memo(function TrendingsAssetCard({
           <div className="trendings-card-menu-wrap">
             <button
               className="trendings-card-menu-btn"
-              onClick={() => onToggleMenu(asset.id)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleMenu(assetMenuKey);
+              }}
               title="More"
             >
               ⋮
             </button>
             {isMenuOpen && (
-              <div className="trendings-card-menu">
+              <div className="trendings-card-menu" onClick={(event) => event.stopPropagation()}>
                 <button onClick={() => onInfo(asset)}>
                   Info
                 </button>
+                {canDownload && (
+                  <button onClick={() => onDownload(asset)}>
+                    Download
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -365,9 +380,11 @@ const TrendingsGridCell = React.memo(function TrendingsGridCell({
   assets,
   buildOpenUrl,
   buildThumbnailUrl,
+  canDownload,
   columnCount,
   columnIndex,
   openMenuAssetId,
+  onDownload,
   onInfo,
   onPreview,
   onToggleMenu,
@@ -382,7 +399,9 @@ const TrendingsGridCell = React.memo(function TrendingsGridCell({
     <div {...ariaAttributes} className="trendings-virtual-cell" style={style}>
       <TrendingsAssetCard
         asset={asset}
-        isMenuOpen={openMenuAssetId === asset.id}
+        canDownload={canDownload}
+        isMenuOpen={openMenuAssetId === getAssetMenuKey(asset)}
+        onDownload={onDownload}
         onInfo={onInfo}
         onPreview={onPreview}
         onToggleMenu={onToggleMenu}
@@ -397,10 +416,12 @@ const TrendingsVirtualGrid = React.memo(function TrendingsVirtualGrid({
   assets,
   buildOpenUrl,
   buildThumbnailUrl,
+  canDownload,
   canLoadMore,
   loadMoreAssets,
   loadingMore,
   openMenuAssetId,
+  onDownload,
   onInfo,
   onPreview,
   onToggleMenu,
@@ -438,8 +459,10 @@ const TrendingsVirtualGrid = React.memo(function TrendingsVirtualGrid({
             assets,
             buildOpenUrl,
             buildThumbnailUrl,
+            canDownload,
             columnCount,
             openMenuAssetId,
+            onDownload,
             onInfo,
             onPreview,
             onToggleMenu,
@@ -464,6 +487,7 @@ const TrendingsDirectoryFileCard = React.memo(function TrendingsDirectoryFileCar
   asset,
   buildDownloadUrl,
   buildOpenUrl,
+  canDownload,
   onDownload,
   onInfo,
   onPreview,
@@ -512,7 +536,7 @@ const TrendingsDirectoryFileCard = React.memo(function TrendingsDirectoryFileCar
             Open
           </a>
         )}
-        {downloadUrl && (
+        {canDownload && downloadUrl && (
           <button
             className="trendings-open-link-btn"
             onClick={() => onDownload(asset)}
@@ -536,6 +560,7 @@ const TrendingsDirectoryFileCell = React.memo(function TrendingsDirectoryFileCel
   assets,
   buildDownloadUrl,
   buildOpenUrl,
+  canDownload,
   onDownload,
   onInfo,
   onPreview,
@@ -551,6 +576,7 @@ const TrendingsDirectoryFileCell = React.memo(function TrendingsDirectoryFileCel
         asset={asset}
         buildDownloadUrl={buildDownloadUrl}
         buildOpenUrl={buildOpenUrl}
+        canDownload={canDownload}
         onDownload={onDownload}
         onInfo={onInfo}
         onPreview={onPreview}
@@ -563,6 +589,7 @@ const TrendingsDirectoryFileList = React.memo(function TrendingsDirectoryFileLis
   assets,
   buildDownloadUrl,
   buildOpenUrl,
+  canDownload,
   canLoadMore,
   loadingMore,
   onDownload,
@@ -595,6 +622,7 @@ const TrendingsDirectoryFileList = React.memo(function TrendingsDirectoryFileLis
             assets,
             buildDownloadUrl,
             buildOpenUrl,
+            canDownload,
             onDownload,
             onInfo,
             onPreview,
@@ -616,6 +644,8 @@ const TrendingsDirectoryFileList = React.memo(function TrendingsDirectoryFileLis
 });
 
 const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
+  const { can } = usePermissions();
+  const canDownloadRmwData = can('download_rmw_data');
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -1164,7 +1194,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     return (
       <div className="trendings-preview-link">
         <p>This file type is not embeddable.</p>
-        {buildDownloadUrl(asset) ? (
+        {canDownloadRmwData && buildDownloadUrl(asset) ? (
           <button type="button" className="trendings-open-link-btn" onClick={() => downloadAsset(asset)}>
             Download
           </button>
@@ -1420,6 +1450,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                               assets={directoryFiles}
                               buildDownloadUrl={buildDownloadUrl}
                               buildOpenUrl={buildOpenUrl}
+                              canDownload={canDownloadRmwData}
                               canLoadMore={directoryFilesHasMore}
                               loadingMore={directoryFilesLoadingMore}
                               onDownload={downloadAsset}
@@ -1458,10 +1489,12 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                       assets={filteredAssets}
                       buildOpenUrl={buildOpenUrl}
                       buildThumbnailUrl={buildThumbnailUrl}
+                      canDownload={canDownloadRmwData}
                       canLoadMore={canLoadMore}
                       loadMoreAssets={loadMoreAssets}
                       loadingMore={loadingMore}
                       openMenuAssetId={openMenuAssetId}
+                      onDownload={downloadAsset}
                       onInfo={handleInfoAsset}
                       onPreview={handlePreviewAsset}
                       onToggleMenu={handleToggleAssetMenu}

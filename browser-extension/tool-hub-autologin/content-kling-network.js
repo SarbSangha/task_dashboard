@@ -14,6 +14,7 @@
   const MAX_REASONABLE_CREDIT_BURN = 3000;
   const GENERATE_INTENT_WINDOW_MS = 30000;
   let recentGenerateIntentUntil = 0;
+  let lastGoogleOauthPopupRecoveryAt = 0;
   const blobSourceUrls = new WeakMap();
 
   function toText(value) {
@@ -55,6 +56,38 @@
       if (input && typeof input.url === 'string') return new URL(input.url, location.href).href;
     } catch {}
     return `${input || ''}`;
+  }
+
+  function isGoogleOauthUrl(value = '') {
+    try {
+      const url = new URL(`${value || ''}`, location.href);
+      return url.hostname === 'accounts.google.com'
+        && (
+          /oauth|signin|identifier|servicelogin/i.test(url.pathname)
+          || /client_id|redirect_uri|oauth/i.test(url.search)
+        );
+    } catch {
+      return /^https:\/\/accounts\.google\.com\//i.test(`${value || ''}`);
+    }
+  }
+
+  function postGoogleOauthPopupBlocked(url, target = '', features = '') {
+    const now = Date.now();
+    if (!isGoogleOauthUrl(url)) return;
+    if (now - lastGoogleOauthPopupRecoveryAt < 10000) return;
+    lastGoogleOauthPopupRecoveryAt = now;
+    try {
+      window.postMessage({
+        source: SOURCE,
+        type: 'KLING_GOOGLE_OAUTH_POPUP_BLOCKED',
+        payload: {
+          url: `${url || ''}`.slice(0, 4000),
+          target: `${target || ''}`.slice(0, 200),
+          features: `${features || ''}`.slice(0, 500),
+          capturedAt: now,
+        },
+      }, location.origin);
+    } catch {}
   }
 
   function isLikelyMediaResponse(url = '', contentType = '') {
@@ -210,6 +243,120 @@
       }
       return undefined;
     }) || '';
+  }
+
+  function normalizeIdentifierValue(value) {
+    const text = `${value || ''}`.trim();
+    if (!text || text.length > 220) return '';
+    if (/^(true|false|null|undefined|nan)$/i.test(text)) return '';
+    if (/^\d{1,3}$/.test(text)) return '';
+    return text;
+  }
+
+  function classifyIdentifierKey(key) {
+    const normalized = `${key || ''}`.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    if (!normalized) return '';
+    if (normalized === 'task' || normalized === 'taskid') return 'task_id';
+    if (normalized === 'job' || normalized === 'jobid') return 'job_id';
+    if (normalized === 'generation' || normalized === 'generationid' || normalized === 'generateid') return 'generation_id';
+    if (normalized === 'workflow' || normalized === 'workflowid') return 'workflow_id';
+    if (normalized === 'creation' || normalized === 'creationid') return 'creation_id';
+    if (normalized === 'requestid' || normalized === 'request' || normalized === 'reqid') return 'request_id';
+    if (normalized === 'traceid' || normalized === 'trace' || normalized === 'logid' || normalized === 'xrequestid') return 'trace_id';
+    return '';
+  }
+
+  function collectIdentifierCandidatesFromObject(value, origin) {
+    const candidates = [];
+    const seen = new Set();
+    walkAll(value, (key, item, parent) => {
+      const kind = classifyIdentifierKey(key);
+      const parentKeys = isObject(parent) ? Object.keys(parent).join('_') : '';
+      const contextualKind = !kind && /^id$/i.test(key) && /(generation|generate|task|job|workflow|work|creation)/i.test(parentKeys)
+        ? 'contextual_id'
+        : '';
+      const idKind = kind || contextualKind;
+      if (!idKind) return;
+      if (typeof item !== 'string' && typeof item !== 'number') return;
+      const valueText = normalizeIdentifierValue(item);
+      if (!valueText) return;
+      const candidateKey = `${idKind}|${valueText}|${origin}`;
+      if (seen.has(candidateKey)) return;
+      seen.add(candidateKey);
+      candidates.push({
+        key,
+        kind: idKind,
+        value: valueText,
+        origin,
+      });
+    });
+    return candidates;
+  }
+
+  function collectIdentifierCandidatesFromText(text, origin) {
+    const candidates = [];
+    const seen = new Set();
+    const sourceText = `${text || ''}`.slice(0, MAX_TEXT_LENGTH);
+    const pattern = /["']?\b(task(?:_id)?|job(?:_id)?|generation(?:_id)?|generate_id|workflow(?:_id)?|creation(?:_id)?|request_id|req_id|trace_id|log_id|x_request_id)\b["']?\s*[:=]\s*["']?([A-Za-z0-9._:-]{4,220})/gi;
+    let match = pattern.exec(sourceText);
+    while (match) {
+      const kind = classifyIdentifierKey(match[1]);
+      const valueText = normalizeIdentifierValue(match[2]);
+      const candidateKey = `${kind}|${valueText}|${origin}`;
+      if (kind && valueText && !seen.has(candidateKey)) {
+        seen.add(candidateKey);
+        candidates.push({
+          key: match[1],
+          kind,
+          value: valueText,
+          origin,
+        });
+      }
+      match = pattern.exec(sourceText);
+    }
+    return candidates;
+  }
+
+  function identifierPriority(candidate) {
+    const originScore = /response|websocket|eventsource/i.test(candidate?.origin || '') ? 0 : 20;
+    const kind = `${candidate?.kind || ''}`;
+    const kindScore = {
+      task_id: 0,
+      job_id: 1,
+      generation_id: 2,
+      workflow_id: 3,
+      creation_id: 4,
+      contextual_id: 5,
+      request_id: 8,
+      trace_id: 9,
+    }[kind] ?? 12;
+    return originScore + kindScore;
+  }
+
+  function collectIdentifierCandidates({ responseJson, requestJson, responseText, requestText }) {
+    const merged = [
+      ...collectIdentifierCandidatesFromObject(responseJson, 'response_json'),
+      ...collectIdentifierCandidatesFromObject(requestJson, 'request_json'),
+      ...collectIdentifierCandidatesFromText(responseText, 'response_text'),
+      ...collectIdentifierCandidatesFromText(requestText, 'request_text'),
+    ];
+    const byKey = new Map();
+    for (const candidate of merged) {
+      const key = `${candidate.kind}|${candidate.value}`;
+      const existing = byKey.get(key);
+      if (!existing || identifierPriority(candidate) < identifierPriority(existing)) {
+        byKey.set(key, candidate);
+      }
+    }
+    return Array.from(byKey.values())
+      .sort((left, right) => identifierPriority(left) - identifierPriority(right))
+      .slice(0, 12);
+  }
+
+  function selectPrimaryKlingTaskId(candidates) {
+    return candidates.find((candidate) => /^(task_id|job_id|generation_id|workflow_id|creation_id|contextual_id)$/.test(candidate.kind))
+      || candidates[0]
+      || null;
   }
 
   function pickNumber(value, matcher, options = {}) {
@@ -464,12 +611,22 @@
     const requestText = payload.requestText || '';
 
     const telemetryText = `${requestText}\n${responseText}`;
-    const generationId = pickString(merged, /^(generation_?id|generate_?id|task_?id|job_?id)$/i)
+    const identifierCandidates = collectIdentifierCandidates({
+      responseJson,
+      requestJson,
+      responseText,
+      requestText,
+    });
+    const selectedIdentifier = selectPrimaryKlingTaskId(identifierCandidates);
+    const klingTaskId = selectedIdentifier?.value || '';
+    const generationId = pickString(merged, /^(generation_?id|generate_?id|task_?id|job_?id|workflow_?id|creation_?id)$/i)
       || pickString(requestObject, /^(generation_?id|generate_?id|task_?id|job_?id)$/i)
+      || (selectedIdentifier && /^(task_id|job_id|generation_id|workflow_id|creation_id|contextual_id)$/.test(selectedIdentifier.kind) ? selectedIdentifier.value : '')
       || pickContextualId(merged)
       || pickContextualId(requestObject);
     const requestId = pickString(merged, /^(request_?id|trace_?id|log_?id|req_?id|x_?request_?id)$/i)
-      || pickString(requestObject, /^(request_?id|trace_?id|req_?id|x_?request_?id)$/i);
+      || pickString(requestObject, /^(request_?id|trace_?id|req_?id|x_?request_?id)$/i)
+      || (selectedIdentifier && /^(request_id|trace_id)$/.test(selectedIdentifier.kind) ? selectedIdentifier.value : '');
     const creditsUsed = pickCreditValue(
       merged,
       /^(credits?_?used|credit_?used|consume_?credits?|consumed_?credits?|cost_?credits?|credit_?cost|actual_?credits?|credits?_?burned|burned_?credits?)$/i
@@ -520,6 +677,14 @@
 
     return {
       externalEventId: generationId || requestId || `net_${fingerprint}`,
+      klingTaskId,
+      identifierCandidates,
+      identifierChannel: payload.transport || payload.source || selectedIdentifier?.origin || '',
+      identifierSource: selectedIdentifier?.origin || '',
+      identifierKind: selectedIdentifier?.kind || '',
+      ownershipConfidence: selectedIdentifier && /^(task_id|job_id|generation_id|workflow_id|creation_id|contextual_id)$/.test(selectedIdentifier.kind)
+        ? 0.99
+        : (selectedIdentifier ? 0.85 : 0),
       generationId,
       requestId,
       fingerprint,
@@ -545,6 +710,7 @@
       if (!payload.forceInspect && !shouldInspect(payload.url, payload.requestText)) return;
       const extracted = extractTelemetry(payload);
       const hasRecentGenerateIntent = Date.now() <= recentGenerateIntentUntil;
+      const hasDiscoveredTaskId = Boolean(extracted.klingTaskId || extracted.generationId || extracted.requestId);
       const hasCorrelatableSignal = Boolean(
         extracted.generationId
         || extracted.requestId
@@ -557,7 +723,7 @@
         ))
       );
       if (!hasCorrelatableSignal) return;
-      if (!extracted.status && !extracted.isCompleted && !extracted.isCreditBurnReasonable) return;
+      if (!extracted.status && !extracted.isCompleted && !extracted.isCreditBurnReasonable && !(hasRecentGenerateIntent && hasDiscoveredTaskId)) return;
 
       window.postMessage({
         source: SOURCE,
@@ -613,6 +779,24 @@
       recentGenerateIntentUntil = Math.max(recentGenerateIntentUntil, Date.now() + GENERATE_INTENT_WINDOW_MS);
     } catch {}
   }, false);
+
+  const originalWindowOpen = window.open;
+  if (typeof originalWindowOpen === 'function') {
+    window.open = function rmwKlingWindowOpen(url, target, features) {
+      const normalizedUrl = normalizeUrl(url);
+      let opened = null;
+      try {
+        opened = originalWindowOpen.apply(this, arguments);
+      } catch (error) {
+        postGoogleOauthPopupBlocked(normalizedUrl, target, features);
+        throw error;
+      }
+      if (!opened) {
+        postGoogleOauthPopupBlocked(normalizedUrl, target, features);
+      }
+      return opened;
+    };
+  }
 
   const originalFetch = window.fetch;
   if (typeof originalFetch === 'function') {

@@ -3896,6 +3896,8 @@ async function attemptFreepikGoogleDeveloperInfoStep() {
     return true;
   }
 
+  STATE.googleAddAccountPendingAt = 0;
+  STATE.developerInfoDismissedAt = Date.now();
   scheduleAttempt(450);
   return true;
 }
@@ -3903,29 +3905,15 @@ async function attemptFreepikGoogleDeveloperInfoStep() {
 async function attemptFreepikGoogleChooserStep(credential) {
   if (!isGoogleAccountChooserPage()) return false;
 
+  if (isGoogleDeveloperInfoDialogVisible()) return false;
+  if (findGoogleEmailInput() || isGoogleIdentifierUrl()) return false;
+
   if (
     STATE.googleAddAccountPendingAt
     && Date.now() - STATE.googleAddAccountPendingAt < STEP_PENDING_RETRY_MS
-    && !findGoogleEmailInput()
-    && !isGoogleIdentifierUrl()
   ) {
     setStatus('Waiting for Google add-account page');
     scheduleAttempt(500);
-    return true;
-  }
-
-  const addAccountAction = shouldPreferGoogleAddAccount() ? findGoogleUseAnotherAccountAction() : null;
-  if (addAccountAction) {
-    setStatus('Choosing Google add account');
-    if (!activateActionElement(addAccountAction)) {
-      setStatus('Google add-account option not ready');
-      scheduleAttempt(300);
-      return true;
-    }
-
-    STATE.googleAddAccountPendingAt = Date.now();
-    STATE.emailSubmitted = false;
-    scheduleAttempt(700);
     return true;
   }
 
@@ -3947,6 +3935,21 @@ async function attemptFreepikGoogleChooserStep(credential) {
     STATE.lastEmailSubmitAt = Date.now();
     STATE.emailSubmitted = true;
     STATE.passwordSubmitted = false;
+    scheduleAttempt(700);
+    return true;
+  }
+
+  const addAccountAction = findGoogleUseAnotherAccountAction();
+  if (addAccountAction) {
+    setStatus('Choosing Google add account');
+    if (!activateActionElement(addAccountAction)) {
+      setStatus('Google add-account option not ready');
+      scheduleAttempt(300);
+      return true;
+    }
+
+    STATE.googleAddAccountPendingAt = Date.now();
+    STATE.emailSubmitted = false;
     scheduleAttempt(700);
     return true;
   }
@@ -4140,13 +4143,13 @@ async function attemptFreepikGooglePopupFlow(credential) {
     return true;
   }
 
-  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
-  // Freepik uses the same Google account chooser/password pages as Kling. Keep
-  // the Freepik route isolated, but run the proven Kling step sequence.
-  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
-  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptFreepikGoogleDeveloperInfoStep()) return true;
+  // Google can show "Use another account" on the password page, but we should
+  // never re-enter chooser logic once already on /challenge/pwd.
+  if (!isGooglePasswordUrl() && await attemptFreepikGoogleChooserStep(credential)) return true;
+  if (await attemptFreepikGooglePasswordStep(credential)) return true;
   if (await attemptGoogleConsentContinueStep()) return true;
-  if (await attemptKlingGoogleEmailStep(credential)) return true;
+  if (await attemptFreepikGoogleEmailStep(credential)) return true;
 
   if (isFreepikGoogleRelevantSurface()) {
     setStatus('Waiting for Freepik Google popup step');

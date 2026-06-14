@@ -469,6 +469,7 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
               <p><strong>Approval Status:</strong> {infoUser.approvalStatus || 'N/A'}</p>
               <p><strong>Approved At:</strong> {formatDateTime(infoUser.approvedAt)}</p>
               <p><strong>Login Access:</strong> {infoUser.isActive ? 'Active' : 'Disabled'}</p>
+              <p><strong>RMW Data Download:</strong> {infoUser.isActive && !infoUser.isDeleted ? 'Approved' : 'Not approved'}</p>
               <p><strong>Deleted:</strong> {infoUser.isDeleted ? 'Yes' : 'No'}</p>
               {infoUser.isDeleted && (
                 <>

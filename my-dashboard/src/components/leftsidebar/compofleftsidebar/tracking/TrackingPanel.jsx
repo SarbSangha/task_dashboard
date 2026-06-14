@@ -166,6 +166,8 @@ const doesTaskMatchDate = (task, selectedDate) => {
   ].some((value) => getLocalDateKey(value) === selectedDate);
 };
 
+const normalizeTaskStatus = (task) => String(task?.status || '').trim().toLowerCase().replace(/\s+/g, '_');
+
 const TRACKING_FILTERS = [
   {
     key: 'all',
@@ -173,24 +175,39 @@ const TRACKING_FILTERS = [
     matches: () => true,
   },
   {
-    key: 'active',
-    label: 'Active',
-    matches: (task) => ['pending', 'assigned', 'forwarded', 'in_progress'].includes(task?.status),
+    key: 'pending',
+    label: 'Pending',
+    matches: (task) => normalizeTaskStatus(task) === 'pending',
+  },
+  {
+    key: 'assigned',
+    label: 'Assigned',
+    matches: (task) => normalizeTaskStatus(task) === 'assigned',
+  },
+  {
+    key: 'forwarded',
+    label: 'Forwarded',
+    matches: (task) => normalizeTaskStatus(task) === 'forwarded',
+  },
+  {
+    key: 'in_progress',
+    label: 'In Progress',
+    matches: (task) => normalizeTaskStatus(task) === 'in_progress',
   },
   {
     key: 'submitted',
-    label: 'Waiting Review',
-    matches: (task) => ['submitted', 'under_review'].includes(task?.status),
+    label: 'Submitted',
+    matches: (task) => ['submitted', 'under_review'].includes(normalizeTaskStatus(task)),
   },
   {
     key: 'revision',
-    label: 'Revisions',
-    matches: (task) => task?.status === 'need_improvement',
+    label: 'Need Improvement',
+    matches: (task) => normalizeTaskStatus(task) === 'need_improvement',
   },
   {
     key: 'completed',
     label: 'Completed',
-    matches: (task) => ['approved', 'completed', 'cancelled', 'rejected'].includes(task?.status),
+    matches: (task) => ['approved', 'completed', 'cancelled', 'rejected'].includes(normalizeTaskStatus(task)),
   },
 ];
 
