@@ -83,7 +83,7 @@ export default function CompanyTab() {
           <div className="company-department-create">
             <div className="company-department-create-copy">
               <strong>Add Department</strong>
-              <span>Create a new team once and reuse it everywhere.</span>
+              <span>Create a reusable team for assignments, credentials, and member views.</span>
             </div>
             <div className="company-department-create-controls">
               <input
@@ -99,6 +99,7 @@ export default function CompanyTab() {
                 }}
               />
               <button
+                type="button"
                 className="company-department-submit"
                 onClick={() => {
                   void handleAddDepartment();
@@ -112,23 +113,29 @@ export default function CompanyTab() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '10px', marginBottom: '14px' }}>
-        {departments.map((dept) => (
-          <button
-            key={dept}
-            className="add-btn"
-            style={{
-              textAlign: 'left',
-              opacity: selectedDepartment === dept ? 1 : 0.8,
-              border: selectedDepartment === dept ? '1px solid rgba(255,255,255,0.35)' : undefined,
-            }}
-            onClick={() => {
-              void selectDepartment(dept);
-            }}
-          >
-            {dept}
-          </button>
-        ))}
+      <div className="company-department-section">
+        <div className="company-department-section-head">
+          <div>
+            <strong>Departments</strong>
+            <span>{departments.length} team{departments.length === 1 ? '' : 's'} available</span>
+          </div>
+          {selectedDepartment ? <small>Viewing {selectedDepartment}</small> : null}
+        </div>
+
+        <div className="company-department-grid">
+          {departments.map((dept) => (
+            <button
+              key={dept}
+              type="button"
+              className={`company-department-chip ${selectedDepartment === dept ? 'active' : ''}`}
+              onClick={() => {
+                void selectDepartment(dept);
+              }}
+            >
+              <span>{dept}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="team-grid">
