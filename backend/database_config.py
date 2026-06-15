@@ -160,7 +160,10 @@ def _create_engine(url: str):
         "echo": _sql_echo_enabled(),
         # Supabase pooler (PgBouncer) can conflict with psycopg prepared statements.
         # Disable automatic prepare to avoid DuplicatePreparedStatement on startup.
-        "connect_args": {"prepare_threshold": None},
+        "connect_args": {
+            "prepare_threshold": None,
+            "connect_timeout": max(3, _int_env("DB_CONNECT_TIMEOUT", 10)),
+        },
     }
     if _uses_external_pooler(normalized) and not _is_truthy(os.getenv("DB_USE_SQLALCHEMY_POOL")):
         # PgBouncer/Supabase poolers are already the connection pool. Holding another

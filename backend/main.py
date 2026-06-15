@@ -123,6 +123,10 @@ def _ascii_safe_text(value: object) -> str:
     return f"{value}".encode("ascii", "backslashreplace").decode("ascii")
 
 
+def _safe_print(value: object = "") -> None:
+    print(_ascii_safe_text(value))
+
+
 def _int_env(name: str, default: int) -> int:
     raw = (os.getenv(name) or "").strip()
     if not raw:
@@ -173,14 +177,12 @@ async def _periodic_auth_store_cleanup(interval_seconds: int = 3600) -> None:
                 timeout=10,
             )
             if expired_sessions or expired_reset_tokens:
-                print(
-                    _ascii_safe_text(
-                        "Auth cleanup removed "
-                        f"sessions={expired_sessions} resetTokens={expired_reset_tokens}"
-                    )
+                _safe_print(
+                    "Auth cleanup removed "
+                    f"sessions={expired_sessions} resetTokens={expired_reset_tokens}"
                 )
         except Exception as exc:
-            print(f"Auth cleanup failed: {_ascii_safe_text(exc)}")
+            _safe_print(f"Auth cleanup failed: {exc}")
 
 
 async def _periodic_notification_outbox_dispatch(interval_seconds: int = 30) -> None:
@@ -198,10 +200,10 @@ async def _periodic_notification_outbox_dispatch(interval_seconds: int = 30) -> 
                 timeout=max(5, _int_env("NOTIFICATION_OUTBOX_DISPATCH_TIMEOUT_SECONDS", 20)),
             )
             if dispatched:
-                print(_ascii_safe_text(f"Notification outbox dispatched={dispatched}"))
+                _safe_print(f"Notification outbox dispatched={dispatched}")
         except Exception as exc:
             db.rollback()
-            print(f"Notification outbox dispatch failed: {_ascii_safe_text(exc)}")
+            _safe_print(f"Notification outbox dispatch failed: {exc}")
         finally:
             db.close()
 
@@ -210,22 +212,22 @@ async def _periodic_notification_outbox_dispatch(interval_seconds: int = 30) -> 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    print("\n" + "="*60)
-    print("STARTING TASK MANAGEMENT SYSTEM")
-    print("="*60)
+    _safe_print("\n" + "="*60)
+    _safe_print("STARTING TASK MANAGEMENT SYSTEM")
+    _safe_print("="*60)
     
     if _startup_schema_sync_enabled():
         # Prefer external migrations in production; startup schema sync defaults off there.
-        print("\nInitializing operational database...")
+        _safe_print("\nInitializing operational database...")
         Base.metadata.create_all(bind=operational_engine)
         ensure_operational_schema(operational_engine)
-        print(f"Operational database ready: {operational_engine.dialect.name}")
+        _safe_print(f"Operational database ready: {operational_engine.dialect.name}")
         
-        print("\nInitializing archive database...")
+        _safe_print("\nInitializing archive database...")
         ArchiveBase.metadata.create_all(bind=archive_engine)
-        print(f"Archive database ready: {archive_engine.dialect.name}")
+        _safe_print(f"Archive database ready: {archive_engine.dialect.name}")
     else:
-        print("\nStartup schema sync disabled.")
+        _safe_print("\nStartup schema sync disabled.")
 
     # Optional default-admin bootstrap, driven by environment variables instead of hardcoded account details.
     op_db = OperationalSessionLocal()
@@ -264,37 +266,29 @@ async def lifespan(app: FastAPI):
                 )
                 op_db.add(admin)
             else:
-                print(
-                    _ascii_safe_text(
-                        f"Default admin {admin_email} already exists; bootstrap will not mutate existing user."
-                    )
-                )
+                _safe_print(f"Default admin {admin_email} already exists; bootstrap will not mutate existing user.")
                 if configured_roles:
-                    print(
-                        _ascii_safe_text(
-                            "DEFAULT_ADMIN_ROLES ignored for existing user; update roles from admin UI or database."
-                        )
-                    )
+                    _safe_print("DEFAULT_ADMIN_ROLES ignored for existing user; update roles from admin UI or database.")
         else:
-            print("Default admin bootstrap disabled: DEFAULT_ADMIN_EMAIL is not set.")
+            _safe_print("Default admin bootstrap disabled: DEFAULT_ADMIN_EMAIL is not set.")
         op_db.commit()
     finally:
         op_db.close()
     
-    print("\n" + "="*60)
-    print("APPLICATION READY")
-    print("="*60)
-    print("\nAPI Documentation: http://localhost:8000/docs")
-    print(f"Operational DB: {_mask_db_url(OPERATIONAL_DB_URL)}")
-    print(f"Archive DB: {_mask_db_url(ARCHIVE_DB_URL)}")
+    _safe_print("\n" + "="*60)
+    _safe_print("APPLICATION READY")
+    _safe_print("="*60)
+    _safe_print("\nAPI Documentation: http://localhost:8000/docs")
+    _safe_print(f"Operational DB: {_mask_db_url(OPERATIONAL_DB_URL)}")
+    _safe_print(f"Archive DB: {_mask_db_url(ARCHIVE_DB_URL)}")
     try:
         await cache_utils.init_redis()
     except Exception as exc:
-        print(f"Redis initialization failed; continuing without Redis: {_ascii_safe_text(exc)}")
+        _safe_print(f"Redis initialization failed; continuing without Redis: {exc}")
     try:
         notification_dispatcher.start()
     except Exception as exc:
-        print(f"Notification dispatcher failed to start; continuing degraded: {_ascii_safe_text(exc)}")
+        _safe_print(f"Notification dispatcher failed to start; continuing degraded: {exc}")
     auth_cleanup_task = asyncio.create_task(
         _periodic_auth_store_cleanup(_int_env("AUTH_CLEANUP_INTERVAL_SECONDS", 3600)),
         name="auth-store-cleanup",
@@ -303,7 +297,7 @@ async def lifespan(app: FastAPI):
         _periodic_notification_outbox_dispatch(_int_env("NOTIFICATION_OUTBOX_INTERVAL_SECONDS", 30)),
         name="notification-outbox-dispatch",
     )
-    print(f"Frontend: {_display_frontend_url()}\n")
+    _safe_print(f"Frontend: {_display_frontend_url()}\n")
     
     try:
         yield
@@ -313,7 +307,7 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(auth_cleanup_task, notification_outbox_task, return_exceptions=True)
         await notification_dispatcher.stop()
     
-    print("\nShutting down gracefully...")
+    _safe_print("\nShutting down gracefully...")
     await cache_utils.close_redis()
     operational_engine.dispose()
     if archive_engine is not operational_engine:
@@ -347,9 +341,9 @@ async def ensure_cors_headers_on_error_responses(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        print(f"Unhandled exception: {_ascii_safe_text(exc)}")
+        _safe_print(f"Unhandled exception: {exc}")
         traceback_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        print(_ascii_safe_text(traceback_text))
+        _safe_print(traceback_text)
         response = JSONResponse(
             status_code=500,
             content={
@@ -366,11 +360,9 @@ async def ensure_cors_headers_on_error_responses(request: Request, call_next):
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     slow_request_ms = max(1000, _int_env("SLOW_REQUEST_LOG_MS", 3000))
     if elapsed_ms >= slow_request_ms or request.url.path in {"/api/auth/login", "/api/auth/me"}:
-        print(
-            _ascii_safe_text(
-                f"REQUEST {request.method} {request.url.path} "
-                f"status={response.status_code} elapsed_ms={elapsed_ms}"
-            )
+        _safe_print(
+            f"REQUEST {request.method} {request.url.path} "
+            f"status={response.status_code} elapsed_ms={elapsed_ms}"
         )
     return response
 
@@ -379,9 +371,9 @@ async def ensure_cors_headers_on_error_responses(request: Request, call_next):
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler"""
-    print(f"Unhandled exception: {_ascii_safe_text(exc)}")
+    _safe_print(f"Unhandled exception: {exc}")
     traceback_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    print(_ascii_safe_text(traceback_text))
+    _safe_print(traceback_text)
     
     return JSONResponse(
         status_code=500,
@@ -565,12 +557,12 @@ async def system_status():
 
 # ==================== STATIC FILES - MUST BE AFTER API ROUTES ====================
 if os.path.exists("dist"):
-    print("Serving frontend from dist/")
+    _safe_print("Serving frontend from dist/")
     
     # Mount assets folder for JS/CSS/images
     if os.path.exists("dist/assets"):
         app.mount("/assets", StaticFiles(directory="dist/assets"), name="assets")
-        print("Mounted /assets")
+        _safe_print("Mounted /assets")
     
     # Catch-all for SPA routing (MUST BE LAST)
     @app.get("/{full_path:path}")
@@ -583,7 +575,7 @@ if os.path.exists("dist"):
         # Serve index.html for all other routes (React Router support)
         return FileResponse("dist/index.html")
 else:
-    print("dist folder not found - API only mode")
+    _safe_print("dist folder not found - API only mode")
     
     @app.get("/")
     async def root_no_frontend():
