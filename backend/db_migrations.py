@@ -311,10 +311,10 @@ def _ensure_postgres_schema(conn) -> None:
             INSERT INTO user_roles (user_id, role, created_at)
             SELECT users.id, LOWER(TRIM(role_value)), CURRENT_TIMESTAMP
             FROM users
-            CROSS JOIN LATERAL json_array_elements_text(
+            CROSS JOIN LATERAL jsonb_array_elements_text(
                 CASE
-                    WHEN json_typeof(users.roles_json) = 'array' THEN users.roles_json
-                    ELSE '[]'::json
+                    WHEN jsonb_typeof(users.roles_json::jsonb) = 'array' THEN users.roles_json::jsonb
+                    ELSE '[]'::jsonb
                 END
             ) AS role_value
             WHERE users.roles_json IS NOT NULL
