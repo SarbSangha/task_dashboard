@@ -85,13 +85,13 @@ const Login = () => {
           )}
 
           <div style={styles.formGroup}>
-            <label htmlFor="email" style={styles.label}>Email / Username</label>
+            <label htmlFor="email" style={styles.label}>Email</label>
             <input
               type="text"
               id="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter your email or username"
+              placeholder="Enter your email"
               required
               disabled={loading}
               style={styles.input}

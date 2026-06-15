@@ -22,7 +22,8 @@ const buildDateInputValue = (offsetDays = 0) => {
 
 const EMPTY_USAGE_FILTERS = {
   toolSlug: 'kling-ai',
-  selectedDate: buildDateInputValue(0),
+  dateFrom: buildDateInputValue(0),
+  dateTo: buildDateInputValue(0),
   userId: '',
   credentialId: '',
 };
@@ -574,6 +575,22 @@ const formatUsageAssetLabel = (asset, index) => {
   return `${type} ${index + 1}${source ? ` - ${source.replace(/_/g, ' ')}` : ''}`;
 };
 
+const downloadBlobResponse = (response, fallbackFilename) => {
+  const blob = response?.data;
+  if (!blob) return;
+  const disposition = `${response?.headers?.['content-disposition'] || ''}`;
+  const filenameMatch = disposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+  const filename = filenameMatch ? decodeURIComponent(filenameMatch[1].replace(/"$/g, '')) : fallbackFilename;
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || fallbackFilename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+};
+
 const compareUsageAggregateTotals = (left, right) => {
   if (Number(right?.creditsBurned || 0) !== Number(left?.creditsBurned || 0)) {
     return Number(right?.creditsBurned || 0) - Number(left?.creditsBurned || 0);
@@ -626,6 +643,7 @@ export default function Tools({ view = 'tools' }) {
   const [usageFilters, setUsageFilters] = useState(EMPTY_USAGE_FILTERS);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageRows, setUsageRows] = useState([]);
+  const [usageExporting, setUsageExporting] = useState(false);
   const [launchHistoryLoading, setLaunchHistoryLoading] = useState(false);
   const [launchHistoryRows, setLaunchHistoryRows] = useState([]);
   const [launchHistorySummary, setLaunchHistorySummary] = useState(EMPTY_LAUNCH_HISTORY_SUMMARY);
@@ -858,7 +876,8 @@ export default function Tools({ view = 'tools' }) {
     setUsageLoading(true);
     void itToolsAPI.getUsageReport({
       tool_slug: usageFilters.toolSlug,
-      selected_date: usageFilters.selectedDate,
+      date_from: usageFilters.dateFrom,
+      date_to: usageFilters.dateTo,
       user_id: usageFilters.userId || undefined,
       signal: controller.signal,
     }).then((response) => {
@@ -885,14 +904,15 @@ export default function Tools({ view = 'tools' }) {
     });
 
     return () => controller.abort();
-  }, [activeView, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
+  }, [activeView, usageFilters.toolSlug, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
 
   useEffect(() => {
     if (activeView !== 'credits' || !isAdmin) return undefined;
     const controller = new AbortController();
     setLaunchHistoryLoading(true);
     void itToolsAPI.getLaunchHistory({
-      selected_date: usageFilters.selectedDate,
+      date_from: usageFilters.dateFrom,
+      date_to: usageFilters.dateTo,
       user_id: usageFilters.userId || undefined,
       signal: controller.signal,
     }).then((response) => {
@@ -909,7 +929,7 @@ export default function Tools({ view = 'tools' }) {
     });
 
     return () => controller.abort();
-  }, [activeView, isAdmin, usageFilters.selectedDate, usageFilters.userId]);
+  }, [activeView, isAdmin, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
 
   useEffect(() => {
     if (activeView !== 'credits') return undefined;
@@ -920,7 +940,8 @@ export default function Tools({ view = 'tools' }) {
       usageRefreshControllerRef.current = controller;
       void itToolsAPI.getUsageReport({
         tool_slug: usageFilters.toolSlug,
-        selected_date: usageFilters.selectedDate,
+        date_from: usageFilters.dateFrom,
+        date_to: usageFilters.dateTo,
         user_id: usageFilters.userId || undefined,
         signal: controller.signal,
       }).then((response) => {
@@ -947,7 +968,8 @@ export default function Tools({ view = 'tools' }) {
       });
       if (isAdmin) {
         void itToolsAPI.getLaunchHistory({
-          selected_date: usageFilters.selectedDate,
+          date_from: usageFilters.dateFrom,
+          date_to: usageFilters.dateTo,
           user_id: usageFilters.userId || undefined,
         }).then((response) => {
           setLaunchHistoryRows(response.rows || []);
@@ -976,7 +998,27 @@ export default function Tools({ view = 'tools' }) {
       usageRefreshControllerRef.current?.abort();
       usageRefreshControllerRef.current = null;
     };
-  }, [activeView, isAdmin, usageFilters.toolSlug, usageFilters.selectedDate, usageFilters.userId]);
+  }, [activeView, isAdmin, usageFilters.toolSlug, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
+
+  const handleExportKlingUsage = async () => {
+    setError('');
+    setUsageExporting(true);
+    try {
+      const response = await itToolsAPI.exportKlingUsageReport({
+        date_from: usageFilters.dateFrom,
+        date_to: usageFilters.dateTo,
+        user_id: usageFilters.userId || undefined,
+        credential_id: usageFilters.credentialId || undefined,
+      });
+      const fromLabel = usageFilters.dateFrom || 'all';
+      const toLabel = usageFilters.dateTo || fromLabel;
+      downloadBlobResponse(response, `kling-usage-${fromLabel}-to-${toLabel}.xlsx`);
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Unable to export Kling usage report.');
+    } finally {
+      setUsageExporting(false);
+    }
+  };
 
   const categories = useMemo(() => {
     return ['All', ...new Set(tools.map((tool) => tool.category || 'General'))];
@@ -3046,8 +3088,16 @@ export default function Tools({ view = 'tools' }) {
                 <input
                   className="it-usage-filter-control"
                   type="date"
-                  value={usageFilters.selectedDate}
-                  onChange={(event) => setUsageFilters((current) => ({ ...current, selectedDate: event.target.value }))}
+                  aria-label="Usage from date"
+                  value={usageFilters.dateFrom}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, dateFrom: event.target.value }))}
+                />
+                <input
+                  className="it-usage-filter-control"
+                  type="date"
+                  aria-label="Usage to date"
+                  value={usageFilters.dateTo}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, dateTo: event.target.value }))}
                 />
                 <select
                   className="it-usage-filter-control"
@@ -3061,6 +3111,14 @@ export default function Tools({ view = 'tools' }) {
                     </option>
                   ))}
                 </select>
+                <button
+                  type="button"
+                  className="it-usage-export-btn"
+                  onClick={handleExportKlingUsage}
+                  disabled={usageExporting}
+                >
+                  {usageExporting ? 'Exporting...' : 'Export Kling Excel'}
+                </button>
               </div>
             </div>
 

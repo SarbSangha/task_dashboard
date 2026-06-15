@@ -1,12 +1,14 @@
 # main.py - Clean and Consolidated
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from datetime import datetime
+import asyncio
 import os
 import re
+import time
 import traceback
 from sqlalchemy import text
 
@@ -37,11 +39,14 @@ from routers import groups_router
 from routers import direct_messages_router
 from routers import it_tools_router
 from routers import mailbox_admin_router
-from utils.cache import init_redis, close_redis
+from utils import cache as cache_utils
 
 # Import auth utilities for system status
 from auth import SESSION_STORE
 from auth import get_password_hash
+from auth import cleanup_expired_reset_tokens, cleanup_expired_sessions
+from routers.tasks_router import notification_dispatcher
+from services.notification_outbox_service import dispatch_notification_outbox_batch
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
@@ -74,13 +79,29 @@ def _display_frontend_url() -> str:
     return "not configured"
 
 
+def _is_production() -> bool:
+    environment = (os.getenv("ENVIRONMENT") or "").strip().lower()
+    render_flag = (os.getenv("RENDER") or "").strip().lower()
+    return environment == "production" or render_flag in {"1", "true", "yes", "on"}
+
+
+def _allowed_origin_regex() -> str | None:
+    configured = (os.getenv("CORS_ALLOW_ORIGIN_REGEX") or "").strip()
+    if configured:
+        return configured
+    if _bool_env("CORS_ALLOW_RENDER_PREVIEWS", False):
+        return r"https://.*\.onrender\.com"
+    return None
+
+
 def _origin_allowed(origin: str) -> bool:
     normalized = (origin or "").strip()
     if not normalized:
         return False
     if normalized in _allowed_origins():
         return True
-    return bool(re.fullmatch(r"https://.*\.onrender\.com", normalized))
+    origin_regex = _allowed_origin_regex()
+    return bool(origin_regex and re.fullmatch(origin_regex, normalized))
 
 
 def _mask_db_url(url: str) -> str:
@@ -102,6 +123,89 @@ def _ascii_safe_text(value: object) -> str:
     return f"{value}".encode("ascii", "backslashreplace").decode("ascii")
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _startup_schema_sync_enabled() -> bool:
+    raw = (os.getenv("RUN_STARTUP_SCHEMA_SYNC") or "").strip()
+    if raw:
+        return _bool_env("RUN_STARTUP_SCHEMA_SYNC", True)
+    return not _is_production()
+
+
+def _redis_configured() -> bool:
+    return bool((os.getenv("REDIS_URL") or "").strip())
+
+
+def _is_local_request(request: Request) -> bool:
+    client_host = request.client.host if request.client else ""
+    return client_host in {"127.0.0.1", "::1", "localhost"}
+
+
+_SYSTEM_STATUS_CACHE: dict = {"expires_at": 0.0, "payload": None}
+
+
+async def _periodic_auth_store_cleanup(interval_seconds: int = 3600) -> None:
+    while True:
+        await asyncio.sleep(max(60, interval_seconds))
+        try:
+            expired_sessions, expired_reset_tokens = await asyncio.wait_for(
+                asyncio.to_thread(
+                    lambda: (
+                        cleanup_expired_sessions(),
+                        cleanup_expired_reset_tokens(),
+                    )
+                ),
+                timeout=10,
+            )
+            if expired_sessions or expired_reset_tokens:
+                print(
+                    _ascii_safe_text(
+                        "Auth cleanup removed "
+                        f"sessions={expired_sessions} resetTokens={expired_reset_tokens}"
+                    )
+                )
+        except Exception as exc:
+            print(f"Auth cleanup failed: {_ascii_safe_text(exc)}")
+
+
+async def _periodic_notification_outbox_dispatch(interval_seconds: int = 30) -> None:
+    while True:
+        await asyncio.sleep(max(5, interval_seconds))
+        db = OperationalSessionLocal()
+        try:
+            dispatched = await asyncio.wait_for(
+                asyncio.to_thread(
+                    dispatch_notification_outbox_batch,
+                    db,
+                    notification_dispatcher,
+                    limit=_int_env("NOTIFICATION_OUTBOX_BATCH_SIZE", 100),
+                ),
+                timeout=max(5, _int_env("NOTIFICATION_OUTBOX_DISPATCH_TIMEOUT_SECONDS", 20)),
+            )
+            if dispatched:
+                print(_ascii_safe_text(f"Notification outbox dispatched={dispatched}"))
+        except Exception as exc:
+            db.rollback()
+            print(f"Notification outbox dispatch failed: {_ascii_safe_text(exc)}")
+        finally:
+            db.close()
+
+
 # ==================== LIFESPAN EVENT ====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -110,16 +214,18 @@ async def lifespan(app: FastAPI):
     print("STARTING TASK MANAGEMENT SYSTEM")
     print("="*60)
     
-    # Create operational database tables
-    print("\nInitializing operational database...")
-    Base.metadata.create_all(bind=operational_engine)
-    ensure_operational_schema(operational_engine)
-    print(f"Operational database ready: {operational_engine.dialect.name}")
-    
-    # Create archive database tables
-    print("\nInitializing archive database...")
-    ArchiveBase.metadata.create_all(bind=archive_engine)
-    print(f"Archive database ready: {archive_engine.dialect.name}")
+    if _startup_schema_sync_enabled():
+        # Prefer external migrations in production; startup schema sync defaults off there.
+        print("\nInitializing operational database...")
+        Base.metadata.create_all(bind=operational_engine)
+        ensure_operational_schema(operational_engine)
+        print(f"Operational database ready: {operational_engine.dialect.name}")
+        
+        print("\nInitializing archive database...")
+        ArchiveBase.metadata.create_all(bind=archive_engine)
+        print(f"Archive database ready: {archive_engine.dialect.name}")
+    else:
+        print("\nStartup schema sync disabled.")
 
     # Optional default-admin bootstrap, driven by environment variables instead of hardcoded account details.
     op_db = OperationalSessionLocal()
@@ -158,22 +264,17 @@ async def lifespan(app: FastAPI):
                 )
                 op_db.add(admin)
             else:
-                admin.is_admin = True
-                admin.is_active = True
-                admin.is_deleted = False
+                print(
+                    _ascii_safe_text(
+                        f"Default admin {admin_email} already exists; bootstrap will not mutate existing user."
+                    )
+                )
                 if configured_roles:
-                    roles = []
-                    if isinstance(admin.roles_json, list):
-                        roles = [str(role).strip().lower() for role in admin.roles_json if str(role).strip()]
-                    for role in configured_roles:
-                        if role not in roles:
-                            roles.append(role)
-                    admin.roles_json = roles
-                if (admin.position or "").lower() != "admin":
-                    admin.position = "admin"
-                admin.department = "ADMIN"
-                if not admin.name:
-                    admin.name = "Administrator"
+                    print(
+                        _ascii_safe_text(
+                            "DEFAULT_ADMIN_ROLES ignored for existing user; update roles from admin UI or database."
+                        )
+                    )
         else:
             print("Default admin bootstrap disabled: DEFAULT_ADMIN_EMAIL is not set.")
         op_db.commit()
@@ -186,13 +287,34 @@ async def lifespan(app: FastAPI):
     print("\nAPI Documentation: http://localhost:8000/docs")
     print(f"Operational DB: {_mask_db_url(OPERATIONAL_DB_URL)}")
     print(f"Archive DB: {_mask_db_url(ARCHIVE_DB_URL)}")
-    await init_redis()
+    try:
+        await cache_utils.init_redis()
+    except Exception as exc:
+        print(f"Redis initialization failed; continuing without Redis: {_ascii_safe_text(exc)}")
+    try:
+        notification_dispatcher.start()
+    except Exception as exc:
+        print(f"Notification dispatcher failed to start; continuing degraded: {_ascii_safe_text(exc)}")
+    auth_cleanup_task = asyncio.create_task(
+        _periodic_auth_store_cleanup(_int_env("AUTH_CLEANUP_INTERVAL_SECONDS", 3600)),
+        name="auth-store-cleanup",
+    )
+    notification_outbox_task = asyncio.create_task(
+        _periodic_notification_outbox_dispatch(_int_env("NOTIFICATION_OUTBOX_INTERVAL_SECONDS", 30)),
+        name="notification-outbox-dispatch",
+    )
     print(f"Frontend: {_display_frontend_url()}\n")
     
-    yield
+    try:
+        yield
+    finally:
+        auth_cleanup_task.cancel()
+        notification_outbox_task.cancel()
+        await asyncio.gather(auth_cleanup_task, notification_outbox_task, return_exceptions=True)
+        await notification_dispatcher.stop()
     
     print("\nShutting down gracefully...")
-    await close_redis()
+    await cache_utils.close_redis()
     operational_engine.dispose()
     if archive_engine is not operational_engine:
         archive_engine.dispose()
@@ -211,7 +333,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins(),
-    allow_origin_regex=r"https://.*\.onrender\.com",
+    allow_origin_regex=_allowed_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -221,6 +343,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def ensure_cors_headers_on_error_responses(request: Request, call_next):
+    started_at = time.perf_counter()
     try:
         response = await call_next(request)
     except Exception as exc:
@@ -240,6 +363,15 @@ async def ensure_cors_headers_on_error_responses(request: Request, call_next):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Credentials"] = "true"
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    slow_request_ms = max(1000, _int_env("SLOW_REQUEST_LOG_MS", 3000))
+    if elapsed_ms >= slow_request_ms or request.url.path in {"/api/auth/login", "/api/auth/me"}:
+        print(
+            _ascii_safe_text(
+                f"REQUEST {request.method} {request.url.path} "
+                f"status={response.status_code} elapsed_ms={elapsed_ms}"
+            )
+        )
     return response
 
 
@@ -345,37 +477,89 @@ async def health_check():
         ar_status = "healthy"
     except Exception as e:
         ar_status = f"unhealthy: {str(e)}"
+
+    redis_status = "disabled"
+    if cache_utils.redis_client is not None:
+        try:
+            await cache_utils.redis_client.ping()
+            redis_status = "healthy"
+        except Exception as e:
+            redis_status = f"unhealthy: {str(e)}"
+    elif _redis_configured():
+        redis_status = "unhealthy: REDIS_URL configured but client is unavailable"
     
-    overall_status = "healthy" if (op_status == "healthy" and ar_status == "healthy") else "degraded"
+    dispatcher_status = notification_dispatcher.status()
+    dispatcher_healthy = dispatcher_status.get("stopped", 0) == 0
+    redis_healthy = redis_status in {"healthy", "disabled"}
+    overall_status = (
+        "healthy"
+        if (
+            op_status == "healthy"
+            and ar_status == "healthy"
+            and redis_healthy
+            and dispatcher_healthy
+        )
+        else "degraded"
+    )
     
-    return {
+    payload = {
         "status": overall_status,
         "timestamp": datetime.utcnow().isoformat(),
         "databases": {
             "operational": op_status,
             "archive": ar_status
-        }
+        },
+        "redis": redis_status,
+        "notificationDispatcher": dispatcher_status,
     }
+    if overall_status != "healthy":
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+@app.get("/api/debug/pool")
+async def debug_pool(request: Request):
+    """Local-only database pool diagnostics for production incidents."""
+    if not _is_local_request(request):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "processId": os.getpid(),
+        "operationalPool": operational_engine.pool.status(),
+        "archivePool": archive_engine.pool.status(),
+        "sharedArchivePool": archive_engine is operational_engine,
+        "notificationDispatcher": notification_dispatcher.status(),
+    }
+
 
 @app.get("/api/system/status")
 async def system_status():
     """Get system status"""
+    now = time.time()
+    cached_payload = _SYSTEM_STATUS_CACHE.get("payload")
+    if cached_payload and now < float(_SYSTEM_STATUS_CACHE.get("expires_at") or 0):
+        return cached_payload
+
     try:
         with OperationalSessionLocal() as op_db:
             user_count = op_db.query(User).count()
             task_count = op_db.query(Task).count()
             active_tasks = op_db.query(Task).filter(Task.is_deleted == False).count()
         
-        return {
+        payload = {
             "status": "operational",
             "timestamp": datetime.utcnow().isoformat(),
             "statistics": {
                 "total_users": user_count,
                 "total_tasks": task_count,
                 "active_tasks": active_tasks,
-                "active_sessions": len(SESSION_STORE)
+                "local_worker_sessions": len(SESSION_STORE)
             }
         }
+        _SYSTEM_STATUS_CACHE["payload"] = payload
+        _SYSTEM_STATUS_CACHE["expires_at"] = now + max(5, _int_env("SYSTEM_STATUS_CACHE_SECONDS", 30))
+        return payload
     except Exception as e:
         return {"status": "error", "error": str(e)}
 

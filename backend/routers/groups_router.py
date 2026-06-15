@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta
 from typing import Optional
-import asyncio
 from collections import defaultdict
+import logging
+import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func, select
@@ -11,13 +12,16 @@ from sqlalchemy import and_, func, select
 from database_config import get_operational_db
 from models_new import ActivityStatus, ChatMessageReaction, ChatMessageReadReceipt, GroupChat, GroupChatMember, GroupChatMessage, User, UserActivity
 from routers.auth_router import get_current_user
-from routers.tasks_router import notification_hub
+from routers.tasks_router import notification_dispatcher
 from utils.cache import cache_response
 from utils.datetime_utils import normalize_to_utc_naive, utcnow_naive
 
 
 router = APIRouter(prefix="/api/groups", tags=["Groups"])
 PRESENCE_STALE_SECONDS = 90
+TYPING_THROTTLE_SECONDS = 5
+_TYPING_THROTTLE: dict[tuple[int, int, bool], float] = {}
+logger = logging.getLogger(__name__)
 
 
 class GroupCreatePayload(BaseModel):
@@ -296,9 +300,114 @@ def _build_group_reply_lookup(
 
 def _notify_receipt_update(user_id: int, payload: dict) -> None:
     try:
-        asyncio.create_task(notification_hub.push(user_id, payload))
-    except RuntimeError:
-        pass
+        queued = notification_dispatcher.enqueue(user_id, payload)
+        if not queued:
+            logger.warning("Group notification queue full for user_id=%s event=%s", user_id, payload.get("eventType"))
+    except Exception:
+        logger.exception("Failed to enqueue group notification for user_id=%s event=%s", user_id, payload.get("eventType"))
+
+
+def _notify_group_members(member_ids: list[int] | set[int], sender_id: int, payload_factory) -> int:
+    queued_count = 0
+    for member_id in sorted({int(member_id) for member_id in member_ids if member_id}):
+        if member_id == sender_id:
+            continue
+        _notify_receipt_update(member_id, payload_factory(member_id))
+        queued_count += 1
+    return queued_count
+
+
+def _should_send_typing_event(sender_id: int, group_id: int, active: bool) -> bool:
+    now = time.monotonic()
+    key = (sender_id, group_id, bool(active))
+    last_sent_at = _TYPING_THROTTLE.get(key)
+    if last_sent_at and now - last_sent_at < TYPING_THROTTLE_SECONDS:
+        return False
+    _TYPING_THROTTLE[key] = now
+
+    if len(_TYPING_THROTTLE) > 3000:
+        cutoff = now - (TYPING_THROTTLE_SECONDS * 4)
+        for stale_key, sent_at in list(_TYPING_THROTTLE.items()):
+            if sent_at < cutoff:
+                _TYPING_THROTTLE.pop(stale_key, None)
+    return True
+
+
+def _mark_group_receipts(
+    db: Session,
+    rows: list,
+    user_id: int,
+    now: datetime,
+    *,
+    mark_seen: bool = False,
+) -> list:
+    message_ids = sorted({row.id for row in rows if row.id})
+    if not message_ids:
+        return []
+
+    existing_receipts = (
+        db.query(ChatMessageReadReceipt)
+        .filter(
+            ChatMessageReadReceipt.message_scope == "group",
+            ChatMessageReadReceipt.user_id == user_id,
+            ChatMessageReadReceipt.message_id.in_(message_ids),
+        )
+        .all()
+    )
+    existing_by_message_id = {receipt.message_id: receipt for receipt in existing_receipts}
+    changed_rows = []
+    missing_rows = []
+
+    for row in rows:
+        receipt = existing_by_message_id.get(row.id)
+        if not receipt:
+            missing_rows.append(row)
+            changed_rows.append(row)
+            continue
+        if not receipt.delivered_at or (mark_seen and not receipt.seen_at):
+            changed_rows.append(row)
+
+    changed_message_ids = [row.id for row in changed_rows if row.id not in {missing.id for missing in missing_rows}]
+    if changed_message_ids:
+        if any(not existing_by_message_id[row.id].delivered_at for row in changed_rows if row.id in existing_by_message_id):
+            (
+                db.query(ChatMessageReadReceipt)
+                .filter(
+                    ChatMessageReadReceipt.message_scope == "group",
+                    ChatMessageReadReceipt.user_id == user_id,
+                    ChatMessageReadReceipt.message_id.in_(changed_message_ids),
+                    ChatMessageReadReceipt.delivered_at.is_(None),
+                )
+                .update({"delivered_at": now}, synchronize_session=False)
+            )
+        if mark_seen and any(not existing_by_message_id[row.id].seen_at for row in changed_rows if row.id in existing_by_message_id):
+            (
+                db.query(ChatMessageReadReceipt)
+                .filter(
+                    ChatMessageReadReceipt.message_scope == "group",
+                    ChatMessageReadReceipt.user_id == user_id,
+                    ChatMessageReadReceipt.message_id.in_(changed_message_ids),
+                    ChatMessageReadReceipt.seen_at.is_(None),
+                )
+                .update({"seen_at": now}, synchronize_session=False)
+            )
+
+    if missing_rows:
+        db.bulk_insert_mappings(
+            ChatMessageReadReceipt,
+            [
+                {
+                    "message_scope": "group",
+                    "message_id": row.id,
+                    "user_id": user_id,
+                    "delivered_at": now,
+                    "seen_at": now if mark_seen else None,
+                }
+                for row in missing_rows
+            ],
+        )
+
+    return changed_rows
 
 
 def _build_group_receipt_lookup(
@@ -762,18 +871,29 @@ async def update_group_member_role(
 @router.get("/{group_id}/messages")
 async def list_group_messages(
     group_id: int,
+    before_message_id: Optional[int] = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=300),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):
     group, _ = _ensure_group_access(db, group_id, current_user.id)
-    rows = (
+    query = (
         db.query(GroupChatMessage, User)
         .join(User, User.id == GroupChatMessage.sender_id)
         .filter(GroupChatMessage.group_id == group.id)
-        .order_by(GroupChatMessage.created_at.desc(), GroupChatMessage.id.desc())
-        .limit(300)
+    )
+    if before_message_id:
+        query = query.filter(GroupChatMessage.id < before_message_id)
+
+    rows = (
+        query
+        .order_by(GroupChatMessage.id.desc())
+        .limit(limit + 1)
         .all()
     )
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
     rows.reverse()
     messages = [msg for msg, _sender in rows]
     receipt_lookup = _build_group_receipt_lookup(db, group.id, messages, current_user.id)
@@ -781,6 +901,11 @@ async def list_group_messages(
     reply_lookup = _build_group_reply_lookup(db, messages)
     return {
         "success": True,
+        "pagination": {
+            "limit": limit,
+            "hasMore": has_more,
+            "nextBeforeMessageId": rows[0][0].id if has_more and rows else None,
+        },
         "data": [
             {
                 "id": msg.id,
@@ -823,34 +948,8 @@ async def mark_group_messages_delivered(
     if not message_ids:
         return {"success": True, "markedCount": 0}
 
-    existing = {
-        row.message_id: row
-        for row in db.query(ChatMessageReadReceipt)
-        .filter(
-            ChatMessageReadReceipt.message_scope == "group",
-            ChatMessageReadReceipt.user_id == current_user.id,
-            ChatMessageReadReceipt.message_id.in_(message_ids),
-        )
-        .all()
-    }
     now = _utcnow()
-    changed_rows = []
-    for row in rows:
-        receipt = existing.get(row.id)
-        if receipt:
-            if not receipt.delivered_at:
-                receipt.delivered_at = now
-                changed_rows.append(row)
-            continue
-        db.add(
-            ChatMessageReadReceipt(
-                message_scope="group",
-                message_id=row.id,
-                user_id=current_user.id,
-                delivered_at=now,
-            )
-        )
-        changed_rows.append(row)
+    changed_rows = _mark_group_receipts(db, rows, current_user.id, now, mark_seen=False)
     db.commit()
 
     for sender_id in {row.sender_id for row in changed_rows if row.sender_id != current_user.id}:
@@ -890,41 +989,8 @@ async def mark_group_messages_read(
     if not message_ids:
         return {"success": True, "markedCount": 0}
 
-    existing = {
-        row.message_id: row
-        for row in db.query(ChatMessageReadReceipt)
-        .filter(
-            ChatMessageReadReceipt.message_scope == "group",
-            ChatMessageReadReceipt.user_id == current_user.id,
-            ChatMessageReadReceipt.message_id.in_(message_ids),
-        )
-        .all()
-    }
     now = _utcnow()
-    changed_rows = []
-    for row in rows:
-        receipt = existing.get(row.id)
-        if receipt:
-            changed = False
-            if not receipt.delivered_at:
-                receipt.delivered_at = now
-                changed = True
-            if not receipt.seen_at:
-                receipt.seen_at = now
-                changed = True
-            if changed:
-                changed_rows.append(row)
-            continue
-        db.add(
-            ChatMessageReadReceipt(
-                message_scope="group",
-                message_id=row.id,
-                user_id=current_user.id,
-                delivered_at=now,
-                seen_at=now,
-            )
-        )
-        changed_rows.append(row)
+    changed_rows = _mark_group_receipts(db, rows, current_user.id, now, mark_seen=True)
     db.commit()
 
     affected_sender_ids = {row.sender_id for row in changed_rows if row.sender_id != current_user.id}
@@ -975,13 +1041,8 @@ async def send_group_typing_indicator(
             "updatedAt": _utcnow().isoformat(),
         },
     }
-    for member_id in member_ids:
-        if member_id == current_user.id:
-            continue
-        try:
-            asyncio.create_task(notification_hub.push(member_id, ws_payload))
-        except RuntimeError:
-            pass
+    if _should_send_typing_event(current_user.id, group.id, payload.active):
+        _notify_group_members(member_ids, current_user.id, lambda _member_id: ws_payload)
 
     return {"success": True}
 
@@ -1373,12 +1434,9 @@ async def send_group_message(
             "createdAt": msg.created_at.isoformat() if msg.created_at else None,
         },
     }
-    for member_id in member_ids:
-        if member_id == current_user.id:
-            continue
-        member_payload = ws_payload
+    def _message_payload_for_member(member_id: int) -> dict:
         if member_id in mentioned_user_ids:
-            member_payload = {
+            return {
                 **ws_payload,
                 "title": f"{current_user.name} mentioned you in {group.name}",
                 "message": (text or "You were mentioned in a group message")[:180],
@@ -1388,11 +1446,9 @@ async def send_group_message(
                     "isMention": True,
                 },
             }
-        try:
-            asyncio.create_task(notification_hub.push(member_id, member_payload))
-        except RuntimeError:
-            # If event loop scheduling is unavailable, skip realtime push gracefully.
-            pass
+        return ws_payload
+
+    _notify_group_members(member_ids, current_user.id, _message_payload_for_member)
 
     return {
         "success": True,

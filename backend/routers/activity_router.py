@@ -45,18 +45,7 @@ def get_current_user_from_session(
 
 
 def role_set(user: User) -> set[str]:
-    roles = set()
-    if user and isinstance(user.roles_json, list):
-        roles = {str(x).strip().lower() for x in user.roles_json if str(x).strip()}
-
-    position = (user.position or "").lower() if user else ""
-    if "hod" in position:
-        roles.add("hod")
-    if "admin" in position or "super admin" in position:
-        roles.add("admin")
-    if user and user.is_admin:
-        roles.add("admin")
-    return roles
+    return resolve_roles(user)
 
 
 def ensure_authenticated(user: Optional[User]) -> User:

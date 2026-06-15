@@ -6,7 +6,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const SESSION_TOKEN_STORAGE_KEY = 'rmw_session_token_v1';
 const SESSION_TOKEN_REMEMBER_KEY = 'rmw_session_token_remember_v1';
 const REQUEST_TIMEOUT_MS = 15000;
-const AUTH_REQUEST_TIMEOUT_MS = 8000;
+const AUTH_REQUEST_TIMEOUT_MS = 15000;
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 5000;
 const BACKGROUND_REQUEST_TIMEOUT_MS = 8000;
 const PRESIGN_TIMEOUT_MS = 30000;
@@ -15,6 +15,8 @@ const DIRECT_UPLOAD_PART_CONCURRENCY = 3;
 const LEGACY_UPLOAD_FALLBACK_MAX_BYTES = 90 * 1024 * 1024;
 const DIRECT_UPLOAD_RETRY_COUNT = 2;
 const DIRECT_UPLOAD_RETRY_BASE_DELAY_MS = 1200;
+const AUTH_LOGIN_RETRY_COUNT = 2;
+const AUTH_LOGIN_RETRY_BASE_DELAY_MS = 900;
 
 const canUseBrowserStorage = () => typeof window !== 'undefined';
 
@@ -197,6 +199,28 @@ const withUploadRetry = async (fn, retryCount = DIRECT_UPLOAD_RETRY_COUNT) => {
       }
       const delayMs = DIRECT_UPLOAD_RETRY_BASE_DELAY_MS * (attempt + 1);
       await sleep(delayMs);
+      attempt += 1;
+    }
+  }
+
+  throw lastError;
+};
+
+const withAuthLoginRetry = async (fn) => {
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt <= AUTH_LOGIN_RETRY_COUNT) {
+    try {
+      return await fn(attempt);
+    } catch (error) {
+      lastError = error;
+      const status = error?.response?.status;
+      const isRetryableStatus = !status || status === 408 || status === 429 || status >= 500;
+      if (attempt >= AUTH_LOGIN_RETRY_COUNT || !isRetryableStatus || isRequestCanceled(error)) {
+        break;
+      }
+      await sleep(AUTH_LOGIN_RETRY_BASE_DELAY_MS * (attempt + 1));
       attempt += 1;
     }
   }
@@ -421,13 +445,15 @@ export const authAPI = {
   },
 
   login: async (email, password, rememberMe = false) => {
-    const response = await api.post('/api/auth/login', {
-      email,
-      password,
-      remember_me: rememberMe
-    }, {
-      timeout: AUTH_REQUEST_TIMEOUT_MS,
-    });
+    const response = await withAuthLoginRetry(() =>
+      api.post('/api/auth/login', {
+        email,
+        password,
+        remember_me: rememberMe
+      }, {
+        timeout: AUTH_REQUEST_TIMEOUT_MS,
+      })
+    );
     if (response.data?.sessionToken) {
       storeSessionToken(response.data.sessionToken, rememberMe);
     }
@@ -1516,6 +1542,16 @@ export const itToolsAPI = {
   getUsageReport: async ({ signal, ...params } = {}) => {
     const response = await api.get('/api/it-tools/usage-report', { params, signal });
     return response.data;
+  },
+
+  exportKlingUsageReport: async ({ signal, ...params } = {}) => {
+    const response = await api.get('/api/it-tools/usage-report/kling/export', {
+      params,
+      signal,
+      responseType: 'blob',
+      timeout: 60000,
+    });
+    return response;
   },
 
   getLaunchHistory: async ({ signal, ...params } = {}) => {

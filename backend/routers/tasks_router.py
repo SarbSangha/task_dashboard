@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, timezone
 import asyncio
 import hashlib
+import logging
 import os
 import re
 from time import perf_counter
@@ -42,6 +43,7 @@ from task_helpers import TaskHelpers
 from utils.cache import cache_response, invalidate_pattern
 from utils.datetime_utils import normalize_deadline_to_utc_naive, normalize_to_utc_naive, serialize_utc_datetime
 from utils.edge_cache import queue_edge_cache_purge
+from services.role_service import user_role_names
 
 try:
     from pywebpush import webpush, WebPushException
@@ -123,6 +125,91 @@ class NotificationHub:
 
 
 notification_hub = NotificationHub()
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+class NotificationDispatcher:
+    def __init__(self, max_queue_size: int = 1000, worker_count: int = 2):
+        self.queue: asyncio.Queue[tuple[int, dict]] = asyncio.Queue(maxsize=max_queue_size)
+        self.worker_count = max(1, worker_count)
+        self._workers: list[asyncio.Task] = []
+        self.dropped = 0
+        self.failures = 0
+        self.push_timeout_seconds = max(1, _int_env("NOTIFICATION_PUSH_TIMEOUT_SECONDS", 5))
+
+    def start(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._workers = [worker for worker in self._workers if not worker.done()]
+        missing_workers = self.worker_count - len(self._workers)
+        if missing_workers <= 0:
+            return
+        starting_index = len(self._workers)
+        for idx in range(starting_index, starting_index + missing_workers):
+            self._workers.append(
+                loop.create_task(self._worker(), name=f"notification-dispatcher-{idx}")
+            )
+
+    async def stop(self) -> None:
+        for worker in self._workers:
+            worker.cancel()
+        if self._workers:
+            await asyncio.gather(*self._workers, return_exceptions=True)
+        self._workers = []
+
+    def enqueue(self, user_id: int, payload: dict) -> bool:
+        self.start()
+        try:
+            self.queue.put_nowait((user_id, payload))
+            return True
+        except asyncio.QueueFull:
+            self.dropped += 1
+            return False
+
+    async def _worker(self) -> None:
+        while True:
+            user_id, payload = await self.queue.get()
+            try:
+                await asyncio.wait_for(
+                    notification_hub.push(user_id, payload),
+                    timeout=self.push_timeout_seconds,
+                )
+            except Exception:
+                self.failures += 1
+                logger.exception("Notification dispatch failed for user_id=%s", user_id)
+            finally:
+                self.queue.task_done()
+
+    def status(self) -> dict:
+        running_workers = [worker for worker in self._workers if not worker.done()]
+        return {
+            "queued": self.queue.qsize(),
+            "maxQueueSize": self.queue.maxsize,
+            "workerCount": self.worker_count,
+            "dropped": self.dropped,
+            "failures": self.failures,
+            "running": len(running_workers),
+            "stopped": max(0, self.worker_count - len(running_workers)),
+            "pushTimeoutSeconds": self.push_timeout_seconds,
+        }
+
+
+notification_dispatcher = NotificationDispatcher(
+    max_queue_size=max(100, _int_env("NOTIFICATION_QUEUE_MAX_SIZE", 1000)),
+    worker_count=max(1, _int_env("NOTIFICATION_QUEUE_WORKERS", 2)),
+)
+logger = logging.getLogger(__name__)
 
 
 def _extract_websocket_session_token(websocket: WebSocket) -> tuple[Optional[str], Optional[str]]:
@@ -605,14 +692,13 @@ def to_hex4(value: str) -> str:
 
 
 def role_set(user: User) -> Set[str]:
-    roles = set()
-    if user and user.roles_json and isinstance(user.roles_json, list):
-        roles = {str(r).strip().lower() for r in user.roles_json if str(r).strip()}
+    roles = user_role_names(user)
+    if user and (user.is_admin or "admin" in roles):
+        roles.add("admin")
+        roles.add("super_admin")
 
     position = (user.position or "").lower() if user else ""
     mapped = {
-        "super admin": "super_admin",
-        "admin": "super_admin",
         "head of department": "hod",
         "hod": "hod",
         "spoc": "spoc",
@@ -1445,23 +1531,18 @@ def create_notification(
         actor_desc = f"{actor.name} ({', '.join(sorted(role_set(actor)))}, {actor.department or 'N/A'})"
         meta.setdefault("actorDescription", actor_desc)
 
-    try:
-        asyncio.create_task(
-            notification_hub.push(
-                user_id,
-                {
-                    "eventType": event_type,
-                    "title": title,
-                    "message": message,
-                    "taskId": task.id,
-                    "taskNumber": task.task_number,
-                    "projectId": task.project_id,
-                    "metadata": meta,
-                },
-            )
-        )
-    except RuntimeError:
-        pass
+    notification_dispatcher.enqueue(
+        user_id,
+        {
+            "eventType": event_type,
+            "title": title,
+            "message": message,
+            "taskId": task.id,
+            "taskNumber": task.task_number,
+            "projectId": task.project_id,
+            "metadata": meta,
+        },
+    )
 
 
 def post_system_comment(db: Session, task: Task, user_id: int, comment: str, comment_type: str):

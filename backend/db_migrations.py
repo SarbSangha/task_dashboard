@@ -277,6 +277,130 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "task_comments", "stage_id", "INTEGER")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS user_roles (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role VARCHAR(80) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_user_roles_user_role UNIQUE (user_id, role)
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_user_id ON user_roles(user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role ON user_roles(role)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_created_at ON user_roles(created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role_user_id ON user_roles(role, user_id)"))
+    conn.execute(
+        text(
+            """
+            INSERT INTO user_roles (user_id, role, created_at)
+            SELECT id, 'admin', CURRENT_TIMESTAMP
+            FROM users
+            WHERE is_admin = TRUE
+            ON CONFLICT (user_id, role) DO NOTHING
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            INSERT INTO user_roles (user_id, role, created_at)
+            SELECT users.id, LOWER(TRIM(role_value)), CURRENT_TIMESTAMP
+            FROM users
+            CROSS JOIN LATERAL json_array_elements_text(
+                CASE
+                    WHEN json_typeof(users.roles_json) = 'array' THEN users.roles_json
+                    ELSE '[]'::json
+                END
+            ) AS role_value
+            WHERE users.roles_json IS NOT NULL
+              AND TRIM(role_value) <> ''
+            ON CONFLICT (user_id, role) DO NOTHING
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS pending_password_changes (
+                id SERIAL PRIMARY KEY,
+                approval_request_id INTEGER NOT NULL UNIQUE REFERENCES user_approval_requests(id),
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                password_hash TEXT NOT NULL,
+                status VARCHAR NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                consumed_at TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pending_password_changes_request ON pending_password_changes(approval_request_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pending_password_changes_user_id ON pending_password_changes(user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pending_password_changes_status ON pending_password_changes(status)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pending_password_changes_status_created ON pending_password_changes(status, created_at)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS notification_outbox (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                event_type VARCHAR(120) NOT NULL,
+                payload_json JSON NOT NULL,
+                status VARCHAR(40) NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 10,
+                last_error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                next_attempt_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                dispatched_at TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_user_id ON notification_outbox(user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_event_type ON notification_outbox(event_type)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_status ON notification_outbox(status)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_created_at ON notification_outbox(created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_next_attempt_at ON notification_outbox(next_attempt_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_status_next_attempt ON notification_outbox(status, next_attempt_at)"))
+    conn.execute(
+        text(
+            """
+            WITH ranked AS (
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY user_id, request_type
+                        ORDER BY created_at DESC NULLS LAST, id DESC
+                    ) AS rn
+                FROM user_approval_requests
+                WHERE status = 'pending'
+            )
+            UPDATE user_approval_requests target
+            SET
+                status = 'rejected',
+                reviewed_at = CURRENT_TIMESTAMP,
+                review_notes = COALESCE(review_notes, 'Superseded duplicate pending request during migration')
+            FROM ranked
+            WHERE target.id = ranked.id
+              AND ranked.rn > 1
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_user_approval_pending_user_type
+            ON user_approval_requests(user_id, request_type)
+            WHERE status = 'pending'
+            """
+        )
+    )
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_linked_credential_id ON it_portal_tool_credentials(linked_credential_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_external_event_id ON it_portal_tool_usage_events(external_event_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_generation_id ON it_portal_tool_usage_events(generation_id)"))
@@ -591,6 +715,79 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(
             text(
                 """
+                CREATE TABLE IF NOT EXISTS user_roles (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    role VARCHAR(80) NOT NULL,
+                    created_at DATETIME,
+                    UNIQUE(user_id, role),
+                    FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_user_id ON user_roles(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role ON user_roles(role)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_created_at ON user_roles(created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role_user_id ON user_roles(role, user_id)"))
+        conn.execute(
+            text(
+                """
+                INSERT OR IGNORE INTO user_roles (user_id, role, created_at)
+                SELECT id, 'admin', CURRENT_TIMESTAMP
+                FROM users
+                WHERE is_admin = 1
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT OR IGNORE INTO user_roles (user_id, role, created_at)
+                SELECT users.id, LOWER(TRIM(json_each.value)), CURRENT_TIMESTAMP
+                FROM users, json_each(users.roles_json)
+                WHERE users.roles_json IS NOT NULL
+                  AND json_valid(users.roles_json)
+                  AND TRIM(json_each.value) <> ''
+                """
+            )
+        )
+        if _table_exists(conn, "user_approval_requests"):
+            conn.execute(
+                text(
+                    """
+                    UPDATE user_approval_requests
+                    SET
+                        status = 'rejected',
+                        reviewed_at = CURRENT_TIMESTAMP,
+                        review_notes = COALESCE(review_notes, 'Superseded duplicate pending request during migration')
+                    WHERE status = 'pending'
+                      AND id NOT IN (
+                          SELECT keep_id
+                          FROM (
+                              SELECT
+                                  MAX(id) AS keep_id
+                              FROM user_approval_requests
+                              WHERE status = 'pending'
+                              GROUP BY user_id, request_type
+                          )
+                      )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS ux_user_approval_pending_user_type
+                    ON user_approval_requests(user_id, request_type)
+                    WHERE status = 'pending'
+                    """
+                )
+            )
+
+        conn.execute(
+            text(
+                """
                 CREATE TABLE IF NOT EXISTS department_directory (
                     id INTEGER PRIMARY KEY,
                     name VARCHAR(120) NOT NULL UNIQUE,
@@ -718,6 +915,32 @@ def ensure_operational_schema(engine) -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS notification_outbox (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    event_type VARCHAR(120) NOT NULL,
+                    payload_json JSON NOT NULL,
+                    status VARCHAR(40) NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 10,
+                    last_error TEXT,
+                    created_at DATETIME,
+                    next_attempt_at DATETIME,
+                    dispatched_at DATETIME,
+                    FOREIGN KEY(user_id) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_user_id ON notification_outbox(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_event_type ON notification_outbox(event_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_status ON notification_outbox(status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_created_at ON notification_outbox(created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_next_attempt_at ON notification_outbox(next_attempt_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notification_outbox_status_next_attempt ON notification_outbox(status, next_attempt_at)"))
 
         conn.execute(
             text(
@@ -739,6 +962,29 @@ def ensure_operational_schema(engine) -> None:
             )
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_approval_requests_status ON user_approval_requests(status)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS pending_password_changes (
+                    id INTEGER PRIMARY KEY,
+                    approval_request_id INTEGER NOT NULL UNIQUE,
+                    user_id INTEGER NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    status VARCHAR NOT NULL DEFAULT 'pending',
+                    created_at DATETIME,
+                    expires_at DATETIME,
+                    consumed_at DATETIME,
+                    FOREIGN KEY(approval_request_id) REFERENCES user_approval_requests (id),
+                    FOREIGN KEY(user_id) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pending_password_changes_request ON pending_password_changes(approval_request_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pending_password_changes_user_id ON pending_password_changes(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pending_password_changes_status ON pending_password_changes(status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_pending_password_changes_status_created ON pending_password_changes(status, created_at)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_views_task_id ON task_views(task_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_views_user_id ON task_views(user_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_stage_assignees_user_id ON task_stage_assignees(user_id)"))

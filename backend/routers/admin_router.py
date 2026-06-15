@@ -4,13 +4,18 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
-import asyncio
 
 from database_config import get_operational_db
 from models_new import DepartmentDirectory, User, UserApprovalRequest
-from auth import SESSION_STORE, get_password_hash, invalidate_session, revoke_user_sessions
-from routers.tasks_router import notification_hub
+from auth import get_password_hash, revoke_user_sessions
+from services.admin_workflow_service import (
+    pending_password_change_for_request,
+    push_admin_realtime_event,
+    sanitize_request_payload,
+)
+from services.role_service import user_role_names
 from utils.cache import invalidate_pattern
 from utils.datetime_utils import serialize_utc_datetime
 from utils.permissions import require_admin
@@ -49,7 +54,7 @@ def _serialize_user(user: User, approval_status: str) -> dict:
         "employeeId": user.employee_id,
         "department": user.department,
         "position": user.position,
-        "roles": user.roles_json or [],
+        "roles": sorted(user_role_names(user)),
         "isActive": user.is_active,
         "isDeleted": bool(getattr(user, "is_deleted", False)),
         "isAdmin": user.is_admin,
@@ -88,45 +93,6 @@ def _get_signup_request(db: Session, user_id: int) -> Optional[UserApprovalReque
     )
 
 
-def _terminate_user_sessions(user_id: int) -> None:
-    tokens = [token for token, data in SESSION_STORE.items() if data.get("user_id") == user_id]
-    for token in tokens:
-        invalidate_session(token)
-
-
-def _admin_user_ids(db: Session) -> list[int]:
-    rows = db.query(User.id).filter(
-        User.is_active == True,
-        User.is_deleted == False,
-        ((User.is_admin == True) | (User.position.ilike("%admin%"))),
-    ).all()
-    return [row[0] for row in rows]
-
-
-def _push_admin_realtime_event(db: Session, event_type: str, title: str, message: str, metadata: Optional[dict] = None):
-    payload = {
-        "eventType": event_type,
-        "title": title,
-        "message": message,
-        "metadata": metadata or {},
-    }
-    for admin_id in _admin_user_ids(db):
-        try:
-            asyncio.create_task(notification_hub.push(admin_id, payload))
-        except RuntimeError:
-            pass
-
-
-def _sanitize_request_payload(request_type: str, payload: Optional[dict]) -> dict:
-    data = dict(payload or {})
-    if request_type == "password_change":
-        return {
-            "summary": "Secure password change request",
-            "hasPasswordUpdate": bool(data.get("password_hash")),
-        }
-    return data
-
-
 def _archive_deleted_user_identity(user: User) -> None:
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     if user.email and "@archived.local" not in user.email:
@@ -140,21 +106,20 @@ async def pending_signups(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    requests = (
-        db.query(UserApprovalRequest)
+    users = []
+    rows = (
+        db.query(UserApprovalRequest, User)
+        .join(User, User.id == UserApprovalRequest.user_id)
         .filter(
             UserApprovalRequest.request_type == "signup",
             UserApprovalRequest.status == "pending",
+            User.is_deleted == False,
         )
         .order_by(UserApprovalRequest.created_at.asc())
         .all()
     )
 
-    users = []
-    for req in requests:
-        user = db.query(User).filter(User.id == req.user_id, User.is_deleted == False).first()
-        if not user:
-            continue
+    for req, user in rows:
         item = _serialize_user(user, "pending")
         item["requestId"] = req.id
         item["requestCreatedAt"] = serialize_utc_datetime(req.created_at)
@@ -169,22 +134,21 @@ async def pending_requests(
     db: Session = Depends(get_operational_db),
 ):
     rows = (
-        db.query(UserApprovalRequest)
+        db.query(UserApprovalRequest, User)
+        .join(User, User.id == UserApprovalRequest.user_id)
         .filter(UserApprovalRequest.status == "pending")
+        .filter(User.is_deleted == False)
         .order_by(UserApprovalRequest.created_at.asc())
         .all()
     )
     items = []
-    for req in rows:
-        user = db.query(User).filter(User.id == req.user_id, User.is_deleted == False).first()
-        if not user:
-            continue
+    for req, user in rows:
         items.append(
             {
                 "requestId": req.id,
                 "requestType": req.request_type,
                 "status": req.status,
-                "payload": _sanitize_request_payload(req.request_type, req.payload_json),
+                "payload": sanitize_request_payload(req.request_type, req.payload_json),
                 "createdAt": serialize_utc_datetime(req.created_at),
                 "user": _serialize_user(user, req.status),
             }
@@ -256,50 +220,75 @@ async def review_request(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    req = db.query(UserApprovalRequest).filter(UserApprovalRequest.id == request_id).first()
-    if not req:
-        raise HTTPException(status_code=404, detail="Request not found")
-    if req.status != "pending":
-        raise HTTPException(status_code=400, detail="Request already reviewed")
+    try:
+        req = (
+            db.query(UserApprovalRequest)
+            .filter(UserApprovalRequest.id == request_id)
+            .with_for_update()
+            .first()
+        )
+        if not req:
+            raise HTTPException(status_code=404, detail="Request not found")
+        if req.status != "pending":
+            raise HTTPException(status_code=400, detail="Request already reviewed")
 
-    user = db.query(User).filter(User.id == req.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.is_deleted:
-        raise HTTPException(status_code=400, detail="Cannot review requests for deleted users")
+        user = db.query(User).filter(User.id == req.user_id).with_for_update().first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if user.is_deleted:
+            raise HTTPException(status_code=400, detail="Cannot review requests for deleted users")
 
-    req.status = "approved" if payload.approve else "rejected"
-    req.reviewed_at = datetime.utcnow()
-    req.reviewed_by = current_user.id
-    req.review_notes = payload.notes
+        req.status = "approved" if payload.approve else "rejected"
+        req.reviewed_at = datetime.utcnow()
+        req.reviewed_by = current_user.id
+        req.review_notes = payload.notes
 
-    if payload.approve:
-        if req.request_type == "signup":
-            user.is_active = True
-            user.approved_by = current_user.id
-            user.approved_at = datetime.utcnow()
-            user.rejection_reason = None
-        elif req.request_type == "profile_update":
-            data = req.payload_json or {}
-            user.name = data.get("name", user.name)
-            user.email = data.get("email", user.email)
-            user.employee_id = data.get("employee_id", user.employee_id)
-            user.position = data.get("position", user.position)
-            user.department = data.get("department", user.department)
-        elif req.request_type == "password_change":
-            data = req.payload_json or {}
-            password_hash = data.get("password_hash")
-            if not password_hash:
-                raise HTTPException(status_code=400, detail="Password change request is missing password data")
-            user.hashed_password = password_hash
-            revoke_user_sessions(db, user.id)
-    else:
-        if req.request_type == "signup":
-            user.is_active = False
-            user.rejection_reason = payload.notes or "Request rejected by admin"
+        if payload.approve:
+            if req.request_type == "signup":
+                user.is_active = True
+                user.approved_by = current_user.id
+                user.approved_at = datetime.utcnow()
+                user.rejection_reason = None
+            elif req.request_type == "profile_update":
+                data = req.payload_json or {}
+                user.name = data.get("name", user.name)
+                user.email = data.get("email", user.email)
+                user.employee_id = data.get("employee_id", user.employee_id)
+                user.position = data.get("position", user.position)
+                user.department = data.get("department", user.department)
+            elif req.request_type == "password_change":
+                pending_password = pending_password_change_for_request(db, req)
+                if not pending_password or pending_password.status != "pending":
+                    raise HTTPException(status_code=400, detail="Password change request is missing password data")
+                if pending_password.expires_at and pending_password.expires_at < datetime.utcnow():
+                    pending_password.status = "expired"
+                    raise HTTPException(status_code=400, detail="Password change request has expired")
+                user.hashed_password = pending_password.password_hash
+                pending_password.status = "approved"
+                pending_password.consumed_at = datetime.utcnow()
+                revoke_user_sessions(db, user.id)
+        else:
+            if req.request_type == "password_change":
+                pending_password = pending_password_change_for_request(db, req)
+                if pending_password and pending_password.status == "pending":
+                    pending_password.status = "rejected"
+                    pending_password.consumed_at = datetime.utcnow()
+            if req.request_type == "signup":
+                user.is_active = False
+                user.rejection_reason = payload.notes or "Request rejected by admin"
 
-    db.commit()
-    _push_admin_realtime_event(
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Request review could not be completed because of a duplicate value")
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Request review database unavailable")
+
+    push_admin_realtime_event(
         db,
         "admin_request_reviewed",
         "Request Reviewed",
@@ -331,9 +320,9 @@ async def deactivate_user(
     user.is_active = False
     if payload and payload.reason:
         user.rejection_reason = payload.reason
-    _terminate_user_sessions(user.id)
+    revoke_user_sessions(db, user.id)
     db.commit()
-    _push_admin_realtime_event(
+    push_admin_realtime_event(
         db,
         "admin_user_access_changed",
         "Login Access Removed",
@@ -364,7 +353,7 @@ async def activate_user(
     user.is_active = True
     user.rejection_reason = None
     db.commit()
-    _push_admin_realtime_event(
+    push_admin_realtime_event(
         db,
         "admin_user_access_changed",
         "Login Access Restored",
@@ -414,9 +403,9 @@ async def delete_user_account(
         row.reviewed_by = current_user.id
         row.review_notes = f"Account deleted by admin. {user.deleted_reason}"
 
-    _terminate_user_sessions(user.id)
+    revoke_user_sessions(db, user.id)
     db.commit()
-    _push_admin_realtime_event(
+    push_admin_realtime_event(
         db,
         "admin_user_deleted",
         "User Account Deleted",
@@ -450,7 +439,7 @@ async def admin_change_user_password(
     revoke_user_sessions(db, user.id)
     db.commit()
 
-    _push_admin_realtime_event(
+    push_admin_realtime_event(
         db,
         "admin_user_password_changed",
         "User Password Changed",
@@ -484,9 +473,19 @@ async def all_users(
     db: Session = Depends(get_operational_db),
 ):
     users = db.query(User).order_by(User.is_deleted.asc(), User.created_at.desc()).all()
+    signup_requests = (
+        db.query(UserApprovalRequest)
+        .filter(UserApprovalRequest.request_type == "signup")
+        .order_by(UserApprovalRequest.user_id.asc(), UserApprovalRequest.created_at.desc())
+        .all()
+    )
+    latest_signup_by_user: dict[int, UserApprovalRequest] = {}
+    for req in signup_requests:
+        latest_signup_by_user.setdefault(req.user_id, req)
+
     data = []
     for user in users:
-        req = _get_signup_request(db, user.id)
+        req = latest_signup_by_user.get(user.id)
         status = "deleted" if user.is_deleted else ("approved" if user.is_active else "pending")
         if req and req.status in {"pending", "rejected", "approved"}:
             status = req.status

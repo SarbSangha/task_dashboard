@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta
-import asyncio
 from collections import defaultdict
+import logging
+import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
@@ -11,12 +12,15 @@ from sqlalchemy.orm import Session
 from database_config import get_operational_db
 from models_new import ActivityStatus, ChatMessageReaction, ChatMessageReadReceipt, DirectMessage, User, UserActivity
 from routers.auth_router import get_current_user
-from routers.tasks_router import notification_hub
+from routers.tasks_router import notification_dispatcher
 from utils.datetime_utils import normalize_to_utc_naive, utcnow_naive
 
 
 router = APIRouter(prefix="/api/direct-messages", tags=["Direct Messages"])
 PRESENCE_STALE_SECONDS = 90
+TYPING_THROTTLE_SECONDS = 5
+_TYPING_THROTTLE: dict[tuple[int, int, bool], float] = {}
+logger = logging.getLogger(__name__)
 
 
 class DirectMessagePayload(BaseModel):
@@ -191,9 +195,27 @@ def _build_reaction_lookup(
 
 def _notify_receipt_update(user_id: int, payload: dict) -> None:
     try:
-        asyncio.create_task(notification_hub.push(user_id, payload))
-    except RuntimeError:
-        pass
+        queued = notification_dispatcher.enqueue(user_id, payload)
+        if not queued:
+            logger.warning("Direct message notification queue full for user_id=%s event=%s", user_id, payload.get("eventType"))
+    except Exception:
+        logger.exception("Failed to enqueue direct message notification for user_id=%s event=%s", user_id, payload.get("eventType"))
+
+
+def _should_send_typing_event(sender_id: int, recipient_id: int, active: bool) -> bool:
+    now = time.monotonic()
+    key = (sender_id, recipient_id, bool(active))
+    last_sent_at = _TYPING_THROTTLE.get(key)
+    if last_sent_at and now - last_sent_at < TYPING_THROTTLE_SECONDS:
+        return False
+    _TYPING_THROTTLE[key] = now
+
+    if len(_TYPING_THROTTLE) > 2000:
+        cutoff = now - (TYPING_THROTTLE_SECONDS * 4)
+        for stale_key, sent_at in list(_TYPING_THROTTLE.items()):
+            if sent_at < cutoff:
+                _TYPING_THROTTLE.pop(stale_key, None)
+    return True
 
 
 def _get_active_user(db: Session, user_id: int) -> User:
@@ -205,6 +227,80 @@ def _get_active_user(db: Session, user_id: int) -> User:
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
+
+
+def _mark_direct_receipts(
+    db: Session,
+    message_ids: list[int],
+    user_id: int,
+    now: datetime,
+    *,
+    mark_seen: bool = False,
+) -> int:
+    unique_message_ids = sorted({message_id for message_id in message_ids if message_id})
+    if not unique_message_ids:
+        return 0
+
+    existing_receipts = (
+        db.query(ChatMessageReadReceipt)
+        .filter(
+            ChatMessageReadReceipt.message_scope == "direct",
+            ChatMessageReadReceipt.user_id == user_id,
+            ChatMessageReadReceipt.message_id.in_(unique_message_ids),
+        )
+        .all()
+    )
+    existing_ids = {receipt.message_id for receipt in existing_receipts}
+    missing_ids = [message_id for message_id in unique_message_ids if message_id not in existing_ids]
+
+    changed_existing_ids = [
+        receipt.message_id
+        for receipt in existing_receipts
+        if (
+            not receipt.delivered_at
+            or (mark_seen and not receipt.seen_at)
+        )
+    ]
+
+    if changed_existing_ids:
+        if any(not receipt.delivered_at for receipt in existing_receipts):
+            (
+                db.query(ChatMessageReadReceipt)
+                .filter(
+                    ChatMessageReadReceipt.message_scope == "direct",
+                    ChatMessageReadReceipt.user_id == user_id,
+                    ChatMessageReadReceipt.message_id.in_(changed_existing_ids),
+                    ChatMessageReadReceipt.delivered_at.is_(None),
+                )
+                .update({"delivered_at": now}, synchronize_session=False)
+            )
+
+        if mark_seen and any(not receipt.seen_at for receipt in existing_receipts):
+            (
+                db.query(ChatMessageReadReceipt)
+                .filter(
+                    ChatMessageReadReceipt.message_scope == "direct",
+                    ChatMessageReadReceipt.user_id == user_id,
+                    ChatMessageReadReceipt.message_id.in_(changed_existing_ids),
+                    ChatMessageReadReceipt.seen_at.is_(None),
+                )
+                .update({"seen_at": now}, synchronize_session=False)
+            )
+
+    if missing_ids:
+        rows = [
+            {
+                "message_scope": "direct",
+                "message_id": message_id,
+                "user_id": user_id,
+                "delivered_at": now,
+                "seen_at": now if mark_seen else None,
+            }
+            for message_id in missing_ids
+        ]
+        db.bulk_insert_mappings(ChatMessageReadReceipt, rows)
+
+    return len(changed_existing_ids) + len(missing_ids)
 
 
 def _serialize_direct_message(
@@ -480,6 +576,8 @@ async def get_direct_unread_counts(
 @router.get("/conversations/{other_user_id}/messages")
 async def list_direct_messages(
     other_user_id: int,
+    before_message_id: Optional[int] = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=300),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -487,7 +585,7 @@ async def list_direct_messages(
         raise HTTPException(status_code=400, detail="You cannot chat with yourself")
 
     other_user = _get_active_user(db, other_user_id)
-    rows = (
+    query = (
         db.query(DirectMessage, User)
         .join(User, User.id == DirectMessage.sender_id)
         .filter(
@@ -496,10 +594,19 @@ async def list_direct_messages(
                 and_(DirectMessage.sender_id == other_user_id, DirectMessage.recipient_id == current_user.id),
             )
         )
-        .order_by(DirectMessage.created_at.desc(), DirectMessage.id.desc())
-        .limit(300)
+    )
+    if before_message_id:
+        query = query.filter(DirectMessage.id < before_message_id)
+
+    rows = (
+        query
+        .order_by(DirectMessage.id.desc())
+        .limit(limit + 1)
         .all()
     )
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
     rows.reverse()
     messages = [message for message, _sender in rows]
     receipt_lookup = _build_direct_receipt_lookup(db, messages, current_user.id)
@@ -509,6 +616,11 @@ async def list_direct_messages(
     return {
         "success": True,
         "conversationWith": _serialize_user(other_user, presence_lookup.get(other_user.id)),
+        "pagination": {
+            "limit": limit,
+            "hasMore": has_more,
+            "nextBeforeMessageId": rows[0][0].id if has_more and rows else None,
+        },
         "data": [
             _serialize_direct_message(
                 message,
@@ -545,34 +657,8 @@ async def mark_direct_messages_delivered(
     if not message_ids:
         return {"success": True, "markedCount": 0}
 
-    existing = {
-        row.message_id: row
-        for row in db.query(ChatMessageReadReceipt)
-        .filter(
-            ChatMessageReadReceipt.message_scope == "direct",
-            ChatMessageReadReceipt.user_id == current_user.id,
-            ChatMessageReadReceipt.message_id.in_(message_ids),
-        )
-        .all()
-    }
     now = _utcnow()
-    changed_count = 0
-    for message_id in message_ids:
-        receipt = existing.get(message_id)
-        if receipt:
-            if not receipt.delivered_at:
-                receipt.delivered_at = now
-                changed_count += 1
-            continue
-        db.add(
-            ChatMessageReadReceipt(
-                message_scope="direct",
-                message_id=message_id,
-                user_id=current_user.id,
-                delivered_at=now,
-            )
-        )
-        changed_count += 1
+    changed_count = _mark_direct_receipts(db, message_ids, current_user.id, now, mark_seen=False)
     db.commit()
 
     if changed_count:
@@ -615,41 +701,8 @@ async def mark_direct_messages_read(
     if not message_ids:
         return {"success": True, "markedCount": 0}
 
-    existing = {
-        row.message_id: row
-        for row in db.query(ChatMessageReadReceipt)
-        .filter(
-            ChatMessageReadReceipt.message_scope == "direct",
-            ChatMessageReadReceipt.user_id == current_user.id,
-            ChatMessageReadReceipt.message_id.in_(message_ids),
-        )
-        .all()
-    }
     now = _utcnow()
-    changed_count = 0
-    for message_id in message_ids:
-        receipt = existing.get(message_id)
-        if receipt:
-            changed = False
-            if not receipt.delivered_at:
-                receipt.delivered_at = now
-                changed = True
-            if not receipt.seen_at:
-                receipt.seen_at = now
-                changed = True
-            if changed:
-                changed_count += 1
-            continue
-        db.add(
-            ChatMessageReadReceipt(
-                message_scope="direct",
-                message_id=message_id,
-                user_id=current_user.id,
-                delivered_at=now,
-                seen_at=now,
-            )
-        )
-        changed_count += 1
+    changed_count = _mark_direct_receipts(db, message_ids, current_user.id, now, mark_seen=True)
     db.commit()
 
     if changed_count:
@@ -694,10 +747,8 @@ async def send_direct_typing_indicator(
             "updatedAt": _utcnow().isoformat(),
         },
     }
-    try:
-        asyncio.create_task(notification_hub.push(recipient.id, ws_payload))
-    except RuntimeError:
-        pass
+    if _should_send_typing_event(current_user.id, recipient.id, payload.active):
+        _notify_receipt_update(recipient.id, ws_payload)
 
     return {"success": True}
 
@@ -1012,10 +1063,7 @@ async def send_direct_message(
             "createdAt": message.created_at.isoformat() if message.created_at else None,
         },
     }
-    try:
-        asyncio.create_task(notification_hub.push(recipient.id, ws_payload))
-    except RuntimeError:
-        pass
+    _notify_receipt_update(recipient.id, ws_payload)
 
     return {
         "success": True,

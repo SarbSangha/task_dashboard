@@ -104,6 +104,22 @@ class User(Base):
     created_tasks = relationship("Task", foreign_keys="Task.creator_id", back_populates="creator")
     participations = relationship("TaskParticipant", back_populates="user")
     comments = relationship("TaskComment", back_populates="user")
+    role_assignments = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserRole(Base):
+    __tablename__ = "user_roles"
+    __table_args__ = (
+        UniqueConstraint("user_id", "role", name="uq_user_roles_user_role"),
+        Index("ix_user_roles_role_user_id", "role", "user_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(80), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", back_populates="role_assignments")
 
 
 class DepartmentDirectory(Base):
@@ -488,6 +504,26 @@ class TaskNotification(Base):
     read_at = Column(DateTime)
 
 
+class NotificationOutbox(Base):
+    """Recoverable notification delivery attempts for realtime/web-push fanout."""
+    __tablename__ = "notification_outbox"
+    __table_args__ = (
+        Index("ix_notification_outbox_status_next_attempt", "status", "next_attempt_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    event_type = Column(String(120), nullable=False, index=True)
+    payload_json = Column(JSON, nullable=False)
+    status = Column(String(40), nullable=False, default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=10)
+    last_error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    next_attempt_at = Column(DateTime, default=datetime.utcnow, index=True)
+    dispatched_at = Column(DateTime)
+
+
 class WebPushSubscription(Base):
     """Browser push subscriptions scoped to a single authenticated user."""
     __tablename__ = "web_push_subscriptions"
@@ -546,6 +582,16 @@ class IdSequence(Base):
 
 class UserApprovalRequest(Base):
     __tablename__ = "user_approval_requests"
+    __table_args__ = (
+        Index(
+            "ux_user_approval_pending_user_type",
+            "user_id",
+            "request_type",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+    )
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
@@ -556,6 +602,23 @@ class UserApprovalRequest(Base):
     reviewed_at = Column(DateTime)
     reviewed_by = Column(Integer, ForeignKey("users.id"))
     review_notes = Column(Text)
+
+
+class PendingPasswordChange(Base):
+    __tablename__ = "pending_password_changes"
+    __table_args__ = (
+        UniqueConstraint("approval_request_id", name="ux_pending_password_changes_request"),
+        Index("ix_pending_password_changes_status_created", "status", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    approval_request_id = Column(Integer, ForeignKey("user_approval_requests.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    password_hash = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="pending", index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    expires_at = Column(DateTime, index=True)
+    consumed_at = Column(DateTime)
 
 
 class UserActivity(Base):

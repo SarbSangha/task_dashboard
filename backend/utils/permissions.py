@@ -1,22 +1,19 @@
 from typing import Iterable, Optional
 
-from fastapi import Cookie, Depends, Header, HTTPException
+from fastapi import Cookie, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from auth import get_request_session_token, resolve_session_user
+from auth import create_session_fingerprint, get_request_session_token, resolve_session_user
 from database_config import get_operational_db
 from models_new import User
+from services.role_service import user_role_names
 
 
 def resolve_roles(user: Optional[User]) -> set[str]:
-    roles = set()
-    if user and isinstance(user.roles_json, list):
-        roles.update({str(role).strip().lower() for role in user.roles_json if str(role).strip()})
+    roles = user_role_names(user)
 
     position = (user.position or "").strip().lower() if user else ""
     if user and getattr(user, "is_admin", False):
-        roles.add("admin")
-    if "admin" in position:
         roles.add("admin")
     if "faculty" in position:
         roles.add("faculty")
@@ -43,6 +40,7 @@ def has_any_role(user: Optional[User], allowed_roles: Iterable[str]) -> bool:
 
 
 def get_current_user(
+    request: Request,
     session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     db: Session = Depends(get_operational_db),
@@ -51,7 +49,11 @@ def get_current_user(
     if not resolved_session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    return resolve_session_user(resolved_session_id, db)
+    return resolve_session_user(
+        resolved_session_id,
+        db,
+        session_fingerprint=create_session_fingerprint(request.headers.get("user-agent")),
+    )
 
 
 class RoleChecker:

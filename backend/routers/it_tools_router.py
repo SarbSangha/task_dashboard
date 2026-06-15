@@ -4,17 +4,20 @@ import hashlib
 import hmac
 import html
 import imaplib
+import io
 import json
 import math
 import os
 import re
 import time
+import zipfile
 from datetime import datetime, date, timezone, timedelta
 from typing import Optional
 from urllib.parse import urlparse
+from xml.sax.saxutils import escape as xml_escape
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, or_, func, case
 from sqlalchemy.orm import Session
@@ -1724,6 +1727,97 @@ def _usage_event_to_safe_dict(event: ITPortalToolUsageEvent) -> dict:
         data["creditsBurned"] = safe_credits
         data["metadata"] = metadata
     return data
+
+
+def _excel_column_name(index: int) -> str:
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _xlsx_inline_cell(row_index: int, column_index: int, value) -> str:
+    cell_ref = f"{_excel_column_name(column_index)}{row_index}"
+    normalized = "" if value is None else str(value)
+    normalized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", normalized)
+    return (
+        f'<c r="{cell_ref}" t="inlineStr">'
+        f'<is><t xml:space="preserve">{xml_escape(normalized)}</t></is>'
+        f"</c>"
+    )
+
+
+def _build_simple_xlsx(headers: list[str], rows: list[list], sheet_name: str = "Sheet1") -> bytes:
+    sheet_rows = []
+    all_rows = [headers, *rows]
+    for row_index, values in enumerate(all_rows, start=1):
+        cells = [
+            _xlsx_inline_cell(row_index, column_index, value)
+            for column_index, value in enumerate(values, start=1)
+        ]
+        sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+
+    sheet_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews><sheetView workbookViewId="0"/></sheetViews>
+  <sheetFormatPr defaultRowHeight="15"/>
+  <sheetData>
+    {"".join(sheet_rows)}
+  </sheetData>
+</worksheet>"""
+    workbook_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="{xml_escape(sheet_name[:31] or 'Sheet1')}" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"""
+    workbook_rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"""
+    root_rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+    content_types_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"""
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types_xml)
+        archive.writestr("_rels/.rels", root_rels_xml)
+        archive.writestr("xl/workbook.xml", workbook_xml)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    return buffer.getvalue()
+
+
+def _usage_event_media_links(metadata: Optional[dict]) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    media_assets = metadata.get("mediaAssets")
+    if not isinstance(media_assets, list):
+        return ""
+    links = []
+    seen = set()
+    for item in media_assets:
+        if not isinstance(item, dict):
+            continue
+        url = f"{item.get('url') or ''}".strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        role = f"{item.get('assetRole') or ''}".strip()
+        asset_type = f"{item.get('assetType') or item.get('mimetype') or ''}".strip()
+        label = " ".join(part for part in [role, asset_type] if part).strip()
+        links.append(f"{label}: {url}" if label else url)
+    return "\n".join(links)
 
 
 def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
@@ -3646,6 +3740,121 @@ async def get_tool_usage_report(
             for event, user, tool_item in recent_events
         ],
     }
+
+
+@router.get("/usage-report/kling/export")
+async def export_kling_usage_report(
+    selected_date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user_id: Optional[int] = None,
+    credential_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db),
+):
+    is_admin = has_any_role(current_user, {"admin"})
+    if user_id and not is_admin and int(user_id) != int(current_user.id):
+        raise HTTPException(status_code=403, detail="You can only export your own usage.")
+
+    parsed_selected_date = _parse_report_date(selected_date, "selected_date")
+    parsed_date_from = _parse_report_date(date_from, "date_from")
+    parsed_date_to = _parse_report_date(date_to, "date_to")
+    if parsed_selected_date:
+        parsed_date_from = parsed_selected_date
+        parsed_date_to = parsed_selected_date
+    if parsed_date_from and parsed_date_to and parsed_date_from > parsed_date_to:
+        raise HTTPException(status_code=400, detail="date_from cannot be later than date_to")
+
+    kling_slugs = {"kling", "kling-ai", "klingai"}
+    query = (
+        db.query(ITPortalToolUsageEvent, User, ITPortalTool)
+        .join(User, User.id == ITPortalToolUsageEvent.user_id)
+        .join(ITPortalTool, ITPortalTool.id == ITPortalToolUsageEvent.tool_id)
+        .filter(ITPortalTool.slug.in_(kling_slugs))
+        .filter(~and_(
+            ITPortalToolUsageEvent.event_type == "generate_click",
+            ITPortalToolUsageEvent.source == "expected_credit_lock",
+        ))
+    )
+    if parsed_date_from:
+        query = query.filter(ITPortalToolUsageEvent.event_date >= parsed_date_from)
+    if parsed_date_to:
+        query = query.filter(ITPortalToolUsageEvent.event_date <= parsed_date_to)
+    if is_admin:
+        if user_id:
+            query = query.filter(ITPortalToolUsageEvent.user_id == int(user_id))
+    else:
+        query = query.filter(ITPortalToolUsageEvent.user_id == current_user.id)
+    if credential_id:
+        query = query.filter(ITPortalToolUsageEvent.credential_id == int(credential_id))
+
+    event_rows = (
+        query
+        .order_by(ITPortalToolUsageEvent.created_at.asc(), ITPortalToolUsageEvent.id.asc())
+        .all()
+    )
+    deduped_event_ids = {
+        event.id
+        for event in _dedupe_usage_events([
+            event for event, _, _ in event_rows if not _is_unconfirmed_expected_lock_event(event)
+        ])
+    }
+    event_rows = [row for row in event_rows if row[0].id in deduped_event_ids]
+
+    credential_ids = {int(event.credential_id) for event, _, _ in event_rows if event.credential_id}
+    credential_map = {}
+    if credential_ids:
+        credentials = (
+            db.query(ITPortalToolCredential)
+            .filter(ITPortalToolCredential.id.in_(credential_ids))
+            .all()
+        )
+        credential_map = {
+            credential.id: {
+                "scope": credential.scope,
+                "loginIdentifier": _safe_decrypt_secret(credential.login_identifier_encrypted),
+            }
+            for credential in credentials
+        }
+
+    def _credential_label(event: ITPortalToolUsageEvent) -> str:
+        credential = credential_map.get(event.credential_id) or {}
+        credential_label = f"{credential.get('loginIdentifier') or ''}".strip()
+        if credential_label:
+            return credential_label
+        metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
+        return f"{metadata.get('credentialLabel') or metadata.get('klingAccountLabel') or ''}".strip()
+
+    rows = []
+    for event, user, _tool in event_rows:
+        safe_event = _usage_event_to_safe_dict(event)
+        metadata = safe_event.get("metadata") if isinstance(safe_event.get("metadata"), dict) else {}
+        created_at = _serialize_utc_datetime(event.created_at) or ""
+        prompt_capture = metadata.get("promptCapture") if isinstance(metadata.get("promptCapture"), dict) else {}
+        prompt = f"{event.prompt_text or prompt_capture.get('text') or ''}".strip()
+        rows.append([
+            created_at,
+            user.name or "",
+            user.email or "",
+            _credential_label(event),
+            prompt,
+            _usage_event_media_links(metadata),
+            safe_event.get("creditsBurned") if safe_event.get("creditsBurned") is not None else "",
+        ])
+
+    workbook = _build_simple_xlsx(
+        ["Date/Time", "User", "User Email", "Kling ID", "Prompt", "Media Links", "Credit"],
+        rows,
+        sheet_name="Kling Usage",
+    )
+    from_label = parsed_date_from.isoformat() if parsed_date_from else "all"
+    to_label = parsed_date_to.isoformat() if parsed_date_to else from_label
+    filename = f"kling-usage-{from_label}-to-{to_label}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(workbook),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/launch-history")

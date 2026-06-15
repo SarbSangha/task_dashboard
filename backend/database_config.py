@@ -120,28 +120,31 @@ def _is_supabase_pooler_url(url: str) -> bool:
     return port == 6543 or "pooler.supabase.com" in host or "pooler.supabase.co" in host
 
 
+def _uses_external_pooler(url: str) -> bool:
+    parsed = urlparse(url)
+    port = parsed.port
+    return (
+        _is_supabase_pooler_url(url)
+        or _is_truthy(os.getenv("DB_EXTERNAL_POOLER"))
+        or _is_truthy(os.getenv("DB_USE_NULL_POOL"))
+        or port == 6432
+    )
+
+
 def _pool_settings(url: str) -> dict:
     is_supabase_pooler = _is_supabase_pooler_url(url)
-    # Supabase pooler session mode caps client connections at its configured
-    # pool size. Keep defaults conservative, but allow enough concurrency to
-    # handle the dashboard's parallel startup requests without queueing behind
-    # only one or two checked-out connections.
-    if is_supabase_pooler and _is_local_runtime():
-        # Local dev often runs extra short-lived processes (reload workers,
-        # scripts, shells). Use a tiny default pool so localhost startup does
-        # not exhaust the shared Supabase session-mode client quota.
+    # Keep hosted pooler connections tiny, but give direct droplet PostgreSQL
+    # enough app-side checkout capacity for real dashboard traffic.
+    if is_supabase_pooler:
         default_pool_size = 1
         default_max_overflow = 0
     else:
-        # Keep the default pool conservative for small VPS/PostgreSQL installs.
-        # The dashboard opens several parallel requests per browser profile, and
-        # a large overflow can exhaust Postgres max_connections until restart.
-        default_pool_size = 5
-        default_max_overflow = 5
+        default_pool_size = 20
+        default_max_overflow = 20
     return {
         "pool_size": max(1, _int_env("DB_POOL_SIZE", default_pool_size)),
         "max_overflow": max(0, _int_env("DB_MAX_OVERFLOW", default_max_overflow)),
-        "pool_timeout": max(1, _int_env("DB_POOL_TIMEOUT", 30)),
+        "pool_timeout": max(1, _int_env("DB_POOL_TIMEOUT", 5)),
         "pool_recycle": max(30, _int_env("DB_POOL_RECYCLE", 1800)),
         "pool_pre_ping": True,
         "pool_use_lifo": True,
@@ -159,9 +162,10 @@ def _create_engine(url: str):
         # Disable automatic prepare to avoid DuplicatePreparedStatement on startup.
         "connect_args": {"prepare_threshold": None},
     }
-    if _is_supabase_pooler_url(normalized) and _is_local_runtime():
-        # Do not hold open idle DB clients in local dev. This keeps localhost
-        # from exhausting the shared session-mode pooler quota.
+    if _uses_external_pooler(normalized) and not _is_truthy(os.getenv("DB_USE_SQLALCHEMY_POOL")):
+        # PgBouncer/Supabase poolers are already the connection pool. Holding another
+        # app-side QueuePool on top leaves idle client connections open until a
+        # process restart, which can make login fail during traffic bursts.
         kwargs["poolclass"] = NullPool
     else:
         kwargs.update(_pool_settings(normalized))
