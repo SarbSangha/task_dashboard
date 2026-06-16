@@ -701,7 +701,7 @@ async def register(
 
         # Check if user exists
         existing_user = db.query(User).filter(
-            User.email == user_data.email
+            func.lower(func.trim(User.email)) == user_data.email
         ).first()
         
         if existing_user:
@@ -832,7 +832,7 @@ async def login(
         
         # Find user
         user = db.query(User).filter(
-            User.email == normalized_email
+            func.lower(func.trim(User.email)) == normalized_email
         ).first()
         if not user:
             _fake_password_verify_for_timing(credentials.password)
@@ -1552,7 +1552,9 @@ async def forgot_password(
     """Request password reset"""
     normalized_email = payload.email.strip().lower()
     await _check_forgot_password_rate_limit(normalized_email, request)
-    user = db.query(User).filter(User.email == normalized_email).first()
+    user = db.query(User).filter(
+        func.lower(func.trim(User.email)) == normalized_email
+    ).first()
     
     if user:
         token = create_reset_token(normalized_email)
@@ -1572,7 +1574,9 @@ def reset_password(
     """Reset password using token"""
     email = verify_reset_token(request.token)
     
-    user = db.query(User).filter(User.email == email).first()
+    user = db.query(User).filter(
+        func.lower(func.trim(User.email)) == (email or "").strip().lower()
+    ).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 

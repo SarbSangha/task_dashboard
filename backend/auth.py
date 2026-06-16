@@ -2,6 +2,7 @@
 from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 import hashlib
 import json
@@ -202,8 +203,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def authenticate_user(db: Session, email: str, password: str):
     """Authenticate user with email and password"""
     from models_new import User
-    
-    user = db.query(User).filter(User.email == email).first()
+
+    normalized_email = (email or "").strip().lower()
+    user = db.query(User).filter(
+        func.lower(func.trim(User.email)) == normalized_email
+    ).first()
     if not user:
         return None
     

@@ -1404,6 +1404,24 @@ function actionText(element) {
   ].filter(Boolean).join(' '));
 }
 
+function controlHintText(element) {
+  return normalizeText([
+    actionText(element),
+    element?.getAttribute?.('name'),
+    element?.getAttribute?.('id'),
+    element?.getAttribute?.('class'),
+    element?.getAttribute?.('data-testid'),
+    element?.getAttribute?.('data-icon'),
+    element?.getAttribute?.('data-email'),
+    element?.getAttribute?.('data-identifier'),
+    element?.getAttribute?.('aria-controls'),
+  ].filter(Boolean).join(' '));
+}
+
+function collectUniqueElements(elements) {
+  return Array.from(new Set((elements || []).filter(Boolean)));
+}
+
 function disablePasswordRevealControl(element) {
   if (!element || element.dataset?.rmwGooglePasswordRevealDisabled === 'true') return;
   element.dataset.rmwGooglePasswordRevealDisabled = 'true';
@@ -1809,12 +1827,23 @@ function findGoogleAccountChooserAction(credential) {
   const loginIdentifier = normalizeText(credential?.loginIdentifier || '');
   if (!loginIdentifier) return null;
 
-  const candidates = Array.from(document.querySelectorAll(ACTION_SELECTORS))
-    .filter((element) => !isDisabled(element) && isVisible(element));
+  const chooserPanel = findGoogleChooserPanel() || document;
+  const candidates = collectUniqueElements([
+    ...collectChooserActionCandidates(chooserPanel),
+    ...Array.from(chooserPanel.querySelectorAll(ACTION_SELECTORS)),
+  ]).filter((element) => !isDisabled(element) && isVisible(element));
+
+  const exactDataMatch = candidates.find((element) => {
+    const dataEmail = normalizeText(element?.getAttribute?.('data-email'));
+    const dataIdentifier = normalizeText(element?.getAttribute?.('data-identifier'));
+    return dataEmail === loginIdentifier || dataIdentifier === loginIdentifier;
+  });
+  if (exactDataMatch) return exactDataMatch;
 
   return candidates.find((element) => {
     const label = actionText(element);
-    return label.includes(loginIdentifier);
+    const hints = controlHintText(element);
+    return label.includes(loginIdentifier) || hints.includes(loginIdentifier);
   }) || null;
 }
 
@@ -1842,8 +1871,32 @@ function findGoogleChooserPanel() {
 }
 
 function collectChooserActionCandidates(root = document) {
-  return Array.from(root.querySelectorAll('button, [role="button"], [data-view-id], [data-email], [data-identifier], li, div[tabindex], span[tabindex]'))
+  return Array.from(root.querySelectorAll('button, [role="button"], [role="link"], [data-view-id], [data-email], [data-identifier], li, div[tabindex], span[tabindex]'))
     .filter((element) => isVisible(element) && !isDisabled(element));
+}
+
+function resolveGoogleChooserRowFromTextNode(node) {
+  if (!node || !isVisible(node)) return null;
+  let current = node;
+  while (current && current !== document.body) {
+    if (!isVisible(current) || isDisabled(current)) {
+      current = current.parentElement;
+      continue;
+    }
+
+    const label = actionText(current);
+    const isTargetLabel = label === 'use another account'
+      || label === 'add another account'
+      || label === 'add account';
+    const isClickableRow = current.matches?.('button, [role="button"], [role="link"], [data-view-id], [data-email], [data-identifier], li, div[tabindex], span[tabindex]')
+      || isChooserLikeAction(current);
+    if (isTargetLabel && isClickableRow) {
+      return current;
+    }
+
+    current = current.parentElement;
+  }
+  return null;
 }
 
 function findGoogleUseAnotherAccountAction() {
@@ -1869,19 +1922,13 @@ function findGoogleUseAnotherAccountAction() {
         || label === 'add account';
     });
   if (nestedTextNode) {
-    const ancestor = nestedTextNode.closest('button, [role="button"], [data-view-id], [data-email], [data-identifier], li, div[tabindex], span[tabindex]');
-    if (ancestor && isVisible(ancestor) && !isDisabled(ancestor)) {
+    const ancestor = resolveGoogleChooserRowFromTextNode(nestedTextNode);
+    if (ancestor) {
       return ancestor;
     }
   }
 
-  const partialRow = rows.find((element) => {
-    const label = actionText(element);
-    return label.includes('use another account')
-      || label.includes('add another account')
-      || label.includes('add account');
-  });
-  return partialRow || null;
+  return null;
 }
 
 function isGoogleAccountChooserPage() {
@@ -1894,7 +1941,9 @@ function isGoogleAccountChooserPage() {
 
 function isGoogleDeveloperInfoDialogVisible() {
   const text = pageText();
-  return text.includes('developer info')
+  const hasDeveloperInfoTitle = text.includes('developer info') || text.includes('developer information');
+  return Boolean(findGoogleDeveloperInfoDialog())
+    || (hasDeveloperInfoTitle
     && (
       text.includes('choosing an account will redirect you')
       || (
@@ -1902,7 +1951,7 @@ function isGoogleDeveloperInfoDialogVisible() {
         && text.includes('support email')
         && text.includes('got it')
       )
-    );
+    ));
 }
 
 function findGoogleDeveloperInfoDialog() {
@@ -1910,7 +1959,8 @@ function findGoogleDeveloperInfoDialog() {
     .filter((element) => isVisible(element));
   return dialogs.find((element) => {
     const text = actionText(element);
-    return text.includes('developer info')
+    const hasDeveloperInfoTitle = text.includes('developer info') || text.includes('developer information');
+    return hasDeveloperInfoTitle
       && (
         text.includes('choosing an account will redirect you')
         || (
@@ -1923,12 +1973,15 @@ function findGoogleDeveloperInfoDialog() {
 }
 
 function findGoogleDeveloperInfoDismissAction() {
-  if (!isGoogleDeveloperInfoDialogVisible()) return null;
-
   const dialog = findGoogleDeveloperInfoDialog();
-  const root = dialog || document;
+  const root = dialog || (
+    pageText().includes('developer information') || pageText().includes('developer info')
+      ? document
+      : null
+  );
+  if (!root) return null;
 
-  const directButtons = collectChooserActionCandidates(root)
+  const directButtons = Array.from(root.querySelectorAll('button, [role="button"], div[tabindex], span[tabindex]'))
     .filter((element) => isVisible(element) && !isDisabled(element))
     .filter((element) => actionText(element) === 'got it');
   for (const candidate of directButtons) {
@@ -3227,6 +3280,8 @@ async function attemptKlingGoogleDeveloperInfoStep() {
     return true;
   }
 
+  STATE.googleAddAccountPendingAt = 0;
+  STATE.developerInfoDismissedAt = Date.now();
   scheduleAttempt(450);
   return true;
 }
@@ -3234,29 +3289,31 @@ async function attemptKlingGoogleDeveloperInfoStep() {
 async function attemptKlingGoogleChooserStep(credential) {
   if (!isGoogleAccountChooserPage()) return false;
 
+  const dismissAction = findGoogleDeveloperInfoDismissAction();
+  if (dismissAction) {
+    setStatus('Dismissing Google developer info');
+    if (!activateActionElement(dismissAction)) {
+      setStatus('Google developer info dialog not ready');
+      scheduleAttempt(250);
+      return true;
+    }
+
+    STATE.googleAddAccountPendingAt = 0;
+    STATE.developerInfoDismissedAt = Date.now();
+    scheduleAttempt(450);
+    return true;
+  }
+
+  const addAccountAction = shouldPreferGoogleAddAccount() ? findGoogleUseAnotherAccountAction() : null;
   if (
     STATE.googleAddAccountPendingAt
     && Date.now() - STATE.googleAddAccountPendingAt < STEP_PENDING_RETRY_MS
     && !findGoogleEmailInput()
     && !isGoogleIdentifierUrl()
+    && !addAccountAction
   ) {
     setStatus('Waiting for Google add-account page');
     scheduleAttempt(500);
-    return true;
-  }
-
-  const addAccountAction = shouldPreferGoogleAddAccount() ? findGoogleUseAnotherAccountAction() : null;
-  if (addAccountAction) {
-    setStatus('Choosing Google add account');
-    if (!activateActionElement(addAccountAction)) {
-      setStatus('Google add-account option not ready');
-      scheduleAttempt(300);
-      return true;
-    }
-
-    STATE.googleAddAccountPendingAt = Date.now();
-    STATE.emailSubmitted = false;
-    scheduleAttempt(700);
     return true;
   }
 
@@ -3278,6 +3335,20 @@ async function attemptKlingGoogleChooserStep(credential) {
     STATE.lastEmailSubmitAt = Date.now();
     STATE.emailSubmitted = true;
     STATE.passwordSubmitted = false;
+    scheduleAttempt(700);
+    return true;
+  }
+
+  if (addAccountAction) {
+    setStatus('Choosing Google add account');
+    if (!activateActionElement(addAccountAction)) {
+      setStatus('Google add-account option not ready');
+      scheduleAttempt(300);
+      return true;
+    }
+
+    STATE.googleAddAccountPendingAt = Date.now();
+    STATE.emailSubmitted = false;
     scheduleAttempt(700);
     return true;
   }
@@ -4163,10 +4234,26 @@ async function attemptEmailStep(credential) {
   // Never process the email step once already on the password challenge page.
   if (isGooglePasswordUrl()) return false;
 
+  const developerInfoDismissAction = findGoogleDeveloperInfoDismissAction();
+  if (developerInfoDismissAction) {
+    setStatus('Dismissing Google developer info');
+    if (!activateActionElement(developerInfoDismissAction)) {
+      setStatus('Google developer info dialog not ready');
+      scheduleAttempt(250);
+      return true;
+    }
+
+    STATE.googleAddAccountPendingAt = 0;
+    STATE.developerInfoDismissedAt = Date.now();
+    scheduleAttempt(400);
+    return true;
+  }
+
   const directAddAccountUrl = (
     isGoogleAccountChooserPage()
     && shouldPreferGoogleAddAccount()
     && !findGoogleEmailInput()
+    && !findGoogleUseAnotherAccountAction()
     && getGoogleAddAccountDirectUrl()
   );
   if (directAddAccountUrl) {
@@ -4178,40 +4265,10 @@ async function attemptEmailStep(credential) {
     }
   }
 
-  const developerInfoDismissAction = findGoogleDeveloperInfoDismissAction();
-  if (developerInfoDismissAction) {
-    setStatus('Dismissing Google developer info');
-    if (!activateActionElement(developerInfoDismissAction)) {
-      setStatus('Google developer info dialog not ready');
-      scheduleAttempt(250);
-      return true;
-    }
-
-    STATE.developerInfoDismissedAt = Date.now();
-    if (STATE.lastEmailSubmitAt) {
-      STATE.googleAddAccountPendingAt = Date.now();
-    }
-    scheduleAttempt(400);
-    return true;
-  }
-
   if (STATE.developerInfoDismissedAt && Date.now() - STATE.developerInfoDismissedAt < 1200) {
     setStatus('Developer info dismissed, returning to account chooser');
     scheduleAttempt(350);
     return true;
-  }
-
-  if (STATE.googleAddAccountPendingAt) {
-    const elapsed = Date.now() - STATE.googleAddAccountPendingAt;
-    if (findGoogleEmailInput() || isGoogleIdentifierUrl()) {
-      STATE.googleAddAccountPendingAt = 0;
-    } else if (elapsed < 5000) {
-      setStatus('Waiting for Google add-account redirect');
-      scheduleAttempt(500);
-      return true;
-    } else {
-      STATE.googleAddAccountPendingAt = 0;
-    }
   }
 
   const useAnotherAccountAction = (
@@ -4238,6 +4295,19 @@ async function attemptEmailStep(credential) {
     STATE.googleAddAccountPendingAt = Date.now();
     scheduleAttempt(450);
     return true;
+  }
+
+  if (STATE.googleAddAccountPendingAt) {
+    const elapsed = Date.now() - STATE.googleAddAccountPendingAt;
+    if (findGoogleEmailInput() || isGoogleIdentifierUrl()) {
+      STATE.googleAddAccountPendingAt = 0;
+    } else if (elapsed < 5000) {
+      setStatus('Waiting for Google add-account redirect');
+      scheduleAttempt(500);
+      return true;
+    } else {
+      STATE.googleAddAccountPendingAt = 0;
+    }
   }
 
   const accountChooserAction = findGoogleAccountChooserAction(credential);
