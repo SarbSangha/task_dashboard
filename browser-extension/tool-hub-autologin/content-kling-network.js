@@ -8,6 +8,7 @@
   const MAX_MEDIA_ASSETS = 8;
   const GENERATION_URL_RE = /(generate|generation|submit|create|infer|aigc|image|video|task)/i;
   const WALLET_URL_RE = /(balance|wallet|credits?|credit)/i;
+  const TRADE_HISTORY_URL_RE = /\/api\/account\/trade(?:[?#]|$)/i;
   const EXCLUDED_URL_RE = /(balance|wallet|account|user|profile|history|list|records?|assets?|works?|notifications?|message|comment|feed|search|recommend|config|price|pricing|package|membership|subscription)/i;
   const URL_RE = /(kling\.ai|klingai\.com)/i;
   const MEDIA_URL_RE = /\.(?:png|jpe?g|webp|gif|avif|mp4|webm|mov|m4v|m3u8)(?:[?#]|$)/i;
@@ -379,6 +380,18 @@
       : null;
   }
 
+  function normalizeTradeCreditAmount(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed >= 0) return null;
+    const absolute = Math.abs(parsed);
+    const scaled = absolute >= 100 && absolute % 100 === 0
+      ? absolute / 100
+      : absolute;
+    return Number.isInteger(scaled) && scaled > 0 && scaled <= MAX_REASONABLE_CREDIT_BURN
+      ? scaled
+      : null;
+  }
+
   function normalizeWalletBalanceValue(value) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed >= 0 && parsed <= 1000000
@@ -398,6 +411,49 @@
       const normalized = normalizeWalletBalanceValue(item);
       return normalized != null ? normalized : undefined;
     });
+  }
+
+  function pickOwnText(object, names) {
+    if (!isObject(object)) return '';
+    for (const name of names) {
+      if (!Object.prototype.hasOwnProperty.call(object, name)) continue;
+      const value = object[name];
+      if (typeof value === 'string' || typeof value === 'number') {
+        const text = `${value}`.trim();
+        if (text) return text;
+      }
+    }
+    return '';
+  }
+
+  function collectTradeHistoryRows(value) {
+    const rows = [];
+    const seen = new Set();
+    walkAll(value, (_key, item) => {
+      if (rows.length >= 80 || !isObject(item)) return;
+      const taskId = normalizeIdentifierValue(pickOwnText(item, ['taskId', 'task_id', 'taskID']));
+      const amountText = pickOwnText(item, ['amount', 'points', 'point', 'creditAmount', 'credits']);
+      const creditsBurned = normalizeTradeCreditAmount(amountText);
+      if (!taskId || creditsBurned == null) return;
+      const createTimeText = pickOwnText(item, ['createTime', 'createdAt', 'created_at', 'time', 'timestamp']);
+      const key = `${taskId}|${amountText}|${createTimeText}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({
+        taskId,
+        amount: Number(amountText),
+        creditsBurned,
+        createTime: Number(createTimeText || 0) || null,
+        taskType: pickOwnText(item, ['taskType', 'task_type', 'type']),
+        raw: {
+          taskId,
+          amount: Number(amountText),
+          createTime: Number(createTimeText || 0) || null,
+          taskType: pickOwnText(item, ['taskType', 'task_type', 'type']),
+        },
+      });
+    });
+    return rows;
   }
 
   function pickCreditValue(value, matcher) {
@@ -770,6 +826,29 @@
     } catch {}
   }
 
+  function postTradeHistoryTelemetry(payload) {
+    try {
+      if (!URL_RE.test(payload.url) || !TRADE_HISTORY_URL_RE.test(payload.url)) return;
+      const rows = collectTradeHistoryRows(payload.responseJson);
+      if (!rows.length) return;
+      window.postMessage({
+        source: SOURCE,
+        type: 'KLING_TRADE_HISTORY',
+        payload: {
+          rows,
+          method: payload.method,
+          url: payload.url,
+          ok: payload.ok,
+          httpStatus: payload.httpStatus,
+          source: payload.source,
+          transport: payload.transport || payload.source,
+          schemaVersion: 1,
+          capturedAt: Date.now(),
+        },
+      }, location.origin);
+    } catch {}
+  }
+
   window.addEventListener('message', (event) => {
     try {
       if (event?.source !== window) return;
@@ -829,6 +908,14 @@
             ok: response.ok,
             httpStatus: response.status,
           });
+          postTradeHistoryTelemetry({
+            source: 'trade_history_fetch_response',
+            method,
+            url,
+            responseJson: parseJson(responseText),
+            ok: response.ok,
+            httpStatus: response.status,
+          });
         }).catch(() => {});
       } catch {}
 
@@ -869,6 +956,14 @@
           });
           postWalletTelemetry({
             source: 'wallet_xhr_response',
+            method: this.__rmwKlingMethod || 'GET',
+            url: this.__rmwKlingUrl || '',
+            responseJson: parseJson(responseText),
+            ok: this.status >= 200 && this.status < 400,
+            httpStatus: this.status,
+          });
+          postTradeHistoryTelemetry({
+            source: 'trade_history_xhr_response',
             method: this.__rmwKlingMethod || 'GET',
             url: this.__rmwKlingUrl || '',
             responseJson: parseJson(responseText),

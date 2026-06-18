@@ -1556,6 +1556,8 @@ def _normalize_usage_text(value: Optional[str], max_length: int = 160) -> Option
 
 def _usage_source_rank(value: Optional[str]) -> int:
     normalized = f"{value or ''}".strip().lower()
+    if normalized == "trade_history_reconciled":
+        return 2
     if normalized == "wallet_reconciled":
         return 5
     if normalized in {"fetch_response", "xhr_response"}:
@@ -1623,6 +1625,7 @@ def _safe_credits_burned_value(
     is_kling_network_or_fallback = normalized_source in {
         "dom_balance_fallback",
         "expected_credit_lock",
+        "trade_history_reconciled",
         "wallet_reconciled",
         "fetch_response",
         "xhr_response",
@@ -2460,6 +2463,7 @@ async def report_extension_usage_event(
         "websocket_message",
         "eventsource_message",
         "network_response",
+        "trade_history_reconciled",
     }
     if credits_burned is not None and credits_burned > MAX_REASONABLE_KLING_CREDIT_BURN:
         merged_metadata = dict(payload.metadata or {})
