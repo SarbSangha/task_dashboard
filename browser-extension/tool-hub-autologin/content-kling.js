@@ -55,10 +55,12 @@ const PENDING_MEDIASOURCE_MAX_MS = 30000;
 const GENERATED_ASSET_SCAN_MS = 4000;
 const GENERATED_ASSET_SCAN_MAX_MS = 150000;
 const ACTIVE_GENERATION_MAX_MS = GENERATED_ASSET_SCAN_MAX_MS;
+const KLING_TIMESTAMP_FALLBACK_WINDOW_MS = 2000;
 const MAX_EXPECTED_LOCK_AUTO_BURN = 300;
 const SUPPORTED_KLING_USAGE_FALLBACK_MODES = new Set(['image', 'video', 'motion-control', 'avatar']);
 const CREDIT_SOURCE_PROFILES = {
   trade: { source: 'trade_history_reconciled', priority: 90, confidence: 0.9 },
+  tradeTime: { source: 'trade_history_time_reconciled', priority: 70, confidence: 0.7 },
   wallet: { source: 'wallet_reconciled', priority: 100, confidence: 1 },
   dom: { source: 'dom_balance_fallback', priority: 80, confidence: 0.8 },
   expected: { source: 'expected_credit_lock', priority: 60, confidence: 0.6 },
@@ -211,6 +213,7 @@ const USAGE_CTX = {
   assetScanSnapshot   : null,
   activeGenerationIds : new Map(),
   activeGeneration    : null,
+  recentTradeHistoryRows: [],
   pendingMediaSourcePayloads: [],
 };
 
@@ -1406,6 +1409,7 @@ function buildActiveGenerationFromSnapshot(snapshot, startedAt = Date.now()) {
     fingerprint: `${snapshot?.fingerprint || ''}`.trim(),
     promptText,
     prompt: promptText,
+    eventId: Number(snapshot?.eventId || 0) || null,
     startedAt,
     expiresAt: startedAt + ACTIVE_GENERATION_MAX_MS,
     klingTaskId: '',
@@ -1494,6 +1498,7 @@ function buildGenerationOwnershipMetadata(activeGeneration = USAGE_CTX.activeGen
   const taskIds = getActiveGenerationTaskIds(activeGeneration);
   return {
     internalGenerationId: activeGeneration.internalGenerationId || activeGeneration.generateIntentId,
+    backendEventId: Number(activeGeneration.eventId || USAGE_CTX.assetScanSnapshot?.eventId || 0) || null,
     klingTaskId: activeGeneration.klingTaskId || taskIds[0] || '',
     discoveredTaskIds: taskIds,
     ownershipStrategy: strategy || (taskIds.length ? 'kling_task_id' : 'dom_new_output_fallback'),
@@ -1508,6 +1513,14 @@ function buildGenerationOwnershipMetadata(activeGeneration = USAGE_CTX.activeGen
 
 function attachActiveGenerationOwnership(snapshot, strategy = '') {
   if (!snapshot || !isActiveGenerationValid()) return snapshot;
+  const activeEventId = Number(
+    USAGE_CTX.activeGeneration?.eventId
+      || USAGE_CTX.assetScanSnapshot?.eventId
+      || 0
+  ) || null;
+  if (activeEventId && !snapshot.eventId) {
+    snapshot.eventId = activeEventId;
+  }
   const ownership = buildGenerationOwnershipMetadata(USAGE_CTX.activeGeneration, strategy);
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
@@ -1518,6 +1531,16 @@ function attachActiveGenerationOwnership(snapshot, strategy = '') {
     snapshot.generationId = snapshot.generationId || ownership.klingTaskId;
   }
   return snapshot;
+}
+
+function eventIdForKnownKlingTaskId(taskId) {
+  const normalizedId = normalizeKlingTaskId(taskId);
+  if (!normalizedId || !isKnownKlingTaskId(normalizedId)) return null;
+  return Number(
+    USAGE_CTX.activeGeneration?.eventId
+      || USAGE_CTX.assetScanSnapshot?.eventId
+      || 0
+  ) || null;
 }
 
 function associateKlingTaskIdWithActiveGeneration(payload = {}) {
@@ -1550,6 +1573,7 @@ function associateKlingTaskIdWithActiveGeneration(payload = {}) {
   if (primaryId && !activeGeneration.klingTaskId) {
     activeGeneration.klingTaskId = primaryId;
   }
+  activeGeneration.eventId = Number(activeGeneration.eventId || USAGE_CTX.assetScanSnapshot?.eventId || 0) || null;
   activeGeneration.identifierChannel = `${payload.identifierChannel || payload.transport || payload.source || activeGeneration.identifierChannel || ''}`.slice(0, 120);
   activeGeneration.identifierSource = `${payload.identifierSource || activeGeneration.identifierSource || ''}`.slice(0, 120);
   activeGeneration.identifierKind = `${payload.identifierKind || activeGeneration.identifierKind || ''}`.slice(0, 80);
@@ -1841,6 +1865,10 @@ function clearActiveGeneration(reason = '') {
 }
 
 function stopGeneratedAssetDetection() {
+  reportPipelineDiagnosticsUpdate('asset_detection_stopped', {
+    assetDetectionStoppedReason: 'asset_detection_stopped',
+    assetDetectionStoppedAt: Date.now(),
+  });
   if (USAGE_CTX.assetScanTimer) {
     clearInterval(USAGE_CTX.assetScanTimer);
     USAGE_CTX.assetScanTimer = null;
@@ -2208,6 +2236,78 @@ function getUsageIdentityMetadata() {
   };
 }
 
+function buildPipelineDiagnostics(snapshot = {}, reason = '') {
+  const metadata = snapshot.metadata || {};
+  const activeGeneration = USAGE_CTX.activeGeneration;
+  const taskIds = [
+    ...collectKlingTaskIdsFromPayload({
+      klingTaskId: metadata.klingTaskId,
+      generationId: snapshot.generationId || metadata.generationId,
+      requestId: snapshot.requestId || metadata.requestId,
+      externalEventId: snapshot.externalEventId || metadata.externalEventId,
+      identifierCandidates: metadata.identifierCandidates,
+    }),
+    ...getActiveGenerationTaskIds(activeGeneration),
+  ].filter((id, index, list) => id && list.indexOf(id) === index);
+  const mediaAssets = Array.isArray(metadata.mediaAssets) ? metadata.mediaAssets : [];
+  const mediaAssetCount = mediaAssets.length || Number(metadata.mediaAssetCount || 0) || 0;
+  const creditsBurned = Number(snapshot.creditsBurned ?? 0);
+  const expectedCredits = Number(snapshot.expectedCredits ?? metadata.expectedCredits ?? 0);
+  const tradeHistory = metadata.tradeHistory && typeof metadata.tradeHistory === 'object' ? metadata.tradeHistory : null;
+  const tradeMetrics = metadata.tradeMetrics && typeof metadata.tradeMetrics === 'object' ? metadata.tradeMetrics : null;
+  const assetHistory = metadata.assetHistory && typeof metadata.assetHistory === 'object' ? metadata.assetHistory : null;
+  const assetMetrics = metadata.assetMetrics && typeof metadata.assetMetrics === 'object' ? metadata.assetMetrics : null;
+  const outputCaptured = mediaAssetCount > 0 || hasOwnedOutputForActiveGeneration();
+  const creditCaptured = (
+    Number.isFinite(creditsBurned) && creditsBurned > 0
+  ) || (
+    tradeHistory && Number(tradeHistory.creditsBurned || 0) > 0
+  );
+  const taskIdCaptured = taskIds.length > 0;
+  const promptCaptured = Boolean(normalizePromptCaptureValue(snapshot.promptText || activeGeneration?.promptText));
+  const networkSeen = Boolean(
+    metadata.capture === 'network'
+    || metadata.networkUrl
+    || metadata.networkMethod
+    || taskIdCaptured
+  );
+  const assetSeen = Boolean(assetHistory || assetMetrics?.assetRowsSeen);
+  const tradeSeen = Boolean(tradeHistory || tradeMetrics?.tradeRowsSeen);
+  const missingReasons = [];
+  if (!promptCaptured) missingReasons.push('prompt_missing');
+  if (!taskIdCaptured) missingReasons.push('task_id_missing');
+  if (!outputCaptured) missingReasons.push('output_missing');
+  if (!creditCaptured) missingReasons.push(tradeSeen ? 'credit_not_matched_from_trade' : 'credit_missing');
+  if (tradeMetrics?.tradeRowsSkippedUnknownTask > 0) missingReasons.push('trade_rows_skipped_unknown_task');
+
+  return {
+    reason: `${reason || metadata.stage || snapshot.status || 'usage_report'}`.slice(0, 120),
+    promptCaptured,
+    promptLength: normalizePromptCaptureValue(snapshot.promptText || activeGeneration?.promptText).length || 0,
+    backendEventId: Number(snapshot.eventId || activeGeneration?.eventId || USAGE_CTX.assetScanSnapshot?.eventId || 0) || null,
+    taskIdCaptured,
+    taskIds: taskIds.slice(0, 8),
+    primaryTaskId: taskIds[0] || '',
+    networkSeen,
+    assetSeen,
+    assetMatched: Boolean(assetHistory || assetMetrics?.assetRowsMatched),
+    tradeSeen,
+    tradeMatched: Boolean(tradeHistory || tradeMetrics?.tradeRowsMatched),
+    outputCaptured,
+    outputAssetCount: mediaAssetCount,
+    mediaSourceCaptured: mediaAssets.some(isMediaSourceCapturedAsset),
+    creditCaptured,
+    creditsBurned: creditCaptured ? (creditsBurned || Number(tradeHistory?.creditsBurned || 0) || null) : null,
+    expectedCredits: Number.isFinite(expectedCredits) && expectedCredits > 0 ? expectedCredits : null,
+    source: `${snapshot.source || metadata.source || ''}`.slice(0, 80),
+    status: `${snapshot.status || ''}`.slice(0, 80),
+    missingReasons,
+    hasMissingData: missingReasons.length > 0,
+    activeGenerationValid: isActiveGenerationValid(),
+    updatedAt: Date.now(),
+  };
+}
+
 function buildNetworkUsageDedupeKey(payload) {
   const creditsUsed = Number(payload?.creditsUsed);
   const visibleExpectedCredits = readVisibleExpectedGenerateCredits();
@@ -2252,19 +2352,54 @@ function isKnownKlingTaskId(taskId) {
   return getActiveGenerationTaskIds().includes(normalizedId);
 }
 
-function buildTradeHistoryUsageSnapshot(row = {}, payload = {}) {
+function normalizedPromptForMatch(value) {
+  return normalizePromptCaptureValue(value)
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function promptsMatchForFallback(left, right) {
+  const a = normalizedPromptForMatch(left);
+  const b = normalizedPromptForMatch(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const short = a.length <= b.length ? a : b;
+  const long = a.length <= b.length ? b : a;
+  return short.length >= 40 && long.includes(short);
+}
+
+function timestampMatchesActiveGeneration(createTime) {
+  const timestamp = Number(createTime || 0);
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || !isActiveGenerationValid()) return false;
+  return Math.abs(timestamp - Number(USAGE_CTX.activeGeneration.startedAt || 0)) <= KLING_TIMESTAMP_FALLBACK_WINDOW_MS;
+}
+
+function canFallbackMatchActiveGeneration({ prompt = '', createTime = null, requirePrompt = false } = {}) {
+  if (!isActiveGenerationValid()) return false;
+  if (getActiveGenerationTaskIds().length) return false;
+  const promptMatches = promptsMatchForFallback(prompt, USAGE_CTX.activeGeneration.promptText);
+  const timeMatches = timestampMatchesActiveGeneration(createTime);
+  return requirePrompt ? (promptMatches && timeMatches) : timeMatches;
+}
+
+function buildTradeHistoryUsageSnapshot(row = {}, payload = {}, options = {}) {
   const taskId = normalizeKlingTaskId(row.taskId);
   const creditsBurned = normalizeKlingTradeCredits(row.creditsBurned);
   if (!taskId || creditsBurned == null) return null;
   const createTime = Number(row.createTime || 0) || null;
   const capturedAt = Number(payload.capturedAt || Date.now());
-  const tradeProfile = CREDIT_SOURCE_PROFILES.trade;
+  const tradeProfile = options.matchStrategy === 'timestamp'
+    ? CREDIT_SOURCE_PROFILES.tradeTime
+    : CREDIT_SOURCE_PROFILES.trade;
   const credentialUsageMetadata = readCredentialUsageMetadata();
   const usageIdentityMetadata = getUsageIdentityMetadata();
   const eventDate = createTime ? buildLocalDateValue(new Date(createTime)) : buildLocalDateValue(new Date(capturedAt));
   const amount = Number(row.amount || 0) || null;
+  const eventId = eventIdForKnownKlingTaskId(taskId);
 
   return {
+    eventId,
     eventType: 'network_generation',
     eventDate,
     status: 'settled',
@@ -2298,6 +2433,8 @@ function buildTradeHistoryUsageSnapshot(row = {}, payload = {}) {
         creditsBurned,
         createTime,
         taskType: `${row.taskType || ''}`.slice(0, 160),
+        matchStrategy: options.matchStrategy || 'task_id',
+        timestampFallbackWindowMs: options.matchStrategy === 'timestamp' ? KLING_TIMESTAMP_FALLBACK_WINDOW_MS : null,
         capturedAt,
         networkUrl: `${payload.url || ''}`.slice(0, 1000),
         networkMethod: `${payload.method || ''}`.slice(0, 16),
@@ -2319,6 +2456,68 @@ function buildTradeHistoryUsageSnapshot(row = {}, payload = {}) {
       klingAccountLabel: readTrackedKlingAccountLabel(),
     },
   };
+}
+
+function rememberRecentTradeHistoryRows(rows = [], payload = {}) {
+  const capturedAt = Number(payload.capturedAt || Date.now());
+  for (const row of rows) {
+    const taskId = normalizeKlingTaskId(row?.taskId);
+    if (!taskId) continue;
+    USAGE_CTX.recentTradeHistoryRows.push({
+      row,
+      payload,
+      taskId,
+      capturedAt,
+    });
+  }
+  USAGE_CTX.recentTradeHistoryRows = USAGE_CTX.recentTradeHistoryRows
+    .filter((entry) => Date.now() - Number(entry.capturedAt || 0) <= 10 * 60 * 1000)
+    .slice(-160);
+}
+
+function findRecentTradeHistoryRowByTaskId(taskId) {
+  const normalizedId = normalizeKlingTaskId(taskId);
+  if (!normalizedId) return null;
+  for (let index = USAGE_CTX.recentTradeHistoryRows.length - 1; index >= 0; index -= 1) {
+    const entry = USAGE_CTX.recentTradeHistoryRows[index];
+    if (normalizeKlingTaskId(entry?.taskId) === normalizedId) return entry;
+  }
+  return null;
+}
+
+function reportTradeHistoryRow(row = {}, payload = {}, matchStrategy = 'task_id') {
+  const snapshot = buildTradeHistoryUsageSnapshot(row, payload, { matchStrategy });
+  if (!snapshot) return 'invalid';
+  const dedupeKey = [
+    snapshot.source,
+    snapshot.generationId,
+    snapshot.creditsBurned,
+    snapshot.metadata?.tradeHistory?.createTime || '',
+  ].filter(Boolean).join('|');
+  if (dedupeKey && USAGE_CTX.networkEventKeys.has(dedupeKey)) return 'duplicate';
+  if (dedupeKey) {
+    USAGE_CTX.networkEventKeys.set(dedupeKey, Date.now());
+    broadcastNetworkUsageClaim(dedupeKey);
+  }
+  if (snapshot.generationId) {
+    USAGE_CTX.activeGenerationIds.set(snapshot.generationId, Date.now());
+  }
+  reportKlingUsage(snapshot)
+    .then((response) => {
+      const eventId = Number(response?.event?.id || 0);
+      debugUsageTelemetry('trade_history_reconciled', {
+        eventId,
+        taskId: snapshot.generationId,
+        creditsBurned: snapshot.creditsBurned,
+        source: snapshot.source,
+        matchStrategy,
+      });
+    })
+    .catch((error) => {
+      if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) return;
+      console.warn('[RMW Kling] Trade history reconciliation failed', error);
+    });
+  return 'reconciled';
 }
 
 function setupUsageBroadcastChannel() {
@@ -2422,6 +2621,13 @@ function buildGenerateUsageSnapshot(generateButton) {
 async function reportKlingUsage(snapshot) {
   const usageTicket = loadStoredUsageTicket();
   const extensionTicket = loadStoredTicket();
+  const pipelineDiagnostics = buildPipelineDiagnostics(snapshot, snapshot.metadata?.stage || snapshot.status || snapshot.source);
+  snapshot.metadata = {
+    ...(snapshot.metadata || {}),
+    pipelineDiagnostics,
+    pipelineMissingReasons: pipelineDiagnostics.missingReasons,
+    pipelineHasMissingData: pipelineDiagnostics.hasMissingData,
+  };
 
   const response = await msg({
     type: 'TOOL_HUB_REPORT_USAGE_EVENT',
@@ -2467,6 +2673,36 @@ async function reportKlingUsage(snapshot) {
   }
 
   return response;
+}
+
+function reportPipelineDiagnosticsUpdate(reason = '', metadataPatch = {}) {
+  const baseSnapshot = USAGE_CTX.assetScanSnapshot;
+  const eventId = Number(
+    baseSnapshot?.eventId
+      || USAGE_CTX.activeGeneration?.eventId
+      || 0
+  ) || null;
+  if (!baseSnapshot || !eventId) return;
+  reportKlingUsage({
+    ...baseSnapshot,
+    eventId,
+    status: baseSnapshot.status || 'captured',
+    creditsBurned: baseSnapshot.creditsBurned ?? null,
+    metadata: {
+      ...(baseSnapshot.metadata || {}),
+      ...metadataPatch,
+      lifecycleEvent: {
+        stage: 'diagnostics',
+        source: 'pipeline_diagnostics',
+        transport: reason || 'diagnostics_update',
+        capturedAt: Date.now(),
+      },
+    },
+  })
+    .catch((error) => {
+      if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) return;
+      console.warn('[RMW Kling] Pipeline diagnostics update failed', error);
+    });
 }
 
 function pruneNetworkEventKeys(now = Date.now()) {
@@ -2744,51 +2980,39 @@ function handleKlingNetworkUsageMessage(event) {
       tradeRowsInvalid: 0,
       tradeRowsReconciled: 0,
     };
+    rememberRecentTradeHistoryRows(rows, payload);
     pruneNetworkEventKeys(now);
     for (const row of rows) {
       const tradeTaskId = normalizeKlingTaskId(row?.taskId);
-      if (!isKnownKlingTaskId(tradeTaskId)) {
+      const matchedByTaskId = isKnownKlingTaskId(tradeTaskId);
+      const matchedByTimestamp = Boolean(tradeTaskId) && !matchedByTaskId && canFallbackMatchActiveGeneration({
+        createTime: row?.createTime,
+      });
+      if (!matchedByTaskId && !matchedByTimestamp) {
         tradeMetrics.tradeRowsSkippedUnknownTask += 1;
         continue;
       }
+      if (matchedByTimestamp) {
+        associateKlingTaskIdWithActiveGeneration({
+          klingTaskId: tradeTaskId,
+          generationId: tradeTaskId,
+          source: 'trade_history_time_reconciled',
+          identifierSource: 'trade_history_timestamp',
+          identifierKind: 'task_id',
+          ownershipConfidence: CREDIT_SOURCE_PROFILES.tradeTime.confidence,
+        });
+      }
       tradeMetrics.tradeRowsMatched += 1;
-      const snapshot = buildTradeHistoryUsageSnapshot(row, payload);
-      if (!snapshot) {
+      const reportResult = reportTradeHistoryRow(row, payload, matchedByTimestamp ? 'timestamp' : 'task_id');
+      if (reportResult === 'invalid') {
         tradeMetrics.tradeRowsInvalid += 1;
         continue;
       }
-      const dedupeKey = [
-        snapshot.source,
-        snapshot.generationId,
-        snapshot.creditsBurned,
-        snapshot.metadata?.tradeHistory?.createTime || '',
-      ].filter(Boolean).join('|');
-      if (dedupeKey && USAGE_CTX.networkEventKeys.has(dedupeKey)) {
+      if (reportResult === 'duplicate') {
         tradeMetrics.tradeRowsDuplicate += 1;
         continue;
       }
-      if (dedupeKey) {
-        USAGE_CTX.networkEventKeys.set(dedupeKey, now);
-        broadcastNetworkUsageClaim(dedupeKey);
-      }
-      if (snapshot.generationId) {
-        USAGE_CTX.activeGenerationIds.set(snapshot.generationId, now);
-      }
       tradeMetrics.tradeRowsReconciled += 1;
-      reportKlingUsage(snapshot)
-        .then((response) => {
-          const eventId = Number(response?.event?.id || 0);
-          debugUsageTelemetry('trade_history_reconciled', {
-            eventId,
-            taskId: snapshot.generationId,
-            creditsBurned: snapshot.creditsBurned,
-            source: snapshot.source,
-          });
-        })
-        .catch((error) => {
-          if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) return;
-          console.warn('[RMW Kling] Trade history reconciliation failed', error);
-        });
     }
     debugUsageTelemetry('trade_history_metrics', {
       ...tradeMetrics,
@@ -2797,6 +3021,15 @@ function handleKlingNetworkUsageMessage(event) {
       httpStatus: Number(payload.httpStatus || 0) || null,
       capturedAt: Number(payload.capturedAt || now),
     });
+    reportPipelineDiagnosticsUpdate('trade_history_metrics', {
+      tradeMetrics: {
+        ...tradeMetrics,
+        knownTaskIdCount: getActiveGenerationTaskIds().length + USAGE_CTX.activeGenerationIds.size,
+        source: payload.source || '',
+        httpStatus: Number(payload.httpStatus || 0) || null,
+        capturedAt: Number(payload.capturedAt || now),
+      },
+    });
     if (tradeMetrics.tradeRowsSkippedUnknownTask > 0) {
       debugUsageTelemetry('trade_history_skipped_unknown_task_id', {
         skippedCount: tradeMetrics.tradeRowsSkippedUnknownTask,
@@ -2804,6 +3037,88 @@ function handleKlingNetworkUsageMessage(event) {
         knownTaskIdCount: getActiveGenerationTaskIds().length + USAGE_CTX.activeGenerationIds.size,
       });
     }
+    return;
+  }
+  if (event?.data?.type === 'KLING_ASSET_HISTORY') {
+    const payload = event.data.payload || {};
+    const rows = Array.isArray(payload.rows) ? payload.rows.slice(0, 80) : [];
+    const assetMetrics = {
+      assetRowsSeen: rows.length,
+      assetRowsMatched: 0,
+      assetRowsSkippedUnknownGeneration: 0,
+      assetRowsWithOutput: 0,
+      assetRowsRecoveredTaskId: 0,
+    };
+    for (const row of rows) {
+      const assetTaskId = normalizeKlingTaskId(row?.taskId);
+      const matchedByTaskId = isKnownKlingTaskId(assetTaskId);
+      const matchedByPromptTime = !matchedByTaskId && canFallbackMatchActiveGeneration({
+        prompt: row?.prompt,
+        createTime: row?.createTime,
+        requirePrompt: true,
+      });
+      if (!matchedByTaskId && !matchedByPromptTime) {
+        assetMetrics.assetRowsSkippedUnknownGeneration += 1;
+        continue;
+      }
+      assetMetrics.assetRowsMatched += 1;
+      if (assetTaskId && matchedByPromptTime) {
+        assetMetrics.assetRowsRecoveredTaskId += 1;
+        associateKlingTaskIdWithActiveGeneration({
+          klingTaskId: assetTaskId,
+          generationId: assetTaskId,
+          promptText: row?.prompt,
+          source: 'asset_history_prompt_time',
+          identifierSource: 'asset_history_prompt_time',
+          identifierKind: 'task_id',
+          ownershipConfidence: 0.72,
+        });
+        const recentTrade = findRecentTradeHistoryRowByTaskId(assetTaskId);
+        if (recentTrade) {
+          const reportResult = reportTradeHistoryRow(
+            recentTrade.row,
+            recentTrade.payload,
+            'asset_recovered_task_id'
+          );
+          debugUsageTelemetry('asset_recovered_task_id_trade_retry', {
+            taskId: assetTaskId,
+            reportResult,
+          });
+        }
+      }
+      const mediaAssets = normalizeCapturedMediaAssets(row?.mediaAssets, 'asset_history');
+      if (mediaAssets.length) {
+        assetMetrics.assetRowsWithOutput += 1;
+        reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, mediaAssets);
+      }
+      reportPipelineDiagnosticsUpdate('asset_history_match', {
+        assetHistory: {
+          taskId: assetTaskId || '',
+          promptMatched: matchedByPromptTime,
+          taskIdMatched: matchedByTaskId,
+          taskIdSource: matchedByTaskId
+            ? 'known_task_id'
+            : (assetTaskId && matchedByPromptTime ? 'asset_prompt_time_recovered' : ''),
+          matchWindowMs: matchedByPromptTime ? KLING_TIMESTAMP_FALLBACK_WINDOW_MS : null,
+          createTime: Number(row?.createTime || 0) || null,
+          showPrice: `${row?.showPrice || ''}`.slice(0, 80),
+          taskType: `${row?.taskType || ''}`.slice(0, 160),
+          mediaAssetCount: mediaAssets.length,
+          capturedAt: Number(payload.capturedAt || Date.now()),
+          networkUrl: `${payload.url || ''}`.slice(0, 1000),
+        },
+      });
+    }
+    reportPipelineDiagnosticsUpdate('asset_history_metrics', {
+      assetMetrics: {
+        ...assetMetrics,
+        knownTaskIdCount: getActiveGenerationTaskIds().length + USAGE_CTX.activeGenerationIds.size,
+        source: payload.source || '',
+        httpStatus: Number(payload.httpStatus || 0) || null,
+        capturedAt: Number(payload.capturedAt || Date.now()),
+      },
+    });
+    debugUsageTelemetry('asset_history_metrics', assetMetrics);
     return;
   }
   if (event?.data?.type !== 'KLING_NETWORK_USAGE') return;
@@ -3177,6 +3492,9 @@ function scheduleGenerateUsageReport(generateButton) {
       const eventId = Number(response?.event?.id || 0);
       if (eventId > 0) {
         snapshot.eventId = eventId;
+        if (isActiveGenerationValid() && snapshotMatchesActiveGeneration(snapshot)) {
+          USAGE_CTX.activeGeneration.eventId = eventId;
+        }
       }
       debugUsageTelemetry('generate_intent_saved', {
         eventId,

@@ -9,6 +9,7 @@
   const GENERATION_URL_RE = /(generate|generation|submit|create|infer|aigc|image|video|task)/i;
   const WALLET_URL_RE = /(balance|wallet|credits?|credit)/i;
   const TRADE_HISTORY_URL_RE = /\/api\/account\/trade(?:[?#]|$)/i;
+  const ASSET_HISTORY_URL_RE = /\/api\/(?:task\/status|[^?#]*(?:assets?|works?|materials?|history|records?|list))(?:[?#]|$)/i;
   const EXCLUDED_URL_RE = /(balance|wallet|account|user|profile|history|list|records?|assets?|works?|notifications?|message|comment|feed|search|recommend|config|price|pricing|package|membership|subscription)/i;
   const URL_RE = /(kling\.ai|klingai\.com)/i;
   const MEDIA_URL_RE = /\.(?:png|jpe?g|webp|gif|avif|mp4|webm|mov|m4v|m3u8)(?:[?#]|$)/i;
@@ -334,12 +335,13 @@
     return originScore + kindScore;
   }
 
-  function collectIdentifierCandidates({ responseJson, requestJson, responseText, requestText }) {
+  function collectIdentifierCandidates({ responseJson, requestJson, responseText, requestText, urlText }) {
     const merged = [
       ...collectIdentifierCandidatesFromObject(responseJson, 'response_json'),
       ...collectIdentifierCandidatesFromObject(requestJson, 'request_json'),
       ...collectIdentifierCandidatesFromText(responseText, 'response_text'),
       ...collectIdentifierCandidatesFromText(requestText, 'request_text'),
+      ...collectIdentifierCandidatesFromText(urlText, 'url'),
     ];
     const byKey = new Map();
     for (const candidate of merged) {
@@ -426,6 +428,36 @@
     return '';
   }
 
+  function pickNamedValue(object, names) {
+    const direct = pickOwnText(object, names);
+    if (direct) return direct;
+    const targetNames = new Set(names.map((name) => `${name}`.trim().toLowerCase()));
+    let found = '';
+    walkAll(object, (key, item, parent) => {
+      if (found || !isObject(parent)) return;
+      if (!/^(name|key|field|label)$/i.test(key)) return;
+      const nameText = `${item || ''}`.trim().toLowerCase();
+      if (!targetNames.has(nameText)) return;
+      const value = parent.value ?? parent.val ?? parent.text ?? parent.content;
+      if (typeof value === 'string' || typeof value === 'number') {
+        found = `${value}`.trim();
+      }
+    });
+    return found;
+  }
+
+  function pickNestedTaskId(object) {
+    const direct = normalizeIdentifierValue(pickOwnText(object, ['taskId', 'task_id', 'taskID', 'id']));
+    if (direct) return direct;
+    return walk(object, (key, item, parent) => {
+      if (!/^id$/i.test(key)) return undefined;
+      const parentKeys = isObject(parent) ? Object.keys(parent).join('_') : '';
+      if (!/(task|work|generation|job)/i.test(parentKeys)) return undefined;
+      const normalized = normalizeIdentifierValue(item);
+      return normalized || undefined;
+    }) || '';
+  }
+
   function collectTradeHistoryRows(value) {
     const rows = [];
     const seen = new Set();
@@ -451,6 +483,32 @@
           createTime: Number(createTimeText || 0) || null,
           taskType: pickOwnText(item, ['taskType', 'task_type', 'type']),
         },
+      });
+    });
+    return rows;
+  }
+
+  function collectAssetHistoryRows(value) {
+    const rows = [];
+    const seen = new Set();
+    walkAll(value, (_key, item) => {
+      if (rows.length >= 80 || !isObject(item)) return;
+      const mediaAssets = collectMediaAssetsFromPayload(item).filter((asset) => asset.assetRole !== 'input');
+      const prompt = pickNamedValue(item, ['prompt', 'text', 'query', 'positivePrompt', 'positive_prompt']);
+      const taskId = pickNestedTaskId(item);
+      const createTimeText = pickNamedValue(item, ['createTime', 'createdAt', 'created_at', 'time', 'timestamp']);
+      const showPriceText = pickNamedValue(item, ['showPrice', 'price', 'credits', 'amount', 'cost']);
+      if (!taskId && !prompt && !mediaAssets.length) return;
+      const key = `${taskId}|${createTimeText}|${prompt.slice(0, 120)}|${mediaAssets.map((asset) => asset.url).join(',')}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({
+        taskId,
+        prompt: prompt.slice(0, 4000),
+        createTime: Number(createTimeText || 0) || null,
+        showPrice: showPriceText,
+        taskType: pickNamedValue(item, ['taskType', 'task_type', 'type']),
+        mediaAssets,
       });
     });
     return rows;
@@ -666,12 +724,14 @@
     const responseText = payload.responseText || '';
     const requestText = payload.requestText || '';
 
-    const telemetryText = `${requestText}\n${responseText}`;
+    const urlText = payload.url || '';
+    const telemetryText = `${urlText}\n${requestText}\n${responseText}`;
     const identifierCandidates = collectIdentifierCandidates({
       responseJson,
       requestJson,
       responseText,
       requestText,
+      urlText,
     });
     const selectedIdentifier = selectPrimaryKlingTaskId(identifierCandidates);
     const klingTaskId = selectedIdentifier?.value || '';
@@ -849,6 +909,29 @@
     } catch {}
   }
 
+  function postAssetHistoryTelemetry(payload) {
+    try {
+      if (!URL_RE.test(payload.url) || !ASSET_HISTORY_URL_RE.test(payload.url)) return;
+      const rows = collectAssetHistoryRows(payload.responseJson);
+      if (!rows.length) return;
+      window.postMessage({
+        source: SOURCE,
+        type: 'KLING_ASSET_HISTORY',
+        payload: {
+          rows,
+          method: payload.method,
+          url: payload.url,
+          ok: payload.ok,
+          httpStatus: payload.httpStatus,
+          source: payload.source,
+          transport: payload.transport || payload.source,
+          schemaVersion: 1,
+          capturedAt: Date.now(),
+        },
+      }, location.origin);
+    } catch {}
+  }
+
   window.addEventListener('message', (event) => {
     try {
       if (event?.source !== window) return;
@@ -916,6 +999,14 @@
             ok: response.ok,
             httpStatus: response.status,
           });
+          postAssetHistoryTelemetry({
+            source: 'asset_history_fetch_response',
+            method,
+            url,
+            responseJson: parseJson(responseText),
+            ok: response.ok,
+            httpStatus: response.status,
+          });
         }).catch(() => {});
       } catch {}
 
@@ -964,6 +1055,14 @@
           });
           postTradeHistoryTelemetry({
             source: 'trade_history_xhr_response',
+            method: this.__rmwKlingMethod || 'GET',
+            url: this.__rmwKlingUrl || '',
+            responseJson: parseJson(responseText),
+            ok: this.status >= 200 && this.status < 400,
+            httpStatus: this.status,
+          });
+          postAssetHistoryTelemetry({
+            source: 'asset_history_xhr_response',
             method: this.__rmwKlingMethod || 'GET',
             url: this.__rmwKlingUrl || '',
             responseJson: parseJson(responseText),
