@@ -1488,6 +1488,16 @@ def _serialize_utc_datetime(value: Optional[datetime]) -> Optional[str]:
     return normalized.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+INDIA_TIMEZONE = timezone(timedelta(hours=5, minutes=30))
+
+
+def _serialize_india_datetime(value: Optional[datetime]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return normalized.astimezone(INDIA_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _normalize_status_label(value: Optional[str], fallback: str = "captured") -> str:
     normalized = f"{value or fallback}".strip().lower()
     return normalized or fallback
@@ -1824,6 +1834,62 @@ def _usage_event_media_links(metadata: Optional[dict]) -> str:
         label = " ".join(part for part in [role, asset_type] if part).strip()
         links.append(f"{label}: {url}" if label else url)
     return "\n".join(links)
+
+
+def _truth_label(value: object) -> str:
+    return "Yes" if bool(value) else "No"
+
+
+def _join_export_values(values: object) -> str:
+    if not isinstance(values, list):
+        return ""
+    return ", ".join(f"{value}" for value in values if f"{value}".strip())
+
+
+def _usage_event_task_id_stage(metadata: Optional[dict], event: Optional[ITPortalToolUsageEvent] = None) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    asset_history = metadata.get("assetHistory") if isinstance(metadata.get("assetHistory"), dict) else {}
+    trade_history = metadata.get("tradeHistory") if isinstance(metadata.get("tradeHistory"), dict) else {}
+    pipeline = metadata.get("pipelineDiagnostics") if isinstance(metadata.get("pipelineDiagnostics"), dict) else {}
+    if asset_history.get("taskIdSource") == "asset_prompt_time_recovered":
+        return "Asset prompt+time recovered"
+    if trade_history.get("matchStrategy") == "asset_recovered_task_id":
+        return "Asset recovered taskId -> trade"
+    if trade_history.get("matchStrategy") == "timestamp":
+        return "Trade timestamp fallback"
+    if metadata.get("klingTaskId") or (pipeline.get("primaryTaskId") if isinstance(pipeline, dict) else ""):
+        source = f"{metadata.get('identifierSource') or metadata.get('ownershipSource') or ''}".strip()
+        kind = f"{metadata.get('identifierKind') or metadata.get('ownershipKind') or ''}".strip()
+        channel = f"{metadata.get('identifierChannel') or metadata.get('ownershipChannel') or ''}".strip()
+        details = " / ".join(part for part in [source, kind, channel] if part)
+        return f"Network/status{f' ({details})' if details else ''}"
+    if event and (event.generation_id or event.request_id):
+        return "Network/status"
+    return "Missing"
+
+
+def _usage_event_task_ids(metadata: Optional[dict], event: Optional[ITPortalToolUsageEvent] = None) -> str:
+    ids: list[str] = []
+
+    def push(value: object) -> None:
+        text_value = f"{value or ''}".strip()
+        if text_value and text_value not in ids:
+            ids.append(text_value)
+
+    if event:
+        push(event.generation_id)
+        push(event.request_id)
+    if isinstance(metadata, dict):
+        push(metadata.get("klingTaskId"))
+        ownership = metadata.get("ownership") if isinstance(metadata.get("ownership"), dict) else {}
+        push(ownership.get("klingTaskId"))
+        pipeline = metadata.get("pipelineDiagnostics") if isinstance(metadata.get("pipelineDiagnostics"), dict) else {}
+        for task_id in pipeline.get("taskIds") if isinstance(pipeline.get("taskIds"), list) else []:
+            push(task_id)
+        for task_id in metadata.get("discoveredTaskIds") if isinstance(metadata.get("discoveredTaskIds"), list) else []:
+            push(task_id)
+    return ", ".join(ids[:8])
 
 
 def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
@@ -3837,8 +3903,9 @@ async def export_kling_usage_report(
     for event, user, _tool in event_rows:
         safe_event = _usage_event_to_safe_dict(event)
         metadata = safe_event.get("metadata") if isinstance(safe_event.get("metadata"), dict) else {}
-        created_at = _serialize_utc_datetime(event.created_at) or ""
+        created_at = _serialize_india_datetime(event.created_at) or ""
         prompt_capture = metadata.get("promptCapture") if isinstance(metadata.get("promptCapture"), dict) else {}
+        pipeline = metadata.get("pipelineDiagnostics") if isinstance(metadata.get("pipelineDiagnostics"), dict) else {}
         prompt = f"{event.prompt_text or prompt_capture.get('text') or ''}".strip()
         rows.append([
             created_at,
@@ -3848,10 +3915,42 @@ async def export_kling_usage_report(
             prompt,
             _usage_event_media_links(metadata),
             safe_event.get("creditsBurned") if safe_event.get("creditsBurned") is not None else "",
+            _truth_label(pipeline.get("promptCaptured")),
+            _truth_label(pipeline.get("taskIdCaptured") or _usage_event_task_ids(metadata, event)),
+            _usage_event_task_ids(metadata, event),
+            _usage_event_task_id_stage(metadata, event),
+            _truth_label(pipeline.get("networkSeen")),
+            _truth_label(pipeline.get("assetSeen")),
+            _truth_label(pipeline.get("assetMatched")),
+            _truth_label(pipeline.get("outputCaptured")),
+            _truth_label(pipeline.get("tradeSeen")),
+            _truth_label(pipeline.get("tradeMatched")),
+            _truth_label(pipeline.get("creditCaptured") or safe_event.get("creditsBurned") is not None),
+            _join_export_values(pipeline.get("missingReasons") or metadata.get("pipelineMissingReasons")),
         ])
 
     workbook = _build_simple_xlsx(
-        ["Date/Time", "User", "User Email", "Kling ID", "Prompt", "Media Links", "Credit"],
+        [
+            "Date/Time",
+            "User",
+            "User Email",
+            "Kling ID",
+            "Prompt",
+            "Media Links",
+            "Credit",
+            "Prompt Captured",
+            "TaskId Captured",
+            "Task IDs",
+            "TaskId Capture Stage",
+            "Network Seen",
+            "Asset Seen",
+            "Asset Matched",
+            "Output Captured",
+            "Trade Seen",
+            "Trade Matched",
+            "Credit Captured",
+            "Missing Reasons",
+        ],
         rows,
         sheet_name="Kling Usage",
     )
