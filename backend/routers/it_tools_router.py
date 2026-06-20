@@ -1858,14 +1858,12 @@ def _usage_event_task_id_stage(metadata: Optional[dict], event: Optional[ITPorta
         return "Asset recovered taskId -> trade"
     if trade_history.get("matchStrategy") == "timestamp":
         return "Trade timestamp fallback"
-    if metadata.get("klingTaskId") or (pipeline.get("primaryTaskId") if isinstance(pipeline, dict) else ""):
+    if _usage_event_task_ids(metadata, event):
         source = f"{metadata.get('identifierSource') or metadata.get('ownershipSource') or ''}".strip()
         kind = f"{metadata.get('identifierKind') or metadata.get('ownershipKind') or ''}".strip()
         channel = f"{metadata.get('identifierChannel') or metadata.get('ownershipChannel') or ''}".strip()
         details = " / ".join(part for part in [source, kind, channel] if part)
         return f"Network/status{f' ({details})' if details else ''}"
-    if event and (event.generation_id or event.request_id):
-        return "Network/status"
     return "Missing"
 
 
@@ -1874,6 +1872,8 @@ def _usage_event_task_ids(metadata: Optional[dict], event: Optional[ITPortalTool
 
     def push(value: object) -> None:
         text_value = f"{value or ''}".strip()
+        if re.match(r"^(?:kgen|net|dom|trade)_", text_value, flags=re.IGNORECASE):
+            return
         if text_value and text_value not in ids:
             ids.append(text_value)
 
@@ -1892,9 +1892,142 @@ def _usage_event_task_ids(metadata: Optional[dict], event: Optional[ITPortalTool
     return ", ".join(ids[:8])
 
 
+def _split_usage_event_kling_ids(metadata: Optional[dict], event: Optional[ITPortalToolUsageEvent] = None) -> tuple[str, str, str]:
+    all_ids = [
+        value.strip()
+        for value in _usage_event_task_ids(metadata, event).split(",")
+        if value.strip()
+    ]
+    numeric_ids: list[str] = []
+    generation_ids: list[str] = []
+    other_ids: list[str] = []
+    for value in all_ids:
+        if re.fullmatch(r"\d{9,}", value):
+            numeric_ids.append(value)
+        elif value.startswith("kgen_"):
+            generation_ids.append(value)
+        else:
+            other_ids.append(value)
+    return (
+        ", ".join(numeric_ids[:6]),
+        ", ".join(generation_ids[:4]),
+        ", ".join(other_ids[:4]),
+    )
+
+
+def _usage_pipeline_value(metadata: Optional[dict], event: Optional[ITPortalToolUsageEvent], key: str):
+    if not isinstance(metadata, dict):
+        metadata = {}
+    pipeline = metadata.get("pipelineDiagnostics") if isinstance(metadata.get("pipelineDiagnostics"), dict) else {}
+    asset_history = metadata.get("assetHistory") if isinstance(metadata.get("assetHistory"), dict) else {}
+    trade_history = metadata.get("tradeHistory") if isinstance(metadata.get("tradeHistory"), dict) else {}
+    asset_metrics = metadata.get("assetMetrics") if isinstance(metadata.get("assetMetrics"), dict) else {}
+    trade_metrics = metadata.get("tradeMetrics") if isinstance(metadata.get("tradeMetrics"), dict) else {}
+    media_assets = metadata.get("mediaAssets") if isinstance(metadata.get("mediaAssets"), list) else []
+    prompt_capture = metadata.get("promptCapture") if isinstance(metadata.get("promptCapture"), dict) else {}
+
+    if key == "promptCaptured":
+        return bool(pipeline.get(key) or (event.prompt_text if event else "") or prompt_capture.get("text"))
+    if key == "taskIdCaptured":
+        return bool(pipeline.get(key) or _usage_event_task_ids(metadata, event))
+    if key == "networkSeen":
+        return bool(pipeline.get(key) or (
+            metadata.get("capture") == "network"
+            or metadata.get("networkUrl")
+            or metadata.get("networkMethod")
+            or metadata.get("klingTaskId")
+            or (event and (event.generation_id or event.request_id))
+        ))
+    if key == "assetSeen":
+        return bool(pipeline.get(key) or asset_history or asset_metrics.get("assetEndpointSeen") or asset_metrics.get("assetRowsSeen"))
+    if key == "assetMatched":
+        return bool(pipeline.get(key) or asset_history or asset_metrics.get("assetRowsMatched"))
+    if key == "outputCaptured":
+        return bool(pipeline.get(key) or media_assets or metadata.get("mediaAssetCount"))
+    if key == "tradeSeen":
+        return bool(pipeline.get(key) or trade_history or trade_metrics.get("tradeEndpointSeen") or trade_metrics.get("tradeRowsSeen"))
+    if key == "tradeMatched":
+        return bool(pipeline.get(key) or trade_history or trade_metrics.get("tradeRowsMatched"))
+    if key == "creditCaptured":
+        return bool(pipeline.get(key) or (event and event.credits_burned is not None) or trade_history.get("creditsBurned"))
+    return None
+
+
+def _usage_event_canonical_output_key(metadata: Optional[dict]) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    media_assets = metadata.get("mediaAssets") if isinstance(metadata.get("mediaAssets"), list) else []
+    candidates = []
+    for item in media_assets:
+        if not isinstance(item, dict):
+            continue
+        role = f"{item.get('assetRole') or ''}".strip().lower()
+        if role == "input":
+            continue
+        url = f"{item.get('url') or ''}".strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        parsed = urlparse(url)
+        path = parsed.path or ""
+        lowered = path.lower()
+        if "prompt-library-resources" in lowered:
+            continue
+        if not re.search(r"(?:output|result|generated|avremux|\.mp4$|\.webm$|\.mov$)", lowered):
+            continue
+        if "multi_bitrate" in lowered:
+            path = path.split("_multi_bitrate", 1)[0]
+        candidates.append(f"{parsed.netloc.lower()}{path}")
+    return sorted(set(candidates))[0] if candidates else ""
+
+
+def _usage_internal_generation_id(metadata: Optional[dict]) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    ownership = metadata.get("ownership") if isinstance(metadata.get("ownership"), dict) else {}
+    pipeline = metadata.get("pipelineDiagnostics") if isinstance(metadata.get("pipelineDiagnostics"), dict) else {}
+    generation_pipeline = pipeline.get("generationPipeline") if isinstance(pipeline.get("generationPipeline"), dict) else {}
+    for value in (
+        metadata.get("canonicalInternalGenerationId"),
+        metadata.get("internalGenerationId"),
+        metadata.get("generateIntentId"),
+        ownership.get("internalGenerationId"),
+        generation_pipeline.get("currentIntentId"),
+    ):
+        normalized = f"{value or ''}".strip()
+        if normalized:
+            return normalized[:160]
+    return ""
+
+
+def _usage_event_dedupe_quality(event: ITPortalToolUsageEvent) -> tuple:
+    metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
+    safe_credits = _safe_credits_burned_value(event.credits_burned, event.expected_credits, metadata, event.source)
+    generation_id = f"{event.generation_id or ''}".strip()
+    real_numeric_id = bool(re.fullmatch(r"\d{9,}", generation_id))
+    media_count = len(metadata.get("mediaAssets")) if isinstance(metadata.get("mediaAssets"), list) else 0
+    return (
+        1 if safe_credits is not None else 0,
+        1 if real_numeric_id else 0,
+        _usage_source_rank(event.source),
+        media_count,
+        event.created_at or datetime.min,
+    )
+
+
 def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
     metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
     safe_credits = _safe_credits_burned_value(event.credits_burned, event.expected_credits, metadata, event.source)
+    canonical_output = _usage_event_canonical_output_key(metadata)
+    normalized_prompt = f"{event.prompt_text or ''}".strip().lower()
+    if canonical_output and normalized_prompt:
+        return (
+            "output_prompt",
+            int(event.tool_id or 0),
+            int(event.user_id or 0),
+            int(event.credential_id or 0),
+            hashlib.sha1(normalized_prompt.encode("utf-8")).hexdigest()[:20],
+            canonical_output,
+        )
     if (
         event.event_type == "network_generation"
         and safe_credits is None
@@ -1977,13 +2110,13 @@ def _usage_event_duplicate_key(event: ITPortalToolUsageEvent) -> tuple:
 def _dedupe_usage_events(events: list[ITPortalToolUsageEvent]) -> list[ITPortalToolUsageEvent]:
     deduped = []
     seen = set()
-    for event in sorted(events, key=lambda item: item.created_at or datetime.min, reverse=True):
+    for event in sorted(events, key=_usage_event_dedupe_quality, reverse=True):
         key = _usage_event_duplicate_key(event)
         if key in seen:
             continue
         seen.add(key)
         deduped.append(event)
-    return deduped
+    return sorted(deduped, key=lambda item: item.created_at or datetime.min, reverse=True)
 
 
 def _normalize_prompt_text(value: Optional[str]) -> Optional[str]:
@@ -2542,6 +2675,7 @@ async def report_extension_usage_event(
         credits_burned = _safe_credits_burned_value(credits_burned, expected_credits, merged_metadata, source)
     else:
         merged_metadata = dict(payload.metadata or {})
+    internal_generation_id = _usage_internal_generation_id(merged_metadata)
     if (
         normalized_event_type == "generate_click"
         and f"{source or ''}".strip().lower() == "generate_intent"
@@ -2609,6 +2743,7 @@ async def report_extension_usage_event(
 
     usage_event = None
     action_name = "tool_usage_reported"
+    dedupe_match_reason = "create_new"
 
     if payload.event_id:
         usage_event = (
@@ -2622,6 +2757,7 @@ async def report_extension_usage_event(
         )
         if not usage_event:
             raise HTTPException(status_code=404, detail="Usage event not found")
+        dedupe_match_reason = "explicit_event_id"
     else:
         stable_dedupe_filters = []
         if generation_id:
@@ -2653,6 +2789,36 @@ async def report_extension_usage_event(
                 .order_by(ITPortalToolUsageEvent.created_at.desc())
                 .first()
             )
+            if usage_event:
+                dedupe_match_reason = "stable_id_same_credential"
+
+        if not usage_event and internal_generation_id:
+            internal_query = (
+                db.query(ITPortalToolUsageEvent)
+                .filter(
+                    ITPortalToolUsageEvent.tool_id == tool.id,
+                    ITPortalToolUsageEvent.user_id == current_user.id,
+                    ITPortalToolUsageEvent.created_at >= datetime.utcnow() - timedelta(hours=6),
+                )
+            )
+            if credential:
+                internal_query = internal_query.filter(
+                    or_(
+                        ITPortalToolUsageEvent.credential_id == credential.id,
+                        ITPortalToolUsageEvent.credential_id.is_(None),
+                    )
+                )
+            internal_candidates = internal_query.order_by(ITPortalToolUsageEvent.created_at.desc()).limit(100).all()
+            usage_event = next(
+                (
+                    candidate
+                    for candidate in internal_candidates
+                    if _usage_internal_generation_id(candidate.metadata_json) == internal_generation_id
+                ),
+                None,
+            )
+            if usage_event:
+                dedupe_match_reason = "metadata_internal_generation_id"
 
         if not usage_event and dedupe_filters:
             dedupe_query = (
@@ -2671,6 +2837,8 @@ async def report_extension_usage_event(
                     )
                 )
             usage_event = dedupe_query.order_by(ITPortalToolUsageEvent.created_at.desc()).first()
+            if usage_event:
+                dedupe_match_reason = "stable_or_fingerprint_any_credential"
         elif normalized_event_type == "generate_click":
             duplicate_window_start = datetime.utcnow() - timedelta(seconds=8)
             duplicate_query = (
@@ -2696,6 +2864,8 @@ async def report_extension_usage_event(
             if payload.model_label:
                 duplicate_query = duplicate_query.filter(ITPortalToolUsageEvent.model_label == payload.model_label.strip())
             usage_event = duplicate_query.order_by(ITPortalToolUsageEvent.created_at.desc()).first()
+            if usage_event:
+                dedupe_match_reason = "generate_click_time_window"
 
     if usage_event:
         if usage_event.user_id != current_user.id:
@@ -2771,8 +2941,28 @@ async def report_extension_usage_event(
         usage_event.schema_version = schema_version or usage_event.schema_version
         usage_event.confidence = final_confidence
         usage_event.metadata_json = _merge_usage_metadata(usage_event.metadata_json, merged_metadata)
+        usage_event.metadata_json["lastDedupeDecision"] = {
+            "decision": "update",
+            "reason": dedupe_match_reason,
+            "incomingEventId": int(payload.event_id or 0) or None,
+            "incomingExternalEventId": external_event_id,
+            "incomingGenerationId": generation_id,
+            "incomingRequestId": request_id,
+            "internalGenerationId": internal_generation_id,
+            "updatedAt": _serialize_utc_datetime(datetime.utcnow()),
+        }
         action_name = "tool_usage_updated"
     else:
+        merged_metadata["lastDedupeDecision"] = {
+            "decision": "create",
+            "reason": dedupe_match_reason,
+            "incomingEventId": int(payload.event_id or 0) or None,
+            "incomingExternalEventId": external_event_id,
+            "incomingGenerationId": generation_id,
+            "incomingRequestId": request_id,
+            "internalGenerationId": internal_generation_id,
+            "createdAt": _serialize_utc_datetime(datetime.utcnow()),
+        }
         usage_event = ITPortalToolUsageEvent(
             tool_id=tool.id,
             credential_id=credential.id if credential else None,
@@ -2817,6 +3007,10 @@ async def report_extension_usage_event(
             "generationId": generation_id,
             "requestId": request_id,
             "fingerprint": fingerprint,
+            "eventId": usage_event.id,
+            "decision": "update" if action_name == "tool_usage_updated" else "create",
+            "dedupeMatchReason": dedupe_match_reason,
+            "internalGenerationId": internal_generation_id,
         },
     )
     db.commit()
@@ -2825,6 +3019,12 @@ async def report_extension_usage_event(
     return {
         "success": True,
         "event": _usage_event_to_safe_dict(usage_event),
+        "dedupeDecision": {
+            "decision": "update" if action_name == "tool_usage_updated" else "create",
+            "reason": dedupe_match_reason,
+            "eventId": usage_event.id,
+            "internalGenerationId": internal_generation_id,
+        },
     }
 
 
@@ -3905,8 +4105,8 @@ async def export_kling_usage_report(
         metadata = safe_event.get("metadata") if isinstance(safe_event.get("metadata"), dict) else {}
         created_at = _serialize_india_datetime(event.created_at) or ""
         prompt_capture = metadata.get("promptCapture") if isinstance(metadata.get("promptCapture"), dict) else {}
-        pipeline = metadata.get("pipelineDiagnostics") if isinstance(metadata.get("pipelineDiagnostics"), dict) else {}
         prompt = f"{event.prompt_text or prompt_capture.get('text') or ''}".strip()
+        numeric_kling_ids, kgen_ids, other_kling_ids = _split_usage_event_kling_ids(metadata, event)
         rows.append([
             created_at,
             user.name or "",
@@ -3915,18 +4115,21 @@ async def export_kling_usage_report(
             prompt,
             _usage_event_media_links(metadata),
             safe_event.get("creditsBurned") if safe_event.get("creditsBurned") is not None else "",
-            _truth_label(pipeline.get("promptCaptured")),
-            _truth_label(pipeline.get("taskIdCaptured") or _usage_event_task_ids(metadata, event)),
+            _truth_label(_usage_pipeline_value(metadata, event, "promptCaptured")),
+            _truth_label(_usage_pipeline_value(metadata, event, "taskIdCaptured")),
             _usage_event_task_ids(metadata, event),
+            numeric_kling_ids,
+            kgen_ids,
+            other_kling_ids,
             _usage_event_task_id_stage(metadata, event),
-            _truth_label(pipeline.get("networkSeen")),
-            _truth_label(pipeline.get("assetSeen")),
-            _truth_label(pipeline.get("assetMatched")),
-            _truth_label(pipeline.get("outputCaptured")),
-            _truth_label(pipeline.get("tradeSeen")),
-            _truth_label(pipeline.get("tradeMatched")),
-            _truth_label(pipeline.get("creditCaptured") or safe_event.get("creditsBurned") is not None),
-            _join_export_values(pipeline.get("missingReasons") or metadata.get("pipelineMissingReasons")),
+            _truth_label(_usage_pipeline_value(metadata, event, "networkSeen")),
+            _truth_label(_usage_pipeline_value(metadata, event, "assetSeen")),
+            _truth_label(_usage_pipeline_value(metadata, event, "assetMatched")),
+            _truth_label(_usage_pipeline_value(metadata, event, "outputCaptured")),
+            _truth_label(_usage_pipeline_value(metadata, event, "tradeSeen")),
+            _truth_label(_usage_pipeline_value(metadata, event, "tradeMatched")),
+            _truth_label(_usage_pipeline_value(metadata, event, "creditCaptured")),
+            _join_export_values((metadata.get("pipelineDiagnostics") or {}).get("missingReasons") or metadata.get("pipelineMissingReasons")),
         ])
 
     workbook = _build_simple_xlsx(
@@ -3941,6 +4144,9 @@ async def export_kling_usage_report(
             "Prompt Captured",
             "TaskId Captured",
             "Task IDs",
+            "Numeric Kling IDs",
+            "Kgen IDs",
+            "Other IDs",
             "TaskId Capture Stage",
             "Network Seen",
             "Asset Seen",

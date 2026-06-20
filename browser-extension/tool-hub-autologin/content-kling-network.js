@@ -8,15 +8,20 @@
   const MAX_MEDIA_ASSETS = 8;
   const GENERATION_URL_RE = /(generate|generation|submit|create|infer|aigc|image|video|task)/i;
   const WALLET_URL_RE = /(balance|wallet|credits?|credit)/i;
-  const TRADE_HISTORY_URL_RE = /\/api\/account\/trade(?:[?#]|$)/i;
-  const ASSET_HISTORY_URL_RE = /\/api\/(?:task\/status|[^?#]*(?:assets?|works?|materials?|history|records?|list))(?:[?#]|$)/i;
+  const TRADE_HISTORY_URL_RE = /\/(?:api|v\d+)\/[^?#]*(?:account\/trade|trade|consume|consumption|credit[^?#]*(?:history|record|detail)|billing[^?#]*(?:history|record))(?:[/?#]|$)/i;
+  const ASSET_HISTORY_URL_RE = /\/(?:api|v\d+)\/[^?#]*(?:task\/status|task[^?#]*(?:detail|info|list|history|record|result)|assets?|works?|materials?|history|records?|project[^?#]*(?:asset|work))(?:[/?#]|$)/i;
   const EXCLUDED_URL_RE = /(balance|wallet|account|user|profile|history|list|records?|assets?|works?|notifications?|message|comment|feed|search|recommend|config|price|pricing|package|membership|subscription)/i;
   const URL_RE = /(kling\.ai|klingai\.com)/i;
   const MEDIA_URL_RE = /\.(?:png|jpe?g|webp|gif|avif|mp4|webm|mov|m4v|m3u8)(?:[?#]|$)/i;
   const MAX_REASONABLE_CREDIT_BURN = 3000;
   const GENERATE_INTENT_WINDOW_MS = 30000;
+  const ENDPOINT_PROBE_CANDIDATES = [
+    { label: 'trade', path: '/api/account/trade?page=1&pageSize=1' },
+    { label: 'asset', path: '/api/task/status?taskId=__rmw_capture_probe__' },
+  ];
   let recentGenerateIntentUntil = 0;
   let lastGoogleOauthPopupRecoveryAt = 0;
+  let rawFetch = null;
   const blobSourceUrls = new WeakMap();
 
   function toText(value) {
@@ -446,10 +451,95 @@
     return found;
   }
 
+  function parseEmbeddedJsonObject(value) {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    if (!/^[\[{]/.test(text) || text.length > MAX_TEXT_LENGTH) return null;
+    return parseJson(text);
+  }
+
+  function describeValueShape(value) {
+    if (Array.isArray(value)) return `array(${value.length})`;
+    if (isObject(value)) return `object(${Object.keys(value).slice(0, 6).join('|')})`;
+    return typeof value;
+  }
+
+  function collectPaginatedAssetItems(value) {
+    const items = [];
+    const seen = new Set();
+    const pushItem = (item) => {
+      if (!isObject(item)) return;
+      if (seen.has(item)) return;
+      seen.add(item);
+      items.push(item);
+    };
+    const visit = (node, depth = 0) => {
+      if (depth > 7 || node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (const item of node.slice(0, 500)) {
+          if (isObject(item)) pushItem(item);
+          visit(item, depth + 1);
+        }
+        return;
+      }
+      if (!isObject(node)) return;
+      for (const key of [
+        'history',
+        'list',
+        'records',
+        'items',
+        'works',
+        'data',
+        'result',
+        'results',
+        'rows',
+        'pageData',
+        'page_data',
+      ]) {
+        if (Object.prototype.hasOwnProperty.call(node, key)) {
+          visit(node[key], depth + 1);
+        }
+      }
+    };
+    visit(value);
+    return items;
+  }
+
+  function collectKlingWorksOutputAssets(item) {
+    const roots = [];
+    if (Array.isArray(item?.works)) roots.push(...item.works);
+    if (Array.isArray(item?.workList)) roots.push(...item.workList);
+    if (Array.isArray(item?.resources)) roots.push(...item.resources);
+    if (Array.isArray(item?.materials)) roots.push(...item.materials);
+    if (isObject(item?.work)) roots.push(item.work);
+    if (isObject(item?.resource)) roots.push(item.resource);
+    if (isObject(item?.result)) roots.push(item.result);
+    if (!roots.length) return [];
+    return collectMediaAssetsFromPayload(...roots)
+      .map((asset) => ({
+        ...asset,
+        assetRole: 'output',
+        source: asset.source === 'json' ? 'asset_history_works' : asset.source,
+      }));
+  }
+
   function pickNestedTaskId(object) {
-    const direct = normalizeIdentifierValue(pickOwnText(object, ['taskId', 'task_id', 'taskID', 'id']));
+    const direct = normalizeIdentifierValue(pickOwnText(object, [
+      'taskId',
+      'task_id',
+      'taskID',
+      'task',
+      'jobId',
+      'job_id',
+      'generationId',
+      'generation_id',
+    ]));
     if (direct) return direct;
     return walk(object, (key, item, parent) => {
+      if (/^(taskId|task_id|taskID|jobId|job_id|generationId|generation_id)$/i.test(key)) {
+        const normalized = normalizeIdentifierValue(item);
+        return normalized || undefined;
+      }
       if (!/^id$/i.test(key)) return undefined;
       const parentKeys = isObject(parent) ? Object.keys(parent).join('_') : '';
       if (!/(task|work|generation|job)/i.test(parentKeys)) return undefined;
@@ -458,11 +548,37 @@
     }) || '';
   }
 
+  function pickNestedWorkId(object) {
+    const direct = normalizeIdentifierValue(pickOwnText(object, [
+      'workId',
+      'work_id',
+      'worksId',
+      'assetId',
+      'asset_id',
+      'id',
+    ]));
+    if (direct) return direct;
+    return walk(object, (key, item, parent) => {
+      if (!/^(workId|work_id|worksId|assetId|asset_id|id)$/i.test(key)) return undefined;
+      const parentKeys = isObject(parent) ? Object.keys(parent).join('_') : '';
+      if (!/(work|asset|resource|material|result)/i.test(parentKeys)) return undefined;
+      const normalized = normalizeIdentifierValue(item);
+      return normalized || undefined;
+    }) || '';
+  }
+
   function collectTradeHistoryRows(value) {
     const rows = [];
     const seen = new Set();
+    let candidateObjects = 0;
+    const sampleKeys = [];
     walkAll(value, (_key, item) => {
       if (rows.length >= 80 || !isObject(item)) return;
+      candidateObjects += 1;
+      if (sampleKeys.length < 5) {
+        const keys = Object.keys(item).slice(0, 12).join(',');
+        if (keys && !sampleKeys.includes(keys)) sampleKeys.push(keys);
+      }
       const taskId = normalizeIdentifierValue(pickOwnText(item, ['taskId', 'task_id', 'taskID']));
       const amountText = pickOwnText(item, ['amount', 'points', 'point', 'creditAmount', 'credits']);
       const creditsBurned = normalizeTradeCreditAmount(amountText);
@@ -485,32 +601,126 @@
         },
       });
     });
+    rows.parserDiagnostics = {
+      candidateObjects,
+      sampleKeys,
+    };
     return rows;
   }
 
   function collectAssetHistoryRows(value) {
     const rows = [];
     const seen = new Set();
-    walkAll(value, (_key, item) => {
-      if (rows.length >= 80 || !isObject(item)) return;
-      const mediaAssets = collectMediaAssetsFromPayload(item).filter((asset) => asset.assetRole !== 'input');
-      const prompt = pickNamedValue(item, ['prompt', 'text', 'query', 'positivePrompt', 'positive_prompt']);
+    let candidateObjects = 0;
+    let objectsWithAnySignal = 0;
+    const sampleKeys = [];
+    const wrapperShapes = [];
+    const paginatedItems = collectPaginatedAssetItems(value);
+    const sourceItems = paginatedItems.length ? paginatedItems : (() => {
+      const collected = [];
+      walkAll(value, (_key, item) => {
+        if (collected.length >= 500 || !isObject(item)) return;
+        collected.push(item);
+      });
+      return collected;
+    })();
+
+    walkAll(value, (key, item, parent) => {
+      if (wrapperShapes.length >= 8 || !isObject(parent)) return;
+      if (!/^(history|list|records|items|works|data|result|results|rows|pageData|page_data)$/i.test(key)) return;
+      const shape = `${key}:${describeValueShape(item)}`;
+      if (!wrapperShapes.includes(shape)) wrapperShapes.push(shape);
+    });
+
+    for (const item of sourceItems) {
+      if (rows.length >= 160 || !isObject(item)) continue;
+      candidateObjects += 1;
+      if (sampleKeys.length < 5) {
+        const keys = Object.keys(item)
+          .slice(0, 12)
+          .join(',');
+        if (keys && !sampleKeys.includes(keys)) sampleKeys.push(keys);
+      }
+      const embeddedRoots = [];
+      for (const embeddedKey of [
+        'arguments',
+        'argument',
+        'params',
+        'param',
+        'config',
+        'payload',
+        'extra',
+        'extend',
+        'detail',
+      ]) {
+        const parsed = parseEmbeddedJsonObject(item[embeddedKey]);
+        if (parsed) embeddedRoots.push(parsed);
+      }
+      const roots = [item, ...embeddedRoots];
+      const mediaAssets = mergeMediaAssetLists(
+        collectKlingWorksOutputAssets(item),
+        collectMediaAssetsFromPayload(...roots).filter((asset) => asset.assetRole !== 'input')
+      );
+      const prompt = pickNamedValue(item, [
+        'prompt',
+        'text',
+        'query',
+        'positivePrompt',
+        'positive_prompt',
+        'inputPrompt',
+        'input_prompt',
+        'description',
+        'desc',
+      ]) || embeddedRoots.map((root) => pickNamedValue(root, [
+        'prompt',
+        'text',
+        'query',
+        'positivePrompt',
+        'positive_prompt',
+        'inputPrompt',
+        'input_prompt',
+      ])).find(Boolean) || '';
       const taskId = pickNestedTaskId(item);
-      const createTimeText = pickNamedValue(item, ['createTime', 'createdAt', 'created_at', 'time', 'timestamp']);
-      const showPriceText = pickNamedValue(item, ['showPrice', 'price', 'credits', 'amount', 'cost']);
-      if (!taskId && !prompt && !mediaAssets.length) return;
-      const key = `${taskId}|${createTimeText}|${prompt.slice(0, 120)}|${mediaAssets.map((asset) => asset.url).join(',')}`;
-      if (seen.has(key)) return;
+      const workId = pickNestedWorkId(item);
+      const createTimeText = pickNamedValue(item, [
+        'createTime',
+        'create_time',
+        'createdAt',
+        'created_at',
+        'ctime',
+        'time',
+        'timestamp',
+        'submitTime',
+        'submit_time',
+        'finishTime',
+        'finish_time',
+      ]);
+      const showPriceText = pickNamedValue(item, ['showPrice', 'show_price', 'price', 'credits', 'amount', 'cost']);
+      const taskType = pickNamedValue(item, ['taskType', 'task_type', 'type', 'scene', 'mode']);
+      if (taskId || workId || prompt || mediaAssets.length || createTimeText || showPriceText) {
+        objectsWithAnySignal += 1;
+      }
+      if (!taskId && !prompt && !mediaAssets.length && !createTimeText && !showPriceText && !taskType) continue;
+      const key = `${taskId || workId}|${createTimeText}|${prompt.slice(0, 120)}|${mediaAssets.map((asset) => asset.url).join(',')}`;
+      if (seen.has(key)) continue;
       seen.add(key);
       rows.push({
         taskId,
+        workId,
         prompt: prompt.slice(0, 4000),
         createTime: Number(createTimeText || 0) || null,
         showPrice: showPriceText,
-        taskType: pickNamedValue(item, ['taskType', 'task_type', 'type']),
+        taskType,
         mediaAssets,
       });
-    });
+    }
+    rows.parserDiagnostics = {
+      candidateObjects,
+      objectsWithAnySignal,
+      sampleKeys,
+      wrapperShapes,
+      paginatedItems: paginatedItems.length,
+    };
     return rows;
   }
 
@@ -525,8 +735,8 @@
 
   function inferMediaType(value, key = '') {
     const haystack = `${key || ''}\n${value || ''}`.toLowerCase();
-    if (/\.(mp4|webm|mov|m4v|m3u8)(?:[?#]|$)/i.test(haystack) || /\b(video|mp4|m3u8)\b/i.test(haystack)) return 'video';
-    if (/\.(png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(haystack) || /\b(image|img|cover|thumbnail|poster)\b/i.test(haystack)) return 'image';
+    if (/\.(mp4|webm|mov|m4v|m3u8)(?:[?#]|$)/i.test(haystack) || /\b(video|mp4|m3u8|playurl|video_url|videourl)\b/i.test(haystack)) return 'video';
+    if (/\.(png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(haystack) || /\b(image|img|cover|thumbnail|poster|coverurl|cover_url)\b/i.test(haystack)) return 'image';
     return 'media';
   }
 
@@ -548,12 +758,7 @@
     const normalizedKey = `${key || ''}`.trim().toLowerCase();
     if (!url) return false;
     if (/\.origin(?:[?#]|$)/i.test(url)) return false;
-    const klingCdnSizeMatch = url.match(/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kimg\/[^?#]+:(\d+)x(\d+)\.webp(?:[?#]|$)/i);
-    if (klingCdnSizeMatch) {
-      const width = Number(klingCdnSizeMatch[1]);
-      const height = Number(klingCdnSizeMatch[2]);
-      if (Number.isFinite(width) && Number.isFinite(height) && height > 0 && width / height >= 2.5) return true;
-    }
+    if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kimg\/[^?#]*(?:loading|placeholder|empty|default|sample|example)[^?#]*\.webp(?:[?#]|$)/i.test(url)) return true;
     if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web[-/][^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
     if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
     if (/\/(?:assets?|static|web-assets?|kling-web)\/[^?#]*(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example)[^/]*(?:\.(?:png|jpe?g|webp|gif|avif|svg))?(?:[?#]|$)/i.test(url)) return true;
@@ -576,7 +781,7 @@
       }
     }
     if (/^\/\//.test(text)) return `${location.protocol}${text}`;
-    if (MEDIA_URL_RE.test(text) && /^\/[^/]/.test(text)) {
+    if ((MEDIA_URL_RE.test(text) || /\/(?:kimg|kos|bs2|material|resource|upload)\//i.test(text)) && /^\/[^/]/.test(text)) {
       try {
         return new URL(text, location.href).href;
       } catch {}
@@ -827,6 +1032,27 @@
       const extracted = extractTelemetry(payload);
       const hasRecentGenerateIntent = Date.now() <= recentGenerateIntentUntil;
       const hasDiscoveredTaskId = Boolean(extracted.klingTaskId || extracted.generationId || extracted.requestId);
+      if (hasRecentGenerateIntent || hasDiscoveredTaskId) {
+        window.postMessage({
+          source: SOURCE,
+          type: 'KLING_GENERATION_PIPELINE_SIGNAL',
+          payload: {
+            generationRequestDetected: hasRecentGenerateIntent,
+            taskIdDetected: hasDiscoveredTaskId,
+            klingTaskId: extracted.klingTaskId,
+            generationId: extracted.generationId,
+            requestId: extracted.requestId,
+            identifierCandidates: extracted.identifierCandidates,
+            identifierSource: extracted.identifierSource,
+            identifierKind: extracted.identifierKind,
+            method: payload.method,
+            url: payload.url,
+            source: payload.source,
+            transport: payload.transport || payload.source,
+            capturedAt: Date.now(),
+          },
+        }, location.origin);
+      }
       const hasCorrelatableSignal = Boolean(
         extracted.generationId
         || extracted.requestId
@@ -848,6 +1074,8 @@
           ...extracted,
           method: payload.method,
           url: payload.url,
+          isAssetHistoryEndpoint: ASSET_HISTORY_URL_RE.test(payload.url),
+          isTradeHistoryEndpoint: TRADE_HISTORY_URL_RE.test(payload.url),
           ok: payload.ok,
           httpStatus: payload.httpStatus,
           source: payload.source,
@@ -890,12 +1118,16 @@
     try {
       if (!URL_RE.test(payload.url) || !TRADE_HISTORY_URL_RE.test(payload.url)) return;
       const rows = collectTradeHistoryRows(payload.responseJson);
-      if (!rows.length) return;
+      const parserDiagnostics = rows.parserDiagnostics || {};
       window.postMessage({
         source: SOURCE,
         type: 'KLING_TRADE_HISTORY',
         payload: {
           rows,
+          rowsSeen: rows.length,
+          parserDiagnostics,
+          jsonParsed: Boolean(payload.responseJson),
+          responseTextLength: Number(payload.responseTextLength || 0) || `${payload.responseText || ''}`.length,
           method: payload.method,
           url: payload.url,
           ok: payload.ok,
@@ -912,13 +1144,18 @@
   function postAssetHistoryTelemetry(payload) {
     try {
       if (!URL_RE.test(payload.url) || !ASSET_HISTORY_URL_RE.test(payload.url)) return;
+      if (/\/api\/(?:works\/mixPublish|invitation\/record\/list)(?:[/?#]|$)/i.test(payload.url)) return;
       const rows = collectAssetHistoryRows(payload.responseJson);
-      if (!rows.length) return;
+      const parserDiagnostics = rows.parserDiagnostics || {};
       window.postMessage({
         source: SOURCE,
         type: 'KLING_ASSET_HISTORY',
         payload: {
           rows,
+          rowsSeen: rows.length,
+          parserDiagnostics,
+          jsonParsed: Boolean(payload.responseJson),
+          responseTextLength: Number(payload.responseTextLength || 0) || `${payload.responseText || ''}`.length,
           method: payload.method,
           url: payload.url,
           ok: payload.ok,
@@ -932,11 +1169,82 @@
     } catch {}
   }
 
+  async function probeKlingEndpoint(candidate) {
+    const startedAt = Date.now();
+    const label = `${candidate?.label || 'endpoint'}`.slice(0, 40);
+    const path = `${candidate?.path || ''}`;
+    try {
+      const fetcher = rawFetch || window.fetch;
+      if (typeof fetcher !== 'function') {
+        return { label, ok: false, status: 'no_fetch', durationMs: Date.now() - startedAt };
+      }
+      const url = new URL(path, location.origin).href;
+      const response = await fetcher.call(window, url, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      const text = await response.clone().text().catch(() => '');
+      const json = parseJson(limitText(text));
+      const rows = label === 'trade'
+        ? collectTradeHistoryRows(json).length
+        : collectAssetHistoryRows(json).length;
+      return {
+        label,
+        ok: response.status < 500,
+        status: response.status,
+        rows,
+        url: compactEndpointForProbe(url),
+        durationMs: Date.now() - startedAt,
+      };
+    } catch (error) {
+      return {
+        label,
+        ok: false,
+        status: `${error?.name || 'error'}`.slice(0, 60),
+        durationMs: Date.now() - startedAt,
+      };
+    }
+  }
+
+  function compactEndpointForProbe(value = '') {
+    try {
+      const url = new URL(`${value || ''}`, location.href);
+      return `${url.pathname}${url.search ? '?' : ''}`.slice(0, 120);
+    } catch {
+      return `${value || ''}`.slice(0, 120);
+    }
+  }
+
+  async function postDiagnosticPong(payload = {}) {
+    const endpointProbes = [];
+    for (const candidate of ENDPOINT_PROBE_CANDIDATES) {
+      endpointProbes.push(await probeKlingEndpoint(candidate));
+    }
+    try {
+      window.postMessage({
+        source: SOURCE,
+        type: 'KLING_CAPTURE_DIAGNOSTIC_PONG',
+        payload: {
+          pingId: `${payload.pingId || ''}`.slice(0, 120),
+          dummy: true,
+          hookInstalled: true,
+          endpointProbes,
+          respondedAt: Date.now(),
+        },
+      }, location.origin);
+    } catch {}
+  }
+
   window.addEventListener('message', (event) => {
     try {
       if (event?.source !== window) return;
       if (event?.origin !== location.origin) return;
       if (event?.data?.source !== 'rmw-kling-content-telemetry') return;
+      if (event?.data?.type === 'KLING_CAPTURE_DIAGNOSTIC_PING') {
+        postDiagnosticPong(event.data.payload || {});
+        return;
+      }
       if (event?.data?.type !== 'KLING_GENERATE_INTENT') return;
       recentGenerateIntentUntil = Math.max(recentGenerateIntentUntil, Date.now() + GENERATE_INTENT_WINDOW_MS);
     } catch {}
@@ -961,6 +1269,7 @@
   }
 
   const originalFetch = window.fetch;
+  rawFetch = originalFetch;
   if (typeof originalFetch === 'function') {
     window.fetch = async function rmwKlingFetch(input, init) {
       const method = `${init?.method || input?.method || 'GET'}`.toUpperCase();
@@ -971,6 +1280,7 @@
       try {
         const cloned = response.clone();
         cloned.text().then((text) => {
+          const responseJson = parseJson(text);
           const responseText = limitText(text);
           postTelemetry({
             source: 'fetch_response',
@@ -979,7 +1289,8 @@
             requestText,
             requestJson: parseJson(requestText),
             responseText,
-            responseJson: parseJson(responseText),
+            responseTextLength: `${text || ''}`.length,
+            responseJson,
             ok: response.ok,
             httpStatus: response.status,
           });
@@ -987,7 +1298,7 @@
             source: 'wallet_fetch_response',
             method,
             url,
-            responseJson: parseJson(responseText),
+            responseJson,
             ok: response.ok,
             httpStatus: response.status,
           });
@@ -995,7 +1306,9 @@
             source: 'trade_history_fetch_response',
             method,
             url,
-            responseJson: parseJson(responseText),
+            responseText,
+            responseTextLength: `${text || ''}`.length,
+            responseJson,
             ok: response.ok,
             httpStatus: response.status,
           });
@@ -1003,7 +1316,9 @@
             source: 'asset_history_fetch_response',
             method,
             url,
-            responseJson: parseJson(responseText),
+            responseText,
+            responseTextLength: `${text || ''}`.length,
+            responseJson,
             ok: response.ok,
             httpStatus: response.status,
           });
@@ -1033,7 +1348,20 @@
           if (this.response instanceof Blob && isLikelyMediaResponse(this.__rmwKlingUrl || this.responseURL || '', contentType)) {
             rememberBlobSource(this.response, this.__rmwKlingUrl || this.responseURL || '');
           }
-          const responseText = limitText(this.responseType && this.responseType !== 'text' ? '' : this.responseText);
+          let responseJson = null;
+          let responseText = '';
+          if (this.responseType && this.responseType !== 'text') {
+            if (this.responseType === 'json' && this.response && typeof this.response === 'object') {
+              responseJson = this.response;
+              responseText = limitText(JSON.stringify(this.response));
+            } else if (!this.responseType && typeof this.responseText === 'string') {
+              responseJson = parseJson(this.responseText);
+              responseText = limitText(this.responseText);
+            }
+          } else {
+            responseJson = parseJson(this.responseText);
+            responseText = limitText(this.responseText);
+          }
           postTelemetry({
             source: 'xhr_response',
             method: this.__rmwKlingMethod || 'GET',
@@ -1041,7 +1369,8 @@
             requestText,
             requestJson: parseJson(requestText),
             responseText,
-            responseJson: parseJson(responseText),
+            responseTextLength: `${this.responseText || responseText || ''}`.length,
+            responseJson,
             ok: this.status >= 200 && this.status < 400,
             httpStatus: this.status,
           });
@@ -1049,7 +1378,7 @@
             source: 'wallet_xhr_response',
             method: this.__rmwKlingMethod || 'GET',
             url: this.__rmwKlingUrl || '',
-            responseJson: parseJson(responseText),
+            responseJson,
             ok: this.status >= 200 && this.status < 400,
             httpStatus: this.status,
           });
@@ -1057,7 +1386,8 @@
             source: 'trade_history_xhr_response',
             method: this.__rmwKlingMethod || 'GET',
             url: this.__rmwKlingUrl || '',
-            responseJson: parseJson(responseText),
+            responseJson,
+            responseTextLength: `${this.responseText || responseText || ''}`.length,
             ok: this.status >= 200 && this.status < 400,
             httpStatus: this.status,
           });
@@ -1065,7 +1395,9 @@
             source: 'asset_history_xhr_response',
             method: this.__rmwKlingMethod || 'GET',
             url: this.__rmwKlingUrl || '',
-            responseJson: parseJson(responseText),
+            responseText,
+            responseTextLength: `${this.responseText || responseText || ''}`.length,
+            responseJson,
             ok: this.status >= 200 && this.status < 400,
             httpStatus: this.status,
           });

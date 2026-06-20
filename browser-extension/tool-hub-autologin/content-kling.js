@@ -198,6 +198,7 @@ const USAGE_CTX = {
   pendingReportTimers : new Set(),
   networkListenerAttached: false,
   networkEventKeys    : new Map(),
+  usageReportQueue    : Promise.resolve(),
   domSettlementKeys   : new Map(),
   browserSessionId    : '',
   tabSessionId        : '',
@@ -214,7 +215,55 @@ const USAGE_CTX = {
   activeGenerationIds : new Map(),
   activeGeneration    : null,
   recentTradeHistoryRows: [],
+  recentAssetHistoryRows: [],
   pendingMediaSourcePayloads: [],
+  captureProbeTimer: null,
+  generationPipelineMetrics: {
+    generations: 0,
+    promptCaptured: 0,
+    generationRequestDetected: 0,
+    taskIdDetected: 0,
+    assetRowDetected: 0,
+    assetMatched: 0,
+    outputCaptured: 0,
+    firstTaskIdEndpoint: '',
+    lastTaskIdEndpoint: '',
+  },
+  captureBadge: {
+    hookPingAt: 0,
+    hookPongAt: 0,
+    hookStatus: 'waiting',
+    endpointProbes: [],
+    lastNetworkAt: 0,
+    lastNetworkStatus: '',
+    lastNetworkUrl: '',
+    lastTaskIds: [],
+    lastAssetTaskIds: [],
+    assetEndpointSeen: false,
+    assetRowsSeen: 0,
+    assetJsonParsed: false,
+    assetResponseTextLength: 0,
+    assetCandidateObjects: 0,
+    assetObjectsWithSignal: 0,
+    assetSampleKeys: [],
+    assetWrapperShapes: [],
+    assetSampleRows: [],
+    assetActiveJoinIds: [],
+    assetRowsMatched: 0,
+    assetRowsWithOutput: 0,
+    lastAssetUrl: '',
+    tradeEndpointSeen: false,
+    tradeRowsSeen: 0,
+    tradeRowsMatched: 0,
+    tradeRowsReconciled: 0,
+    lastTradeUrl: '',
+    tradeJsonParsed: false,
+    tradeResponseTextLength: 0,
+    tradeSampleKeys: [],
+    lastDbEventId: 0,
+    lastDbSource: '',
+    lastUpdatedAt: 0,
+  },
 };
 
 function normalizeLoginMethod(value) {
@@ -482,6 +531,155 @@ function parseCreditNumber(value) {
   if (suffix === 'k') return numericValue * 1000;
   if (suffix === 'm') return numericValue * 1000000;
   return numericValue;
+}
+
+function compactKlingEndpoint(value = '') {
+  if (!`${value || ''}`.trim()) return '';
+  try {
+    const url = new URL(`${value || ''}`, location.href);
+    return `${url.pathname}${url.search ? '?' : ''}`.slice(0, 90);
+  } catch {
+    return `${value || ''}`.slice(0, 90);
+  }
+}
+
+function formatCaptureAge(timestamp) {
+  const ageMs = Date.now() - Number(timestamp || 0);
+  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > 60 * 60 * 1000) return '-';
+  if (ageMs < 1000) return 'now';
+  return `${Math.round(ageMs / 1000)}s`;
+}
+
+function renderKlingCaptureBadge() {
+  const state = USAGE_CTX.captureBadge || {};
+  const pipeline = USAGE_CTX.generationPipelineMetrics || {};
+  let badge = document.getElementById('rmw-kling-capture-badge');
+  if (!badge) {
+    badge = document.createElement('div');
+    badge.id = 'rmw-kling-capture-badge';
+    Object.assign(badge.style, {
+      position: 'fixed',
+      top: '10px',
+      right: '10px',
+      zIndex: '2147483647',
+      maxWidth: '420px',
+      padding: '10px 12px',
+      borderRadius: '8px',
+      background: 'rgba(8,12,24,0.94)',
+      color: '#eaf1ff',
+      font: '12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      boxShadow: '0 4px 18px rgba(0,0,0,0.45)',
+      pointerEvents: 'none',
+      whiteSpace: 'pre-wrap',
+      border: '1px solid rgba(124,161,255,0.45)',
+    });
+    (document.body || document.documentElement).appendChild(badge);
+  }
+  if (!badge) return;
+  const taskIds = Array.isArray(state.lastTaskIds) && state.lastTaskIds.length
+    ? state.lastTaskIds.slice(0, 3).join(', ')
+    : '-';
+  const assetTaskIds = Array.isArray(state.lastAssetTaskIds) && state.lastAssetTaskIds.length
+    ? state.lastAssetTaskIds.slice(0, 3).join(', ')
+    : '-';
+  const probes = Array.isArray(state.endpointProbes) && state.endpointProbes.length
+    ? state.endpointProbes.map((probe) => {
+      const status = probe.ok ? `ok/${probe.status || ''}` : `${probe.status || 'fail'}`;
+      const rows = Number(probe.rows || 0);
+      return `${probe.label}:${status}${rows ? ` rows ${rows}` : ''}`;
+    }).join(' ')
+    : 'waiting';
+  const assetKeyHint = Array.isArray(state.assetSampleKeys) && state.assetSampleKeys.length
+    ? `\nKeys: ${state.assetSampleKeys[0].slice(0, 90)}`
+    : '';
+  const assetWrapperHint = Array.isArray(state.assetWrapperShapes) && state.assetWrapperShapes.length
+    ? `\nWrap: ${state.assetWrapperShapes.slice(0, 2).join(' ').slice(0, 90)}`
+    : '';
+  const activeJoinHint = Array.isArray(state.assetActiveJoinIds) && state.assetActiveJoinIds.length
+    ? `\nActive: ${state.assetActiveJoinIds.slice(0, 4).join(',').slice(0, 90)}`
+    : '';
+  const sampleRowHint = Array.isArray(state.assetSampleRows) && state.assetSampleRows.length
+    ? `\nRow: ${state.assetSampleRows[0].slice(0, 110)}`
+    : '';
+  const tradeKeyHint = Array.isArray(state.tradeSampleKeys) && state.tradeSampleKeys.length
+    ? `\nTradeKeys: ${state.tradeSampleKeys[0].slice(0, 90)}`
+    : '';
+  badge.textContent = [
+    'Kling Capture Test',
+    `Hook: ${state.hookPongAt ? `pong ${formatCaptureAge(state.hookPongAt)}` : state.hookStatus || 'waiting'}`,
+    `Probe: ${probes}`,
+    `Network: ${state.lastNetworkAt ? 'seen' : 'waiting'} ${formatCaptureAge(state.lastNetworkAt)} ${state.lastNetworkStatus || ''}`.trim(),
+    `Funnel: gen ${pipeline.generations || 0} prompt ${pipeline.promptCaptured || 0} request ${pipeline.generationRequestDetected || 0} task ${pipeline.taskIdDetected || 0} asset ${pipeline.assetRowDetected || 0} match ${pipeline.assetMatched || 0} output ${pipeline.outputCaptured || 0}`,
+    `Task endpoint: ${compactKlingEndpoint(pipeline.lastTaskIdEndpoint || pipeline.firstTaskIdEndpoint || '') || '-'}`,
+    `Task IDs: ${taskIds}`,
+    `Asset IDs: ${assetTaskIds}`,
+    `Asset: ${state.assetEndpointSeen ? 'open' : 'waiting'} rows ${state.assetRowsSeen || 0} json ${state.assetJsonParsed ? 'yes' : 'no'} len ${state.assetResponseTextLength || 0} obj ${state.assetObjectsWithSignal || state.assetCandidateObjects || 0} match ${state.assetRowsMatched || 0} output ${state.assetRowsWithOutput || 0}${activeJoinHint}${sampleRowHint}${assetWrapperHint}${assetKeyHint}`,
+    `Trade: ${state.tradeEndpointSeen ? 'open' : 'waiting'} rows ${state.tradeRowsSeen || 0} json ${state.tradeJsonParsed ? 'yes' : 'no'} len ${state.tradeResponseTextLength || 0} match ${state.tradeRowsMatched || 0} rec ${state.tradeRowsReconciled || 0}${tradeKeyHint}`,
+    `DB: ${state.lastDbEventId ? `sent #${state.lastDbEventId}` : 'waiting'} ${state.lastDbSource || ''}`.trim(),
+    `Last: ${compactKlingEndpoint(state.lastAssetUrl || state.lastTradeUrl || state.lastNetworkUrl || location.href)}`,
+  ].join('\n');
+}
+
+function updateKlingCaptureBadge(patch = {}) {
+  USAGE_CTX.captureBadge = {
+    ...(USAGE_CTX.captureBadge || {}),
+    ...patch,
+    lastUpdatedAt: Date.now(),
+  };
+  renderKlingCaptureBadge();
+}
+
+function markGenerationPipelineStage(stage, details = {}) {
+  const metrics = USAGE_CTX.generationPipelineMetrics;
+  const activeGeneration = USAGE_CTX.activeGeneration;
+  if (!metrics || !activeGeneration || !stage) return false;
+  activeGeneration.pipelineStages = activeGeneration.pipelineStages || {};
+  if (activeGeneration.pipelineStages[stage]) return false;
+  activeGeneration.pipelineStages[stage] = {
+    capturedAt: Date.now(),
+    ...details,
+  };
+  if (Object.prototype.hasOwnProperty.call(metrics, stage)) {
+    metrics[stage] += 1;
+  }
+  if (stage === 'taskIdDetected') {
+    const endpoint = `${details.endpoint || ''}`.slice(0, 500);
+    if (endpoint && !metrics.firstTaskIdEndpoint) metrics.firstTaskIdEndpoint = endpoint;
+    if (endpoint) metrics.lastTaskIdEndpoint = endpoint;
+    if (endpoint && !activeGeneration.firstTaskIdEndpoint) activeGeneration.firstTaskIdEndpoint = endpoint;
+  }
+  renderKlingCaptureBadge();
+  reportPipelineDiagnosticsUpdate(`pipeline_stage_${stage}`, {
+    generationPipeline: {
+      currentIntentId: activeGeneration.generateIntentId,
+      stages: activeGeneration.pipelineStages,
+      aggregate: { ...metrics },
+      updatedAt: Date.now(),
+    },
+  });
+  return true;
+}
+
+function pingKlingCaptureHook(reason = 'manual') {
+  const pingId = `kping_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  updateKlingCaptureBadge({
+    hookPingAt: Date.now(),
+    hookStatus: 'pinging',
+  });
+  try {
+    window.postMessage({
+      source: 'rmw-kling-content-telemetry',
+      type: 'KLING_CAPTURE_DIAGNOSTIC_PING',
+      payload: {
+        pingId,
+        reason,
+        dummy: true,
+        requestedAt: Date.now(),
+      },
+    }, location.origin);
+  } catch {
+    updateKlingCaptureBadge({ hookStatus: 'ping_failed' });
+  }
 }
 
 function parseIntegerCreditNumber(value) {
@@ -793,24 +991,28 @@ function collectInteractionCandidateElements(target) {
 
 function findGenerateActionTarget(target) {
   const candidates = collectInteractionCandidateElements(target)
-    .map((el) => findClickableAncestor(el) || el);
+    .map((el) => findClickableAncestor(el))
+    .filter(Boolean);
 
   let bestCandidate = null;
   let bestScore = -1;
 
   for (const candidate of collectUniqueElements(candidates)) {
     if (!candidate || !isVisible(candidate) || !isEnabled(candidate)) continue;
+    if (!candidate.matches?.('button,[role="button"],input[type="button"],input[type="submit"]')) continue;
 
     const text = readGenerateButtonLabel(candidate);
     if (!text) continue;
+    if (text.length > 140) continue;
     if (!/(^|\s)generate($|\s)/i.test(text)) continue;
     if (/create\s+in\s+omni/i.test(text)) continue;
 
     const rect = candidate.getBoundingClientRect();
     if (rect.width < 90 || rect.height < 32) continue;
+    if (rect.width > 640 || rect.height > 120) continue;
 
     let score = 0;
-    if (candidate.matches?.('button,[role="button"],a[href],input[type="button"],input[type="submit"]')) score += 5;
+    score += 5;
     if (rect.width >= 140) score += 3;
     if (rect.height >= 40) score += 2;
     if (parseCreditNumber(text) != null) score += 2;
@@ -1205,7 +1407,7 @@ function getElementMediaUrlCandidates(el, mediaEl) {
 
 function isLikelyKlingUiMediaElement(el) {
   if (!el || el.nodeType !== Node.ELEMENT_NODE) return true;
-  if (el.closest?.('#rmw-kling-badge')) return true;
+  if (el.closest?.('#rmw-kling-badge, #rmw-kling-capture-badge')) return true;
   if (el.closest?.('nav,header,footer,aside,[role="navigation"],[role="menu"],[role="menubar"],[role="dialog"],[aria-modal="true"]')) return true;
   const contextText = normalizeSpace([
     el.getAttribute?.('alt'),
@@ -1421,6 +1623,8 @@ function buildActiveGenerationFromSnapshot(snapshot, startedAt = Date.now()) {
     outputFeedSnapshotCount: Number(snapshot?.metadata?.outputFeedSnapshotCount || 0) || 0,
     ownedOutputDetectedAt: 0,
     ownedOutputAssetCount: 0,
+    pipelineStages: {},
+    firstTaskIdEndpoint: '',
     status: 'active',
   };
 }
@@ -1471,7 +1675,6 @@ function collectKlingTaskIdsFromPayload(payload = {}) {
   push(payload.klingTaskId);
   push(payload.generationId);
   push(payload.requestId);
-  push(payload.externalEventId);
   if (Array.isArray(payload.identifierCandidates)) {
     for (const candidate of payload.identifierCandidates) {
       push(candidate?.value);
@@ -1522,11 +1725,24 @@ function attachActiveGenerationOwnership(snapshot, strategy = '') {
     snapshot.eventId = activeEventId;
   }
   const ownership = buildGenerationOwnershipMetadata(USAGE_CTX.activeGeneration, strategy);
+  const incomingExternalEventId = `${snapshot.externalEventId || ''}`.trim();
+  const canonicalExternalEventId = `${
+    USAGE_CTX.activeGeneration?.externalEventId
+      || USAGE_CTX.activeGeneration?.generateIntentId
+      || ''
+  }`.trim();
   snapshot.metadata = {
     ...(snapshot.metadata || {}),
     ...ownership,
     ownership,
+    canonicalInternalGenerationId: canonicalExternalEventId || ownership.internalGenerationId || '',
+    networkExternalEventId: incomingExternalEventId && incomingExternalEventId !== canonicalExternalEventId
+      ? incomingExternalEventId
+      : (snapshot.metadata?.networkExternalEventId || ''),
   };
+  if (canonicalExternalEventId) {
+    snapshot.externalEventId = canonicalExternalEventId;
+  }
   if (ownership.klingTaskId) {
     snapshot.generationId = snapshot.generationId || ownership.klingTaskId;
   }
@@ -1973,6 +2189,11 @@ function startGeneratedAssetDetection(snapshot) {
     return;
   }
   USAGE_CTX.activeGeneration = activeGeneration;
+  USAGE_CTX.generationPipelineMetrics.generations += 1;
+  markGenerationPipelineStage('promptCaptured', {
+    promptLength: activeGeneration.promptText.length,
+    source: snapshot.metadata?.promptCapture?.source || 'generate_click',
+  });
   const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
   const outputFeedSnapshot = collectVisibleGeneratedMediaAssets(generationMode);
   USAGE_CTX.generatedAssetUrls = new Set(
@@ -1990,6 +2211,18 @@ function startGeneratedAssetDetection(snapshot) {
     ownershipStrategy: 'dom_new_output_fallback',
     ownershipConfidence: 0.9,
   };
+  const cachedAssetApplied = applyCachedAssetRowsForActiveGeneration('generation_started_cached_asset_rows');
+  if (cachedAssetApplied > 0) {
+    debugUsageTelemetry('cached_asset_rows_applied_on_generation_start', {
+      applied: cachedAssetApplied,
+      activeTaskIds: getActiveGenerationTaskIds(),
+    });
+    updateKlingCaptureBadge({
+      assetRowsMatched: Math.max(Number(USAGE_CTX.captureBadge?.assetRowsMatched || 0), cachedAssetApplied),
+      assetRowsWithOutput: Math.max(Number(USAGE_CTX.captureBadge?.assetRowsWithOutput || 0), cachedAssetApplied),
+      lastDbSource: 'cached_asset_recovery',
+    });
+  }
 
   const scan = () => {
     const scanStartedAt = USAGE_CTX.assetScanStartedAt;
@@ -2035,7 +2268,7 @@ function readVisibleCreditBalance() {
 
   for (const el of collectUniqueElements(Array.from(document.querySelectorAll('div,span,button,strong,b')))) {
     if (!isVisible(el)) continue;
-    if (el.closest?.('#rmw-kling-badge')) continue;
+    if (el.closest?.('#rmw-kling-badge, #rmw-kling-capture-badge')) continue;
 
     const text = `${el.textContent || ''}`.trim();
     if (!text || text.length > 32) continue;
@@ -2271,8 +2504,8 @@ function buildPipelineDiagnostics(snapshot = {}, reason = '') {
     || metadata.networkMethod
     || taskIdCaptured
   );
-  const assetSeen = Boolean(assetHistory || assetMetrics?.assetRowsSeen);
-  const tradeSeen = Boolean(tradeHistory || tradeMetrics?.tradeRowsSeen);
+  const assetSeen = Boolean(assetHistory || assetMetrics?.assetEndpointSeen || assetMetrics?.assetRowsSeen);
+  const tradeSeen = Boolean(tradeHistory || tradeMetrics?.tradeEndpointSeen || tradeMetrics?.tradeRowsSeen);
   const missingReasons = [];
   if (!promptCaptured) missingReasons.push('prompt_missing');
   if (!taskIdCaptured) missingReasons.push('task_id_missing');
@@ -2304,6 +2537,12 @@ function buildPipelineDiagnostics(snapshot = {}, reason = '') {
     missingReasons,
     hasMissingData: missingReasons.length > 0,
     activeGenerationValid: isActiveGenerationValid(),
+    generationPipeline: {
+      currentIntentId: `${activeGeneration?.generateIntentId || ''}`,
+      stages: activeGeneration?.pipelineStages || {},
+      firstTaskIdEndpoint: `${activeGeneration?.firstTaskIdEndpoint || ''}`.slice(0, 1000),
+      aggregate: { ...(USAGE_CTX.generationPipelineMetrics || {}) },
+    },
     updatedAt: Date.now(),
   };
 }
@@ -2349,6 +2588,12 @@ function isKnownKlingTaskId(taskId) {
   const normalizedId = normalizeKlingTaskId(taskId);
   if (!normalizedId) return false;
   if (USAGE_CTX.activeGenerationIds.has(normalizedId)) return true;
+  return getActiveGenerationTaskIds().includes(normalizedId);
+}
+
+function isCurrentGenerationKlingTaskId(taskId) {
+  const normalizedId = normalizeKlingTaskId(taskId);
+  if (!normalizedId || !isActiveGenerationValid()) return false;
   return getActiveGenerationTaskIds().includes(normalizedId);
 }
 
@@ -2485,6 +2730,90 @@ function findRecentTradeHistoryRowByTaskId(taskId) {
   return null;
 }
 
+function rememberRecentAssetHistoryRows(rows = [], payload = {}) {
+  const capturedAt = Number(payload.capturedAt || Date.now());
+  for (const row of rows) {
+    USAGE_CTX.recentAssetHistoryRows.push({
+      row,
+      payload,
+      capturedAt,
+      taskId: normalizeKlingTaskId(row?.taskId),
+      workId: normalizeKlingTaskId(row?.workId),
+      prompt: normalizePromptCaptureValue(row?.prompt),
+      createTime: Number(row?.createTime || 0) || null,
+      mediaAssetCount: Array.isArray(row?.mediaAssets) ? row.mediaAssets.length : 0,
+    });
+  }
+  USAGE_CTX.recentAssetHistoryRows = USAGE_CTX.recentAssetHistoryRows
+    .filter((entry) => Date.now() - Number(entry.capturedAt || 0) <= 15 * 60 * 1000)
+    .slice(-500);
+}
+
+function recentAssetRowsForActiveGeneration(limit = 80) {
+  if (!isActiveGenerationValid()) return [];
+  const matches = [];
+  for (let index = USAGE_CTX.recentAssetHistoryRows.length - 1; index >= 0; index -= 1) {
+    const entry = USAGE_CTX.recentAssetHistoryRows[index];
+    const matchedByTaskId = isCurrentGenerationKlingTaskId(entry.taskId) || isCurrentGenerationKlingTaskId(entry.workId);
+    const matchedByPromptTime = !matchedByTaskId && canFallbackMatchActiveGeneration({
+      prompt: entry.prompt,
+      createTime: entry.createTime,
+      requirePrompt: true,
+    });
+    if (matchedByTaskId || matchedByPromptTime) {
+      matches.push(entry);
+      if (matches.length >= limit) break;
+    }
+  }
+  return matches;
+}
+
+function applyCachedAssetRowsForActiveGeneration(reason = 'cached_asset_rows') {
+  const matches = recentAssetRowsForActiveGeneration(20);
+  if (!matches.length || !USAGE_CTX.assetScanSnapshot) return 0;
+  markGenerationPipelineStage('assetRowDetected', {
+    endpoint: `${matches[0]?.payload?.url || ''}`.slice(0, 1000),
+    rowCount: matches.length,
+    source: 'cache',
+  });
+  let applied = 0;
+  for (const entry of matches) {
+    const assetTaskId = normalizeKlingTaskId(entry.row?.taskId);
+    const assetWorkId = normalizeKlingTaskId(entry.row?.workId);
+    if (!isCurrentGenerationKlingTaskId(assetTaskId) && !isCurrentGenerationKlingTaskId(assetWorkId)) {
+      const recoveredId = assetTaskId || assetWorkId;
+      if (recoveredId) {
+        associateKlingTaskIdWithActiveGeneration({
+          klingTaskId: recoveredId,
+          generationId: recoveredId,
+          promptText: entry.row?.prompt,
+          source: 'cached_asset_prompt_time',
+          identifierSource: reason,
+          identifierKind: assetTaskId ? 'task_id' : 'work_id',
+          ownershipConfidence: 0.68,
+        });
+      }
+    }
+    markGenerationPipelineStage('assetMatched', {
+      endpoint: `${entry.payload?.url || ''}`.slice(0, 1000),
+      taskId: assetTaskId || '',
+      workId: assetWorkId || '',
+      strategy: 'cached_identifier_or_prompt_time',
+    });
+    const mediaAssets = normalizeCapturedMediaAssets(entry.row?.mediaAssets, 'asset_history_cache');
+    if (mediaAssets.length) {
+      markGenerationPipelineStage('outputCaptured', {
+        endpoint: `${entry.payload?.url || ''}`.slice(0, 1000),
+        mediaAssetCount: mediaAssets.length,
+        source: 'cache',
+      });
+      reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, mediaAssets);
+      applied += 1;
+    }
+  }
+  return applied;
+}
+
 function reportTradeHistoryRow(row = {}, payload = {}, matchStrategy = 'task_id') {
   const snapshot = buildTradeHistoryUsageSnapshot(row, payload, { matchStrategy });
   if (!snapshot) return 'invalid';
@@ -2505,6 +2834,12 @@ function reportTradeHistoryRow(row = {}, payload = {}, matchStrategy = 'task_id'
   reportKlingUsage(snapshot)
     .then((response) => {
       const eventId = Number(response?.event?.id || 0);
+      if (eventId > 0) {
+        updateKlingCaptureBadge({
+          lastDbEventId: eventId,
+          lastDbSource: snapshot.source || snapshot.metadata?.source || 'trade',
+        });
+      }
       debugUsageTelemetry('trade_history_reconciled', {
         eventId,
         taskId: snapshot.generationId,
@@ -2618,7 +2953,15 @@ function buildGenerateUsageSnapshot(generateButton) {
   };
 }
 
-async function reportKlingUsage(snapshot) {
+function reportKlingUsage(snapshot) {
+  const queued = USAGE_CTX.usageReportQueue
+    .catch(() => null)
+    .then(() => reportKlingUsageNow(snapshot));
+  USAGE_CTX.usageReportQueue = queued.catch(() => null);
+  return queued;
+}
+
+async function reportKlingUsageNow(snapshot) {
   const usageTicket = loadStoredUsageTicket();
   const extensionTicket = loadStoredTicket();
   const pipelineDiagnostics = buildPipelineDiagnostics(snapshot, snapshot.metadata?.stage || snapshot.status || snapshot.source);
@@ -2670,6 +3013,14 @@ async function reportKlingUsage(snapshot) {
   const eventId = Number(response?.event?.id || 0);
   if (eventId > 0) {
     snapshot.eventId = eventId;
+  }
+  const dedupeDecision = response?.dedupeDecision;
+  if (dedupeDecision && typeof dedupeDecision === 'object') {
+    debugUsageTelemetry('backend_dedupe_decision', dedupeDecision);
+    updateKlingCaptureBadge({
+      lastDbEventId: eventId,
+      lastDbSource: `${dedupeDecision.decision || ''}:${dedupeDecision.reason || ''}`.slice(0, 120),
+    });
   }
 
   return response;
@@ -2939,6 +3290,50 @@ function handleKlingNetworkUsageMessage(event) {
     return;
   }
   if (event?.data?.source !== 'rmw-kling-network-telemetry') return;
+  if (event?.data?.type === 'KLING_CAPTURE_DIAGNOSTIC_PONG') {
+    const payload = event.data.payload || {};
+    updateKlingCaptureBadge({
+      hookPongAt: Number(payload.respondedAt || Date.now()),
+      hookStatus: 'pong',
+      endpointProbes: Array.isArray(payload.endpointProbes) ? payload.endpointProbes : [],
+    });
+    return;
+  }
+  if (event?.data?.type === 'KLING_GENERATION_PIPELINE_SIGNAL') {
+    const payload = event.data.payload || {};
+    if (!isActiveGenerationValid()) return;
+    const capturedAt = Number(payload.capturedAt || Date.now());
+    if (capturedAt < Number(USAGE_CTX.activeGeneration.startedAt || 0) - 2000) return;
+    if (payload.generationRequestDetected) {
+      markGenerationPipelineStage('generationRequestDetected', {
+        endpoint: `${payload.url || ''}`.slice(0, 1000),
+        method: `${payload.method || ''}`.slice(0, 16),
+        transport: `${payload.transport || payload.source || ''}`.slice(0, 80),
+      });
+    }
+    const discoveredIds = collectKlingTaskIdsFromPayload(payload);
+    if (payload.taskIdDetected && discoveredIds.length) {
+      const associated = associateKlingTaskIdWithActiveGeneration({
+        ...payload,
+        ownershipConfidence: 0.99,
+      });
+      if (associated) {
+        markGenerationPipelineStage('taskIdDetected', {
+          endpoint: `${payload.url || ''}`.slice(0, 1000),
+          ids: discoveredIds.slice(0, 8),
+          identifierSource: `${payload.identifierSource || ''}`.slice(0, 120),
+          identifierKind: `${payload.identifierKind || ''}`.slice(0, 80),
+        });
+        updateKlingCaptureBadge({
+          lastTaskIds: getActiveGenerationTaskIds().slice(0, 8),
+          lastNetworkAt: capturedAt,
+          lastNetworkStatus: 'task_id_discovered',
+          lastNetworkUrl: `${payload.url || ''}`,
+        });
+      }
+    }
+    return;
+  }
   if (event?.data?.type === 'KLING_GOOGLE_OAUTH_POPUP_BLOCKED') {
     recoverBlockedGoogleOauthPopup(event.data.payload || {});
     debugUsageTelemetry('google_oauth_popup_blocked_recovered', {
@@ -2971,8 +3366,12 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.data?.type === 'KLING_TRADE_HISTORY') {
     const payload = event.data.payload || {};
     const rows = Array.isArray(payload.rows) ? payload.rows.slice(0, 80) : [];
+    const parserDiagnostics = payload.parserDiagnostics && typeof payload.parserDiagnostics === 'object'
+      ? payload.parserDiagnostics
+      : {};
     const now = Date.now();
     const tradeMetrics = {
+      tradeEndpointSeen: true,
       tradeRowsSeen: rows.length,
       tradeRowsMatched: 0,
       tradeRowsSkippedUnknownTask: 0,
@@ -3030,6 +3429,16 @@ function handleKlingNetworkUsageMessage(event) {
         capturedAt: Number(payload.capturedAt || now),
       },
     });
+    updateKlingCaptureBadge({
+      tradeEndpointSeen: true,
+      tradeRowsSeen: tradeMetrics.tradeRowsSeen,
+      tradeJsonParsed: Boolean(payload.jsonParsed),
+      tradeResponseTextLength: Number(payload.responseTextLength || 0) || 0,
+      tradeSampleKeys: Array.isArray(parserDiagnostics.sampleKeys) ? parserDiagnostics.sampleKeys.slice(0, 3) : [],
+      tradeRowsMatched: tradeMetrics.tradeRowsMatched,
+      tradeRowsReconciled: tradeMetrics.tradeRowsReconciled,
+      lastTradeUrl: `${payload.url || ''}`,
+    });
     if (tradeMetrics.tradeRowsSkippedUnknownTask > 0) {
       debugUsageTelemetry('trade_history_skipped_unknown_task_id', {
         skippedCount: tradeMetrics.tradeRowsSkippedUnknownTask,
@@ -3042,17 +3451,49 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.data?.type === 'KLING_ASSET_HISTORY') {
     const payload = event.data.payload || {};
     const rows = Array.isArray(payload.rows) ? payload.rows.slice(0, 80) : [];
+    rememberRecentAssetHistoryRows(rows, payload);
+    const parserDiagnostics = payload.parserDiagnostics && typeof payload.parserDiagnostics === 'object'
+      ? payload.parserDiagnostics
+      : {};
+    const assetTaskIdsSeen = [];
+    const sampleRows = [];
+    const activeJoinIds = getActiveGenerationTaskIds().slice(0, 12);
     const assetMetrics = {
+      assetEndpointSeen: true,
       assetRowsSeen: rows.length,
       assetRowsMatched: 0,
       assetRowsSkippedUnknownGeneration: 0,
       assetRowsWithOutput: 0,
       assetRowsRecoveredTaskId: 0,
     };
+    const hasActiveGenerationForAssetMatch = isActiveGenerationValid();
+    if (hasActiveGenerationForAssetMatch && rows.length) {
+      markGenerationPipelineStage('assetRowDetected', {
+        endpoint: `${payload.url || ''}`.slice(0, 1000),
+        rowCount: rows.length,
+      });
+    }
     for (const row of rows) {
       const assetTaskId = normalizeKlingTaskId(row?.taskId);
-      const matchedByTaskId = isKnownKlingTaskId(assetTaskId);
-      const matchedByPromptTime = !matchedByTaskId && canFallbackMatchActiveGeneration({
+      if (assetTaskId && !assetTaskIdsSeen.includes(assetTaskId)) {
+        assetTaskIdsSeen.push(assetTaskId);
+      }
+      const assetWorkId = normalizeKlingTaskId(row?.workId);
+      if (assetWorkId && !assetTaskIdsSeen.includes(assetWorkId)) {
+        assetTaskIdsSeen.push(assetWorkId);
+      }
+      if (sampleRows.length < 5) {
+        const promptSnippet = normalizePromptCaptureValue(row?.prompt).slice(0, 28).replace(/\s+/g, ' ');
+        sampleRows.push([
+          `task:${assetTaskId || '-'}`,
+          `work:${assetWorkId || '-'}`,
+          `time:${Number(row?.createTime || 0) || '-'}`,
+          `media:${Array.isArray(row?.mediaAssets) ? row.mediaAssets.length : 0}`,
+          promptSnippet ? `p:${promptSnippet}` : '',
+        ].filter(Boolean).join(' '));
+      }
+      const matchedByTaskId = hasActiveGenerationForAssetMatch && (isCurrentGenerationKlingTaskId(assetTaskId) || isCurrentGenerationKlingTaskId(assetWorkId));
+      const matchedByPromptTime = hasActiveGenerationForAssetMatch && !matchedByTaskId && canFallbackMatchActiveGeneration({
         prompt: row?.prompt,
         createTime: row?.createTime,
         requirePrompt: true,
@@ -3062,6 +3503,12 @@ function handleKlingNetworkUsageMessage(event) {
         continue;
       }
       assetMetrics.assetRowsMatched += 1;
+      markGenerationPipelineStage('assetMatched', {
+        endpoint: `${payload.url || ''}`.slice(0, 1000),
+        taskId: assetTaskId || '',
+        workId: assetWorkId || '',
+        strategy: matchedByTaskId ? 'identifier' : 'prompt_time',
+      });
       if (assetTaskId && matchedByPromptTime) {
         assetMetrics.assetRowsRecoveredTaskId += 1;
         associateKlingTaskIdWithActiveGeneration({
@@ -3086,14 +3533,30 @@ function handleKlingNetworkUsageMessage(event) {
           });
         }
       }
+      if (!assetTaskId && assetWorkId && matchedByPromptTime) {
+        associateKlingTaskIdWithActiveGeneration({
+          klingTaskId: assetWorkId,
+          generationId: assetWorkId,
+          promptText: row?.prompt,
+          source: 'asset_history_prompt_time',
+          identifierSource: 'asset_history_work_prompt_time',
+          identifierKind: 'work_id',
+          ownershipConfidence: 0.68,
+        });
+      }
       const mediaAssets = normalizeCapturedMediaAssets(row?.mediaAssets, 'asset_history');
       if (mediaAssets.length) {
         assetMetrics.assetRowsWithOutput += 1;
+        markGenerationPipelineStage('outputCaptured', {
+          endpoint: `${payload.url || ''}`.slice(0, 1000),
+          mediaAssetCount: mediaAssets.length,
+        });
         reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, mediaAssets);
       }
       reportPipelineDiagnosticsUpdate('asset_history_match', {
         assetHistory: {
           taskId: assetTaskId || '',
+          workId: assetWorkId || '',
           promptMatched: matchedByPromptTime,
           taskIdMatched: matchedByTaskId,
           taskIdSource: matchedByTaskId
@@ -3119,12 +3582,42 @@ function handleKlingNetworkUsageMessage(event) {
       },
     });
     debugUsageTelemetry('asset_history_metrics', assetMetrics);
+    updateKlingCaptureBadge({
+      assetEndpointSeen: true,
+      assetRowsSeen: assetMetrics.assetRowsSeen,
+      assetJsonParsed: Boolean(payload.jsonParsed),
+      assetResponseTextLength: Number(payload.responseTextLength || 0) || 0,
+      assetCandidateObjects: Number(parserDiagnostics.candidateObjects || 0) || 0,
+      assetObjectsWithSignal: Number(parserDiagnostics.objectsWithAnySignal || 0) || 0,
+      assetSampleKeys: Array.isArray(parserDiagnostics.sampleKeys) ? parserDiagnostics.sampleKeys.slice(0, 3) : [],
+      assetWrapperShapes: Array.isArray(parserDiagnostics.wrapperShapes) ? parserDiagnostics.wrapperShapes.slice(0, 4) : [],
+      assetSampleRows: sampleRows,
+      assetActiveJoinIds: activeJoinIds,
+      assetRowsMatched: assetMetrics.assetRowsMatched,
+      assetRowsWithOutput: assetMetrics.assetRowsWithOutput,
+      lastAssetUrl: `${payload.url || ''}`,
+      lastAssetTaskIds: assetTaskIdsSeen.slice(0, 8),
+    });
     return;
   }
   if (event?.data?.type !== 'KLING_NETWORK_USAGE') return;
 
   const payload = event.data.payload || {};
   const now = Date.now();
+  const payloadTaskIds = collectKlingTaskIdsFromPayload(payload).slice(0, 8);
+  const isAssetStatusNetworkEvent = Boolean(payload?.isAssetHistoryEndpoint);
+  const hasRecentGenerateIntentForBadge = now - Number(USAGE_CTX.lastGenerateAt || 0) < 30000;
+  const shouldShowAsGenerationTaskIds = !isAssetStatusNetworkEvent
+    || hasRecentGenerateIntentForBadge
+    || (isActiveGenerationValid() && payloadMatchesActiveGenerationTaskId(payload) !== false);
+  updateKlingCaptureBadge({
+    lastNetworkAt: now,
+    lastNetworkStatus: `${payload.status || payload.source || ''}`.slice(0, 80),
+    lastNetworkUrl: `${payload.url || ''}`,
+    ...(shouldShowAsGenerationTaskIds
+      ? { lastTaskIds: payloadTaskIds }
+      : { lastAssetTaskIds: payloadTaskIds }),
+  });
   const creditsUsed = Number(payload?.creditsUsed);
   const hasReasonableCreditBurn = Number.isFinite(creditsUsed)
     && Number.isInteger(creditsUsed)
@@ -3235,6 +3728,12 @@ function handleKlingNetworkUsageMessage(event) {
     })
     .then((response) => {
       const eventId = Number(response?.event?.id || 0);
+      if (eventId > 0) {
+        updateKlingCaptureBadge({
+          lastDbEventId: eventId,
+          lastDbSource: snapshot.source || snapshot.metadata?.source || 'network',
+        });
+      }
       setStatus(`Network usage captured${eventId > 0 ? ` #${eventId}` : ''}`, { hideAfterMs: 2500 });
     })
     .catch((error) => {
@@ -3516,6 +4015,16 @@ function scheduleGenerateUsageReport(generateButton) {
       : 'Generate intent detected: credit cost unclear',
     { hideAfterMs: 2500 }
   );
+  updateKlingCaptureBadge({
+    lastTaskIds: getActiveGenerationTaskIds().slice(0, 8),
+    lastAssetTaskIds: [],
+    assetRowsMatched: 0,
+    assetRowsWithOutput: 0,
+    tradeRowsMatched: 0,
+    tradeRowsReconciled: 0,
+    lastDbEventId: snapshot.eventId || 0,
+    lastDbSource: 'generate_intent',
+  });
   debugUsageTelemetry('credit_intent_captured', {
     expectedCredits: hasExpectedCredits ? expectedCredits : null,
     generationMode,
@@ -3589,6 +4098,10 @@ function scheduleGenerateUsageReport(generateButton) {
 }
 
 function clearPendingUsageReport() {
+  if (USAGE_CTX.captureProbeTimer) {
+    clearInterval(USAGE_CTX.captureProbeTimer);
+    USAGE_CTX.captureProbeTimer = null;
+  }
   for (const timer of USAGE_CTX.pendingReportTimers) {
     clearTimeout(timer);
   }
@@ -3644,6 +4157,9 @@ function startUsageTracking() {
     USAGE_CTX.debugReadyShown = true;
     setStatus('Kling usage tracker ready', { hideAfterMs: 2500 });
     window.setTimeout(() => showCurrentCreditsDebug('startup'), 900);
+    renderKlingCaptureBadge();
+    window.setTimeout(() => pingKlingCaptureHook('startup'), 300);
+    USAGE_CTX.captureProbeTimer = window.setInterval(() => pingKlingCaptureHook('interval'), 30000);
   }
 }
 
@@ -3720,7 +4236,7 @@ function isPolicyLikeAction(el) {
 function hasKlingNetworkErrorToast() {
   const text = normalizeSpace(
     Array.from(document.body?.querySelectorAll('body *') || [])
-      .filter((element) => isVisible(element) && !element.closest?.('#rmw-kling-badge'))
+      .filter((element) => isVisible(element) && !element.closest?.('#rmw-kling-badge, #rmw-kling-capture-badge'))
       .map((element) => element.innerText || element.textContent || '')
       .filter(Boolean)
       .join(' ')
