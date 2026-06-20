@@ -528,23 +528,22 @@
       'taskId',
       'task_id',
       'taskID',
-      'task',
       'jobId',
       'job_id',
       'generationId',
       'generation_id',
     ]));
     if (direct) return direct;
+    const nestedTask = isObject(object?.task)
+      ? normalizeIdentifierValue(pickOwnText(object.task, ['taskId', 'task_id', 'id']))
+      : '';
+    if (nestedTask) return nestedTask;
     return walk(object, (key, item, parent) => {
       if (/^(taskId|task_id|taskID|jobId|job_id|generationId|generation_id)$/i.test(key)) {
         const normalized = normalizeIdentifierValue(item);
         return normalized || undefined;
       }
-      if (!/^id$/i.test(key)) return undefined;
-      const parentKeys = isObject(parent) ? Object.keys(parent).join('_') : '';
-      if (!/(task|work|generation|job)/i.test(parentKeys)) return undefined;
-      const normalized = normalizeIdentifierValue(item);
-      return normalized || undefined;
+      return undefined;
     }) || '';
   }
 
@@ -555,13 +554,26 @@
       'worksId',
       'assetId',
       'asset_id',
-      'id',
     ]));
     if (direct) return direct;
+    const nestedWork = isObject(object?.work)
+      ? normalizeIdentifierValue(pickOwnText(object.work, ['workId', 'work_id', 'id']))
+      : '';
+    if (nestedWork) return nestedWork;
     return walk(object, (key, item, parent) => {
       if (!/^(workId|work_id|worksId|assetId|asset_id|id)$/i.test(key)) return undefined;
       const parentKeys = isObject(parent) ? Object.keys(parent).join('_') : '';
       if (!/(work|asset|resource|material|result)/i.test(parentKeys)) return undefined;
+      const normalized = normalizeIdentifierValue(item);
+      return normalized || undefined;
+    }) || '';
+  }
+
+  function pickNestedCreativeId(object) {
+    const direct = normalizeIdentifierValue(pickOwnText(object, ['creativeId', 'creative_id']));
+    if (direct) return direct;
+    return walk(object, (key, item) => {
+      if (!/^(creativeId|creative_id)$/i.test(key)) return undefined;
       const normalized = normalizeIdentifierValue(item);
       return normalized || undefined;
     }) || '';
@@ -682,6 +694,7 @@
       ])).find(Boolean) || '';
       const taskId = pickNestedTaskId(item);
       const workId = pickNestedWorkId(item);
+      const creativeId = pickNestedCreativeId(item);
       const createTimeText = pickNamedValue(item, [
         'createTime',
         'create_time',
@@ -697,7 +710,7 @@
       ]);
       const showPriceText = pickNamedValue(item, ['showPrice', 'show_price', 'price', 'credits', 'amount', 'cost']);
       const taskType = pickNamedValue(item, ['taskType', 'task_type', 'type', 'scene', 'mode']);
-      if (taskId || workId || prompt || mediaAssets.length || createTimeText || showPriceText) {
+      if (taskId || workId || creativeId || prompt || mediaAssets.length || createTimeText || showPriceText) {
         objectsWithAnySignal += 1;
       }
       if (!taskId && !prompt && !mediaAssets.length && !createTimeText && !showPriceText && !taskType) continue;
@@ -707,6 +720,7 @@
       rows.push({
         taskId,
         workId,
+        creativeId,
         prompt: prompt.slice(0, 4000),
         createTime: Number(createTimeText || 0) || null,
         showPrice: showPriceText,

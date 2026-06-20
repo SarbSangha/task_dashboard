@@ -61,6 +61,7 @@ const SUPPORTED_KLING_USAGE_FALLBACK_MODES = new Set(['image', 'video', 'motion-
 const CREDIT_SOURCE_PROFILES = {
   trade: { source: 'trade_history_reconciled', priority: 90, confidence: 0.9 },
   tradeTime: { source: 'trade_history_time_reconciled', priority: 70, confidence: 0.7 },
+  assetShowPrice: { source: 'asset_show_price_reconciled', priority: 85, confidence: 0.85 },
   wallet: { source: 'wallet_reconciled', priority: 100, confidence: 1 },
   dom: { source: 'dom_balance_fallback', priority: 80, confidence: 0.8 },
   expected: { source: 'expected_credit_lock', priority: 60, confidence: 0.6 },
@@ -1131,6 +1132,9 @@ function inferCapturedAssetRole(url = '', hint = '', source = '') {
   const normalizedSource = `${source || ''}`.trim().toLowerCase();
   const text = `${hint || ''}\n${url || ''}`.toLowerCase();
   if (normalizedSource === 'dom' || /^blob:/i.test(`${url || ''}`)) return 'output';
+  // Kling appends `.origin` to generated output posters/frames. It describes
+  // the original-size rendition, not user-supplied input media.
+  if (/output(?:[_\-.]|%)/i.test(text) && /\.origin(?:[?#]|$)/i.test(`${url || ''}`)) return 'output';
   if (/\b(input|reference|ref|origin|source|start|end|first|last|init|mask|image_url|imageurl)\b/.test(text)) {
     return 'input';
   }
@@ -1615,6 +1619,9 @@ function buildActiveGenerationFromSnapshot(snapshot, startedAt = Date.now()) {
     startedAt,
     expiresAt: startedAt + ACTIVE_GENERATION_MAX_MS,
     klingTaskId: '',
+    taskId: '',
+    workId: '',
+    creativeId: '',
     identifierChannel: '',
     identifierSource: '',
     identifierKind: '',
@@ -1690,8 +1697,18 @@ function getActiveGenerationTaskIds(activeGeneration = USAGE_CTX.activeGeneratio
     if (normalized && !ids.includes(normalized)) ids.push(normalized);
   };
   push(activeGeneration?.klingTaskId);
+  push(activeGeneration?.taskId);
   if (Array.isArray(activeGeneration?.discoveredTaskIds)) {
     activeGeneration.discoveredTaskIds.forEach(push);
+  }
+  return ids;
+}
+
+function getActiveGenerationAssetIds(activeGeneration = USAGE_CTX.activeGeneration) {
+  const ids = [...getActiveGenerationTaskIds(activeGeneration)];
+  for (const value of [activeGeneration?.workId, activeGeneration?.creativeId]) {
+    const normalized = normalizeKlingTaskId(value);
+    if (normalized && !ids.includes(normalized)) ids.push(normalized);
   }
   return ids;
 }
@@ -1703,6 +1720,9 @@ function buildGenerationOwnershipMetadata(activeGeneration = USAGE_CTX.activeGen
     internalGenerationId: activeGeneration.internalGenerationId || activeGeneration.generateIntentId,
     backendEventId: Number(activeGeneration.eventId || USAGE_CTX.assetScanSnapshot?.eventId || 0) || null,
     klingTaskId: activeGeneration.klingTaskId || taskIds[0] || '',
+    taskId: activeGeneration.taskId || activeGeneration.klingTaskId || taskIds[0] || '',
+    workId: activeGeneration.workId || '',
+    creativeId: activeGeneration.creativeId || '',
     discoveredTaskIds: taskIds,
     ownershipStrategy: strategy || (taskIds.length ? 'kling_task_id' : 'dom_new_output_fallback'),
     ownershipConfidence: Number(activeGeneration.ownershipConfidence || (taskIds.length ? 0.99 : 0.9)),
@@ -1789,6 +1809,9 @@ function associateKlingTaskIdWithActiveGeneration(payload = {}) {
   if (primaryId && !activeGeneration.klingTaskId) {
     activeGeneration.klingTaskId = primaryId;
   }
+  if (primaryId && !activeGeneration.taskId) {
+    activeGeneration.taskId = primaryId;
+  }
   activeGeneration.eventId = Number(activeGeneration.eventId || USAGE_CTX.assetScanSnapshot?.eventId || 0) || null;
   activeGeneration.identifierChannel = `${payload.identifierChannel || payload.transport || payload.source || activeGeneration.identifierChannel || ''}`.slice(0, 120);
   activeGeneration.identifierSource = `${payload.identifierSource || activeGeneration.identifierSource || ''}`.slice(0, 120);
@@ -1807,6 +1830,37 @@ function associateKlingTaskIdWithActiveGeneration(payload = {}) {
     channel: activeGeneration.identifierChannel,
   });
   return true;
+}
+
+function linkAssetIdsWithActiveGeneration({ taskId = '', workId = '', creativeId = '', source = '' } = {}) {
+  if (!isActiveGenerationValid()) return false;
+  const activeGeneration = USAGE_CTX.activeGeneration;
+  const normalizedTaskId = normalizeKlingTaskId(taskId);
+  const normalizedWorkId = normalizeKlingTaskId(workId);
+  const normalizedCreativeId = normalizeKlingTaskId(creativeId);
+  if (normalizedTaskId) {
+    activeGeneration.taskId = normalizedTaskId;
+    activeGeneration.klingTaskId = activeGeneration.klingTaskId || normalizedTaskId;
+    activeGeneration.discoveredTaskIds = Array.isArray(activeGeneration.discoveredTaskIds)
+      ? activeGeneration.discoveredTaskIds
+      : [];
+    if (!activeGeneration.discoveredTaskIds.includes(normalizedTaskId)) {
+      activeGeneration.discoveredTaskIds.push(normalizedTaskId);
+    }
+    USAGE_CTX.activeGenerationIds.set(normalizedTaskId, Date.now());
+  }
+  if (normalizedWorkId) activeGeneration.workId = normalizedWorkId;
+  if (normalizedCreativeId) activeGeneration.creativeId = normalizedCreativeId;
+  attachActiveGenerationOwnership(USAGE_CTX.assetScanSnapshot, 'asset_id_linkage');
+  debugUsageTelemetry('asset_ids_linked', {
+    internalGenerationId: activeGeneration.internalGenerationId,
+    taskId: normalizedTaskId,
+    workId: normalizedWorkId,
+    creativeId: normalizedCreativeId,
+    creativeMatchesWork: Boolean(normalizedCreativeId && normalizedCreativeId === normalizedWorkId),
+    source,
+  });
+  return Boolean(normalizedTaskId || normalizedWorkId || normalizedCreativeId);
 }
 
 function payloadMatchesActiveGenerationTaskId(payload = {}) {
@@ -2121,7 +2175,7 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
   }
   const captureSource = ownedAssets.some((asset) => /^mediasource/i.test(`${asset?.source || ''}`))
     ? 'mediasource'
-    : 'dom';
+    : (ownedAssets.some((asset) => /^asset_history/i.test(`${asset?.source || ''}`)) ? 'asset_history' : 'dom');
   const existingAssets = Array.isArray(snapshot.metadata?.mediaAssets) ? snapshot.metadata.mediaAssets : [];
   const hasExistingMediaSource = existingAssets.some(isMediaSourceCapturedAsset);
   if (captureSource === 'dom' && hasExistingMediaSource) {
@@ -2133,7 +2187,9 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
   }
   const mergeBaseAssets = captureSource === 'mediasource'
     ? existingAssets.filter((asset) => !shouldDropDomPreviewAfterMediaSource(asset))
-    : existingAssets;
+    : (captureSource === 'asset_history'
+      ? existingAssets.filter((asset) => /^mediasource_upload/i.test(`${asset?.source || ''}`))
+      : existingAssets);
   const mergedAssets = mergeCapturedMediaAssets(mergeBaseAssets, ownedAssets);
   if (!mergedAssets.length) return;
   markActiveGenerationOwnedOutput(ownedAssets.length, captureSource === 'mediasource' ? 'owned_output_mediasource_enrichment' : 'dom_new_output_fallback');
@@ -2582,6 +2638,52 @@ function normalizeKlingTradeCredits(value) {
   return Number.isInteger(parsed) && parsed <= MAX_REASONABLE_KLING_CREDIT_BURN
     ? parsed
     : null;
+}
+
+function normalizeKlingShowPriceCredits(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  const scaled = parsed >= 100 && parsed % 100 === 0 ? parsed / 100 : parsed;
+  return Number.isInteger(scaled) && scaled <= MAX_REASONABLE_KLING_CREDIT_BURN ? scaled : null;
+}
+
+function reportAssetShowPriceCredit(row = {}, payload = {}) {
+  const creditsBurned = normalizeKlingShowPriceCredits(row?.showPrice);
+  const baseSnapshot = USAGE_CTX.assetScanSnapshot;
+  const eventId = Number(baseSnapshot?.eventId || USAGE_CTX.activeGeneration?.eventId || 0) || null;
+  if (!creditsBurned || !baseSnapshot || !eventId) return false;
+  const taskId = normalizeKlingTaskId(row?.taskId);
+  const workId = normalizeKlingTaskId(row?.workId);
+  const dedupeKey = `asset-show-price|${eventId}|${taskId}|${workId}|${creditsBurned}`;
+  if (USAGE_CTX.networkEventKeys.has(dedupeKey)) return false;
+  USAGE_CTX.networkEventKeys.set(dedupeKey, Date.now());
+  const profile = CREDIT_SOURCE_PROFILES.assetShowPrice;
+  reportKlingUsage({
+    ...baseSnapshot,
+    eventId,
+    status: 'settled',
+    creditsBurned,
+    source: profile.source,
+    confidence: profile.confidence,
+    metadata: {
+      ...(baseSnapshot.metadata || {}),
+      creditSource: profile.source,
+      creditSourcePriority: profile.priority,
+      assetShowPrice: {
+        raw: Number(row.showPrice),
+        creditsBurned,
+        taskId,
+        workId,
+        creativeId: normalizeKlingTaskId(row?.creativeId),
+        capturedAt: Number(payload.capturedAt || Date.now()),
+      },
+    },
+  }).catch((error) => {
+    if (!error?.contextInvalidated && !isExtensionContextInvalidatedError(error?.message)) {
+      console.warn('[RMW Kling] Asset showPrice reconciliation failed', error);
+    }
+  });
+  return true;
 }
 
 function isKnownKlingTaskId(taskId) {
@@ -3479,6 +3581,7 @@ function handleKlingNetworkUsageMessage(event) {
         assetTaskIdsSeen.push(assetTaskId);
       }
       const assetWorkId = normalizeKlingTaskId(row?.workId);
+      const assetCreativeId = normalizeKlingTaskId(row?.creativeId);
       if (assetWorkId && !assetTaskIdsSeen.includes(assetWorkId)) {
         assetTaskIdsSeen.push(assetWorkId);
       }
@@ -3492,13 +3595,18 @@ function handleKlingNetworkUsageMessage(event) {
           promptSnippet ? `p:${promptSnippet}` : '',
         ].filter(Boolean).join(' '));
       }
-      const matchedByTaskId = hasActiveGenerationForAssetMatch && (isCurrentGenerationKlingTaskId(assetTaskId) || isCurrentGenerationKlingTaskId(assetWorkId));
+      const activeAssetIds = getActiveGenerationAssetIds();
+      const matchedByTaskId = hasActiveGenerationForAssetMatch && Boolean(assetTaskId && isCurrentGenerationKlingTaskId(assetTaskId));
+      const matchedByLinkedAssetId = hasActiveGenerationForAssetMatch && Boolean(
+        (assetWorkId && activeAssetIds.includes(assetWorkId))
+        || (assetCreativeId && activeAssetIds.includes(assetCreativeId))
+      );
       const matchedByPromptTime = hasActiveGenerationForAssetMatch && !matchedByTaskId && canFallbackMatchActiveGeneration({
         prompt: row?.prompt,
         createTime: row?.createTime,
         requirePrompt: true,
       });
-      if (!matchedByTaskId && !matchedByPromptTime) {
+      if (!matchedByTaskId && !matchedByLinkedAssetId && !matchedByPromptTime) {
         assetMetrics.assetRowsSkippedUnknownGeneration += 1;
         continue;
       }
@@ -3507,7 +3615,14 @@ function handleKlingNetworkUsageMessage(event) {
         endpoint: `${payload.url || ''}`.slice(0, 1000),
         taskId: assetTaskId || '',
         workId: assetWorkId || '',
-        strategy: matchedByTaskId ? 'identifier' : 'prompt_time',
+        creativeId: assetCreativeId || '',
+        strategy: matchedByTaskId ? 'task_id' : (matchedByLinkedAssetId ? 'linked_asset_id' : 'prompt_time'),
+      });
+      linkAssetIdsWithActiveGeneration({
+        taskId: assetTaskId,
+        workId: assetWorkId,
+        creativeId: assetCreativeId,
+        source: 'asset_history_match',
       });
       if (assetTaskId && matchedByPromptTime) {
         assetMetrics.assetRowsRecoveredTaskId += 1;
@@ -3553,10 +3668,13 @@ function handleKlingNetworkUsageMessage(event) {
         });
         reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, mediaAssets);
       }
+      reportAssetShowPriceCredit(row, payload);
       reportPipelineDiagnosticsUpdate('asset_history_match', {
         assetHistory: {
           taskId: assetTaskId || '',
           workId: assetWorkId || '',
+          creativeId: assetCreativeId || '',
+          creativeMatchesWork: Boolean(assetCreativeId && assetCreativeId === assetWorkId),
           promptMatched: matchedByPromptTime,
           taskIdMatched: matchedByTaskId,
           taskIdSource: matchedByTaskId

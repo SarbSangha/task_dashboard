@@ -559,13 +559,57 @@ const getUsageEventSettings = (event) => {
 const getUsageEventMediaAssets = (event, role) => {
   const mediaAssets = getUsageEventMetadata(event)?.mediaAssets;
   if (!Array.isArray(mediaAssets)) return [];
-  return mediaAssets
-    .filter((asset) => asset && typeof asset === 'object' && asset.url)
+  const resolveAssetUrl = (asset) => `${
+    asset.permanentUrl
+      || asset.openUrl
+      || asset.downloadUrl
+      || asset.upload?.openUrl
+      || asset.upload?.url
+      || asset.storageUrl
+      || asset.rawUrl
+      || asset.url
+      || ''
+  }`.trim();
+  const normalizedAssets = mediaAssets
+    .filter((asset) => asset && typeof asset === 'object' && resolveAssetUrl(asset))
+    .map((asset) => {
+      const resolvedUrl = resolveAssetUrl(asset);
+      const generatedOriginFrame = /output(?:[_\-.]|%)/i.test(resolvedUrl) && /\.origin(?:[?#]|$)/i.test(resolvedUrl);
+      return {
+        ...asset,
+        url: resolvedUrl,
+        assetRole: generatedOriginFrame ? 'output' : asset.assetRole,
+      };
+    })
     .filter((asset) => {
       const assetRole = `${asset.assetRole || ''}`.trim().toLowerCase();
       if (role === 'input') return assetRole === 'input';
       if (role === 'output') return assetRole !== 'input';
       return true;
+    });
+  const stableUrls = new Set(normalizedAssets
+    .filter((asset) => /^https?:\/\//i.test(asset.url))
+    .map((asset) => `${asset.blobUrl || ''}`.trim())
+    .filter(Boolean));
+  const hasAuthoritativeOutput = role === 'output' && normalizedAssets.some((asset) => {
+    const source = `${asset.source || ''}`.trim().toLowerCase();
+    return source && !['dom', 'blob_source'].includes(source) && /^https?:\/\//i.test(asset.url);
+  });
+  return normalizedAssets
+    .filter((asset) => {
+      if (!hasAuthoritativeOutput) return true;
+      const source = `${asset.source || ''}`.trim().toLowerCase();
+      return !['dom', 'blob_source'].includes(source) && !/^blob:/i.test(asset.url);
+    })
+    .filter((asset) => !/^blob:/i.test(asset.url) || !stableUrls.has(`${asset.url || asset.blobUrl || ''}`.trim()))
+    .sort((left, right) => {
+      const score = (asset) => {
+        if (asset.permanentUrl || asset.openUrl || asset.upload?.url || asset.storageUrl) return 0;
+        if (/^https?:\/\//i.test(asset.url) && `${asset.assetType || asset.mimetype || ''}`.toLowerCase().includes('video')) return 1;
+        if (/^https?:\/\//i.test(asset.url)) return 2;
+        return 3;
+      };
+      return score(left) - score(right);
     });
 };
 

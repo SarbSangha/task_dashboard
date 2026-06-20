@@ -1566,6 +1566,8 @@ def _normalize_usage_text(value: Optional[str], max_length: int = 160) -> Option
 
 def _usage_source_rank(value: Optional[str]) -> int:
     normalized = f"{value or ''}".strip().lower()
+    if normalized == "asset_show_price_reconciled":
+        return 1
     if normalized == "trade_history_reconciled":
         return 2
     if normalized == "trade_history_time_reconciled":
@@ -1639,6 +1641,7 @@ def _safe_credits_burned_value(
         "expected_credit_lock",
         "trade_history_reconciled",
         "trade_history_time_reconciled",
+        "asset_show_price_reconciled",
         "wallet_reconciled",
         "fetch_response",
         "xhr_response",
