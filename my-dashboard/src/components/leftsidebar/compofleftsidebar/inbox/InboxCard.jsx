@@ -227,6 +227,25 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     const label = formatDateTimeIndia(task.deadline);
 
     const isDeadlineMissed = diffMs < 0;
+    const completionCandidates = [task.completedAt, task.approvedAt];
+    if (['completed', 'approved'].includes(normalizedStatus)) {
+      completionCandidates.push(task.updatedAt);
+    }
+    const recordedFinishDate = completionCandidates
+      .filter(Boolean)
+      .map((value) => new Date(value))
+      .find((date) => !Number.isNaN(date.getTime())) || null;
+
+    // A closed task is judged by final approval/completion time. The updated
+    // timestamp is only a compatibility fallback for older completed records.
+    if (recordedFinishDate) {
+      const finishedLate = recordedFinishDate.getTime() > deadlineDate.getTime();
+      return {
+        className: finishedLate ? 'deadline-closed-missed' : 'deadline-complete',
+        label,
+        meta: finishedLate ? 'Completed late' : 'Completed on time',
+      };
+    }
 
     if (isDeadlineMissed && !terminalStatuses.has(normalizedStatus)) {
       return {
@@ -691,13 +710,19 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         <div className="worker-status-chip-list">
           {workerStatusRows.map((worker) => {
             const status = worker.submitted ? 'Submitted' : worker.started ? 'In Progress' : 'Not Started';
+            const workerSubmittedAt = worker.submission?.submittedAt;
             return (
               <span
                 key={worker.id || worker.name}
                 className={`worker-status-chip ${worker.submitted ? 'submitted' : worker.started ? 'progress' : 'pending'}`}
               >
                 <b>{worker.name || 'Unknown worker'}</b>
-                <em>{status}</em>
+                <span className="worker-status-chip-meta">
+                  <em>{status}</em>
+                  {worker.submitted && workerSubmittedAt ? (
+                    <small>{formatDateTimeIndia(workerSubmittedAt)}</small>
+                  ) : null}
+                </span>
               </span>
             );
           })}
