@@ -24,6 +24,21 @@ const setWorkflowCache = (taskId, data) => {
   });
 };
 
+const resolveTaskUserName = (task, userId, fallback = 'Assignee') => {
+  const normalizedUserId = Number(userId || 0);
+  if (!normalizedUserId) return fallback;
+  const workerRows = Array.isArray(task?.workerSubmissions?.workers)
+    ? task.workerSubmissions.workers
+    : [];
+  const candidates = [
+    task?.creator,
+    ...(Array.isArray(task?.assignedTo) ? task.assignedTo : []),
+    ...workerRows,
+  ].filter(Boolean);
+  const matchedUser = candidates.find((person) => Number(person.id || person.userId || 0) === normalizedUserId);
+  return matchedUser?.name || task?.submittedByName || fallback;
+};
+
 const buildLegacyWorkflowSteps = (task) => {
   const status = (task.status || '').toLowerCase();
   const workflowStage = (task.workflowStage || task.workflow_stage || '').toLowerCase();
@@ -76,7 +91,11 @@ const buildLegacyWorkflowSteps = (task) => {
       type: 'circle',
       status: submittedStates.has(status) ? (status === 'submitted' ? 'active' : 'completed') : 'pending',
       timestamp: task.submittedAt,
-      actor: task.submittedBy ? `User #${task.submittedBy}` : 'Assignee',
+      actor: resolveTaskUserName(
+        task,
+        task.submittedBy,
+        assignedUsers.map((person) => person.name).join(', ') || 'Assignee',
+      ),
     },
     {
       id: 4,
@@ -278,6 +297,9 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
     const loopCount = Math.max(0, Number(task.resultVersion || 0) - 1);
     const isLoopStep = step.keyName === 'loop';
     const legacyWorkingStarted = Boolean(task.startedAt);
+    const finalCompletionAt = task.completedAt
+      || task.approvedAt
+      || (['completed', 'approved'].includes((task.status || '').toLowerCase()) ? task.updatedAt : null);
     const workAllocated = hasAssignedWorkers
       || workflowStage === 'assigned'
       || workflowStage === 'in_progress';
@@ -286,7 +308,7 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
       if (stageData) return workerNames;
       if (step.keyName === 'created') return task.creator?.name || 'Creator';
       if (step.keyName === 'approval') return task.creator?.name || 'Creator';
-      if (step.keyName === 'submitted') return task.submittedBy ? `User #${task.submittedBy}` : workerNames;
+      if (step.keyName === 'submitted') return resolveTaskUserName(task, task.submittedBy, workerNames);
       if (isLoopStep) return workerNames;
       if (isUpcoming) return 'Not reached yet';
       return step.actor || workerNames;
@@ -317,7 +339,7 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
       if (step.keyName === 'submitted') return task.submittedAt || null;
       if (step.keyName === 'approval') return task.submittedAt || null;
       if (isLoopStep) return task.updatedAt || task.submittedAt;
-      if (step.keyName === 'final') return task.completedAt || null;
+      if (step.keyName === 'final') return task.startedAt || task.createdAt || null;
       return step.timestamp || null;
     };
 
@@ -329,10 +351,10 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
       if (isUpcoming || isCurrent) return null;
       if (step.keyName === 'created') return task.createdAt;
       if (step.keyName === 'working') return task.submittedAt || null;
-      if (step.keyName === 'submitted') return task.completedAt || null;
-      if (step.keyName === 'approval') return task.completedAt || null;
+      if (step.keyName === 'submitted') return task.submittedAt || null;
+      if (step.keyName === 'approval') return finalCompletionAt;
       if (isLoopStep) return task.updatedAt;
-      if (step.keyName === 'final') return task.completedAt || null;
+      if (step.keyName === 'final') return finalCompletionAt;
       return null;
     };
 

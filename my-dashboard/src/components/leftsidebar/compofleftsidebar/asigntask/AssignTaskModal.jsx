@@ -109,7 +109,7 @@ const buildDirtySnapshot = (formData = {}) => {
     taskType: `${formData.taskType || ''}`.trim(),
     workflowEnabled: Boolean(formData.workflowEnabled),
     finalApprovalRequired: Boolean(formData.finalApprovalRequired),
-    submissionMode: formData.submissionMode === 'all' ? 'all' : 'any',
+    submissionMode: formData.submissionMode === 'any' ? 'any' : 'all',
     selectedUserIds: (Array.isArray(formData.selectedUserIds) ? formData.selectedUserIds : [])
       .map((value) => `${value || ''}`)
       .sort(),
@@ -157,7 +157,7 @@ const createEmptyFormData = (myDepartment = '') => ({
   taskType: 'task',
   attachments: [],
   links: [],
-  submissionMode: 'any',
+  submissionMode: 'all',
   workflowEnabled: false,
   finalApprovalRequired: false,
   workflowStages: [],
@@ -1084,7 +1084,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         reference: formData.reference || '',
         links: formData.links || [],
         attachments: finalAttachments,
-        submissionMode: formData.submissionMode === 'all' ? 'all' : 'any',
+        submissionMode: formData.submissionMode === 'any' ? 'any' : 'all',
         ...(shouldSendWorkflow ? { workflow: workflowPayload } : {}),
       };
 

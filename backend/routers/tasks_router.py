@@ -482,7 +482,7 @@ class TaskCreate(BaseModel):
     links: List[str] = Field(default_factory=list)
     attachments: List[dict] = Field(default_factory=list)
     workflow: Optional["TaskWorkflowCreatePayload"] = None
-    submissionMode: str = Field(default="any")
+    submissionMode: str = Field(default="all")
 
 
 class TaskWorkflowStageCreatePayload(BaseModel):
