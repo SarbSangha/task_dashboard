@@ -742,6 +742,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         <span><strong>Chat:</strong> {task.chatCount || 0}</span>
         <span><strong>Created:</strong> {task.createdAt ? formatDateTimeIndia(task.createdAt) : '-'}</span>
         <span><strong>Updated:</strong> {task.updatedAt ? formatDateTimeIndia(task.updatedAt) : '-'}</span>
+        <span><strong>Submitted:</strong> {task.submittedAt ? formatDateTimeIndia(task.submittedAt) : '-'}</span>
         <span className={`deadline-tile ${deadlineInfo.className}`}>
           <strong>Deadline:</strong>
           <em>{deadlineInfo.label}</em>
