@@ -1,16 +1,22 @@
+import React from 'react';
 import '../MenuButton.css';
 
 const TrendingsButton = ({ isActive, onClick }) => {
   return (
     <button
-      className={`menu-button ${isActive ? 'active' : ''}`}
+      className={`menu-button${isActive ? ' active' : ''}`}
       onClick={onClick}
+      data-label="RMW Data"
+      aria-label="RMW Data"
+      aria-current={isActive ? 'page' : undefined}
     >
-      <div className="menu-button-icon">
-        <svg viewBox="0 0 24 24" fill="currentColor">
-          <path d="M3 17h3l3-5 4 4 5-8 3 2v7H3v-2zm0-9h5v2H3V8zm7 0h11v2H10V8z" />
+      <span className="menu-button-icon" aria-hidden="true">
+        {/* Trending up — clear data/analytics metaphor */}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+          <polyline points="17 6 23 6 23 12" />
         </svg>
-      </div>
+      </span>
       <span className="menu-button-label">RMW Data</span>
     </button>
   );

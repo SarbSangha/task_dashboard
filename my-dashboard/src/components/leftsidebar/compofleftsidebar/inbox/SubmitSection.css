@@ -9,7 +9,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.8);
+  background: var(--color-surface-overlay);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -21,7 +21,8 @@
 }
 
 .submit-modal {
-  background: #1e293b;
+  background: var(--color-surface-modal);
+  border: 1px solid var(--color-border);
   border-radius: 16px;
   width: 600px;
   max-width: 100%;
@@ -30,6 +31,8 @@
   flex-direction: column;
   overflow-x: hidden;
   box-sizing: border-box;
+  box-shadow: var(--shadow-popover);
+  color: var(--color-text);
 }
 
 .submit-modal * {
@@ -38,7 +41,8 @@
 
 .submit-header {
   padding: 20px 24px;
-  background: #334155;
+  background: var(--color-navbar-surface);
+  border-bottom: 1px solid var(--color-navbar-border);
   border-radius: 16px 16px 0 0;
   display: flex;
   justify-content: space-between;
@@ -46,7 +50,7 @@
 }
 
 .submit-header h2 {
-  color: white;
+  color: var(--color-text);
   margin: 0;
   font-size: 20px;
 }
@@ -55,21 +59,7 @@
   padding: 24px;
   overflow-y: auto;
   overflow-x: hidden;
-}
-
-/* Tracking Theme Override */
-.submit-modal {
-  background: #1f2937;
-  border: 1px solid #374151;
-}
-
-.submit-header {
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.16) 0%, rgba(118, 75, 162, 0.16) 100%);
-  border-bottom: 1px solid #374151;
-}
-
-.submit-form {
-  background: #111b2b;
+  background: var(--color-surface);
 }
 
 .form-group {
@@ -78,7 +68,7 @@
 
 .form-group label {
   display: block;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--color-text-secondary);
   font-size: 14px;
   font-weight: 600;
   margin-bottom: 8px;
@@ -86,11 +76,11 @@
 
 .form-group textarea {
   width: 100%;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--color-input-bg);
+  border: 1px solid var(--color-input-border);
   border-radius: 8px;
   padding: 12px;
-  color: white;
+  color: var(--color-input-text);
   font-family: inherit;
   font-size: 14px;
   resize: vertical;
@@ -98,8 +88,9 @@
 
 .form-group textarea:focus {
   outline: none;
-  border-color: #1abc9c;
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--color-primary);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--shadow-focus);
 }
 
 .upload-area {
@@ -112,18 +103,20 @@
 .upload-btn {
   display: inline-block;
   padding: 10px 20px;
-  background: rgba(26, 188, 156, 0.2);
-  color: #1abc9c;
-  border: 2px dashed #1abc9c;
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
+  border: 2px dashed var(--color-feedback-info-border);
   border-radius: 8px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
-  transition: all 0.2s;
+  transition:
+    background-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
 }
 
 .upload-btn:hover {
-  background: rgba(26, 188, 156, 0.3);
+  background: color-mix(in srgb, var(--color-feedback-info-bg) 78%, var(--color-info));
   transform: translateY(-2px);
 }
 
@@ -135,12 +128,13 @@
 .attachments-preview {
   margin-top: 12px;
   padding: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
 }
 
 .attachments-preview h4 {
-  color: white;
+  color: var(--color-text);
   font-size: 14px;
   margin: 0 0 8px 0;
 }
@@ -151,14 +145,15 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
   border-radius: 6px;
   margin-bottom: 6px;
   min-width: 0;
 }
 
 .attachment-preview-item span {
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--color-text-secondary);
   font-size: 13px;
   min-width: 0;
   overflow: hidden;
@@ -167,19 +162,19 @@
 }
 
 .remove-btn {
-  background: rgba(239, 68, 68, 0.2);
-  color: #ef4444;
+  background: var(--color-feedback-error-bg);
+  color: var(--color-feedback-error-text);
   border: none;
   width: 24px;
   height: 24px;
   border-radius: 4px;
   cursor: pointer;
   font-size: 16px;
-  transition: all 0.2s;
+  transition: background-color var(--theme-transition-fast);
 }
 
 .remove-btn:hover {
-  background: rgba(239, 68, 68, 0.4);
+  background: color-mix(in srgb, var(--color-feedback-error-bg) 78%, var(--color-danger));
 }
 
 .submit-actions {
@@ -192,19 +187,23 @@
 .submit-btn {
   flex: 1;
   padding: 14px;
-  background: #1abc9c;
-  color: white;
+  background: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
   border: none;
   border-radius: 8px;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
+  transition:
+    background-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .submit-btn:hover:not(:disabled) {
-  background: #16a085;
+  background: var(--color-button-primary-bg-hover);
   transform: translateY(-2px);
+  box-shadow: var(--shadow-button-primary);
 }
 
 .submit-btn:disabled {
@@ -214,18 +213,27 @@
 
 .cancel-btn {
   padding: 14px 24px;
-  background: rgba(255, 255, 255, 0.1);
-  color: white;
-  border: none;
+  background: var(--color-button-secondary-bg);
+  color: var(--color-button-secondary-text);
+  border: 1px solid var(--color-button-outline-border);
   border-radius: 8px;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background-color var(--theme-transition-fast);
 }
 
 .cancel-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--color-button-secondary-bg-hover);
+}
+
+.form-group textarea:focus-visible,
+.upload-btn:focus-visible,
+.remove-btn:focus-visible,
+.submit-btn:focus-visible,
+.cancel-btn:focus-visible {
+  outline: var(--outline-focus);
+  outline-offset: 2px;
 }
 
 @media (max-width: 560px) {

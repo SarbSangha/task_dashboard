@@ -193,6 +193,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
   const workerSubmissionRows = Array.isArray(workerSubmissionSummary.workers)
     ? workerSubmissionSummary.workers
     : [];
+  const viewerSubmission = workerSubmissionSummary.viewerSubmission || null;
   const hasWorkerSubmissionSummary = !isWorkflowTask(taskDetails) && workerSubmissionRows.length > 1;
   const normalizedSubmissionMode = workerSubmissionSummary.mode === 'all' || taskDetails.submissionMode === 'all'
     ? 'all'
@@ -204,7 +205,16 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
     !isWorkflowTask(taskDetails)
     && taskDetails.myRole === 'assignee'
     && workerSubmissionSummary.viewerSubmitted
-    && ['in_progress', 'submitted', 'under_review'].includes(normalizedTaskStatus)
+    && (
+      normalizedTaskStatus === 'in_progress'
+      || (
+        normalizedTaskStatus === 'submitted'
+        && (
+          Number(viewerSubmission?.submittedByUserId || 0) === Number(taskDetails.submittedBy || 0)
+          || isCreatorTask
+        )
+      )
+    )
     && !visibleActions.includes('edit_submit')
   ) {
     availableActions = [...availableActions, 'edit_submit'];

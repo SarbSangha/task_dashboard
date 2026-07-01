@@ -18,6 +18,8 @@ import {
   openSystemFilePicker,
 } from '../../../../utils/fileUploads';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { isMobileViewport } from '../../../../utils/isMobileViewport';
+import WindowControls from '../../../common/WindowControls';
 import { GROUP_MESSAGES_KEY, useSendGroupMessage } from '../../../../hooks/useMessages';
 import ChatAttachmentGallery from '../../../common/chat/ChatAttachmentGallery';
 import {
@@ -893,7 +895,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const directUsersRef = useRef(directUsers);
   const directConversationsRef = useRef(directConversations);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const realtimeRefreshTimersRef = useRef({
     groupIndex: null,
     groupMessages: null,
@@ -2079,7 +2081,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     if (variant !== 'overlay') return;
     if (isOpen) {
       setIsMinimized(false);
-      setIsMaximized(false);
+      setIsMaximized(isMobileViewport());
     }
   }, [isOpen, variant]);
 
@@ -3304,16 +3306,20 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               </div>
             </div>
             <div className="message-system-sidebar-actions">
-              <button type="button" className="message-system-sidebar-btn" onClick={refreshCurrentView} title="Refresh groups">
-                ↻
+              <button type="button" className="message-system-sidebar-btn" onClick={refreshCurrentView} title="Refresh groups" aria-label="Refresh groups">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
               </button>
               <button
                 type="button"
                 className={`message-system-sidebar-btn ${showGroupComposer ? 'active' : ''}`}
                 onClick={() => setShowGroupComposer((prev) => !prev)}
                 title={showGroupComposer ? 'Hide create group' : 'Create group'}
+                aria-label={showGroupComposer ? 'Hide create group' : 'Create group'}
               >
-                {showGroupComposer ? '−' : '+'}
+                {showGroupComposer
+                  ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="14" height="14" aria-hidden="true"><path d="M5 12h14"/></svg>
+                  : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="14" height="14" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                }
               </button>
             </div>
           </div>
@@ -3363,7 +3369,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                   type="button"
                   className={`group-thread-card ${selectedGroupId === group.id ? 'active' : ''} ${hasUnread ? 'has-unread' : ''}`}
                   key={group.id}
-                  onClick={() => setSelectedGroupId(group.id)}
+                  onClick={() => { setSelectedGroupId(group.id); if (isMobileViewport()) setVisibleListTab(null); }}
                 >
                   <div
                     className={`group-thread-avatar ${hasUnread ? 'has-unread' : ''}`}
@@ -3405,6 +3411,16 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           {selectedGroup && (
             <>
               <div className="group-chat-header">
+                <button
+                  type="button"
+                  className="group-chat-back-btn"
+                  onClick={() => setVisibleListTab(activeTab)}
+                  aria-label="Back to groups list"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" width="18" height="18" aria-hidden="true">
+                    <path d="M15 18l-6-6 6-6"/>
+                  </svg>
+                </button>
                 <div className="group-chat-summary">
                   <div
                     className="group-chat-header-avatar"
@@ -3436,7 +3452,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                       className="group-chat-menu-trigger"
                       onClick={() => setShowGroupMenu((prev) => !prev)}
                     >
-                      ...
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
                     </button>
 
                     {showGroupMenu && (
@@ -3617,7 +3633,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                       disabled={editingMessage.saving}
                       aria-label="Cancel edit"
                     >
-                      x
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
                     </button>
                   </div>
                 )}
@@ -3632,7 +3648,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                       onClick={cancelReplyToMessage}
                       aria-label="Cancel reply"
                     >
-                      x
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
                     </button>
                   </div>
                 )}
@@ -3644,6 +3660,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                         <span>{getAttachmentLabel(attachment)}</span>
                         <button
                           type="button"
+                          aria-label="Remove attachment"
                           onClick={() =>
                             setPendingAttachments((prev) => {
                               const nextAttachments = prev.filter((_, attachmentIndex) => attachmentIndex !== index);
@@ -3659,7 +3676,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                             })
                           }
                         >
-                          x
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" width="9" height="9" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
                         </button>
                       </div>
                     ))}
@@ -3675,9 +3692,10 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                       openAttachmentPicker('files');
                     }}
                     title="Attach files"
+                    aria-label="Attach files"
                     disabled={uploadingAttachment || isEditingGroupMessage}
                   >
-                    +
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="group-chat-tool-icon" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                   </button>
                   <button
                     type="button"
@@ -3800,17 +3818,17 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                 </div>
               </div>
               <div className="message-system-sidebar-actions">
-                <button type="button" className="message-system-sidebar-btn" onClick={refreshCurrentView} title="Refresh direct chats">
-                  ↻
+                <button type="button" className="message-system-sidebar-btn" onClick={refreshCurrentView} title="Refresh direct chats" aria-label="Refresh direct chats">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                 </button>
               </div>
             </div>
-            <div className="groups-create-card groups-create-card--helper">
+            {/* <div className="groups-create-card groups-create-card--helper">
               <div className="groups-create-title">Quick Start</div>
               <div className="group-message-info-card direct-helper-card">
                 Choose a teammate from the list below to start or continue a one-to-one conversation.
               </div>
-            </div>
+            </div> */}
 
             <div className="groups-list">
               {directLoading && <div className="group-message-info-card">Loading people...</div>}
@@ -3830,7 +3848,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                     type="button"
                     className={`group-thread-card ${selectedDirectUserId === item.id ? 'active' : ''} ${hasUnread ? 'has-unread' : ''}`}
                     key={item.id}
-                    onClick={() => setSelectedDirectUserId(item.id)}
+                    onClick={() => { setSelectedDirectUserId(item.id); if (isMobileViewport()) setVisibleListTab(null); }}
                   >
                     <div
                       className={`group-thread-avatar ${hasUnread ? 'has-unread' : ''}`}
@@ -3873,6 +3891,16 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
             {selectedDirectUser && (
               <>
                 <div className="group-chat-header">
+                  <button
+                    type="button"
+                    className="group-chat-back-btn"
+                    onClick={() => setVisibleListTab(activeTab)}
+                    aria-label="Back to messages list"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" width="18" height="18" aria-hidden="true">
+                      <path d="M15 18l-6-6 6-6"/>
+                    </svg>
+                  </button>
                   <div className="group-chat-summary">
                     <div
                       className="group-chat-header-avatar"
@@ -3891,7 +3919,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                     </div>
                 </div>
                 <div className="group-chat-actions">
-                  <span className="group-chat-badge">Direct</span>
+                  {/* <span className="group-chat-badge"></span> */}
                   <button
                     type="button"
                     className={`group-chat-selection-toggle ${isDirectSelectionActive ? 'active' : ''}`}
@@ -3985,7 +4013,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                         disabled={editingMessage.saving}
                         aria-label="Cancel edit"
                       >
-                        x
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
                       </button>
                     </div>
                   )}
@@ -4000,7 +4028,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                         onClick={cancelReplyToMessage}
                         aria-label="Cancel reply"
                       >
-                        x
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
                       </button>
                     </div>
                   )}
@@ -4012,6 +4040,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                           <span>{getAttachmentLabel(attachment)}</span>
                           <button
                             type="button"
+                            aria-label="Remove attachment"
                             onClick={() =>
                               setDirectPendingAttachments((prev) => {
                                 const nextAttachments = prev.filter((_, attachmentIndex) => attachmentIndex !== index);
@@ -4027,7 +4056,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                               })
                             }
                           >
-                            x
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" width="9" height="9" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
                           </button>
                         </div>
                       ))}
@@ -4043,9 +4072,10 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                         openAttachmentPicker('files', handleDirectAttachmentSelect);
                       }}
                       title="Attach files"
+                      aria-label="Attach files"
                       disabled={uploadingDirectAttachment || isEditingDirectMessage}
                     >
-                      +
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="group-chat-tool-icon" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                     </button>
                     <button
                       type="button"
@@ -4330,7 +4360,6 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       return;
     }
 
-    setIsMaximized(false);
     setIsMinimized(true);
   };
 
@@ -4385,43 +4414,13 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               )}
               {!isMinimized && panelStatusBanner}
             </div>
-            <div className="group-message-window-controls">
-              {!isMinimized && (
-                <button
-                  type="button"
-                  className="group-message-window-btn"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleToggleMinimize();
-                  }}
-                  title="Minimize"
-                >
-                  ─
-                </button>
-              )}
-              <button
-                type="button"
-                className="group-message-window-btn"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleToggleMaximize();
-                }}
-                title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}
-              >
-                {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
-              </button>
-              <button
-                type="button"
-                className="group-message-modal-close"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onClose();
-                }}
-                title="Close"
-              >
-                ✕
-              </button>
-            </div>
+            <WindowControls
+              isMinimized={isMinimized}
+              isMaximized={isMaximized}
+              onMinimize={handleToggleMinimize}
+              onMaximize={handleToggleMaximize}
+              onClose={onClose}
+            />
           </div>
           {!isMinimized && <div className="group-message-panel-body">{content}</div>}
         </div>

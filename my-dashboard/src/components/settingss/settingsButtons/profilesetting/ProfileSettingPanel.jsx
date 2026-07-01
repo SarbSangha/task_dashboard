@@ -130,7 +130,7 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
       <div className="profile-settings-panel">
         <div className="profile-settings-header">
           <h3>Profile Settings</h3>
-          <button className="close-panel-btn" onClick={onClose}>
+          <button type="button" className="close-panel-btn" onClick={onClose} aria-label="Close profile settings">
             ✕
           </button>
         </div>
@@ -211,6 +211,7 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
                 <option className="flag-option" value="NORMAL">NORMAL</option>
               </select>
               <button
+                type="button"
                 className="flag-request-btn"
                 onClick={handleSubmitFlagRequest}
                 disabled={!requestChangeFlag}
@@ -260,7 +261,7 @@ const ProfileSettingsPanel = ({ isOpen, onClose }) => {
 
           {/* Save Button */}
           <div className="profile-actions">
-            <button className="save-profile-btn" onClick={handleSaveProfile}>
+            <button type="button" className="save-profile-btn" onClick={handleSaveProfile}>
               Submit
             </button>
           </div>

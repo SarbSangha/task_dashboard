@@ -4,6 +4,7 @@ import LoginSecurityPanel from './settingsButtons/profilesetting/LoginSecurityPa
 import ProfileSettingsPanel from './settingsButtons/profilesetting/ProfileSettingPanel';
 import AdminApprovalsPanel from './settingsButtons/admin/AdminApprovalsPanel';
 import NotificationsPanel from './settingsButtons/NotificationsPanel';
+import DarkModeToggle from './settingsButtons/DarkModeToggle';
 import { useAuth } from '../../context/AuthContext';
 import { usePermissions } from '../../hooks/usePermissions';
 const SettingsSidebar = ({ isOpen, onClose }) => {
@@ -51,7 +52,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
       <aside className={`settings-sidebar ${isOpen ? 'open' : ''}`}>
         <div className="settings-header">
           <h2>Settings</h2>
-          <button className="settings-close-btn" onClick={onClose}>
+          <button type="button" className="settings-close-btn" onClick={onClose} aria-label="Close settings">
             ✕
           </button>
         </div>
@@ -59,6 +60,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
         <nav className="settings-menu">
           {/* Login & Security Button */}
           <button
+            type="button"
             className="settings-menu-item"
             onClick={() => openPanel('login-security')}
           >
@@ -73,6 +75,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
 
           {/* Profile Settings Button */}
           <button
+            type="button"
             className="settings-menu-item"
             onClick={() => openPanel('profile-settings')}
           >
@@ -87,6 +90,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
 
           {can('approve_signups') && (
             <button
+              type="button"
               className="settings-menu-item"
               onClick={() => openPanel('admin-approvals')}
             >
@@ -101,15 +105,11 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
           )}
 
           {/* Dark Mode */}
-          <button className="settings-menu-item">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M9 2c-1.05 0-2.05.16-3 .46 4.06 1.27 7 5.06 7 9.54 0 4.48-2.94 8.27-7 9.54.95.3 1.95.46 3 .46 5.52 0 10-4.48 10-10S14.52 2 9 2z"/>
-            </svg>
-            <span>Dark Mode</span>
-          </button>
+          <DarkModeToggle />
 
           {/* Notifications */}
           <button
+            type="button"
             className="settings-menu-item"
             onClick={() => openPanel('notifications')}
           >
@@ -120,7 +120,7 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
           </button>
 
           {/* Logout */}
-          <button className="settings-menu-item" onClick={handleLogout}>
+          <button type="button" className="settings-menu-item" onClick={handleLogout}>
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/>
             </svg>
@@ -142,9 +142,6 @@ const SettingsSidebar = ({ isOpen, onClose }) => {
         </button> */}
         </nav>
       </aside>
-
-      {/* Backdrop overlay */}
-      {isOpen && <div className="settings-backdrop" onClick={onClose} />}
     </>
   );
 };

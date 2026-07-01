@@ -1,86 +1,143 @@
-/* Global App Container */
 .App {
   margin: 0;
   padding: 0;
   width: 100%;
   min-height: 100vh;
-  background-color: #e8ecef;
+  background: var(--color-page);
+  color: var(--color-text);
+  transition: background-color var(--theme-transition-base), color var(--theme-transition-base);
 }
 
-/* Main Content Area - Adjusted for navbar and sidebar */
+/* ----------------------------------------------------------------
+   Main content area — sits to the right of the fixed sidebar and
+   below the fixed topnav. Margins are driven by sidebar width and
+   topnav height at each breakpoint.
+---------------------------------------------------------------- */
+
 .App-content {
-  margin-top: 100px;  /* Changed from 90px to match menu top position */
-  margin-left: 240px;
+  margin-top: calc(var(--topnav-inset) + var(--topnav-height) + 16px);
+  margin-left: calc(var(--sidebar-width) + var(--topnav-inset) + 4px);
   padding: 20px;
-  min-height: calc(100vh - 100px);
-  transition: margin-left 0.3s ease;
+  min-height: calc(100vh - var(--topnav-inset) - var(--topnav-height) - 16px);
+  transition: margin-left var(--theme-transition-base);
 }
 
-/* Content Container */
 .content-container {
   max-width: 1400px;
   margin: 0 auto;
 }
 
 .content-container h1 {
-  font-size: 32px;
-  color: #2b4257;
+  font-size: clamp(20px, 2.5vw, 32px);
+  color: var(--color-text);
   margin-bottom: 12px;
   font-weight: 700;
 }
 
 .content-container > p {
-  font-size: 16px;
-  color: #5a6c7d;
+  font-size: clamp(13px, 1.2vw, 16px);
+  color: var(--color-text-muted);
   margin-bottom: 30px;
 }
 
-/* Placeholder Content Grid */
 .placeholder-content {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: 20px;
   margin-top: 20px;
 }
 
 .placeholder-card {
-  background: white;
+  background: var(--color-card);
   padding: 24px;
   border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  transition: all 0.3s ease;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-soft);
+  transition:
+    transform var(--theme-transition-base),
+    box-shadow var(--theme-transition-base),
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast);
 }
 
 .placeholder-card:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-card-hover);
   transform: translateY(-4px);
 }
 
 .placeholder-card h3 {
-  font-size: 20px;
-  color: #2b4257;
+  font-size: clamp(16px, 1.4vw, 20px);
+  color: var(--color-text);
   margin-bottom: 12px;
   font-weight: 600;
 }
 
 .placeholder-card p {
-  font-size: 14px;
-  color: #7f8c8d;
+  font-size: clamp(13px, 1vw, 14px);
+  color: var(--color-text-muted);
   margin: 0;
 }
 
-/* Responsive Design */
+.push-status-pill {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 12px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
 
-/* Tablet - 768px to 1024px */
+.push-status-pill--active {
+  color: var(--color-feedback-success-text);
+  background: var(--color-feedback-success-bg);
+  border-color: var(--color-feedback-success-border);
+}
+
+.push-status-pill--checking,
+.push-status-pill--permission_required {
+  color: var(--color-feedback-warning-text);
+  background: var(--color-feedback-warning-bg);
+  border-color: var(--color-feedback-warning-border);
+}
+
+.push-status-pill--permission_denied,
+.push-status-pill--error {
+  color: var(--color-feedback-error-text);
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+}
+
+.push-status-pill--server_disabled {
+  color: var(--color-feedback-info-text);
+  background: var(--color-feedback-info-bg);
+  border-color: var(--color-feedback-info-border);
+}
+
+.push-status-pill--unsupported,
+.push-status-pill--inactive {
+  color: var(--color-text-muted);
+  background: var(--color-disabled-surface);
+  border-color: var(--color-disabled-border);
+}
+
+/* ----------------------------------------------------------------
+   Collapsed sidebar — content shifts left
+---------------------------------------------------------------- */
+
+.functional-menu.collapsed ~ .App-content {
+  margin-left: calc(var(--sidebar-icon-width) + var(--topnav-inset) + 4px);
+}
+
+/* ----------------------------------------------------------------
+   Large tablet (≤ 1024px) — sidebar shrinks slightly
+---------------------------------------------------------------- */
+
 @media (max-width: 1024px) {
   .App-content {
-    margin-left: 220px;
-    margin-top: 90px;
+    margin-left: calc(200px + var(--topnav-inset) + 4px);
     padding: 18px;
-  }
-
-  .content-container h1 {
-    font-size: 28px;
   }
 
   .placeholder-content {
@@ -88,20 +145,33 @@
   }
 }
 
-/* Mobile - Below 768px */
+/* ----------------------------------------------------------------
+   Tablet (≤ 768px) — icon-only sidebar (70px), still visible
+---------------------------------------------------------------- */
+
 @media (max-width: 768px) {
   .App-content {
-    margin-left: 80px;
-    margin-top: 160px;  /* Matches menu top position */
+    margin-left: calc(var(--sidebar-icon-width) + var(--topnav-inset) + 8px);
     padding: 16px;
   }
 
-  .content-container h1 {
-    font-size: 24px;
+  .functional-menu.collapsed ~ .App-content {
+    margin-left: calc(var(--sidebar-icon-width) + var(--topnav-inset) + 8px);
+  }
+}
+
+/* ----------------------------------------------------------------
+   Mobile (≤ 640px) — sidebar is a drawer; content is full-width
+---------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  .App-content {
+    margin-left: 0;
+    padding: 12px;
   }
 
-  .content-container > p {
-    font-size: 14px;
+  .functional-menu.collapsed ~ .App-content {
+    margin-left: 0;
   }
 
   .placeholder-content {
@@ -110,64 +180,38 @@
   }
 
   .placeholder-card {
-    padding: 20px;
-  }
-}
-
-/* Small Mobile - Below 480px */
-@media (max-width: 480px) {
-  .App-content {
-    margin-left: 70px;
-    margin-top: 155px;
-    padding: 12px;
-  }
-
-  .content-container h1 {
-    font-size: 20px;
-  }
-
-  .content-container > p {
-    font-size: 13px;
-    margin-bottom: 20px;
-  }
-
-  .placeholder-card {
     padding: 16px;
   }
-
-  .placeholder-card h3 {
-    font-size: 18px;
-  }
-
-  .placeholder-card p {
-    font-size: 13px;
-  }
 }
 
-/* Extra Small Mobile - Below 360px */
-@media (max-width: 360px) {
+/* ----------------------------------------------------------------
+   Small mobile (≤ 480px)
+---------------------------------------------------------------- */
+
+@media (max-width: 480px) {
   .App-content {
-    margin-left: 60px;
     padding: 10px;
   }
 
-  .content-container h1 {
-    font-size: 18px;
+  .content-container > p {
+    margin-bottom: 20px;
   }
 }
 
-/* When functional menu is collapsed */
-.functional-menu.collapsed ~ .App-content {
-  margin-left: 90px;
-}
+/* ----------------------------------------------------------------
+   Very small mobile (≤ 360px)
+---------------------------------------------------------------- */
 
-@media (max-width: 768px) {
-  .functional-menu.collapsed ~ .App-content {
-    margin-left: 80px;
+@media (max-width: 360px) {
+  .App-content {
+    padding: 8px;
   }
 }
 
-/* Print Styles */
+/* ----------------------------------------------------------------
+   Print
+---------------------------------------------------------------- */
+
 @media print {
   .App-content {
     margin-left: 0;

@@ -133,6 +133,21 @@ def _pg_add_column_if_missing(conn, table_name: str, column_name: str, sql_type:
     conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"))
 
 
+def _pg_constraint_exists(conn, constraint_name: str) -> bool:
+    row = conn.execute(
+        text(
+            """
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = :constraint_name
+            LIMIT 1
+            """
+        ),
+        {"constraint_name": constraint_name},
+    ).fetchone()
+    return row is not None
+
+
 def _quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
@@ -243,6 +258,7 @@ def _ensure_postgres_schema(conn) -> None:
     # Convert legacy enum type names to canonical type names used by models_new.py
     _migrate_enum_type(conn, "participantrole", "participant_role")
     _migrate_enum_type(conn, "taskstatus", "task_status")
+    _pg_add_column_if_missing(conn, "users", "enforce_active_task_policy", "BOOLEAN NOT NULL DEFAULT FALSE")
     _pg_add_column_if_missing(conn, "users", "is_deleted", "BOOLEAN DEFAULT FALSE")
     _pg_add_column_if_missing(conn, "users", "deleted_reason", "TEXT")
     _pg_add_column_if_missing(conn, "users", "deleted_at", "TIMESTAMP")
@@ -407,6 +423,175 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_request_id ON it_portal_tool_usage_events(request_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_fingerprint ON it_portal_tool_usage_events(fingerprint)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_source ON it_portal_tool_usage_events(source)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS generation_projects (
+                id SERIAL PRIMARY KEY,
+                owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name VARCHAR(200) NOT NULL,
+                normalized_name VARCHAR(200) NOT NULL,
+                description TEXT,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                archived_at TIMESTAMP
+            )
+            """
+        )
+    )
+    _pg_add_column_if_missing(conn, "generation_projects", "description", "TEXT")
+    _pg_add_column_if_missing(conn, "generation_projects", "created_by", "INTEGER")
+    _pg_add_column_if_missing(conn, "generation_projects", "updated_by", "INTEGER")
+    _pg_add_column_if_missing(conn, "generation_projects", "archived_at", "TIMESTAMP")
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_projects_owner_normalized_name_active
+            ON generation_projects(owner_user_id, normalized_name)
+            WHERE archived_at IS NULL
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_projects_owner_updated_at ON generation_projects(owner_user_id, updated_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_projects_archived_at ON generation_projects(archived_at)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS generation_recovery_audits (
+                id SERIAL PRIMARY KEY,
+                provider VARCHAR(40) NOT NULL DEFAULT 'kling',
+                action_type VARCHAR(40) NOT NULL,
+                requested_by_admin_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                date_from DATE NOT NULL,
+                date_to DATE NOT NULL,
+                kling_count INTEGER NOT NULL DEFAULT 0,
+                database_count INTEGER NOT NULL DEFAULT 0,
+                missing_count INTEGER NOT NULL DEFAULT 0,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                status VARCHAR(40) NOT NULL DEFAULT 'started',
+                filters_json JSON,
+                report_json JSON,
+                error_message TEXT,
+                started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    _pg_add_column_if_missing(conn, "generation_recovery_audits", "filters_json", "JSON")
+    _pg_add_column_if_missing(conn, "generation_recovery_audits", "report_json", "JSON")
+    _pg_add_column_if_missing(conn, "generation_recovery_audits", "error_message", "TEXT")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_recovery_audits_admin_created_at ON generation_recovery_audits(requested_by_admin_id, created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_recovery_audits_provider_action_created_at ON generation_recovery_audits(provider, action_type, created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_recovery_audits_date_range_created_at ON generation_recovery_audits(date_from, date_to, created_at DESC)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS generation_records (
+                id SERIAL PRIMARY KEY,
+                provider VARCHAR(40) NOT NULL DEFAULT 'kling',
+                provider_task_id VARCHAR(160),
+                provider_generation_id VARCHAR(160),
+                canonical_asset_url TEXT,
+                canonical_asset_key VARCHAR(255),
+                prompt_text TEXT,
+                model_label VARCHAR(255),
+                duration_label VARCHAR(80),
+                resolution_label VARCHAR(80),
+                credits_burned DOUBLE PRECISION,
+                ingestion_source VARCHAR(40) NOT NULL DEFAULT 'captured',
+                capture_status VARCHAR(40) NOT NULL DEFAULT 'active',
+                owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                ownership_status VARCHAR(40) NOT NULL DEFAULT 'unknown',
+                ownership_source VARCHAR(80),
+                ownership_notes TEXT,
+                assigned_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                assigned_at TIMESTAMP,
+                project_id INTEGER REFERENCES generation_projects(id) ON DELETE SET NULL,
+                source_usage_event_id INTEGER REFERENCES it_portal_tool_usage_events(id) ON DELETE SET NULL,
+                recovery_audit_id INTEGER REFERENCES generation_recovery_audits(id) ON DELETE SET NULL,
+                recovered_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                recovered_at TIMESTAMP,
+                metadata_json JSON,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                archived_at TIMESTAMP
+            )
+            """
+        )
+    )
+    _pg_add_column_if_missing(conn, "generation_records", "provider_generation_id", "VARCHAR(160)")
+    _pg_add_column_if_missing(conn, "generation_records", "canonical_asset_url", "TEXT")
+    _pg_add_column_if_missing(conn, "generation_records", "canonical_asset_key", "VARCHAR(255)")
+    _pg_add_column_if_missing(conn, "generation_records", "duration_label", "VARCHAR(80)")
+    _pg_add_column_if_missing(conn, "generation_records", "resolution_label", "VARCHAR(80)")
+    _pg_add_column_if_missing(conn, "generation_records", "ownership_source", "VARCHAR(80)")
+    _pg_add_column_if_missing(conn, "generation_records", "ownership_notes", "TEXT")
+    _pg_add_column_if_missing(conn, "generation_records", "assigned_by_admin_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "generation_records", "assigned_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "generation_records", "source_usage_event_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "generation_records", "recovery_audit_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "generation_records", "recovered_by_admin_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "generation_records", "recovered_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "generation_records", "archived_at", "TIMESTAMP")
+    if not _pg_constraint_exists(conn, "ck_generation_records_identity_present"):
+        conn.execute(
+            text(
+                """
+                ALTER TABLE generation_records
+                ADD CONSTRAINT ck_generation_records_identity_present
+                CHECK (
+                    provider_task_id IS NOT NULL
+                    OR provider_generation_id IS NOT NULL
+                    OR canonical_asset_key IS NOT NULL
+                )
+                """
+            )
+        )
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_records_provider_task_id
+            ON generation_records(provider, provider_task_id)
+            WHERE provider_task_id IS NOT NULL
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_records_provider_generation_id
+            ON generation_records(provider, provider_generation_id)
+            WHERE provider_generation_id IS NOT NULL
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_records_provider_asset_key
+            ON generation_records(provider, canonical_asset_key)
+            WHERE canonical_asset_key IS NOT NULL
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_records_source_usage_event_id
+            ON generation_records(source_usage_event_id)
+            WHERE source_usage_event_id IS NOT NULL
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_owner_project_created_at ON generation_records(owner_user_id, project_id, created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_owner_status_created_at ON generation_records(owner_user_id, ownership_status, created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_project_created_at ON generation_records(project_id, created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_ingestion_created_at ON generation_records(ingestion_source, created_at DESC)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_enabled ON tasks(workflow_enabled)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_status ON tasks(workflow_status)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_current_stage_order ON tasks(current_stage_order)"))
@@ -708,6 +893,8 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN deleted_by INTEGER"))
             if "session_revoked_at" not in user_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN session_revoked_at DATETIME"))
+            if "enforce_active_task_policy" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN enforce_active_task_policy BOOLEAN NOT NULL DEFAULT 0"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_employee_id ON users(employee_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
@@ -1148,6 +1335,158 @@ def ensure_operational_schema(engine) -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_request_id ON it_portal_tool_usage_events(request_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_fingerprint ON it_portal_tool_usage_events(fingerprint)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_source ON it_portal_tool_usage_events(source)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS generation_projects (
+                    id INTEGER PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL,
+                    name VARCHAR(200) NOT NULL,
+                    normalized_name VARCHAR(200) NOT NULL,
+                    description TEXT,
+                    created_by INTEGER,
+                    updated_by INTEGER,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    archived_at DATETIME,
+                    FOREIGN KEY(owner_user_id) REFERENCES users (id) ON DELETE CASCADE,
+                    FOREIGN KEY(created_by) REFERENCES users (id) ON DELETE SET NULL,
+                    FOREIGN KEY(updated_by) REFERENCES users (id) ON DELETE SET NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_projects_owner_normalized_name_active
+                ON generation_projects(owner_user_id, normalized_name)
+                WHERE archived_at IS NULL
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_projects_owner_updated_at ON generation_projects(owner_user_id, updated_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_projects_archived_at ON generation_projects(archived_at)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS generation_recovery_audits (
+                    id INTEGER PRIMARY KEY,
+                    provider VARCHAR(40) NOT NULL DEFAULT 'kling',
+                    action_type VARCHAR(40) NOT NULL,
+                    requested_by_admin_id INTEGER NOT NULL,
+                    date_from DATE NOT NULL,
+                    date_to DATE NOT NULL,
+                    kling_count INTEGER NOT NULL DEFAULT 0,
+                    database_count INTEGER NOT NULL DEFAULT 0,
+                    missing_count INTEGER NOT NULL DEFAULT 0,
+                    imported_count INTEGER NOT NULL DEFAULT 0,
+                    duplicate_count INTEGER NOT NULL DEFAULT 0,
+                    status VARCHAR(40) NOT NULL DEFAULT 'started',
+                    filters_json JSON,
+                    report_json JSON,
+                    error_message TEXT,
+                    started_at DATETIME NOT NULL,
+                    completed_at DATETIME,
+                    created_at DATETIME NOT NULL,
+                    FOREIGN KEY(requested_by_admin_id) REFERENCES users (id) ON DELETE RESTRICT
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_recovery_audits_admin_created_at ON generation_recovery_audits(requested_by_admin_id, created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_recovery_audits_provider_action_created_at ON generation_recovery_audits(provider, action_type, created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_recovery_audits_date_range_created_at ON generation_recovery_audits(date_from, date_to, created_at)"))
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS generation_records (
+                    id INTEGER PRIMARY KEY,
+                    provider VARCHAR(40) NOT NULL DEFAULT 'kling',
+                    provider_task_id VARCHAR(160),
+                    provider_generation_id VARCHAR(160),
+                    canonical_asset_url TEXT,
+                    canonical_asset_key VARCHAR(255),
+                    prompt_text TEXT,
+                    model_label VARCHAR(255),
+                    duration_label VARCHAR(80),
+                    resolution_label VARCHAR(80),
+                    credits_burned FLOAT,
+                    ingestion_source VARCHAR(40) NOT NULL DEFAULT 'captured',
+                    capture_status VARCHAR(40) NOT NULL DEFAULT 'active',
+                    owner_user_id INTEGER,
+                    ownership_status VARCHAR(40) NOT NULL DEFAULT 'unknown',
+                    ownership_source VARCHAR(80),
+                    ownership_notes TEXT,
+                    assigned_by_admin_id INTEGER,
+                    assigned_at DATETIME,
+                    project_id INTEGER,
+                    source_usage_event_id INTEGER,
+                    recovery_audit_id INTEGER,
+                    recovered_by_admin_id INTEGER,
+                    recovered_at DATETIME,
+                    metadata_json JSON,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    archived_at DATETIME,
+                    CHECK (
+                        provider_task_id IS NOT NULL
+                        OR provider_generation_id IS NOT NULL
+                        OR canonical_asset_key IS NOT NULL
+                    ),
+                    FOREIGN KEY(owner_user_id) REFERENCES users (id) ON DELETE SET NULL,
+                    FOREIGN KEY(assigned_by_admin_id) REFERENCES users (id) ON DELETE SET NULL,
+                    FOREIGN KEY(project_id) REFERENCES generation_projects (id) ON DELETE SET NULL,
+                    FOREIGN KEY(source_usage_event_id) REFERENCES it_portal_tool_usage_events (id) ON DELETE SET NULL,
+                    FOREIGN KEY(recovery_audit_id) REFERENCES generation_recovery_audits (id) ON DELETE SET NULL,
+                    FOREIGN KEY(recovered_by_admin_id) REFERENCES users (id) ON DELETE SET NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_records_provider_task_id
+                ON generation_records(provider, provider_task_id)
+                WHERE provider_task_id IS NOT NULL
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_records_provider_generation_id
+                ON generation_records(provider, provider_generation_id)
+                WHERE provider_generation_id IS NOT NULL
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_records_provider_asset_key
+                ON generation_records(provider, canonical_asset_key)
+                WHERE canonical_asset_key IS NOT NULL
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_records_source_usage_event_id
+                ON generation_records(source_usage_event_id)
+                WHERE source_usage_event_id IS NOT NULL
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_owner_project_created_at ON generation_records(owner_user_id, project_id, created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_owner_status_created_at ON generation_records(owner_user_id, ownership_status, created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_project_created_at ON generation_records(project_id, created_at)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_ingestion_created_at ON generation_records(ingestion_source, created_at)"))
 
         conn.execute(
             text(

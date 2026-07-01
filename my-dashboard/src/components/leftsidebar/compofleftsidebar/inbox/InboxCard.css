@@ -1,14 +1,14 @@
 .inbox-card {
   box-sizing: border-box;
   background:
-    radial-gradient(circle at top left, rgba(99, 102, 241, 0.12), transparent 32%),
-    linear-gradient(180deg, #22324d 0%, #1a2740 100%);
-  border: 1px solid rgba(88, 114, 156, 0.55);
+    radial-gradient(circle at top left, color-mix(in srgb, var(--color-primary-soft) 90%, transparent), transparent 34%),
+    linear-gradient(180deg, var(--color-card) 0%, var(--color-surface-muted) 100%);
+  border: 1px solid var(--color-border);
   border-radius: 18px;
   padding: 16px;
-  color: #e5e7eb;
+  color: var(--color-text-secondary);
   position: relative;
-  box-shadow: 0 18px 36px rgba(3, 8, 20, 0.22);
+  box-shadow: var(--shadow-soft);
   width: 100%;
   max-width: 100%;
   min-width: 0;
@@ -22,46 +22,46 @@
 
 .inbox-card.revoked-card {
   opacity: 0.9;
-  border-color: rgba(244, 114, 182, 0.45);
-  background: linear-gradient(180deg, rgba(48, 26, 55, 0.6), rgba(30, 37, 57, 0.92));
+  border-color: var(--color-feedback-error-border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-feedback-error-bg) 84%, var(--color-card)) 0%, var(--color-card) 100%);
 }
 
 .revoked-banner {
   margin-top: 10px;
   padding: 9px 10px;
-  border: 1px solid rgba(244, 114, 182, 0.45);
+  border: 1px solid var(--color-feedback-error-border);
   border-radius: 10px;
-  background: rgba(76, 29, 67, 0.45);
+  background: var(--color-feedback-error-bg);
   display: grid;
   gap: 4px;
   font-size: 12px;
 }
 
 .revoked-banner strong {
-  color: #fbcfe8;
+  color: var(--color-feedback-error-text);
 }
 
 .revoked-banner span {
-  color: #f5d0fe;
+  color: var(--color-feedback-error-text);
 }
 
 .held-banner {
   margin-top: 10px;
   padding: 9px 10px;
-  border: 1px solid rgba(245, 158, 11, 0.45);
+  border: 1px solid var(--color-feedback-warning-border);
   border-radius: 10px;
-  background: rgba(120, 53, 15, 0.35);
+  background: var(--color-feedback-warning-bg);
   display: grid;
   gap: 4px;
   font-size: 12px;
 }
 
 .held-banner strong {
-  color: #fde68a;
+  color: var(--color-feedback-warning-text);
 }
 
 .held-banner span {
-  color: #fef3c7;
+  color: var(--color-feedback-warning-text);
 }
 
 .card-header {
@@ -75,6 +75,7 @@
   margin: 0;
   font-size: 20px;
   line-height: 1.15;
+  color: var(--color-text);
 }
 
 .card-title-row {
@@ -91,9 +92,9 @@
   padding: 2px 10px;
   font-size: 11px;
   font-weight: 700;
-  color: #fef3c7;
-  background: rgba(180, 83, 9, 0.35);
-  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: var(--color-feedback-warning-text);
+  background: var(--color-feedback-warning-bg);
+  border: 1px solid var(--color-feedback-warning-border);
 }
 
 .task-hold-badge {
@@ -103,9 +104,9 @@
   padding: 2px 10px;
   font-size: 11px;
   font-weight: 700;
-  color: #fde68a;
-  background: rgba(146, 64, 14, 0.35);
-  border: 1px solid rgba(245, 158, 11, 0.45);
+  color: var(--color-feedback-warning-text);
+  background: var(--color-feedback-warning-bg);
+  border: 1px solid var(--color-feedback-warning-border);
 }
 
 .card-subtitle {
@@ -113,7 +114,7 @@
   font-size: 13px;
   line-height: 1.5;
   max-width: 760px;
-  color: #bdcde6;
+  color: var(--color-text-muted);
 }
 
 .card-menu-wrap {
@@ -124,9 +125,9 @@
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  border: 1px solid rgba(132, 149, 183, 0.35);
-  background: rgba(15, 23, 42, 0.28);
-  color: #fff;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--color-icon);
   cursor: pointer;
 }
 
@@ -135,21 +136,22 @@
   right: 0;
   top: 36px;
   min-width: 180px;
-  background: #111827;
-  border: 1px solid #334155;
+  background: var(--color-surface-popover);
+  border: 1px solid var(--color-border-strong);
   border-radius: 10px;
   padding: 6px;
   z-index: 10;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  box-shadow: var(--shadow-popover);
 }
 
 .card-menu button {
   text-align: left;
   border: none;
   background: transparent;
-  color: #e5e7eb;
+  color: var(--color-text-secondary);
   padding: 8px 10px;
   border-radius: 8px;
   text-transform: capitalize;
@@ -157,7 +159,8 @@
 }
 
 .card-menu button:hover {
-  background: rgba(99, 102, 241, 0.2);
+  background: var(--color-selected-surface);
+  color: var(--color-text);
 }
 
 .card-menu-empty {
@@ -181,9 +184,9 @@
   gap: 4px;
   padding: 10px 12px;
   border-radius: 12px;
-  background: rgba(12, 21, 39, 0.3);
-  border: 1px solid rgba(91, 112, 150, 0.24);
-  color: #d7e2f3;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
 }
 
 .card-grid .deadline-tile {
@@ -205,8 +208,8 @@
   margin-top: 12px;
   padding: 12px;
   border-radius: 14px;
-  border: 1px solid rgba(91, 112, 150, 0.3);
-  background: rgba(12, 21, 39, 0.34);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
   display: grid;
   gap: 10px;
 }
@@ -222,11 +225,11 @@
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #9bb0cf;
+  color: var(--color-text-muted);
 }
 
 .worker-status-strip-head span {
-  color: #cbd5e1;
+  color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 700;
 }
@@ -246,9 +249,9 @@
   gap: 10px;
   padding: 9px 11px;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(15, 26, 47, 0.72);
-  color: #e5e7eb;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-text);
 }
 
 .worker-status-chip b {
@@ -276,7 +279,7 @@
 }
 
 .worker-status-chip-meta small {
-  color: #cbd5e1;
+  color: var(--color-text-muted);
   font-size: 10px;
   font-weight: 600;
   line-height: 1.25;
@@ -284,67 +287,67 @@
 }
 
 .worker-status-chip.pending {
-  border-color: rgba(251, 191, 36, 0.36);
-  color: #fde68a;
+  border-color: var(--color-feedback-warning-border);
+  color: var(--color-feedback-warning-text);
 }
 
 .worker-status-chip.progress {
-  border-color: rgba(96, 165, 250, 0.44);
-  color: #bfdbfe;
+  border-color: var(--color-feedback-info-border);
+  color: var(--color-feedback-info-text);
 }
 
 .worker-status-chip.submitted {
-  border-color: rgba(74, 222, 128, 0.4);
-  color: #bbf7d0;
+  border-color: var(--color-feedback-success-border);
+  color: var(--color-feedback-success-text);
 }
 
 .status-tile.status-pending {
-  background: rgba(146, 64, 14, 0.38);
-  border-color: rgba(251, 191, 36, 0.72);
-  color: #fde68a;
+  background: var(--color-feedback-warning-bg);
+  border-color: var(--color-feedback-warning-border);
+  color: var(--color-feedback-warning-text);
 }
 
 .status-tile.status-progress {
-  background: rgba(30, 64, 175, 0.36);
-  border-color: rgba(96, 165, 250, 0.72);
-  color: #bfdbfe;
+  background: var(--color-feedback-info-bg);
+  border-color: var(--color-feedback-info-border);
+  color: var(--color-feedback-info-text);
 }
 
 .status-tile.status-submitted {
-  background: rgba(88, 28, 135, 0.36);
-  border-color: rgba(168, 85, 247, 0.72);
-  color: #e9d5ff;
+  background: color-mix(in srgb, var(--color-primary-soft) 80%, var(--color-surface-muted));
+  border-color: color-mix(in srgb, var(--color-primary-strong) 44%, transparent);
+  color: var(--color-text);
 }
 
 .status-tile.status-improvement {
-  background: rgba(127, 29, 29, 0.38);
-  border-color: rgba(248, 113, 113, 0.72);
-  color: #fecaca;
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
 }
 
 .status-tile.status-complete {
-  background: rgba(20, 83, 45, 0.35);
-  border-color: rgba(74, 222, 128, 0.54);
-  color: #bbf7d0;
+  background: var(--color-feedback-success-bg);
+  border-color: var(--color-feedback-success-border);
+  color: var(--color-feedback-success-text);
 }
 
 .status-tile.status-cancelled {
-  background: rgba(76, 29, 67, 0.36);
-  border-color: rgba(244, 114, 182, 0.62);
-  color: #fbcfe8;
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
 }
 
 .status-tile.status-draft,
 .status-tile.status-default {
-  background: rgba(15, 23, 42, 0.26);
-  border-color: rgba(148, 163, 184, 0.28);
-  color: #cbd5e1;
+  background: var(--color-disabled-surface);
+  border-color: var(--color-disabled-border);
+  color: var(--color-text-muted);
 }
 
 .deadline-tile em {
   font-style: normal;
   font-weight: 700;
-  color: #f8fafc;
+  color: var(--color-text);
 }
 
 .deadline-tile small {
@@ -355,47 +358,47 @@
 }
 
 .deadline-tile.deadline-overdue {
-  background: rgba(127, 29, 29, 0.42);
-  border-color: rgba(248, 113, 113, 0.78);
-  color: #fecaca;
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
 }
 
 .deadline-tile.deadline-today {
-  background: rgba(146, 64, 14, 0.42);
-  border-color: rgba(251, 191, 36, 0.78);
-  color: #fde68a;
+  background: var(--color-feedback-warning-bg);
+  border-color: var(--color-feedback-warning-border);
+  color: var(--color-feedback-warning-text);
 }
 
 .deadline-tile.deadline-soon {
-  background: rgba(113, 63, 18, 0.38);
-  border-color: rgba(245, 158, 11, 0.58);
-  color: #fed7aa;
+  background: var(--color-feedback-warning-bg);
+  border-color: var(--color-feedback-warning-border);
+  color: var(--color-feedback-warning-text);
 }
 
 .deadline-tile.deadline-ok,
 .deadline-tile.deadline-complete {
-  background: rgba(20, 83, 45, 0.35);
-  border-color: rgba(74, 222, 128, 0.54);
-  color: #bbf7d0;
+  background: var(--color-feedback-success-bg);
+  border-color: var(--color-feedback-success-border);
+  color: var(--color-feedback-success-text);
 }
 
 .deadline-tile.deadline-closed-missed {
-  background: rgba(2, 6, 23, 0.76);
-  border-color: rgba(15, 23, 42, 0.95);
-  color: #f8fafc;
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
 }
 
 .deadline-tile.deadline-none {
-  background: rgba(15, 23, 42, 0.26);
-  border-color: rgba(148, 163, 184, 0.28);
-  color: #cbd5e1;
+  background: var(--color-disabled-surface);
+  border-color: var(--color-disabled-border);
+  color: var(--color-text-muted);
 }
 
 .card-grid strong {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #93a8c9;
+  color: var(--color-text-muted);
 }
 
 .card-footer {
@@ -423,9 +426,9 @@
   margin-top: 16px;
   padding: 14px;
   border-radius: 16px;
-  border: 1px solid rgba(88, 114, 156, 0.38);
+  border: 1px solid var(--color-border);
   background:
-    linear-gradient(180deg, rgba(19, 31, 54, 0.92), rgba(14, 23, 40, 0.96));
+    linear-gradient(180deg, var(--color-surface-elevated), var(--color-surface));
   font-size: 12px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -436,8 +439,8 @@
   min-width: 0;
   padding: 12px;
   border-radius: 12px;
-  background: rgba(15, 26, 47, 0.72);
-  border: 1px solid rgba(84, 108, 145, 0.2);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
 }
 
 .card-details > div strong,
@@ -447,7 +450,7 @@
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #9bb0cf;
+  color: var(--color-text-muted);
 }
 
 .card-details .full-span {
@@ -466,7 +469,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 6px 0;
-  border-top: 1px solid rgba(89, 107, 142, 0.16);
+  border-top: 1px solid var(--color-divider);
 }
 
 .forward-item:first-of-type {
@@ -475,34 +478,35 @@
 }
 
 .forward-item a {
-  color: #93c5fd;
+  color: var(--color-link);
   text-decoration: underline;
   word-break: break-all;
 }
 
 .seenby {
   font-size: 12px;
-  opacity: 0.8;
+  color: var(--color-text-muted);
 }
 
 .track-btn {
   border: none;
   border-radius: 10px;
   padding: 9px 14px;
-  background: linear-gradient(135deg, #6d73ff, #7b5cff);
-  color: #fff;
+  background: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
   cursor: pointer;
   font-weight: 600;
+  box-shadow: var(--shadow-button-primary);
 }
 
 .approve-inline-btn {
-  background: linear-gradient(180deg, #22c55e, #16a34a);
-  border: 1px solid rgba(134, 239, 172, 0.65);
-  color: #f8fafc;
+  background: var(--color-button-success-bg);
+  border: 1px solid transparent;
+  color: var(--color-button-success-text);
 }
 
 .approve-inline-btn:hover {
-  background: linear-gradient(180deg, #34d399, #16a34a);
+  filter: brightness(1.04);
 }
 
 .detail-head {
@@ -513,13 +517,17 @@
 }
 
 .mini-action-btn {
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.08);
-  color: #e5e7eb;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--color-icon);
   border-radius: 6px;
   padding: 3px 8px;
   font-size: 11px;
   cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast);
 }
 
 .mini-action-btn:disabled {
@@ -539,21 +547,20 @@
   right: 20px;
   bottom: 20px;
   z-index: 2500;
-  background: rgba(17, 24, 39, 0.95);
-  color: #e5e7eb;
-  border: 1px solid rgba(99, 102, 241, 0.45);
+  background: var(--color-surface-popover);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   padding: 8px 12px;
   font-size: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-popover);
 }
 
 .workflow-stage-summary-block {
   padding: 14px;
   border-radius: 16px;
-  background:
-    linear-gradient(180deg, rgba(20, 31, 55, 0.98), rgba(12, 21, 38, 0.96));
-  border: 1px solid rgba(99, 116, 155, 0.3);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
 }
 
 .workflow-stage-summary-head {
@@ -569,23 +576,23 @@
   font-size: 13px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #dce8ff;
+  color: var(--color-text);
 }
 
 .workflow-stage-summary-head span {
   font-size: 12px;
-  color: #9cb0d0;
+  color: var(--color-text-muted);
 }
 
 .workflow-stage-error {
-  color: #fca5a5;
+  color: var(--color-feedback-error-text);
 }
 
 .inbox-card .worker-submission-block {
   padding: 14px;
   border-radius: 16px;
-  background: linear-gradient(180deg, rgba(20, 31, 55, 0.98), rgba(12, 21, 38, 0.96));
-  border: 1px solid rgba(99, 116, 155, 0.3);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
 }
 
 .inbox-card .worker-submission-head {
@@ -601,11 +608,11 @@
   font-size: 13px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #dce8ff;
+  color: var(--color-text);
 }
 
 .inbox-card .worker-submission-head span {
-  color: #9cb0d0;
+  color: var(--color-text-muted);
   font-size: 12px;
 }
 
@@ -615,20 +622,20 @@
 }
 
 .inbox-card .worker-submission-card {
-  border: 1px solid rgba(85, 106, 143, 0.26);
+  border: 1px solid var(--color-border);
   border-radius: 14px;
   padding: 12px;
-  background: rgba(11, 20, 35, 0.72);
+  background: var(--color-card);
   display: grid;
   gap: 10px;
 }
 
 .inbox-card .worker-submission-card.submitted {
-  border-color: rgba(74, 222, 128, 0.34);
+  border-color: var(--color-feedback-success-border);
 }
 
 .inbox-card .worker-submission-card.pending {
-  border-color: rgba(251, 191, 36, 0.34);
+  border-color: var(--color-feedback-warning-border);
 }
 
 .inbox-card .worker-submission-card-head {
@@ -640,21 +647,21 @@
 
 .inbox-card .worker-submission-card-head h4 {
   margin: 0 0 3px;
-  color: #f8fafc;
+  color: var(--color-text);
   font-size: 14px;
 }
 
 .inbox-card .worker-submission-card-head p {
   margin: 0;
-  color: #9cb0d0;
+  color: var(--color-text-muted);
 }
 
 .inbox-card .worker-submission-status {
   border-radius: 999px;
   padding: 5px 10px;
-  color: #dbeafe;
-  background: rgba(96, 165, 250, 0.14);
-  border: 1px solid rgba(147, 197, 253, 0.18);
+  color: var(--color-text-secondary);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
   font-size: 11px;
   font-weight: 700;
 }
@@ -672,9 +679,8 @@
 
 .workflow-stage-card {
   border-radius: 16px;
-  border: 1px solid rgba(85, 106, 143, 0.26);
-  /* background:
-    linear-gradient(180deg, rgba(21, 33, 56, 0.96), rgba(11, 20, 35, 0.96)); */
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
   padding: 14px;
   display: grid;
   gap: 12px;
@@ -683,14 +689,14 @@
 }
 
 .workflow-stage-card.current {
-  border-color: rgba(110, 126, 255, 0.65);
-  box-shadow: inset 0 0 0 1px rgba(110, 126, 255, 0.2);
+  border-color: color-mix(in srgb, var(--color-primary) 36%, var(--color-border));
+  box-shadow: var(--shadow-card-hover);
 }
 
 .workflow-stage-card.status-submitted,
 .workflow-stage-card.status-active {
   background:
-    linear-gradient(180deg, rgba(23, 35, 63, 0.98), rgba(11, 20, 35, 0.96));
+    linear-gradient(180deg, color-mix(in srgb, var(--color-primary-soft) 72%, var(--color-card)), var(--color-card));
 }
 
 .workflow-stage-card-head {
@@ -713,21 +719,21 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #c8d5f7;
-  background: rgba(67, 92, 134, 0.38);
-  border: 1px solid rgba(110, 130, 168, 0.45);
+  color: var(--color-feedback-info-text);
+  background: var(--color-feedback-info-bg);
+  border: 1px solid var(--color-feedback-info-border);
 }
 
 .workflow-stage-card-title h4 {
   margin: 8px 0 4px;
   font-size: 17px;
   line-height: 1.2;
-  color: #f8fbff;
+  color: var(--color-text);
 }
 
 .workflow-stage-card-title p {
   margin: 0;
-  color: #abc0df;
+  color: var(--color-text-secondary);
   line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -751,19 +757,19 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #dbe8ff;
-  background: rgba(42, 57, 84, 0.78);
-  border: 1px solid rgba(97, 114, 147, 0.4);
+  color: var(--color-text-secondary);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
 }
 
 .workflow-stage-badge.current {
-  color: #f5f7ff;
-  background: rgba(101, 104, 241, 0.38);
-  border-color: rgba(139, 140, 255, 0.52);
+  color: var(--color-text);
+  background: var(--color-selected-surface);
+  border-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
 }
 
 .workflow-stage-badge.subtle {
-  color: #a8bbda;
+  color: var(--color-text-muted);
 }
 
 .workflow-stage-metrics {
@@ -775,8 +781,8 @@
 .workflow-stage-metrics > div {
   padding: 10px 12px;
   border-radius: 12px;
-  background: rgba(13, 22, 39, 0.7);
-  border: 1px solid rgba(86, 106, 141, 0.18);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
 }
 
 .workflow-stage-metrics span,
@@ -788,13 +794,13 @@
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #8ea4c8;
+  color: var(--color-text-muted);
 }
 
 .workflow-stage-metrics strong,
 .workflow-stage-pane-head strong {
   font-size: 13px;
-  color: #eff5ff;
+  color: var(--color-text);
 }
 
 .workflow-stage-io-grid {
@@ -808,8 +814,8 @@
 .workflow-stage-activity {
   padding: 12px;
   border-radius: 14px;
-  background: rgba(10, 18, 33, 0.74);
-  border: 1px solid rgba(82, 103, 138, 0.18);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
   min-height: 100%;
 }
 
@@ -827,7 +833,7 @@
 
 .workflow-stage-field p {
   margin: 0;
-  color: #dbe7f8;
+  color: var(--color-text-secondary);
   line-height: 1.45;
   word-break: break-word;
 }
@@ -844,21 +850,21 @@
   gap: 10px;
   padding: 8px 10px;
   border-radius: 12px;
-  background: rgba(18, 30, 52, 0.78);
-  border: 1px solid rgba(83, 101, 136, 0.18);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
 }
 
 .stage-resource-item span:first-child {
   min-width: 0;
-  color: #dce7fb;
+  color: var(--color-text-secondary);
   word-break: break-word;
 }
 
 .workflow-stage-empty {
-  background: #ffffff;
-  border: 1px solid #d5dbe5;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
   border-radius: 10px;
-  color: #111827;
+  color: var(--color-text-muted);
   font-weight: 600;
   line-height: 1.5;
   padding: 12px 14px;
@@ -872,8 +878,8 @@
 .workflow-stage-event-item {
   padding: 10px;
   border-radius: 12px;
-  background: rgba(15, 25, 44, 0.78);
-  border: 1px solid rgba(79, 99, 137, 0.18);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
 }
 
 .workflow-stage-event-head {
@@ -884,25 +890,25 @@
 }
 
 .workflow-stage-event-head strong {
-  color: #f3f7ff;
+  color: var(--color-text);
 }
 
 .workflow-stage-event-head span,
 .workflow-stage-event-item small {
-  color: #90a6cb;
+  color: var(--color-text-muted);
 }
 
 .workflow-stage-event-item p,
 .workflow-stage-comment-summary p {
   margin: 8px 0 0;
-  color: #d9e6f8;
+  color: var(--color-text-secondary);
   line-height: 1.45;
 }
 
 .workflow-stage-comment-summary {
   margin-top: 12px;
   padding-top: 10px;
-  border-top: 1px solid rgba(86, 104, 140, 0.18);
+  border-top: 1px solid var(--color-divider);
 }
 
 .workflow-stage-card-list::-webkit-scrollbar {
@@ -910,13 +916,58 @@
 }
 
 .workflow-stage-card-list::-webkit-scrollbar-track {
-  background: rgba(11, 18, 31, 0.65);
+  background: var(--color-scrollbar-track);
   border-radius: 999px;
 }
 
 .workflow-stage-card-list::-webkit-scrollbar-thumb {
-  background: rgba(109, 115, 255, 0.55);
+  background: var(--color-scrollbar-thumb);
   border-radius: 999px;
+}
+
+.workflow-stage-card.status-pending,
+.workflow-stage-card.status-assigned,
+.workflow-stage-card.status-forwarded {
+  border-color: var(--color-feedback-warning-border);
+}
+
+.workflow-stage-card.status-in_progress,
+.workflow-stage-card.status-in-progress {
+  border-color: var(--color-feedback-info-border);
+}
+
+.workflow-stage-card.status-submitted,
+.workflow-stage-card.status-under_review,
+.workflow-stage-card.status-under-review {
+  border-color: color-mix(in srgb, var(--color-primary-strong) 42%, transparent);
+}
+
+.workflow-stage-card.status-approved,
+.workflow-stage-card.status-completed {
+  border-color: var(--color-feedback-success-border);
+}
+
+.workflow-stage-card.status-need_improvement,
+.workflow-stage-card.status-need-improvement,
+.workflow-stage-card.status-rejected,
+.workflow-stage-card.status-cancelled {
+  border-color: var(--color-feedback-error-border);
+}
+
+.mini-action-btn:hover:not(:disabled),
+.card-menu-btn:hover {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.card-menu-btn:focus-visible,
+.card-menu button:focus-visible,
+.track-btn:focus-visible,
+.approve-inline-btn:focus-visible,
+.mini-action-btn:focus-visible {
+  outline: var(--outline-focus);
+  outline-offset: 2px;
 }
 
 @media (max-width: 960px) {
@@ -971,5 +1022,128 @@
     width: 100%;
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+}
+
+/* =============================================
+   INBOX CARD — MOBILE TOUCH IMPROVEMENTS
+   Touch targets, improved footer layout,
+   better menu positioning. Applies <768px so
+   desktop cards are 100% unchanged.
+   ============================================= */
+@media (max-width: 767px) {
+  .inbox-card {
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  /* Minimum 44px touch targets */
+  .track-btn {
+    min-height: 44px;
+    padding: 10px 16px;
+    border-radius: 12px;
+    font-size: 13px;
+  }
+
+  .card-menu-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+  }
+
+  /* Action menu appears above trigger button */
+  .card-footer-actions .card-menu {
+    top: auto;
+    bottom: calc(100% + 6px);
+    right: 0;
+    left: auto;
+    min-width: 200px;
+    border-radius: 14px;
+    padding: 8px;
+  }
+
+  /* Bigger touch targets inside the menu */
+  .card-menu button {
+    min-height: 46px;
+    font-size: 13px;
+    padding: 10px 12px;
+    border-radius: 10px;
+  }
+
+  /* Footer spacing */
+  .card-footer {
+    margin-top: 12px;
+    gap: 8px;
+  }
+
+  .card-footer-actions {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .seenby {
+    font-size: 11px;
+  }
+
+  /* Slightly more compact card grid tiles */
+  .card-grid {
+    gap: 7px;
+  }
+
+  .card-grid span {
+    min-height: 46px;
+    padding: 9px 11px;
+  }
+
+  /* Worker chips — narrower min on mobile */
+  .worker-status-chip {
+    min-width: 140px;
+    flex: 1 1 140px;
+    padding: 8px 10px;
+  }
+}
+
+/* =============================================
+   INBOX CARD — SMALL MOBILE (<640px)
+   ============================================= */
+@media (max-width: 639px) {
+  .inbox-card {
+    padding: 12px;
+    border-radius: 14px;
+  }
+
+  .card-grid span {
+    min-height: 42px;
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+
+  .card-grid strong {
+    font-size: 10px;
+  }
+
+  .track-btn {
+    font-size: 12px;
+    padding: 9px 14px;
+  }
+
+  .seenby {
+    font-size: 10px;
+  }
+
+  /* Worker submission chips wrap tightly */
+  .worker-status-chip-list {
+    gap: 6px;
+  }
+
+  .worker-status-chip {
+    min-width: 120px;
+    flex: 1 1 120px;
+    font-size: 11px;
+    padding: 7px 9px;
+  }
+
+  .workflow-stage-card-head {
+    gap: 10px;
   }
 }

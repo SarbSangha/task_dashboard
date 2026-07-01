@@ -1,0 +1,237 @@
+/* ==========================================================================
+   Admin Pending Tab — approval request queue
+   ========================================================================== */
+
+.apt-root { display: flex; flex-direction: column; gap: 10px; }
+
+/* ── Table ────────────────────────────────────────────────────────────────── */
+
+.apt-table-wrap {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 14px;
+  overflow: hidden;
+  overflow-x: auto;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
+  scrollbar-width: thin;
+}
+
+.apt-table-wrap::-webkit-scrollbar { height: 6px; }
+.apt-table-wrap::-webkit-scrollbar-track { background: var(--color-scrollbar-track); }
+.apt-table-wrap::-webkit-scrollbar-thumb { background: var(--color-scrollbar-thumb); border-radius: 999px; }
+
+.apt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 720px;
+}
+
+.apt-table thead tr {
+  background: var(--color-table-header);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.apt-table th {
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.apt-table th:first-child, .apt-table td:first-child { padding-left: 16px; }
+.apt-table th:last-child,  .apt-table td:last-child  { padding-right: 16px; }
+
+.apt-row {
+  background: var(--color-table-row);
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background-color var(--theme-transition-fast);
+}
+
+.apt-row:nth-child(even) { background: var(--color-table-row-zebra); }
+.apt-row:last-child      { border-bottom: none; }
+.apt-row:hover           { background: var(--color-table-row-hover); }
+
+.apt-table td { padding: 10px 12px; vertical-align: middle; }
+
+/* ── User cell ────────────────────────────────────────────────────────────── */
+
+.apt-user-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.apt-user-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.apt-user-email {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.apt-cell { font-size: 12px; color: var(--color-text-secondary); }
+.apt-cell--muted { color: var(--color-text-muted); }
+
+/* ── Type badges ──────────────────────────────────────────────────────────── */
+
+.apt-type {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.apt-type--info {
+  background: var(--color-feedback-info-bg);
+  border-color: var(--color-feedback-info-border);
+  color: var(--color-feedback-info-text);
+}
+
+.apt-type--success {
+  background: var(--color-feedback-success-bg);
+  border-color: var(--color-feedback-success-border);
+  color: var(--color-feedback-success-text);
+}
+
+.apt-type--warning {
+  background: var(--color-feedback-warning-bg);
+  border-color: var(--color-feedback-warning-border);
+  color: var(--color-feedback-warning-text);
+}
+
+.apt-type--neutral {
+  background: var(--color-surface-muted);
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-muted);
+}
+
+/* ── Payload details ──────────────────────────────────────────────────────── */
+
+.apt-details { max-width: 200px; }
+
+.apt-details-toggle {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-primary);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.apt-details-toggle::-webkit-details-marker { display: none; }
+
+.apt-details[open] .apt-details-toggle { color: var(--color-text-muted); }
+
+.apt-details-pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 140px;
+  overflow: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* ── Action buttons ───────────────────────────────────────────────────────── */
+
+.apt-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.apt-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
+}
+
+.apt-btn:hover { transform: translateY(-1px); }
+
+.apt-btn--approve {
+  background: var(--color-button-success-bg);
+  border-color: color-mix(in srgb, var(--color-success) 52%, transparent);
+  color: var(--color-button-success-text);
+}
+
+.apt-btn--reject {
+  background: var(--color-button-destructive-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-button-destructive-text);
+}
+
+.apt-btn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+/* ── Empty state ──────────────────────────────────────────────────────────── */
+
+.apt-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 60px 20px;
+  border: 1px dashed var(--color-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-surface-muted) 60%, transparent);
+}
+
+.apt-empty-icon {
+  width: 48px;
+  height: 48px;
+  color: var(--color-text-muted);
+}
+
+.apt-empty-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+
+@media (max-width: 700px) {
+  .apt-table td:nth-child(4),
+  .apt-table th:nth-child(4) { display: none; }
+}

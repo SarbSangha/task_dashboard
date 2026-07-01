@@ -1,0 +1,186 @@
+.projects-status-row {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.projects-status-row .add-btn {
+  flex-shrink: 0;
+}
+
+.projects-status-row .cache-status-banner {
+  flex: 1;
+  min-width: 0;
+}
+
+.projects-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font-size: 14px;
+  outline: none;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast),
+    color var(--theme-transition-fast);
+}
+
+.projects-search::placeholder {
+  color: var(--color-text-muted);
+}
+
+.projects-search:focus {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-focus);
+  background: var(--color-surface);
+}
+
+.projects-search:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.projects-helper-text {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.project-card,
+.project-folder-panel {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--shadow-card-hover);
+}
+
+.project-card {
+  padding: 20px;
+  border-radius: 12px;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
+}
+
+.project-card:hover {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border);
+  transform: translateY(-2px);
+}
+
+.project-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.project-header h4 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.project-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.project-status.active {
+  border-color: var(--color-feedback-info-border);
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
+}
+
+.project-status.completed {
+  border-color: var(--color-feedback-success-border);
+  background: var(--color-feedback-success-bg);
+  color: var(--color-feedback-success-text);
+}
+
+.project-description,
+.project-folder-empty {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+.project-description {
+  margin-bottom: 16px;
+}
+
+.project-folder-panel {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px;
+  border-radius: 14px;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
+}
+
+.project-folder-panel::-webkit-scrollbar {
+  width: 10px;
+}
+
+.project-folder-panel::-webkit-scrollbar-track {
+  background: var(--color-scrollbar-track);
+}
+
+.project-folder-panel::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+  border-radius: 999px;
+}
+
+.project-folder-panel::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-thumb-hover);
+}
+
+.project-folder-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--color-feedback-info-border);
+  border-radius: 999px;
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.project-folder-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+@media (max-width: 768px) {
+  .project-folder-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .project-folder-panel {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+}

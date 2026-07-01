@@ -52,7 +52,7 @@ const AdminApprovalsPanel = ({ isOpen, onClose }) => {
       <div className="admin-approvals-panel">
         <div className="admin-approvals-header">
           <h3>Admin Approvals</h3>
-          <button onClick={onClose}>✕</button>
+          <button type="button" onClick={onClose} aria-label="Close admin approvals">✕</button>
         </div>
 
         <div className="admin-approvals-content">
@@ -68,8 +68,8 @@ const AdminApprovalsPanel = ({ isOpen, onClose }) => {
                   <p>{req.payload?.email} | {req.payload?.position} | {req.payload?.department}</p>
                 </div>
                 <div className="admin-actions">
-                  <button onClick={() => reviewRequest(req.id, true)}>Approve</button>
-                  <button className="reject" onClick={() => reviewRequest(req.id, false)}>Reject</button>
+                  <button type="button" onClick={() => reviewRequest(req.id, true)}>Approve</button>
+                  <button type="button" className="reject" onClick={() => reviewRequest(req.id, false)}>Reject</button>
                 </div>
               </div>
             ))}
@@ -84,8 +84,8 @@ const AdminApprovalsPanel = ({ isOpen, onClose }) => {
                   <p>{req.payload?.name} | {req.payload?.email} | {req.payload?.position} | {req.payload?.department}</p>
                 </div>
                 <div className="admin-actions">
-                  <button onClick={() => reviewRequest(req.id, true)}>Approve</button>
-                  <button className="reject" onClick={() => reviewRequest(req.id, false)}>Reject</button>
+                  <button type="button" onClick={() => reviewRequest(req.id, true)}>Approve</button>
+                  <button type="button" className="reject" onClick={() => reviewRequest(req.id, false)}>Reject</button>
                 </div>
               </div>
             ))}
@@ -100,8 +100,8 @@ const AdminApprovalsPanel = ({ isOpen, onClose }) => {
                   <p>{req.payload?.summary || 'Secure password change request'}</p>
                 </div>
                 <div className="admin-actions">
-                  <button onClick={() => reviewRequest(req.id, true)}>Approve</button>
-                  <button className="reject" onClick={() => reviewRequest(req.id, false)}>Reject</button>
+                  <button type="button" onClick={() => reviewRequest(req.id, true)}>Approve</button>
+                  <button type="button" className="reject" onClick={() => reviewRequest(req.id, false)}>Reject</button>
                 </div>
               </div>
             ))}

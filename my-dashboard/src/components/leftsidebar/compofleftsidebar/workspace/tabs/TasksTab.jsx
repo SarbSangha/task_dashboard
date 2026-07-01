@@ -1,8 +1,8 @@
-import React from 'react';
+import './TasksTab.css';
 
 export default function TasksTab() {
   return (
-    <div className="tab-content">
+    <div className="tab-content workspace-tasks">
       <div className="content-header">
         <button className="add-btn">+ Add Task</button>
       </div>

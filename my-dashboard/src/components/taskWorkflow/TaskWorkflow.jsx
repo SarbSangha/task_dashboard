@@ -6,6 +6,8 @@ import { buildFileOpenUrl } from '../../utils/fileLinks';
 import { taskAPI } from '../../services/api';
 import FilePreviewModal from '../common/FilePreviewModal';
 import { useMinimizedWindowStack } from '../../hooks/useMinimizedWindowStack';
+import { isMobileViewport } from '../../utils/isMobileViewport';
+import WindowControls from '../common/WindowControls';
 
 const WORKFLOW_CACHE_TTL_MS = 30 * 1000;
 const workflowDetailCache = new Map();
@@ -179,7 +181,7 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
   const [submittingStageComment, setSubmittingStageComment] = useState(false);
   const [previewFile, setPreviewFile] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const minimizedWindowStyle = useMinimizedWindowStack('task-workflow-modal', isOpen && isMinimized);
 
   const applyWorkflowPayload = (response, nextSelectedNodeId = null) => {
@@ -249,7 +251,7 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
   useEffect(() => {
     if (isOpen) {
       setIsMinimized(false);
-      setIsMaximized(false);
+      setIsMaximized(isMobileViewport());
     }
   }, [isOpen]);
 
@@ -551,7 +553,6 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
     }
 
     runPanelViewTransition(() => {
-      setIsMaximized(false);
       setIsMinimized(true);
     });
   };
@@ -797,57 +798,13 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
             )}
           </div>
           
-          {/* Control Buttons */}
-          <div className="workflow-controls">
-            {!isMinimized && (
-              <button
-                className="workflow-control-btn minimize-btn"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleToggleMinimize();
-                }}
-                title="Minimize"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </button>
-            )}
-
-            <button
-              className="workflow-control-btn maximize-btn"
-              onClick={(event) => {
-                event.stopPropagation();
-                handleToggleMaximize();
-              }}
-              title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}
-            >
-              {isMinimized ? (
-                '▢'
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  {isMaximized ? (
-                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-                  ) : (
-                    <rect x="3" y="3" width="18" height="18" rx="2" />
-                  )}
-                </svg>
-              )}
-            </button>
-
-            <button
-              className="workflow-close-btn"
-              onClick={(event) => {
-                event.stopPropagation();
-                onClose();
-              }}
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
+          <WindowControls
+            isMinimized={isMinimized}
+            isMaximized={isMaximized}
+            onMinimize={handleToggleMinimize}
+            onMaximize={handleToggleMaximize}
+            onClose={onClose}
+          />
         </div>
 
         {/* Content */}

@@ -6,6 +6,7 @@ import html
 import imaplib
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -27,11 +28,19 @@ from database_config import get_operational_db
 from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, ITPortalToolUsageEvent, User
 from services.otp_mail_service import fetch_auth_link_from_gmail, fetch_otp_from_gmail, latest_otp_uid_from_gmail
 from services.totp_service import generate_totp_code, parse_totp_config
+from services.workplace_access_service import (
+    enforce_workplace_tools_access,
+    get_current_user_with_workplace_tools_access,
+    get_workplace_tools_access_status,
+    require_admin_with_workplace_tools_access,
+)
 from utils.credential_crypto import decrypt_secret, encrypt_secret
-from utils.permissions import get_current_user, has_any_role, require_admin, require_user
+from utils.generation_backfill import sync_generation_record_from_usage_event
+from utils.permissions import get_current_user, has_any_role
 
 
 router = APIRouter(prefix="/api/it-tools", tags=["IT Tools"])
+LOGGER = logging.getLogger(__name__)
 
 VALID_SCOPES = {"company", "user"}
 VALID_LAUNCH_MODES = {"external_link", "manual_credential", "sso", "api_proxy", "automation", "extension_autofill"}
@@ -2405,9 +2414,20 @@ def _resolve_usage_event_actor(
     raise _usage_tracking_ticket_error()
 
 
+@router.get("/access-status")
+async def get_tools_access_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_operational_db),
+):
+    return {
+        "success": True,
+        **get_workplace_tools_access_status(current_user, db),
+    }
+
+
 @router.get("/tools")
 async def list_tools(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     is_admin = has_any_role(current_user, {"admin"})
@@ -2437,7 +2457,7 @@ async def list_tools(
 @router.post("/tools")
 async def create_tool(
     payload: ToolCreatePayload,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_admin_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     name = _validate_tool_name(payload.name)
@@ -2478,7 +2498,7 @@ async def create_tool(
 async def update_tool(
     tool_id: int,
     payload: ToolUpdatePayload,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_admin_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
@@ -2523,7 +2543,7 @@ async def update_tool(
 @router.delete("/tools/{tool_id}")
 async def delete_tool(
     tool_id: int,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_admin_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
@@ -2545,7 +2565,7 @@ async def delete_tool(
 @router.post("/extension/credential")
 async def get_extension_credential(
     payload: ExtensionCredentialPayload,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     tool = _find_extension_tool(db, payload)
@@ -2641,6 +2661,7 @@ async def report_extension_usage_event(
         usage_ticket=usage_ticket,
         extension_ticket=extension_ticket,
     )
+    enforce_workplace_tools_access(current_user, db)
 
     credential = _resolve_usage_event_credential(
         db,
@@ -2993,6 +3014,13 @@ async def report_extension_usage_event(
         db.add(usage_event)
 
     db.flush()
+    generation_record_sync = None
+    if (tool.slug or "").strip().lower() in {"kling", "kling-ai", "klingai"}:
+        generation_record_sync = sync_generation_record_from_usage_event(
+            db,
+            usage_event,
+            logger=LOGGER,
+        )
     _add_audit(
         db,
         actor_id=current_user.id,
@@ -3014,6 +3042,7 @@ async def report_extension_usage_event(
             "decision": "update" if action_name == "tool_usage_updated" else "create",
             "dedupeMatchReason": dedupe_match_reason,
             "internalGenerationId": internal_generation_id,
+            "generationRecordSync": generation_record_sync.to_dict() if generation_record_sync else None,
         },
     )
     db.commit()
@@ -3034,7 +3063,7 @@ async def report_extension_usage_event(
 @router.post("/extension/otp-baseline")
 async def get_extension_otp_baseline(
     payload: OtpRequestPayload,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     _tool, mailbox_entry = _resolve_extension_otp_mailbox(db, payload, current_user)
@@ -3066,7 +3095,7 @@ async def get_extension_otp_baseline(
 @router.post("/extension/otp")
 async def get_extension_otp(
     payload: OtpRequestPayload,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     extension_ticket = (payload.extension_ticket or "").strip()
@@ -3159,7 +3188,7 @@ async def get_extension_otp(
 @router.post("/extension/auth-link")
 async def get_extension_auth_link(
     payload: OtpRequestPayload,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     tool = _find_extension_tool(db, payload)
@@ -3262,7 +3291,7 @@ async def get_extension_auth_link(
 @router.post("/extension/totp")
 async def get_extension_totp(
     payload: OtpRequestPayload,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     tool = _find_extension_tool(db, payload)
@@ -3341,7 +3370,7 @@ async def get_extension_totp(
 @router.get("/tools/{tool_id}/credentials")
 async def list_credentials(
     tool_id: int,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_admin_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
@@ -3406,7 +3435,7 @@ async def list_credentials(
 async def upsert_credential(
     tool_id: int,
     payload: CredentialUpsertPayload,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_admin_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
@@ -3610,7 +3639,7 @@ async def upsert_credential(
 async def delete_credential(
     tool_id: int,
     credential_id: int,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_admin_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
@@ -3675,7 +3704,7 @@ async def delete_credential(
 async def launch_tool(
     tool_id: int,
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id, ITPortalTool.is_active == True).first()
@@ -3772,7 +3801,7 @@ async def get_tool_usage_report(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     user_id: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     is_admin = has_any_role(current_user, {"admin"})
@@ -4026,7 +4055,7 @@ async def export_kling_usage_report(
     date_to: Optional[str] = None,
     user_id: Optional[int] = None,
     credential_id: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     is_admin = has_any_role(current_user, {"admin"})
@@ -4173,6 +4202,167 @@ async def export_kling_usage_report(
     )
 
 
+@router.get("/usage-report/kling/export/raw")
+async def export_kling_raw_usage_report(
+    selected_date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user_id: Optional[int] = None,
+    credential_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
+    db: Session = Depends(get_operational_db),
+):
+    is_admin = has_any_role(current_user, {"admin"})
+    if user_id and not is_admin and int(user_id) != int(current_user.id):
+        raise HTTPException(status_code=403, detail="You can only export your own usage.")
+
+    parsed_selected_date = _parse_report_date(selected_date, "selected_date")
+    parsed_date_from = _parse_report_date(date_from, "date_from")
+    parsed_date_to = _parse_report_date(date_to, "date_to")
+    if parsed_selected_date:
+        parsed_date_from = parsed_selected_date
+        parsed_date_to = parsed_selected_date
+    if parsed_date_from and parsed_date_to and parsed_date_from > parsed_date_to:
+        raise HTTPException(status_code=400, detail="date_from cannot be later than date_to")
+
+    kling_slugs = {"kling", "kling-ai", "klingai"}
+    query = (
+        db.query(ITPortalToolUsageEvent, User, ITPortalTool)
+        .join(User, User.id == ITPortalToolUsageEvent.user_id)
+        .join(ITPortalTool, ITPortalTool.id == ITPortalToolUsageEvent.tool_id)
+        .filter(ITPortalTool.slug.in_(kling_slugs))
+    )
+    if parsed_date_from:
+        query = query.filter(ITPortalToolUsageEvent.event_date >= parsed_date_from)
+    if parsed_date_to:
+        query = query.filter(ITPortalToolUsageEvent.event_date <= parsed_date_to)
+    if is_admin:
+        if user_id:
+            query = query.filter(ITPortalToolUsageEvent.user_id == int(user_id))
+    else:
+        query = query.filter(ITPortalToolUsageEvent.user_id == current_user.id)
+    if credential_id:
+        query = query.filter(ITPortalToolUsageEvent.credential_id == int(credential_id))
+
+    event_rows = (
+        query
+        .order_by(ITPortalToolUsageEvent.created_at.asc(), ITPortalToolUsageEvent.id.asc())
+        .all()
+    )
+
+    credential_ids = {int(event.credential_id) for event, _, _ in event_rows if event.credential_id}
+    credential_map = {}
+    if credential_ids:
+        credentials = (
+            db.query(ITPortalToolCredential)
+            .filter(ITPortalToolCredential.id.in_(credential_ids))
+            .all()
+        )
+        credential_map = {
+            credential.id: {
+                "scope": credential.scope,
+                "loginIdentifier": _safe_decrypt_secret(credential.login_identifier_encrypted),
+            }
+            for credential in credentials
+        }
+
+    def _credential_label(event: ITPortalToolUsageEvent) -> str:
+        credential = credential_map.get(event.credential_id) or {}
+        credential_label = f"{credential.get('loginIdentifier') or ''}".strip()
+        if credential_label:
+            return credential_label
+        metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
+        return f"{metadata.get('credentialLabel') or metadata.get('klingAccountLabel') or ''}".strip()
+
+    rows = []
+    for event, user, tool in event_rows:
+        metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
+        numeric_kling_ids, kgen_ids, other_kling_ids = _split_usage_event_kling_ids(metadata, event)
+        rows.append([
+            int(event.id or 0),
+            _serialize_india_datetime(event.created_at) or "",
+            event.event_date.isoformat() if event.event_date else "",
+            user.name or "",
+            user.email or "",
+            tool.name or "",
+            tool.slug or "",
+            event.event_type or "",
+            event.status or "",
+            event.source or "",
+            _credential_label(event),
+            int(event.credential_id or 0) if event.credential_id else "",
+            (credential_map.get(event.credential_id) or {}).get("scope", ""),
+            event.prompt_text or "",
+            event.model_label or "",
+            event.duration_label or "",
+            event.resolution_label or "",
+            event.expected_credits if event.expected_credits is not None else "",
+            event.credits_before if event.credits_before is not None else "",
+            event.credits_after if event.credits_after is not None else "",
+            event.credits_burned if event.credits_burned is not None else "",
+            event.external_event_id or "",
+            event.generation_id or "",
+            event.request_id or "",
+            event.fingerprint or "",
+            event.schema_version if event.schema_version is not None else "",
+            event.confidence if event.confidence is not None else "",
+            _usage_event_task_ids(metadata, event),
+            numeric_kling_ids,
+            kgen_ids,
+            other_kling_ids,
+            _usage_event_media_links(metadata),
+            json.dumps(metadata, ensure_ascii=True, sort_keys=True),
+        ])
+
+    workbook = _build_simple_xlsx(
+        [
+            "Event ID",
+            "Captured At",
+            "Event Date",
+            "User",
+            "User Email",
+            "Tool",
+            "Tool Slug",
+            "Event Type",
+            "Status",
+            "Source",
+            "Kling ID",
+            "Credential ID",
+            "Credential Scope",
+            "Prompt",
+            "Model",
+            "Duration",
+            "Resolution",
+            "Expected Credits",
+            "Credits Before",
+            "Credits After",
+            "Credits Burned Raw",
+            "External Event ID",
+            "Generation ID",
+            "Request ID",
+            "Fingerprint",
+            "Schema Version",
+            "Confidence",
+            "Task IDs",
+            "Numeric Kling IDs",
+            "Kgen IDs",
+            "Other IDs",
+            "Media Links",
+            "Raw Metadata JSON",
+        ],
+        rows,
+        sheet_name="Kling Raw Usage",
+    )
+    from_label = parsed_date_from.isoformat() if parsed_date_from else "all"
+    to_label = parsed_date_to.isoformat() if parsed_date_to else from_label
+    filename = f"kling-raw-usage-{from_label}-to-{to_label}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(workbook),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/launch-history")
 async def get_tool_launch_history(
     selected_date: Optional[str] = None,
@@ -4180,7 +4370,7 @@ async def get_tool_launch_history(
     date_to: Optional[str] = None,
     user_id: Optional[int] = None,
     tool_id: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
     is_admin = has_any_role(current_user, {"admin"})
@@ -4340,6 +4530,10 @@ async def launch_with_ticket(
         raise HTTPException(status_code=400, detail="Invalid launch ticket")
     if payload.get("kind") != "automation_launch":
         raise HTTPException(status_code=400, detail="Invalid launch ticket")
+    launch_user = db.query(User).filter(User.id == user_id).first()
+    if not launch_user:
+        raise HTTPException(status_code=400, detail="Invalid launch ticket")
+    enforce_workplace_tools_access(launch_user, db)
 
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id, ITPortalTool.is_active == True).first()
     if not tool:

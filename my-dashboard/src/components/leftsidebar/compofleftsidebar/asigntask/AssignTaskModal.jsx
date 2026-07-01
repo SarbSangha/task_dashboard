@@ -16,21 +16,25 @@ import {
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { isMobileViewport } from '../../../../utils/isMobileViewport';
+import WindowControls from '../../../common/WindowControls';
 import { formatDateTimeLocalInputIndia } from '../../../../utils/dateTime';
 
 const TASK_TAG_OPTIONS = [
+  'Gen Ai Frames',
+  'Gen Ai Vedio',
+  'Image and Video',
+  'Graphic Design',
+  'Video Editing',
+  'Motion Graphics',
+  'Social Media',
+  'Script',
+  'Animation',
   'Audio',
   'Video',
-  'Image',
-  'Image and Vedio',
-  'Script',
   'Content',
-  'Animation',
   'Banner',
-  'Graphic Design',
-  'Motion Graphics',
   'Thumbnail',
-  'Social Media',
   'Others',
 ];
 
@@ -244,7 +248,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
   const [submitUploadState, setSubmitUploadState] = useState(createInitialSubmitUploadState);
   const [currentDraftId, setCurrentDraftId] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const allowNavigationRef = useRef(false);
   const initialFormSnapshotRef = useRef(buildDirtySnapshot(createEmptyFormData()));
   const initialWorkflowSnapshotRef = useRef(buildWorkflowSnapshot(createEmptyFormData()));
@@ -551,7 +555,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
   useEffect(() => {
     if (isOpen) {
       setIsMinimized(false);
-      setIsMaximized(false);
+      setIsMaximized(isMobileViewport());
       allowNavigationRef.current = false;
     }
   }, [isOpen]);
@@ -1245,7 +1249,6 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       return;
     }
 
-    setIsMaximized(false);
     setIsMinimized(true);
   };
 
@@ -1357,40 +1360,13 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                 {saveMessage.text}
               </span>
             )}
-            {!isMinimized && (
-              <button
-                className="assign-window-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleToggleMinimize();
-                }}
-                aria-label="Minimize"
-                title="Minimize"
-              >
-                ─
-              </button>
-            )}
-            <button
-              className="assign-window-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleToggleMaximize();
-              }}
-              aria-label={isMinimized ? 'Restore' : isMaximized ? 'Restore window' : 'Maximize'}
-              title={isMinimized ? 'Restore' : isMaximized ? 'Restore window' : 'Maximize'}
-            >
-              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
-            </button>
-            <button
-              className="assign-close-icon"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleClose();
-              }}
-              aria-label="Close"
-            >
-              ✕
-            </button>
+            <WindowControls
+              isMinimized={isMinimized}
+              isMaximized={isMaximized}
+              onMinimize={handleToggleMinimize}
+              onMaximize={handleToggleMaximize}
+              onClose={handleClose}
+            />
           </div>
         </div>
 
@@ -1691,11 +1667,11 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                         onChange={(event) => handleChange('submissionMode', event.target.checked ? 'all' : 'any')}
                       />
                       <span>
-                        Require every selected worker to submit
+                        Require every selected person to submit
                         <small>
                           {formData.submissionMode === 'all'
-                            ? 'Task goes to review only after all selected workers submit their own result.'
-                            : 'Task goes to review when any one selected worker submits.'}
+                        ? 'Task goes to review only after all selected people submit their own result.'
+                        : 'Task goes to review when any one selected person submits.'}
                         </small>
                       </span>
                     </label>

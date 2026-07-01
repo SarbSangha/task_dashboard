@@ -5,8 +5,34 @@
     <link rel="icon" type="image/svg+xml" href="/rmweye.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RMWeye</title>
+    <script>
+      (function () {
+        var storageKey = 'rmw-dashboard-theme';
+        var theme = 'dark';
+
+        try {
+          var savedTheme = window.localStorage.getItem(storageKey);
+          if (savedTheme === 'light' || savedTheme === 'dark') {
+            theme = savedTheme;
+          } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            theme = 'light';
+          }
+        } catch (error) {
+          if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            theme = 'light';
+          }
+        }
+
+        window.__RMW_THEME__ = theme;
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
   </head>
   <body>
+    <script>
+      document.body.classList.add('theme-' + (window.__RMW_THEME__ || 'dark'));
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

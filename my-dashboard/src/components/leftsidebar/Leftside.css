@@ -1,225 +1,421 @@
-/* Functional Menu - Left Sidebar Container with INCREASED margins */
+/* ================================================================
+   Functional Sidebar — Enterprise Redesign
+   Linear / Notion / Figma design language
+   Desktop: 220px full panel
+   Tablet ≤768px: 56px icon-only strip with tooltips
+   Mobile ≤640px: full-height slide-in drawer
+================================================================ */
+
+/* ----------------------------------------------------------------
+   Base sidebar container
+---------------------------------------------------------------- */
+
 .functional-menu {
   position: fixed;
-  top: 120px;  /* Increased spacing from navbar */
-  left: 20px;  /* Increased from 10px to 20px */
-  width: 220px;
-  height: calc(100vh - 140px);  /* Adjusted height calculation */
-  background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%);
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  padding: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  transition: all 0.3s ease;
+  top: calc(var(--topnav-inset, 20px) + var(--topnav-height, 84px) + var(--sidebar-gap, 10px));
+  left: var(--topnav-inset, 20px);
+  width: var(--sidebar-width, 220px);
+  height: calc(100vh - var(--topnav-inset, 20px) - var(--topnav-height, 84px) - var(--sidebar-gap, 10px) - 10px);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-sidebar-surface);
+  border: 1px solid var(--color-sidebar-border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sidebar);
+  overflow: hidden;
   z-index: 900;
+  transition:
+    width 0.22s cubic-bezier(0.25, 0.8, 0.25, 1),
+    left var(--theme-transition-base),
+    top var(--theme-transition-base),
+    height var(--theme-transition-base),
+    transform var(--theme-transition-base),
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
-/* Outbox Button Styling - Add to your sidebar CSS */
-.outbox-trigger-btn,
-.sidebar-menu-item {
-  width: 100%;
+
+/* ----------------------------------------------------------------
+   Sidebar Header
+---------------------------------------------------------------- */
+
+.sidebar-header {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 14px 20px;
-  background: transparent;
-  border: none;
-  border-left: 4px solid transparent;
-  color: #b8c5d6;
-  font-size: 15px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  text-align: left;
-  margin: 4px 0;
-  font-family: inherit;
+  justify-content: space-between;
+  padding: 0 8px 0 14px;
+  height: 52px;
+  min-height: 52px;
+  border-bottom: 1px solid var(--color-sidebar-border);
+  flex-shrink: 0;
+  gap: 6px;
 }
 
-.outbox-trigger-btn:hover,
-.sidebar-menu-item:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #ffffff;
-  border-left-color: #3b82f6;
+/* Brand mark (icon + wordmark) */
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
 }
 
-.outbox-trigger-btn.active,
-.sidebar-menu-item.active {
-  background: #2dd4bf;
-  color: white;
-  border-left-color: #14b8a6;
-}
-
-.outbox-trigger-btn .menu-icon,
-.sidebar-menu-item .menu-icon {
-  font-size: 18px;
-  width: 24px;
+.sidebar-brand-icon {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--color-nav-active);
+  flex-shrink: 0;
+  box-shadow: 0 4px 10px rgba(61, 226, 194, 0.2);
 }
 
-.outbox-trigger-btn .menu-text,
-.sidebar-menu-item .menu-text {
-  font-size: 15px;
-  font-weight: 500;
+.sidebar-brand-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: var(--color-text-inverse);
+}
+
+.sidebar-brand-name {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  opacity: 1;
+  transition:
+    opacity 0.18s ease,
+    width 0.18s ease;
+}
+
+/* Toggle collapse button */
+.sidebar-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-nav-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color 0.13s ease,
+    border-color 0.13s ease,
+    color 0.13s ease;
+}
+
+.sidebar-toggle-btn:hover {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border-subtle);
+  color: var(--color-nav-text);
+}
+
+.sidebar-toggle-btn:focus-visible {
+  outline: 2px solid var(--color-nav-selected-border);
+  outline-offset: 2px;
+}
+
+.sidebar-toggle-btn svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.22s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+/* ----------------------------------------------------------------
+   Navigation container
+---------------------------------------------------------------- */
+
+.sidebar-nav {
   flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 0 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar-thumb) transparent;
 }
 
+.sidebar-nav::-webkit-scrollbar {
+  width: 3px;
+}
+
+.sidebar-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+  border-radius: 4px;
+}
+
+/* ----------------------------------------------------------------
+   Navigation sections
+---------------------------------------------------------------- */
+
+.nav-section {
+  padding: 0;
+  margin-bottom: 2px;
+}
+
+/* Section header row */
+.nav-section-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px 3px;
+  gap: 8px;
+}
+
+/* Section label text */
+.nav-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-text-disabled);
+  white-space: nowrap;
+  overflow: hidden;
+  line-height: 1;
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+
+/* ----------------------------------------------------------------
+   Collapsed state — desktop sidebar toggle
+---------------------------------------------------------------- */
 
 .functional-menu.collapsed {
-  width: 70px;
+  width: var(--sidebar-icon-width, 70px);
+  /* overflow: visible is needed for tooltips to peek outside */
+  overflow: visible;
 }
 
-/* Custom Scrollbar */
-.functional-menu::-webkit-scrollbar {
-  width: 6px;
+/* Prevent sidebar-nav scrollbar from clipping tooltips */
+.functional-menu.collapsed .sidebar-nav {
+  overflow: visible;
 }
 
-.functional-menu::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 10px;
-}
-
-.functional-menu::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 10px;
-}
-
-.functional-menu::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
-}
-
-/* Menu Header */
-.menu-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 24px 16px;  /* Increased padding */
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  position: sticky;
-  top: 0;
-  background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%);
-  z-index: 10;
-}
-
-.menu-title {
-  position: absolute;
-  left: calc(50% - 10px);
-  transform: translateX(-50%);
-  font-size: 13px;
-  font-weight: 700;
-  color: white;
-  letter-spacing: 1px;
-  margin: 0;
-  white-space: nowrap;
-  transition: opacity 0.3s ease;
-}
-
-.functional-menu.collapsed .menu-title {
+/* Hide brand name text, keep icon */
+.functional-menu.collapsed .sidebar-brand-name {
   opacity: 0;
   width: 0;
   overflow: hidden;
 }
 
-.collapse-btn {
-  margin-left: auto;
-  position: relative;
-  z-index: 1;
-  width: 32px;
-  height: 32px;
-  background: rgba(255, 255, 255, 0.1);
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
+.functional-menu.collapsed .sidebar-header {
   justify-content: center;
-  transition: all 0.2s ease;
+  padding: 0 8px;
 }
 
-.collapse-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
-  transform: scale(1.05);
+.functional-menu.collapsed .sidebar-brand {
+  flex: 0 0 auto;
+  gap: 0;
 }
 
-.collapse-btn svg {
-  width: 18px;
-  height: 18px;
-  fill: white;
+/* Chevron rotates 180° when collapsed */
+.functional-menu.collapsed .sidebar-toggle-btn svg {
+  transform: rotate(180deg);
 }
 
-/* Menu Items Container with MORE spacing */
-.menu-items {
-  padding: 12px 0;  /* Increased from 8px to 12px */
+/* Section labels → thin dividers in icon-only mode */
+.functional-menu.collapsed .nav-section-header {
+  padding: 0 12px;
+  margin: 4px 0;
 }
 
-/* Responsive Design */
+.functional-menu.collapsed .nav-section-label {
+  display: block;
+  width: 100%;
+  height: 1px;
+  padding: 0;
+  font-size: 0;
+  overflow: hidden;
+  background: var(--color-divider);
+  border-radius: 1px;
+  opacity: 0.6;
+}
+
+/* No top divider for the first section */
+.functional-menu.collapsed .nav-section:first-child .nav-section-label {
+  display: none;
+}
+
+/* ----------------------------------------------------------------
+   Large tablet ≤1024px — sidebar narrower but still full labels
+---------------------------------------------------------------- */
+
 @media (max-width: 1024px) {
   .functional-menu {
     width: 200px;
-    top: 110px;
-    left: 15px;
-    height: calc(100vh - 125px);
   }
 }
 
+/* ----------------------------------------------------------------
+   Tablet ≤768px — always icon-only (no JS toggle needed)
+---------------------------------------------------------------- */
+
 @media (max-width: 768px) {
   .functional-menu {
-    width: 70px;
-    top: 180px;
-    left: 12px;
-    height: calc(100vh - 192px);
+    width: var(--sidebar-icon-width, 70px);
+    /* Allow tooltips to escape the container */
+    overflow: visible;
   }
 
-  .menu-title {
+  .functional-menu .sidebar-nav {
+    overflow: visible;
+  }
+
+  .functional-menu .sidebar-brand-name {
+    opacity: 0;
+    width: 0;
+    overflow: hidden;
+  }
+
+  .functional-menu .sidebar-header {
+    justify-content: center;
+    padding: 0 8px;
+  }
+
+  .functional-menu .sidebar-brand {
+    flex: 0 0 auto;
+    gap: 0;
+  }
+
+  /* Section labels → dividers */
+  .functional-menu .nav-section-header {
+    padding: 0 12px;
+    margin: 4px 0;
+  }
+
+  .functional-menu .nav-section-label {
+    display: block;
+    width: 100%;
+    height: 1px;
+    padding: 0;
+    font-size: 0;
+    overflow: hidden;
+    background: var(--color-divider);
+    border-radius: 1px;
+    opacity: 0.6;
+  }
+
+  .functional-menu .nav-section:first-child .nav-section-label {
     display: none;
   }
 }
 
-@media (max-width: 480px) {
+/* ----------------------------------------------------------------
+   Mobile ≤640px — off-screen slide-in drawer
+---------------------------------------------------------------- */
+
+@media (max-width: 640px) {
   .functional-menu {
-    width: 60px;
-    border-radius: 10px;
-    top: 175px;
-    left: 10px;
-    height: calc(100vh - 185px);
+    /* Full-height drawer: covers entire screen from left */
+    top: 0;
+    left: 0;
+    width: min(300px, 85vw);
+    height: 100vh;
+    height: 100dvh; /* iOS Safari dynamic viewport */
+    border-radius: 0 16px 16px 0;
+    border-left: none;
+    /* Start off-screen */
+    transform: translateX(-110%);
+    z-index: 1050;
+    /* Restore overflow for drawer scroll */
+    overflow: hidden;
+    transition:
+      transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+      background-color var(--theme-transition-fast),
+      border-color var(--theme-transition-fast),
+      box-shadow var(--theme-transition-fast);
   }
 
-  .menu-header {
-    padding: 16px 8px;
+  .functional-menu.mobile-open {
+    transform: translateX(0);
+    box-shadow: 4px 0 48px rgba(0, 0, 0, 0.36);
+  }
+
+  /* Drawer header: full height matches topnav bottom */
+  .functional-menu .sidebar-header {
+    justify-content: space-between;
+    padding: 0 8px 0 14px;
+    height: calc(var(--topnav-inset, 10px) + var(--topnav-height, 64px));
+    min-height: 52px;
+    border-bottom: 1px solid var(--color-sidebar-border);
+  }
+
+  /* Restore full brand in mobile drawer */
+  .functional-menu.mobile-open .sidebar-brand-name {
+    opacity: 1;
+    width: auto;
+    overflow: visible;
+  }
+
+  .functional-menu.mobile-open .sidebar-brand {
+    flex: 1;
+    gap: 9px;
+  }
+
+  /* Restore section labels in mobile drawer */
+  .functional-menu.mobile-open .nav-section-header {
+    padding: 10px 16px 3px;
+    margin: 0;
+  }
+
+  .functional-menu.mobile-open .nav-section-label {
+    display: inline;
+    width: auto;
+    height: auto;
+    padding: 0;
+    font-size: 10px;
+    overflow: visible;
+    background: transparent;
+    opacity: 1;
+  }
+
+  .functional-menu.mobile-open .nav-section:first-child .nav-section-label {
+    display: inline;
+  }
+
+  /* Nav scroll within drawer */
+  .functional-menu.mobile-open .sidebar-nav {
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 }
-/* Inbox container inside sidebar */
-.inbox-container {
-  margin-top: 20px;
-  padding: 0 12px;
-  border-top: 1px solid #e5e7eb;
+
+/* ----------------------------------------------------------------
+   Mobile overlay backdrop
+---------------------------------------------------------------- */
+
+.mobile-menu-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-overlay);
+  z-index: 1049;
+  animation: mobileOverlayIn 0.22s ease;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
 }
 
-.inbox-container .inbox-section {
-  padding: 12px 8px;
+@keyframes mobileOverlayIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
-.inbox-container .inbox-grid {
-  grid-template-columns: 1fr;
-  gap: 12px;
-}
+/* ----------------------------------------------------------------
+   Very small mobile ≤360px
+---------------------------------------------------------------- */
 
-.inbox-container .inbox-task-card.expanded {
-  grid-column: span 1;
-}
-
-.inbox-container .inbox-filters {
-  gap: 6px;
-}
-
-.inbox-container .inbox-filter-btn {
-  padding: 6px 12px;
-  font-size: 12px;
-}
-
-/* Make sidebar taller when inbox is open */
-.functional-menu.inbox-open {
-  height: 100vh;
-  overflow-y: auto;
+@media (max-width: 360px) {
+  .functional-menu {
+    width: min(280px, 90vw);
+  }
 }

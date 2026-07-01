@@ -1,38 +1,102 @@
-/* Reset body margin for floating effect */
-body {
-  margin: 0;
-  padding: 0;
-}
+/* ================================================================
+   Top Navigation Bar
+   Fixed pill-style nav bar. Single row at all viewport widths.
+================================================================ */
 
-/* Main Navbar Container - Floating with INCREASED margins */
 .topnav {
+  box-sizing: border-box;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: linear-gradient(135deg, #3d5a80 0%, #2b4257 100%);
-  padding: 14px 28px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   position: fixed;
-  top: 20px;
-  left: 20px;
-  right: 20px;
+  top: var(--topnav-inset, 20px);
+  right: var(--topnav-inset, 20px);
+  left: var(--topnav-inset, 20px);
   z-index: 1000;
+  padding: 14px 28px;
+  border: 1px solid var(--color-navbar-border);
   border-radius: 16px;
-  transition: all 0.3s ease;
+  background: var(--color-navbar-surface);
+  box-shadow: var(--shadow-navbar);
+  /* Never wrap — stays as one row on all viewports */
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-height: var(--topnav-height, 84px);
+  transition:
+    background-color var(--theme-transition-base),
+    border-color var(--theme-transition-base),
+    box-shadow var(--theme-transition-base),
+    transform var(--theme-transition-fast);
 }
 
-/* ==================== LEFT SECTION - LOGO ==================== */
+/* ----------------------------------------------------------------
+   Left section
+---------------------------------------------------------------- */
+
 .topnav-left {
   display: flex;
   align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
 }
+
+/* ----------------------------------------------------------------
+   Hamburger (mobile-only — hidden on desktop via CSS)
+---------------------------------------------------------------- */
+
+.topnav-hamburger {
+  display: none; /* shown at ≤ 640px */
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-hover-surface);
+  color: var(--color-nav-icon);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
+}
+
+.topnav-hamburger:hover {
+  background: var(--color-pressed-surface);
+  border-color: var(--color-border);
+}
+
+.topnav-hamburger.is-open {
+  background: var(--color-nav-selected);
+  border-color: var(--color-nav-selected-border);
+  color: var(--color-nav-selected-border);
+  box-shadow: var(--shadow-nav-glow-soft);
+}
+
+.topnav-hamburger:focus-visible {
+  outline: var(--outline-focus);
+  outline-offset: 3px;
+}
+
+.topnav-hamburger svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ----------------------------------------------------------------
+   Logo
+---------------------------------------------------------------- */
 
 .logo-container {
   display: flex;
   align-items: center;
   gap: 12px;
   cursor: pointer;
-  transition: transform 0.2s ease;
+  transition: transform var(--theme-transition-fast);
+  flex-shrink: 0;
 }
 
 .logo-container:hover {
@@ -40,73 +104,85 @@ body {
 }
 
 .logo-icon {
-  width: 44px;
-  height: 44px;
-  background: #1abc9c;
-  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 44px;
+  height: 44px;
   padding: 8px;
+  border-radius: 10px;
+  background: var(--color-nav-active);
+  box-shadow: var(--shadow-nav-active);
+  flex-shrink: 0;
 }
 
 .eye-icon {
   width: 100%;
   height: 100%;
-  fill: white;
+  fill: var(--color-text-inverse);
 }
 
 .logo-text {
+  color: var(--color-text);
   font-size: 22px;
   font-weight: 700;
-  color: white;
   letter-spacing: 0.5px;
+  white-space: nowrap;
 }
 
-/* ==================== RIGHT SECTION - USER & ICONS ==================== */
+/* ----------------------------------------------------------------
+   Right section
+---------------------------------------------------------------- */
+
 .topnav-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
+  flex-shrink: 0;
 }
+
+/* ----------------------------------------------------------------
+   User profile
+---------------------------------------------------------------- */
 
 .user-profile {
   display: flex;
   align-items: center;
   gap: 12px;
-  cursor: pointer;
   padding: 6px 12px;
+  border: 1px solid transparent;
   border-radius: 10px;
-  transition: background 0.2s ease;
+  cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast);
 }
 
 .user-profile:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--color-nav-hover);
+  border-color: var(--color-border-subtle);
 }
 
 .user-avatar {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: #4a6fa5;
-  border: 2px solid #1abc9c;
+  --user-avatar-fallback-background: transparent;
+  --user-avatar-fallback-color: inherit;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 40px;
+  height: 40px;
   overflow: hidden;
+  border: 2px solid var(--color-nav-selected-border);
+  border-radius: 50%;
+  background: var(--color-selected-surface);
+  color: var(--color-text);
+  flex-shrink: 0;
 }
 
 .user-avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-}
-
-.avatar-placeholder {
-  color: white;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
 }
 
 .user-info {
@@ -116,86 +192,108 @@ body {
 }
 
 .user-name {
+  color: var(--color-text);
   font-size: 14px;
   font-weight: 600;
-  color: white;
   line-height: 1;
+  white-space: nowrap;
 }
 
 .user-badge {
-  background: #1abc9c;
-  color: white;
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
   font-size: 10px;
   font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 4px;
-  text-transform: uppercase;
   letter-spacing: 0.5px;
-  align-self: flex-start;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
+/* ----------------------------------------------------------------
+   Icon buttons
+---------------------------------------------------------------- */
+
 .icon-button {
-  width: 38px;
-  height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  border: 1px solid transparent;
   border-radius: 8px;
-  transition: all 0.3s ease;
+  cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
 }
 
 .icon-button:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--color-nav-hover);
+  border-color: var(--color-border-subtle);
   transform: translateY(-2px);
 }
 
 .icon-button svg {
   width: 20px;
   height: 20px;
-  fill: white;
-  transition: fill 0.3s ease;
+  fill: var(--color-nav-icon);
+  transition: fill var(--theme-transition-fast);
 }
 
-/* Active state for settings icon when sidebar is open */
 .icon-button.active {
-  background: rgba(26, 188, 156, 0.2);
-  transform: rotate(90deg) translateY(0);
+  border-color: var(--color-nav-selected-border);
+  background: var(--color-nav-selected);
+  box-shadow: var(--shadow-nav-glow-soft);
+  transform: rotate(90deg);
 }
 
 .icon-button.active:hover {
-  background: rgba(26, 188, 156, 0.3);
+  background: var(--color-nav-selected);
 }
 
 .icon-button.active svg {
-  fill: #1abc9c;
+  fill: var(--color-nav-selected-border);
 }
 
-/* ==================== RESPONSIVE DESIGN ==================== */
+.icon-button:focus-visible {
+  outline: var(--outline-focus);
+  outline-offset: 3px;
+}
 
-/* Tablet - 768px to 1024px */
+/* ----------------------------------------------------------------
+   Large tablet (≤ 1024px)
+---------------------------------------------------------------- */
+
 @media (max-width: 1024px) {
   .topnav {
     padding: 12px 20px;
-    top: 15px;
-    left: 15px;
-    right: 15px;
   }
 
   .logo-text {
     font-size: 20px;
   }
+
+  .user-avatar {
+    width: 38px;
+    height: 38px;
+  }
 }
 
-/* Mobile - Below 768px */
+/* ----------------------------------------------------------------
+   Tablet (≤ 768px) — hide user text, compact spacing
+---------------------------------------------------------------- */
+
 @media (max-width: 768px) {
   .topnav {
-    padding: 12px 16px;
-    flex-wrap: wrap;
-    top: 12px;
-    left: 12px;
-    right: 12px;
-    gap: 12px;
+    padding: 10px 16px;
+    border-radius: 14px;
+    gap: 6px;
   }
 
   .user-info {
@@ -204,11 +302,12 @@ body {
 
   .user-profile {
     padding: 4px;
+    gap: 0;
+    background: transparent;
   }
 
-  .icon-button {
-    width: 36px;
-    height: 36px;
+  .user-profile:hover {
+    background: var(--color-nav-hover);
   }
 
   .logo-text {
@@ -219,20 +318,44 @@ body {
     width: 38px;
     height: 38px;
   }
-}
 
-/* Small Mobile - Below 480px */
-@media (max-width: 480px) {
-  .topnav {
-    padding: 10px 12px;
-    border-radius: 12px;
-    top: 10px;
-    left: 10px;
-    right: 10px;
+  .icon-button {
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
   }
 
-  .logo-text {
-    font-size: 16px;
+  .topnav-right {
+    gap: 8px;
+  }
+}
+
+/* ----------------------------------------------------------------
+   Mobile (≤ 640px) — show hamburger, remove WiFi icon
+---------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  .topnav {
+    padding: 10px 12px;
+  }
+
+  .topnav-hamburger {
+    display: flex;
+  }
+
+  .topnav-wifi-btn {
+    display: none;
+  }
+}
+
+/* ----------------------------------------------------------------
+   Small mobile (≤ 480px)
+---------------------------------------------------------------- */
+
+@media (max-width: 480px) {
+  .topnav {
+    padding: 8px 10px;
+    border-radius: 12px;
   }
 
   .logo-icon {
@@ -240,12 +363,52 @@ body {
     height: 34px;
   }
 
-  .user-avatar {
-    width: 38px;
-    height: 38px;
+  .logo-text {
+    font-size: 16px;
   }
 
-  .icon-button:first-of-type {
+  .user-avatar {
+    width: 36px;
+    height: 36px;
+  }
+
+  .topnav-hamburger {
+    width: 40px;
+    height: 40px;
+  }
+
+  .topnav-hamburger svg {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+/* ----------------------------------------------------------------
+   Very small mobile (≤ 360px) — hide logo text
+---------------------------------------------------------------- */
+
+@media (max-width: 360px) {
+  .topnav {
+    padding: 8px;
+  }
+
+  .logo-text {
     display: none;
+  }
+
+  .logo-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .icon-button {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+  }
+
+  .topnav-hamburger {
+    width: 38px;
+    height: 38px;
   }
 }

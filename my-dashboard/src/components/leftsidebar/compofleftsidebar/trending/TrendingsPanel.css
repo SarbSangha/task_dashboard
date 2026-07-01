@@ -5,7 +5,7 @@
 .trendings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: transparent;
   backdrop-filter: none;
   z-index: 1199;
 }
@@ -19,20 +19,20 @@
 .trendings-panel {
   position: fixed;
   top: var(--leftbar-popup-top-offset);
-  left: 50%;
-  transform: translateX(-50%);
-  width: 95%;
-  max-width: 1400px;
+  left: var(--panel-left-inset, 250px);
+  right: var(--topnav-inset, 20px);
+  width: auto;
+  max-width: none;
   height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
-  background: linear-gradient(160deg, #0c1a35, #0b152a 42%, #101f40);
-  border: 1px solid rgba(87, 127, 210, 0.35);
+  background: var(--color-surface-modal);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 18px;
   z-index: 1200;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 20px 60px rgba(3, 7, 20, 0.6);
+  box-shadow: var(--shadow-card);
 }
 
 .trendings-panel.maximized {
@@ -64,16 +64,14 @@
   align-items: center;
   gap: 18px;
   padding: 24px 20px;
-  background: linear-gradient(135deg, #1f2d40 0%, #16212c 100%);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.25),
-    0 2px 6px rgba(0, 0, 0, 0.15);
+  background: var(--color-surface-elevated);
+  border-bottom: 1px solid var(--color-border-subtle);
+  box-shadow: var(--shadow-soft);
 }
 
 .trendings-header h2 {
   margin: 0;
-  color: #eef5ff;
+  color: var(--color-text);
   letter-spacing: 0.2px;
   min-width: 0;
   white-space: nowrap;
@@ -84,9 +82,9 @@
 }
 
 .trendings-close-btn {
-  border: 1px solid rgba(154, 182, 242, 0.35);
-  background: rgba(255, 255, 255, 0.06);
-  color: #dbe7ff;
+  border: 1px solid var(--color-button-outline-border);
+  background: var(--color-button-ghost-bg);
+  color: var(--color-button-ghost-text);
   border-radius: 8px;
   width: 34px;
   height: 34px;
@@ -96,6 +94,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .trendings-controls {
@@ -134,18 +137,37 @@
   width: 34px;
   height: 34px;
   border-radius: 8px;
-  border: 1px solid rgba(154, 182, 242, 0.35);
-  background: rgba(255, 255, 255, 0.06);
-  color: #dbe7ff;
+  border: 1px solid var(--color-button-outline-border);
+  background: var(--color-button-ghost-bg);
+  color: var(--color-button-ghost-text);
   cursor: pointer;
   font-size: 16px;
   line-height: 1;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
+}
+
+.trendings-control-btn:hover,
+.trendings-control-btn:focus-visible {
+  background: var(--color-button-ghost-bg-hover);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-close-btn:hover {
-  background: rgba(239, 68, 68, 0.18);
-  border-color: rgba(248, 113, 113, 0.45);
-  color: #fff;
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
+}
+
+.trendings-close-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-view-tabs {
@@ -161,9 +183,9 @@
 }
 
 .trendings-view-tab {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
   min-width: 0;
   min-height: 34px;
   border-radius: 9px;
@@ -172,43 +194,55 @@
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    background-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
-.trendings-view-tab:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.2);
+.trendings-view-tab:hover,
+.trendings-view-tab:focus-visible {
+  color: var(--color-text);
+  background: var(--color-hover-surface);
+  border-color: var(--color-border-strong);
   transform: translateY(-1px);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-view-tab.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-color: rgba(255, 255, 255, 0.18);
-  color: #ffffff;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
+  background: var(--color-button-primary-bg);
+  border-color: transparent;
+  color: var(--color-button-primary-text);
+  box-shadow: var(--shadow-button-primary);
 }
 
 .trendings-search {
   width: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  border: 1px solid var(--color-input-border);
+  background: var(--color-input-bg);
+  color: var(--color-input-text);
   border-radius: 10px;
   height: 40px;
   padding: 0 16px;
   outline: none;
-  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  transition:
+    background-color var(--theme-transition-base),
+    border-color var(--theme-transition-base),
+    color var(--theme-transition-base),
+    box-shadow var(--theme-transition-base);
 }
 
 .trendings-search::placeholder {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-placeholder);
 }
 
 .trendings-search:focus {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: #1abc9c;
-  box-shadow: 0 0 0 3px rgba(26, 188, 156, 0.15);
+  background: var(--color-surface-elevated);
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-filter-row {
@@ -217,7 +251,7 @@
   grid-template-columns: auto minmax(180px, 1fr) auto auto;
   gap: 14px;
   align-items: center;
-  border-bottom: 1px solid rgba(80, 99, 139, 0.18);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .trendings-filter-group,
@@ -242,7 +276,7 @@
 }
 
 .trendings-filter-select-label {
-  color: #a8c0e8;
+  color: var(--color-text-muted);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -253,19 +287,24 @@
 .trendings-filter-select {
   min-width: 160px;
   height: 40px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--color-select-border);
+  background: var(--color-select-bg);
+  color: var(--color-input-text);
   border-radius: 9px;
   padding: 0 14px;
   font-size: 12px;
   font-weight: 600;
   outline: none;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .trendings-toolbar-status {
   min-width: 0;
-  color: #b9cbec;
+  color: var(--color-text-secondary);
   font-size: 12px;
   line-height: 1.35;
   overflow: hidden;
@@ -274,44 +313,53 @@
 }
 
 .trendings-filter-select:focus {
-  border-color: rgba(255, 255, 255, 0.18);
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.18);
-  color: #fff;
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-focus);
+  color: var(--color-text);
 }
 
 .trendings-filter-select option {
-  color: #111111;
-  background: #ffffff;
+  color: var(--color-text);
+  background: var(--color-surface-modal);
 }
 
 .trendings-chip,
 .trendings-sort-btn {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
   min-height: 34px;
   border-radius: 9px;
   padding: 7px 14px;
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    background-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .trendings-chip:hover,
-.trendings-sort-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #fff;
+.trendings-sort-btn:hover,
+.trendings-chip:focus-visible,
+.trendings-sort-btn:focus-visible {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
   transform: translateY(-1px);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-chip.active,
 .trendings-sort-btn.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-color: rgba(255, 255, 255, 0.18);
-  color: #fff;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
+  background: var(--color-button-primary-bg);
+  border-color: transparent;
+  color: var(--color-button-primary-text);
+  box-shadow: var(--shadow-button-primary);
 }
 
 .trendings-content {
@@ -319,6 +367,7 @@
   min-height: 0;
   overflow: auto;
   padding: 0 20px 20px;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
 }
 
 .trendings-content--data {
@@ -337,10 +386,10 @@
   flex: 1 1 auto;
   min-height: 0;
   margin-bottom: 18px;
-  border: 1px solid rgba(118, 155, 231, 0.28);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 16px;
-  background: linear-gradient(155deg, rgba(14, 26, 53, 0.95), rgba(10, 20, 40, 0.98));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--shadow-soft);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -353,18 +402,18 @@
   align-items: center;
   gap: 12px;
   padding: 16px 18px;
-  border-bottom: 1px solid rgba(113, 154, 245, 0.18);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .trendings-directory-header h3 {
   margin: 0;
-  color: #eef5ff;
+  color: var(--color-text);
   font-size: 17px;
 }
 
 .trendings-directory-header p {
   margin: 6px 0 0;
-  color: #9cb6de;
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
@@ -380,7 +429,7 @@
 }
 
 .trendings-directory-structure-title {
-  color: #e6efff;
+  color: var(--color-text);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -399,7 +448,7 @@
 }
 
 .trendings-directory-structure-field span {
-  color: #a8c0e8;
+  color: var(--color-text-muted);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -408,32 +457,51 @@
 
 .trendings-directory-structure-field select {
   width: 100%;
-  border: 1px solid rgba(126, 159, 228, 0.32);
-  background: rgba(255, 255, 255, 0.07);
-  color: #eaf2ff;
+  border: 1px solid var(--color-select-border);
+  background: var(--color-select-bg);
+  color: var(--color-input-text);
   border-radius: 10px;
   padding: 10px 12px;
   outline: none;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .trendings-directory-structure-field select option {
-  color: #111111;
-  background: #ffffff;
+  color: var(--color-text);
+  background: var(--color-surface-modal);
 }
 
 .trendings-directory-structure small {
-  color: #8faad6;
+  color: var(--color-text-muted);
   font-size: 11px;
 }
 
 .trendings-directory-close {
-  border: 1px solid rgba(137, 169, 235, 0.35);
-  background: rgba(255, 255, 255, 0.08);
-  color: #e8f1ff;
+  border: 1px solid var(--color-button-outline-border);
+  background: var(--color-button-ghost-bg);
+  color: var(--color-button-ghost-text);
   border-radius: 10px;
   padding: 8px 12px;
   cursor: pointer;
   font-weight: 600;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
+}
+
+.trendings-directory-close:hover,
+.trendings-directory-close:focus-visible {
+  background: var(--color-button-ghost-bg-hover);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-directory-grid {
@@ -447,7 +515,7 @@
 .trendings-directory-column {
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid rgba(113, 154, 245, 0.12);
+  border-right: 1px solid var(--color-border-subtle);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -460,7 +528,7 @@
 .trendings-directory-column-title {
   flex: 0 0 auto;
   padding: 14px 16px 10px;
-  color: #bfd1ef;
+  color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
@@ -476,6 +544,7 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
   display: grid;
   gap: 8px;
 }
@@ -490,9 +559,9 @@
 
 .trendings-directory-item {
   width: 100%;
-  border: 1px solid rgba(132, 163, 228, 0.16);
-  background: rgba(255, 255, 255, 0.04);
-  color: #dce8ff;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-muted);
+  color: var(--color-text);
   border-radius: 12px;
   padding: 12px;
   display: grid;
@@ -501,11 +570,25 @@
   gap: 10px;
   cursor: pointer;
   text-align: left;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .trendings-directory-item.active {
-  background: linear-gradient(120deg, rgba(74, 124, 240, 0.34), rgba(47, 100, 230, 0.2));
-  border-color: rgba(119, 155, 239, 0.55);
+  background: var(--color-selected-surface);
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-focus);
+}
+
+.trendings-directory-item:hover,
+.trendings-directory-item:focus-visible {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border-strong);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-directory-icon {
@@ -521,13 +604,13 @@
 }
 
 .trendings-directory-count {
-  color: #97b4e4;
+  color: var(--color-text-muted);
   font-size: 12px;
   font-weight: 700;
 }
 
 .trendings-directory-files {
-  background: rgba(255, 255, 255, 0.02);
+  background: color-mix(in srgb, var(--color-surface-muted) 64%, transparent);
 }
 
 .trendings-directory-path {
@@ -536,14 +619,14 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  color: #93b0df;
+  color: var(--color-text-muted);
   font-size: 12px;
 }
 
 .trendings-directory-breadcrumb {
   border: none;
   background: transparent;
-  color: #9fc0f4;
+  color: var(--color-link);
   font-size: 12px;
   font-weight: 600;
   padding: 0;
@@ -551,21 +634,24 @@
 }
 
 .trendings-directory-breadcrumb.active {
-  color: #eef5ff;
+  color: var(--color-text);
 }
 
-.trendings-directory-breadcrumb:hover {
-  color: #ffffff;
+.trendings-directory-breadcrumb:hover,
+.trendings-directory-breadcrumb:focus-visible {
+  color: var(--color-text);
   text-decoration: underline;
+  outline: none;
 }
 
 .trendings-directory-file-card {
-  border: 1px solid rgba(132, 163, 228, 0.16);
-  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface);
   border-radius: 12px;
   padding: 12px;
   height: 100%;
   overflow: hidden;
+  box-shadow: var(--shadow-soft);
 }
 
 .trendings-directory-file-virtual-wrap {
@@ -579,6 +665,7 @@
   overflow-x: hidden !important;
   overscroll-behavior: contain;
   scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
   will-change: transform;
 }
 
@@ -597,10 +684,10 @@
   bottom: 12px;
   transform: translateX(-50%);
   padding: 7px 12px;
-  border: 1px solid rgba(118, 155, 231, 0.28);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 999px;
-  background: rgba(8, 16, 34, 0.92);
-  color: #cfe0ff;
+  background: var(--color-surface-popover);
+  color: var(--color-text);
   font-size: 12px;
   font-weight: 700;
   pointer-events: none;
@@ -636,19 +723,19 @@
 }
 
 .trendings-directory-file-uploader {
-  color: #dbe8ff;
+  color: var(--color-text);
   font-size: 12px;
   font-weight: 600;
 }
 
 .trendings-directory-file-time {
-  color: #93acd3;
+  color: var(--color-text-muted);
   font-size: 11px;
 }
 
 .trendings-directory-file-name {
   margin-top: 10px;
-  color: #f0f6ff;
+  color: var(--color-text);
   font-size: 14px;
   font-weight: 700;
   word-break: break-word;
@@ -658,7 +745,7 @@
   margin-top: 6px;
   display: grid;
   gap: 4px;
-  color: #a9bfdf;
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
@@ -671,13 +758,13 @@
 
 .trendings-directory-empty {
   padding: 24px 16px;
-  color: #b9cbec;
+  color: var(--color-text-secondary);
   font-size: 13px;
 }
 
 .trendings-directory-load-state {
   padding: 10px 4px 2px;
-  color: #8faad6;
+  color: var(--color-text-muted);
   font-size: 12px;
   text-align: center;
 }
@@ -691,29 +778,29 @@
 .trendings-state {
   padding: 30px;
   text-align: center;
-  color: #b9cbec;
+  color: var(--color-text-secondary);
 }
 
 .trendings-state-error {
   margin-bottom: 14px;
-  border: 1px solid rgba(239, 68, 68, 0.25);
+  border: 1px solid var(--color-feedback-error-border);
   border-radius: 12px;
-  background: rgba(127, 29, 29, 0.18);
-  color: #ffd5d5;
+  background: var(--color-feedback-error-bg);
+  color: var(--color-feedback-error-text);
 }
 
 .trendings-footnote {
   margin-top: 10px;
-  color: #9bb2d8;
+  color: var(--color-text-muted);
   font-size: 12px;
 }
 
 .trendings-directory-footnote {
   margin: 14px 20px 0;
   padding: 12px 14px;
-  border: 1px solid rgba(118, 155, 231, 0.2);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--color-surface-muted);
 }
 
 .trendings-grid {
@@ -724,14 +811,15 @@
 
 .trendings-card {
   position: relative;
-  border: 1px solid rgba(132, 163, 228, 0.24);
-  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface);
   border-radius: 14px;
   padding: 12px;
   overflow: hidden;
   contain: layout paint;
   content-visibility: auto;
   contain-intrinsic-size: 370px;
+  box-shadow: var(--shadow-soft);
 }
 
 .trendings-card.menu-open {
@@ -750,6 +838,7 @@
 .trendings-virtual-grid {
   overflow-x: hidden !important;
   scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
   will-change: transform;
 }
 
@@ -769,13 +858,13 @@
   bottom: 18px;
   transform: translateX(-50%);
   padding: 9px 14px;
-  border: 1px solid rgba(118, 155, 231, 0.28);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 999px;
-  background: rgba(8, 16, 34, 0.92);
-  color: #cfe0ff;
+  background: var(--color-surface-popover);
+  color: var(--color-text);
   font-size: 12px;
   font-weight: 700;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+  box-shadow: var(--shadow-popover);
   pointer-events: none;
 }
 
@@ -785,8 +874,8 @@
   border-radius: 10px;
   overflow: hidden;
   margin-bottom: 10px;
-  background: rgba(7, 14, 30, 0.9);
-  border: 1px solid rgba(132, 163, 228, 0.2);
+  background: var(--color-code-surface);
+  border: 1px solid var(--color-border-subtle);
   cursor: pointer;
 }
 
@@ -811,11 +900,11 @@
   flex-direction: column;
   justify-content: center;
   gap: 10px;
-  background: radial-gradient(circle at top left, #1c356e, #0c1a38);
+  background: var(--color-surface-muted);
 }
 
 .trendings-card-audio-label {
-  color: #d3e5ff;
+  color: var(--color-text);
   font-size: 13px;
   font-weight: 600;
 }
@@ -830,7 +919,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #b7cceb;
+  color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 700;
 }
@@ -877,13 +966,13 @@
 }
 
 .trendings-card-uploader {
-  color: #dbe8ff;
+  color: var(--color-text);
   font-size: 12px;
   font-weight: 600;
 }
 
 .trendings-card-upload-time {
-  color: #9fb5d7;
+  color: var(--color-text-muted);
   font-size: 11px;
 }
 
@@ -893,24 +982,51 @@
   border-radius: 999px;
   padding: 3px 8px;
   font-weight: 700;
+  border: 1px solid transparent;
 }
 
 .type-badge {
   text-transform: uppercase;
-  color: #f1f7ff;
-  background: rgba(65, 104, 177, 0.6);
+  color: var(--color-feedback-info-text);
+  background: color-mix(in srgb, var(--color-feedback-info-bg) 82%, var(--color-surface-elevated));
+  border-color: var(--color-feedback-info-border);
 }
 
-.type-badge.image { background: rgba(37, 140, 110, 0.7); }
-.type-badge.video { background: rgba(142, 91, 202, 0.7); }
-.type-badge.music { background: rgba(201, 121, 57, 0.75); }
-.type-badge.text { background: rgba(60, 116, 201, 0.75); }
-.type-badge.link { background: rgba(56, 189, 248, 0.75); }
-.type-badge.pdf { background: rgba(220, 38, 38, 0.75); }
+.type-badge.image {
+  color: var(--color-feedback-success-text);
+  background: color-mix(in srgb, var(--color-feedback-success-bg) 82%, var(--color-surface-elevated));
+  border-color: var(--color-feedback-success-border);
+}
+
+.type-badge.video {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-primary-soft) 88%, var(--color-surface-elevated));
+  border-color: var(--color-border);
+}
+
+.type-badge.music {
+  color: var(--color-feedback-warning-text);
+  background: color-mix(in srgb, var(--color-feedback-warning-bg) 82%, var(--color-surface-elevated));
+  border-color: var(--color-feedback-warning-border);
+}
+
+.type-badge.text,
+.type-badge.link {
+  color: var(--color-feedback-info-text);
+  background: color-mix(in srgb, var(--color-feedback-info-bg) 82%, var(--color-surface-elevated));
+  border-color: var(--color-feedback-info-border);
+}
+
+.type-badge.pdf {
+  color: var(--color-feedback-error-text);
+  background: color-mix(in srgb, var(--color-feedback-error-bg) 82%, var(--color-surface-elevated));
+  border-color: var(--color-feedback-error-border);
+}
 
 .stage-badge {
-  color: #cbe0ff;
-  background: rgba(255, 255, 255, 0.09);
+  color: var(--color-text-secondary);
+  background: var(--color-surface-muted);
+  border-color: var(--color-border-subtle);
   text-transform: capitalize;
 }
 
@@ -925,11 +1041,25 @@
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  border: 1px solid rgba(154, 183, 243, 0.35);
-  background: rgba(255, 255, 255, 0.08);
-  color: #dbe7ff;
+  border: 1px solid var(--color-button-outline-border);
+  background: var(--color-button-ghost-bg);
+  color: var(--color-button-ghost-text);
   cursor: pointer;
   line-height: 1;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
+}
+
+.trendings-card-menu-btn:hover,
+.trendings-card-menu-btn:focus-visible {
+  background: var(--color-button-ghost-bg-hover);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-card-menu {
@@ -937,10 +1067,10 @@
   right: 0;
   top: calc(100% + 6px);
   min-width: 100px;
-  border: 1px solid rgba(134, 167, 233, 0.25);
-  background: #0f1f3e;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-popover);
   border-radius: 8px;
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-popover);
   z-index: 6;
   padding: 6px;
 }
@@ -950,20 +1080,26 @@
   text-align: left;
   border: none;
   background: transparent;
-  color: #dbe7ff;
+  color: var(--color-text);
   border-radius: 6px;
   font-size: 12px;
   padding: 7px 8px;
   cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    color var(--theme-transition-fast);
 }
 
-.trendings-card-menu button:hover {
-  background: rgba(99, 102, 241, 0.22);
+.trendings-card-menu button:hover,
+.trendings-card-menu button:focus-visible {
+  background: var(--color-hover-surface);
+  color: var(--color-text);
+  outline: none;
 }
 
 .trendings-title {
   margin: 10px 0 8px;
-  color: #e9f2ff;
+  color: var(--color-text);
   font-size: 15px;
   word-break: break-word;
   line-height: 1.24;
@@ -975,7 +1111,7 @@
 
 .trendings-meta {
   margin: 0 0 4px;
-  color: #a9bfdf;
+  color: var(--color-text-secondary);
   font-size: 12px;
   line-height: 1.35;
   display: -webkit-box;
@@ -993,7 +1129,7 @@
 }
 
 .trendings-open-link {
-  color: #6ca6ff;
+  color: var(--color-link);
   text-decoration: none;
 }
 
@@ -1001,15 +1137,26 @@
   margin-top: 10px;
   border: none;
   background: transparent;
-  color: #6ca6ff;
+  color: var(--color-link);
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   padding: 0;
+  transition:
+    color var(--theme-transition-fast),
+    text-decoration-color var(--theme-transition-fast);
 }
 
 .trendings-no-link {
-  color: #8fa8cf;
+  color: var(--color-text-muted);
+}
+
+.trendings-open-link:hover,
+.trendings-open-link-btn:hover,
+.trendings-open-link-btn:focus-visible {
+  color: var(--color-primary-hover);
+  text-decoration: underline;
+  outline: none;
 }
 
 .trendings-load-more-wrap {
@@ -1021,25 +1168,32 @@
 .trendings-load-more-meta {
   margin-top: 12px;
   text-align: center;
-  color: rgba(219, 231, 255, 0.72);
+  color: var(--color-text-secondary);
   font-size: 13px;
 }
 
 .trendings-load-more-btn {
   min-width: 160px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid transparent;
   border-radius: 999px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: #fff;
+  background: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
   font-weight: 700;
   padding: 12px 20px;
   cursor: pointer;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
+  box-shadow: var(--shadow-button-primary);
+  transition:
+    background var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
 }
 
-.trendings-load-more-btn:hover {
-  filter: brightness(1.05);
+.trendings-load-more-btn:hover,
+.trendings-load-more-btn:focus-visible {
+  background: var(--color-button-primary-bg-hover);
   transform: translateY(-1px);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-load-more-btn:disabled {
@@ -1050,7 +1204,7 @@
 .trendings-preview-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--color-overlay);
   z-index: 1400;
   display: flex;
   align-items: center;
@@ -1062,34 +1216,37 @@
   width: min(980px, 95vw);
   height: min(88vh, 820px);
   border-radius: 14px;
-  border: 1px solid rgba(146, 177, 240, 0.3);
-  background: linear-gradient(165deg, #0a1631, #102041);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-modal);
   overflow: hidden;
   display: flex;
   flex-direction: column;
   position: relative;
   z-index: 1401;
+  box-shadow: var(--shadow-popover);
 }
 
 .trendings-info-modal {
   width: min(620px, 95vw);
   max-height: min(88vh, 820px);
   border-radius: 14px;
-  border: 1px solid rgba(146, 177, 240, 0.3);
-  background: linear-gradient(165deg, #0a1631, #102041);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-modal);
   overflow: hidden;
   display: flex;
   flex-direction: column;
   position: relative;
   z-index: 1401;
+  box-shadow: var(--shadow-popover);
 }
 
 .trendings-info-body {
   padding: 14px 16px 18px;
   overflow-y: auto;
-  color: #cbdbf5;
+  color: var(--color-text-secondary);
   font-size: 13px;
   line-height: 1.45;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
 }
 
 .trendings-info-body p {
@@ -1102,18 +1259,18 @@
   justify-content: space-between;
   gap: 10px;
   padding: 14px 16px;
-  border-bottom: 1px solid rgba(134, 167, 233, 0.25);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .trendings-preview-header h3 {
   margin: 0;
-  color: #edf4ff;
+  color: var(--color-text);
   font-size: 16px;
 }
 
 .trendings-preview-header p {
   margin: 6px 0 0;
-  color: #a7bfe4;
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
@@ -1121,12 +1278,26 @@
   width: 34px;
   height: 34px;
   border-radius: 8px;
-  border: 1px solid rgba(154, 183, 243, 0.35);
-  background: rgba(255, 255, 255, 0.07);
-  color: #e6f0ff;
+  border: 1px solid var(--color-button-outline-border);
+  background: var(--color-button-ghost-bg);
+  color: var(--color-button-ghost-text);
   cursor: pointer;
   font-size: 22px;
   line-height: 1;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
+}
+
+.trendings-preview-close:hover,
+.trendings-preview-close:focus-visible {
+  background: var(--color-button-ghost-bg-hover);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .trendings-preview-body {
@@ -1145,7 +1316,7 @@
   height: 100%;
   border: none;
   border-radius: 10px;
-  background: #091426;
+  background: var(--color-code-surface);
   object-fit: contain;
 }
 
@@ -1165,16 +1336,16 @@
   gap: 10px;
   align-items: center;
   justify-content: center;
-  color: #cbdbf5;
+  color: var(--color-text-secondary);
 }
 
 .trendings-preview-link a {
-  color: #78adff;
+  color: var(--color-link);
   font-weight: 700;
 }
 
 .trendings-preview-empty {
-  color: #b7cceb;
+  color: var(--color-text-secondary);
 }
 
 @media (max-width: 768px) {
@@ -1250,7 +1421,7 @@
 
   .trendings-directory-column {
     border-right: none;
-    border-bottom: 1px solid rgba(113, 154, 245, 0.12);
+    border-bottom: 1px solid var(--color-border-subtle);
   }
 
   .trendings-directory-column:last-child {

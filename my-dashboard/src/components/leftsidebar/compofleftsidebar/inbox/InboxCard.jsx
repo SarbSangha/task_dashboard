@@ -28,6 +28,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const assignedPeople = Array.isArray(task.assignedTo) ? task.assignedTo : [];
   const workerSubmissionSummary = task.workerSubmissions || {};
   const workerSubmissionRows = Array.isArray(workerSubmissionSummary.workers) ? workerSubmissionSummary.workers : [];
+  const viewerSubmission = workerSubmissionSummary.viewerSubmission || null;
   const normalizedSubmissionMode = workerSubmissionSummary.mode === 'all' || task.submissionMode === 'all'
     ? 'all'
     : 'any';
@@ -86,7 +87,16 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     task.myRole === 'assignee' &&
     !isHeld &&
     viewerHasSubmittedPart &&
-    ['in_progress', 'submitted', 'under_review'].includes(normalizedStatus);
+    (
+      normalizedStatus === 'in_progress'
+      || (
+        normalizedStatus === 'submitted'
+        && (
+          Number(viewerSubmission?.submittedByUserId || 0) === Number(task.submittedBy || 0)
+          || isCreatorTask
+        )
+      )
+    );
   const withStart = canShowStartTask && !baseActions.includes('start')
     ? ['start', ...baseActions]
     : baseActions;

@@ -50,9 +50,11 @@ const LoginSecurityPanel = ({ isOpen, onClose }) => {
       {/* Header */}
       <div className="login-security-header">
         <h2>Login & Security</h2>
-        <button 
+        <button
+          type="button"
           onClick={onClose}
           className="close-btn"
+          aria-label="Close login and security"
         >
           {/* Close SVG */}
           <svg

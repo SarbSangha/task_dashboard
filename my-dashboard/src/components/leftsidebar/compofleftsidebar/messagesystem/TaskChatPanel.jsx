@@ -4,6 +4,8 @@ import { useCustomDialogs } from '../../../common/CustomDialogs';
 import './TaskChatPanel.css';
 import { formatDateTimeIndia } from '../../../../utils/dateTime';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { isMobileViewport } from '../../../../utils/isMobileViewport';
+import WindowControls from '../../../common/WindowControls';
 import ChatAttachmentGallery from '../../../common/chat/ChatAttachmentGallery';
 import {
   getAttachmentDisplayName,
@@ -123,7 +125,7 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
   const [chatLoaded, setChatLoaded] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const refreshTimerRef = useRef(null);
   const commentsEndRef = useRef(null);
   const minimizedWindowStyle = useMinimizedWindowStack('task-chat-panel', isOpen && isMinimized);
@@ -203,7 +205,7 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
   useEffect(() => {
     if (!isOpen || !taskId) return;
     setIsMinimized(false);
-    setIsMaximized(false);
+    setIsMaximized(isMobileViewport());
     setActiveTab('chat');
     setCommentText('');
     setCommentType('general');
@@ -389,7 +391,6 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
       setIsMinimized(false);
       return;
     }
-    setIsMaximized(false);
     setIsMinimized(true);
   };
 
@@ -419,40 +420,13 @@ const TaskChatPanel = ({ task, isOpen, onClose }) => {
             <h3>Task Chat</h3>
             <p>{task.taskNumber || 'No Task ID'} • {task.projectId || 'No Project ID'}</p>
           </div>
-          <div className="task-chat-window-controls">
-            {!isMinimized && (
-              <button
-                className="task-chat-window-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleToggleMinimize();
-                }}
-                title="Minimize"
-              >
-                ─
-              </button>
-            )}
-            <button
-              className="task-chat-window-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleToggleMaximize();
-              }}
-              title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}
-            >
-              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
-            </button>
-            <button
-              className="task-chat-close-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose();
-              }}
-              title="Close"
-            >
-              ✕
-            </button>
-          </div>
+          <WindowControls
+            isMinimized={isMinimized}
+            isMaximized={isMaximized}
+            onMinimize={handleToggleMinimize}
+            onMaximize={handleToggleMaximize}
+            onClose={onClose}
+          />
         </div>
 
         {!isMinimized && (

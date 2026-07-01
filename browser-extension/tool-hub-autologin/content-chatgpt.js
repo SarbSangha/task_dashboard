@@ -49,6 +49,7 @@ const MAX_AUTH_RETRIES      = 8;
 const MAX_CRED_RETRIES      = 4;
 const GOOGLE_NEXT_WAIT_MS   = 2500;
 const GOOGLE_NEXT_POLL_MS   = 120;
+const SUCCESS_BADGE_HIDE_MS = 4000;
 
 // ── THE FIX: DOM-settle gate ──────────────────────────────────
 // isChatGPTAuthenticated() is BANNED from returning true until
@@ -67,6 +68,7 @@ const CTX = {
   timer:            null,
   keepAlive:        null,
   observer:         null,
+  badgeTimer:       null,
   credential:       null,
   credentialKey:    '',
   flowHint:         '',
@@ -164,6 +166,14 @@ function setStatus(msg) {
   console.debug('[RMW ChatGPT]', `[${CTX.phase}]`, msg);
   const b = ensureBadge();
   if (b) b.textContent = `ChatGPT auto-login\n[${CTX.phase}] ${msg}`;
+}
+
+function dismissBadge(delay = SUCCESS_BADGE_HIDE_MS) {
+  if (CTX.badgeTimer) clearTimeout(CTX.badgeTimer);
+  CTX.badgeTimer = setTimeout(() => {
+    document.getElementById('rmw-autologin-status')?.remove();
+    CTX.badgeTimer = null;
+  }, Math.max(0, delay));
 }
 
 // ── Chrome messaging ──────────────────────────────────────────
@@ -1257,13 +1267,14 @@ async function handleEmailVerificationStep() {
 }
 
 // ── Stop / wake / run ─────────────────────────────────────────
-function stop(msg) {
+function stop(msg, { dismissAfterMs = 0 } = {}) {
   CTX.stopped = true;
   if (CTX.timer)     { clearTimeout(CTX.timer);     CTX.timer = null; }
   if (CTX.keepAlive) { clearInterval(CTX.keepAlive); CTX.keepAlive = null; }
   if (CTX.observer)  { CTX.observer.disconnect();    CTX.observer = null; }
   clearTicket();
   setStatus(msg);
+  if (dismissAfterMs > 0) dismissBadge(dismissAfterMs);
 }
 
 function wake(delay = 0) {
@@ -1292,7 +1303,7 @@ async function tick() {
   }
 
   // Auth check gated behind settle window
-  if (isChatGPTAuthenticated()) { stop('✓ Signed in successfully'); return; }
+  if (isChatGPTAuthenticated()) { stop('✓ Signed in successfully', { dismissAfterMs: SUCCESS_BADGE_HIDE_MS }); return; }
 
   switch (CTX.phase) {
 
@@ -1470,7 +1481,7 @@ async function tick() {
     // ── WAIT_REDIRECT ────────────────────────────────────────
     case PHASE.WAIT_REDIRECT: {
       const elapsed = Date.now() - CTX.submitAt;
-      if (isChatGPTAuthenticated()) { stop('✓ Signed in'); return; }
+      if (isChatGPTAuthenticated()) { stop('✓ Signed in', { dismissAfterMs: SUCCESS_BADGE_HIDE_MS }); return; }
       if (onGoogleDomain()) { CTX.submitLockUntil = 0; await handleGoogleFlow(); return; }
       if ((onChatGPTDomain() || onAuthDomain()) && findPasswordInputInModal()) { CTX.submitLockUntil = 0; CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
       if ((onChatGPTDomain() || onAuthDomain()) && findEmailInputInModal())    { CTX.submitLockUntil = 0; CTX.phase = PHASE.CHATGPT_EMAIL;    wake(0); return; }
@@ -1490,7 +1501,7 @@ async function tick() {
     }
 
     case PHASE.BLOCKED: { stop('Blocked — open this tool from the dashboard first.'); break; }
-    case PHASE.DONE:    { stop('✓ Done.'); break; }
+    case PHASE.DONE:    { stop('✓ Done.', { dismissAfterMs: SUCCESS_BADGE_HIDE_MS }); break; }
   }
 }
 

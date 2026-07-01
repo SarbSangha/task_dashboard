@@ -1,0 +1,412 @@
+[
+  {
+    "scenario": "dark-desktop",
+    "theme": "dark",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "url": "http://127.0.0.1:5174/dashboard/workspace?tab=generation-projects",
+    "shellMetrics": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "workspaceContent": {
+        "clientHeight": 626,
+        "scrollHeight": 626,
+        "clientWidth": 1368,
+        "scrollWidth": 1368,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "578px"
+      },
+      "tabRoot": {
+        "clientHeight": 578,
+        "scrollHeight": 578,
+        "clientWidth": 1320,
+        "scrollWidth": 1320,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "relative",
+        "minHeight": "0px",
+        "height": "578px"
+      },
+      "shell": {
+        "clientHeight": 425,
+        "scrollHeight": 467,
+        "clientWidth": 1320,
+        "scrollWidth": 1320,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "424.5px"
+      },
+      "panel": {
+        "clientHeight": 465,
+        "scrollHeight": 465,
+        "clientWidth": 958,
+        "scrollWidth": 958,
+        "scrollTop": 0,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "424.5px"
+      },
+      "sidebar": {
+        "clientHeight": 117,
+        "scrollHeight": 117,
+        "clientWidth": 340,
+        "scrollWidth": 340,
+        "scrollTop": 0,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "117.375px"
+      },
+      "panelAtBottom": true,
+      "sidebarAtBottom": true,
+      "paginationVisibleInPanel": null,
+      "panelWithinViewport": true,
+      "sidebarWithinViewport": true,
+      "documentHasHorizontalOverflow": true,
+      "workspaceHasHorizontalOverflow": false,
+      "nestedVerticalScrollOwners": []
+    },
+    "modalMetrics": {
+      "modalFullyVisible": true,
+      "closeVisible": true,
+      "submitVisible": true,
+      "cancelVisible": true
+    },
+    "consoleEntries": [],
+    "pageErrors": []
+  },
+  {
+    "scenario": "light-desktop",
+    "theme": "light",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "url": "http://127.0.0.1:5174/dashboard/workspace?tab=generation-projects",
+    "shellMetrics": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "workspaceContent": {
+        "clientHeight": 626,
+        "scrollHeight": 626,
+        "clientWidth": 1368,
+        "scrollWidth": 1368,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "578px"
+      },
+      "tabRoot": {
+        "clientHeight": 578,
+        "scrollHeight": 578,
+        "clientWidth": 1320,
+        "scrollWidth": 1320,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "relative",
+        "minHeight": "0px",
+        "height": "578px"
+      },
+      "shell": {
+        "clientHeight": 425,
+        "scrollHeight": 467,
+        "clientWidth": 1320,
+        "scrollWidth": 1320,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "424.5px"
+      },
+      "panel": {
+        "clientHeight": 465,
+        "scrollHeight": 465,
+        "clientWidth": 958,
+        "scrollWidth": 958,
+        "scrollTop": 0,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "424.5px"
+      },
+      "sidebar": {
+        "clientHeight": 117,
+        "scrollHeight": 117,
+        "clientWidth": 340,
+        "scrollWidth": 340,
+        "scrollTop": 0,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "117.375px"
+      },
+      "panelAtBottom": true,
+      "sidebarAtBottom": true,
+      "paginationVisibleInPanel": null,
+      "panelWithinViewport": true,
+      "sidebarWithinViewport": true,
+      "documentHasHorizontalOverflow": true,
+      "workspaceHasHorizontalOverflow": false,
+      "nestedVerticalScrollOwners": []
+    },
+    "modalMetrics": {
+      "modalFullyVisible": true,
+      "closeVisible": true,
+      "submitVisible": true,
+      "cancelVisible": true
+    },
+    "consoleEntries": [],
+    "pageErrors": []
+  },
+  {
+    "scenario": "dark-narrow",
+    "theme": "dark",
+    "viewport": {
+      "width": 620,
+      "height": 900
+    },
+    "url": "http://127.0.0.1:5174/dashboard/workspace?tab=generation-projects",
+    "shellMetrics": {
+      "viewport": {
+        "width": 620,
+        "height": 900
+      },
+      "workspaceContent": {
+        "clientHeight": 634,
+        "scrollHeight": 634,
+        "clientWidth": 589,
+        "scrollWidth": 589,
+        "scrollTop": 0,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "602px"
+      },
+      "tabRoot": {
+        "clientHeight": 602,
+        "scrollHeight": 602,
+        "clientWidth": 557,
+        "scrollWidth": 557,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "relative",
+        "minHeight": "0px",
+        "height": "602px"
+      },
+      "shell": {
+        "clientHeight": 393,
+        "scrollHeight": 435,
+        "clientWidth": 557,
+        "scrollWidth": 557,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "392.5px"
+      },
+      "panel": {
+        "clientHeight": 247,
+        "scrollHeight": 725,
+        "clientWidth": 555,
+        "scrollWidth": 555,
+        "scrollTop": 478,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "207.25px"
+      },
+      "sidebar": {
+        "clientHeight": 15,
+        "scrollHeight": 96,
+        "clientWidth": 557,
+        "scrollWidth": 557,
+        "scrollTop": 81,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "15.375px"
+      },
+      "panelAtBottom": true,
+      "sidebarAtBottom": true,
+      "paginationVisibleInPanel": null,
+      "panelWithinViewport": false,
+      "sidebarWithinViewport": true,
+      "documentHasHorizontalOverflow": true,
+      "workspaceHasHorizontalOverflow": false,
+      "nestedVerticalScrollOwners": [
+        {
+          "className": "generation-projects-sidebar-list",
+          "canScrollY": true,
+          "canScrollX": false,
+          "overflowY": "auto"
+        },
+        {
+          "className": "generation-projects-panel",
+          "canScrollY": true,
+          "canScrollX": false,
+          "overflowY": "auto"
+        }
+      ]
+    },
+    "modalMetrics": {
+      "modalFullyVisible": true,
+      "closeVisible": true,
+      "submitVisible": true,
+      "cancelVisible": true
+    },
+    "consoleEntries": [],
+    "pageErrors": []
+  },
+  {
+    "scenario": "light-narrow",
+    "theme": "light",
+    "viewport": {
+      "width": 620,
+      "height": 900
+    },
+    "url": "http://127.0.0.1:5174/dashboard/workspace?tab=generation-projects",
+    "shellMetrics": {
+      "viewport": {
+        "width": 620,
+        "height": 900
+      },
+      "workspaceContent": {
+        "clientHeight": 634,
+        "scrollHeight": 634,
+        "clientWidth": 589,
+        "scrollWidth": 589,
+        "scrollTop": 0,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "602px"
+      },
+      "tabRoot": {
+        "clientHeight": 602,
+        "scrollHeight": 602,
+        "clientWidth": 557,
+        "scrollWidth": 557,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "relative",
+        "minHeight": "0px",
+        "height": "602px"
+      },
+      "shell": {
+        "clientHeight": 393,
+        "scrollHeight": 435,
+        "clientWidth": 557,
+        "scrollWidth": 557,
+        "scrollTop": 0,
+        "overflow": "hidden",
+        "overflowY": "hidden",
+        "overflowX": "hidden",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "392.5px"
+      },
+      "panel": {
+        "clientHeight": 247,
+        "scrollHeight": 725,
+        "clientWidth": 555,
+        "scrollWidth": 555,
+        "scrollTop": 478,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "207.25px"
+      },
+      "sidebar": {
+        "clientHeight": 15,
+        "scrollHeight": 96,
+        "clientWidth": 557,
+        "scrollWidth": 557,
+        "scrollTop": 81,
+        "overflow": "auto",
+        "overflowY": "auto",
+        "overflowX": "auto",
+        "position": "static",
+        "minHeight": "0px",
+        "height": "15.375px"
+      },
+      "panelAtBottom": true,
+      "sidebarAtBottom": true,
+      "paginationVisibleInPanel": null,
+      "panelWithinViewport": false,
+      "sidebarWithinViewport": true,
+      "documentHasHorizontalOverflow": true,
+      "workspaceHasHorizontalOverflow": false,
+      "nestedVerticalScrollOwners": [
+        {
+          "className": "generation-projects-sidebar-list",
+          "canScrollY": true,
+          "canScrollX": false,
+          "overflowY": "auto"
+        },
+        {
+          "className": "generation-projects-panel",
+          "canScrollY": true,
+          "canScrollX": false,
+          "overflowY": "auto"
+        }
+      ]
+    },
+    "modalMetrics": {
+      "modalFullyVisible": true,
+      "closeVisible": true,
+      "submitVisible": true,
+      "cancelVisible": true
+    },
+    "consoleEntries": [],
+    "pageErrors": []
+  }
+]

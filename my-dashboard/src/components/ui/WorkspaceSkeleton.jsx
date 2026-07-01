@@ -1,8 +1,8 @@
 import { SkeletonBlock } from './Skeleton';
 
 const SECTION_CARD_STYLE = {
-  background: 'rgba(255, 255, 255, 0.05)',
-  border: '1px solid rgba(255, 255, 255, 0.1)',
+  background: 'var(--color-surface-muted)',
+  border: '1px solid var(--color-border-subtle)',
   borderRadius: 12,
 };
 

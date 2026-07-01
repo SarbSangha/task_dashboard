@@ -1,8 +1,9 @@
 // src/components/auth/Login.jsx
-import React, { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-// import './Login.css'; // ✅ Import CSS file
+import { useTheme } from '../../context/ThemeContext';
+import './Login.css';
 
 const Login = () => {
   const [email, setEmail] = useState('');
@@ -11,9 +12,37 @@ const Login = () => {
   const [error, setError] = useState('');
   const [errorDetails, setErrorDetails] = useState(null);
   const [loading, setLoading] = useState(false);
-  
+  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
+  const themeMenuRef = useRef(null);
   const { login } = useAuth();
+  const { isDarkMode, toggleTheme } = useTheme();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!isThemeMenuOpen) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (!themeMenuRef.current?.contains(event.target)) {
+        setIsThemeMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setIsThemeMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isThemeMenuOpen]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -56,36 +85,80 @@ const Login = () => {
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        <div style={{ marginBottom: '30px' }}>
-          <h2 style={styles.title}>Welcome Back</h2>
-          <p style={styles.subtitle}>Sign in to continue to your dashboard</p>
+    <div className="login-page">
+      <div className="login-wordmark-background" aria-hidden="true">
+        <span className="login-wordmark-letter login-wordmark-letter--left">R</span>
+        <span className="login-wordmark-letter login-wordmark-letter--center">M</span>
+        <span className="login-wordmark-letter login-wordmark-letter--right">W</span>
+      </div>
+
+      <div className="login-theme-panel" ref={themeMenuRef}>
+        <button
+          type="button"
+          className="login-theme-trigger"
+          aria-label="Open appearance settings"
+          aria-expanded={isThemeMenuOpen}
+          onClick={() => setIsThemeMenuOpen((open) => !open)}
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19.14 12.94a7.43 7.43 0 0 0 .06-.94 7.43 7.43 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.45 7.45 0 0 0-1.63-.94L14.4 2.81a.5.5 0 0 0-.49-.41h-3.82a.5.5 0 0 0-.49.41l-.36 2.55c-.58.23-1.12.55-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.88a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.56a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.39 1.04.71 1.62.94l.36 2.55a.5.5 0 0 0 .49.41h3.82a.5.5 0 0 0 .49-.41l.36-2.55c.59-.23 1.13-.55 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z" />
+          </svg>
+        </button>
+
+        {isThemeMenuOpen && (
+          <div className="login-theme-popover">
+            <div className="login-theme-popover-header">
+              <span>Appearance</span>
+            </div>
+            <button
+              type="button"
+              className="login-theme-toggle"
+              onClick={toggleTheme}
+              aria-label={`Switch to ${isDarkMode ? 'light' : 'dark'} theme`}
+            >
+              <div className="login-theme-toggle-copy">
+                <span className="login-theme-toggle-title">Theme</span>
+                <span className="login-theme-toggle-value">
+                  {isDarkMode ? 'Dark mode' : 'Light mode'}
+                </span>
+              </div>
+              <span className={`login-theme-switch ${isDarkMode ? 'is-on' : ''}`} aria-hidden="true">
+                <span className="login-theme-switch-thumb" />
+              </span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="login-card login-card--glass">
+        <div className="login-card-header">
+          <h2 className="login-title">Welcome Back</h2>
+          <p className="login-subtitle">Sign in to continue to your dashboard</p>
         </div>
 
         <form onSubmit={handleSubmit}>
           {error && (
-            <div style={styles.errorCard}>
-              <div style={styles.errorHeader}>
-                <span style={styles.errorIcon}>⚠</span>
-                <span style={styles.errorTitle}>
+            <div className="login-error-card">
+              <div className="login-error-header">
+                <span className="login-error-icon">⚠</span>
+                <span className="login-error-title">
                   {errorDetails?.code === 'ACCOUNT_PENDING_APPROVAL' ? 'Approval Pending' : 'Login Failed'}
                 </span>
               </div>
-              <div style={styles.errorMessage}>{errorDetails?.message || error}</div>
+              <div className="login-error-message">{errorDetails?.message || error}</div>
               {errorDetails?.reason && (
-                <div style={styles.errorReason}>
+                <div className="login-error-reason">
                   <strong>Reason:</strong> {errorDetails.reason}
                 </div>
               )}
               {errorDetails?.nextAction && (
-                <div style={styles.errorHint}>{errorDetails.nextAction}</div>
+                <div className="login-error-hint">{errorDetails.nextAction}</div>
               )}
             </div>
           )}
 
-          <div style={styles.formGroup}>
-            <label htmlFor="email" style={styles.label}>Email</label>
+          <div className="login-form-group">
+            <label htmlFor="email" className="login-label">Email</label>
             <input
               type="text"
               id="email"
@@ -94,12 +167,12 @@ const Login = () => {
               placeholder="Enter your email"
               required
               disabled={loading}
-              style={styles.input}
+              className="login-input"
             />
           </div>
 
-          <div style={styles.formGroup}>
-            <label htmlFor="password" style={styles.label}>Password</label>
+          <div className="login-form-group">
+            <label htmlFor="password" className="login-label">Password</label>
             <input
               type="password"
               id="password"
@@ -109,22 +182,22 @@ const Login = () => {
               required
               minLength={6}
               disabled={loading}
-              style={styles.input}
+              className="login-input"
             />
           </div>
 
-          <div style={styles.optionsRow}>
-            <label style={styles.checkboxLabel}>
+          <div className="login-options-row">
+            <label className="login-checkbox-label">
               <input
                 type="checkbox"
                 checked={rememberMe}
                 onChange={(e) => setRememberMe(e.target.checked)}
                 disabled={loading}
-                style={{ marginRight: '8px', cursor: 'pointer' }}
+                className="login-checkbox"
               />
-              <span style={{ fontSize: '14px', color: '#555' }}>Remember me</span>
+              <span className="login-checkbox-text">Remember me</span>
             </label>
-            <Link to="/forgot-password" style={styles.linkSmall}>
+            <Link to="/forgot-password" className="login-link-small">
               Forgot password?
             </Link>
           </div>
@@ -132,169 +205,19 @@ const Login = () => {
           <button
             type="submit"
             disabled={loading}
-            style={{
-              ...styles.button,
-              opacity: loading ? 0.7 : 1,
-              cursor: loading ? 'not-allowed' : 'pointer'
-            }}
+            className="login-submit-button"
           >
             {loading ? '⏳ Signing in...' : 'Sign In'}
           </button>
         </form>
 
-        <div style={styles.footer}>
-          <span style={styles.footerText}>Don't have an account?</span>
-          <Link to="/register" style={styles.link}>Sign up</Link>
+        <div className="login-footer">
+          <span className="login-footer-text">Don't have an account?</span>
+          <Link to="/register" className="login-link">Sign up</Link>
         </div>
       </div>
     </div>
   );
-};
-
-const styles = {
-  container: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    minHeight: '100vh',
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    padding: '20px'
-  },
-  card: {
-    background: 'white',
-    padding: '40px',
-    borderRadius: '12px',
-    boxShadow: '0 10px 40px rgba(0,0,0,0.2)',
-    width: '400px',
-    maxWidth: '100%'
-  },
-  title: {
-    margin: '0 0 10px 0',
-    fontSize: '28px',
-    color: '#333',
-    fontWeight: '700'
-  },
-  subtitle: {
-    color: '#666',
-    fontSize: '14px',
-    margin: 0
-  },
-  formGroup: {
-    marginBottom: '20px'
-  },
-  label: {
-    display: 'block',
-    marginBottom: '8px',
-    color: '#333',
-    fontWeight: '500',
-    fontSize: '14px'
-  },
-  input: {
-    width: '100%',
-    padding: '12px',
-    border: '1px solid #ddd',
-    borderRadius: '6px',
-    fontSize: '14px',
-    boxSizing: 'border-box',
-    outline: 'none',
-    transition: 'border-color 0.3s'
-  },
-  optionsRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '20px'
-  },
-  checkboxLabel: {
-    display: 'flex',
-    alignItems: 'center',
-    cursor: 'pointer'
-  },
-  button: {
-    width: '100%',
-    padding: '14px',
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '6px',
-    fontSize: '16px',
-    fontWeight: '600',
-    transition: 'all 0.3s',
-    marginTop: '5px'
-  },
-  errorCard: {
-    background: 'linear-gradient(180deg, #fff8f8 0%, #fff2f2 100%)',
-    color: '#7f1d1d',
-    padding: '14px',
-    borderRadius: '10px',
-    marginBottom: '20px',
-    border: '1px solid #fecaca',
-    boxShadow: '0 4px 16px rgba(185, 28, 28, 0.12)'
-  },
-  errorHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    marginBottom: '6px'
-  },
-  errorIcon: {
-    width: '20px',
-    height: '20px',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: '50%',
-    background: '#ef4444',
-    color: '#fff',
-    fontSize: '12px',
-    fontWeight: 700
-  },
-  errorTitle: {
-    fontSize: '14px',
-    fontWeight: 700,
-    color: '#991b1b'
-  },
-  errorMessage: {
-    fontSize: '14px',
-    lineHeight: 1.4
-  },
-  errorReason: {
-    marginTop: '8px',
-    fontSize: '13px',
-    lineHeight: 1.4,
-    color: '#7f1d1d',
-    background: '#fee2e2',
-    border: '1px solid #fecaca',
-    borderRadius: '6px',
-    padding: '8px 10px'
-  },
-  errorHint: {
-    marginTop: '8px',
-    fontSize: '12px',
-    color: '#9f1239'
-  },
-  linkSmall: {
-    color: '#667eea',
-    textDecoration: 'none',
-    fontSize: '13px'
-  },
-  footer: {
-    marginTop: '25px',
-    textAlign: 'center',
-    paddingTop: '20px',
-    borderTop: '1px solid #eee'
-  },
-  footerText: {
-    color: '#666',
-    fontSize: '14px',
-    marginRight: '8px'
-  },
-  link: {
-    color: '#667eea',
-    textDecoration: 'none',
-    fontWeight: '600',
-    fontSize: '14px'
-  }
 };
 
 export default Login;

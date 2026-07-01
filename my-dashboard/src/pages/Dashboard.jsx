@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState, useCallback } from 'react';
 import Topnavbar from '../components/navbar/top/Topnavbar';
 import FunctionalMenu from '../components/leftsidebar/Leftside';
 import AIAssistant from '../components/aiAssistant/AIAssistant';
@@ -22,6 +22,17 @@ const Dashboard = () => {
   useBackgroundRealtimeAlerts();
   const pushStatus = useWebPushNotifications();
   const pushMeta = PUSH_STATUS_META[pushStatus?.code] || PUSH_STATUS_META.checking;
+  const pushStatusCode = pushStatus?.code || 'checking';
+
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  const handleHamburgerClick = useCallback(() => {
+    setIsMobileMenuOpen((v) => !v);
+  }, []);
+
+  const handleMobileMenuClose = useCallback(() => {
+    setIsMobileMenuOpen(false);
+  }, []);
 
   const handleStartTrack = () => {
     if (trackingRef.current) {
@@ -31,9 +42,9 @@ const Dashboard = () => {
 
   return (
     <div className="App">
-      <Topnavbar />
+      <Topnavbar onHamburgerClick={handleHamburgerClick} isMobileMenuOpen={isMobileMenuOpen} />
 
-      <FunctionalMenu />
+      <FunctionalMenu isMobileOpen={isMobileMenuOpen} onMobileClose={handleMobileMenuClose} />
       <AIAssistant />
       <RMWHero onStartTrack={handleStartTrack} />
       <main className="App-content" ref={trackingRef}>
@@ -61,17 +72,8 @@ const Dashboard = () => {
               <h3>Push Status</h3>
               <p>{pushStatus?.detail || 'Checking browser push status...'}</p>
               <span
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  marginTop: '12px',
-                  padding: '6px 12px',
-                  borderRadius: '999px',
-                  fontSize: '0.85rem',
-                  fontWeight: 700,
-                  color: pushMeta.color,
-                  background: pushMeta.background,
-                }}
+                className={`push-status-pill push-status-pill--${pushStatusCode}`}
+                data-status={pushStatusCode}
               >
                 {pushMeta.label}
               </span>

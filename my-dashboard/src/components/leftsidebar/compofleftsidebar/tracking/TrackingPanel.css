@@ -10,8 +10,8 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 2147482500;
+  background: transparent;
+  z-index: 1200;
   transition: background-color 0.28s ease, opacity 0.28s ease;
 }
 
@@ -19,57 +19,42 @@
 .tracking-panel {
   position: fixed;
   top: var(--leftbar-popup-top-offset);
-  left: 50%;
-  transform: translateX(-50%);
-  width: 95%;
-  max-width: 1400px;
+  left: var(--panel-left-inset, 250px);
+  right: var(--topnav-inset, 20px);
+  width: auto;
+  max-width: none;
   height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
-  background: #1f2937;
-  border: 1px solid #374151;
-  border-radius: 12px;
-  z-index: 2147482501;
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 16px;
+  z-index: 1201;
   display: flex;
   flex-direction: column;
-  animation: popIn 0.3s ease-out;
+  animation: trackingPanelOpen 0.32s cubic-bezier(0.22, 1, 0.36, 1);
   overflow: hidden;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-  color: white;
-  view-transition-name: tracking-panel-shell;
-  will-change: top, left, right, bottom, width, height, max-width, max-height, transform, border-radius, box-shadow;
+  box-shadow: var(--shadow-card);
+  color: var(--color-text);
+  will-change: width, height, top, left, right, bottom, transform;
   transition:
-    top 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    left 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    right 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    bottom 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    width 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    height 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    max-width 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    max-height 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    border-radius 0.36s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.36s ease;
+    top 0.28s ease,
+    left 0.28s ease,
+    right 0.28s ease,
+    bottom 0.28s ease,
+    width 0.28s ease,
+    height 0.28s ease,
+    border-radius 0.28s ease,
+    box-shadow 0.28s ease;
 }
 
-::view-transition-group(tracking-panel-shell) {
-  animation-duration: 0.34s;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-::view-transition-old(tracking-panel-shell),
-::view-transition-new(tracking-panel-shell) {
-  animation-duration: 0.34s;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-@keyframes popIn {
+@keyframes trackingPanelOpen {
   from {
     opacity: 0;
-    transform: translateX(-50%) scale(0.96);
+    transform: scale(0.97);
   }
   to {
     opacity: 1;
-    transform: translateX(-50%) scale(1);
+    transform: scale(1);
   }
 }
 
@@ -80,19 +65,20 @@
   justify-content: space-between;
   align-items: center;
   padding: 24px 28px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(135deg, #1f2d40 0%, #16212c 100%);
-  box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.25),
-    0 2px 6px rgba(0, 0, 0, 0.15);
-  transition: all 0.3s ease;
+  border-bottom: 1px solid var(--color-navbar-border);
+  background: var(--color-navbar-surface);
+  box-shadow: var(--shadow-navbar);
+  transition:
+    background var(--theme-transition-base),
+    border-color var(--theme-transition-base),
+    box-shadow var(--theme-transition-base);
 }
 
 .tracking-header h2 {
   margin: 0;
   font-size: 20px;
   font-weight: 700;
-  color: white;
+  color: var(--color-text);
   flex: 1;
   min-width: 0;
 }
@@ -121,7 +107,7 @@
   width: 18px;
   height: 18px;
   transform: translateY(-50%);
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-icon-muted);
   pointer-events: none;
 }
 
@@ -129,23 +115,23 @@
   width: 100%;
   height: 40px;
   padding: 10px 16px 10px 44px;
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--color-input-bg);
+  border: 1px solid var(--color-input-border);
   border-radius: 10px;
-  color: #fff;
+  color: var(--color-input-text);
   font-size: 14px;
   outline: none;
   transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .tracking-header-search input::placeholder {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-placeholder);
 }
 
 .tracking-header-search input:focus {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: #1abc9c;
-  box-shadow: 0 0 0 3px rgba(26, 188, 156, 0.15);
+  background: var(--color-surface-elevated);
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
 }
 
 .tracking-header-date-filter {
@@ -155,10 +141,10 @@
   align-items: center;
   gap: 8px;
   padding: 0 8px 0 12px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--color-input-border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.72);
+  background: var(--color-input-bg);
+  color: var(--color-text-secondary);
 }
 
 .tracking-header-date-filter span {
@@ -173,7 +159,7 @@
   border: none;
   outline: none;
   background: transparent;
-  color: #fff;
+  color: var(--color-input-text);
   font-size: 13px;
 }
 
@@ -182,20 +168,30 @@
   height: 22px;
   border: none;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: var(--color-button-ghost-bg-hover);
+  color: var(--color-icon);
   cursor: pointer;
   line-height: 1;
+  transition: background-color var(--theme-transition-fast), color var(--theme-transition-fast);
 }
 
-.tracking-close-btn {
-  background: transparent;
-  border: 1px solid transparent;
+.tracking-header-date-filter button:hover {
+  background: var(--color-active-surface);
+}
+
+.tracking-close-btn,
+.tracking-control-btn {
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 8px;
   padding: 8px;
-  color: white;
+  color: var(--color-icon);
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -204,10 +200,16 @@
   line-height: 1;
 }
 
-.tracking-close-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: transparent;
+.tracking-close-btn:hover,
+.tracking-control-btn:hover {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border);
   transform: translateY(-2px);
+}
+
+.tracking-close-btn:active,
+.tracking-control-btn:active {
+  transform: translateY(0);
 }
 
 .tracking-close-btn svg {
@@ -234,31 +236,36 @@
 .filter-btn {
   padding: 7px 14px;
   min-height: 34px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
   border-radius: 9px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    background-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
   white-space: nowrap;
   flex-shrink: 0;
   line-height: 1;
 }
 
 .filter-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.2);
-  color: white;
+  background: var(--color-hover-surface);
+  border-color: var(--color-border);
+  color: var(--color-text);
   transform: translateY(-1px);
 }
 
 .filter-btn.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border-color: rgba(255, 255, 255, 0.18);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
+  background: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
+  border-color: transparent;
+  box-shadow: var(--shadow-button-primary);
 }
 
 /* Content Area */
@@ -266,16 +273,15 @@
   flex: 1;
   overflow-y: auto;
   padding: 16px;
-  transition: padding 0.36s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .tracking-refresh-indicator {
   margin-bottom: 12px;
   padding: 8px 12px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid var(--color-feedback-info-border);
   border-radius: 10px;
-  background: rgba(59, 130, 246, 0.08);
-  color: rgba(191, 219, 254, 0.95);
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -288,14 +294,14 @@
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--color-text-muted);
 }
 
 .spinner {
   width: 40px;
   height: 40px;
-  border: 3px solid rgba(255, 255, 255, 0.1);
-  border-top-color: #667eea;
+  border: 3px solid var(--color-border-subtle);
+  border-top-color: var(--color-primary);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   margin-bottom: 16px;
@@ -319,7 +325,7 @@
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-text-muted);
   text-align: center;
 }
 
@@ -346,10 +352,14 @@
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--theme-transition-base),
+    border-color var(--theme-transition-base),
+    box-shadow var(--theme-transition-base),
+    transform var(--theme-transition-base);
   animation: slideUp 0.4s ease-out;
 }
 
@@ -365,23 +375,64 @@
 }
 
 .tracking-task-card:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(102, 126, 234, 0.3);
+  background: var(--color-card-hover);
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--color-border));
+  box-shadow: var(--shadow-card-hover);
   transform: translateY(-2px);
 }
 
 /* Status Indicator */
 .status-indicator {
+  --task-status-color: var(--color-text-muted);
   width: 4px;
   height: 64px;
   border-radius: 2px;
   flex-shrink: 0;
-  transition: all 0.3s ease;
+  background: var(--task-status-color);
+  color: var(--task-status-color);
+  transition:
+    width var(--theme-transition-base),
+    box-shadow var(--theme-transition-base),
+    background-color var(--theme-transition-base);
 }
 
 .tracking-task-card:hover .status-indicator {
   width: 6px;
   box-shadow: 0 0 12px currentColor;
+}
+
+.status-draft,
+.status-cancelled,
+.status-unknown {
+  --task-status-color: var(--color-text-muted);
+}
+
+.status-pending,
+.status-assigned {
+  --task-status-color: var(--color-warning);
+}
+
+.status-forwarded,
+.status-under-review {
+  --task-status-color: var(--color-info);
+}
+
+.status-in-progress {
+  --task-status-color: var(--color-primary);
+}
+
+.status-submitted {
+  --task-status-color: var(--color-primary-strong);
+}
+
+.status-approved,
+.status-completed {
+  --task-status-color: var(--color-success);
+}
+
+.status-need-improvement,
+.status-rejected {
+  --task-status-color: var(--color-danger);
 }
 
 /* Task Info */
@@ -402,7 +453,7 @@
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  color: white;
+  color: var(--color-text);
   word-break: break-word;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -410,7 +461,7 @@
 }
 
 .task-status-badge {
-  --task-status-color: #94a3b8;
+  --task-status-color: var(--color-text-muted);
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -420,8 +471,8 @@
   padding: 4px 9px;
   border: 1px solid color-mix(in srgb, var(--task-status-color) 54%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--task-status-color) 18%, rgba(15, 23, 42, 0.92));
-  color: #f8fafc;
+  background: color-mix(in srgb, var(--task-status-color) 18%, var(--color-surface-muted));
+  color: var(--color-text);
   font-size: 11px;
   font-weight: 800;
   line-height: 1;
@@ -443,7 +494,7 @@
 .task-number {
   margin: 0 0 6px 0;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-text-muted);
   font-family: monospace;
   letter-spacing: 0.5px;
 }
@@ -461,7 +512,7 @@
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--color-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -483,9 +534,9 @@
   min-height: 24px;
   padding: 4px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: rgba(15, 23, 42, 0.42);
-  color: rgba(241, 245, 249, 0.9);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
   max-width: min(280px, 44vw);
 }
 
@@ -497,7 +548,7 @@
 .task-priority-badge span,
 .task-deadline-badge span,
 .worker-meta span {
-  color: rgba(203, 213, 225, 0.72);
+  color: var(--color-text-muted);
   font-weight: 700;
 }
 
@@ -509,37 +560,37 @@
 }
 
 .priority-high {
-  border-color: rgba(248, 113, 113, 0.45);
-  background: rgba(127, 29, 29, 0.34);
-  color: #fecaca;
+  border-color: var(--color-feedback-error-border);
+  background: var(--color-feedback-error-bg);
+  color: var(--color-feedback-error-text);
 }
 
 .priority-medium {
-  border-color: rgba(251, 191, 36, 0.42);
-  background: rgba(113, 63, 18, 0.32);
-  color: #fde68a;
+  border-color: var(--color-feedback-warning-border);
+  background: var(--color-feedback-warning-bg);
+  color: var(--color-feedback-warning-text);
 }
 
 .priority-low {
-  border-color: rgba(45, 212, 191, 0.38);
-  background: rgba(19, 78, 74, 0.32);
-  color: #99f6e4;
+  border-color: var(--color-feedback-success-border);
+  background: var(--color-feedback-success-bg);
+  color: var(--color-feedback-success-text);
 }
 
 .task-deadline-badge {
   flex: 0 1 auto;
   max-width: min(220px, 34vw);
-  border-color: rgba(56, 189, 248, 0.35);
-  background: rgba(12, 74, 110, 0.26);
-  color: #bae6fd;
+  border-color: var(--color-feedback-info-border);
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
   font-weight: 700;
 }
 
 .worker-meta {
   flex: 1 1 180px;
-  color: #dbeafe;
-  border-color: rgba(96, 165, 250, 0.32);
-  background: rgba(30, 64, 175, 0.22);
+  color: var(--color-text);
+  border-color: color-mix(in srgb, var(--color-primary) 28%, transparent);
+  background: color-mix(in srgb, var(--color-primary-soft) 72%, var(--color-surface-muted));
 }
 
 /* Track Button */
@@ -549,18 +600,23 @@
   height: 36px;
   border-radius: 6px;
   border: none;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.3s ease;
+  transition:
+    transform 0.3s ease,
+    box-shadow 0.3s ease,
+    filter 0.3s ease,
+    background var(--theme-transition-fast);
 }
 
 .track-workflow-btn:hover {
   transform: scale(1.1);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  box-shadow: var(--shadow-button-primary);
+  filter: brightness(1.02);
 }
 
 .track-workflow-btn:active {
@@ -576,10 +632,19 @@
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.08);
-  color: #e5e7eb;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--color-icon);
   cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast);
+}
+
+.task-action-trigger:hover {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border-strong);
 }
 
 .task-action-menu {
@@ -587,10 +652,10 @@
   right: 0;
   top: calc(100% + 6px);
   min-width: 180px;
-  background: #111827;
-  border: 1px solid #374151;
+  background: var(--color-surface-popover);
+  border: 1px solid var(--color-border-strong);
   border-radius: 10px;
-  box-shadow: 0 14px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-popover);
   z-index: 20;
   padding: 6px;
   display: flex;
@@ -602,29 +667,33 @@
   text-align: left;
   border: none;
   background: transparent;
-  color: #e5e7eb;
+  color: var(--color-text-secondary);
   font-size: 12px;
   padding: 8px 10px;
   border-radius: 8px;
   text-transform: capitalize;
   cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    color var(--theme-transition-fast);
 }
 
 .task-action-menu button:hover {
-  background: rgba(99, 102, 241, 0.2);
+  background: var(--color-selected-surface);
+  color: var(--color-text);
 }
 
 .task-action-empty {
   padding: 8px 10px;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--color-text-muted);
 }
 
 .tracking-selection-overlay {
   position: fixed;
   inset: 0;
-  z-index: 2147483200;
-  background: rgba(8, 15, 35, 0.52);
+  z-index: 1210;
+  background: var(--color-surface-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -633,11 +702,12 @@
 
 .tracking-selection-modal {
   width: min(540px, 100%);
-  background: #ffffff;
+  background: var(--color-surface-modal);
+  border: 1px solid var(--color-border);
   border-radius: 12px;
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-popover);
   padding: 18px;
-  color: #1f2937;
+  color: var(--color-text);
   display: grid;
   gap: 10px;
 }
@@ -650,22 +720,28 @@
 .tracking-selection-subtitle {
   margin: 0 0 4px;
   font-size: 13px;
-  color: #4b5563;
+  color: var(--color-text-muted);
 }
 
 .tracking-selection-modal label {
   font-size: 13px;
   font-weight: 600;
-  color: #334155;
+  color: var(--color-text-secondary);
 }
 
 .tracking-selection-modal select,
 .tracking-selection-modal textarea {
   width: 100%;
-  border: 1px solid #c7d2fe;
+  border: 1px solid var(--color-input-border);
   border-radius: 10px;
   padding: 9px 12px;
   font-size: 14px;
+  background: var(--color-input-bg);
+  color: var(--color-input-text);
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .tracking-selection-modal textarea {
@@ -673,12 +749,18 @@
   min-height: 72px;
 }
 
+.tracking-selection-modal textarea::placeholder {
+  color: var(--color-placeholder);
+}
+
 .tracking-edit-input {
   width: 100%;
-  border: 1px solid #c7d2fe;
+  border: 1px solid var(--color-input-border);
   border-radius: 10px;
   padding: 9px 12px;
   font-size: 14px;
+  background: var(--color-input-bg);
+  color: var(--color-input-text);
 }
 
 .tracking-edit-grid {
@@ -688,14 +770,14 @@
 }
 
 .tracking-selection-user-list {
-  border: 1px solid #dbe3f4;
+  border: 1px solid var(--color-border);
   border-radius: 10px;
   max-height: 220px;
   overflow-y: auto;
   padding: 8px;
   display: grid;
   gap: 6px;
-  background: #f8fbff;
+  background: var(--color-surface-muted);
 }
 
 .tracking-selection-user-item {
@@ -704,16 +786,25 @@
   justify-content: flex-start;
   gap: 8px;
   font-size: 13px;
-  color: #e5edf8;
+  color: var(--color-text);
   min-height: 40px;
   padding: 8px 10px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.5);
+  background: var(--color-card);
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast);
+}
+
+.tracking-selection-user-item:hover {
+  background: var(--color-card-hover);
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--color-border));
 }
 
 .tracking-selection-user-item input[type="checkbox"] {
   flex: 0 0 auto;
+  accent-color: var(--color-primary);
 }
 
 .tracking-selection-modal .tracking-selection-user-item .tracking-selection-user-copy {
@@ -722,45 +813,39 @@
   flex: 1 1 auto;
   flex-direction: column;
   gap: 2px;
-  color: #f8fafc !important;
-  text-align: left !important;
-  visibility: visible !important;
-  opacity: 1 !important;
+  color: var(--color-text);
+  text-align: left;
 }
 
 .tracking-selection-modal .tracking-selection-user-item .tracking-selection-user-copy strong {
   display: block;
-  color: #f8fafc !important;
-  font-size: 13px !important;
+  color: var(--color-text);
+  font-size: 13px;
   line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  visibility: visible !important;
-  opacity: 1 !important;
 }
 
 .tracking-selection-modal .tracking-selection-user-item .tracking-selection-user-copy small {
   display: block;
-  color: rgba(203, 213, 225, 0.78) !important;
-  font-size: 11px !important;
+  color: var(--color-text-muted);
+  font-size: 11px;
   line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  visibility: visible !important;
-  opacity: 1 !important;
 }
 
 .tracking-selection-loading {
   margin: 0;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--color-text-muted);
 }
 
 .tracking-selection-error {
   margin: 0;
-  color: #b91c1c;
+  color: var(--color-feedback-error-text);
   font-size: 13px;
 }
 
@@ -771,24 +856,41 @@
 }
 
 .tracking-selection-actions button {
-  border: none;
+  border: 1px solid transparent;
   border-radius: 8px;
   padding: 8px 14px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  background: #e2e8f0;
-  color: #1e293b;
+  background: var(--color-button-secondary-bg);
+  color: var(--color-button-secondary-text);
+  transition:
+    background var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
 }
 
 .tracking-selection-actions button.primary {
-  background: #2b62ff;
-  color: #ffffff;
+  background: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
+}
+
+.tracking-selection-actions button:hover {
+  background: var(--color-button-secondary-bg-hover);
+  transform: translateY(-1px);
+}
+
+.tracking-selection-actions button.primary:hover {
+  background: var(--color-button-primary-bg-hover);
+  box-shadow: var(--shadow-button-primary);
 }
 
 .tracking-selection-actions button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+  transform: none;
 }
 
 /* Control Buttons */
@@ -797,31 +899,6 @@
   gap: 8px;
   align-items: center;
   flex-shrink: 0;
-}
-
-.tracking-control-btn {
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  padding: 8px;
-  color: white;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-}
-
-.tracking-control-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.22);
-  transform: translateY(-1px);
-}
-
-.tracking-control-btn:active {
-  transform: translateY(0);
 }
 
 .minimize-btn svg {
@@ -906,80 +983,396 @@
 }
 
 .tracking-content::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--color-scrollbar-track);
 }
 
 .tracking-content::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--color-scrollbar-thumb);
   border-radius: 3px;
 }
 
 .tracking-content::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--color-scrollbar-thumb-hover);
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-  .tracking-panel {
-    width: 95vw;
-    max-width: 95vw;
-    height: calc(100vh - var(--leftbar-popup-top-offset) - 16px);
-    max-height: calc(100vh - var(--leftbar-popup-top-offset) - 16px);
-    top: var(--leftbar-popup-top-offset);
+.tracking-selection-user-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tracking-selection-user-list::-webkit-scrollbar-track {
+  background: var(--color-scrollbar-track);
+}
+
+.tracking-selection-user-list::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.tracking-selection-user-list::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-thumb-hover);
+}
+
+.tracking-header-search input:focus-visible,
+.tracking-header-date-filter input:focus-visible,
+.tracking-header-date-filter button:focus-visible,
+.tracking-close-btn:focus-visible,
+.tracking-control-btn:focus-visible,
+.filter-btn:focus-visible,
+.track-workflow-btn:focus-visible,
+.task-action-trigger:focus-visible,
+.task-action-menu button:focus-visible,
+.tracking-selection-modal select:focus-visible,
+.tracking-selection-modal textarea:focus-visible,
+.tracking-edit-input:focus-visible,
+.tracking-selection-actions button:focus-visible {
+  outline: var(--outline-focus);
+  outline-offset: 2px;
+}
+
+/* =============================================
+   Animation for mobile bottom-sheet entry
+   ============================================= */
+@keyframes slideUpPanel {
+  from {
+    transform: translateY(48px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* =============================================
+   RESPONSIVE — TABLET (768–1023px)
+   Extend panel to full width; sidebar is
+   typically collapsed or overlaid at these sizes.
+   ============================================= */
+@media (max-width: 1023px) {
+  .tracking-panel:not(.minimized):not(.maximized) {
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+}
+
+/* =============================================
+   RESPONSIVE — MOBILE (<768px)
+   Redesigns the panel as a touch-friendly
+   bottom sheet and adapts all controls for
+   finger-sized touch targets. Desktop layout
+   is untouched — all rules here are additive.
+   ============================================= */
+@media (max-width: 767px) {
+  /* Panel → bottom sheet */
+  .tracking-panel:not(.minimized):not(.maximized) {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: 100%;
+    height: 88vh;
+    max-height: 88vh;
+    border-radius: 20px 20px 0 0;
+    animation: slideUpPanel 0.32s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
+  /* Drag-handle pill rendered as the first flex child */
+  .tracking-panel:not(.minimized):not(.maximized)::before {
+    content: '';
+    display: block;
+    flex-shrink: 0;
+    width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--color-border-strong);
+    margin: 10px auto 2px;
+  }
+
+  /* Minimized → compact chip at bottom-right */
   .tracking-panel.minimized {
-    width: 300px;
-    right: 10px;
-    bottom: 10px;
+    width: 260px;
+    max-width: 260px;
+    height: 58px;
+    max-height: 58px;
+    right: 12px;
+    bottom: 12px;
+    left: auto;
+    top: auto;
+    border-radius: 12px;
   }
 
+  /* Maximized → full screen */
   .tracking-panel.maximized {
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: 100%;
     height: 100%;
+    border-radius: 0;
   }
 
-  .tracking-filters {
-    gap: 4px;
-  }
-
+  /* ── Header ─────────────────────────────── */
   .tracking-header {
+    padding: 10px 14px 12px;
     flex-wrap: wrap;
-    gap: 12px;
+    gap: 8px;
   }
 
+  .tracking-header h2 {
+    font-size: 17px;
+  }
+
+  /* Search + date filter on the same row */
   .tracking-header-tools {
-    position: relative;
+    position: static;
     left: auto;
-    order: 3;
-    width: 100%;
-    max-width: none;
     transform: none;
+    order: 10;
+    width: 100%;
+    max-width: 100%;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
   }
 
   .tracking-header-search {
+    flex: 1 1 0;
     min-width: 0;
+    width: auto;
+  }
+
+  /* 16px prevents iOS auto-zoom on input focus */
+  .tracking-header-search input {
+    height: 44px;
+    font-size: 16px;
+    border-radius: 12px;
   }
 
   .tracking-header-date-filter {
     flex-shrink: 0;
+    width: auto;
+    height: 44px;
+    border-radius: 12px;
+    padding: 0 10px 0 14px;
+  }
+
+  .tracking-header-date-filter input {
+    font-size: 15px;
+    width: 120px;
+  }
+
+  /* ── Window Controls ────────────────────── */
+  .tracking-controls {
+    gap: 6px;
+  }
+
+  .tracking-close-btn,
+  .tracking-control-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+  }
+
+  /* ── Filter Tabs ────────────────────────── */
+  .tracking-filters {
+    padding: 6px 12px;
+    gap: 6px;
   }
 
   .filter-btn {
-    padding: 6px 12px;
+    padding: 8px 14px;
+    min-height: 36px;
     font-size: 12px;
+    border-radius: 10px;
   }
 
+  /* ── Scrollable Content ─────────────────── */
+  .tracking-content {
+    padding: 12px;
+  }
+
+  .tasks-grid {
+    gap: 10px;
+  }
+
+  /* ── Task Cards ─────────────────────────── */
   .tracking-task-card {
-    padding: 10px;
+    padding: 12px 12px 12px 10px;
+    gap: 10px;
+    align-items: flex-start;
+    border-radius: 12px;
   }
 
-  .task-info {
-    flex: 1;
+  /* Disable hover-lift; touch devices use :active */
+  .tracking-task-card:hover {
+    transform: none;
   }
 
-  .tracking-control-btn {
-    width: 32px;
-    height: 32px;
+  /* Status bar stretches to match card height */
+  .status-indicator {
+    width: 4px;
+    height: auto;
+    min-height: 60px;
+    align-self: stretch;
+    border-radius: 4px;
+  }
+
+  .tracking-task-card:hover .status-indicator {
+    width: 5px;
+  }
+
+  /* Allow title to wrap on narrow screens */
+  .task-title {
+    white-space: normal;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-height: 1.45;
+  }
+
+  .task-meta {
+    gap: 5px;
+  }
+
+  /* Remove desktop max-width caps on meta badges */
+  .task-project-meta {
+    max-width: 100%;
+  }
+
+  .task-priority-badge,
+  .task-deadline-badge,
+  .worker-meta {
+    max-width: none;
+  }
+
+  /* ── Touch-Friendly Action Buttons ─────── */
+  .track-workflow-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    flex-shrink: 0;
+  }
+
+  .task-action-trigger {
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    font-size: 18px;
+  }
+
+  /* Action dropdown — wider items for easy tapping */
+  .task-action-menu {
+    min-width: 200px;
+    border-radius: 14px;
+    padding: 8px;
+    gap: 4px;
+  }
+
+  .task-action-menu button {
+    min-height: 48px;
+    font-size: 14px;
+    padding: 12px 14px;
+    border-radius: 10px;
+  }
+
+  /* ── Empty / Error States ───────────────── */
+  .empty-state {
+    padding: 48px 20px;
+  }
+
+  /* ── Selection Modal → Bottom Sheet ─────── */
+  .tracking-selection-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .tracking-selection-modal {
+    width: 100%;
+    border-radius: 20px 20px 0 0;
+    max-height: 88vh;
+    overflow-y: auto;
+    padding: 20px 16px;
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+
+  .tracking-selection-modal h3 {
+    font-size: 18px;
+  }
+
+  .tracking-selection-modal select,
+  .tracking-selection-modal textarea {
+    font-size: 16px;
+    min-height: 48px;
+    border-radius: 12px;
+    padding: 12px;
+  }
+
+  .tracking-selection-user-item {
+    min-height: 52px;
+    padding: 12px;
+  }
+
+  .tracking-selection-actions {
+    flex-direction: column-reverse;
+    gap: 10px;
+    margin-top: 4px;
+  }
+
+  .tracking-selection-actions button {
+    width: 100%;
+    min-height: 48px;
+    font-size: 15px;
+    border-radius: 12px;
+    padding: 12px 20px;
+  }
+}
+
+/* =============================================
+   RESPONSIVE — SMALL MOBILE (<640px)
+   Further tightening for 360–639px screens
+   (Galaxy S series, iPhone SE / standard).
+   ============================================= */
+@media (max-width: 639px) {
+  .tracking-panel:not(.minimized):not(.maximized) {
+    height: 91vh;
+    max-height: 91vh;
+  }
+
+  .tracking-header {
+    padding: 10px 12px;
+  }
+
+  .tracking-header h2 {
+    font-size: 16px;
+  }
+
+  .tracking-filters {
+    padding: 6px 10px;
+    gap: 4px;
+  }
+
+  .filter-btn {
+    padding: 7px 11px;
+    font-size: 11px;
+    min-height: 34px;
+  }
+
+  /* Hide redundant badge labels on the narrowest screens */
+  .task-priority-badge span,
+  .task-deadline-badge span,
+  .worker-meta span {
+    display: none;
+  }
+
+  .tracking-panel.minimized {
+    width: 240px;
+    max-width: 240px;
+    height: 52px;
+    max-height: 52px;
   }
 }

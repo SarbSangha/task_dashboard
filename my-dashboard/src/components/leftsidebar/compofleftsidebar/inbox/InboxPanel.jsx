@@ -18,6 +18,8 @@ import {
   setTaskPanelCache,
 } from '../../../../utils/taskPanelCache';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { isMobileViewport } from '../../../../utils/isMobileViewport';
+import WindowControls from '../../../common/WindowControls';
 import { useInbox } from '../../../../hooks/useInbox';
 import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
 import { InboxSkeleton } from '../../../ui/InboxSkeleton';
@@ -113,7 +115,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [chatTask, setChatTask] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const [forwardModal, setForwardModal] = useState({
     open: false,
     task: null,
@@ -406,7 +408,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
   useEffect(() => {
     if (isOpen) {
       setIsMinimized(false);
-      setIsMaximized(false);
+      setIsMaximized(isMobileViewport());
     }
   }, [isOpen]);
 
@@ -985,7 +987,6 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
       return;
     }
 
-    setIsMaximized(false);
     setIsMinimized(true);
   };
 
@@ -1042,22 +1043,13 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
               </label>
             </div>
           )}
-          <div className="inbox-window-controls">
-            {!isMinimized && (
-              <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title="Minimize">
-                ─
-              </button>
-            )}
-            <button className="inbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMaximize(); }} title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}>
-              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
-            </button>
-            <button className="inbox-close-btn" onClick={(e) => { e.stopPropagation(); onClose(); }}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
+          <WindowControls
+            isMinimized={isMinimized}
+            isMaximized={isMaximized}
+            onMinimize={handleToggleMinimize}
+            onMaximize={handleToggleMaximize}
+            onClose={onClose}
+          />
         </div>
 
         {/* Filters */}
@@ -1410,18 +1402,25 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
         isOpen={submitModal.open}
         task={submitModal.task}
         onClose={closeSubmitModal}
-        onSubmit={(task, payload) =>
-          updateTaskStatus({
+        onSubmit={(task, payload) => {
+          const isEditingSubmission = Boolean(
+            task?.workerSubmissions?.viewerSubmitted || task?.workerSubmissions?.viewerSubmission
+          );
+          return updateTaskStatus({
             taskId: task.id,
-            status: task.submissionMode === 'all' && Number(task.workerSubmissions?.pending || 0) > 1
-              ? 'in_progress'
-              : 'submitted',
+            status: isEditingSubmission
+              ? task.status
+              : task.submissionMode === 'all' && Number(task.workerSubmissions?.pending || 0) > 1
+                ? 'in_progress'
+                : 'submitted',
             execute: () =>
               (isWorkflowTask(task) && task.currentStageId
                 ? taskAPI.submitStage(task.id, task.currentStageId, payload)
-                : taskAPI.submitTask(task.id, payload)),
-          })
-        }
+                : isEditingSubmission
+                  ? taskAPI.editResult(task.id, payload)
+                  : taskAPI.submitTask(task.id, payload)),
+          });
+        }}
       />
     </>
   );

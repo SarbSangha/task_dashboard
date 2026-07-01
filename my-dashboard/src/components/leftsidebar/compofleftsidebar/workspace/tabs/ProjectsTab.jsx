@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import CacheStatusBanner from '../../../../common/CacheStatusBanner';
 import { WorkspaceSkeleton } from '../../../../ui/WorkspaceSkeleton';
 import {
@@ -6,6 +6,7 @@ import {
   formatProjectDate,
   useWorkspaceTaskDataset,
 } from '../workspaceTabData';
+import './ProjectsTab.css';
 
 export default function ProjectsTab() {
   const { tasks, loading, isRefreshing, error, refresh, cacheStatus } = useWorkspaceTaskDataset();
@@ -46,7 +47,7 @@ export default function ProjectsTab() {
   }, [filteredProjects, projects, selectedProjectKey]);
 
   return (
-    <div className="tab-content tab-content-projects">
+    <div className="tab-content tab-content-projects workspace-projects">
       <div className="projects-status-row">
         <button className="add-btn" onClick={() => void refresh()}>
           Refresh

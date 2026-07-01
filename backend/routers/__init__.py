@@ -13,6 +13,9 @@ from . import activity_router
 from . import admin_router
 from . import groups_router
 from . import direct_messages_router
+from . import generation_projects_router
+from . import generation_records_router
+from . import generation_recovery_router
 
 __all__ = [
     'auth_router',
@@ -25,5 +28,8 @@ __all__ = [
     'activity_router',
     'admin_router',
     'groups_router',
-    'direct_messages_router'
+    'direct_messages_router',
+    'generation_projects_router',
+    'generation_records_router',
+    'generation_recovery_router',
 ]

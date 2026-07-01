@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Grid } from 'react-window';
 import { authAPI, taskAPI } from '../../../../services/api';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { isMobileViewport } from '../../../../utils/isMobileViewport';
+import WindowControls from '../../../common/WindowControls';
 import { usePermissions } from '../../../../hooks/usePermissions';
 import { buildFileDownloadUrl, buildFileOpenUrl, buildFileThumbnailUrl } from '../../../../utils/fileLinks';
 import './TrendingsPanel.css';
@@ -664,7 +666,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [infoAsset, setInfoAsset] = useState(null);
   const [openMenuAssetId, setOpenMenuAssetId] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const minimizedWindowStyle = useMinimizedWindowStack('trendings-panel', isOpen && isMinimized);
   const [activeView, setActiveView] = useState('data');
   const [directoryStructure, setDirectoryStructure] = useState(() => loadDirectoryStructurePreference());
@@ -1212,7 +1214,6 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       return;
     }
 
-    setIsMaximized(false);
     setIsMinimized(true);
   };
 
@@ -1250,25 +1251,13 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
               />
             </div>
           )}
-          <div className="trendings-controls">
-            {!isMinimized && (
-              <button
-                className="trendings-control-btn"
-                onClick={handleToggleMinimize}
-                title="Minimize"
-              >
-                —
-              </button>
-            )}
-            <button
-              className="trendings-control-btn"
-              onClick={handleToggleMaximize}
-              title={isMinimized ? 'Restore' : isMaximized ? 'Restore Size' : 'Maximize'}
-            >
-              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
-            </button>
-            <button className="trendings-close-btn" onClick={onClose}>×</button>
-          </div>
+          <WindowControls
+            isMinimized={isMinimized}
+            isMaximized={isMaximized}
+            onMinimize={handleToggleMinimize}
+            onMaximize={handleToggleMaximize}
+            onClose={onClose}
+          />
         </div>
 
         {!isMinimized && (

@@ -107,7 +107,7 @@ const NotificationsPanel = ({ isOpen, onClose }) => {
             <h3>Notifications</h3>
             <p>{unreadCount} unread</p>
           </div>
-          <button onClick={onClose}>✕</button>
+          <button type="button" onClick={onClose} aria-label="Close notifications">✕</button>
         </div>
 
         <div className="notifications-toolbar">
@@ -119,7 +119,7 @@ const NotificationsPanel = ({ isOpen, onClose }) => {
             />
             Show unread only
           </label>
-          <button onClick={markAllVisibleRead} disabled={loading || unreadCount === 0}>
+          <button type="button" onClick={markAllVisibleRead} disabled={loading || unreadCount === 0}>
             Mark all read
           </button>
         </div>
@@ -144,6 +144,7 @@ const NotificationsPanel = ({ isOpen, onClose }) => {
                 <div className="notifications-item-actions">
                   {!item.isRead && (
                     <button
+                      type="button"
                       className="notifications-mark-btn"
                       onClick={() => markAsRead(item.id)}
                       disabled={markingId === item.id || deletingId === item.id}
@@ -152,6 +153,7 @@ const NotificationsPanel = ({ isOpen, onClose }) => {
                     </button>
                   )}
                   <button
+                    type="button"
                     className="notifications-remove-btn"
                     onClick={() => removeNotification(item.id)}
                     disabled={deletingId === item.id || markingId === item.id}

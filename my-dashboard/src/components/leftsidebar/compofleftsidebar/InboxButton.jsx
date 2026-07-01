@@ -24,10 +24,7 @@ const InboxButton = ({ isActive, onClick }) => {
   const inboxCacheKey = user?.id ? buildTaskPanelCacheKey(user.id, 'inbox') : null;
 
   useEffect(() => {
-    if (!user) {
-      setUnreadCount(0);
-      return undefined;
-    }
+    if (!user) { setUnreadCount(0); return undefined; }
 
     const scheduleUnreadRefresh = () => {
       if (refreshTimerRef.current) return;
@@ -54,19 +51,18 @@ const InboxButton = ({ isActive, onClick }) => {
       if (document.visibilityState !== 'visible') return;
       fetchUnreadCount();
     }, INITIAL_UNREAD_FETCH_DELAY_MS);
-    // Fallback polling every 3 minutes (WebSocket drives real-time updates).
+
     const interval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       fetchUnreadCount();
     }, 180000);
+
     const unsubscribe = subscribeRealtimeNotifications({
       onMessage: (payload) => {
         if (!payload || payload.eventType === 'group_message') return;
         scheduleUnreadRefresh();
       },
-      onOpen: () => {
-        scheduleUnreadRefresh();
-      },
+      onOpen: () => scheduleUnreadRefresh(),
     });
 
     return () => {
@@ -81,17 +77,13 @@ const InboxButton = ({ isActive, onClick }) => {
   }, [inboxCacheKey, unreadCacheKey, user]);
 
   const fetchUnreadCount = async () => {
-    if (!user) return;
-    if (!unreadCacheKey) return;
-    if (inFlightRef.current) return;
+    if (!user || !unreadCacheKey || inFlightRef.current) return;
     inFlightRef.current = true;
     try {
       const data = await taskAPI.getInboxUnreadCount();
       if (data.success) {
         setUnreadCount(data.unreadCount);
-        setTaskPanelCache(unreadCacheKey, {
-          unreadCount: data.unreadCount,
-        });
+        setTaskPanelCache(unreadCacheKey, { unreadCount: data.unreadCount });
       }
     } catch (error) {
       console.error('Error fetching unread count:', error);
@@ -100,30 +92,28 @@ const InboxButton = ({ isActive, onClick }) => {
     }
   };
 
+  const displayCount = unreadCount > 99 ? '99+' : unreadCount;
+
   return (
-    <button 
-      className={`menu-button ${isActive ? 'active' : ''} ${unreadCount > 0 ? 'highlighted' : ''}`}
+    <button
+      className={`menu-button${isActive ? ' active' : ''}${unreadCount > 0 ? ' highlighted' : ''}`}
       onClick={onClick}
+      data-label="Inbox"
+      aria-label={`Inbox${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+      aria-current={isActive ? 'page' : undefined}
     >
-      <span className="menu-button-icon">
-        <svg 
-          viewBox="0 0 24 24" 
-          fill="none" 
-          stroke="currentColor" 
-          strokeWidth="2" 
-          strokeLinecap="round" 
-          strokeLinejoin="round"
-        >
-          <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
-          <polyline points="22,6 12,13 2,6" />
+      <span className="menu-button-icon" aria-hidden="true">
+        {/* Inbox tray — arrow into a tray */}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="8 17 12 21 16 17" />
+          <line x1="12" y1="12" x2="12" y2="21" />
+          <path d="M20.88 18.09A5 5 0 0018 9h-1.26A8 8 0 103 16.29" />
         </svg>
       </span>
-      <span className="menu-button-label">
-        Inbox
-        {unreadCount > 0 && (
-          <span className="notification-badge">{unreadCount}</span>
-        )}
-      </span>
+      <span className="menu-button-label">Inbox</span>
+      {unreadCount > 0 && (
+        <span className="notification-badge" aria-hidden="true">{displayCount}</span>
+      )}
     </button>
   );
 };

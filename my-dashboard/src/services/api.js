@@ -615,7 +615,22 @@ export const authAPI = {
   getDeletedUsers: async () => {
     const response = await api.get('/api/admin/deleted-users');
     return response.data;
-  }
+  },
+
+  setUserWorkplacePolicy: async (userId, enforceActiveTaskPolicy) => {
+    const response = await api.patch(`/api/admin/users/${userId}/workplace-policy`, {
+      enforce_active_task_policy: enforceActiveTaskPolicy,
+    });
+    return response.data;
+  },
+
+  bulkSetWorkplacePolicy: async (userIds, enforceActiveTaskPolicy) => {
+    const response = await api.patch('/api/admin/users/workplace-policy/bulk', {
+      user_ids: userIds,
+      enforce_active_task_policy: enforceActiveTaskPolicy,
+    });
+    return response.data;
+  },
 };
 
 export const activityAPI = {
@@ -959,8 +974,11 @@ export const taskAPI = {
     return response.data;
   },
 
-  editResult: async (taskId, resultText) => {
-    const response = await api.put(`/api/tasks/${taskId}/edit-result`, { result_text: resultText });
+  editResult: async (taskId, resultTextOrPayload = '') => {
+    const payload = typeof resultTextOrPayload === 'object' && resultTextOrPayload !== null
+      ? resultTextOrPayload
+      : { result_text: resultTextOrPayload };
+    const response = await api.put(`/api/tasks/${taskId}/edit-result`, payload);
     return response.data;
   },
 
@@ -1472,8 +1490,100 @@ export const fileAPI = {
   },
 };
 
+export const generationProjectsAPI = {
+  listProjects: async (requestConfig = {}) => {
+    const response = await api.get('/api/generation-projects', requestConfig);
+    return response.data;
+  },
+
+  createProject: async (payload, requestConfig = {}) => {
+    const response = await api.post('/api/generation-projects', payload, requestConfig);
+    return response.data;
+  },
+
+  getProject: async (projectId, requestConfig = {}) => {
+    const response = await api.get(`/api/generation-projects/${projectId}`, requestConfig);
+    return response.data;
+  },
+
+  getProjectGenerations: async (projectId, paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      `/api/generation-projects/${projectId}/generations`,
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  assignGeneration: async (projectId, generationId, requestConfig = {}) => {
+    const response = await api.post(
+      `/api/generation-projects/${projectId}/generations/${generationId}`,
+      {},
+      requestConfig
+    );
+    return response.data;
+  },
+
+  removeGeneration: async (projectId, generationId, requestConfig = {}) => {
+    const response = await api.delete(
+      `/api/generation-projects/${projectId}/generations/${generationId}`,
+      requestConfig
+    );
+    return response.data;
+  },
+};
+
+export const generationRecordsAPI = {
+  getUngrouped: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/generations/ungrouped',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+};
+
+export const generationRecoveryAPI = {
+  reconcile: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/admin/generation-recovery/reconcile',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  previewMissing: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/admin/generation-recovery/missing',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  listAudits: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/admin/generation-recovery/audits',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  importAudit: async (auditId, requestConfig = {}) => {
+    const response = await api.post(
+      `/api/admin/generation-recovery/import/${auditId}`,
+      {},
+      requestConfig
+    );
+    return response.data;
+  },
+};
+
 // ==================== IT PROFILE / TOOL VAULT API ====================
 export const itToolsAPI = {
+  getAccessStatus: async (requestConfig = {}) => {
+    const response = await api.get('/api/it-tools/access-status', requestConfig);
+    return response.data;
+  },
+
   listTools: async (requestConfig = {}) => {
     const response = await api.get('/api/it-tools/tools', requestConfig);
     return response.data;
@@ -1546,6 +1656,16 @@ export const itToolsAPI = {
 
   exportKlingUsageReport: async ({ signal, ...params } = {}) => {
     const response = await api.get('/api/it-tools/usage-report/kling/export', {
+      params,
+      signal,
+      responseType: 'blob',
+      timeout: 60000,
+    });
+    return response;
+  },
+
+  exportKlingRawUsageReport: async ({ signal, ...params } = {}) => {
+    const response = await api.get('/api/it-tools/usage-report/kling/export/raw', {
       params,
       signal,
       responseType: 'blob',

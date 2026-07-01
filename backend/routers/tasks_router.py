@@ -605,7 +605,10 @@ class TaskIdGeneratePayload(BaseModel):
 
 
 class ResultEditPayload(BaseModel):
-    result_text: str = Field(..., min_length=1)
+    result_text: str = Field(default="")
+    comments: Optional[str] = None
+    result_links: List[str] = Field(default_factory=list)
+    result_attachments: List[dict] = Field(default_factory=list)
 
 
 class TaskStageUpdatePayload(BaseModel):
@@ -1699,6 +1702,22 @@ def _task_worker_has_started(task: Task, user_id: int) -> bool:
     return isinstance(progress, dict) and f"{progress.get('status') or ''}".lower() in {"in_progress", "submitted"}
 
 
+def _is_creator_assignee(
+    task: Task,
+    user_id: Optional[int],
+    db: Session,
+    my_participation: Optional[TaskParticipant] = None,
+) -> bool:
+    if not task or not user_id or int(user_id) != int(task.creator_id or 0):
+        return False
+    if my_participation is not None:
+        return bool(
+            my_participation.is_active == True
+            and my_participation.role == ParticipantRole.ASSIGNEE
+        )
+    return user_is_participant(task.id, int(user_id), ParticipantRole.ASSIGNEE, db)
+
+
 def _record_task_worker_started(task: Task, current_user: User, now: datetime) -> dict:
     meta = dict(task.metadata_json or {})
     progress = dict(meta.get(TASK_WORKER_PROGRESS_META_KEY) or {})
@@ -2008,6 +2027,7 @@ def compute_available_actions(
         )
     else:
         is_assignee = user_is_participant(task.id, user.id, ParticipantRole.ASSIGNEE, db)
+    is_creator_assignee = _is_creator_assignee(task, user.id, db, my_participation=my_participation)
 
     if is_held:
         if can_unhold_task(user, task):
@@ -2035,7 +2055,15 @@ def compute_available_actions(
                 actions.append("edit_submit")
             elif _get_task_submission_mode(task) != TASK_SUBMISSION_MODE_ALL or not _task_worker_has_submitted(task, user.id):
                 actions.append("submit")
-        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW} and _task_worker_has_submitted(task, user.id):
+        if (
+            task.status == TaskStatus.SUBMITTED
+            and _task_worker_has_submitted(task, user.id)
+            and (
+                not task.submitted_by
+                or int(task.submitted_by) == int(user.id)
+                or is_creator_assignee
+            )
+        ):
             actions.append("edit_submit")
         if task.status == TaskStatus.NEED_IMPROVEMENT:
             actions.append("edit_result")
@@ -5170,11 +5198,16 @@ async def submit_task(
             raise HTTPException(status_code=400, detail=str(exc))
 
     is_assignee = user_is_participant(task.id, current_user.id, ParticipantRole.ASSIGNEE, db)
+    is_creator_assignee = _is_creator_assignee(task, current_user.id, db)
     if not is_assignee:
         raise HTTPException(status_code=403, detail="Only assignee can submit")
     submission_mode = _get_task_submission_mode(task)
     viewer_already_submitted = _task_worker_has_submitted(task, current_user.id)
-    if task.status != TaskStatus.IN_PROGRESS:
+    if viewer_already_submitted and task.result_edit_locked and not is_creator_assignee:
+        raise HTTPException(status_code=400, detail="Submitted result is locked while the task is under review")
+    if task.status != TaskStatus.IN_PROGRESS and not (
+        is_creator_assignee and viewer_already_submitted and task.status == TaskStatus.SUBMITTED
+    ):
         raise HTTPException(status_code=400, detail="Start the task before submitting")
     has_result_update = bool(payload.result_text or payload.result_links or payload.result_attachments)
     submission_mode = _get_task_submission_mode(task)
@@ -6286,15 +6319,152 @@ async def edit_task_result(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     ensure_task_not_held(task)
-    if not user_is_participant(task.id, current_user.id, ParticipantRole.ASSIGNEE, db):
+    is_assignee = user_is_participant(task.id, current_user.id, ParticipantRole.ASSIGNEE, db)
+    is_creator_assignee = _is_creator_assignee(task, current_user.id, db)
+    if not is_assignee:
         raise HTTPException(status_code=403, detail="Only assignee can edit result")
+
+    result_text = (payload.result_text or "").strip()
+    links_were_set = payload_field_was_set(payload, "result_links")
+    attachments_were_set = payload_field_was_set(payload, "result_attachments")
+    normalized_links = _normalize_result_links(payload.result_links)
+    normalized_attachments = _normalize_result_attachments(payload.result_attachments)
+    has_payload = bool(result_text or normalized_links or normalized_attachments)
+    if not has_payload:
+        raise HTTPException(status_code=400, detail="Add result text, links, or attachments before updating the submission")
+
+    viewer_already_submitted = _task_worker_has_submitted(task, current_user.id)
+    submission_mode = _get_task_submission_mode(task)
+    now = datetime.utcnow()
+    meta_before = dict(task.metadata_json or {})
+
+    if viewer_already_submitted:
+        if task.status not in {TaskStatus.IN_PROGRESS, TaskStatus.SUBMITTED}:
+            raise HTTPException(status_code=400, detail="Submitted result cannot be edited in the current task state")
+        if (
+            task.status == TaskStatus.SUBMITTED
+            and task.submitted_by
+            and int(task.submitted_by) != int(current_user.id)
+            and not is_creator_assignee
+        ):
+            raise HTTPException(status_code=403, detail="Only the assignee who submitted the task can edit it now")
+
+        before_submission = _task_worker_submissions(task).get(str(int(current_user.id or 0))) or {}
+        before = {
+            "resultText": task.result_text,
+            "resultVersion": task.result_version,
+            "resultLinks": meta_before.get("resultLinks", []),
+            "resultAttachments": meta_before.get("resultAttachments", []),
+            "workerSubmission": before_submission,
+        }
+        effective_links = (
+            normalized_links
+            if links_were_set
+            else _normalize_result_links(before_submission.get("links"))
+        )
+        effective_attachments = (
+            normalized_attachments
+            if attachments_were_set
+            else _normalize_result_attachments(before_submission.get("attachments"))
+        )
+        update_payload = TaskActionPayload(
+            comments=payload.comments,
+            result_text=result_text,
+            result_links=effective_links,
+            result_attachments=effective_attachments,
+        )
+        sync_global_result = (
+            submission_mode == TASK_SUBMISSION_MODE_ANY
+            or task.status == TaskStatus.SUBMITTED
+            or int(task.submitted_by or 0) == int(current_user.id)
+        )
+        updated_submission = _record_task_worker_submission(
+            task,
+            current_user,
+            update_payload,
+            now,
+            sync_global_result=sync_global_result,
+        )
+        if task.status == TaskStatus.SUBMITTED and int(task.submitted_by or 0) == int(current_user.id):
+            task.submitted_at = now
+        task.updated_at = now
+        meta_after = dict(task.metadata_json or {})
+
+        db.add(
+            TaskEditLog(
+                task_id=task.id,
+                user_id=current_user.id,
+                edit_scope="result",
+                before_json=before,
+                after_json={
+                    "resultText": task.result_text,
+                    "resultVersion": task.result_version,
+                    "resultLinks": meta_after.get("resultLinks", []),
+                    "resultAttachments": meta_after.get("resultAttachments", []),
+                    "workerSubmission": updated_submission,
+                },
+                created_at=now,
+            )
+        )
+        add_history(
+            db,
+            task,
+            current_user.id,
+            "result_edited",
+            task.status.value,
+            payload.comments or "Submitted result updated",
+        )
+
+        participants = db.query(TaskParticipant).filter(
+            TaskParticipant.task_id == task.id,
+            TaskParticipant.is_active == True,
+        ).all()
+        recipients = {task.creator_id}
+        recipients.update({p.user_id for p in participants})
+        recipients.discard(current_user.id)
+        for participant in participants:
+            if participant.user_id == current_user.id:
+                continue
+            participant.is_read = False
+            participant.read_at = None
+        for user_id in recipients:
+            create_notification(
+                db,
+                task,
+                user_id,
+                "result_edited",
+                f"Submitted Result Updated: {task.title}",
+                payload.comments or "A submitted task result has been updated.",
+                actor=current_user,
+                metadata_json={"resultVersion": task.result_version, "submittedEdit": True},
+            )
+
+        db.commit()
+        await invalidate_task_lane_b_cache()
+        return {"success": True, "message": "Submitted result updated"}
+
     if task.result_edit_locked:
         raise HTTPException(status_code=400, detail="Result editing is locked")
 
-    before = {"resultText": task.result_text, "resultVersion": task.result_version}
-    task.result_text = payload.result_text
+    before = {
+        "resultText": task.result_text,
+        "resultVersion": task.result_version,
+        "resultLinks": meta_before.get("resultLinks", []),
+        "resultAttachments": meta_before.get("resultAttachments", []),
+    }
+    effective_links = normalized_links if links_were_set else _normalize_result_links(meta_before.get("resultLinks"))
+    effective_attachments = (
+        normalized_attachments
+        if attachments_were_set
+        else _normalize_result_attachments(meta_before.get("resultAttachments"))
+    )
+    task.result_text = result_text
     task.result_version = (task.result_version or 0) + 1
-    task.updated_at = datetime.utcnow()
+    meta = dict(task.metadata_json or {})
+    meta["resultLinks"] = effective_links
+    meta["resultAttachments"] = effective_attachments
+    task.metadata_json = meta
+    task.updated_at = now
 
     db.add(
         TaskEditLog(
@@ -6302,11 +6472,16 @@ async def edit_task_result(
             user_id=current_user.id,
             edit_scope="result",
             before_json=before,
-            after_json={"resultText": task.result_text, "resultVersion": task.result_version},
-            created_at=datetime.utcnow(),
+            after_json={
+                "resultText": task.result_text,
+                "resultVersion": task.result_version,
+                "resultLinks": meta.get("resultLinks", []),
+                "resultAttachments": meta.get("resultAttachments", []),
+            },
+            created_at=now,
         )
     )
-    add_history(db, task, current_user.id, "result_edited", task.status.value, "Result edited")
+    add_history(db, task, current_user.id, "result_edited", task.status.value, payload.comments or "Result edited")
 
     participants = db.query(TaskParticipant).filter(
         TaskParticipant.task_id == task.id,
@@ -6327,7 +6502,7 @@ async def edit_task_result(
             user_id,
             "result_edited",
             f"Result Updated: {task.title}",
-            "Task result has been edited.",
+            payload.comments or "Task result has been edited.",
             actor=current_user,
             metadata_json={"resultVersion": task.result_version},
         )

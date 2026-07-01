@@ -1,5 +1,5 @@
 // src/components/leftsidebar/Leftside.jsx (FunctionalMenu)
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import './Leftside.css';
 import TrackingButton from './compofleftsidebar/tracking/TrackingButton';
@@ -31,9 +31,10 @@ const PANEL_TO_ACTIVE = {
   'create-task': 'create-task',
 };
 
-const getPanelFromPath = (pathname = '') => pathname.replace(/^\/dashboard\/?/, '').split('/')[0] || '';
+const getPanelFromPath = (pathname = '') =>
+  pathname.replace(/^\/dashboard\/?/, '').split('/')[0] || '';
 
-const FunctionalMenu = () => {
+const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
   const { can } = usePermissions();
   const navigate = useNavigate();
   const location = useLocation();
@@ -54,151 +55,120 @@ const FunctionalMenu = () => {
   const previousRouteRef = useRef({ pathname, search });
   const routeInterceptionRef = useRef(false);
 
-  const toggleCollapse = () => {
-    setIsCollapsed(!isCollapsed);
+  const toggleCollapse = () => setIsCollapsed((v) => !v);
+
+  /* ---- Mobile drawer: body scroll lock + ESC to close ---- */
+  useEffect(() => {
+    if (!isMobileOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleEsc = (e) => { if (e.key === 'Escape') onMobileClose?.(); };
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [isMobileOpen, onMobileClose]);
+
+  /* ---- Close drawer when route changes on mobile ---- */
+  const closeMobileOnNav = useCallback(() => {
+    if (window.matchMedia('(max-width: 640px)').matches) onMobileClose?.();
+  }, [onMobileClose]);
+
+  /* Collapse btn: close drawer on mobile, collapse on desktop */
+  const handleCollapseOrClose = () => {
+    if (window.matchMedia('(max-width: 640px)').matches) onMobileClose?.();
+    else toggleCollapse();
   };
 
   const confirmLeaveCreateTask = async () => {
-    if (panel !== 'create-task') {
-      return true;
-    }
-
-    if (assignModalRef.current?.consumeNavigationAllowance?.()) {
-      return true;
-    }
-
+    if (panel !== 'create-task') return true;
+    if (assignModalRef.current?.consumeNavigationAllowance?.()) return true;
     const canLeaveCreateTask = await assignModalRef.current?.confirmBeforeExit?.();
-    if (!canLeaveCreateTask) {
-      return false;
-    }
-
+    if (!canLeaveCreateTask) return false;
     return true;
   };
 
   const goTo = async (segment) => {
     if (segment !== 'create-task') {
       const canLeave = await confirmLeaveCreateTask();
-      if (!canLeave) {
-        return;
-      }
+      if (!canLeave) return;
     }
-
+    closeMobileOnNav();
     navigate(`/dashboard/${segment}`);
   };
+
   const goHome = async () => {
     const canLeave = await confirmLeaveCreateTask();
-    if (!canLeave) {
-      return;
-    }
+    if (!canLeave) return;
+    closeMobileOnNav();
     navigate('/dashboard');
   };
-  const isPanelVisible = (panelKey) => panel === panelKey || !!persistedMinimizedPanels[panelKey];
+
+  const isPanelVisible = (panelKey) =>
+    panel === panelKey || !!persistedMinimizedPanels[panelKey];
+
   const setPanelMinimized = (panelKey, isMinimized) => {
     setPersistedMinimizedPanels((prev) => {
-      if (!!prev[panelKey] === isMinimized) {
-        return prev;
-      }
-
-      if (!isMinimized && !prev[panelKey]) {
-        return prev;
-      }
-
-      return {
-        ...prev,
-        [panelKey]: isMinimized,
-      };
+      if (!!prev[panelKey] === isMinimized) return prev;
+      if (!isMinimized && !prev[panelKey]) return prev;
+      return { ...prev, [panelKey]: isMinimized };
     });
   };
+
   const activatePanel = async (segment, search = '') => {
     if (segment !== 'create-task') {
       const canLeave = await confirmLeaveCreateTask();
-      if (!canLeave) {
-        return;
-      }
+      if (!canLeave) return;
     }
-
     navigate(`/dashboard/${segment}${search}`);
   };
+
   const closePanel = (panelKey) => {
     setPanelMinimized(panelKey, false);
-    if (panel === panelKey) {
-      void goHome();
-    }
+    if (panel === panelKey) void goHome();
   };
+
   const isCreateTaskVisible = isPanelVisible('create-task');
 
-  const openAssignModal = () => {
-    setEditingTask(null);
-    goTo('create-task');
-  };
-
+  const openAssignModal = () => { setEditingTask(null); goTo('create-task'); };
   const closeAssignModal = () => {
     setPanelMinimized('create-task', false);
-    if (panel === 'create-task') {
-      navigate('/dashboard');
-    }
+    if (panel === 'create-task') navigate('/dashboard');
   };
 
-  const openInboxPanel = () => {
-    goTo('inbox');
-  };
+  const openInboxPanel = () => goTo('inbox');
+  const closeInboxPanel = () => closePanel('inbox');
 
-  const closeInboxPanel = () => {
-    closePanel('inbox');
-  };
-
-  const openOutboxModal = () => {
-    goTo('outbox');
-  };
-  
+  const openOutboxModal = () => goTo('outbox');
   const closeOutboxModal = () => closePanel('outbox');
 
-  const handleEditTaskFromOutbox = (task) => {
-    setEditingTask(task);
-    goTo('create-task');
-  };
-  const handleEditTaskFromTracking = (task) => {
-    setEditingTask(task);
-    goTo('create-task');
-  };
-  
+  const handleEditTaskFromOutbox = (task) => { setEditingTask(task); goTo('create-task'); };
+  const handleEditTaskFromTracking = (task) => { setEditingTask(task); goTo('create-task'); };
+
   const openWorkSpace = async () => {
     const canLeave = await confirmLeaveCreateTask();
-    if (!canLeave) {
-      return;
-    }
+    if (!canLeave) return;
     navigate('/dashboard/workspace?tab=overview');
   };
-  
   const closeWorkSpace = () => closePanel('workspace');
 
-  const handleStartTaskFromInbox = () => {
-    navigate('/dashboard/workspace?tab=Tools');
-  };
+  const handleStartTaskFromInbox = () => navigate('/dashboard/workspace?tab=Tools');
 
-  const openTrackingPanel = () => {
-    goTo('tracking');
-  };
-
+  const openTrackingPanel = () => goTo('tracking');
   const closeTrackingPanel = () => closePanel('tracking');
-  const openMessageSystem = () => {
-    goTo('messages');
-  };
+
+  const openMessageSystem = () => goTo('messages');
   const closeMessageSystem = () => closePanel('messages');
-  const openTrendingsPanel = () => {
-    goTo('trendings');
-  };
+
+  const openTrendingsPanel = () => goTo('trendings');
   const closeTrendingsPanel = () => closePanel('trendings');
-  const openAdminQueue = () => {
-    goTo('admin-queue');
-  };
+
+  const openAdminQueue = () => goTo('admin-queue');
   const closeAdminQueue = () => closePanel('admin-queue');
 
   useEffect(() => {
-    if (isCreateTaskVisible) {
-      return;
-    }
-
+    if (isCreateTaskVisible) return;
     setEditingTask(null);
   }, [isCreateTaskVisible]);
 
@@ -216,20 +186,9 @@ const FunctionalMenu = () => {
 
     if (previousPanel === 'create-task' && currentPanel !== 'create-task') {
       const modalApi = assignModalRef.current;
-      if (!modalApi) {
-        previousRouteRef.current = currentRoute;
-        return;
-      }
-
-      if (modalApi.consumeNavigationAllowance?.()) {
-        previousRouteRef.current = currentRoute;
-        return;
-      }
-
-      if (!modalApi.hasUnsavedChanges?.()) {
-        previousRouteRef.current = currentRoute;
-        return;
-      }
+      if (!modalApi) { previousRouteRef.current = currentRoute; return; }
+      if (modalApi.consumeNavigationAllowance?.()) { previousRouteRef.current = currentRoute; return; }
+      if (!modalApi.hasUnsavedChanges?.()) { previousRouteRef.current = currentRoute; return; }
 
       routeInterceptionRef.current = true;
       navigate(`${previousRoute.pathname}${previousRoute.search || ''}`, { replace: true });
@@ -244,7 +203,6 @@ const FunctionalMenu = () => {
         }
         routeInterceptionRef.current = false;
       });
-
       return;
     }
 
@@ -253,68 +211,114 @@ const FunctionalMenu = () => {
 
   return (
     <>
-      <aside className={`functional-menu ${isCollapsed ? 'collapsed' : ''}`}>
-        <div className="menu-header">
-          <h2 className="menu-title">MENU BAR</h2>
+      {/* Mobile overlay backdrop */}
+      {isMobileOpen && (
+        <div
+          className="mobile-menu-overlay"
+          onClick={onMobileClose}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside
+        id="functional-menu"
+        className={`functional-menu${isCollapsed ? ' collapsed' : ''}${isMobileOpen ? ' mobile-open' : ''}`}
+        aria-label="Main navigation"
+      >
+        {/* ── Sidebar Header ── */}
+        <div className="sidebar-header">
+          <div className="sidebar-brand">
+            <span className="sidebar-brand-name">MENU BAR</span>
+          </div>
+
           <button
-            className="collapse-btn"
-            onClick={toggleCollapse}
-            aria-label="Toggle menu"
+            className="sidebar-toggle-btn"
+            onClick={handleCollapseOrClose}
+            aria-label={isMobileOpen ? 'Close navigation' : isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" />
-            </svg>
+            {isMobileOpen ? (
+              /* X icon — close drawer on mobile */
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            ) : (
+              /* Chevron left — collapses; rotates 180° when already collapsed */
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+            )}
           </button>
         </div>
 
-        <nav className="menu-items">
-          <TrackingButton
-            isActive={activeItem === 'tracking'}
-            onClick={openTrackingPanel}
-          />
+        {/* ── Navigation ── */}
+        <nav className="sidebar-nav" role="navigation" aria-label="Sidebar navigation">
 
-          <AssignTaskButton
-            isActive={activeItem === 'create-task'}
-            onClick={openAssignModal}
-          />
+          {/* ── WORK ── */}
+          <div className="nav-section">
+            <div className="nav-section-header">
+              <span className="nav-section-label">Work</span>
+            </div>
 
-          <InboxButton
-            isActive={activeItem === 'inbox'}
-            onClick={openInboxPanel}
-          />
-
-          <OutboxButton
-            isActive={activeItem === 'outbox'}
-            isOpen={isOutboxModalOpen}
-            onClick={openOutboxModal}
-          />
-
-          <MessageSystemButton
-            isActive={activeItem === 'message-system'}
-            isOpen={isMessageSystemOpen}
-            onClick={openMessageSystem}
-          />
-          
-          <WorkSpaceButton 
-            isActive={activeItem === 'workspace'}
-            onClick={openWorkSpace}
-          />
-
-          <TrendingsButton
-            isActive={activeItem === 'trendings'}
-            onClick={openTrendingsPanel}
-          />
-
-          {can('view_admin_queue') && (
-            <AdminQueueButton
-              isActive={activeItem === 'admin-queue'}
-              onClick={openAdminQueue}
+            <TrackingButton
+              isActive={activeItem === 'tracking'}
+              onClick={openTrackingPanel}
             />
-          )}
+            <AssignTaskButton
+              isActive={activeItem === 'create-task'}
+              onClick={openAssignModal}
+            />
+            <InboxButton
+              isActive={activeItem === 'inbox'}
+              onClick={openInboxPanel}
+            />
+            <OutboxButton
+              isActive={activeItem === 'outbox'}
+              isOpen={isOutboxModalOpen}
+              onClick={openOutboxModal}
+            />
+            <WorkSpaceButton
+              isActive={activeItem === 'workspace'}
+              onClick={openWorkSpace}
+            />
+          </div>
+
+          {/* ── COMMUNICATION ── */}
+          <div className="nav-section">
+            <div className="nav-section-header">
+              <span className="nav-section-label">Communication</span>
+            </div>
+
+            <MessageSystemButton
+              isActive={activeItem === 'message-system'}
+              isOpen={isMessageSystemOpen}
+              onClick={openMessageSystem}
+            />
+          </div>
+
+          {/* ── INSIGHT ── */}
+          <div className="nav-section">
+            <div className="nav-section-header">
+              <span className="nav-section-label">Insight</span>
+            </div>
+
+            <TrendingsButton
+              isActive={activeItem === 'trendings'}
+              onClick={openTrendingsPanel}
+            />
+            {can('view_admin_queue') && (
+              <AdminQueueButton
+                isActive={activeItem === 'admin-queue'}
+                onClick={openAdminQueue}
+              />
+            )}
+          </div>
+
         </nav>
       </aside>
 
-      {/* Assign Task Modal */}
+      {/* ── Panels & Modals (business logic unchanged) ── */}
+
       <AssignTaskModal
         ref={assignModalRef}
         isOpen={isPanelVisible('create-task')}
@@ -324,7 +328,6 @@ const FunctionalMenu = () => {
         onActivate={() => activatePanel('create-task')}
       />
 
-      {/* Inbox Panel */}
       <InboxPanel
         isOpen={isPanelVisible('inbox')}
         onClose={closeInboxPanel}
@@ -333,7 +336,6 @@ const FunctionalMenu = () => {
         onActivate={() => activatePanel('inbox')}
       />
 
-      {/* Tracking Panel */}
       <TrackingPanel
         isOpen={isPanelVisible('tracking')}
         onClose={closeTrackingPanel}
@@ -341,6 +343,7 @@ const FunctionalMenu = () => {
         onMinimizedChange={(isMinimized) => setPanelMinimized('tracking', isMinimized)}
         onActivate={() => activatePanel('tracking')}
       />
+
       <GroupMessagePanel
         isOpen={isPanelVisible('messages')}
         onClose={closeMessageSystem}
@@ -348,6 +351,7 @@ const FunctionalMenu = () => {
         onMinimizedChange={(isMinimized) => setPanelMinimized('messages', isMinimized)}
         onActivate={() => activatePanel('messages')}
       />
+
       <TrendingsPanel
         isOpen={isPanelVisible('trendings')}
         onClose={closeTrendingsPanel}
@@ -355,7 +359,6 @@ const FunctionalMenu = () => {
         onActivate={() => activatePanel('trendings')}
       />
 
-      {/* Outbox Modal */}
       <OutboxModal
         isOpen={isPanelVisible('outbox')}
         onClose={closeOutboxModal}
@@ -364,7 +367,6 @@ const FunctionalMenu = () => {
         onActivate={() => activatePanel('outbox')}
       />
 
-      {/* WorkSpace Modal */}
       <WorkSpaceModal
         isOpen={isPanelVisible('workspace')}
         onClose={closeWorkSpace}

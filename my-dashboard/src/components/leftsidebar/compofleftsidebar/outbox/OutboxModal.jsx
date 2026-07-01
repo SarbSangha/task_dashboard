@@ -9,6 +9,8 @@ import { draftAPI, taskAPI } from '../../../../services/api';
 import { formatDateIndia, formatTimeIndia } from '../../../../utils/dateTime';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { isMobileViewport } from '../../../../utils/isMobileViewport';
+import WindowControls from '../../../common/WindowControls';
 import { useDrafts, useOutbox } from '../../../../hooks/useOutbox';
 import { OutboxSkeleton } from '../../../ui/OutboxSkeleton';
 import { useAuth } from '../../../../context/AuthContext';
@@ -76,7 +78,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   const [taskSearch, setTaskSearch] = useState('');
   const [taskDateFilter, setTaskDateFilter] = useState('');
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const [selectedTaskForWorkflow, setSelectedTaskForWorkflow] = useState(null);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [chatTask, setChatTask] = useState(null);
@@ -113,7 +115,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   useEffect(() => {
     if (isOpen) {
       setIsMinimized(false);
-      setIsMaximized(false);
+      setIsMaximized(isMobileViewport());
     }
   }, [isOpen]);
 
@@ -385,7 +387,6 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
       return;
     }
 
-    setIsMaximized(false);
     setIsMinimized(true);
   };
 
@@ -450,19 +451,13 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
               </label>
             </div>
           )}
-          <div className="outbox-window-controls">
-            {!isMinimized && (
-              <button className="outbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMinimize(); }} title="Minimize">
-                ─
-              </button>
-            )}
-            <button className="outbox-window-btn" onClick={(e) => { e.stopPropagation(); handleToggleMaximize(); }} title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}>
-              {isMinimized ? '▢' : isMaximized ? '❐' : '□'}
-            </button>
-            <button className="outbox-close-btn" onClick={(e) => { e.stopPropagation(); onClose(); }}>
-              ✕
-            </button>
-          </div>
+          <WindowControls
+            isMinimized={isMinimized}
+            isMaximized={isMaximized}
+            onMinimize={handleToggleMinimize}
+            onMaximize={handleToggleMaximize}
+            onClose={onClose}
+          />
         </div>
 
         {/* Outbox Filters */}
@@ -545,7 +540,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
             <div className="no-tasks">
               <p>📭 No tasks found</p>
               {currentUser && (
-                <small style={{ color: '#666', marginTop: '8px' }}>
+                <small className="outbox-empty-note">
                   Showing only tasks created by you
                 </small>
               )}

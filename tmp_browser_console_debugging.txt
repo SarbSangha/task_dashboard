@@ -1,0 +1,2318 @@
+
+
+===== PAGE 1 =====
+
+ChatGPT
+Browser Console Debugging
+6/26/2026, 12:38:46 PM
+Source: https://chatgpt.com/c/6a3e0336-f440-83ee-b0cf-c3cdc9929218
+2
+4
+6
+12
+20
+48
+52
+56
+59
+see t ////;llkjhgfcx. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+why the coop policy appear. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+and in my kling it automatically log out i want to check that. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+tell me some thing if you need any thing to inspect the change. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+Request URL https://kling.ai/api/notix/channel/sse-push/connect/ Request Method GET Status Code 401
+Unauthorized Remote Address 23.61.202.42:443 Referrer Policy strict-origin-when-cross-origin alt-svc h3=":443";
+ma=93600 content-length 61 content-type application/json;charset=utf-8 date Fri, 26 Jun 2026 05:17:45 GMT quic-
+version 0x00000001 :authority kling.ai :method GET :path /api/notix/channel/sse-push/connect/ :scheme https
+accept text/event-stream accept-encoding gzip, deﬂate, br, zstd accept-language en-IN,en;q=0.9 cache-control no-
+cache cookie kGateway-identity=kGateway-1a2c7f22-40200185; _gcl_au=1.1.817607041.1782447107;
+_ga=GA1.1.1336240656.1782447108; __risk_web_device_id=d64a44fa1782447108034401;
+weblogger_did=web_2249077255BC2A6. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+Request URL https://id.kling.ai/pass/ksi18n/web/sns/login/accessToken?__NS_hxfalcon=HUDR_sFnX-
+FFuAW5VsfDNK0XOP6snthhLcvIxjxBz8_r61UvYFIc7AGaHwcmlb_Lw36QFxBn0Bj4EKN4Zb24e3VuXsMYojNEC2VAlN0_LMerD
+fsgpPhcwt79cK7Hy9w4ZK644eMCLcihAJ9lm17QsTGX880s53arOUmCd8fY7xjqAfLxZ8mm3rUdQ_j6YLtNm3GqRmU9bFN-9t
+Uv50lw6AzZFi5S1aubT6L3glO_SI3C716nsBK55GqOfXz-
+Cc1h23WbQN6L9vJecDKwK2q8YGfnxTYWmv0l64z2002kcvEllTrbiJcRE3KMZVEtTlbbdRjPIq438urWLyfrC04iVNtYoKYd9ZBQG2
+HTlqjZ7zsog1wmfOwRLspbSWo6b_EAyc8pchpuopaDiE6xip3bwTZpezVZyBb3Yxsmq11kPMPh9l_oR5BaRcoR1-YOWPFc4kyB
+49zM3oXEL4Oijc44PZAVGnwEnuaXarGMI1ggviqaeq3K1H-HuqsEt9YNW7AEWcIeK6OY. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+AEC AdJVEatevZUOJSB0dmKY6oZJLy3MXORjyzXF1fu04-mcn8qhH5lTmmf7LkU .google.com / 2026-08-26T10:48:02.212Z 62 
+Medium APISID 4Qt0aRETW2_uSdfC/Art_QBUoOrwvT0R0S .google.com / 2027-07-30T12:32:46.112Z 40 High APISID
+4Qt0aRETW2_uSdfC/Art_QBUoOrwvT0R0S .google.co.in / 2027-07-30T12:32:46.577Z 40 High did
+web_a74u9ov76kk0s76f4gmcwkso84mjt3ndxy24 .kling.ai / 2027-07-31T04:51:05.535Z 43 ✓  None Medium g_state
+{"i_l":0,"i_ll":1782449467781,"i_b":"2jICf4DORi3LYEI/cISKGtVJzaUECJSqMwPftrYAOQs","i_e":
+{"enable_itp_optimization":24},"i_et":1782449467781} kling.ai / 2026-12-23T04:51:07.000Z 147 Medium GCL_AW_P
+GCL.1782207370.CjwKCAjw3ejRBhAdEiwADkqPn1YlqfBQcqUrMh2iCK3yHMbhXQruVmBn9f0hDOH3IPMKKjpPriGzVxoCrfIQ
+.google.com /. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+i am using two proﬁle one in incognito and simple. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 
+after logout. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+i will send a=evry thing before log out then i will send every thing after logut tell me what you need now. . . . . . . . . . . . 
+Pasted
+text(16).txtDocumentUcEmvYVMnr4XnrVwXC1KusZLaa/bJZLd+ojYq/pY1lERZi3OeQE3Ke9GyvOydpPxRMiseIYPU1HeQp/3M
+44f52808927f2e0c07c9b448cd2a6c5a85dbd3211fa1cc694bacb26346fa59af 4abc1868743d6bc844eb11bafd2111199b73
+ChNrc2kxOG4uYWkucG9ydGFsLnN0EqABHJy_5-KE4PLQ_IcPEB2WIw-
+TWZQpsgZFGzLvvkXVCRtTfR00VFsqif3iVClpWIHtxN5WDLNqbT0hmqiC5aQGxNW-Bh1sNGWG9Ra3XI60nnC4MN8VKf4ryMa
+G2mQFfxqXMIzIh1sR6DhlfUJDTycUI0h0S3jkXLANIZA4-o49ZXYio-wT3tb-x6EuJMzc7Nkna--
+IBa2kxDbZF8nbgKppRoSh5hmrSv593Ml7Cg4s7d4h_BIIiACbaMoSd8sKQ2WJITs9wa_oFotR2-t2xhRA13t60gezCgFMAE
+web_4ﬀ0a769a1ﬀ818ed7ed599c1e099a2c9fa9 kGateway-c30b1879-191189962
+{"buster":"","timestamp":1782454052992,"clientState":{"mutations":[],"queries":[{"dehydratedAt":1782454052992,"state":{
+<?xml versi. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 1/77
+
+===== PAGE 2 =====
+
+see t           ////;llkjhgfcx   
+Yes, I can see the screenshot.
+The main things visible in the browser console are:
+1. Repeated warning (Chinese)
+[warn 102] user_id 为空 ...
+Translation:
+user_id is empty. Please make sure it is passed in. If it is passed asynchronously, use the
+updateCommonPackage interface.
+This is a warning from Kling's frontend indicating that user_id is missing. It is usually not fatal.
+2. Repeated COOP messages
+Cross-Origin-Opener-Policy policy would block the window.closed call.
+These are browser security messages related to popups/oauth windows. They are generally not the
+cause of generation failures.
+3. Browser information
+Chrome 149
+Windows 10
+Blink engine
+amd64
+4. Some debug values like
+radar: 307cdnUrl
+which look like internal Kling logs.
+If your concern is why Kling isn't generating, this console doesn't show the actual failure yet. The
+important information would be in the Network tab.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 2/77
+
+===== PAGE 3 =====
+
+Could you tell me:
+Is the generation stuck, failing immediately, or showing an error message?
+Or are you trying to inspect the request that contains your prompt?
+If you're looking for the request that sends the prompt to Kling, open Developer Tools →  Network,
+start a generation, and send a screenshot of the Network tab (or the failed request). That will reveal
+much more than these console warnings.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 3/77
+
+===== PAGE 4 =====
+
+why the coop policy appear
+The message
+Cross-Origin-Opener-Policy policy would block the window.closed call.
+comes from the browser's Cross-Origin-Opener-Policy (COOP) security feature.
+What is COOP?
+COOP is an HTTP response header that isolates a webpage from pages opened from other origins
+(domains). It helps protect against attacks such as Spectre and prevents cross-origin pages from
+interfering with each other.
+For example, a website might send:
+http
+Cross-Origin-Opener-Policy: same-origin
+or
+http
+Cross-Origin-Opener-Policy: same-origin-allow-popups
+Why does this message appear?
+A very common ﬂow is:
+1. Kling opens a popup window for login/payment/OAuth.
+2. The popup ﬁnishes.
+3. Some JavaScript tries to execute:
+JavaScript
+window.close();
+or
+JavaScript
+window.opener.close();
+4. Because the popup and the main page are considered diﬀerent browsing contexts under COOP,
+Chrome blocks that operation and prints:
+Cross-Origin-Opener-Policy policy would block the window.closed call.
+It's a warning from Chrome, not necessarily an application error.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 4/77
+
+===== PAGE 5 =====
+
+Is this causing your generation to fail?
+Probably not.
+In your screenshot, there are no JavaScript exceptions related to generation itself.
+Instead I see:
+⚠  user_id is empty (Kling warning)
+⚠  COOP warnings
+Debug logs
+COOP warnings are extremely common on sites using:
+Google Login
+OAuth
+Stripe
+PayPal
+Firebase Authentication
+Microsoft Login
+Many AI websites (including Kling, Midjourney web apps, etc.)
+Users often see these warnings even when everything works normally.
+Can you ﬁx it?
+If you're just using Kling as a user:
+No. Only Kling's developers can change the COOP headers.
+If you own the website, you would conﬁgure headers such as:
+http
+Cross-Origin-Opener-Policy: same-origin-allow-popups
+or redesign how popups communicate.
+Should you ignore it?
+Yes, unless the popup actually fails (for example, login never completes or payment never returns). In
+most cases, these messages are harmless and can be ignored.
+If your goal is to debug why Kling generation is failing, the Network tab (especially failed XHR/Fetch
+requests with status 4xx or 5xx) will be much more informative than these COOP warnings.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 5/77
+
+===== PAGE 6 =====
+
+and in my kling it automatically log out i want to check that 
+Yes. If Kling is automatically logging you out, you can investigate it using Chrome DevTools. Here's a
+systematic way to determine the cause.
+1. Check Cookies (Most Likely Cause)
+Open:
+DevTools → Application → Storage → Cookies → https://kling.ai
+Look for cookies such as:
+session
+access_token
+refresh_token
+auth_token
+jwt
+token
+Check:
+Does the cookie disappear after logout?
+Does its Expires time suddenly change?
+Is it marked Session (deleted when browser closes)?
+2. Watch the Network Requests ⭐
+Open:
+Network
+Enable:
+✅  Preserve log
+✅  Disable cache
+Now:
+1. Login.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 6/77
+
+===== PAGE 7 =====
+
+2. Wait until it logs out.
+3. Look for requests returning
+401 Unauthorized
+or
+403 Forbidden
+Especially requests like:
+/user/me/profile/session/auth/token/refresh
+Click the failing request and inspect:
+Response
+Sometimes you'll see:
+JSON
+{  "code":401,  "message":"Token expired"}
+or
+JSON
+{  "message":"Session invalid"}
+3. Check Local Storage
+Application→ Local Storage→ https://kling.ai
+Look for keys like
+tokenjwtaccess_tokenrefresh_tokenuser
+See if they disappear after logout.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 7/77
+
+===== PAGE 8 =====
+
+4. Check Session Storage
+Same place:
+Session Storage
+If Kling stores authentication here instead of cookies, closing tabs or certain reloads can remove it.
+5. Check Console
+When logout happens, see if new errors appear:
+401Token expiredrefresh failedinvalid sessioncookie missing
+The COOP warning is not what causes logout.
+6. Check the Login Response
+In Network, ﬁnd the login request.
+See if the server sends
+Set-Cookie
+or
+JSON
+{    "accessToken": "...",    "refreshToken": "..."}
+If there's no refresh token, Kling may intentionally log users out after the access token expires.
+7. Check if Refresh Token Fails
+Many sites work like this:
+Access Token (30 min)
+↓
+Expires
+↓
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 8/77
+
+===== PAGE 9 =====
+
+Browser calls
+POST /refresh
+↓
+Gets new token
+If
+POST /refresh
+returns
+401
+or
+403
+you'll be logged out.
+8. Possible Reasons
+Cause How to Detect
+Access token expired 401 in Network
+Refresh token failed /refresh returns 401
+Cookie deleted Cookie disappears in Application tab
+Browser extension Test in Incognito with extensions disabled
+Multiple logins Session invalidated by server
+Kling server bug Refresh request fails despite valid cookies
+Since you mentioned you're using two Kling accounts, also check whether:
+Logging into one account automatically logs out the other (if both use the same browser proﬁle
+and cookies).
+If both accounts are on the same kling.ai domain, they share the same cookie storage, so
+signing into one account can overwrite the other's session.
+The most useful next step
+When the logout happens, please provide:
+1. A screenshot of the Network tab ﬁltered by 401 or auth.
+2. A screenshot of Application →  Cookies →  https://kling.ai  before and after the logout.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 9/77
+
+===== PAGE 10 =====
+
+Those two screenshots will usually reveal the exact reason for the automatic logout.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 10/77
+
+===== PAGE 11 =====
+
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 11/77
+
+===== PAGE 12 =====
+
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 12/77
+
+===== PAGE 13 =====
+
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 13/77
+
+===== PAGE 14 =====
+
+tell me some thing if you need any thing 
+to inspect the change
+Yes. From these screenshots I can already infer a few things, but I need one more set of information to
+pinpoint the logout cause.
+What I found
+1. The COOP warnings are unrelated
+These are just browser security warnings and won't log you out.
+2. I do see authentication failures
+In your console:
+server-push: HTTP error! status: 401
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 14/77
+
+===== PAGE 15 =====
+
+and
+status: 401
+A 401 means the server thinks you're no longer authenticated.
+The question is why.
+3. Your cookies still exist
+From the Application tab I can see cookies like
+kwfv1kwscodekwssettoken...
+so the browser isn't deleting everything immediately.
+4. Local Storage still contains user data
+I can see
+user
+with values like
+JSON
+{  "userName":"",  "userId":0,  ...}
+That is interesting.
+Normally after login I'd expect something like
+userId: 92054030
+not
+userId: 0
+So either
+Kling cleared the user object, or
+it failed to refresh it.
+The most likely possibilities
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 15/77
+
+===== PAGE 16 =====
+
+At the moment I think the probabilities are roughly:
+①  Access token expired (60%)
+The websocket/server push begins returning
+401
+because the token expired.
+Then Kling logs you out.
+②  Refresh token request failed (25%)
+Normally it should do
+Access Token expires
+↓
+POST /refresh
+↓
+new token
+If that refresh request returns
+401
+it logs you out.
+③  Server invalidated your session (15%)
+Possible if
+another login
+account restriction
+backend issue
+What I need next
+This is the most important part.
+A) Network tab
+Open
+Network
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 16/77
+
+===== PAGE 17 =====
+
+Enable
+✓ Preserve log✓ Disable cache
+Then
+1. Login
+2. Wait until it logs out
+3. Click the ﬁrst red request.
+I need screenshots of
+Headers
+Response
+especially if it's
+401
+or
+refresh
+or
+user/profile
+B) Find the refresh request
+In Network ﬁlter type
+refresh
+or
+auth
+or
+token
+Take a screenshot.
+C) Check cookie changes
+In Application →  Cookies
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 17/77
+
+===== PAGE 18 =====
+
+Find
+kwssettoken
+or
+kwscode
+When logout happens
+see whether
+value changes
+cookie disappears
+D) Check websocket
+In Network choose
+WS
+(or ﬁlter
+websocket
+)
+Click the websocket connection.
+When logout happens,
+does it receive
+401
+or
+close
+or
+unauthorized
+One thing I noticed
+I also noticed this cookie:
+kwssettoken
+and in Local Storage
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 18/77
+
+===== PAGE 19 =====
+
+serverPushBizErrorKey
+NXCH.MaxNewSubExceed
+That suggests Kling is using a persistent WebSocket/server-push service.
+Since your console speciﬁcally says
+server-pushHTTP error 401
+I'm particularly interested in whether the WebSocket is failing ﬁrst and then triggering the logout, or
+whether the session expires ﬁrst and the WebSocket failure is just a symptom.
+I can help you fully diagnose this
+If you provide one HAR ﬁle, we can likely identify the exact cause.
+1. Open Network.
+2. Enable Preserve log.
+3. Reproduce the automatic logout.
+4. Right-click anywhere in the Network list →  Save all as HAR with content.
+5. Upload the .har ﬁle here.
+The HAR ﬁle will show:
+which request returned 401,
+whether the access token expired,
+whether a refresh request was attempted,
+whether cookies changed,
+and the sequence of events leading to the logout. This is usually enough to identify the root cause.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 19/77
+
+===== PAGE 20 =====
+
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 20/77
+
+===== PAGE 21 =====
+
+Request URL
+https://kling.ai/api/notix/channel/sse-push/connect/
+Request Method
+GET
+Status Code
+401 Unauthorized
+Remote Address
+23.61.202.42:443
+Referrer Policy
+strict-origin-when-cross-origin
+alt-svc
+h3=":443"; ma=93600
+content-length
+61
+content-type
+application/json;charset=utf-8
+date
+Fri, 26 Jun 2026 05:17:45 GMT
+quic-version
+0x00000001
+:authority
+kling.ai
+:method
+GET
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 21/77
+
+===== PAGE 22 =====
+
+:path
+/api/notix/channel/sse-push/connect/
+:scheme
+https
+accept
+text/event-stream
+accept-encoding
+gzip, deﬂate, br, zstd
+accept-language
+en-IN,en;q=0.9
+cache-control
+no-cache
+cookie
+kGateway-identity=kGateway-1a2c7f22-40200185; _gcl_au=1.1.817607041.1782447107; 
+_ga=GA1.1.1336240656.1782447108; __risk_web_device_id=d64a44fa1782447108034401; 
+weblogger_did=web_2249077255BC2A62; kwpsecproductname=kling-web-sgp; accept-
+language=en-001; history-locale=en; _did=web_73598422935437F; 
+did=web_0094db4162d5da4dcc204bde6100f8ddc5ca; wid=11174529016642871; teamId=; 
+_ga_MWG30LDQKZ=GS2.1.s1782447107$o1$g1$t1782448788$j59$l0$h516433524; 
+kwfv1=GAm0P/GIPA0z0+0m00Gn8fw/bSP/DFP/qAPAGEG/rAP/ql+0zjGAq7GnL9PA+SweY0PAqh8/QY
+P/8YPBr7+/qI80rI+eSS+0YS+08DweGA+9P9P/c7w/PA8/WA+0Gl80ZU+npSP/pjweGUP9+fPA+YPfcU80
+mj8eDFGfHUG0HU8/W=; g_state=
+{"i_l":0,"i_ll":1782448789989,"i_b":"1u0rEFCo9l9e3vQY+m48QZYGsVNkR17gfIZsBvC5gVE","i_e":
+{"enable_itp_optimization":24},"i_et":1782448789989}; userId=92054030; 
+ksi18n.ai.portal_st=ChNrc2kxOG4uYWkucG9ydGFsLnN0EqABdMckfPLZGhTCIMHﬁCRNaAeuL1vhkke
+rOmRwTvAqizSQFfJgvBDmzVc3j9HxpTkeFwPMVDV9TukecAK97BKJtcFG0Bz1jQ2nZci6S92wg4xQBPZ
+AzDAf5kB-xAWhTZPeLYLoshQHFEJDCEFDrDPqorTQiixBF-kntuZWnjAjKwOaun-
+aEsXGmBWG0HbcHgOeMw0oNM90RUMu73iBLSmcYxoSYbyO0302z4UY08ctfW5KI2jvIiBu0S5DjEfLl
+OthTOkKS56rZKi-v3VCBFIi9IxURFOogSgFMAE; 
+ksi18n.ai.portal_ph=94add879c8c5a8b3a84ac6b07d55341073a2; 
+kwssectoken=Qta3B5jC5IfVGXYqc3taN+XUId/h6ks/ul8NineOQTPPpGQjAlOOR1rLjeNo9BCiCjxvgUHc
+16S68MVBiro4dg==; 
+kwscode=010115ebdbcf3ecc11856a43173b231fc02feec25611dca95de06c689ceb16ea
+pragma
+no-cache
+priority
+u=1, i
+referer
+https://kling.ai/app/user-proﬁle/published/all
+sec-ch-ua
+"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+same-origin
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 22/77
+
+===== PAGE 23 =====
+
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) 
+Chrome/149.0.0.0 Safari/537.36
+Show moreShow less
+This is much more useful. I think we're close to identifying the root cause.
+What we know
+The failing request is:
+GET https://kling.ai/api/notix/channel/sse-push/connect/
+Response:
+JSON
+{  "result": -401,  "error_msg": "token value error"}
+So the server is rejecting the authentication token, not the browser.
+Notice:
+Cookies are being sent (I can see kwssectoken, kwscode, ksi18n.ai.portal_st, etc.).
+The request reaches Kling successfully.
+Kling responds "token value error".
+This means the problem is not:
+COOP
+Chrome
+Cookies not being sent
+CORS
+It means Kling doesn't accept the token it received.
+I now suspect one of these
+1. Token expired (most likely)
+Kling keeps an authentication token (kwssectoken or another internal token).
+When it expires:
+SSE connect        ↓Server validates token
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 23/77
+
+===== PAGE 24 =====
+
+        ↓token value error        ↓401        ↓Frontend logs out
+2. Token refresh failed
+Normally the ﬂow should be
+login
+↓
+access token
+↓
+expires
+↓
+POST refresh
+↓
+new token
+↓
+SSE reconnect
+If refresh never happens (or fails), the next SSE request gets
+401token value error
+3. Token corruption
+Less likely, but possible if
+another tab
+another browser proﬁle
+another login
+an extension
+overwrites the stored token.
+The next thing I want to inspect
+This is not the SSE request anymore.
+I want the request that refreshes the login.
+In Network, search for
+refresh
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 24/77
+
+===== PAGE 25 =====
+
+or
+token
+or
+login
+or
+passport
+or
+user
+Even better
+Click this ﬁlter:
+Fetch/XHR
+Then reproduce the logout.
+I want to see the ﬁrst request that returns 401 before the SSE request.
+Also inspect one cookie
+In Application →  Cookies
+Click
+kwssectoken
+and tell me
+Does its value change after logout?
+Or does it stay exactly the same?
+I also want one request header
+Click the failing SSE request.
+Under Request Headers, see if there is an Authorization header.
+For example:
+Authorization: Bearer xxxxx
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 25/77
+
+===== PAGE 26 =====
+
+or
+x-token: ...
+I only saw cookies in your screenshot. If there is an Authorization header farther down, that's important.
+One thing that stands out
+Your cookies include:
+kwssectokenkwscode
+These are probably Kling's authentication/session tokens.
+However, the server says:
+token value error
+rather than
+token missing
+That distinction matters:
+"token missing" would mean no token was sent.
+"token value error" means a token was sent, but the server rejected its value.
+So the token is present but invalid according to the server.
+My current hypothesis (about 80% conﬁdence)
+The logout is happening because Kling's session refresh mechanism is failing, not because of cookies
+or the browser.
+The next step is to identify why the token becomes invalid.
+Could you provide these two things?
+1. Application →  Cookies →  kwssectoken (click it and show all its properties, especially Expires/Max-Age
+if present).
+2. Network →  Fetch/XHR around the time of logout, looking for any request that returns 401 besides
+/api/notix/channel/sse-push/connect/.
+Those should reveal whether the session token simply expires or whether the refresh process itself is
+failing.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 26/77
+
+===== PAGE 27 =====
+
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 27/77
+
+===== PAGE 28 =====
+
+Request URL
+https://id.kling.ai/pass/ksi18n/web/sns/login/accessToken?__NS_hxfalcon=HUDR_sFnX-
+FFuAW5VsfDNK0XOP6snthhLcvIxjxBz8_r61UvYFIc7AGaHwcmlb_Lw36QFxBn0Bj4EKN4Zb24e3VuXs
+MYojNEC2VAlN0_LMerDhJK9nym8Jrx2cnp4iNdoYGECPbgEPyzfyJ_9LRRA2kT4Wi-
+fsgpPhcwt79cK7Hy9w4ZK644eMCLcihAJ9lm17QsTGX880s53arOUmCd8fY7xjqAfLxZ8mm3rUdQ_j6Y
+LtNm3GqRmU9bFN-9tTlaFaEDf2CSPTcgyyybIvo1KPDt-OfZJI1uH1M4K-
+Uv50lw6AzZFi5S1aubT6L3glO_SI3C716nsBK55GqOfXz-
+Cc1h23WbQN6L9vJecDKwK2q8YGfnxTYWmv0l64z2002kcvEllTrbiJcRE3KMZVEtTlbbdRjPIq438urWLyf
+rC04iVNtYoKYd9ZBQG2TaO6BzdcOT-yZYpjr_ﬂdd-
+HTlqjZ7zsog1wmfOwRLspbSWo6b_EAyc8pchpuopaDiE6xip3bwTZpezVZyBb3Yxsmq11kPMPh9l_oR5
+BaRcoR1-YOWPFc4kyB9zQoNTcReNdziC8P_woC6WW30XFhHy6rg1-
+49zM3oXEL4Oijc44PZAVGnwEnuaXarGMI1ggviqaeq3K1H-
+HuqsEt9YNW7AEWcIeK6OYKNpaUw8Yy_gtOj2VrAo4j8eoa8NZViT_-
+qTmzclurEKMdxYdyRL8HeZbKvbafv-oB0_CKXa6n4ZbDp0ogD2wC5CbNYIIw-
+EBG4gsvWB$HE_554ad2b7b5b504241c811f8d2301e6fb851f1e1e1e1fc386b2a40cc13aaac3a06ed48
+11f854820c4654820f61e&caver=2
+Request Method
+POST
+Status Code
+200 OK
+Remote Address
+23.63.108.216:443
+Referrer Policy
+strict-origin-when-cross-origin
+access-control-allow-credentials
+true
+access-control-allow-origin
+https://kling.ai
+alt-svc
+h3=":443"; ma=93600
+content-encoding
+gzip
+content-length
+1267
+content-type
+application/json;charset=UTF-8
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 28/77
+
+===== PAGE 29 =====
+
+date
+Fri, 26 Jun 2026 04:40:10 GMT
+quic-version
+0x00000001
+set-cookie
+userId=92054030; Path=/; Domain=kling.ai; Max-Age=1814400; Expires=Fri, 17 Jul 2026 04:40:10 
+GMT; Secure; SameSite=None
+set-cookie
+userId=92054030; Path=/; Max-Age=1814400; Expires=Fri, 17 Jul 2026 04:40:10 GMT; Secure; 
+SameSite=None
+set-cookie
+passToken=ChNwYXNzcG9ydC5wYXNzLXRva2VuEsABx6PpI8gDQcNWzlZuj-fs5bPIRQbM5MH-
+vyHS2BR7nUDk8FOWisR4_ECR-
+-247fCNtSNmKQa1l3nKwJO39cxprYNqvqEuf_DF0OQVsMPHGK7WVynKCa7nkMKd_rgI1sJBO1T-
+GBYuDDddRxfRC7R5I-
+P_0UkkgZhUn7V5siOVGo1Tc_jvTYHynhL70P_a0cY0Jt2cW9xjNseuepz1lqSPA8MdJugWXoteKjr6m2p8_
+4A_KS4u6S1YF3zDC0qJDOMmGhJO3MZPvRPnLuYSIusA6iN0bysiIMuAKE1vP4erJ1JuoZ2Kz5VoZZn6O_
+o1SjNEKQWRGc2VKAUwAQ; Path=/; Max-Age=1814400; Expires=Fri, 17 Jul 2026 04:40:10 GMT; 
+Secure; HttpOnly; SameSite=None
+vary
+Accept-Encoding
+:authority
+id.kling.ai
+:method
+POST
+:path
+/pass/ksi18n/web/sns/login/accessToken?__NS_hxfalcon=HUDR_sFnX-
+FFuAW5VsfDNK0XOP6snthhLcvIxjxBz8_r61UvYFIc7AGaHwcmlb_Lw36QFxBn0Bj4EKN4Zb24e3VuXs
+MYojNEC2VAlN0_LMerDhJK9nym8Jrx2cnp4iNdoYGECPbgEPyzfyJ_9LRRA2kT4Wi-
+fsgpPhcwt79cK7Hy9w4ZK644eMCLcihAJ9lm17QsTGX880s53arOUmCd8fY7xjqAfLxZ8mm3rUdQ_j6Y
+LtNm3GqRmU9bFN-9tTlaFaEDf2CSPTcgyyybIvo1KPDt-OfZJI1uH1M4K-
+Uv50lw6AzZFi5S1aubT6L3glO_SI3C716nsBK55GqOfXz-
+Cc1h23WbQN6L9vJecDKwK2q8YGfnxTYWmv0l64z2002kcvEllTrbiJcRE3KMZVEtTlbbdRjPIq438urWLyf
+rC04iVNtYoKYd9ZBQG2TaO6BzdcOT-yZYpjr_ﬂdd-
+HTlqjZ7zsog1wmfOwRLspbSWo6b_EAyc8pchpuopaDiE6xip3bwTZpezVZyBb3Yxsmq11kPMPh9l_oR5
+BaRcoR1-YOWPFc4kyB9zQoNTcReNdziC8P_woC6WW30XFhHy6rg1-
+49zM3oXEL4Oijc44PZAVGnwEnuaXarGMI1ggviqaeq3K1H-
+HuqsEt9YNW7AEWcIeK6OYKNpaUw8Yy_gtOj2VrAo4j8eoa8NZViT_-
+qTmzclurEKMdxYdyRL8HeZbKvbafv-oB0_CKXa6n4ZbDp0ogD2wC5CbNYIIw-
+EBG4gsvWB$HE_554ad2b7b5b504241c811f8d2301e6fb851f1e1e1e1fc386b2a40cc13aaac3a06ed48
+11f854820c4654820f61e&caver=2
+:scheme
+https
+accept
+application/json, text/plain, */*
+accept-encoding
+gzip, deﬂate, br, zstd
+accept-language
+en-IN,en;q=0.9
+cache-control
+no-cache
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 29/77
+
+===== PAGE 30 =====
+
+content-length
+1280
+content-type
+application/json
+cookie
+_gcl_au=1.1.817607041.1782447107; _ga=GA1.1.1336240656.1782447108; 
+__risk_web_device_id=d64a44fa1782447108034401; kwpsecproductname=kling-web-sgp; accept-
+language=en-001; history-locale=en; did=web_0094db4162d5da4dcc204bde6100f8ddc5ca; 
+wid=11174529016642871; 
+ksi18n.ai.portal_st=ChNrc2kxOG4uYWkucG9ydGFsLnN0EqABVFY62m5tLsX_ghkeFJBQI2xhXjq4agP6
+8L8Ld3rW6x-v3a-SHhuRWyBRptsv1WI-
+GyjeCSFBc449c2NBa2SPNkyASg93OLsBt4xmdYif3dmZkPfwS5hfBig_5hW3OyN7k_TnauDIIKyTSWUK
+LrNvMDIS2vyows3tnmGkWuJ9uTyql8gbaLG6KvsC88_W4_J5dB9QKIlJLZaG6-
+ySLw8jxxoSrQbVxRXH0Y1e-vqHhbZPCjPSIiBZ9-
+dADv553MuLjnzmcN_droPCPKC2gFyoh52SxYTydCgFMAE; 
+ksi18n.ai.portal_ph=fcc131c427e59c965c2081a5ea95d981739e; teamId=; 
+_ga_MWG30LDQKZ=GS2.1.s1782447107$o1$g1$t1782448788$j59$l0$h516433524; 
+kwssectoken=fwr8fGNcV0WxhDA0Ado/NHtLInREWhTUbF1l4WfUrQgRkfbQpceUrst+QUda8yqr5nIp
+yx+SmFREp6Otd1oiLA==; 
+kwscode=346366ae5929c53fbea5dfbc973cd91ﬀ54d9d87d4f7275af2c0d9971cececea; 
+kwfv1=GAm0P/GIPA0z0+0m00Gn8fw/bSP/DFP/qAPAGEG/rAP/ql+0zjGAq7GnL9PA+SweY0PAqh8/QY
+P/8YPBr7+/qI80rI+eSS+0YS+08DweGA+9P9P/c7w/PA8/WA+0Gl80ZU+npSP/pjweGUP9+fPA+YPfcU80
+mj8eDFGfHUG0HU8/W=
+kww
+GAm0P/GIPA0z0+0m00Gn8fw/bSP/DFP/qAPAGEG/rAP/ql+0zjGAq7GnL9PA+SweY0PAqh8/QYP/8YPB
+r7+/qI80rI+eSS+0YS+08DweGA+9P9P/c7w/PA8/WA+0Gl80ZU+npSP/pjweGUP9+fPA+YPfcU80mj8eDF
+GfHUG0HU8/W=
+origin
+https://kling.ai
+pragma
+no-cache
+priority
+u=1, i
+referer
+https://kling.ai/
+sec-ch-ua
+"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+same-site
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) 
+Chrome/149.0.0.0 Safari/537.36
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 30/77
+
+===== PAGE 31 =====
+
+Request URL
+https://id.kling.ai/pass/ksi18n/web/sns/login/accessToken?__NS_hxfalcon=HUDR_sFnX-
+FFuAW5VsfDNK0XOP6snthhLcvIxjxBz8_r61UvYFIc7AGaHwcmlb_Lw36QFxBn0Bj4EKN4Zb24e3VuXs
+MYojNEC2VAlN0_LMerDhJK9nym8Jrx2cnp4iNdoYGECPbgEPyzfyJ_9LRRA2kT4Wi-
+fsgpPhcwt79cK7Hy9w4ZK644eMCLcihAJ9lm17QsTGX880s53arOUmCd8fY7xjqAfLxZ8mm3rUdQ_j6Y
+LtNm3GqRmU9bFN-9tTlaFaEDf2CSPTcgyyybIvo1KPDt-OfZJI1uH1M4K-
+Uv50lw6AzZFi5S1aubT6L3glO_SI3C716nsBK55GqOfXz-
+Cc1h23WbQN6L9vJecDKwK2q8YGfnxTYWmv0l64z2002kcvEllTrbiJcRE3KMZVEtTlbbdRjPIq438urWLyf
+rC04iVNtYoKYd9ZBQG2TaO6BzdcOT-yZYpjr_ﬂdd-
+HTlqjZ7zsog1wmfOwRLspbSWo6b_EAyc8pchpuopaDiE6xip3bwTZpezVZyBb3Yxsmq11kPMPh9l_oR5
+BaRcoR1-YOWPFc4kyB9zQoNTcReNdziC8P_woC6WW30XFhHy6rg1-
+49zM3oXEL4Oijc44PZAVGnwEnuaXarGMI1ggviqaeq3K1H-
+HuqsEt9YNW7AEWcIeK6OYKNpaUw8Yy_gtOj2VrAo4j8eoa8NZViT_-
+qTmzclurEKMdxYdyRL8HeZbKvbafv-oB0_CKXa6n4ZbDp0ogD2wC5CbNYIIw-
+EBG4gsvWB$HE_554ad2b7b5b504241c811f8d2301e6fb851f1e1e1e1fc386b2a40cc13aaac3a06ed48
+11f854820c4654820f61e&caver=2
+Request Method
+POST
+Status Code
+200 OK
+Remote Address
+23.63.108.216:443
+Referrer Policy
+strict-origin-when-cross-origin
+access-control-allow-credentials
+true
+access-control-allow-origin
+https://kling.ai
+alt-svc
+h3=":443"; ma=93600
+content-encoding
+gzip
+content-length
+1267
+content-type
+application/json;charset=UTF-8
+date
+Fri, 26 Jun 2026 04:40:10 GMT
+quic-version
+0x00000001
+set-cookie
+userId=92054030; Path=/; Domain=kling.ai; Max-Age=1814400; Expires=Fri, 17 Jul 2026 04:40:10 
+GMT; Secure; SameSite=None
+set-cookie
+userId=92054030; Path=/; Max-Age=1814400; Expires=Fri, 17 Jul 2026 04:40:10 GMT; Secure; 
+SameSite=None
+set-cookie
+passToken=ChNwYXNzcG9ydC5wYXNzLXRva2VuEsABx6PpI8gDQcNWzlZuj-fs5bPIRQbM5MH-
+vyHS2BR7nUDk8FOWisR4_ECR-
+-247fCNtSNmKQa1l3nKwJO39cxprYNqvqEuf_DF0OQVsMPHGK7WVynKCa7nkMKd_rgI1sJBO1T-
+GBYuDDddRxfRC7R5I-
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 31/77
+
+===== PAGE 32 =====
+
+P_0UkkgZhUn7V5siOVGo1Tc_jvTYHynhL70P_a0cY0Jt2cW9xjNseuepz1lqSPA8MdJugWXoteKjr6m2p8_
+4A_KS4u6S1YF3zDC0qJDOMmGhJO3MZPvRPnLuYSIusA6iN0bysiIMuAKE1vP4erJ1JuoZ2Kz5VoZZn6O_
+o1SjNEKQWRGc2VKAUwAQ; Path=/; Max-Age=1814400; Expires=Fri, 17 Jul 2026 04:40:10 GMT; 
+Secure; HttpOnly; SameSite=None
+vary
+Accept-Encoding
+:authority
+id.kling.ai
+:method
+POST
+:path
+/pass/ksi18n/web/sns/login/accessToken?__NS_hxfalcon=HUDR_sFnX-
+FFuAW5VsfDNK0XOP6snthhLcvIxjxBz8_r61UvYFIc7AGaHwcmlb_Lw36QFxBn0Bj4EKN4Zb24e3VuXs
+MYojNEC2VAlN0_LMerDhJK9nym8Jrx2cnp4iNdoYGECPbgEPyzfyJ_9LRRA2kT4Wi-
+fsgpPhcwt79cK7Hy9w4ZK644eMCLcihAJ9lm17QsTGX880s53arOUmCd8fY7xjqAfLxZ8mm3rUdQ_j6Y
+LtNm3GqRmU9bFN-9tTlaFaEDf2CSPTcgyyybIvo1KPDt-OfZJI1uH1M4K-
+Uv50lw6AzZFi5S1aubT6L3glO_SI3C716nsBK55GqOfXz-
+Cc1h23WbQN6L9vJecDKwK2q8YGfnxTYWmv0l64z2002kcvEllTrbiJcRE3KMZVEtTlbbdRjPIq438urWLyf
+rC04iVNtYoKYd9ZBQG2TaO6BzdcOT-yZYpjr_ﬂdd-
+HTlqjZ7zsog1wmfOwRLspbSWo6b_EAyc8pchpuopaDiE6xip3bwTZpezVZyBb3Yxsmq11kPMPh9l_oR5
+BaRcoR1-YOWPFc4kyB9zQoNTcReNdziC8P_woC6WW30XFhHy6rg1-
+49zM3oXEL4Oijc44PZAVGnwEnuaXarGMI1ggviqaeq3K1H-
+HuqsEt9YNW7AEWcIeK6OYKNpaUw8Yy_gtOj2VrAo4j8eoa8NZViT_-
+qTmzclurEKMdxYdyRL8HeZbKvbafv-oB0_CKXa6n4ZbDp0ogD2wC5CbNYIIw-
+EBG4gsvWB$HE_554ad2b7b5b504241c811f8d2301e6fb851f1e1e1e1fc386b2a40cc13aaac3a06ed48
+11f854820c4654820f61e&caver=2
+:scheme
+https
+accept
+application/json, text/plain, */*
+accept-encoding
+gzip, deﬂate, br, zstd
+accept-language
+en-IN,en;q=0.9
+cache-control
+no-cache
+content-length
+1280
+content-type
+application/json
+cookie
+_gcl_au=1.1.817607041.1782447107; _ga=GA1.1.1336240656.1782447108; 
+__risk_web_device_id=d64a44fa1782447108034401; kwpsecproductname=kling-web-sgp; accept-
+language=en-001; history-locale=en; did=web_0094db4162d5da4dcc204bde6100f8ddc5ca; 
+wid=11174529016642871; 
+ksi18n.ai.portal_st=ChNrc2kxOG4uYWkucG9ydGFsLnN0EqABVFY62m5tLsX_ghkeFJBQI2xhXjq4agP6
+8L8Ld3rW6x-v3a-SHhuRWyBRptsv1WI-
+GyjeCSFBc449c2NBa2SPNkyASg93OLsBt4xmdYif3dmZkPfwS5hfBig_5hW3OyN7k_TnauDIIKyTSWUK
+LrNvMDIS2vyows3tnmGkWuJ9uTyql8gbaLG6KvsC88_W4_J5dB9QKIlJLZaG6-
+ySLw8jxxoSrQbVxRXH0Y1e-vqHhbZPCjPSIiBZ9-
+dADv553MuLjnzmcN_droPCPKC2gFyoh52SxYTydCgFMAE; 
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 32/77
+
+===== PAGE 33 =====
+
+ksi18n.ai.portal_ph=fcc131c427e59c965c2081a5ea95d981739e; teamId=; 
+_ga_MWG30LDQKZ=GS2.1.s1782447107$o1$g1$t1782448788$j59$l0$h516433524; 
+kwssectoken=fwr8fGNcV0WxhDA0Ado/NHtLInREWhTUbF1l4WfUrQgRkfbQpceUrst+QUda8yqr5nIp
+yx+SmFREp6Otd1oiLA==; 
+kwscode=346366ae5929c53fbea5dfbc973cd91ﬀ54d9d87d4f7275af2c0d9971cececea; 
+kwfv1=GAm0P/GIPA0z0+0m00Gn8fw/bSP/DFP/qAPAGEG/rAP/ql+0zjGAq7GnL9PA+SweY0PAqh8/QY
+P/8YPBr7+/qI80rI+eSS+0YS+08DweGA+9P9P/c7w/PA8/WA+0Gl80ZU+npSP/pjweGUP9+fPA+YPfcU80
+mj8eDFGfHUG0HU8/W=
+kww
+GAm0P/GIPA0z0+0m00Gn8fw/bSP/DFP/qAPAGEG/rAP/ql+0zjGAq7GnL9PA+SweY0PAqh8/QYP/8YPB
+r7+/qI80rI+eSS+0YS+08DweGA+9P9P/c7w/PA8/WA+0Gl80ZU+npSP/pjweGUP9+fPA+YPfcU80mj8eDF
+GfHUG0HU8/W=
+origin
+https://kling.ai
+pragma
+no-cache
+priority
+u=1, i
+referer
+https://kling.ai/
+sec-ch-ua
+"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+same-site
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) 
+Chrome/149.0.0.0 Safari/537.36
+{
+    "result": 1,
+    "snsProﬁle": {
+        "name": "kling june",
+        "gender": null,
+        "modifyTime": 0,
+        "birthday": null,
+        "school": null,
+        "icon": 
+"https://lh3.googleusercontent.com/a/ACg8ocKyVSakF5zjFpXD5mCX_XbpSdfe3sXM9HLhUoccLTIQH
+ayWLA=s96-c",
+        "email": "kling@rmwcreative.in",
+        "locale": "",
+        "sUid": null,
+        "fullNumber": null,
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 33/77
+
+===== PAGE 34 =====
+
+        "ksPhone": "",
+        "ksUserId": 0,
+        "eAccessToken": null,
+        "ksIntroduce": null,
+        "snsExtType": "GOOGLE",
+        "snsId": {
+            "extType": "GOOGLE",
+            "openId": "108438608178543153792",
+            "unionId": ""
+        },
+        "accessToken": "",
+        "appId": ""
+    },
+    "ssecurity": "SAKuMUfY2+4c7Kw+rAqPBg==",
+    "ksi18n.ai.portal_st": 
+"ChNrc2kxOG4uYWkucG9ydGFsLnN0EqABubb6Opcsqi6SAbETxzNfpl9DuMcCKqJl39pmFAd6emYxn
+Gtukcop7FM6WzGxbtRuzveQaJeDWcVXSggC4_6PFMvpdyM65Ft-
+NqgsgomuMYLeUw9pUf4JQhrUgYZLiDAasXylPBdD18JhE2q7DH_Q2mUAJVQvLCtGmRw-
+34cJvsZ44zIZ6Wr6FXXZ1eHj8zGivHum6GGb1lXwaw-
+7UlagMBoSES81PRk1fcfRE7xhx7lclLvCIiDgoMyI_NRHvip5QoLfRV30TY_11m68aMvQ4X1LeZOyFCgF
+MAE",
+    "ksi18n.ai.portal.at": 
+"ChNrc2kxOG4uYWkucG9ydGFsLmF0ErABbQUiJQgUBvvSyekSgvyﬂBHCpE1JaRhaT5ZORtyOPJ3_kBx2
+oi3sFLJdnK8tTwlt42XF4pTXTCX7eBVyZ4uLKKIRStBWWyQ_gW0iRzZpib2yWzEqZAQ2IqMOElymfRhByI
+367H8EK0pBSI9cmWj4Ql1RlD_SA6F5hXx5CDzDbdo6AKt0fmNDUKwowzs1NhklgQOUiuwugWfOMtz
+arB9Dd-
+zTrF0uGlzIa55tOzLWhO4aEndSBmZ8KbUUa1jkCCp9sC9nLSIg2wBGVLMyf8o9OexKiCGclrmby3Xi9M
+LDqW9aEoNTe6ooBTAB",
+    "passToken": "ChNwYXNzcG9ydC5wYXNzLXRva2VuEsABx6PpI8gDQcNWzlZuj-fs5bPIRQbM5MH-
+vyHS2BR7nUDk8FOWisR4_ECR-
+-247fCNtSNmKQa1l3nKwJO39cxprYNqvqEuf_DF0OQVsMPHGK7WVynKCa7nkMKd_rgI1sJBO1T-
+GBYuDDddRxfRC7R5I-
+P_0UkkgZhUn7V5siOVGo1Tc_jvTYHynhL70P_a0cY0Jt2cW9xjNseuepz1lqSPA8MdJugWXoteKjr6m2p8_
+4A_KS4u6S1YF3zDC0qJDOMmGhJO3MZPvRPnLuYSIusA6iN0bysiIMuAKE1vP4erJ1JuoZ2Kz5VoZZn6O_
+o1SjNEKQWRGc2VKAUwAQ",
+    "tokenName": "ksi18n.ai.portal_st",
+    "bUserId": 0,
+    "isNewUser": false,
+    "userId": 92054030,
+    "sid": "ksi18n.ai.portal",
+    "ksi18n.ai.portal_ph": "3323cfaa2d751cfb3d921551c530541ccbf1"
+}
+Show moreShow less
+This is excellent debugging information. It changes the picture quite a bit.
+What we've conﬁrmed
+✅  Login succeeds
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 34/77
+
+===== PAGE 35 =====
+
+The request
+POST https://id.kling.ai/pass/ksi18n/web/sns/login/accessToken
+returns 200 OK.
+It returns:
+passToken
+ksi18n.ai.portal_st
+userId=92054030
+passToken cookie
+userId cookie
+So authentication itself is working correctly.
+✅  The server later rejects the session
+Later we see
+GET /api/notix/channel/sse-push/connect/
+returns
+JSON
+{  "result": -401,  "error_msg": "token value error"}
+That is after login.
+So something becomes invalid between login and the SSE connection.
+One thing stands out immediately
+In your login response I see
+JSON
+"tokenName": "ksi18n.ai.portal_st"
+This is important.
+That means the real login token is probably ksi18n.ai.portal_st, not kwssectoken.
+But your SSE request sends only cookies
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 35/77
+
+===== PAGE 36 =====
+
+The SSE request sends
+Cookie:...ksi18n.ai.portal_st=...kwssectoken=...kwscode=...
+The backend says
+token value error
+That means one of these tokens no longer matches what the server expects.
+What I think is happening
+There are two possibilities.
+Possibility 1 (Most likely)
+The frontend is refreshing one token but not the other.
+Example:
+Login
+↓
+portal_st = NEW
+↓
+passToken = OLD
+↓
+SSE validates both
+↓
+Mismatch
+↓
+401
+This is a very common bug.
+Possibility 2
+The SSE server uses a diﬀerent authentication service.
+Notice:
+Login
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 36/77
+
+===== PAGE 37 =====
+
+↓
+id.kling.ai
+but
+SSE
+↓
+kling.ai
+Diﬀerent backend.
+If replication is delayed or fails,
+Login OK
+↓
+SSE server
+↓
+doesn't recognize new token
+↓
+401
+I also noticed something else
+Your network log shows
+pointAndTicket401
+catalog401
+folders401
+v2401
+Those are not SSE requests.
+This means multiple APIs begin rejecting the session simultaneously.
+That strongly suggests the entire session becomes invalid, not just server push.
+The thing I want next
+We're now looking for what changes immediately before the ﬁrst 401.
+Please do this.
+Open Application
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 37/77
+
+===== PAGE 38 =====
+
+Application
+↓
+Cookies
+↓
+https://kling.ai
+Take screenshots of these before logout and after logout:
+ksi18n.ai.portal_st
+ksi18n.ai.portal_ph
+passToken
+(if present)
+kwssectoken
+Even more important
+Right after logout
+search Network for
+logout
+or
+clear
+or
+signout
+or
+passport
+Sometimes websites silently call
+POST /logout
+when refresh fails.
+One experiment that can narrow this down in 2 minutes
+Open a brand-new Chrome proﬁle (not Incognito, an entirely new proﬁle):
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 38/77
+
+===== PAGE 39 =====
+
+1. Create a new Chrome proﬁle.
+2. Log into Kling.
+3. Do not install any extensions.
+4. Wait to see if it logs out.
+If it doesn't log out there, then something in your main proﬁle (cookies, cached state, or an extension) is
+interfering.
+If it still logs out in a fresh proﬁle, it's much more likely to be a server-side issue with your account or
+Kling's session handling.
+My current assessment
+Based on everything you've collected:
+COOP warnings: Not related.
+Login ﬂow: Working correctly.
+Cookies: Being sent.
+Authentication: Initially valid.
+Failure: Multiple authenticated APIs (pointAndTicket, catalog, folders, v2, and the SSE endpoint) all
+start returning 401 with token value error.
+That pattern points much more strongly to the server deciding your session/token is no longer valid
+than to a browser problem.
+One question that could further narrow it down: Does this happen only on this speciﬁc Kling account,
+or does a completely diﬀerent Kling account in the same browser stay logged in normally? If
+another account stays logged in while this one doesn't, that would point toward an account-speciﬁc
+backend issue rather than a browser or cookie problem.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 39/77
+
+===== PAGE 40 =====
+
+AECAdJVEatevZUOJSB0dmKY6oZJLy3MXORjyzXF1fu04-mcn8qhH5lTmmf7LkU .google.com/
+2026-08-26T10:48:02.212Z62 ✓ ✓ Lax Medium
+APISID 4Qt0aRETW2_uSdfC/Art_QBUoOrwvT0R0S .google.com/ 2027-07-30T12:32:46.112Z
+40 High
+APISID 4Qt0aRETW2_uSdfC/Art_QBUoOrwvT0R0S .google.co.in/ 2027-07-30T12:32:46.577Z
+40 High
+did web_a74u9ov76kk0s76f4gmcwkso84mjt3ndxy24 .kling.ai / 2027-07-31T04:51:05.535Z
+43 ✓ None Medium
+g_state {"i_l":0,"i_ll":1782449467781,"i_b":"2jICf4DORi3LYEI/cISKGtVJzaUECJSqMwPftrYAOQs","i_e":
+{"enable_itp_optimization":24},"i_et":1782449467781} kling.ai / 2026-12-23T04:51:07.000Z
+147 Medium
+GCL_AW_P
+GCL.1782207370.CjwKCAjw3ejRBhAdEiwADkqPn1YlqfBQcqUrMh2iCK3yHMbhXQruVmBn9f0hDOH3
+IPMKKjpPriGzVxoCrfIQAvD_BwE .google.com/ 2026-09-21T09:36:11.588Z114✓ ✓ None
+https://kling.ai ✓ Medium
+history-locale en .kling.ai / 2027-04-22T04:51:06.810Z16 Medium
+HSID AQgq5k_beaVMlDwU9 .google.co.in/ 2027-07-30T12:32:46.577Z21 ✓
+High
+HSID AjNVhoLzLW5sPcYq4 .google.com/ 2027-07-30T12:32:46.112Z21 ✓
+High
+ksi18n.ai.portal_ph b424a410e19b25f7465744dd1a3cb13a46f6 .kling.ai / Session 55
+Medium
+ksi18n.ai.portal_st
+ChNrc2kxOG4uYWkucG9ydGFsLnN0EqAB6ydLDnJdij4eajrvyDqyPIG4WQap22V3WozeDY00EKFwOVx
+-ggheUphCuRDqOmKiJAC7rIhFAbkjRNacgEeu45I2EovAW_o216Kvkbn_EyXXzywIsKLVz-
+j0v1sa2UyhUl8yVkLGGQjtBWzsKMZ1Q2S5mJE_jb7lEIXbiRw21vbTpQ2XJST4PvcvAZCKW61n3nTkog6g
+_AuRqfsIoChXvBoS0sKb0OfBWJYpUWBBRM8_8625IiCqGPgc8il5jSM1GvYxz4j_BqTAjptkAbgz2zI40ucj
+oCgFMAE .kling.ai / Session 342✓ ✓ None Medium
+ktrace-context
+1|MS44NDczNjc0NTc4Njk4ODg0LjY3OTk0NjE0LjE3ODI0NDk0NDA4NzYuNDY1NzUyNw==|MS44ND
+czNjc0NTc4Njk4ODg0LjkzMjgxNTM4LjE3ODI0NDk0NDA4NzYuNDY1NzUyOA==|0|kfx-static-
+next|webservice|true|src-Js kling.ai / Session 194 Medium
+kwfv1
++/PIG9bS+90zD8/40D8eZA8nPIPn8Y+0cEGf8f+e8f8nPhG/LAG0clw/WFG0zYP0+f+/qhG9G7PAQY+fHU
++0zD8BLM8eQSG0cF+9r9P/mfG/SSwBz0+fGM+0DhPemjP/mjPeDIwBG7PAZMPeqUPfLA80mjGAzSG/
+rFP9LMGf8fw/c= .kling.ai / 2026-07-26T04:51:07.000Z179 Medium
+kwpsecproductname kling-web-sgp .kling.ai / 2026-07-26T04:51:06.000Z30
+Medium
+kwscode a715a587d1b6832f2760590584b05c42663b5eae5c68614a6b055f2e0f6069b7
+.kling.ai / 2026-06-26T05:45:00.000Z71 Medium
+kwssectoken
+UiZ1Nu1SSRZZM/CYA3LT1u5AlTOgQO80KENdTTXoaBT1BrZd2QUZlSJHHMfCHLUBSahgYGBYiBNAl0
+80XN3hZw== .kling.ai / 2026-06-26T05:45:00.000Z99 Medium
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 40/77
+
+===== PAGE 41 =====
+
+LSID o.myaccount.google.com|o.play.google.com|s.IN|s.youtube:g.a000_QgLyCT9BkLVGL-
+Mm2Otmz6HIxXj6DwIF-
+p3xSSdTdmC3PAu2BEFH0lIEzVhnc9M2_dA6AACgYKARISARcSFQHGX2Mi37Jbr8COWKCkweGp7gfy4
+hoVAUF8yKoa4q4D7GEBNJRzrznP0_2p0076 accounts.google.com/ 2027-07-30T12:32:46.111Z
+213✓ ✓ High
+NID
+532=mEFWUSNrJN4cmZWtjYj52uNJnLI4dHllatL3f_N5MaNWY1DPdcxsUoQgGipRU4VrW2endLa4dgT
+B8S-CET_MrHfqMxkrQsHhkwYSaS9z2uKxUIucOn1PanlE4XcaH53wVnEz7bEzbcDY1t0NE8owZll2Ykse-
+Z46Wk5hWGQHJwybYI0YDzPMrJadouCXrRk9hudCsfIYewxr63WPLpWOy6uLsV1SXOUXA53hil_ze9qr
+GluboiBw9Y9GWI8LLqIISEDYtR-
+8UPrldUyixY_SybcA4x_5eR5Iy5tr9QB9kDQIr5wGqlOFaeoDmbbT5Iwzd6nteoVJMHMiHdmKxxNbpKc
+Lvu2hnocujFXSNgMOXmQCntgDf-GZMYFvi-BesFPcCCiqTrdfTY_PqoznBQEpo01g-
+TT7BQizsVrZydtZcxzK5UaCGoDfx6xfRkYUkQhI2s7xZHahPcDx1fa0H-GK-
+eJBjUFyo_IZA44P4zCHeQZzWJkdhrb8DNWxzN_URDRyXsKmgxBAG0y9toIRz_XGxM7Z8ZjBixHl8qI3jsJ
+ypL07VISiOfPbHMfN9O56hab2rhUlalxwz-gkoDexmiInl42OXlhpP_jCsqfx-
+dLqxwfhS5g6d7SliNrBdWLexIc-SAfNYgKmZQ1vEq_neIDKq396klG0VAc-
+5YOLvo9dJnOYD39yRyXj5yk4LfzLwO-
+Me6EtLewFGSXFE1rVndKBpSC0MQazW5cS2GuQkN4KH_s3Iuo1hlNx7VZJtHp6Eel1u300RvzDe00Tc3c
+gmisXocUVmbpcBFdtC7TShDGDiH1FYKRgl-
+8SxedsvOI66xU28jZM190ysw_aCzbI4W6LYaS3a8CubB32cGrnG8l8MFXkzN8olQbkX7rY2ac7wYBKb-
+qChG1uNOHdhU66L8ZDk7vUCTiqTXmb_aiwR8NS70pMSZ6AIwA59JMGX3FijHr2vegd_JP8MiTC8wS4x
+Cdw9i17-
+QPqJVfZxtlpGsWYAoNR20_VsUR1Uoesv4Nq0s8jQifGO_V5K1QiHJHwnJBxCVhxHakRbwhAF1as-
+B3L_hV1NVm3dF0ynTG1om80lac63RsAGiKhgiyTaPOjNcTG0WoZCFgRWdLAXott_n1MwC8p6b_VCvx5
+oNtlz91VtuiLgzZ21B1eFDZnL_qnjagivmWJBT9TPscmORpO3ktpbf6o5snSs16wnNg6VQpHbZk6clU-
+zple2egLurr8l2KjJuqNQlNzP3XMVXpSEOGslfFSEcpml5bUOIAycMg64ﬂkxXKyJwB6LW3qdywcHcP6Sdj
+MrxjNkXeSpyehkxKhYCAA6Q .google.com/ 2026-12-25T05:58:03.008Z1333 ✓ ✓ None
+Medium
+NID
+532=KS5u0i_Ep65FALauGbJknQb1MSQqEI0ofhJ578Xa6fB1T5JXqV9JdVv1ukLxSCtFl9xfUD3C4EON2gz
+3vrNRqPVmirkrGS86hmqsijKXkV5V6S4Sl9apcLZxWUNZTdB4jp0JinxnvxuGhlotNQkWlU6spMQvxAH7
+w0uNOg9Vd8VQj5pVCZ4YJkmFrtDwSVrMlcWjrUrZ1VihRF9Za8LVNU-7FV_pXg5dmHMNSiJVraztYN8v-
+WAg4oFe96SJGfcfYMTknqduhcAREmnYg40SVqqDIl5o8J7i2A0RdsbynuYJpQqFIrDkTj6kmj8euUeS1Eo
+hv0-I3LpfHCekkWM6xdlg1Y-
+9DRDrqRzGjSioLkO2ibPC3Z5V4aMh0NVrxSWe3ldCgjhUdUnNX_bgY6eFowbnKX9__SLxeWZ5KqZc0zz
+9AGi-GMeax57YxHG_SPH9ggMAvjCKuAiKTXLuMlusYp2dagppsUv0OH-Id3Y9Y862BcSLV0Fl8-
+0VdJ2usapksbWAxUevHiRnpDGGHmgc_qLRnn3VgxZaO6tzkm11CEeLuHtxohzxKtO1VGVRs_HVNohE
+LJcW-LTtbijjawJpDkTK78rwUlIFpRT7-RjoqbybhaxeA-hLvQPzN9N5xJfHKLHIeDKWW-
+SCowEdmG3Io_HFYgGEYihxipwkVRa_CmRTMNbHv9rf5_nLckDZMz6k4NJW3tYMAQ7Wn31FmCPm4w
+CQFsACCbzb4yTZOhOoq-
+NmKcEmShHveM0aCYqVFmxQewqHfGJAze3pVTNw2YTyjD7XfLudsSis1Ly_7PWLYVDD2optmE7KYBU
+F7tH-D8t-
+7YqFNQIwDUYsRCKlXoDDkOvi3l0NW8slUGjTPA1p2ysT2pQIWaq4TuG7FMhD7lqS4TYu1clBIDR3cIWn
+pIwg1qIb-
+r7tbEzgOwTT2szibGyeY8JE5eMPZLhd_z9MkEt4NfHWxAO9oeKDEmUeElWIA8B4fIASFCa5UmpxIViIRJ
+1xVHrz9m8L1ViKjRi_YOGAL7pieA-Pxv8g4mlJx22ZNVlASDI7bcE7HoRZts7uURD-
+WFojsZHZtb2DvqINS3MUaQMQeArPBgRl8ls1kWgk80jMqxPhabyxsgz3QhRdXeb81YM6bObbvrxlpLl
+aLKYbqxR2_GWjxs5VK6J_ppkbd9rwGOq2p-1Uoo4TNmyQSBGvo9mlaH_T6QiZxr3py-
+Gx6iS0b18uoHLTpxVp7w .google.co.in/ 2026-12-25T12:32:46.577Z1241 ✓ ✓ None
+Medium
+OTZ8663448_34_34__34_ accounts.google.com/ 2026-07-22T06:47:55.000Z21 ✓
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 41/77
+
+===== PAGE 42 =====
+
+Medium
+SAPISID4RHHtmzT2iVULHFO/AEApEdY9QIzy-KSUq .google.com/ 2027-07-30T12:32:46.113Z
+41 ✓ High
+SAPISID4RHHtmzT2iVULHFO/AEApEdY9QIzy-KSUq .google.co.in/ 2027-07-30T12:32:46.577Z
+41 ✓ High
+SIDg.a000_QgLyH1L-
+cip44KC_sFHnHOK444gWKZPKOLkU528uhg4lD9ecLSlDLbE6OKFfSKHTJs8tgACgYKAQ0SARcSFQHGX
+2MiW_h8s0LbifbAX5X9uvxmmxoVAUF8yKqXKoXpxzeULM9D48IFxr9B0076 .google.com/ 2027-
+07-30T12:32:46.111Z 156 High
+SIDg.a000_QgLyH1L-
+cip44KC_sFHnHOK444gWKZPKOLkU528uhg4lD9ecLSlDLbE6OKFfSKHTJs8tgACgYKAQ0SARcSFQHGX
+2MiW_h8s0LbifbAX5X9uvxmmxoVAUF8yKqXKoXpxzeULM9D48IFxr9B0076 .google.co.in/ 2027-
+07-30T12:32:46.576Z 156 High
+SIDCC AKEyXzV3fyfQ9VkLCeKbPYYo9RZxyjpEb5PlF9CchqsbxstaHVeylQrXJogv8GZfBc6YG7HQ5w
+.google.com/ 2027-06-26T04:51:28.162Z79 High
+SSID AUEdLB4w4CFxMiGPx .google.com/ 2027-07-30T12:32:46.112Z21 ✓ ✓
+High
+SSID AVA7gL1IqFCr72yzy .google.co.in/ 2027-07-30T12:32:46.577Z21 ✓ ✓
+High
+teamId .kling.ai / Session 6 Medium
+userId 92054030 .kling.ai / Session 14 ✓ None Medium
+wid28733028753600871 .kling.ai / 2027-06-26T04:51:10.000Z20
+Medium
+__Host-3PLSID
+s.IN|s.youtube:g.a000_gjyL9kpIdZssN_ceg1XEp9ldHYwcvW1PH_Dr4lN8_YHaNOCdjWeoOPvOIh1p1
+wﬁs260wACgYKAbYSARMSFQHGX2Mipdq8gJaEhEtYzSXI5aOcMRoVAUF8yKrQUR_HJIUqpt0Ta4z7yuG
+v0076 accounts.google.com/ 2027-07-31T04:12:03.971Z181✓ ✓ None High
+__Host-GAPS
+1:YsD5Bw2UQwM1340KXwViIwGweZaX1PCIt3zBuECZ1wgd0yRQosUmWGMjtHOqjZ2SQDGhTyfKv3
+8grV9DqKaC22cskVnhNw:rsmWD3fvlSaIxN-i accounts.google.com/ 2027-07-
+31T04:12:03.794Z 124✓ ✓ High
+__risk_web_device_id d64a44fa1782447108034401 .kling.ai / 2027-07-31T04:11:48.034Z44
+Medium
+__Secure-1PAPISID Ad7xyRElpjkTa9QK/A46AFKvo736NnpfcP .google.com/ 2027-07-
+31T04:12:03.793Z 51 ✓ High
+__Secure-1PSID g.a000_gjyL7KFi90OW0NLRxdPn87DkWCauAiPfs1-
+PyLKpT2fhYdHNxv3zk0z4IHttUKORNKbRAACgYKAdwSARMSFQHGX2MihxlGerj5N141mOVJbh--
+QxoVAUF8yKqjEUho0WbtUJ71HXbSqd7e0076 .google.com/ 2027-07-31T04:12:03.793Z167
+✓ ✓ High
+__Secure-1PSIDCC AKEyXzXdwAVGm-WVq2lJtCMiWtR-
+YvQxakIFRs2EVjQwuwESDY9d5bmYB1tb6sTY13S4G0nh8g .google.com/ 2027-06-
+26T04:40:09.900Z 90 ✓ ✓ High
+__Secure-3PAPISID Ad7xyRElpjkTa9QK/A46AFKvo736NnpfcP .google.com/ 2027-07-
+31T04:12:03.793Z 51 ✓ None High
+__Secure-3PSID g.a000_gjyL7KFi90OW0NLRxdPn87DkWCauAiPfs1-
+PyLKpT2fhYdHaYYIauLKkGYqZ4d26_CI5QACgYKAYQSARMSFQHGX2Miq6p2q5b8rvfCFQqxhxfOwBoV
+AUF8yKoQooXvk_Ew4gsKvlYFOrVO0076.google.com/ 2027-07-31T04:12:03.793Z167✓ ✓
+None High
+__Secure-3PSIDCC AKEyXzX90QAKUt70K_wEyRErEOH1SShVQtUb8vmrY7lY-
+h4O2cZnLG0FXrwhwGbBYLAZSsjyyg .google.com/ 2027-06-26T04:40:09.900Z90 ✓ ✓
+None High
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 42/77
+
+===== PAGE 43 =====
+
+_didweb_73598422935437F kling.ai / 2027-06-26T04:11:50.000Z23
+Medium
+_gaGA1.1.1336240656.1782447108 .kling.ai / 2027-07-31T04:39:48.527Z30
+Medium
+_ga_MWG30LDQKZ GS2.1.s1782451072$o2$g0$t1782451072$j60$l0$h539106235 .kling.ai /
+2027-07-31T05:17:52.956Z67 Medium
+_gcl_au 1.1.817607041.1782447107 .kling.ai / 2026-09-24T04:11:47.000Z31
+Medium
+accept-language en-001 .kling.ai / 2027-04-22T04:39:48.920Z21
+Medium
+ACCOUNT_CHOOSER AFx_qI4MKs2F803avcFvsx3JaMZD58CUQuaKrj6MpuBkkBR4vgHZ-
+KQ7G_pCY5-Qz6iHhhf3wfDIcq3dUP2osM2n-k69kOB1FTOo-
+mttkx2i9Ua5s7yUSMEPaabViEkpjvCsoR5HY9YZ accounts.google.com/ 2027-07-
+31T04:12:03.972Z 155✓ ✓ High
+APISID 2Tw349aYPVﬀ8SRP/AItPbdKHREWKzpR3r .google.com/ 2027-07-31T04:12:03.793Z
+40 High
+did web_0094db4162d5da4dcc204bde6100f8ddc5ca .kling.ai / 2027-07-31T04:39:47.254Z
+43 ✓ None Medium
+g_state
+{"i_l":0,"i_ll":1782448789989,"i_b":"1u0rEFCo9l9e3vQY+m48QZYGsVNkR17gfIZsBvC5gVE","i_e":
+{"enable_itp_optimization":24},"i_et":1782448789989} kling.ai / 2026-12-23T04:39:49.000Z
+147 Medium
+history-locale en .kling.ai / 2027-04-22T04:39:48.920Z16 Medium
+HSID AdY1kQAIOPqaV0RyQ .google.com/ 2027-07-31T04:12:03.793Z21 ✓
+High
+kGateway-identity kGateway-1a2c7f22-40200185 kling.ai / 2026-12-23T04:11:46.006Z43
+Medium
+ksi18n.ai.portal_ph 94add879c8c5a8b3a84ac6b07d55341073a2.kling.ai / Session 55
+Medium
+ksi18n.ai.portal_st
+ChNrc2kxOG4uYWkucG9ydGFsLnN0EqABdMckfPLZGhTCIMHﬁCRNaAeuL1vhkkerOmRwTvAqizSQFfJ
+gvBDmzVc3j9HxpTkeFwPMVDV9TukecAK97BKJtcFG0Bz1jQ2nZci6S92wg4xQBPZAzDAf5kB-
+xAWhTZPeLYLoshQHFEJDCEFDrDPqorTQiixBF-kntuZWnjAjKwOaun-
+aEsXGmBWG0HbcHgOeMw0oNM90RUMu73iBLSmcYxoSYbyO0302z4UY08ctfW5KI2jvIiBu0S5DjEfLl
+OthTOkKS56rZKi-v3VCBFIi9IxURFOogSgFMAE .kling.ai / Session 342✓ ✓ None
+Medium
+kwfv1
+GAm0P/GIPA0z0+0m00Gn8fw/bSP/DFP/qAPAGEG/rAP/ql+0zjGAq7GnL9PA+SweY0PAqh8/QYP/8YPB
+r7+/qI80rI+eSS+0YS+08DweGA+9P9P/c7w/PA8/WA+0Gl80ZU+npSP/pjweGUP9+fPA+YPfcU80mj8eDF
+GfHUG0HU8/W= .kling.ai / 2026-07-26T04:39:49.000Z179 Medium
+kwpsecproductname kling-web-sgp .kling.ai / 2026-07-26T04:39:48.000Z30
+Medium
+LSID
+s.IN|s.youtube:g.a000_gjyL9kpIdZssN_ceg1XEp9ldHYwcvW1PH_Dr4lN8_YHaNOCsDxtGnvlc1mpLxN
+-__mpEgACgYKAfESARMSFQHGX2Mion-7k2hzS04xaVQA9UUPVBoVAUF8yKrfggq5OkYwNapY-
+VQePHw80076 accounts.google.com/ 2027-07-31T04:12:03.971Z172✓ ✓
+High
+NID532=J7rIHxSBZw-RMvRWbBXZMCCVAMWMT-kdKata_UKbX-
+4wS34TJ38P0iNLjeYnJA_ET8oqUNYbP-
+NVC7GvQJpmhNLfITVITZ1YQH8L8fKXHX44GYCX6LkmMXaWk79cEiggSCeDm0xbBbB-
+bEpGrloTcwmVPZNAbusAvaneQDAlrwDp3Dw2TvxCOCH-
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 43/77
+
+===== PAGE 44 =====
+
+q5XTuDUwkV5WHn_QK_KtCdfySPyKz5QVkoRTpU6ptzDuzv-
+x0mXN2bM58k4C2Iv_TIZHu3Fj_KJMBa1ymQZ_D1mV3V5VVHVMqhhoQFU2RsV4VtYL5xhnQ2HtY24jl
+qWz7gm0J6_Z2JEPUJFEqgR3bLRZMVtISpV82hTLyVrHk1WeJP9-D9Zakb1QKmWaO23-
+6ygYmxFATgRdY2FEfznFMUzVW_KaZgp0URpZLg5WwhrMafDﬀmkCJfRQ-
+wHI6Idc5byZlUHToL365MXpyYrh5VPFFZnZ2-9MM06EMTYjD5H_-0AlmYMtSYysNRcu-
+eY9LiZEnjB8ZI90enMCmELt9Ez1FioD5iZsOX9TK2InE2ybKHBUaTNOeWYTRdlrTJB7XUGnkCquU8qSo
+qDC7VV_OUXZHW11M1nAaSst40ytoz1RWDhTdhkLthOR_5NSc0jRV5iEPHfo .google.com/ 2026-
+12-26T04:11:54.792Z 647✓ ✓ None Medium
+OTZ8669052_34_34__34_ accounts.google.com/ 2026-07-26T04:11:54.000Z21 ✓
+Medium
+SAPISIDAd7xyRElpjkTa9QK/A46AFKvo736NnpfcP .google.com/ 2027-07-31T04:12:03.793Z
+41 ✓ High
+SIDg.a000_gjyL7KFi90OW0NLRxdPn87DkWCauAiPfs1-PyLKpT2fhYdHkALXiqNwsI4Wks4hEtMV-
+QACgYKAfsSARMSFQHGX2MibN4yiTlnAz6yPb1A-YxZthoVAUF8yKrPZpyGL0WE3Dj77EdPSGsO0076
+.google.com/ 2027-07-31T04:12:03.792Z156 High
+SIDCC AKEyXzVAyW5AcL-4OBrkRcW4pAnaWp79yfWtj-hk67US1H9N-baﬁu8PivkclgAOiZ9dcho2
+.google.com/ 2027-06-26T04:40:09.900Z77 High
+SSID AMfka6JH_evpssgvN .google.com/ 2027-07-31T04:12:03.793Z21 ✓ ✓
+High
+teamId .kling.ai / Session 6 Medium
+test_cookie CheckForPermission .doubleclick.net / 2026-06-26T04:54:48.636Z29 ✓
+None Medium
+weblogger_did web_2249077255BC2A62 kling.ai / 2027-06-26T04:11:48.000Z33
+Medium
+wid11174529016642871 .kling.ai / 2027-06-26T04:39:52.000Z20
+Medium
+after logout there is two thing in cookies 
+and one thing i want to tell you 
+these cookies are of session of two diﬀerent kling 
+not a same session before and after of the  same kling session 
+Show moreShow less
+That detail is actually very important.
+These cookies are from two diﬀerent Kling accounts, not the same account before and
+after logout.
+This changes the diagnosis signiﬁcantly.
+I now suspect you're running into a multi-account session issue.
+From everything you've shown:
+Both accounts use the same domain (.kling.ai).
+Authentication cookies have the same names:
+ksi18n.ai.portal_st
+ksi18n.ai.portal_ph
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 44/77
+
+===== PAGE 45 =====
+
+kwssectoken
+kwscode
+userId
+Cookies are domain-wide, not account-speciﬁc.
+That means if you log into Account A and then log into Account B in the same browser proﬁle, Account
+B will overwrite cookies like:
+ksi18n.ai.portal_stkwssectokenkwscodeuserId
+There is only one value per cookie name per domain.
+This would explain the behavior
+Imagine:
+Browser Profile
+↓
+Login Account A
+↓
+kwssectoken = TOKEN_A
+↓
+Login Account B
+↓
+kwssectoken = TOKEN_B   ← overwrites TOKEN_A
+↓
+Go back to Account A tab
+↓
+Account A sends TOKEN_B
+↓
+Server:token value error
+↓
+401
+↓
+Logout
+This exactly matches the token value error response you captured.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 45/77
+
+===== PAGE 46 =====
+
+One thing in your data supports this
+I noticed diﬀerent values for cookies like:
+widdidksi18n.ai.portal_st
+between your captures.
+If these are from diﬀerent accounts in the same browser proﬁle, that is expected because the latest
+login replaces the previous values.
+I have one important question
+How are you using the two accounts?
+Option 1
+Chrome├── Tab 1 → Account A└── Tab 2 → Account B
+Option 2
+Chrome Profile 1 → Account A
+Chrome Profile 2 → Account B
+Option 3
+Chrome normal → Account A
+Incognito → Account B
+Which one are you using?
+I also want one experiment
+This will tell us immediately if this is the cause.
+Test
+1. Create a brand new Chrome proﬁle.
+2. Login to only one Kling account.
+3. Never log into the second account.
+4. Leave it for the amount of time after which it normally logs out.
+Result
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 46/77
+
+===== PAGE 47 =====
+
+If it never logs out, then the issue is almost certainly cookie/session overwriting.
+If it still logs out, then we know it's an account/session problem on Kling's backend.
+Another thing I'd like to inspect
+Please compare the value of:
+kwssectoken
+Immediately after login and right after the automatic logout (for the same account, in the same
+browser proﬁle).
+I'm interested in whether:
+the cookie disappears,
+the value changes,
+or the value stays exactly the same.
+That will tell us whether the browser is changing it or the server is simply rejecting it.
+Current conﬁdence
+Based on all the evidence you've gathered:
+70%: Cookie/session conﬂict caused by using multiple Kling accounts in the same browser proﬁle.
+20%: Kling backend invalidates the session after some event (token refresh or server-side session
+issue).
+10%: Another account-speciﬁc backend bug.
+One last question: Does the automatic logout happen even if you only ever log into one Kling
+account in a completely separate Chrome proﬁle? That answer will almost deﬁnitively distinguish
+between a browser-side session conﬂict and a server-side session issue.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 47/77
+
+===== PAGE 48 =====
+
+i am using two proﬁle one in incognito 
+and simple 
+That's actually a good setup.
+Using:
+Normal Chrome →  Account A
+Incognito →  Account B
+means the cookie stores are separate. The two sessions should not overwrite each other's cookies. So
+I no longer think cookie collision is the primary cause.
+Here's where we are now
+We know:
+✅  Login succeeds (accessToken API returns 200).
+✅  Cookies are created correctly (portal_st, passToken, kwssectoken, etc.).
+✅  Later, multiple APIs start returning 401.
+✅  SSE returns:
+JSON
+{  "result": -401,  "error_msg": "token value error"}
+This means the server is invalidating or rejecting the session after login, not that Chrome is losing
+the cookies.
+There is one thing I want to inspect next
+From your screenshots, I noticed something interesting.
+The login API returns
+JSON
+{    "passToken": "...",    "tokenName": "ksi18n.ai.portal_st"}
+But I haven't yet seen whether ksi18n.ai.portal_st changes automatically before the logout.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 48/77
+
+===== PAGE 49 =====
+
+Please perform this experiment
+Step 1
+Open
+Application→ Cookies→ https://kling.ai
+Copy the values of:
+ksi18n.ai.portal_st
+kwssectoken
+kwscode
+Step 2
+Do nothing.
+Wait until Kling logs you out.
+Step 3
+Immediately refresh the cookie list.
+Tell me:
+Did portal_st change?
+Did kwssectoken change?
+Did kwscode change?
+Did any of them disappear?
+I also want one Network request
+This is the most important thing left.
+In the Network tab:
+Filter:
+401
+or
+Status = 401
+I want the very ﬁrst request that becomes 401.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 49/77
+
+===== PAGE 50 =====
+
+Not the SSE request.
+The ﬁrst one.
+For example, in your screenshot I see
+pointAndTicketcatalogfoldersv2
+all returning 401.
+I want the earliest one.
+Open it and show:
+Headers
+Response
+One more thing to check
+Your login response contains:
+passToken
+Search the Network tab for:
+passToken
+or
+refresh
+or
+renew
+I want to know if Kling ever tries to refresh the session before it expires.
+My current suspicion
+At this point I think this is less likely to be a browser problem and more likely a backend/session
+lifecycle issue.
+The possibilities are:
+1. The backend invalidates the session after some condition (highest probability).
+2. The frontend fails to refresh the authentication token, so every authenticated API starts
+returning 401.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 50/77
+
+===== PAGE 51 =====
+
+3. A server-side bug speciﬁc to your account or environment, since multiple endpoints reject the
+token at the same time.
+If you can capture the ﬁrst request that returns 401 (before all the others start failing), we'll have the
+best chance of identifying exactly what triggers the logout.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 51/77
+
+===== PAGE 52 =====
+
+These screenshots are very helpful. I compared them carefully.
+What changed?
+Between the two screenshots (which I assume are from two diﬀerent login states), I can see that:
+ksi18n.ai.portal_st changed ✔
+ksi18n.ai.portal_ph changed ✔
+kwscode changed ✔
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 52/77
+
+===== PAGE 53 =====
+
+kwssectoken changed ✔
+did, wid, and kGateway-identity also changed.
+Those are all expected when you log into a diﬀerent account. Nothing unusual there.
+What I still don't have
+The screenshots are not:
+Before logout →  After logout of the same account
+They are two diﬀerent login sessions (or two diﬀerent accounts), so I can't tell whether the logout
+process itself is changing or deleting anything.
+The evidence so far
+From everything you've collected:
+1. Login succeeds (accessToken returns 200).
+2. Tokens and cookies are issued correctly.
+3. Cookies are sent back to Kling.
+4. Later, several authenticated APIs start returning 401.
+5. The SSE endpoint returns:
+JSON
+{  "result": -401,  "error_msg": "token value error"}
+This strongly suggests the server no longer accepts the token, not that Chrome lost it.
+The one thing that will identify the root cause
+We need to know whether the browser changes the cookies at logout, or whether the server
+simply starts rejecting the same cookies.
+Please do this with one account only:
+1. Log into Kling.
+2. Open Application →  Cookies →  https://kling.ai .
+3. Copy or screenshot these four values:
+ksi18n.ai.portal_st
+ksi18n.ai.portal_ph
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 53/77
+
+===== PAGE 54 =====
+
+kwscode
+kwssectoken
+4. Do not refresh the page. Wait until the automatic logout happens.
+5. Immediately look at those same four cookies again.
+Tell me for each one:
+Cookie Same value? Changed? Disappeared?
+ksi18n.ai.portal_st ? ? ?
+ksi18n.ai.portal_ph ? ? ?
+kwscode ? ? ?
+kwssectoken ? ? ?
+That answer will tell us whether:
+the browser/session storage is being modiﬁed, or
+Kling's backend is simply rejecting a token that hasn't changed.
+One more thing I'd like to inspect
+In your Network log, I noticed requests such as:
+pointAndTicket →  401
+catalog →  401
+folders →  401
+v2 →  401
+Can you click one of those 401 requests (for example catalog or folders) and show:
+Headers
+Response
+I'm looking for whether they also return:
+JSON
+{  "result": -401,  "error_msg": "token value error"}
+or a diﬀerent error such as:
+token expired
+login expired
+session invalid
+user forbidden
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 54/77
+
+===== PAGE 55 =====
+
+If all of them return the same "token value error", then we can be fairly conﬁdent the issue is a server-
+side session invalidation rather than a browser or cookie-storage problem.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 55/77
+
+===== PAGE 56 =====
+
+after logout 
+This screenshot actually reveals another clue.
+The popup says:
+"Debugging connection was closed. Reason: Render process gone."
+That message is from Chrome DevTools, not from Kling.
+It means the renderer process for that tab was destroyed or restarted. That can happen if:
+the page performed a full navigation (for example, redirecting to the login page),
+the tab crashed,
+Chrome restarted the renderer,
+or the process was killed due to memory/resource issues.
+This is important
+If automatic logout is followed by:
+Render process gone
+then Kling is probably doing something like:
+Session becomes invalid        ↓401        ↓Frontend detects invalid session        ↓window.location = /loginor full page reload        ↓Chrome creates a new renderer        ↓DevTools loses connection
+So this popup is more likely a consequence of the logout, not its cause.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 56/77
+
+===== PAGE 57 =====
+
+One thing I need now
+The screenshot isn't showing the cookies after logout because the DevTools connection was lost.
+Please reconnect DevTools.
+Then immediately check:
+Application→ Cookies→ https://kling.ai
+Are these cookies still present?
+ksi18n.ai.portal_st
+ksi18n.ai.portal_ph
+kwscode
+kwssectoken
+userId
+If they are still there, then the server is rejecting valid-looking cookies.
+If they are gone, then something (frontend or backend) cleared them during logout.
+Another experiment (this is the one I'd perform)
+Since we've ruled out most browser issues, I'd like to know who initiates the logout.
+1. Open Network.
+2. Enable Preserve log.
+3. Wait for the logout.
+4. Look for one of these requests:
+/logout
+/signout
+/passport/logout
+/clear
+/session
+5. If you see one, open it and inspect the request and response.
+If there is no logout request at all, but everything simply starts returning 401, that's strong evidence
+the backend is expiring or invalidating the session rather than the frontend actively logging you out.
+My current assessment
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 57/77
+
+===== PAGE 58 =====
+
+At this point, based on everything you've collected, I'd rank the causes as:
+1. Server-side session invalidation or token refresh failure — ~80%
+Login succeeds.
+Cookies are issued.
+Multiple APIs later return 401 token value error.
+The app then redirects/reloads.
+2. Frontend bug in token refresh — ~15%
+The client fails to update the token after it expires, so subsequent requests use an invalid token.
+3. Browser/proﬁle issue — ~5%
+Much less likely now, since you're using separate cookie stores (normal + incognito) and the
+failures are consistent with server-side token rejection.
+The next piece of evidence that would likely pinpoint the root cause is whether a logout API is called
+before the redirects, or whether the ﬁrst event is simply a wave of 401 responses with no explicit logout
+request.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 58/77
+
+===== PAGE 59 =====
+
+i will send a=evry thing before log out then i will send every thing 
+after logut tell me what you need  now 
+Perfect. Let's do this systematically so we can isolate the exact point where the session becomes invalid.
+Phase 1: Before Logout (while everything is working)
+Please collect these in this order.
+1. Cookies (Application →  Cookies →  https://kling.ai )
+Take screenshots or export the values of only these cookies:
+ksi18n.ai.portal_st
+ksi18n.ai.portal_ph
+kwssectoken
+kwscode
+userId
+did
+_did
+kGateway-identity
+kwfv1
+2. Local Storage
+Go to:
+Application→ Local Storage→ https://kling.ai
+Screenshot everything.
+3. Session Storage
+Go to:
+Application→ Session Storage→ https://kling.ai
+Screenshot everything.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 59/77
+
+===== PAGE 60 =====
+
+4. IndexedDB
+Go to:
+Application→ IndexedDB
+Expand every database and screenshot all object stores.
+5. Network
+Enable:
+✅  Preserve log
+✅  Disable cache
+Do not clear the log.
+6. Find the latest successful authentication request
+Find the latest request to one of these:
+accessToken
+or
+profile_and_features
+or
+/me
+Open it and send:
+Headers
+Payload
+Response
+7. Working SSE connection
+Find
+connect/
+that returns 200.
+Send:
+Headers
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 60/77
+
+===== PAGE 61 =====
+
+Response
+Timing
+8. Console
+Open Console.
+Leave it open.
+Do not clear it.
+Then do absolutely nothing
+Just wait until the logout happens naturally.
+Phase 2: Immediately AFTER logout
+Without refreshing anything, send:
+A. First failing request (the very ﬁrst 401)
+Usually one of:
+connect/
+or
+profile
+or
+accessToken
+Need:
+Headers
+Response
+Timing
+B. Cookies again
+Exactly the same cookies as before.
+I want to compare every value.
+C. Local Storage again
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 61/77
+
+===== PAGE 62 =====
+
+D. Session Storage again
+E. IndexedDB again
+F. Console
+Everything printed after logout.
+G. Network waterfall
+The requests around the logout (about 20–30 requests before and after the ﬁrst 401).
+One important thing
+Do not redact or hide the token values.
+Since we're trying to determine whether:
+the token changes,
+the cookie changes,
+the cookie disappears,
+the frontend uses an old token,
+or the backend rejects a valid token,
+I need the actual values (at least the ﬁrst and last 15–20 characters if you prefer not to share the full
+strings). Those patterns are often enough to tell whether the session rotated or became stale.
+If you provide both the before and after datasets, I should be able to pinpoint the exact stage at which
+the Kling session becomes invalid.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 62/77
+
+===== PAGE 63 =====
+
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 63/77
+
+===== PAGE 64 =====
+
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 64/77
+
+===== PAGE 65 =====
+
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 65/77
+
+===== PAGE 66 =====
+
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 66/77
+
+===== PAGE 67 =====
+
+Pasted text(16).txt
+Document
+UcEmvYVMnr4XnrVwXC1KusZLaa/bJZLd+ojYq/pY1lERZi3OeQE3Ke9GyvOydpPxRMiseIYPU1HeQp/3
+M/9WXw==
+44f52808927f2e0c07c9b448cd2a6c5a85dbd3211fa1cc694bacb26346fa59af
+4abc1868743d6bc844eb11bafd2111199b73
+ChNrc2kxOG4uYWkucG9ydGFsLnN0EqABHJy_5-KE4PLQ_IcPEB2WIw-
+TWZQpsgZFGzLvvkXVCRtTfR00VFsqif3iVClpWIHtxN5WDLNqbT0hmqiC5aQGxNW-
+Bh1sNGWG9Ra3XI60nnC4MN8VKf4ryMa-G2mQFfxqXMIzIh1sR6DhlfUJDTycUI0h0S3jkXLANIZA4-
+o49ZXYio-wT3tb-x6EuJMzc7Nkna--
+IBa2kxDbZF8nbgKppRoSh5hmrSv593Ml7Cg4s7d4h_BIIiACbaMoSd8sKQ2WJITs9wa_oFotR2-
+t2xhRA13t60gezCgFMAE
+web_4ﬀ0a769a1ﬀ818ed7ed599c1e099a2c9fa9
+kGateway-c30b1879-191189962
+{"buster":"","timestamp":1782454052992,"clientState":{"mutations":[],"queries":
+[{"dehydratedAt":1782454052992,"state":{"data":"<?xml version=\"1.0\" encoding=\"UTF-8\"?
+>\n<svg width=\"320\" height=\"320\" viewBox=\"0 0 320 320\" ﬁll=\"none\" 
+xmlns=\"http://www.w3.org/2000/svg\">\n  <path d=\"M90 133.61C90 114.088 97.375 95.3645 
+110.503 81.5605C123.63 67.7554 141.435 60 160 60C178.565 60 196.37 67.7554 209.497 
+81.5605C222.625 95.3645 230 114.088 230 133.61V144.494C246.96 147.05 260 162.392 260 
+180.931V183.56C260 202.226 244.69 218.588 226.68 217.715C219.28 240.009 200.46 255.036 
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 67/77
+
+===== PAGE 68 =====
+
+180.15 258.843C175.45 260.651 169.89 259.8 165 259.8C161.022 259.8 157.206 258.138 154.393 
+255.18C151.58 252.222 150 248.209 150 244.026C150 239.843 151.58 235.83 154.393 
+232.872C157.206 229.914 161.022 228.252 165 228.252C172.93 228.252 181.71 227.043 187.07 
+234.656C200.03 228.168 210 214.466 210 196.705V133.61C210 119.665 204.732 106.291 195.355 
+96.4319C185.979 86.5713 173.261 81.0315 160 81.0315C146.739 81.0315 134.021 86.5713 124.645 
+96.4319C115.268 106.291 110 119.665 110 133.61V199.334C110 204.214 108.156 208.895 104.874 
+212.346C101.592 215.797 97.141 217.737 92.5 217.737C83.88 217.737 75.614 214.136 69.519 
+207.727C63.424 201.317 60 192.625 60 183.56V180.931C59.998 172.079 63.03 163.524 68.54 
+156.831C74.049 150.139 81.668 145.759 90 144.494V133.61Z\" ﬁll=\"white\">
+</path>\n</svg>\n","dataUpdateCount":1,"dataUpdatedAt":1782453789586,"error":null,"errorUpda
+teCount":0,"errorUpdatedAt":0,"fetchFailureCount":0,"fetchFailureReason":null,"fetchMeta":null,"isI
+nvalidated":false,"status":"success","fetchStatus":"idle"},"queryKey":
+["useFetchSvg","https://api.copilot.livex.ai/api/v1/users/static/6c3f397755a06f79d17ddee41de4a67
+3/26f7c70ﬀ7d852d182fb257fca1c6868.headset.svg"],"queryHash":"
+[\"useFetchSvg\",\"https://api.copilot.livex.ai/api/v1/users/static/6c3f397755a06f79d17ddee41de4a
+673/26f7c70ﬀ7d852d182fb257fca1c6868.headset.svg\"]"}]}}
+{"schema":"gcl","version":1,"gsid_dc":{"value":
+{"joinId":"qce2hVpPmJNtbIlMEX8lRC2Xas9Y3wMQMQ","lastJoinedTimeMs":1782453755125},"expire
+s":1782454055125},"gcl_ctr":{"value":
+{"value":0,"timeouts":0,"errors":0,"eopCount":0,"creationTimeMs":1782453755126},"expires":17902
+29755126}}
+{"iosQRCodeUrl":"https://s15-
+kling.klingai.com/kimg/EMXN1y8qMgoGdXBsb2FkEg55bGFiLXN0dW50LXNncBoYa2xpbmcvYXBwX2
+FkL2lvc0NvZGUucG5n.origin?x-kcdn-pid=112372","androidQRCodeUrl":"https://s15-
+kling.klingai.com/kimg/EMXN1y8qNgoGdXBsb2FkEg55bGFiLXN0dW50LXNncBoca2xpbmcvYXBwX2
+FkL2FuZHJvaWRDb2RlLnBuZw.origin?x-kcdn-pid=112372","desktopWindows":"https://p2-
+kling.klingai.com/kcdn/cdn-kcdn112452/kling-local-app/windows-x64/1.3.18/KlingAI-setup-
+1.3.18.exe","desktopIntel":"https://p4-kling.klingai.com/kcdn/cdn-kcdn112452/kling-local-
+app/macos-x64/1.3.19/KlingAI-v1.3.19-darwin-x64.dmg","desktopM":"https://p4-
+kling.klingai.com/kcdn/cdn-kcdn112452/kling-local-app/macos-arm-x64/1.3.19/KlingAI-v1.3.19-
+darwin-arm64.dmg"}
+{"id":"92054030","email":"kling@rmwcreative.in","avatar":"https://s15-
+kling.klingai.com/kimg/EMXN1y8qSgoGdXBsb2FkEg55bGFiLXN0dW50LXNncBowa2xpbmcvcmVzb3
+VyY2VzL2tsX3BsYWNlaG9sZGVyX2F2YXRhcl9uZXdAM3gucG5n.origin?x-kcdn-
+pid=112372","nickname":"WGtSGglh","isNewUser":false}
+{"userName":"WGtSGglh","userAvatars":["https://s15-
+kling.klingai.com/kimg/EMXN1y8qSgoGdXBsb2FkEg55bGFiLXN0dW50LXNncBowa2xpbmcvcmVzb3
+VyY2VzL2tsX3BsYWNlaG9sZGVyX2F2YXRhcl9uZXdAM3gucG5n.origin?x-kcdn-
+pid=112372"],"introduction":"","userId":92054030,"userEmail":"kling@rmwcreative.in","userAbConﬁ
+gs":
+{"showUserGuide":"false","designerPanelStyle":"simpliﬁed","task_submit_rate_limit_time":"2000","v
+ersionSelectCache":"true","modelSelectPosition":"top","oﬄine_v10_v20master":"true","livex_retenti
+on":"false","use_kimg":"true","kling_7day_membership_type":"","oversea_web_agp_pay":"true","klin
+g_wxpay_type":"","kimage_to_video_web_param":"default","new_side_navigation":"true","web_bann
+er_featured":"true","web_input_revision":"true","kling_commerce_reach_type":"2","motion_control_
+pass_display_oversea":"default"},"userFeatures":
+{"eﬀect_omni_v30_video_input_v2_std_pro_rollout":true,"eﬀect_hide_id_when_pending":true,"eﬀect
+_publish_template_creative":true,"eﬀect_clone_onekey_split":true,"eﬀect_clone_proﬁt_split":true,"ef
+fect_kling_desktop":true,"eﬀect_m2v_img2video_tail_image_v21":true,"eﬀect_show_canvas_entry":
+true,"eﬀect_web_intelligence_switch":true,"eﬀect_upload_mouse_and_wheel_event":true,"eﬀect_m
+mu_multi_img2img_aiweb":true,"eﬀect_multi_modal_video_edit":true,"eﬀect_motion_control_imgs2
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 68/77
+
+===== PAGE 69 =====
+
+video":true,"eﬀect_motion_control_motion_process":true,"eﬀect_mmu_img2img_aiweb_v15_outpai
+nting":true,"eﬀect_mmu_img2img_aiweb_v15_inpainting":true,"eﬀect_m2v_img2video_tail_only_pr
+o_v16":true,"eﬀect_m2v_x2video_audio_hq":true,"eﬀect_m2v_audio_voice":true,"eﬀect_chat_tool":tr
+ue,"eﬀect_livex_switch":true,"eﬀect_mmu_img2img_model":true,"eﬀect_m2v_img2video_tail_only_v
+15":true,"eﬀect_m2v_lora_train":true,"eﬀect_community_publish":true,"eﬀect_client_conﬁg_test":tru
+e,"eﬀect_share_switch":true,"eﬀect_kwave_txt2audio":true,"eﬀect_kwave_video_add_audio":true,"ef
+fect_ki18n_ja_ko":true,"eﬀect_eﬀect_m2v_img2digital":true,"eﬀect_m2v_img2digital_v2":true,"eﬀec
+t_damaged_image_detection":true,"argument_special_eﬀect_m2v_img2video_se_hq":true,"argume
+nt_imageList_m2v_img2video":true,"argument_imageList_m2v_img2video_hq":true,"argument_mot
+ion_brush_json_all":true,"argument_kling_version_all":true,"argument_kling_3.0_turbo_all":true,"ar
+gument_kling_3.0_4k_all":true,"argument_kling_3.0_audio_all":true,"argument_kling_3.0_extra_all":t
+rue,"argument_kling_3.0_motion_m2v_motion_control_animal_motion_direction_subject_v30_720p"
+:true,"argument_kling_3.0_omni_all":true,"argument_kling_img_web_3.0_omni_all":true,"argument_
+kling_img_web_3.0_all":true,"argument_kling_omni_beta_all":true,"argument_kling_txt2video_v25_
+m2v_txt2video_hq":true,"argument_kling_txt2video_v25_m2v_txt2video":true,"argument_kling_img
+2video_v25_m2v_img2video_hq":true,"argument_kling_img2video_v25_m2v_img2video":true,"argu
+ment_kling_v25_all":true,"argument_kolors_txt2img_v21_mmu_txt2img_aiweb":true,"argument_klin
+g_v21_master_t2v_m2v_txt2video":true,"argument_kling_v21_master_i2v_m2v_img2video":true,"ar
+gument_kling_v21_i2v_m2v_img2video":true,"argument_kolors_txt2img_2k_mmu_txt2img_aiweb":t
+rue,"argument_kolors_img2img_v20_mmu_img2img_aiweb":true,"argument_kolors_txt2img_v20_
+mmu_txt2img_aiweb":true,"argument_kling_txtimg2video_v20_m2v_txt2video_hq":true,"argument_
+special_eﬀect_spring_blossoms_m2v_img2video_se_hq":true,"argument_m2v_extend_video_V15_v1
+6_m2v_extend_video":true,"argument_m2v_extend_video_V15_v16_v2_m2v_extend_video":true,"arg
+ument_pe_switch_all":true,"argument_kolors_version_v15_mmu_txt2img_aiweb":true,"argument_kl
+ing_version_v16_all":true,"argument_kling_version_v15_m2v_txt2video":true},"totalBalance":280820
+0,"pointCards":
+[{"orderId":"899029363897794563","type":"reward","amount":500000,"balance":500000,"startTime":
+1782373822292,"endTime":1785052222292,"trial":false,"name":"invitee_50_percent_point_reward","
+showGrantDialog":false,"source":""},
+{"orderId":"899023005576855648","type":"plan","amount":2600000,"balance":2308200,"startTime":
+1782373822271,"endTime":1785052222271,"trial":false,"name":"sssvip-subscription-
+monthly","showGrantDialog":true,"source":""}],"t
+Request URL
+https://kling.ai/api/notix/channel/sse-push/connect/
+Request Method
+GET
+Status Code
+200 OK
+Remote Address
+23.61.202.38:443
+Referrer Policy
+strict-origin-when-cross-origin
+alt-svc
+h3=":443"; ma=93600
+cache-control
+no-cache
+content-type
+text/event-stream;charset=UTF-8
+date
+Fri, 26 Jun 2026 06:17:47 GMT
+quic-version
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 69/77
+
+===== PAGE 70 =====
+
+0x00000001
+:authority
+kling.ai
+:method
+GET
+:path
+/api/notix/channel/sse-push/connect/
+:scheme
+https
+accept
+text/event-stream
+accept-encoding
+gzip, deﬂate, br, zstd
+accept-language
+en-IN,en;q=0.9
+cache-control
+no-cache
+cookie
+kGateway-identity=kGateway-c30b1879-191189962; _gcl_au=1.1.1565474545.1782453747; 
+_ga=GA1.1.683242476.1782453747; __risk_web_device_id=2ddd32de1782453750217321; 
+kwpsecproductname=kling-web-sgp; accept-language=en-001; history-locale=en; g_state=
+{"i_l":0,"i_ll":1782453750865,"i_b":"74iwU35NUdYKRJ5pchwaw1Z7QG7iil8bOCIzxdZFOd4","i_e":
+{"enable_itp_optimization":24},"i_et":1782453750865}; 
+kwfv1=GAm0P/GIPA0z0+0m00Gn8fw/bSP/DFP/qAPAGEG/rAP/ql+0zjGAq7GnL9PA+SweY0PAqh8/QY
+P/8YPBr7+/qI8fHlP/HhPAmD8/Dl+npfwePM+0HMG/p08/rA8BLA8BPI80m0GfcI8/mjwnP9+/cFwe+fG
+ALIwnbf+APM8fHF8/G=; _did=web_2994717484C54A2; 
+did=web_4ﬀ0a769a1ﬀ818ed7ed599c1e099a2c9fa9; 
+_ga_MWG30LDQKZ=GS2.1.s1782453746$o1$g1$t1782453755$j51$l0$h633883130; 
+wid=45735107931142871; userId=92054030; 
+ksi18n.ai.portal_st=ChNrc2kxOG4uYWkucG9ydGFsLnN0EqABHJy_5-KE4PLQ_IcPEB2WIw-
+TWZQpsgZFGzLvvkXVCRtTfR00VFsqif3iVClpWIHtxN5WDLNqbT0hmqiC5aQGxNW-
+Bh1sNGWG9Ra3XI60nnC4MN8VKf4ryMa-G2mQFfxqXMIzIh1sR6DhlfUJDTycUI0h0S3jkXLANIZA4-
+o49ZXYio-wT3tb-x6EuJMzc7Nkna--
+IBa2kxDbZF8nbgKppRoSh5hmrSv593Ml7Cg4s7d4h_BIIiACbaMoSd8sKQ2WJITs9wa_oFotR2-
+t2xhRA13t60gezCgFMAE; ksi18n.ai.portal_ph=4abc1868743d6bc844eb11bafd2111199b73; 
+teamId=; 
+kwssectoken=7o4RSP56asmw1eb+Is4HQ9nLuvLTonSiRW0z+5xAfjgHxQJMB9dzzH0EBekrA8Uq9CQZ
+Wh92zrmvcK/bcIMavw==; 
+kwscode=47ab2e018ﬀd9a5082f18bdb7573fdbd8685d52802237835ce948df0fea3c848
+pragma
+no-cache
+priority
+u=1, i
+referer
+https://kling.ai/app
+sec-ch-ua
+"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 70/77
+
+===== PAGE 71 =====
+
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+same-origin
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) 
+Chrome/149.0.0.0 Safari/537.36
+Request URL
+https://kling.ai/api/user/proﬁle_and_features
+Request Method
+GET
+Status Code
+200 OK
+Remote Address
+23.61.202.38:443
+Referrer Policy
+strict-origin-when-cross-origin
+alt-svc
+h3=":443"; ma=93600
+content-encoding
+gzip
+content-length
+2300
+content-type
+application/json;charset=UTF-8
+date
+Fri, 26 Jun 2026 06:17:55 GMT
+quic-version
+0x00000001
+vary
+Accept-Encoding
+:authority
+kling.ai
+:method
+GET
+:path
+/api/user/proﬁle_and_features
+:scheme
+https
+accept
+application/json, text/plain, */*
+accept-encoding
+gzip, deﬂate, br, zstd
+accept-language
+en-001
+cache-control
+no-cache
+cookie
+kGateway-identity=kGateway-c30b1879-191189962; _gcl_au=1.1.1565474545.1782453747; 
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 71/77
+
+===== PAGE 72 =====
+
+_ga=GA1.1.683242476.1782453747; __risk_web_device_id=2ddd32de1782453750217321; 
+kwpsecproductname=kling-web-sgp; accept-language=en-001; history-locale=en; g_state=
+{"i_l":0,"i_ll":1782453750865,"i_b":"74iwU35NUdYKRJ5pchwaw1Z7QG7iil8bOCIzxdZFOd4","i_e":
+{"enable_itp_optimization":24},"i_et":1782453750865}; 
+kwfv1=GAm0P/GIPA0z0+0m00Gn8fw/bSP/DFP/qAPAGEG/rAP/ql+0zjGAq7GnL9PA+SweY0PAqh8/QY
+P/8YPBr7+/qI8fHlP/HhPAmD8/Dl+npfwePM+0HMG/p08/rA8BLA8BPI80m0GfcI8/mjwnP9+/cFwe+fG
+ALIwnbf+APM8fHF8/G=; _did=web_2994717484C54A2; 
+did=web_4ﬀ0a769a1ﬀ818ed7ed599c1e099a2c9fa9; 
+_ga_MWG30LDQKZ=GS2.1.s1782453746$o1$g1$t1782453755$j51$l0$h633883130; 
+wid=45735107931142871; userId=92054030; 
+ksi18n.ai.portal_st=ChNrc2kxOG4uYWkucG9ydGFsLnN0EqABHJy_5-KE4PLQ_IcPEB2WIw-
+TWZQpsgZFGzLvvkXVCRtTfR00VFsqif3iVClpWIHtxN5WDLNqbT0hmqiC5aQGxNW-
+Bh1sNGWG9Ra3XI60nnC4MN8VKf4ryMa-G2mQFfxqXMIzIh1sR6DhlfUJDTycUI0h0S3jkXLANIZA4-
+o49ZXYio-wT3tb-x6EuJMzc7Nkna--
+IBa2kxDbZF8nbgKppRoSh5hmrSv593Ml7Cg4s7d4h_BIIiACbaMoSd8sKQ2WJITs9wa_oFotR2-
+t2xhRA13t60gezCgFMAE; ksi18n.ai.portal_ph=4abc1868743d6bc844eb11bafd2111199b73; 
+teamId=; 
+kwssectoken=7o4RSP56asmw1eb+Is4HQ9nLuvLTonSiRW0z+5xAfjgHxQJMB9dzzH0EBekrA8Uq9CQZ
+Wh92zrmvcK/bcIMavw==; 
+kwscode=47ab2e018ﬀd9a5082f18bdb7573fdbd8685d52802237835ce948df0fea3c848
+kww
+GAm0P/GIPA0z0+0m00Gn8fw/bSP/DFP/qAPAGEG/rAP/ql+0zjGAq7GnL9PA+SweY0PAqh8/QYP/8YPB
+r7+/qI8fHlP/HhPAmD8/Dl+npfwePM+0HMG/p08/rA8BLA8BPI80m0GfcI8/mjwnP9+/cFwe+fGALIwnb
+f+APM8fHF8/G
+pragma
+no-cache
+priority
+u=1, i
+referer
+https://kling.ai/app/user-assets/projects?ac=1
+sec-ch-ua
+"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+same-origin
+time-zone
+Asia/Calcutta
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) 
+Chrome/149.0.0.0 Safari/537.36
+Show moreShow less
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 72/77
+
+===== PAGE 73 =====
+
+This is exactly what I needed. Based on everything you've shared, I can already draw some important
+conclusions.
+What I can conﬁrm
+1. Authentication is cookie-based
+There is no Authorization: Bearer header anywhere.
+Every authenticated request depends on these cookies:
+ksi18n.ai.portal_st ←  main session token
+ksi18n.ai.portal_ph
+kwssectoken
+kwscode
+kGateway-identity
+The profile_and_features request is authenticated entirely by these cookies. 
+2. The frontend stores almost no auth state
+LocalStorage contains only UI/conﬁguration:
+proﬁle
+QR code
+SVG cache
+settings
+banners
+etc.
+No JWT is stored there.
+SessionStorage also contains only:
+teamId
+download window id
+So logout is not caused by LocalStorage.
+3. IndexedDB is irrelevant
+Only one database exists:
+sse-timestamp-db
+and it is essentially empty.
+Pasted text
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 73/77
+
+===== PAGE 74 =====
+
+So IndexedDB is not responsible.
+4. SSE uses exactly the same cookies
+The SSE connection
+GET/api/notix/channel/sse-push/connect/
+also sends
+ksi18n.ai.portal_stksi18n.ai.portal_phkwssectokenkwscodekGateway-identity
+If any one of these becomes invalid, the SSE dies.
+5. The proﬁle request succeeds
+GET /api/user/profile_and_features200 OKlogin = true
+So before logout the session is perfectly valid. 
+What I now suspect
+At this point there are only a few realistic possibilities.
+Possibility 1 (most likely)
+One of these cookies changes
+ksi18n.ai.portal_st
+or
+kwssectoken
+without the page refreshing.
+Then every subsequent request starts returning
+401
+Possibility 2
+Pasted text
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 74/77
+
+===== PAGE 75 =====
+
+Kling invalidates one session when another browser/proﬁle refreshes it.
+Example
+Proﬁle A
+↓
+gets new portal_st
+↓
+Proﬁle B still has old portal_st
+↓
+server rejects B
+↓
+logout
+This is very common with services that allow only one active web session.
+Possibility 3
+The backend revokes
+kGateway-identity
+or
+portal_st
+after detecting another login.
+Again, this only becomes visible by comparing before and after.
+What I need AFTER logout
+This is the critical dataset.
+Immediately after logout, send me:
+1. Cookies
+Same screenshot as before.
+I want to compare
+portal_stportal_phkwssectokenkwscodekGateway-identity
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 75/77
+
+===== PAGE 76 =====
+
+2. The FIRST failing request
+Usually
+/api/user/profile_and_features
+or
+/api/notix/channel/sse-push/connect/
+Need:
+Status code
+Response
+Headers
+especially the response body.
+3. Was there any Set-Cookie?
+On the failed request,
+look in
+Response Headers
+for
+Set-Cookie
+This is extremely important.
+4. Console
+Any error after logout.
+Especially
+401
+Unauthorized
+Session expired
+Token invalid
+portal_st expired
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 76/77
+
+===== PAGE 77 =====
+
+5. Compare one value
+Tell me whether this changes.
+Before logout you have
+kGateway-identitykGateway-c30b1879-191189962
+After logout is it
+exactly the same?
+completely diﬀerent?
+missing?
+6. Most important question
+Do not refresh the page after logout.
+As soon as you see you're logged out:
+stop interacting,
+take the screenshots,
+send them.
+The comparison between the "before" data you've already shared and the "after" state is what will reveal
+whether Kling is rotating a session cookie, invalidating it server-side, or forcing a single active session
+across browsers.
+Printed using ChatGPT to PDF, powered by PDFCrowd HTML to PDF API. 77/77

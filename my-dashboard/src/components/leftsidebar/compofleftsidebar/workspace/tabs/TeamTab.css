@@ -1,0 +1,198 @@
+.workspace-team {
+  display: grid;
+  gap: 18px;
+}
+
+.workspace-team-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.workspace-team-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 16px;
+  background: var(--color-surface-elevated);
+  box-shadow: var(--shadow-card-hover);
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
+}
+
+.workspace-team-card:hover {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border);
+}
+
+.workspace-team-card-clickable {
+  cursor: pointer;
+}
+
+.workspace-team-card-clickable:hover {
+  transform: translateY(-2px);
+}
+
+.workspace-team-card-clickable:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.workspace-team-empty {
+  min-height: 140px;
+  justify-content: center;
+  border-style: dashed;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  text-align: center;
+}
+
+.workspace-team-avatar {
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: var(--color-nav-selected);
+  color: var(--color-text);
+  font-size: 22px;
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary-strong) 14%, transparent);
+}
+
+.workspace-team-member {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.workspace-team-name {
+  color: var(--color-text);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.workspace-team-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspace-team-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--color-feedback-info-border);
+  border-radius: 999px;
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.workspace-team-position {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.workspace-team-actions {
+  margin-left: auto;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.workspace-team-menu-button {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-button-secondary-bg);
+  color: var(--color-button-secondary-text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
+}
+
+.workspace-team-menu-button:hover {
+  background: var(--color-button-secondary-bg-hover);
+  border-color: var(--color-border-strong);
+  transform: translateY(-1px);
+}
+
+.workspace-team-menu-button:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.workspace-team-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 170px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface-popover);
+  box-shadow: var(--shadow-popover);
+  z-index: 3;
+}
+
+.workspace-team-menu button {
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast);
+}
+
+.workspace-team-menu button:hover {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border-subtle);
+}
+
+.workspace-team-menu button:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+@media (max-width: 768px) {
+  .workspace-team-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-team-card {
+    align-items: flex-start;
+  }
+}

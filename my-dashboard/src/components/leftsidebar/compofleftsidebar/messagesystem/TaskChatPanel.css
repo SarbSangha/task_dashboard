@@ -5,21 +5,21 @@
 .task-chat-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.5);
-  z-index: 2147483000;
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: var(--leftbar-popup-top-offset);
+  background: transparent;
+  z-index: 1204;
 }
 
 .task-chat-overlay.minimized {
-  background: transparent;
+  display: contents;
   align-items: flex-end;
   justify-content: flex-end;
   padding: 0 20px 20px 0;
+  background: transparent;
   pointer-events: none;
-  display: contents;
 }
 
 .task-chat-panel {
@@ -27,63 +27,70 @@
   max-width: 1400px;
   height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
-  overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: #111b2b;
-  border: 1px solid #374151;
-  border-radius: 12px;
-  color: #e5e7eb;
-  box-shadow: 0 18px 48px rgba(5, 14, 28, 0.36);
+  overflow: hidden;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 16px;
+  background: var(--color-surface-modal);
+  color: var(--color-text);
+  box-shadow: var(--shadow-card);
 }
 
 .task-chat-panel.minimized {
   position: fixed;
+  top: auto;
+  left: auto;
   width: 360px;
   max-width: 360px;
   height: 68px;
   max-height: 68px;
-  left: auto;
-  top: auto;
   transform: none;
   border-radius: 12px;
   pointer-events: auto;
 }
 
 .task-chat-panel.maximized {
+  position: fixed;
+  top: 0;
+  left: 0;
   width: 100vw;
   max-width: 100vw;
   height: 100vh;
   max-height: 100vh;
   border-radius: 0;
+  z-index: 1205;
 }
 
 .task-chat-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 24px 28px;
+  justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(135deg, #1f2d40 0%, #16212c 100%);
-  box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.25),
-    0 2px 6px rgba(0, 0, 0, 0.15);
+  padding: 24px 28px;
+  border-bottom: 1px solid var(--color-navbar-border);
+  background: var(--color-navbar-surface);
+  box-shadow: var(--shadow-navbar);
 }
 
 .task-chat-panel.minimized .task-chat-header {
+  padding: 10px 12px;
   border-bottom: none;
   border-radius: 12px;
-  padding: 10px 12px;
   cursor: pointer;
 }
 
+.task-chat-panel.maximized .task-chat-header {
+  border-radius: 0;
+}
+
 .task-chat-header h3 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 700;
   flex: 1;
   min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  font-size: 20px;
+  font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -91,14 +98,14 @@
 
 .task-chat-header p {
   margin: 4px 0 0;
-  color: rgba(226, 232, 240, 0.72);
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
 .task-chat-window-controls {
   display: flex;
-  gap: 8px;
   align-items: center;
+  gap: 8px;
   flex-shrink: 0;
 }
 
@@ -119,87 +126,137 @@
 }
 
 .task-chat-window-btn,
+.task-chat-close-btn,
+.task-chat-tabs button,
+.task-chat-attachment-pill button,
+.task-chat-tool-btn,
+.task-chat-send-btn {
+  font: inherit;
+}
+
+.task-chat-window-btn,
 .task-chat-close-btn {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
-  border: 1px solid rgba(203, 213, 225, 0.14);
-  background: rgba(255, 255, 255, 0.1);
-  color: #f8fafc;
-  font-size: 15px;
-  line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  color: var(--color-icon);
+  font-size: 15px;
+  line-height: 1;
   cursor: pointer;
-  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
 }
 
 .task-chat-window-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.22);
+  background: var(--color-hover-surface);
+  border-color: var(--color-border);
 }
 
 .task-chat-close-btn:hover {
-  background: rgba(239, 68, 68, 0.2);
-  border-color: rgba(248, 113, 113, 0.45);
-  color: #fecaca;
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
+}
+
+.task-chat-window-btn:focus-visible,
+.task-chat-close-btn:focus-visible,
+.task-chat-tabs button:focus-visible,
+.task-chat-tool-btn:focus-visible,
+.task-chat-send-btn:focus-visible,
+.task-chat-input-toolbar select:focus-visible,
+.task-chat-composer-shell input:focus-visible,
+.task-chat-attachment-pill button:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .task-chat-tabs {
   display: flex;
   gap: 8px;
   padding: 10px 16px;
-  border-bottom: 0;
-  background: transparent;
+  border-bottom: 1px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
 }
 
 .task-chat-tabs button {
-  padding: 7px 14px;
   min-height: 34px;
+  padding: 7px 14px;
+  border: 1px solid var(--color-border-subtle);
   border-radius: 9px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.78);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 600;
-  cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
   line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    transform var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .task-chat-tabs button:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: var(--color-hover-surface);
+  border-color: var(--color-border);
+  color: var(--color-text);
   transform: translateY(-1px);
 }
 
 .task-chat-tabs .active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-color: rgba(255, 255, 255, 0.18);
-  color: #fff;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 6px 18px rgba(102, 126, 234, 0.35);
+  background: var(--color-button-primary-bg);
+  border-color: color-mix(in srgb, var(--color-primary-strong) 72%, transparent);
+  color: var(--color-button-primary-text);
+  box-shadow: var(--shadow-button-primary);
 }
 
 .task-chat-content {
-  padding: 12px 16px;
-  overflow: auto;
   flex: 1;
+  overflow: auto;
+  padding: 12px 16px;
+  background: transparent;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
+}
+
+.task-chat-content::-webkit-scrollbar {
+  width: 10px;
+}
+
+.task-chat-content::-webkit-scrollbar-track {
+  background: var(--color-scrollbar-track);
+  border-radius: 999px;
+}
+
+.task-chat-content::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+  border-radius: 999px;
+}
+
+.task-chat-content::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-thumb-hover);
 }
 
 .task-chat-status {
   margin: 0;
-  color: #a9bfdf;
+  color: var(--color-text-muted);
   font-size: 13px;
 }
 
 .chat-item {
-  border: 1px solid #2e3d5d;
-  border-radius: 10px;
-  padding: 10px 12px;
   margin-bottom: 10px;
-  background: #172743;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-surface-muted) 82%, transparent);
 }
 
 .task-chat-comment-attachments {
@@ -209,16 +266,19 @@
 .chat-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
-  opacity: 0.85;
   align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  opacity: 0.9;
 }
 
 .chat-tag {
-  border: 1px solid #4b5f8b;
-  border-radius: 999px;
   padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-selected-surface);
+  color: var(--color-text-secondary);
   text-transform: capitalize;
 }
 
@@ -226,7 +286,8 @@
   display: grid;
   gap: 10px;
   padding: 10px 16px;
-  border-top: 1px solid #2e3d5d;
+  border-top: 1px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
 }
 
 .task-chat-input-toolbar {
@@ -235,23 +296,28 @@
 }
 
 .task-chat-input-toolbar select {
-  height: 38px;
   min-width: 180px;
-  border-radius: 10px;
-  border: 1px solid #445175;
-  background: #1f2d4a;
-  color: #e5e7eb;
+  height: 38px;
   padding: 0 10px;
+  border: 1px solid var(--color-select-border);
+  border-radius: 10px;
+  background: var(--color-select-bg);
+  color: var(--color-input-text);
 }
 
 .task-chat-upload-status {
   display: grid;
   gap: 10px;
   padding: 12px 14px;
+  border: 1px solid var(--color-feedback-success-border);
   border-radius: 16px;
-  border: 1px solid rgba(45, 212, 191, 0.2);
-  background: linear-gradient(180deg, rgba(11, 20, 31, 0.98) 0%, rgba(13, 27, 42, 0.96) 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface-modal) 96%, var(--color-feedback-success-bg)) 0%,
+      color-mix(in srgb, var(--color-surface) 96%, var(--color-feedback-success-bg)) 100%
+    );
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-text-inverse) 3%, transparent);
 }
 
 .task-chat-upload-status-header,
@@ -270,14 +336,14 @@
 
 .task-chat-upload-status-copy strong,
 .task-chat-upload-status-file span {
-  color: #f8fafc;
+  color: var(--color-text);
   font-size: 13px;
   font-weight: 700;
 }
 
 .task-chat-upload-status-copy span,
 .task-chat-upload-status-file small {
-  color: rgba(226, 232, 240, 0.76);
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
@@ -292,9 +358,10 @@
 .task-chat-upload-status-percent {
   flex-shrink: 0;
   padding: 6px 10px;
+  border: 1px solid var(--color-feedback-success-border);
   border-radius: 999px;
-  background: rgba(34, 197, 94, 0.14);
-  color: #bbf7d0;
+  background: var(--color-feedback-success-bg);
+  color: var(--color-feedback-success-text);
   font-size: 12px;
   font-weight: 800;
 }
@@ -302,17 +369,17 @@
 .task-chat-upload-status-bar {
   position: relative;
   height: 8px;
-  border-radius: 999px;
   overflow: hidden;
-  background: rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  background: var(--color-disabled-surface);
 }
 
 .task-chat-upload-status-bar span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #22c55e 0%, #14b8a6 100%);
-  box-shadow: 0 0 16px rgba(20, 184, 166, 0.35);
+  background: var(--color-button-success-bg);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--color-success) 30%, transparent);
 }
 
 .task-chat-attachment-strip {
@@ -326,17 +393,17 @@
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
+  border: 1px solid var(--color-border);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
   font-size: 12px;
-  color: #e2e8f0;
 }
 
 .task-chat-attachment-pill button {
   border: none;
   background: transparent;
-  color: #f8fafc;
+  color: var(--color-text);
   cursor: pointer;
   font-size: 12px;
   font-weight: 700;
@@ -347,29 +414,31 @@
   display: flex;
   gap: 10px;
   padding: 8px;
+  border: 1px solid var(--color-border-subtle);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: color-mix(in srgb, var(--color-surface-muted) 68%, transparent);
 }
 
 .task-chat-tool-btn {
   width: 42px;
   height: 42px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
   border: none;
   border-radius: 50%;
   background: transparent;
-  color: rgba(226, 232, 240, 0.86);
+  color: var(--color-icon);
   font-size: 22px;
-  display: grid;
-  place-items: center;
   cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.2s ease, color 0.2s ease;
+  transition:
+    background-color var(--theme-transition-fast),
+    color var(--theme-transition-fast);
 }
 
 .task-chat-tool-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: var(--color-hover-surface);
+  color: var(--color-text);
 }
 
 .task-chat-tool-btn:disabled {
@@ -384,14 +453,18 @@
 }
 
 .task-chat-composer-shell input {
-  height: 42px;
-  border-radius: 10px;
-  border: none;
-  background: transparent;
-  color: #e5e7eb;
-  padding: 0 10px;
   flex: 1;
   min-width: 0;
+  height: 42px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-input-text);
+}
+
+.task-chat-composer-shell input::placeholder {
+  color: var(--color-placeholder);
 }
 
 .task-chat-composer-shell input:focus {
@@ -400,14 +473,17 @@
 
 .task-chat-send-btn {
   height: 42px;
+  padding: 0 16px;
   border: none;
   border-radius: 12px;
-  padding: 0 16px;
-  background: linear-gradient(135deg, #22c55e 0%, #14b8a6 100%);
-  color: #06281d;
+  background: var(--color-button-success-bg);
+  color: var(--color-button-success-text);
   font-weight: 700;
   cursor: pointer;
-  transition: transform 0.2s ease, filter 0.2s ease;
+  transition:
+    transform var(--theme-transition-fast),
+    filter var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .task-chat-send-btn:hover:not(:disabled) {
@@ -422,8 +498,9 @@
 
 .task-chat-seenby {
   padding: 8px 16px 12px;
+  color: var(--color-text-muted);
   font-size: 12px;
-  opacity: 0.8;
+  opacity: 0.9;
 }
 
 @media (max-width: 768px) {

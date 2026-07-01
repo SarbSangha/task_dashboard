@@ -16,6 +16,7 @@ const GOOGLE_POPUP_ALLOW_RELOAD_KEY = 'rmw_kling_google_popup_allow_reload';
 const USAGE_BROWSER_SESSION_KEY = 'rmw_kling_usage_browser_session';
 const USAGE_TAB_SESSION_KEY = 'rmw_kling_usage_tab_session';
 const USAGE_BROADCAST_CHANNEL = 'rmw-kling-usage';
+const SHOW_KLING_CAPTURE_BADGE = false;
 
 // ── Timing constants ──────────────────────────────────────────
 const KEEP_ALIVE_MS          = 10000;
@@ -552,6 +553,10 @@ function formatCaptureAge(timestamp) {
 }
 
 function renderKlingCaptureBadge() {
+  if (!SHOW_KLING_CAPTURE_BADGE) {
+    document.getElementById('rmw-kling-capture-badge')?.remove();
+    return;
+  }
   const state = USAGE_CTX.captureBadge || {};
   const pipeline = USAGE_CTX.generationPipelineMetrics || {};
   let badge = document.getElementById('rmw-kling-capture-badge');
@@ -4987,6 +4992,64 @@ function landingActionKey(el) {
   ].join('|');
 }
 
+function scoreLabeledActionCandidate(
+  el,
+  {
+    exact = [],
+    partial = [],
+    required = [],
+    forbidden = [],
+  } = {}
+) {
+  if (!el || !isVisible(el) || !isEnabled(el) || isPolicyLikeAction(el)) return -1;
+
+  const text = normalizeSpace(buttonText(el));
+  const descriptor = normalizeSpace(buttonDescriptorText(el));
+  const hints = controlHintText(el);
+  const combined = normalizeSpace([text, descriptor, hints].join(' '));
+
+  if (required.some((token) => token && !combined.includes(token))) return -1;
+  if (forbidden.some((token) => token && combined.includes(token))) return -1;
+
+  let score = -1;
+  if (exact.includes(text)) score = Math.max(score, 140);
+  if (exact.includes(descriptor)) score = Math.max(score, 130);
+  if (partial.some((label) => text.includes(label))) score = Math.max(score, 110);
+  if (partial.some((label) => descriptor.includes(label))) score = Math.max(score, 100);
+  if (score < 0) return -1;
+
+  if (el.matches?.(ACTION_SELECTORS.join(','))) score += 25;
+  if (`${el.getAttribute?.('role') || ''}`.trim().toLowerCase() === 'button') score += 10;
+
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 360) score += 12;
+  if (rect.height <= 90) score += 12;
+  if (rect.width > 480) score -= 30;
+  if (rect.height > 120) score -= 30;
+
+  const nestedActionCount = Array.from(el.querySelectorAll?.(ACTION_SELECTORS.join(',')) || [])
+    .filter((node) => node !== el && isVisible(node))
+    .length;
+  if (nestedActionCount > 0) score -= Math.min(120, nestedActionCount * 35);
+
+  return score;
+}
+
+function findBestLabeledAction(matchOptions) {
+  const direct = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')));
+  const fallback = Array.from(document.querySelectorAll('[tabindex],div,span,li,section,article'))
+    .filter((el) => isVisible(el))
+    .map((el) => findClickableAncestor(el));
+
+  const ranked = collectUniqueElements([...direct, ...fallback])
+    .filter((el) => isActionLikeElement(el))
+    .map((el) => ({ el, score: scoreLabeledActionCandidate(el, matchOptions) }))
+    .filter((entry) => entry.score >= 0)
+    .sort((left, right) => right.score - left.score);
+
+  return ranked[0]?.el || null;
+}
+
 function findLandingCandidates() {
   const primary = Array.from(document.querySelectorAll(ACTION_SELECTORS.join(',')));
   const fallback = Array.from(document.querySelectorAll('[tabindex],div,span,li,section,article'))
@@ -5003,14 +5066,20 @@ function findLandingCandidates() {
 }
 
 function findEmailChooserButton() {
-  return findLandingCandidates().find((el) => isEmailAuthAction(el)) || null;
+  return findBestLabeledAction({
+    exact: ['sign in with email', 'continue with email', 'use email', 'email'],
+    partial: ['sign in with email', 'continue with email', 'use email'],
+    forbidden: ['google', 'apple', 'facebook', 'continue as '],
+  });
 }
 
 function findGoogleAuthButton() {
-  return findLandingCandidates().find((el) => {
-    const text = buttonDescriptorText(el) || buttonText(el);
-    return text.includes('google') && !text.includes('apple') && !text.includes('facebook');
-  }) || null;
+  return findBestLabeledAction({
+    exact: ['sign in with google', 'continue with google', 'google'],
+    partial: ['sign in with google', 'continue with google', 'google sign in', 'continue using google'],
+    required: ['google'],
+    forbidden: ['apple', 'facebook', 'email', 'continue as '],
+  });
 }
 
 function scoreExactSignInCandidate(el) {

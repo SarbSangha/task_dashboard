@@ -20,8 +20,10 @@ export function UserAvatar({ avatar, name, size = 40 }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: avatarSrc ? 'transparent' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-        color: 'white',
+        background: avatarSrc
+          ? 'transparent'
+          : 'var(--user-avatar-fallback-background, linear-gradient(135deg, #667eea 0%, #764ba2 100%))',
+        color: 'var(--user-avatar-fallback-color, white)',
         fontWeight: '600',
         fontSize: `${size / 2.5}px`
       }}

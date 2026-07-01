@@ -5,6 +5,7 @@ import { WorkspaceSkeleton } from '../../../../ui/WorkspaceSkeleton';
 import { authAPI } from '../../../../../services/api';
 import CompanyMemberPreview from '../CompanyMemberPreview';
 import { useWorkspaceCompanyDirectory } from '../workspaceTabData';
+import './CompanyTab.css';
 
 export default function CompanyTab() {
   const { showAlert } = useCustomDialogs();
@@ -52,7 +53,7 @@ export default function CompanyTab() {
 
   if (loading) {
     return (
-      <div className="tab-content">
+      <div className="tab-content workspace-company">
         <WorkspaceSkeleton variant="company" />
       </div>
     );
@@ -60,14 +61,16 @@ export default function CompanyTab() {
 
   if (!canViewCompany) {
     return (
-      <div className="tab-content">
-        <p>Admin or faculty access is required to view the company directory.</p>
+      <div className="tab-content workspace-company">
+        <div className="workspace-company-empty">
+          Admin or faculty access is required to view the company directory.
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="tab-content">
+    <div className="tab-content workspace-company">
       <CacheStatusBanner
         showingCached={cacheStatus.showingCached}
         isRefreshing={isRefreshing}
@@ -79,15 +82,15 @@ export default function CompanyTab() {
       />
 
       {isAdmin && (
-        <div className="company-department-toolbar">
-          <div className="company-department-create">
-            <div className="company-department-create-copy">
+        <div className="workspace-company-toolbar">
+          <div className="workspace-company-create-panel">
+            <div className="workspace-company-create-copy">
               <strong>Add Department</strong>
               <span>Create a reusable team for assignments, credentials, and member views.</span>
             </div>
-            <div className="company-department-create-controls">
+            <div className="workspace-company-create-controls">
               <input
-                className="company-department-input"
+                className="workspace-company-input"
                 value={newDepartmentName}
                 onChange={(event) => setNewDepartmentName(event.target.value)}
                 placeholder="e.g. 3D Visualizer"
@@ -100,7 +103,7 @@ export default function CompanyTab() {
               />
               <button
                 type="button"
-                className="company-department-submit"
+                className="workspace-company-submit"
                 onClick={() => {
                   void handleAddDepartment();
                 }}
@@ -113,21 +116,21 @@ export default function CompanyTab() {
         </div>
       )}
 
-      <div className="company-department-section">
-        <div className="company-department-section-head">
+      <div className="workspace-company-section">
+        <div className="workspace-company-section-head">
           <div>
             <strong>Departments</strong>
             <span>{departments.length} team{departments.length === 1 ? '' : 's'} available</span>
           </div>
-          {selectedDepartment ? <small>Viewing {selectedDepartment}</small> : null}
+          {selectedDepartment ? <small className="workspace-company-section-meta">Viewing {selectedDepartment}</small> : null}
         </div>
 
-        <div className="company-department-grid">
+        <div className="workspace-company-chip-grid">
           {departments.map((dept) => (
             <button
               key={dept}
               type="button"
-              className={`company-department-chip ${selectedDepartment === dept ? 'active' : ''}`}
+              className={`workspace-company-chip ${selectedDepartment === dept ? 'active' : ''}`}
               onClick={() => {
                 void selectDepartment(dept);
               }}
@@ -138,11 +141,15 @@ export default function CompanyTab() {
         </div>
       </div>
 
-      <div className="team-grid">
-        {members.length === 0 && <div className="team-member-card">No members found in selected department.</div>}
+      <div className="workspace-company-member-grid">
+        {members.length === 0 && (
+          <div className="workspace-company-empty workspace-company-empty-members">
+            No members found in selected department.
+          </div>
+        )}
         {members.map((member) => (
           <div
-            className="team-member-card company-member-card"
+            className="workspace-company-member-card"
             key={member.id}
             role="button"
             tabIndex={0}
@@ -154,16 +161,22 @@ export default function CompanyTab() {
               }
             }}
           >
-            <div className="member-avatar">{member.name?.[0]?.toUpperCase() || 'U'}</div>
-            <div className="member-info">
-              <div className="member-name">{member.name}</div>
-              <div className="member-role">{member.department || selectedDepartment}</div>
-              <div className="member-role">{member.position || 'Member'}</div>
+            <div className="workspace-company-avatar">{member.name?.[0]?.toUpperCase() || 'U'}</div>
+            <div className="workspace-company-member-body">
+              <div className="workspace-company-member-name">{member.name}</div>
+              <div className="workspace-company-member-meta">
+                <span className="workspace-company-member-badge">
+                  {member.department || selectedDepartment}
+                </span>
+                <span className="workspace-company-member-position">
+                  {member.position || 'Member'}
+                </span>
+              </div>
             </div>
-            <div className="outbox-card-menu-wrap" style={{ marginLeft: 'auto' }}>
+            <div className="workspace-company-member-actions">
               <button
                 type="button"
-                className="outbox-card-menu-btn"
+                className="workspace-company-menu-button"
                 aria-label={`Open actions for ${member.name}`}
                 aria-expanded={openMenuId === member.id}
                 onClick={(event) => {
@@ -174,7 +187,7 @@ export default function CompanyTab() {
                 ⋮
               </button>
               {openMenuId === member.id && (
-                <div className="outbox-card-menu">
+                <div className="workspace-company-menu">
                   <button
                     type="button"
                     onClick={(event) => {

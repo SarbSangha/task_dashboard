@@ -97,11 +97,17 @@ const SubmitSection = ({ taskId, task = null, onClose, onSubmitComplete }) => {
       };
       if (isWorkflowTask(task) && task?.currentStageId) {
         await taskAPI.submitStage(taskId, task.currentStageId, payload);
+      } else if (existingSubmission) {
+        await taskAPI.editResult(taskId, payload);
       } else {
         await taskAPI.submitTask(taskId, payload);
       }
       await showAlert(
-        isWorkflowTask(task) ? 'Stage submitted successfully!' : 'Task submitted successfully!',
+        existingSubmission
+          ? 'Submission updated successfully!'
+          : isWorkflowTask(task)
+            ? 'Stage submitted successfully!'
+            : 'Task submitted successfully!',
         { title: 'Success' }
       );
       onSubmitComplete();

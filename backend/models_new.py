@@ -1,5 +1,5 @@
 # models_new.py - New Database Models
-from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Boolean, ForeignKey, JSON, Float, Enum as SQLEnum, Index, UniqueConstraint, text
+from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Boolean, ForeignKey, JSON, Float, Enum as SQLEnum, Index, UniqueConstraint, CheckConstraint, text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from database_config import Base, ArchiveBase
@@ -90,6 +90,7 @@ class User(Base):
     is_deleted = Column(Boolean, default=False, index=True)
     mfa_enabled = Column(Boolean, default=False)  # ← ADD THIS
     is_admin = Column(Boolean, default=False, index=True)
+    enforce_active_task_policy = Column(Boolean, default=False, nullable=False)
     rejection_reason = Column(Text)
     deleted_reason = Column(Text)
     deleted_at = Column(DateTime)
@@ -761,6 +762,208 @@ class ITPortalToolUsageEvent(Base):
             "confidence": self.confidence,
             "metadata": self.metadata_json or {},
             "createdAt": serialize_utc_datetime(self.created_at),
+        }
+
+
+class GenerationProject(Base):
+    __tablename__ = "generation_projects"
+    __table_args__ = (
+        Index(
+            "ux_generation_projects_owner_normalized_name_active",
+            "owner_user_id",
+            "normalized_name",
+            unique=True,
+            postgresql_where=text("archived_at IS NULL"),
+            sqlite_where=text("archived_at IS NULL"),
+        ),
+        Index("ix_generation_projects_owner_updated_at", "owner_user_id", "updated_at"),
+        Index("ix_generation_projects_archived_at", "archived_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    normalized_name = Column(String(200), nullable=False)
+    description = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+    archived_at = Column(DateTime)
+
+    records = relationship("GenerationRecord", back_populates="project")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "ownerUserId": self.owner_user_id,
+            "name": self.name,
+            "normalizedName": self.normalized_name,
+            "description": self.description,
+            "createdBy": self.created_by,
+            "updatedBy": self.updated_by,
+            "createdAt": serialize_utc_datetime(self.created_at),
+            "updatedAt": serialize_utc_datetime(self.updated_at),
+            "archivedAt": serialize_utc_datetime(self.archived_at),
+        }
+
+
+class GenerationRecoveryAudit(Base):
+    __tablename__ = "generation_recovery_audits"
+    __table_args__ = (
+        Index("ix_generation_recovery_audits_admin_created_at", "requested_by_admin_id", "created_at"),
+        Index("ix_generation_recovery_audits_provider_action_created_at", "provider", "action_type", "created_at"),
+        Index("ix_generation_recovery_audits_date_range_created_at", "date_from", "date_to", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String(40), nullable=False, default="kling", index=True)
+    action_type = Column(String(40), nullable=False, index=True)
+    requested_by_admin_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    date_from = Column(Date, nullable=False, index=True)
+    date_to = Column(Date, nullable=False, index=True)
+    kling_count = Column(Integer, nullable=False, default=0)
+    database_count = Column(Integer, nullable=False, default=0)
+    missing_count = Column(Integer, nullable=False, default=0)
+    imported_count = Column(Integer, nullable=False, default=0)
+    duplicate_count = Column(Integer, nullable=False, default=0)
+    status = Column(String(40), nullable=False, default="started", index=True)
+    filters_json = Column(JSON)
+    report_json = Column(JSON)
+    error_message = Column(Text)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    records = relationship("GenerationRecord", back_populates="recovery_audit")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "provider": self.provider,
+            "actionType": self.action_type,
+            "requestedByAdminId": self.requested_by_admin_id,
+            "dateFrom": self.date_from.isoformat() if self.date_from else None,
+            "dateTo": self.date_to.isoformat() if self.date_to else None,
+            "klingCount": self.kling_count,
+            "databaseCount": self.database_count,
+            "missingCount": self.missing_count,
+            "importedCount": self.imported_count,
+            "duplicateCount": self.duplicate_count,
+            "status": self.status,
+            "errorMessage": self.error_message,
+            "startedAt": serialize_utc_datetime(self.started_at),
+            "completedAt": serialize_utc_datetime(self.completed_at),
+            "createdAt": serialize_utc_datetime(self.created_at),
+        }
+
+
+class GenerationRecord(Base):
+    __tablename__ = "generation_records"
+    __table_args__ = (
+        CheckConstraint(
+            "provider_task_id IS NOT NULL OR provider_generation_id IS NOT NULL OR canonical_asset_key IS NOT NULL",
+            name="ck_generation_records_identity_present",
+        ),
+        Index(
+            "ux_generation_records_provider_task_id",
+            "provider",
+            "provider_task_id",
+            unique=True,
+            postgresql_where=text("provider_task_id IS NOT NULL"),
+            sqlite_where=text("provider_task_id IS NOT NULL"),
+        ),
+        Index(
+            "ux_generation_records_provider_generation_id",
+            "provider",
+            "provider_generation_id",
+            unique=True,
+            postgresql_where=text("provider_generation_id IS NOT NULL"),
+            sqlite_where=text("provider_generation_id IS NOT NULL"),
+        ),
+        Index(
+            "ux_generation_records_provider_asset_key",
+            "provider",
+            "canonical_asset_key",
+            unique=True,
+            postgresql_where=text("canonical_asset_key IS NOT NULL"),
+            sqlite_where=text("canonical_asset_key IS NOT NULL"),
+        ),
+        Index(
+            "ux_generation_records_source_usage_event_id",
+            "source_usage_event_id",
+            unique=True,
+            postgresql_where=text("source_usage_event_id IS NOT NULL"),
+            sqlite_where=text("source_usage_event_id IS NOT NULL"),
+        ),
+        Index("ix_generation_records_owner_project_created_at", "owner_user_id", "project_id", "created_at"),
+        Index("ix_generation_records_owner_status_created_at", "owner_user_id", "ownership_status", "created_at"),
+        Index("ix_generation_records_project_created_at", "project_id", "created_at"),
+        Index("ix_generation_records_ingestion_created_at", "ingestion_source", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String(40), nullable=False, default="kling", index=True)
+    provider_task_id = Column(String(160), index=True)
+    provider_generation_id = Column(String(160), index=True)
+    canonical_asset_url = Column(Text)
+    canonical_asset_key = Column(String(255), index=True)
+    prompt_text = Column(Text)
+    model_label = Column(String(255))
+    duration_label = Column(String(80))
+    resolution_label = Column(String(80))
+    credits_burned = Column(Float)
+    ingestion_source = Column(String(40), nullable=False, default="captured", index=True)
+    capture_status = Column(String(40), nullable=False, default="active", index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    ownership_status = Column(String(40), nullable=False, default="unknown", index=True)
+    ownership_source = Column(String(80))
+    ownership_notes = Column(Text)
+    assigned_by_admin_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    assigned_at = Column(DateTime)
+    project_id = Column(Integer, ForeignKey("generation_projects.id", ondelete="SET NULL"), index=True)
+    source_usage_event_id = Column(Integer, ForeignKey("it_portal_tool_usage_events.id", ondelete="SET NULL"), index=True)
+    recovery_audit_id = Column(Integer, ForeignKey("generation_recovery_audits.id", ondelete="SET NULL"), index=True)
+    recovered_by_admin_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    recovered_at = Column(DateTime)
+    metadata_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+    archived_at = Column(DateTime, index=True)
+
+    project = relationship("GenerationProject", back_populates="records")
+    recovery_audit = relationship("GenerationRecoveryAudit", back_populates="records")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "provider": self.provider,
+            "providerTaskId": self.provider_task_id,
+            "providerGenerationId": self.provider_generation_id,
+            "canonicalAssetUrl": self.canonical_asset_url,
+            "canonicalAssetKey": self.canonical_asset_key,
+            "promptText": self.prompt_text,
+            "modelLabel": self.model_label,
+            "durationLabel": self.duration_label,
+            "resolutionLabel": self.resolution_label,
+            "creditsBurned": self.credits_burned,
+            "ingestionSource": self.ingestion_source,
+            "captureStatus": self.capture_status,
+            "ownerUserId": self.owner_user_id,
+            "ownershipStatus": self.ownership_status,
+            "ownershipSource": self.ownership_source,
+            "ownershipNotes": self.ownership_notes,
+            "assignedByAdminId": self.assigned_by_admin_id,
+            "assignedAt": serialize_utc_datetime(self.assigned_at),
+            "projectId": self.project_id,
+            "sourceUsageEventId": self.source_usage_event_id,
+            "recoveryAuditId": self.recovery_audit_id,
+            "recoveredByAdminId": self.recovered_by_admin_id,
+            "recoveredAt": serialize_utc_datetime(self.recovered_at),
+            "metadata": self.metadata_json or {},
+            "createdAt": serialize_utc_datetime(self.created_at),
+            "updatedAt": serialize_utc_datetime(self.updated_at),
+            "archivedAt": serialize_utc_datetime(self.archived_at),
         }
 
 

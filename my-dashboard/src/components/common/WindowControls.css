@@ -1,0 +1,151 @@
+/* ============================================================
+   WindowControls — shared enterprise window chrome
+   Minimize · Maximize/Restore · Close
+   ============================================================ */
+
+.wc-root {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ── Base button ───────────────────────────────────────────── */
+.wc-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-icon-muted);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.12s ease,
+    box-shadow 0.15s ease;
+  outline: none;
+  line-height: 1;
+  font-size: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.wc-btn svg {
+  display: block;
+  flex-shrink: 0;
+  transition: opacity 0.15s ease;
+}
+
+/* ── Minimize ──────────────────────────────────────────────── */
+.wc-btn--minimize:hover {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border);
+  color: var(--color-text);
+  transform: translateY(-1px);
+}
+
+.wc-btn--minimize:active {
+  background: var(--color-active-surface);
+  transform: scale(0.92);
+}
+
+/* ── Maximize / Restore ────────────────────────────────────── */
+.wc-btn--maximize:hover {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.28);
+  color: var(--color-primary, #2563eb);
+  transform: translateY(-1px);
+}
+
+.wc-btn--maximize:active {
+  background: rgba(96, 165, 250, 0.18);
+  transform: scale(0.92);
+}
+
+/* ── Close ─────────────────────────────────────────────────── */
+.wc-btn--close:hover {
+  background: rgba(239, 68, 68, 0.13);
+  border-color: rgba(239, 68, 68, 0.32);
+  color: #f87171;
+  transform: translateY(-1px);
+}
+
+.wc-btn--close:active {
+  background: rgba(239, 68, 68, 0.22);
+  transform: scale(0.92);
+}
+
+/* ── Focus rings (keyboard nav) ────────────────────────────── */
+.wc-btn:focus-visible {
+  outline: 2px solid var(--color-primary, #2563eb);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.14);
+}
+
+.wc-btn--close:focus-visible {
+  outline-color: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.14);
+}
+
+/* ── Disabled state ────────────────────────────────────────── */
+.wc-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Minimized panel — slightly smaller controls ───────────── */
+.minimized .wc-root {
+  gap: 4px;
+}
+
+.minimized .wc-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+}
+
+/* ── Mobile: hide maximize (panels open maximized by default) ── */
+@media (max-width: 768px) {
+  .wc-btn--maximize {
+    display: none;
+  }
+
+  /* Show restore button when panel is minimized chip */
+  .wc-root.minimized .wc-btn--maximize {
+    display: flex;
+  }
+
+  .wc-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 9px;
+  }
+
+  .minimized .wc-btn {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* ── High-contrast / forced-colors fallback ────────────────── */
+@media (forced-colors: active) {
+  .wc-btn {
+    border: 1px solid ButtonText;
+    color: ButtonText;
+    background: ButtonFace;
+  }
+
+  .wc-btn:hover,
+  .wc-btn:focus-visible {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+}

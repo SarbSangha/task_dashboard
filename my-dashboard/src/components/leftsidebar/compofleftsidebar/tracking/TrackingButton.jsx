@@ -3,15 +3,21 @@ import '../MenuButton.css';
 
 const TrackingButton = ({ isActive, onClick }) => {
   return (
-    <button 
-      className={`menu-button ${isActive ? 'active' : ''}`}
+    <button
+      className={`menu-button${isActive ? ' active' : ''}`}
       onClick={onClick}
+      data-label="Tracking"
+      aria-label="Tracking"
+      aria-current={isActive ? 'page' : undefined}
     >
-      <div className="menu-button-icon">
-        <svg viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+      <span className="menu-button-icon" aria-hidden="true">
+        {/* Clipboard with checkmark — clear "task status" metaphor */}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
+          <rect x="9" y="3" width="6" height="4" rx="1" />
+          <path d="M9 12l2 2 4-4" />
         </svg>
-      </div>
+      </span>
       <span className="menu-button-label">Tracking</span>
     </button>
   );

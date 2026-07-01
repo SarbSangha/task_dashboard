@@ -1,204 +1,220 @@
-/* Shared settings layer stack */
 :root {
   --settings-backdrop-z: 999;
   --settings-sidebar-z: 1000;
   --settings-panel-overlay-z: 2000;
   --settings-panel-z: 2001;
+  --settings-sidebar-width: min(260px, 90vw);
+  --settings-sidebar-gap: 16px;
 }
 
-/* Settings Sidebar - Right Side Popup */
 .settings-sidebar {
-  position: fixed !important;
-  right: -320px !important;
-  top: 120px !important;
-  width: 260px !important;
-  max-height: calc(100vh - 140px) !important;
-  background: linear-gradient(180deg, #3d5a80 0%, #2b4257 100%)!important;
-  box-shadow: -4px 4px 20px rgba(0, 0, 0, 0.25) !important;
-  z-index: var(--settings-sidebar-z) !important;
-  display: flex !important;
-  flex-direction: column !important;
-  transition: right 0.3s ease-out !important;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif !important;
-  border-radius: 16px 0 0 16px !important;
-  overflow: hidden !important;
+  position: fixed;
+  right: var(--topnav-inset, 20px);
+  top: calc(var(--topnav-inset, 20px) + var(--topnav-height, 84px) + 15px);
+  width: var(--settings-sidebar-width);
+  max-height: calc(100vh - var(--topnav-inset, 20px) - var(--topnav-height, 84px) - 16px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-surface-drawer);
+  box-shadow: var(--shadow-popover);
+  color: var(--color-text);
+  z-index: var(--settings-sidebar-z);
+  transition:
+    transform var(--theme-transition-base),
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
+  transform: translateX(calc(100% + var(--topnav-inset, 20px)));
 }
 
 .settings-sidebar.open {
-  right: 0 !important;
+  transform: translateX(0);
 }
 
-/* Brand Header (Optional - can be removed) */
 .settings-brand {
-  display: none !important;
+  display: none;
 }
 
-/* Settings Header */
 .settings-header {
-  display: flex !important;
-  justify-content: space-between !important;
-  align-items: center !important;
-  padding: 16px 18px !important;
-  background: #37474f !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--color-divider);
+  background: var(--color-surface-elevated);
 }
 
 .settings-header h2 {
-  margin: 0 !important;
-  font-size: 12px !important;
-  font-weight: 700 !important;
-  color: white !important;
-  text-transform: uppercase !important;
-  letter-spacing: 1.2px !important;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
 }
 
-.settings-toggle-btn {
-  background: rgba(255, 255, 255, 0.1) !important;
-  border: none !important;
-  width: 28px !important;
-  height: 28px !important;
-  border-radius: 4px !important;
-  cursor: pointer !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  color: white !important;
-  font-size: 16px !important;
-  transition: all 0.2s !important;
-}
-
-.settings-toggle-btn:hover {
-  background: rgba(255, 255, 255, 0.2) !important;
-}
-
+.settings-toggle-btn,
 .settings-close-btn {
-  background: transparent !important;
-  border: none !important;
-  width: 24px !important;
-  height: 24px !important;
-  cursor: pointer !important;
-  font-size: 18px !important;
-  color: white !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  transition: all 0.2s !important;
-  opacity: 0.8 !important;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-icon);
+  cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
 }
 
+.settings-toggle-btn:hover,
 .settings-close-btn:hover {
-  opacity: 1 !important;
+  background: var(--color-hover-surface);
+  border-color: var(--color-border-subtle);
+  transform: translateY(-1px);
 }
 
-/* Settings Menu */
+.settings-toggle-btn:focus-visible,
+.settings-close-btn:focus-visible,
+.settings-menu-item:focus-visible {
+  outline: var(--outline-focus);
+  outline-offset: 3px;
+}
+
 .settings-menu {
-  flex: 1 !important;
-  overflow-y: auto !important;
-  padding: 8px 0 !important;
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
 }
 
-/* Menu Items - Matching Reference Style */
 .settings-menu-item {
-  display: flex !important;
-  align-items: center !important;
-  gap: 12px !important;
-  padding: 12px 18px !important;
-  background: transparent !important;
-  border: none !important;
-  border-left: 3px solid transparent !important;
-  color: rgba(255, 255, 255, 0.8) !important;
-  font-size: 13px !important;
-  font-weight: 500 !important;
-  cursor: pointer !important;
-  transition: all 0.2s !important;
-  width: 100% !important;
-  text-align: left !important;
-  position: relative !important;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 18px;
+  border: none;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--color-nav-text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
 }
 
 .settings-menu-item:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
-  color: white !important;
-  border-left-color: rgba(255, 255, 255, 0.5) !important;
+  background: var(--color-nav-hover);
+  color: var(--color-nav-text);
+  border-left-color: var(--color-nav-selected-border);
 }
 
 .settings-menu-item.active {
-  background: rgba(255, 255, 255, 0.12) !important;
-  color: white !important;
-  border-left-color: white !important;
+  background: var(--color-nav-selected);
+  color: var(--color-nav-text);
+  border-left-color: var(--color-nav-selected-border);
+  box-shadow: inset 0 0 0 1px var(--color-nav-highlight);
 }
 
-/* Menu Item Icons */
+.settings-menu-toggle {
+  justify-content: space-between;
+}
+
+.settings-menu-toggle > span {
+  flex: 1;
+}
+
 .settings-menu-item svg:first-child {
-  width: 18px !important;
-  height: 18px !important;
-  flex-shrink: 0 !important;
-  opacity: 0.9 !important;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  opacity: 0.92;
 }
 
 .settings-menu-item:hover svg:first-child,
 .settings-menu-item.active svg:first-child {
-  opacity: 1 !important;
+  opacity: 1;
 }
 
-/* Menu Item Text */
 .settings-menu-item span {
-  flex: 1 !important;
-  font-size: 13px !important;
-  font-weight: 500 !important;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
 }
 
-/* Chevron Arrow - Hidden for cleaner look */
 .chevron-right {
-  width: 14px !important;
-  height: 14px !important;
-  opacity: 0.4 !important;
-  transition: opacity 0.2s, transform 0.2s !important;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  opacity: 0.45;
+  transition:
+    opacity var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
 }
 
 .settings-menu-item:hover .chevron-right {
-  opacity: 0.7 !important;
-  transform: translateX(2px) !important;
+  opacity: 0.72;
+  transform: translateX(2px);
 }
 
-/* Scrollbar */
 .settings-menu::-webkit-scrollbar {
-  width: 5px !important;
+  width: 5px;
 }
 
 .settings-menu::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.1) !important;
+  background: var(--color-scrollbar-track);
 }
 
 .settings-menu::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2) !important;
-  border-radius: 3px !important;
+  background: var(--color-scrollbar-thumb);
+  border-radius: 999px;
 }
 
 .settings-menu::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3) !important;
+  background: var(--color-scrollbar-thumb-hover);
 }
 
-/* Backdrop */
-.settings-backdrop {
-  position: fixed !important;
-  top: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  bottom: 0 !important;
-  background: rgba(0, 0, 0, 0.5) !important;
-  z-index: var(--settings-backdrop-z) !important;
-  animation: fadeIn 0.3s ease-out;
+.settings-backdrop,
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--settings-backdrop-z);
+  background: transparent;
+  animation: fadeIn var(--theme-transition-base) ease-out;
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes settingsPanelFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes settingsPanelSlideInRight {
@@ -206,16 +222,38 @@
     transform: translateX(50px);
     opacity: 0;
   }
+
   to {
     transform: translateX(0);
     opacity: 1;
   }
 }
 
-/* Responsive */
 @media (max-width: 768px) {
   .settings-sidebar {
-    width: 240px !important;
-    top: 60px !important;
+    width: min(240px, 90vw);
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-sidebar {
+    width: min(260px, 85vw);
+    border-radius: 12px;
+  }
+
+  .settings-menu-item {
+    min-height: 48px;
+    padding: 14px 16px;
+  }
+}
+
+@media (max-width: 360px) {
+  .settings-sidebar {
+    width: min(240px, 88vw);
+  }
+
+  .settings-menu-item {
+    padding: 12px 14px;
+    font-size: 12px;
   }
 }

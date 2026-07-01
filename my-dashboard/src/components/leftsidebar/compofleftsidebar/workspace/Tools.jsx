@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { authAPI, isRequestCanceled, itToolsAPI } from '../../../../services/api';
 import './Tools.css';
 
@@ -71,6 +71,13 @@ const Icons = {
   Shield: () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+    </svg>
+  ),
+  AlertCircle: () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
     </svg>
   ),
   Globe: () => (
@@ -460,6 +467,102 @@ const formatUsageDateTime = (value) => {
   });
 };
 
+const parseUsageDateValue = (value) => {
+  if (!value) return null;
+  const normalizedValue = `${value}`;
+  const dateOnlyMatch = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const parsed = dateOnlyMatch
+    ? new Date(Number(dateOnlyMatch[1]), Number(dateOnlyMatch[2]) - 1, Number(dateOnlyMatch[3]), 12, 0, 0, 0)
+    : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+};
+
+const toUsageDateKey = (value) => {
+  const parsed = parseUsageDateValue(value);
+  if (!parsed) return '';
+  const year = parsed.getFullYear();
+  const month = `${parsed.getMonth() + 1}`.padStart(2, '0');
+  const day = `${parsed.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const formatUsageShortDate = (value) => {
+  const parsed = parseUsageDateValue(value);
+  if (!parsed) return formatUsageDate(value);
+  return parsed.toLocaleDateString([], {
+    month: 'short',
+    day: 'numeric',
+  });
+};
+
+const getUsageAxisLabelLines = (value, maxCharsPerLine = 12, maxLines = 2) => {
+  const normalized = `${value || ''}`.trim();
+  if (!normalized) return ['Unknown'];
+
+  const words = normalized.split(/\s+/).filter(Boolean);
+  const lines = [];
+
+  if (words.length > 1) {
+    let currentLine = '';
+    words.forEach((word) => {
+      const candidate = currentLine ? `${currentLine} ${word}` : word;
+      if (candidate.length <= maxCharsPerLine || !currentLine) {
+        currentLine = candidate;
+        return;
+      }
+      lines.push(currentLine);
+      currentLine = word;
+    });
+    if (currentLine) lines.push(currentLine);
+  } else {
+    for (let index = 0; index < normalized.length; index += maxCharsPerLine) {
+      lines.push(normalized.slice(index, index + maxCharsPerLine));
+    }
+  }
+
+  if (lines.length <= maxLines) return lines;
+  const visibleLines = lines.slice(0, maxLines);
+  visibleLines[maxLines - 1] = `${visibleLines[maxLines - 1].slice(0, Math.max(maxCharsPerLine - 1, 1))}…`;
+  return visibleLines;
+};
+
+const getUsageChartAxisMax = (values = [], minimum = 1) => {
+  const rawMax = Math.max(minimum, ...values.map((value) => Number(value || 0)));
+  if (rawMax <= minimum) return minimum;
+
+  const withHeadroom = rawMax * 1.15;
+  const magnitude = 10 ** Math.max(0, Math.floor(Math.log10(withHeadroom)));
+  const normalized = withHeadroom / magnitude;
+
+  let niceNormalized = 1;
+  if (normalized <= 1) niceNormalized = 1;
+  else if (normalized <= 2) niceNormalized = 2;
+  else if (normalized <= 2.5) niceNormalized = 2.5;
+  else if (normalized <= 5) niceNormalized = 5;
+  else niceNormalized = 10;
+
+  return niceNormalized * magnitude;
+};
+
+const getUsageDateRangeKeys = (dateFrom, dateTo) => {
+  const start = parseUsageDateValue(dateFrom);
+  const end = parseUsageDateValue(dateTo);
+  if (!start || !end || start > end) return [];
+
+  const values = [];
+  const cursor = new Date(start);
+  let guard = 0;
+
+  while (cursor <= end && guard < 1100) {
+    values.push(toUsageDateKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+    guard += 1;
+  }
+
+  return values;
+};
+
 const formatUsageCredentialTitle = (credentialLabel, credentialId) => {
   const normalizedLabel = `${credentialLabel || ''}`.trim();
   const numericCredentialId = Number(credentialId || 0);
@@ -648,20 +751,425 @@ const compareUsageAggregateTotals = (left, right) => {
   return getUsageTimestamp(right?.lastEventAt) - getUsageTimestamp(left?.lastEventAt);
 };
 
+const USAGE_USER_CHART_COLORS = [
+  'var(--tools-chart-series-1)',
+  'var(--tools-chart-series-2)',
+  'var(--tools-chart-series-3)',
+  'var(--tools-chart-series-4)',
+  'var(--tools-chart-series-5)',
+  'var(--tools-chart-series-6)',
+  'var(--tools-chart-series-7)',
+];
+
+function UsageCreditsLineChart({ data = [], loading = false }) {
+  if (loading) {
+    return <div className="it-usage-chart-empty">Loading credit trend...</div>;
+  }
+
+  if (!data.length) {
+    return <div className="it-usage-chart-empty">No credit burn found for the selected dates.</div>;
+  }
+
+  const width = 760;
+  const height = 280;
+  const padding = { top: 20, right: 18, bottom: 38, left: 74 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const hasPositiveValues = data.some((item) => Number(item.creditsBurned || 0) > 0);
+  const maxValue = hasPositiveValues
+    ? getUsageChartAxisMax(data.map((item) => Number(item.creditsBurned || 0)), 1)
+    : 1;
+  const xStep = data.length === 1 ? 0 : plotWidth / (data.length - 1);
+
+  const points = data.map((item, index) => {
+    const creditsBurned = Number(item.creditsBurned || 0);
+    const x = data.length === 1 ? padding.left + (plotWidth / 2) : padding.left + (index * xStep);
+    const y = padding.top + plotHeight - ((creditsBurned / maxValue) * plotHeight);
+    return {
+      ...item,
+      creditsBurned,
+      x,
+      y,
+    };
+  });
+
+  const linePath = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+  const areaPath = points.length
+    ? `${linePath} L ${points[points.length - 1].x} ${padding.top + plotHeight} L ${points[0].x} ${padding.top + plotHeight} Z`
+    : '';
+  const yTicks = Array.from({ length: 4 }, (_, index) => {
+    const ratio = (3 - index) / 3;
+    return {
+      key: `tick-${index}`,
+      value: hasPositiveValues ? maxValue * ratio : 0,
+      y: padding.top + plotHeight - (ratio * plotHeight),
+    };
+  });
+  const labelStride = data.length <= 7 ? 1 : Math.ceil(data.length / 6);
+
+  return (
+    <div className="it-usage-line-chart" role="img" aria-label="Line chart showing credits burned by date">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="usageCreditsAreaFill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="var(--tools-chart-line)" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="var(--tools-chart-line)" stopOpacity="0.03" />
+          </linearGradient>
+        </defs>
+
+        {yTicks.map((tick) => (
+          <g key={tick.key}>
+            <line
+              x1={padding.left}
+              y1={tick.y}
+              x2={width - padding.right}
+              y2={tick.y}
+              className="it-usage-line-grid"
+            />
+            <text x={padding.left - 12} y={tick.y + 4} textAnchor="end" className="it-usage-line-axis-label">
+              {formatUsageNumber(tick.value)}
+            </text>
+          </g>
+        ))}
+
+        <line
+          x1={padding.left}
+          y1={padding.top + plotHeight}
+          x2={width - padding.right}
+          y2={padding.top + plotHeight}
+          className="it-usage-line-axis"
+        />
+
+        {areaPath && <path d={areaPath} className="it-usage-line-area" />}
+        <path d={linePath} className="it-usage-line-path" />
+
+        {points.map((point, index) => (
+          <g key={`usage-point-${point.date}-${index}`}>
+            <circle cx={point.x} cy={point.y} r="4.5" className="it-usage-line-point" />
+            <title>{`${formatUsageDate(point.date)}: ${formatUsageNumber(point.creditsBurned)} credits`}</title>
+          </g>
+        ))}
+
+        {points.map((point, index) => {
+          const shouldRenderLabel = index === 0 || index === points.length - 1 || index % labelStride === 0;
+          if (!shouldRenderLabel) return null;
+          return (
+            <text
+              key={`usage-label-${point.date}-${index}`}
+              x={point.x}
+              y={height - 12}
+              textAnchor="middle"
+              className="it-usage-line-axis-label"
+            >
+              {formatUsageShortDate(point.date)}
+            </text>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function UsageCreditsBarChart({ data = [], loading = false }) {
+  if (loading) {
+    return <div className="it-usage-chart-empty">Loading user credit bars...</div>;
+  }
+
+  if (!data.length) {
+    return <div className="it-usage-chart-empty">No user credit burn found for the selected filter.</div>;
+  }
+
+  const maxValue = getUsageChartAxisMax(data.map((item) => Number(item.creditsBurned || 0)), 1);
+
+  return (
+    <div className="it-usage-user-bars" role="img" aria-label="Bar graph showing credits burned by user">
+      {data.map((entry) => {
+        const widthPercent = maxValue > 0 ? (Number(entry.creditsBurned || 0) / maxValue) * 100 : 0;
+        const visibleWidth = entry.creditsBurned > 0 ? Math.max(widthPercent, 5) : 0;
+        const label = getUsageUserLabel(entry);
+        const emailLabel = entry.userName && entry.userEmail && entry.userName !== entry.userEmail ? entry.userEmail : '';
+
+        return (
+          <div key={entry.key} className="it-usage-user-bar-row">
+            <div className="it-usage-user-bar-head">
+              <div className="it-usage-user-bar-labels">
+                <strong title={label}>{label}</strong>
+                {emailLabel && <small title={emailLabel}>{emailLabel}</small>}
+              </div>
+              <span>{formatUsageNumber(entry.creditsBurned)} credits</span>
+            </div>
+            <div className="it-usage-user-bar-track">
+              <div className="it-usage-user-bar-fill" style={{ width: `${visibleWidth}%` }} />
+            </div>
+            <div className="it-usage-user-bar-meta">
+              <small>{entry.generateClicks} clicks</small>
+              <small>{formatUsageDateTime(entry.lastEventAt)}</small>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function UsageDailyBarChart({ data = [], loading = false }) {
+  if (loading) {
+    return <div className="it-usage-chart-empty">Loading daily consumption bars...</div>;
+  }
+
+  if (!data.length) {
+    return <div className="it-usage-chart-empty">No day-level consumption found for the selected dates.</div>;
+  }
+
+  const width = 760;
+  const height = 300;
+  const padding = { top: 20, right: 18, bottom: 46, left: 74 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maxValue = getUsageChartAxisMax(data.map((item) => Number(item.creditsBurned || 0)), 1);
+  const gap = data.length > 1 ? 14 : 0;
+  const barWidth = Math.max(28, Math.min(72, (plotWidth - (gap * Math.max(data.length - 1, 0))) / Math.max(data.length, 1)));
+  const totalBarsWidth = (barWidth * data.length) + (gap * Math.max(data.length - 1, 0));
+  const startX = padding.left + Math.max((plotWidth - totalBarsWidth) / 2, 0);
+
+  const bars = data.map((item, index) => {
+    const creditsBurned = Number(item.creditsBurned || 0);
+    const barHeight = maxValue > 0 ? (creditsBurned / maxValue) * plotHeight : 0;
+    const x = startX + (index * (barWidth + gap));
+    const y = padding.top + plotHeight - barHeight;
+    return {
+      ...item,
+      creditsBurned,
+      x,
+      y,
+      barHeight,
+    };
+  });
+
+  const yTicks = Array.from({ length: 4 }, (_, index) => {
+    const ratio = (3 - index) / 3;
+    return {
+      key: `day-bar-tick-${index}`,
+      value: maxValue * ratio,
+      y: padding.top + plotHeight - (ratio * plotHeight),
+    };
+  });
+  const minimumLabelY = padding.top + 12;
+
+  return (
+    <div className="it-usage-line-chart" role="img" aria-label="Bar chart showing daily credit consumption">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="usageDayBarFill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="var(--tools-chart-bar-start)" stopOpacity="0.95" />
+            <stop offset="100%" stopColor="var(--tools-chart-bar-end)" stopOpacity="0.88" />
+          </linearGradient>
+        </defs>
+
+        {yTicks.map((tick) => (
+          <g key={tick.key}>
+            <line
+              x1={padding.left}
+              y1={tick.y}
+              x2={width - padding.right}
+              y2={tick.y}
+              className="it-usage-line-grid"
+            />
+            <text x={padding.left - 12} y={tick.y + 4} textAnchor="end" className="it-usage-line-axis-label">
+              {formatUsageNumber(tick.value)}
+            </text>
+          </g>
+        ))}
+
+        <line
+          x1={padding.left}
+          y1={padding.top + plotHeight}
+          x2={width - padding.right}
+          y2={padding.top + plotHeight}
+          className="it-usage-line-axis"
+        />
+
+        {bars.map((bar, index) => (
+          <g key={`daily-bar-${bar.date}-${index}`}>
+            <rect
+              x={bar.x}
+              y={bar.y}
+              width={barWidth}
+              height={Math.max(bar.barHeight, 0)}
+              rx="10"
+              className="it-usage-day-bar"
+            />
+            <text
+              x={bar.x + (barWidth / 2)}
+              y={Math.max(bar.y - 14, minimumLabelY)}
+              textAnchor="middle"
+              className="it-usage-line-axis-label"
+            >
+              {formatUsageNumber(bar.creditsBurned)}
+            </text>
+            <text
+              x={bar.x + (barWidth / 2)}
+              y={height - 14}
+              textAnchor="middle"
+              className="it-usage-line-axis-label"
+            >
+              {formatUsageShortDate(bar.date)}
+            </text>
+            <title>{`${formatUsageDate(bar.date)}: ${formatUsageNumber(bar.creditsBurned)} credits`}</title>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function UsageSingleDayUserBarChart({ data = [], selectedDate = '', loading = false }) {
+  if (loading) {
+    return <div className="it-usage-chart-empty">Loading daily user credit chart...</div>;
+  }
+
+  if (!data.length) {
+    return <div className="it-usage-chart-empty">No user credit burn found for {formatUsageDate(selectedDate)}.</div>;
+  }
+
+  const width = Math.max(760, 150 + (data.length * 96));
+  const height = 390;
+  const padding = { top: 22, right: 18, bottom: 132, left: 74 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maxValue = getUsageChartAxisMax(data.map((item) => Number(item.creditsBurned || 0)), 1);
+  const gap = data.length > 1 ? 16 : 0;
+  const barWidth = Math.max(34, Math.min(58, (plotWidth - (gap * Math.max(data.length - 1, 0))) / Math.max(data.length, 1)));
+  const totalBarsWidth = (barWidth * data.length) + (gap * Math.max(data.length - 1, 0));
+  const startX = padding.left + Math.max((plotWidth - totalBarsWidth) / 2, 0);
+
+  const yTicks = Array.from({ length: 4 }, (_, index) => {
+    const ratio = (3 - index) / 3;
+    return {
+      key: `single-day-user-tick-${index}`,
+      value: maxValue * ratio,
+      y: padding.top + plotHeight - (ratio * plotHeight),
+    };
+  });
+
+  return (
+    <div className="it-usage-scroll-chart">
+      <div className="it-usage-line-chart" role="img" aria-label="Bar chart showing credits burned by user for the selected day">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="xMinYMin meet"
+          style={{ width: `${width}px`, height: `${height}px` }}
+        >
+          {yTicks.map((tick) => (
+            <g key={tick.key}>
+              <line
+                x1={padding.left}
+                y1={tick.y}
+                x2={width - padding.right}
+                y2={tick.y}
+                className="it-usage-line-grid"
+              />
+              <text x={padding.left - 12} y={tick.y + 4} textAnchor="end" className="it-usage-line-axis-label">
+                {formatUsageNumber(tick.value)}
+              </text>
+            </g>
+          ))}
+
+          <line
+            x1={padding.left}
+            y1={padding.top + plotHeight}
+            x2={width - padding.right}
+            y2={padding.top + plotHeight}
+            className="it-usage-line-axis"
+          />
+
+          {data.map((userEntry, index) => {
+            const creditsBurned = Number(userEntry.creditsBurned || 0);
+            const barHeight = maxValue > 0 ? (creditsBurned / maxValue) * plotHeight : 0;
+            const x = startX + (index * (barWidth + gap));
+            const y = padding.top + plotHeight - barHeight;
+            const labelLines = getUsageAxisLabelLines(userEntry.label, 12, 2);
+
+            return (
+              <g key={`single-day-user-bar-${userEntry.key}-${index}`}>
+                <rect
+                  x={x}
+                  y={y}
+                  width={barWidth}
+                  height={Math.max(barHeight, 0)}
+                  rx="10"
+                  fill={USAGE_USER_CHART_COLORS[index % USAGE_USER_CHART_COLORS.length]}
+                  className="it-usage-day-bar"
+                >
+                  <title>{`${userEntry.label}: ${formatUsageNumber(creditsBurned)} credits on ${formatUsageDate(selectedDate)}`}</title>
+                </rect>
+                <text
+                  x={x + (barWidth / 2)}
+                  y={Math.max(y - 8, padding.top + 10)}
+                  textAnchor="middle"
+                  className="it-usage-line-axis-label"
+                >
+                  {formatUsageNumber(creditsBurned)}
+                </text>
+                <text
+                  x={x + (barWidth / 2)}
+                  y={height - padding.bottom + 20}
+                  textAnchor="middle"
+                  className="it-usage-line-axis-label"
+                  aria-label={userEntry.label}
+                >
+                  {labelLines.map((line, lineIndex) => (
+                    <tspan
+                      key={`${userEntry.key}-label-${lineIndex}`}
+                      x={x + (barWidth / 2)}
+                      dy={lineIndex === 0 ? 0 : 14}
+                    >
+                      {line}
+                    </tspan>
+                  ))}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 const TOOL_ADMIN_SECTIONS = [
   { key: 'assigned', label: 'Tool' },
   { key: 'access', label: 'Access' },
   { key: 'add', label: 'Add Tool' },
 ];
 
+const WORKPLACE_TOOLS_EMPTY_STATE_TITLE = 'No Active Tasks';
+const WORKPLACE_TOOLS_EMPTY_STATE_COPY = "You don't have any active tasks assigned to you.";
+const WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP = 'Workplace tools become available automatically as soon as a new active task is assigned.';
+const WORKPLACE_TOOLS_ACCESS_CHECK_ERROR = 'Unable to verify Workplace tools access right now.';
+
+const isWorkplaceToolsAccessDeniedError = (error) => (
+  error?.response?.status === 403
+  && /active inbox task|workplace tools/i.test(`${error?.response?.data?.detail || ''}`)
+);
+
 export default function Tools({ view = 'tools' }) {
-  const activeView = view === 'credits' ? 'credits' : 'tools';
+  const activeView = view === 'credits' ? 'credits' : view === 'charts' ? 'charts' : 'tools';
+  const isUsageDashboardView = activeView === 'credits' || activeView === 'charts';
   const containerRef = useRef(null);
   const headerRef = useRef(null);
   const usageRefreshControllerRef = useRef(null);
   const [tools, setTools] = useState([]);
   const [users, setUsers] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [toolsAccess, setToolsAccess] = useState({
+    loading: true,
+    checked: false,
+    canAccess: false,
+    isError: false,
+    message: '',
+  });
+  const [toolsAccessRetryCount, setToolsAccessRetryCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [mailboxBusy, setMailboxBusy] = useState(false);
@@ -685,9 +1193,13 @@ export default function Tools({ view = 'tools' }) {
   const [assignmentUserPage, setAssignmentUserPage] = useState(0);
   const [sharedCredentialAssignmentPicker, setSharedCredentialAssignmentPicker] = useState(null);
   const [usageFilters, setUsageFilters] = useState(EMPTY_USAGE_FILTERS);
+  const [usageUserDayChartDate, setUsageUserDayChartDate] = useState(EMPTY_USAGE_FILTERS.dateTo || EMPTY_USAGE_FILTERS.dateFrom);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageRows, setUsageRows] = useState([]);
+  const [usageUserDayRows, setUsageUserDayRows] = useState([]);
+  const [usageUserDayLoading, setUsageUserDayLoading] = useState(false);
   const [usageExporting, setUsageExporting] = useState(false);
+  const [usageRawExporting, setUsageRawExporting] = useState(false);
   const [launchHistoryLoading, setLaunchHistoryLoading] = useState(false);
   const [launchHistoryRows, setLaunchHistoryRows] = useState([]);
   const [launchHistorySummary, setLaunchHistorySummary] = useState(EMPTY_LAUNCH_HISTORY_SUMMARY);
@@ -704,7 +1216,41 @@ export default function Tools({ view = 'tools' }) {
     [usageSummary, recentUsageEvents],
   );
 
-  const loadToolCredentials = async (toolList, signal, { manageLoading = true } = {}) => {
+  const applyToolsAccessStatus = useCallback((response) => {
+    const canAccess = !!response?.canAccessTools;
+    const message = `${response?.message || ''}`.trim();
+    setToolsAccess({
+      loading: false,
+      checked: true,
+      canAccess,
+      isError: false,
+      message,
+    });
+    return canAccess;
+  }, []);
+
+  const handleProtectedToolsError = useCallback((err, fallbackMessage = '') => {
+    if (!isWorkplaceToolsAccessDeniedError(err)) {
+      return false;
+    }
+
+    setError('');
+    setNotice('');
+    setLoading(false);
+    setUsageLoading(false);
+    setLaunchHistoryLoading(false);
+    setUsageUserDayLoading(false);
+    setToolsAccess({
+      loading: false,
+      checked: true,
+      canAccess: false,
+      isError: false,
+      message: err?.response?.data?.detail || fallbackMessage || WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP,
+    });
+    return true;
+  }, []);
+
+  const loadToolCredentials = useCallback(async (toolList, signal, { manageLoading = true } = {}) => {
     if (signal?.aborted) return;
     if (!toolList.length) {
       setToolCredentialsByToolId({});
@@ -734,17 +1280,17 @@ export default function Tools({ view = 'tools' }) {
         setAssignmentLoading(false);
       }
     }
-  };
+  }, []);
 
-  const refreshToolCredentialCache = async (toolId) => {
+  const refreshToolCredentialCache = useCallback(async (toolId) => {
     const response = await itToolsAPI.getToolCredentials(toolId);
     setToolCredentialsByToolId((current) => ({
       ...current,
       [`${toolId}`]: response.credentials || [],
     }));
-  };
+  }, []);
 
-  const loadTools = async (signal) => {
+  const loadTools = useCallback(async (signal) => {
     if (signal?.aborted) return;
     setLoading(true);
     setError('');
@@ -772,6 +1318,7 @@ export default function Tools({ view = 'tools' }) {
             }
           } catch (err) {
             if (isRequestCanceled(err) || signal?.aborted) return;
+            if (handleProtectedToolsError(err, WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP)) return;
             setError(err?.response?.data?.detail || 'Unable to load IT tools.');
           } finally {
             if (!signal?.aborted) {
@@ -785,15 +1332,51 @@ export default function Tools({ view = 'tools' }) {
       }
     } catch (err) {
       if (isRequestCanceled(err) || signal?.aborted) return;
+      if (handleProtectedToolsError(err, WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP)) return;
       setError(err?.response?.data?.detail || 'Unable to load IT tools.');
     } finally {
       if (!signal?.aborted) {
         setLoading(false);
       }
     }
-  };
+  }, [handleProtectedToolsError, loadToolCredentials]);
 
   useEffect(() => {
+    const controller = new AbortController();
+
+    setToolsAccess((current) => ({
+      ...current,
+      loading: true,
+      checked: false,
+      isError: false,
+    }));
+    setError('');
+
+    void itToolsAPI.getAccessStatus({ signal: controller.signal }).then((response) => {
+      if (controller.signal.aborted) return;
+      applyToolsAccessStatus(response);
+    }).catch((err) => {
+      if (isRequestCanceled(err) || controller.signal.aborted) return;
+      if (handleProtectedToolsError(err, WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP)) return;
+      setToolsAccess({
+        loading: false,
+        checked: true,
+        canAccess: false,
+        isError: true,
+        message: err?.response?.data?.detail || WORKPLACE_TOOLS_ACCESS_CHECK_ERROR,
+      });
+    });
+
+    return () => {
+      controller.abort();
+    };
+  }, [applyToolsAccessStatus, handleProtectedToolsError, toolsAccessRetryCount]);
+
+  useEffect(() => {
+    if (toolsAccess.loading || !toolsAccess.canAccess) {
+      setLoading(false);
+      return undefined;
+    }
     if (activeView !== 'tools') {
       setLoading(false);
       return undefined;
@@ -804,7 +1387,7 @@ export default function Tools({ view = 'tools' }) {
     return () => {
       controller.abort();
     };
-  }, [activeView]);
+  }, [activeView, loadTools, toolsAccess.canAccess, toolsAccess.loading]);
 
   useEffect(() => {
     const rootElement = containerRef.current;
@@ -863,7 +1446,8 @@ export default function Tools({ view = 'tools' }) {
   }, []);
 
   useEffect(() => {
-    if (activeView !== 'credits') return undefined;
+    if (toolsAccess.loading || !toolsAccess.canAccess) return undefined;
+    if (!isUsageDashboardView) return undefined;
 
     const controller = new AbortController();
     setError('');
@@ -875,6 +1459,7 @@ export default function Tools({ view = 'tools' }) {
       setIsAdmin(true);
     }).catch((err) => {
       if (isRequestCanceled(err) || controller.signal.aborted) return;
+      if (handleProtectedToolsError(err, WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP)) return;
       if (err?.response?.status === 401 || err?.response?.status === 403) {
         setIsAdmin(false);
         setUsers([]);
@@ -887,10 +1472,11 @@ export default function Tools({ view = 'tools' }) {
     return () => {
       controller.abort();
     };
-  }, [activeView]);
+  }, [activeView, handleProtectedToolsError, isUsageDashboardView, toolsAccess.canAccess, toolsAccess.loading]);
 
   useEffect(() => {
-    if (activeView !== 'credits') return undefined;
+    if (toolsAccess.loading || !toolsAccess.canAccess) return undefined;
+    if (!isUsageDashboardView) return undefined;
 
     const controller = new AbortController();
     void itToolsAPI.listTools({ signal: controller.signal }).then((response) => {
@@ -906,16 +1492,18 @@ export default function Tools({ view = 'tools' }) {
       }
     }).catch((err) => {
       if (isRequestCanceled(err) || controller.signal.aborted) return;
+      if (handleProtectedToolsError(err, WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP)) return;
       setError(err?.response?.data?.detail || 'Unable to load Kling credential mails.');
     });
 
     return () => {
       controller.abort();
     };
-  }, [activeView]);
+  }, [activeView, handleProtectedToolsError, isUsageDashboardView, toolsAccess.canAccess, toolsAccess.loading]);
 
   useEffect(() => {
-    if (activeView !== 'credits') return undefined;
+    if (toolsAccess.loading || !toolsAccess.canAccess) return undefined;
+    if (!isUsageDashboardView) return undefined;
     const controller = new AbortController();
     setUsageLoading(true);
     void itToolsAPI.getUsageReport({
@@ -940,6 +1528,7 @@ export default function Tools({ view = 'tools' }) {
       setRecentUsageEvents(response.recentEvents || []);
     }).catch((err) => {
       if (isRequestCanceled(err) || controller.signal.aborted) return;
+      if (handleProtectedToolsError(err, WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP)) return;
       setError(err?.response?.data?.detail || 'Unable to load Kling usage report.');
     }).finally(() => {
       if (!controller.signal.aborted) {
@@ -948,9 +1537,10 @@ export default function Tools({ view = 'tools' }) {
     });
 
     return () => controller.abort();
-  }, [activeView, usageFilters.toolSlug, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
+  }, [activeView, handleProtectedToolsError, isUsageDashboardView, toolsAccess.canAccess, toolsAccess.loading, usageFilters.toolSlug, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
 
   useEffect(() => {
+    if (toolsAccess.loading || !toolsAccess.canAccess) return undefined;
     if (activeView !== 'credits' || !isAdmin) return undefined;
     const controller = new AbortController();
     setLaunchHistoryLoading(true);
@@ -965,6 +1555,7 @@ export default function Tools({ view = 'tools' }) {
       setLaunchHistorySummary(response.summary || EMPTY_LAUNCH_HISTORY_SUMMARY);
     }).catch((err) => {
       if (isRequestCanceled(err) || controller.signal.aborted) return;
+      if (handleProtectedToolsError(err, WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP)) return;
       setError(err?.response?.data?.detail || 'Unable to load all tool launch history.');
     }).finally(() => {
       if (!controller.signal.aborted) {
@@ -973,10 +1564,11 @@ export default function Tools({ view = 'tools' }) {
     });
 
     return () => controller.abort();
-  }, [activeView, isAdmin, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
+  }, [activeView, handleProtectedToolsError, isAdmin, toolsAccess.canAccess, toolsAccess.loading, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
 
   useEffect(() => {
-    if (activeView !== 'credits') return undefined;
+    if (toolsAccess.loading || !toolsAccess.canAccess) return undefined;
+    if (!isUsageDashboardView) return undefined;
 
     const refreshUsage = () => {
       if (usageRefreshControllerRef.current) return usageRefreshControllerRef.current;
@@ -1004,13 +1596,14 @@ export default function Tools({ view = 'tools' }) {
         setRecentUsageEvents(response.recentEvents || []);
       }).catch((err) => {
         if (isRequestCanceled(err) || controller.signal.aborted) return;
+        if (handleProtectedToolsError(err, WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP)) return;
         setError(err?.response?.data?.detail || 'Unable to refresh Kling usage report.');
       }).finally(() => {
         if (usageRefreshControllerRef.current === controller) {
           usageRefreshControllerRef.current = null;
         }
       });
-      if (isAdmin) {
+      if (activeView === 'credits' && isAdmin) {
         void itToolsAPI.getLaunchHistory({
           date_from: usageFilters.dateFrom,
           date_to: usageFilters.dateTo,
@@ -1020,6 +1613,7 @@ export default function Tools({ view = 'tools' }) {
           setLaunchHistorySummary(response.summary || EMPTY_LAUNCH_HISTORY_SUMMARY);
         }).catch((err) => {
           if (isRequestCanceled(err)) return;
+          if (handleProtectedToolsError(err, WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP)) return;
           setError(err?.response?.data?.detail || 'Unable to refresh all tool launch history.');
         });
       }
@@ -1042,7 +1636,7 @@ export default function Tools({ view = 'tools' }) {
       usageRefreshControllerRef.current?.abort();
       usageRefreshControllerRef.current = null;
     };
-  }, [activeView, isAdmin, usageFilters.toolSlug, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
+  }, [activeView, handleProtectedToolsError, isAdmin, isUsageDashboardView, toolsAccess.canAccess, toolsAccess.loading, usageFilters.toolSlug, usageFilters.dateFrom, usageFilters.dateTo, usageFilters.userId]);
 
   const handleExportKlingUsage = async () => {
     setError('');
@@ -1061,6 +1655,26 @@ export default function Tools({ view = 'tools' }) {
       setError(err?.response?.data?.detail || 'Unable to export Kling usage report.');
     } finally {
       setUsageExporting(false);
+    }
+  };
+
+  const handleExportKlingRawUsage = async () => {
+    setError('');
+    setUsageRawExporting(true);
+    try {
+      const response = await itToolsAPI.exportKlingRawUsageReport({
+        date_from: usageFilters.dateFrom,
+        date_to: usageFilters.dateTo,
+        user_id: usageFilters.userId || undefined,
+        credential_id: usageFilters.credentialId || undefined,
+      });
+      const fromLabel = usageFilters.dateFrom || 'all';
+      const toLabel = usageFilters.dateTo || fromLabel;
+      downloadBlobResponse(response, `kling-raw-usage-${fromLabel}-to-${toLabel}.xlsx`);
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Unable to export raw Kling usage report.');
+    } finally {
+      setUsageRawExporting(false);
     }
   };
 
@@ -1376,6 +1990,237 @@ export default function Tools({ view = 'tools' }) {
       currentCredits: filteredCurrentCredits != null ? filteredCurrentCredits : resolvedCurrentCredits,
     };
   }, [displayableUsageRows, filteredRecentUsageEvents, filteredUsageRows.length, resolvedCurrentCredits]);
+
+  const usageCharts = useMemo(() => {
+    const dailyMap = new Map();
+    const userMap = new Map();
+    const dailyUserMap = new Map();
+
+    displayableUsageRows.forEach((row) => {
+      const dateKey = toUsageDateKey(row.date);
+      const creditsBurned = Number(row.creditsBurned || 0);
+      const generateClicks = Number(row.generateClicks || 0);
+      const lastEventAt = row.lastEventAt || '';
+      const lastEventTime = getUsageTimestamp(lastEventAt);
+
+      if (dateKey) {
+        const dailyEntry = dailyMap.get(dateKey) || {
+          date: dateKey,
+          creditsBurned: 0,
+          generateClicks: 0,
+        };
+        dailyEntry.creditsBurned += creditsBurned;
+        dailyEntry.generateClicks += generateClicks;
+        dailyMap.set(dateKey, dailyEntry);
+
+        if (!dailyUserMap.has(dateKey)) {
+          dailyUserMap.set(dateKey, new Map());
+        }
+        const perDayUserMap = dailyUserMap.get(dateKey);
+        const userKey = getUsageUserKey(row);
+        if (!perDayUserMap.has(userKey)) {
+          perDayUserMap.set(userKey, {
+            key: userKey,
+            userId: row.userId,
+            userName: row.userName || '',
+            userEmail: row.userEmail || '',
+            creditsBurned: 0,
+          });
+        }
+        const perDayUserEntry = perDayUserMap.get(userKey);
+        perDayUserEntry.creditsBurned += creditsBurned;
+      }
+
+      const userKey = getUsageUserKey(row);
+      if (!userMap.has(userKey)) {
+        userMap.set(userKey, {
+          key: userKey,
+          userId: row.userId,
+          userName: row.userName || '',
+          userEmail: row.userEmail || '',
+          creditsBurned: 0,
+          generateClicks: 0,
+          lastEventAt,
+          lastEventTime,
+        });
+      }
+
+      const userEntry = userMap.get(userKey);
+      userEntry.creditsBurned += creditsBurned;
+      userEntry.generateClicks += generateClicks;
+      if (lastEventTime >= userEntry.lastEventTime) {
+        userEntry.lastEventAt = lastEventAt;
+        userEntry.lastEventTime = lastEventTime;
+      }
+    });
+
+    const requestedDateKeys = getUsageDateRangeKeys(usageFilters.dateFrom, usageFilters.dateTo);
+    const sortedKnownDateKeys = Array.from(dailyMap.keys()).sort((left, right) => left.localeCompare(right));
+    const dailySeries = (requestedDateKeys.length ? requestedDateKeys : sortedKnownDateKeys).map((dateKey) => {
+      const dayEntry = dailyMap.get(dateKey);
+      return {
+        date: dateKey,
+        creditsBurned: Number(dayEntry?.creditsBurned || 0),
+        generateClicks: Number(dayEntry?.generateClicks || 0),
+      };
+    });
+
+    const userSeries = Array.from(userMap.values())
+      .sort((left, right) => {
+        const totalsComparison = compareUsageAggregateTotals(left, right);
+        if (totalsComparison !== 0) return totalsComparison;
+        return getUsageUserLabel(left).localeCompare(getUsageUserLabel(right));
+      })
+      .map((entry) => {
+        const nextEntry = { ...entry };
+        delete nextEntry.lastEventTime;
+        return nextEntry;
+      });
+
+    const userDailySeriesByDate = new Map(
+      dailySeries.map((dayEntry) => {
+        const perDayEntries = Array.from((dailyUserMap.get(dayEntry.date) || new Map()).values())
+          .map((entry) => ({
+            ...entry,
+            label: getUsageUserLabel(entry),
+            shortLabel: getUsageUserLabel(entry).slice(0, 18),
+            creditsBurned: Number(entry.creditsBurned || 0),
+          }))
+          .sort((left, right) => {
+            if (Number(right.creditsBurned || 0) !== Number(left.creditsBurned || 0)) {
+              return Number(right.creditsBurned || 0) - Number(left.creditsBurned || 0);
+            }
+            return getUsageUserLabel(left).localeCompare(getUsageUserLabel(right));
+          });
+        return [dayEntry.date, perDayEntries];
+      })
+    );
+
+    const peakDay = dailySeries.reduce((best, current) => {
+      if (!best || current.creditsBurned > best.creditsBurned) return current;
+      return best;
+    }, null);
+
+    const totalCreditsBurned = dailySeries.reduce((sum, item) => sum + Number(item.creditsBurned || 0), 0);
+
+    return {
+      dailySeries,
+      userSeries,
+      totalCreditsBurned,
+      selectedDayCount: dailySeries.length,
+      averageDailyBurn: dailySeries.length ? totalCreditsBurned / dailySeries.length : 0,
+      peakDay,
+      topUser: userSeries[0] || null,
+      availableDateKeys: dailySeries.map((entry) => entry.date),
+      userDailySeriesByDate,
+    };
+  }, [displayableUsageRows, usageFilters.dateFrom, usageFilters.dateTo]);
+
+  const usageChartRangeLabel = useMemo(() => {
+    if (usageFilters.dateFrom && usageFilters.dateTo) {
+      return `${formatUsageDate(usageFilters.dateFrom)} to ${formatUsageDate(usageFilters.dateTo)}`;
+    }
+    if (usageFilters.dateFrom) return `From ${formatUsageDate(usageFilters.dateFrom)}`;
+    if (usageFilters.dateTo) return `Until ${formatUsageDate(usageFilters.dateTo)}`;
+    return 'All recorded dates';
+  }, [usageFilters.dateFrom, usageFilters.dateTo]);
+
+  useEffect(() => {
+    const normalizedCurrent = toUsageDateKey(usageUserDayChartDate);
+    if (normalizedCurrent) return;
+
+    const normalizedDateTo = toUsageDateKey(usageFilters.dateTo);
+    const normalizedDateFrom = toUsageDateKey(usageFilters.dateFrom);
+    const nextDate = normalizedDateTo || normalizedDateFrom;
+    if (nextDate) {
+      setUsageUserDayChartDate(nextDate);
+    }
+  }, [usageFilters.dateFrom, usageFilters.dateTo, usageUserDayChartDate]);
+
+  useEffect(() => {
+    if (activeView !== 'charts' || !isAdmin) return undefined;
+    const selectedDateKey = toUsageDateKey(usageUserDayChartDate);
+    if (!selectedDateKey) {
+      setUsageUserDayRows([]);
+      setUsageUserDayLoading(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setUsageUserDayLoading(true);
+    void itToolsAPI.getUsageReport({
+      tool_slug: usageFilters.toolSlug,
+      date_from: selectedDateKey,
+      date_to: selectedDateKey,
+      user_id: usageFilters.userId || undefined,
+      signal: controller.signal,
+    }).then((response) => {
+      if (controller.signal.aborted) return;
+      setUsageUserDayRows(response.rows || []);
+    }).catch((err) => {
+      if (isRequestCanceled(err) || controller.signal.aborted) return;
+      setError(err?.response?.data?.detail || 'Unable to load day-wise user credit chart.');
+      setUsageUserDayRows([]);
+    }).finally(() => {
+      if (!controller.signal.aborted) {
+        setUsageUserDayLoading(false);
+      }
+    });
+
+    return () => controller.abort();
+  }, [activeView, isAdmin, usageFilters.toolSlug, usageFilters.userId, usageUserDayChartDate]);
+
+  const normalizedUsageUserDayRows = useMemo(() => {
+    return usageUserDayRows.map((row) => ({
+      ...row,
+      credentialLabel: resolveUsageCredentialLabel(row, klingCredentialLabelMap),
+    }));
+  }, [klingCredentialLabelMap, usageUserDayRows]);
+
+  const filteredUsageUserDayRows = useMemo(() => {
+    const normalizedCredentialId = `${usageFilters.credentialId || ''}`.trim();
+    if (!normalizedCredentialId) return normalizedUsageUserDayRows;
+    if (!availableUsageCredentialIds.has(normalizedCredentialId)) return normalizedUsageUserDayRows;
+    return normalizedUsageUserDayRows.filter((row) => `${row.credentialId || ''}` === normalizedCredentialId);
+  }, [availableUsageCredentialIds, normalizedUsageUserDayRows, usageFilters.credentialId]);
+
+  const selectedUsageUserDaySeries = useMemo(() => {
+    const userMap = new Map();
+
+    filteredUsageUserDayRows.forEach((row) => {
+      const userKey = getUsageUserKey(row);
+      const creditsBurned = Number(row.creditsBurned || 0);
+      const generateClicks = Number(row.generateClicks || 0);
+
+      if (!userMap.has(userKey)) {
+        userMap.set(userKey, {
+          key: userKey,
+          userId: row.userId,
+          userName: row.userName || '',
+          userEmail: row.userEmail || '',
+          label: getUsageUserLabel(row),
+          shortLabel: getUsageUserLabel(row).slice(0, 18),
+          creditsBurned: 0,
+          generateClicks: 0,
+        });
+      }
+
+      const userEntry = userMap.get(userKey);
+      userEntry.creditsBurned += creditsBurned;
+      userEntry.generateClicks += generateClicks;
+    });
+
+    return Array.from(userMap.values()).sort((left, right) => {
+      if (Number(right.creditsBurned || 0) !== Number(left.creditsBurned || 0)) {
+        return Number(right.creditsBurned || 0) - Number(left.creditsBurned || 0);
+      }
+      return `${left.label || ''}`.localeCompare(`${right.label || ''}`);
+    });
+  }, [filteredUsageUserDayRows]);
+
+  const selectedUsageUserDayTotal = useMemo(() => (
+    selectedUsageUserDaySeries.reduce((sum, entry) => sum + Number(entry.creditsBurned || 0), 0)
+  ), [selectedUsageUserDaySeries]);
 
   const filteredTools = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -2287,6 +3132,64 @@ export default function Tools({ view = 'tools' }) {
 
   const IconComponent = (name) => Icons[name] || Icons.Globe;
 
+  if (toolsAccess.loading || !toolsAccess.checked) {
+    return (
+      <div ref={containerRef} className="app-container tools-access-shell">
+        <section className="tools-access-state tools-access-state--loading" aria-busy="true" aria-live="polite">
+          <div className="tools-access-illustration tools-access-illustration--loading" aria-hidden="true">
+            <div className="tools-access-spinner" />
+          </div>
+          <div className="tools-access-copy">
+            <h2 className="tools-access-title">Checking Workplace access</h2>
+            <p className="tools-access-text">Loading your active task status before opening the Workplace tools.</p>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (!toolsAccess.canAccess) {
+    if (toolsAccess.isError) {
+      return (
+        <div ref={containerRef} className="app-container tools-access-shell">
+          <section className="tools-access-state tools-access-state--error" aria-live="polite">
+            <div className="tools-access-illustration" aria-hidden="true">
+              <Icons.AlertCircle />
+            </div>
+            <div className="tools-access-copy">
+              <h2 className="tools-access-title">Unable to Load Workplace Tools</h2>
+              <p className="tools-access-text">
+                {toolsAccess.message || WORKPLACE_TOOLS_ACCESS_CHECK_ERROR}
+              </p>
+              <button
+                type="button"
+                className="tools-access-retry-btn"
+                onClick={() => setToolsAccessRetryCount((n) => n + 1)}
+              >
+                Try Again
+              </button>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    return (
+      <div ref={containerRef} className="app-container tools-access-shell">
+        <section className="tools-access-state" aria-live="polite">
+          <div className="tools-access-illustration" aria-hidden="true">
+            <Icons.Shield />
+          </div>
+          <div className="tools-access-copy">
+            <h2 className="tools-access-title">{WORKPLACE_TOOLS_EMPTY_STATE_TITLE}</h2>
+            <p className="tools-access-text">{WORKPLACE_TOOLS_EMPTY_STATE_COPY}</p>
+            <p className="tools-access-subtext">{WORKPLACE_TOOLS_EMPTY_STATE_FOLLOWUP}</p>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div ref={containerRef} className="app-container">
       <header ref={headerRef} className="app-header is-visible">
@@ -3121,7 +4024,7 @@ export default function Tools({ view = 'tools' }) {
         )}
 
         {activeView === 'credits' && isAdmin && (
-          <section className="it-usage-card">
+          <section className="it-usage-card it-usage-card--credits">
             <div className="it-usage-header">
               <div className="it-usage-heading">
                 <p className="it-profile-eyebrow">Tool Usage</p>
@@ -3159,9 +4062,17 @@ export default function Tools({ view = 'tools' }) {
                   type="button"
                   className="it-usage-export-btn"
                   onClick={handleExportKlingUsage}
-                  disabled={usageExporting}
+                  disabled={usageExporting || usageRawExporting}
                 >
                   {usageExporting ? 'Exporting...' : 'Export Kling Excel'}
+                </button>
+                <button
+                  type="button"
+                  className="it-usage-export-btn is-secondary"
+                  onClick={handleExportKlingRawUsage}
+                  disabled={usageExporting || usageRawExporting}
+                >
+                  {usageRawExporting ? 'Exporting...' : 'Export Raw Kling Excel'}
                 </button>
               </div>
             </div>
@@ -3370,23 +4281,175 @@ export default function Tools({ view = 'tools' }) {
           </section>
         )}
 
+        {activeView === 'charts' && isAdmin && (
+          <section className="it-usage-card it-usage-card--charts">
+            <div className="it-usage-header">
+              <div className="it-usage-heading">
+                <p className="it-profile-eyebrow">Usage Charts</p>
+                <h2>Credit burn charts</h2>
+                <span>Date-wise credit graphs and per-user burn comparison for the selected range.</span>
+              </div>
+              <div className="it-usage-filters">
+                <input
+                  className="it-usage-filter-control"
+                  type="date"
+                  aria-label="Chart from date"
+                  value={usageFilters.dateFrom}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, dateFrom: event.target.value }))}
+                />
+                <input
+                  className="it-usage-filter-control"
+                  type="date"
+                  aria-label="Chart to date"
+                  value={usageFilters.dateTo}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, dateTo: event.target.value }))}
+                />
+                <select
+                  className="it-usage-filter-control"
+                  value={usageFilters.userId}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, userId: event.target.value }))}
+                >
+                  <option value="">All users</option>
+                  {sortedUsers.map((user) => (
+                    <option key={`chart-user-${user.id}`} value={user.id}>
+                      {user.name || user.email}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="it-usage-filter-control"
+                  value={usageFilters.credentialId}
+                  onChange={(event) => setUsageFilters((current) => ({ ...current, credentialId: event.target.value }))}
+                >
+                  <option value="">All Kling mails</option>
+                  {usageCredentialOptions.map((option) => (
+                    <option key={`chart-credential-${option.value}`} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="it-usage-chart-stack">
+              <div className="it-usage-chart-panel">
+                <div className="it-usage-chart-head">
+                  <div>
+                    <h3>Credit burn by date</h3>
+                    <p>The line chart follows the selected date filter so you can inspect burn day by day.</p>
+                  </div>
+                  <span>{usageChartRangeLabel}</span>
+                </div>
+                <div className="it-usage-chart-stats">
+                  <div className="it-usage-chart-stat">
+                    <span>Overall credits burned</span>
+                    <strong>{usageLoading ? '...' : formatUsageNumber(usageCharts.totalCreditsBurned)}</strong>
+                  </div>
+                  <div className="it-usage-chart-stat">
+                    <span>Average per day</span>
+                    <strong>{usageLoading ? '...' : formatUsageNumber(usageCharts.averageDailyBurn)}</strong>
+                  </div>
+                  <div className="it-usage-chart-stat">
+                    <span>Peak burn day</span>
+                    <strong>{usageLoading ? '...' : (usageCharts.peakDay ? formatUsageNumber(usageCharts.peakDay.creditsBurned) : '0')}</strong>
+                    <small>{usageLoading ? '' : (usageCharts.peakDay ? formatUsageDate(usageCharts.peakDay.date) : 'No activity')}</small>
+                  </div>
+                  <div className="it-usage-chart-stat">
+                    <span>Tracked days</span>
+                    <strong>{usageLoading ? '...' : usageCharts.selectedDayCount}</strong>
+                  </div>
+                </div>
+                <UsageCreditsLineChart data={usageCharts.dailySeries} loading={usageLoading} />
+              </div>
+
+              <div className="it-usage-chart-panel">
+                <div className="it-usage-chart-head">
+                  <div>
+                    <h3>Day-level consumption bar chart</h3>
+                    <p>The bar chart shows total credit consumption for each selected day only.</p>
+                  </div>
+                  <span>{usageChartRangeLabel}</span>
+                </div>
+                <UsageDailyBarChart data={usageCharts.dailySeries} loading={usageLoading} />
+              </div>
+
+              <div className="it-usage-chart-panel">
+                <div className="it-usage-chart-head">
+                  <div>
+                    <h3>User credit burn by day</h3>
+                    <p>This chart shows one day at a time, with user names on the X axis and credits on the Y axis.</p>
+                  </div>
+                  <div className="it-usage-chart-controls">
+                    <input
+                      className="it-usage-filter-control"
+                      type="date"
+                      aria-label="User credit day"
+                      value={usageUserDayChartDate}
+                      onChange={(event) => setUsageUserDayChartDate(event.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="it-usage-chart-top-user">
+                  <span>Selected day total</span>
+                  <strong>{usageUserDayLoading ? '...' : formatUsageNumber(selectedUsageUserDayTotal)}</strong>
+                  <small>{usageUserDayLoading ? '' : formatUsageDate(usageUserDayChartDate)}</small>
+                </div>
+                <UsageSingleDayUserBarChart
+                  data={selectedUsageUserDaySeries}
+                  selectedDate={usageUserDayChartDate}
+                  loading={usageUserDayLoading}
+                />
+              </div>
+
+              <div className="it-usage-chart-panel">
+                <div className="it-usage-chart-head">
+                  <div>
+                    <h3>Credits burned by user</h3>
+                    <p>The bar graph shows which user burned the most credits in the selected range.</p>
+                  </div>
+                  <span>{usageLoading ? '...' : `${usageCharts.userSeries.length} user${usageCharts.userSeries.length === 1 ? '' : 's'}`}</span>
+                </div>
+                <div className="it-usage-chart-top-user">
+                  <span>Highest burner</span>
+                  <strong>
+                    {usageLoading
+                      ? '...'
+                      : (usageCharts.topUser ? getUsageUserLabel(usageCharts.topUser) : 'No user data')}
+                  </strong>
+                  <small>
+                    {usageLoading
+                      ? ''
+                      : (usageCharts.topUser ? `${formatUsageNumber(usageCharts.topUser.creditsBurned)} credits burned` : 'Change the date filter to see activity')}
+                  </small>
+                </div>
+                <UsageCreditsBarChart data={usageCharts.userSeries} loading={usageLoading} />
+              </div>
+            </div>
+          </section>
+        )}
+
         {activeView === 'tools' && (!isAdmin || toolAdminSection === 'assigned') && (
-          <>
+          <section className="tools-browse-view" aria-label="Tools catalog">
             <div className="category-container">
               {categories.map((category) => (
                 <button
+                  type="button"
                   key={category}
                   onClick={() => setSelectedCategory(category)}
                   className={`category-btn ${selectedCategory === category ? 'active' : ''}`}
+                  aria-pressed={selectedCategory === category}
                 >
                   {category}
                 </button>
               ))}
             </div>
 
-            <div className="tool-grid">
+            <div className="tool-grid" aria-busy={loading ? 'true' : 'false'}>
               {loading ? (
-                <div className="empty-state"><h3>Loading IT tools...</h3></div>
+                <div className="empty-state">
+                  <h3 className="empty-state-title">Loading IT tools...</h3>
+                  <p className="empty-state-copy">Fetching the current company tool catalog and credential availability.</p>
+                </div>
               ) : filteredTools.length > 0 ? (
                 filteredTools.map((tool) => {
                   const CardIcon = IconComponent(tool.icon);
@@ -3399,31 +4462,35 @@ export default function Tools({ view = 'tools' }) {
                       disabled={launchingToolId === `${tool.id}`}
                     >
                       <div className="tool-header">
-                        <div className="tool-icon"><CardIcon /></div>
+                        <div className="tool-icon-group">
+                          <div className="tool-icon"><CardIcon /></div>
+                          <h3 className="tool-name">{tool.name}</h3>
+                        </div>
                         <div className="status-badge">
                           <span className={`status-dot ${tool.status === 'active' ? 'status-active' : 'status-maintenance'}`}></span>
-                          <span>{tool.status || 'active'}</span>
+                          <span className="tool-status-label">{tool.status || 'active'}</span>
                         </div>
                       </div>
-                      <h3 className="tool-name">{tool.name}</h3>
                       <p className="tool-description">{tool.description || 'Open this company tool.'}</p>
-                      <div className="tool-info">
-                        <p><strong>Category:</strong> {tool.category}</p>
-                        <p><strong>Credential:</strong> {tool.hasCredential ? tool.credentialScope : 'Not assigned'}</p>
+                      <div className="tool-meta" aria-label={`${tool.name} metadata`}>
+                        <span className="tool-meta-item">{tool.category}</span>
+                        <span className="tool-meta-sep" aria-hidden="true">·</span>
+                        <span className="tool-meta-item">{tool.hasCredential ? tool.credentialScope : 'Not assigned'}</span>
                       </div>
                     </button>
                   );
                 })
               ) : (
                 <div className="empty-state">
-                  <h3>No tools found</h3>
-                  <button className="reset-btn" onClick={() => { setSearchQuery(''); setSelectedCategory('All'); }}>
+                  <h3 className="empty-state-title">No tools found</h3>
+                  <p className="empty-state-copy">Try a different search or switch back to the full catalog.</p>
+                  <button type="button" className="reset-btn" onClick={() => { setSearchQuery(''); setSelectedCategory('All'); }}>
                     Reset filters
                   </button>
                 </div>
               )}
             </div>
-          </>
+          </section>
         )}
       </main>
     </div>

@@ -30,26 +30,29 @@ const getViewerSubmission = (task = null) => {
   return null;
 };
 
-const createInitialState = (task = null) => ({
-  resultText: getViewerSubmission(task)?.outputText || task?.resultText || '',
-  comments: '',
-  links: Array.isArray(getViewerSubmission(task)?.links)
-    ? [...getViewerSubmission(task).links]
-    : Array.isArray(task?.resultLinks)
-      ? [...task.resultLinks]
-      : [],
-  linkInput: '',
-  existingAttachments: Array.isArray(getViewerSubmission(task)?.attachments)
-    ? [...getViewerSubmission(task).attachments]
-    : Array.isArray(task?.resultAttachments)
-      ? [...task.resultAttachments]
-      : [],
-  attachments: [],
-  submitting: false,
-  error: '',
-  uploadProgress: {},
-  uploadStatus: {},
-});
+const createInitialState = (task = null) => {
+  const existingSubmission = getViewerSubmission(task);
+  return {
+    resultText: existingSubmission?.outputText || task?.resultText || '',
+    comments: '',
+    links: Array.isArray(existingSubmission?.links)
+      ? [...existingSubmission.links]
+      : Array.isArray(task?.resultLinks)
+        ? [...task.resultLinks]
+        : [],
+    linkInput: '',
+    existingAttachments: Array.isArray(existingSubmission?.attachments)
+      ? [...existingSubmission.attachments]
+      : Array.isArray(task?.resultAttachments)
+        ? [...task.resultAttachments]
+        : [],
+    attachments: [],
+    submitting: false,
+    error: '',
+    uploadProgress: {},
+    uploadStatus: {},
+  };
+};
 
 const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
   const [formState, setFormState] = useState(() => createInitialState(task));
@@ -76,6 +79,7 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
 
   if (!isOpen || !task) return null;
 
+  const existingSubmission = getViewerSubmission(task);
   const getAttachmentKey = (file) => {
     if (!file || typeof file !== 'object') {
       return `attachment-${attachmentKeySeqRef.current++}`;
@@ -293,7 +297,7 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
   return (
     <div className="forward-modal-overlay" onClick={formState.submitting ? undefined : closeModal}>
       <div className="submit-modal" onClick={(event) => event.stopPropagation()}>
-        <h3>{getViewerSubmission(task) ? 'Edit Submitted Result' : (isWorkflowTask(task) ? 'Submit Stage Result' : 'Submit Task Result')}</h3>
+        <h3>{existingSubmission ? 'Edit Submitted Result' : (isWorkflowTask(task) ? 'Submit Stage Result' : 'Submit Task Result')}</h3>
         <p className="submit-modal-subtitle">{task?.title}</p>
 
         <div className="submit-task-info">
@@ -440,7 +444,7 @@ const SubmitTaskModal = ({ isOpen, task, onClose, onSubmit }) => {
             disabled={formState.submitting}
             onClick={submitFromModal}
           >
-            {formState.submitting ? 'Submitting...' : (getViewerSubmission(task) ? 'Update Submission' : (isWorkflowTask(task) ? 'Submit Stage' : 'Submit Result'))}
+            {formState.submitting ? 'Submitting...' : (existingSubmission ? 'Update Submission' : (isWorkflowTask(task) ? 'Submit Stage' : 'Submit Result'))}
           </button>
         </div>
       </div>

@@ -14,9 +14,9 @@
   position: fixed;
   width: 380px;
   height: 550px;
-  background: white;
+  background: var(--color-surface-elevated);
   border-radius: 16px;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-popover);
   display: flex;
   flex-direction: column;
   pointer-events: all;
@@ -40,9 +40,9 @@
   justify-content: space-between;
   align-items: center;
   padding: 16px 20px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--color-navbar-surface);
   border-radius: 16px 16px 0 0;
-  color: white;
+  color: var(--color-text-inverse);
 }
 
 .chat-header-info {
@@ -54,7 +54,7 @@
 .chat-avatar {
   width: 40px;
   height: 40px;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--color-nav-selected);
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -64,7 +64,7 @@
 .chat-avatar svg {
   width: 24px;
   height: 24px;
-  fill: white;
+  fill: var(--color-text-inverse);
 }
 
 .chat-header h3 {
@@ -81,7 +81,7 @@
 .close-chat-btn {
   width: 32px;
   height: 32px;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--color-nav-hover);
   border: none;
   border-radius: 50%;
   cursor: pointer;
@@ -92,14 +92,14 @@
 }
 
 .close-chat-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--color-active-surface);
   transform: scale(1.1);
 }
 
 .close-chat-btn svg {
   width: 18px;
   height: 18px;
-  fill: white;
+  fill: var(--color-text-inverse);
 }
 
 /* Chat Messages */
@@ -107,7 +107,7 @@
   flex: 1;
   overflow-y: auto;
   padding: 20px;
-  background: #f5f5f5;
+  background: var(--color-surface-muted);
 }
 
 .chat-messages::-webkit-scrollbar {
@@ -119,7 +119,7 @@
 }
 
 .chat-messages::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--color-scrollbar-thumb);
   border-radius: 10px;
 }
 
@@ -145,14 +145,14 @@
 }
 
 .bot-message .message-content {
-  background: white;
+  background: var(--color-surface);
   border-bottom-left-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-soft);
 }
 
 .user-message .message-content {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
   border-bottom-right-radius: 4px;
 }
 
@@ -179,7 +179,7 @@
 .typing-indicator span {
   width: 8px;
   height: 8px;
-  background: #667eea;
+  background: var(--color-primary);
   border-radius: 50%;
   animation: typing 1.4s infinite;
 }
@@ -207,25 +207,25 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background: #f5f5f5;
+  background: var(--color-surface-muted);
 }
 
 .suggestion-chip {
   padding: 10px 14px;
-  background: white;
-  border: 1px solid #e0e0e0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 20px;
   font-size: 13px;
-  color: #667eea;
+  color: var(--color-link);
   cursor: pointer;
   transition: all 0.2s ease;
   text-align: left;
 }
 
 .suggestion-chip:hover {
-  background: #667eea;
-  color: white;
-  border-color: #667eea;
+  background: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
+  border-color: transparent;
   transform: translateX(4px);
 }
 
@@ -233,30 +233,36 @@
 .chat-input-container {
   display: flex;
   padding: 16px 20px;
-  background: white;
+  background: var(--color-surface-elevated);
   border-radius: 0 0 16px 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--color-divider);
   gap: 12px;
 }
 
 .chat-input {
   flex: 1;
   padding: 10px 14px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--color-input-border);
   border-radius: 20px;
+  background: var(--color-input-bg);
+  color: var(--color-input-text);
   font-size: 14px;
   outline: none;
   transition: border-color 0.2s ease;
 }
 
+.chat-input::placeholder {
+  color: var(--color-placeholder);
+}
+
 .chat-input:focus {
-  border-color: #667eea;
+  border-color: var(--color-primary);
 }
 
 .send-btn {
   width: 40px;
   height: 40px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--color-button-primary-bg);
   border: none;
   border-radius: 50%;
   cursor: pointer;
@@ -268,7 +274,7 @@
 
 .send-btn:hover:not(:disabled) {
   transform: scale(1.1);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  box-shadow: var(--shadow-button-primary);
 }
 
 .send-btn:disabled {
@@ -279,7 +285,7 @@
 .send-btn svg {
   width: 20px;
   height: 20px;
-  fill: white;
+  fill: var(--color-button-primary-text);
 }
 
 /* Responsive */

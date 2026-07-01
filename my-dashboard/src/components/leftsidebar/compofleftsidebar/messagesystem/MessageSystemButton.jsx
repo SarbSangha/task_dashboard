@@ -62,42 +62,23 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
             eventType !== 'direct_message' &&
             eventType !== 'message_read_receipt'
           ) return;
-          if (isOpen) {
-            scheduleRefresh();
-            return;
-          }
-
-          if (eventType === 'message_read_receipt') {
-            scheduleRefresh();
-            return;
-          }
-
-          if (!setsHydratedRef.current) {
-            scheduleRefresh();
-            return;
-          }
+          if (isOpen) { scheduleRefresh(); return; }
+          if (eventType === 'message_read_receipt') { scheduleRefresh(); return; }
+          if (!setsHydratedRef.current) { scheduleRefresh(); return; }
 
           if (eventType === 'group_message') {
             const groupId = Number(payload?.metadata?.groupId);
-            if (groupId) {
-              unseenGroupIdsRef.current.add(groupId);
-            }
+            if (groupId) unseenGroupIdsRef.current.add(groupId);
           } else {
             const senderId = Number(payload?.metadata?.senderId);
-            if (senderId && senderId !== user.id) {
-              unseenSenderIdsRef.current.add(senderId);
-            }
+            if (senderId && senderId !== user.id) unseenSenderIdsRef.current.add(senderId);
           }
 
           const nextCount = unseenGroupIdsRef.current.size + unseenSenderIdsRef.current.size;
           setUnseenCount(nextCount);
-          if (badgeCacheKey) {
-            setTaskPanelCache(badgeCacheKey, { unseenCount: nextCount });
-          }
+          if (badgeCacheKey) setTaskPanelCache(badgeCacheKey, { unseenCount: nextCount });
         },
-        onOpen: () => {
-          if (!isOpen) scheduleRefresh();
-        },
+        onOpen: () => { if (!isOpen) scheduleRefresh(); },
       });
 
       const interval = window.setInterval(() => {
@@ -153,14 +134,10 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
       ]);
 
       const unseenGroupIds = new Set(
-        (groupUnreadResponse?.data?.groups || [])
-          .map((group) => group?.groupId)
-          .filter(Boolean)
+        (groupUnreadResponse?.data?.groups || []).map((g) => g?.groupId).filter(Boolean)
       );
       const unseenSenderIds = new Set(
-        (directUnreadResponse?.data?.conversations || [])
-          .map((conversation) => conversation?.userId)
-          .filter(Boolean)
+        (directUnreadResponse?.data?.conversations || []).map((c) => c?.userId).filter(Boolean)
       );
 
       unseenGroupIdsRef.current = unseenGroupIds;
@@ -184,22 +161,29 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
     fetchUnseenCount();
   };
 
+  const displayCount = unseenCount > 99 ? '99+' : unseenCount;
+
   return (
-    <button 
-      className={`menu-button ${isActive ? 'active' : ''} ${unseenCount > 0 ? 'highlighted' : ''}`}
+    <button
+      className={`menu-button menu-button--messages${isActive ? ' active' : ''}${unseenCount > 0 ? ' highlighted' : ''}`}
       onClick={handleClick}
+      data-label="Messages"
+      aria-label={`Messages${unseenCount > 0 ? `, ${unseenCount} unseen` : ''}`}
+      aria-current={isActive ? 'page' : undefined}
     >
-      <div className="menu-button-icon">
-        <svg viewBox="0 0 24 24" fill="currentColor">
-          <path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
+      <span className="menu-button-icon" aria-hidden="true">
+        {/* Chat bubble with typing dots — distinct from email envelope */}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+          <circle cx="8.5" cy="11" r="0.75" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="11" r="0.75" fill="currentColor" stroke="none" />
+          <circle cx="15.5" cy="11" r="0.75" fill="currentColor" stroke="none" />
         </svg>
-      </div>
-      <span className="menu-button-label">
-        Message
-        {unseenCount > 0 && (
-          <span className="notification-badge">{unseenCount}</span>
-        )}
       </span>
+      <span className="menu-button-label">Messages</span>
+      {unseenCount > 0 && (
+        <span className="notification-badge" aria-hidden="true">{displayCount}</span>
+      )}
     </button>
   );
 };

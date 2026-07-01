@@ -1,0 +1,201 @@
+.workspace-projects .projects-live-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.1fr) minmax(320px, 0.9fr);
+  gap: 20px;
+  align-items: start;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-projects .projects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+  align-content: start;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
+}
+
+.workspace-projects .projects-grid::-webkit-scrollbar {
+  width: 10px;
+}
+
+.workspace-projects .projects-grid::-webkit-scrollbar-track {
+  background: var(--color-scrollbar-track);
+}
+
+.workspace-projects .projects-grid::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+  border-radius: 999px;
+}
+
+.workspace-projects .projects-grid::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-thumb-hover);
+}
+
+.workspace-projects .projects-toolbar {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-shrink: 0;
+}
+
+.workspace-projects .live-project-card {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-projects .live-project-card.selected {
+  border-color: color-mix(in srgb, var(--color-primary-strong) 68%, transparent);
+  background: color-mix(in srgb, var(--color-primary-soft) 24%, var(--color-surface-elevated));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary-strong) 20%, transparent);
+}
+
+.workspace-projects .project-folder-meta,
+.workspace-projects .project-stats-row,
+.workspace-projects .progress-text,
+.workspace-projects .project-folder-panel-header p,
+.workspace-projects .project-task-meta,
+.workspace-projects .project-task-date {
+  color: var(--color-text-secondary);
+}
+
+.workspace-projects .project-folder-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.workspace-projects .project-folder-icon {
+  font-size: 16px;
+}
+
+.workspace-projects .project-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 12px;
+}
+
+.workspace-projects .project-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workspace-projects .progress-bar {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+}
+
+.workspace-projects .progress-fill {
+  height: 100%;
+  background: var(--color-button-primary-bg);
+  transition: width 0.3s ease;
+}
+
+.workspace-projects .progress-text {
+  font-size: 12px;
+}
+
+.workspace-projects .project-folder-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.workspace-projects .project-folder-panel-header h4 {
+  margin: 6px 0 4px;
+  color: var(--color-text);
+  font-size: 22px;
+}
+
+.workspace-projects .project-folder-panel-header p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.workspace-projects .project-task-list {
+  display: grid;
+  gap: 10px;
+}
+
+.workspace-projects .project-task-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  background: var(--color-surface-muted);
+}
+
+.workspace-projects .project-task-main {
+  min-width: 0;
+}
+
+.workspace-projects .project-task-title {
+  margin-bottom: 6px;
+  color: var(--color-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.workspace-projects .project-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.workspace-projects .project-task-side {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  text-align: right;
+}
+
+.workspace-projects .project-task-date {
+  font-size: 12px;
+}
+
+.workspace-projects .live-project-card:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+@media (max-width: 768px) {
+  .workspace-projects .projects-live-layout {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .workspace-projects .projects-grid {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .workspace-projects .project-task-item {
+    flex-direction: column;
+  }
+
+  .workspace-projects .project-task-side {
+    justify-items: start;
+    text-align: left;
+  }
+}

@@ -6,10 +6,11 @@ const CARD_STYLE = {
   display: 'flex',
   flexDirection: 'column',
   gap: 12,
-  background: 'rgba(255, 255, 255, 0.05)',
-  border: '1px solid rgba(255, 255, 255, 0.1)',
+  background: 'var(--color-card)',
+  border: '1px solid var(--color-border)',
   borderRadius: 12,
   boxSizing: 'border-box',
+  boxShadow: 'var(--shadow-soft)',
 };
 
 export function OutboxSkeleton({ count = CARD_COUNT }) {
@@ -31,7 +32,7 @@ export function OutboxSkeleton({ count = CARD_COUNT }) {
             <SkeletonBlock width="52%" height={12} />
           </div>
 
-          <div style={{ height: 1, background: 'rgba(255, 255, 255, 0.08)' }} />
+          <div style={{ height: 1, background: 'var(--color-divider)' }} />
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
             <div style={{ display: 'flex', gap: 8 }}>

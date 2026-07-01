@@ -8,10 +8,16 @@ import TaskChatPanel from '../messagesystem/TaskChatPanel';
 import SubmitTaskModal from '../inbox/SubmitTaskModal';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { isMobileViewport } from '../../../../utils/isMobileViewport';
+import WindowControls from '../../../common/WindowControls';
 import { useTracking } from '../../../../hooks/useTracking';
 import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
 import { formatDateIndia } from '../../../../utils/dateTime';
 import { TrackingPanelSkeleton } from '../../../ui/TrackingPanelSkeleton';
+import {
+  hasMultipleTaskWorkers,
+  hasViewerSubmittedTaskPart,
+} from '../../../../utils/taskSubmissionState';
 import './TrackingPanel.css';
 
 const isWorkflowTask = (task) => Boolean(task?.workflowEnabled);
@@ -91,22 +97,21 @@ const getPriorityClassName = (priority = '') => {
 
 const canStartTaskStatus = (status = '', task = null) => {
   const normalizedStatus = `${status || ''}`.toLowerCase();
+  if (normalizedStatus === 'need_improvement' && hasViewerSubmittedTaskPart(task)) return false;
   if (['pending', 'forwarded', 'assigned', 'need_improvement'].includes(normalizedStatus)) return true;
   if (normalizedStatus !== 'in_progress') return false;
+
+  if (!hasMultipleTaskWorkers(task)) return false;
 
   const workerRows = Array.isArray(task?.workerSubmissions?.workers)
     ? task.workerSubmissions.workers
     : [];
-  const assignedRows = Array.isArray(task?.assignedTo) ? task.assignedTo : [];
-  const hasMultipleWorkers = workerRows.length > 1 || assignedRows.length > 1;
-  if (!hasMultipleWorkers) return false;
-
   if (workerRows.length === 0) return true;
-  return !task?.workerSubmissions?.viewerStarted && !task?.workerSubmissions?.viewerSubmitted;
+  return !task?.workerSubmissions?.viewerStarted && !hasViewerSubmittedTaskPart(task);
 };
 
 const canSubmitTaskStatus = (status = '', task = null) => (
-  `${status || ''}`.toLowerCase() === 'in_progress'
+  ['in_progress', 'need_improvement'].includes(`${status || ''}`.toLowerCase())
   && (
     !Array.isArray(task?.workerSubmissions?.workers)
     || task.workerSubmissions.workers.length <= 1
@@ -221,7 +226,7 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
   const [taskSearch, setTaskSearch] = useState('');
   const [taskDateFilter, setTaskDateFilter] = useState('');
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const [openActionMenuId, setOpenActionMenuId] = useState(null);
   const [chatTask, setChatTask] = useState(null);
   const [submitTask, setSubmitTask] = useState(null);
@@ -291,23 +296,9 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
     },
   });
 
-  const getStatusColor = (status) => {
-    const colors = {
-      draft: '#9ca3af',
-      pending: '#fbbf24',
-      assigned: '#f59e0b',
-      forwarded: '#38bdf8',
-      in_progress: '#3b82f6',
-      submitted: '#8b5cf6',
-      under_review: '#06b6d4',
-      approved: '#22c55e',
-      need_improvement: '#ef4444',
-      rejected: '#ef4444',
-      completed: '#10b981',
-      cancelled: '#6b7280'
-    };
-    return colors[status] || '#d1d5db';
-  };
+  const getTaskStatusClassName = (status = '') => (
+    `status-${`${status || 'unknown'}`.trim().toLowerCase().replace(/\s+/g, '_').replace(/_/g, '-')}`
+  );
 
   const filteredTasks = tasks.filter((task) => {
     const activeFilter = TRACKING_FILTERS.find((entry) => entry.key === filter) || TRACKING_FILTERS[0];
@@ -354,15 +345,22 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
   }, [isOpen, routeTaskId, tasks]);
 
   const submitTaskFromModal = async (task, payload) => {
+    const isEditingSubmission = Boolean(
+      task?.workerSubmissions?.viewerSubmitted || task?.workerSubmissions?.viewerSubmission
+    );
     await updateTaskStatus({
       taskId: task.id,
-      status: task.submissionMode === 'all' && Number(task.workerSubmissions?.pending || 0) > 1
-        ? 'in_progress'
-        : 'submitted',
+      status: isEditingSubmission
+        ? task.status
+        : task.submissionMode === 'all' && Number(task.workerSubmissions?.pending || 0) > 1
+          ? 'in_progress'
+          : 'submitted',
       execute: () =>
         (isWorkflowTask(task) && task.currentStageId
           ? taskAPI.submitStage(task.id, task.currentStageId, payload)
-          : taskAPI.submitTask(task.id, payload)),
+          : isEditingSubmission
+            ? taskAPI.editResult(task.id, payload)
+            : taskAPI.submitTask(task.id, payload)),
     });
     setSubmitTask(null);
     invalidateTrackingCaches();
@@ -374,14 +372,26 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
     setWorkflowOpen(true);
   };
 
-  const getVisibleTaskActions = (task) => (
-    (task.availableActions || []).filter((action) => {
+  const getVisibleTaskActions = (task) => {
+    const visibleActions = (task.availableActions || []).filter((action) => {
       if (action === 'start') return canStartTaskStatus(task.status, task);
       if (action === 'submit') return canSubmitTaskStatus(task.status, task);
       if (action === 'approve' || action === 'need_improvement') return canReviewTask(task);
       return true;
-    })
-  );
+    });
+
+    if (
+      !isWorkflowTask(task)
+      && task.myRole === 'assignee'
+      && hasViewerSubmittedTaskPart(task)
+      && ['in_progress', 'submitted', 'under_review', 'need_improvement'].includes(`${task.status || ''}`.toLowerCase())
+      && !visibleActions.includes('edit_submit')
+    ) {
+      return [...visibleActions, 'edit_submit'];
+    }
+
+    return visibleActions;
+  };
 
   const openSelectionModal = async (task, mode) => {
     setSelectionModal({
@@ -635,7 +645,6 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
     }
 
     runPanelViewTransition(() => {
-      setIsMaximized(false);
       setIsMinimized(true);
     });
   };
@@ -700,50 +709,13 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
           )}
           
           {/* Control Buttons */}
-          <div className="tracking-controls">
-            {!isMinimized && (
-              <button
-                className="tracking-control-btn minimize-btn"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleToggleMinimize();
-                }}
-                title="Minimize"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </button>
-            )}
-
-            <button
-              className="tracking-control-btn maximize-btn"
-              onClick={(event) => {
-                event.stopPropagation();
-                handleToggleMaximize();
-              }}
-              title={isMinimized ? 'Restore' : isMaximized ? 'Restore Window' : 'Maximize'}
-            >
-              {isMinimized ? (
-                '▢'
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  {isMaximized ? (
-                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-                  ) : (
-                    <rect x="3" y="3" width="18" height="18" rx="2" />
-                  )}
-                </svg>
-              )}
-            </button>
-
-            <button className="tracking-close-btn" onClick={(event) => { event.stopPropagation(); onClose(); }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
+          <WindowControls
+            isMinimized={isMinimized}
+            isMaximized={isMaximized}
+            onMinimize={handleToggleMinimize}
+            onMaximize={handleToggleMaximize}
+            onClose={onClose}
+          />
         </div>
 
         {/* Filter Tabs - Only show when not minimized */}
@@ -792,101 +764,101 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
               </div>
             ) : (
               <div className="tasks-grid">
-                {filteredTasks.map((task) => (
-                  <div key={task.id} className="tracking-task-card">
-                    {/* Status Indicator */}
-                    <div
-                      className="status-indicator"
-                      style={{ backgroundColor: getStatusColor(task.status) }}
-                      title={task.status.replace(/[_]/g, ' ').toUpperCase()}
-                    />
+                {filteredTasks.map((task) => {
+                  const taskStatusClassName = getTaskStatusClassName(task.status);
 
-                    {/* Task Info */}
-                    <div className="task-info">
-                      <div className="task-title-row">
-                        <h4 className="task-title">{task.title}</h4>
-                      </div>
-                      <p className="task-number">{task.taskNumber}</p>
-                      {isWorkflowTask(task) && (
-                        <p className="task-number">{getActiveStageLabel(task) || 'Workflow task'}</p>
-                      )}
-                      <div className="task-meta">
-                        <span className="meta-item task-project-meta">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-                          </svg>
-                          {task.projectName || 'N/A'}
-                        </span>
-                        <span
-                          className={`meta-item task-status-badge status-${`${task.status || 'unknown'}`.replace(/_/g, '-')}`}
-                          style={{ '--task-status-color': getStatusColor(task.status) }}
-                        >
-                          <span className="task-status-dot" aria-hidden="true" />
-                          {formatTaskStatus(task.status)}
-                        </span>
-                        <span className={`meta-item task-priority-badge priority-${getPriorityClassName(task.priority)}`}>
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <circle cx="12" cy="12" r="10" />
-                          </svg>
-                          <span>Priority</span>
-                          <strong>{task.priority?.toUpperCase() || 'MEDIUM'}</strong>
-                        </span>
-                        {task.deadline && (
-                          <span className="meta-item task-deadline-badge" title={`Deadline: ${formatDateIndia(task.deadline)}`}>
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <rect x="3" y="4" width="18" height="18" rx="2" />
-                              <path d="M16 2v4" />
-                              <path d="M8 2v4" />
-                              <path d="M3 10h18" />
-                            </svg>
-                            <span>Deadline</span>
-                            <strong>{formatDateIndia(task.deadline)}</strong>
-                          </span>
-                        )}
-                        <span className="meta-item worker-meta" title={`Worker: ${getTaskWorkerNames(task)}`}>
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M20 21a8 8 0 0 0-16 0" />
-                            <circle cx="12" cy="7" r="4" />
-                          </svg>
-                          <span>Worker</span>
-                          {getTaskWorkerNames(task)}
-                        </span>
-                      </div>
-                    </div>
+                  return (
+                    <div key={task.id} className="tracking-task-card">
+                      {/* Status Indicator */}
+                      <div
+                        className={`status-indicator ${taskStatusClassName}`}
+                        title={task.status.replace(/[_]/g, ' ').toUpperCase()}
+                      />
 
-                    {/* Track Button */}
-                    <button
-                      className="track-workflow-btn"
-                      onClick={() => handleTrackClick(task)}
-                      title="View workflow path"
-                    >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-                      </svg>
-                    </button>
-                    <div className="task-action-menu-wrap">
-                      <button
-                        className="task-action-trigger"
-                        onClick={() => setOpenActionMenuId(openActionMenuId === task.id ? null : task.id)}
-                        title="Task actions"
-                      >
-                        ⋮
-                      </button>
-                      {openActionMenuId === task.id && (
-                        <div className="task-action-menu">
-                          {getVisibleTaskActions(task).map((action) => (
-                            <button key={action} onClick={() => runTaskAction(task, action)}>
-                              {getActionLabel(task, action)}
-                            </button>
-                          ))}
-                          {getVisibleTaskActions(task).length === 0 && (
-                            <span className="task-action-empty">No actions</span>
-                          )}
+                      {/* Task Info */}
+                      <div className="task-info">
+                        <div className="task-title-row">
+                          <h4 className="task-title">{task.title}</h4>
                         </div>
-                      )}
+                        <p className="task-number">{task.taskNumber}</p>
+                        {isWorkflowTask(task) && (
+                          <p className="task-number">{getActiveStageLabel(task) || 'Workflow task'}</p>
+                        )}
+                        <div className="task-meta">
+                          <span className="meta-item task-project-meta">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                            </svg>
+                            {task.projectName || 'N/A'}
+                          </span>
+                          <span className={`meta-item task-status-badge ${taskStatusClassName}`}>
+                            <span className="task-status-dot" aria-hidden="true" />
+                            {formatTaskStatus(task.status)}
+                          </span>
+                          <span className={`meta-item task-priority-badge priority-${getPriorityClassName(task.priority)}`}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <circle cx="12" cy="12" r="10" />
+                            </svg>
+                            <span>Priority</span>
+                            <strong>{task.priority?.toUpperCase() || 'MEDIUM'}</strong>
+                          </span>
+                          {task.deadline && (
+                            <span className="meta-item task-deadline-badge" title={`Deadline: ${formatDateIndia(task.deadline)}`}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <rect x="3" y="4" width="18" height="18" rx="2" />
+                                <path d="M16 2v4" />
+                                <path d="M8 2v4" />
+                                <path d="M3 10h18" />
+                              </svg>
+                              <span>Deadline</span>
+                              <strong>{formatDateIndia(task.deadline)}</strong>
+                            </span>
+                          )}
+                          <span className="meta-item worker-meta" title={`Worker: ${getTaskWorkerNames(task)}`}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M20 21a8 8 0 0 0-16 0" />
+                              <circle cx="12" cy="7" r="4" />
+                            </svg>
+                            <span>Worker</span>
+                            {getTaskWorkerNames(task)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Track Button */}
+                      <button
+                        className="track-workflow-btn"
+                        onClick={() => handleTrackClick(task)}
+                        title="View workflow path"
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                        </svg>
+                      </button>
+                      <div className="task-action-menu-wrap">
+                        <button
+                          className="task-action-trigger"
+                          onClick={() => setOpenActionMenuId(openActionMenuId === task.id ? null : task.id)}
+                          title="Task actions"
+                        >
+                          ⋮
+                        </button>
+                        {openActionMenuId === task.id && (
+                          <div className="task-action-menu">
+                            {getVisibleTaskActions(task).map((action) => (
+                              <button key={action} onClick={() => runTaskAction(task, action)}>
+                                {getActionLabel(task, action)}
+                              </button>
+                            ))}
+                            {getVisibleTaskActions(task).length === 0 && (
+                              <span className="task-action-empty">No actions</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

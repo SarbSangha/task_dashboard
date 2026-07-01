@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -18,7 +18,7 @@ from services.admin_workflow_service import (
 from services.role_service import user_role_names
 from utils.cache import invalidate_pattern
 from utils.datetime_utils import serialize_utc_datetime
-from utils.permissions import require_admin
+from utils.permissions import has_any_role, require_admin
 
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -46,6 +46,15 @@ class DepartmentCreatePayload(BaseModel):
     name: str = Field(..., min_length=2, max_length=120)
 
 
+class WorkplacePolicyPayload(BaseModel):
+    enforce_active_task_policy: bool
+
+
+class BulkWorkplacePolicyPayload(BaseModel):
+    user_ids: List[int] = Field(..., min_length=1)
+    enforce_active_task_policy: bool
+
+
 def _serialize_user(user: User, approval_status: str) -> dict:
     return {
         "id": user.id,
@@ -67,6 +76,7 @@ def _serialize_user(user: User, approval_status: str) -> dict:
         "deletedReason": user.deleted_reason,
         "createdAt": serialize_utc_datetime(user.created_at),
         "lastLogin": serialize_utc_datetime(user.last_login),
+        "enforceActiveTaskPolicy": bool(getattr(user, "enforce_active_task_policy", False)),
     }
 
 
@@ -452,6 +462,78 @@ async def admin_change_user_password(
         },
     )
     return {"success": True, "message": "User password updated successfully"}
+
+
+@router.patch("/users/workplace-policy/bulk")
+async def bulk_set_workplace_policy(
+    payload: BulkWorkplacePolicyPayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    if not payload.user_ids:
+        raise HTTPException(status_code=400, detail="No user IDs provided")
+    rows = (
+        db.query(User)
+        .filter(
+            User.id.in_(payload.user_ids),
+            User.is_deleted == False,
+        )
+        .all()
+    )
+    updated = []
+    skipped = []
+    for u in rows:
+        if has_any_role(u, {"admin"}):
+            skipped.append(u.id)
+            continue
+        u.enforce_active_task_policy = payload.enforce_active_task_policy
+        updated.append(u.id)
+    db.commit()
+    push_admin_realtime_event(
+        db,
+        "admin_user_policy_changed",
+        "Workplace Policy Bulk Update",
+        f"Policy {'enabled' if payload.enforce_active_task_policy else 'disabled'} for {len(updated)} user(s).",
+        {
+            "updatedUserIds": updated,
+            "skippedUserIds": skipped,
+            "enforceActiveTaskPolicy": payload.enforce_active_task_policy,
+            "updatedBy": current_user.id,
+        },
+    )
+    return {"success": True, "updatedCount": len(updated), "skippedCount": len(skipped)}
+
+
+@router.patch("/users/{user_id}/workplace-policy")
+async def set_user_workplace_policy(
+    user_id: int,
+    payload: WorkplacePolicyPayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_deleted:
+        raise HTTPException(status_code=400, detail="Cannot update policy for a deleted account")
+    if has_any_role(user, {"admin"}):
+        raise HTTPException(status_code=400, detail="Workplace policy cannot be applied to administrators")
+    user.enforce_active_task_policy = payload.enforce_active_task_policy
+    db.commit()
+    db.refresh(user)
+    push_admin_realtime_event(
+        db,
+        "admin_user_policy_changed",
+        "Workplace Policy Updated",
+        f"Workplace access policy {'enabled' if payload.enforce_active_task_policy else 'disabled'} for {user.name}.",
+        {
+            "userId": user.id,
+            "userName": user.name,
+            "enforceActiveTaskPolicy": payload.enforce_active_task_policy,
+            "updatedBy": current_user.id,
+        },
+    )
+    return {"success": True, "user": _serialize_user(user, "approved" if user.is_active else "pending")}
 
 
 @router.get("/deleted-users")
