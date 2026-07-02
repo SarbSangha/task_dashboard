@@ -199,8 +199,8 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
     ? 'all'
     : 'any';
   const submissionModeLabel = normalizedSubmissionMode === 'all'
-    ? 'All workers must submit'
-    : 'Any one worker can submit';
+    ? 'All employees must submit'
+    : 'Any one employee can submit';
   if (
     !isWorkflowTask(taskDetails)
     && taskDetails.myRole === 'assignee'
@@ -319,7 +319,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
           {hasWorkerSubmissionSummary && (
             <div className="detail-section worker-results-section">
               <div className="worker-results-heading">
-                <h3>Worker Results</h3>
+                <h3>Employee Results</h3>
                 <span>
                   {submissionModeLabel} · {workerSubmissionSummary.submitted || 0}/{workerSubmissionSummary.total || workerSubmissionRows.length} submitted
                 </span>
@@ -337,7 +337,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
                     >
                       <div className="worker-result-card-head">
                         <div>
-                          <strong>{worker.name || 'Unknown worker'}</strong>
+                          <strong>{worker.name || 'Unknown employee'}</strong>
                           <small>{worker.department || 'No department'}</small>
                         </div>
                         <span>{submitted ? 'Submitted' : worker.started ? 'In Progress' : 'Not Started'}</span>
@@ -390,7 +390,7 @@ const TaskDetailModal = ({ task, onClose, onRefresh }) => {
                         <p className="worker-result-empty">
                           {worker.started
                             ? `Started${worker.startedAt ? ` at ${formatDateTimeIndia(worker.startedAt)}` : ''}. No result submitted yet.`
-                            : 'This worker has not started yet.'}
+                            : 'This employee has not started yet.'}
                         </p>
                       )}
                     </article>

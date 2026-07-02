@@ -197,7 +197,7 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
 
     if (action === 'hold_task') {
       const confirmed = await showConfirm(
-        'Hold this task? Workers will not be able to start, submit, approve, forward, or edit results until you unhold it.',
+        'Hold this task? Employees will not be able to start, submit, approve, forward, or edit results until you unhold it.',
         { title: 'Hold Task' }
       );
       if (!confirmed) return;

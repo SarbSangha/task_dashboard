@@ -1,11 +1,9 @@
 (() => {
 // ============================================================
 // ChatGPT Auto-Login Content Script — content-chatgpt.js
-// KEY FIX: isChatGPTAuthenticated() now requires a mandatory
-// DOM-settle wait before it can ever return true.
-// The script cannot declare "signed in" until the page has had
-// time to paint, React has hydrated, and we have confirmed
-// NO login UI is present after at least SETTLE_MS have elapsed.
+// KEY FIX: authenticated-state evaluation now requires a mandatory
+// DOM-settle wait plus positive signed-in UI evidence before it can
+// ever report success.
 // ============================================================
 
 const TOOL_SLUG = 'chatgpt';
@@ -50,9 +48,49 @@ const MAX_CRED_RETRIES      = 4;
 const GOOGLE_NEXT_WAIT_MS   = 2500;
 const GOOGLE_NEXT_POLL_MS   = 120;
 const SUCCESS_BADGE_HIDE_MS = 4000;
+const AUTHENTICATED_CONFIRM_MS = 1800;
+const LOGIN_ERROR_LOOKBACK_MS = 9000;
+const GOOGLE_AUTH_CANCEL_HINT_MS = 45000;
+
+const CHATGPT_LOGIN_ERROR_PHRASES = [
+  'incorrect password',
+  'invalid password',
+  'wrong password',
+  'incorrect email',
+  'invalid email',
+  'email or password is incorrect',
+  'email and password do not match',
+  "email and password don't match",
+  'invalid credentials',
+  'invalid login',
+  'account not found',
+  "we couldn't find an account",
+  'no account found',
+  'try again',
+];
+
+const CHATGPT_SIGNED_IN_STRONG_SELECTORS = [
+  '[data-testid*="user-menu" i]',
+  '[data-testid*="account-menu" i]',
+  '[data-testid*="profile" i]',
+  '[data-testid*="avatar" i]',
+  '[aria-label*="user menu" i]',
+  '[aria-label*="account menu" i]',
+  '[aria-label*="profile" i]',
+  '[aria-label*="my plan" i]',
+  'img[alt*="avatar" i]',
+  'img[alt*="profile" i]',
+];
+
+const CHATGPT_WORKSPACE_SHELL_SELECTORS = [
+  'nav',
+  '[data-testid*="sidebar" i]',
+  '[data-testid*="history" i]',
+  '[data-testid*="composer" i]',
+];
 
 // ── THE FIX: DOM-settle gate ──────────────────────────────────
-// isChatGPTAuthenticated() is BANNED from returning true until
+// ChatGPT auth verification is BANNED from returning true until
 // at least SETTLE_MS have passed since script start AND at least
 // SETTLE_TICKS clean checks have passed with no login UI present.
 // This prevents the race where the first tick fires before the
@@ -78,6 +116,10 @@ const CTX = {
   authRetries:      0,
   submitLockUntil:  0,
   submitAt:         0,
+  authorized:       false,
+  authenticatedSeenAt: 0,
+  googleSignInClickedAt: 0,
+  lastAuthEvaluation: null,
   lastRunAt:        0,
   lastMutationAt:   0,
   landingClicks:    0,
@@ -384,6 +426,31 @@ function descriptorText(el) {
     .trim()
     .toLowerCase();
 }
+function normalizeText(value) {
+  return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+function normalizeLoginMethod(value) {
+  const method = normalizeText(value).replace(/[-\s]+/g, '_');
+  if (!method) return 'email_password';
+  if (method === 'google' || method.includes('google')) return 'google';
+  if (method === 'email' || method.includes('email') || method.includes('password')) return 'email_password';
+  return method;
+}
+function normalizeCredential(credential) {
+  if (!credential || typeof credential !== 'object') return null;
+  const loginMethod = normalizeLoginMethod(credential.loginMethod || credential.login_method);
+  return {
+    ...credential,
+    loginMethod,
+    login_method: loginMethod,
+  };
+}
+function getCredentialLoginMethod(cred = CTX.credential) {
+  return normalizeLoginMethod(cred?.loginMethod || cred?.login_method);
+}
+function isGoogleCredential(cred = CTX.credential) {
+  return getCredentialLoginMethod(cred) === 'google';
+}
 function isThirdPartyBtn(el) {
   const t = btnText(el);
   return t.includes('google') || t.includes('microsoft') || t.includes('apple') || t.includes('passkey') || t.includes('phone');
@@ -541,53 +608,108 @@ function isLoginUiPresent() {
   return false;
 }
 
-// ── THE CORE FIX: settle-gated isChatGPTAuthenticated ─────────
-//
-// Problem: On first tick the page is barely rendered. The modal
-// hasn't painted yet, so isLoginUiPresent() returns false and the
-// script wrongly declares success at [boot] phase.
-//
-// Solution: Two hard gates before we can ever return true:
-//   Gate 1 — wall-clock: at least SETTLE_MS must have elapsed
-//             since the script started (gives React time to hydrate
-//             and the modal time to paint).
-//   Gate 2 — consecutive clean ticks: isLoginUiPresent() must
-//             return false on SETTLE_TICKS consecutive checks,
-//             each separated by at least SETTLE_TICK_GAP_MS.
-//             This filters out the brief window where the DOM is
-//             partially rendered and the modal isn't visible yet.
-//
-// Only when BOTH gates pass do we return true.
-// If login UI IS present at any point during the settle window,
-// we reset the clean-tick counter immediately.
-//
-function isChatGPTAuthenticated() {
-  if (!onChatGPTDomain()) return false;
+function getRenderedPageText() {
+  return normalizeText(document.body?.innerText || '');
+}
 
-  const now = Date.now();
+function findChatGPTLoginErrorMessage() {
+  const errorSelectors = '[role="alert"], [aria-live], [class*="error" i], [class*="danger" i], [class*="invalid" i]';
+  for (const root of collectRoots(document)) {
+    const candidates = root.querySelectorAll ? Array.from(root.querySelectorAll(errorSelectors)) : [];
+    for (const element of candidates) {
+      if (!isVisible(element)) continue;
+      const text = normalizeText(element.textContent || '');
+      if (!text) continue;
+      const match = CHATGPT_LOGIN_ERROR_PHRASES.find((phrase) => text.includes(phrase));
+      if (match) return match;
+    }
+  }
+  return '';
+}
 
-  // Gate 1: wall-clock settle
-  if (now - CTX.startedAt < SETTLE_MS) return false;
+function findSignedInIndicator() {
+  const strongSignal = CHATGPT_SIGNED_IN_STRONG_SELECTORS
+    .flatMap((selector) => {
+      try {
+        return queryDeep(selector);
+      } catch {
+        return [];
+      }
+    })
+    .find((element) => isVisible(element));
+  if (strongSignal) return { found: true, reason: 'avatar_or_account_menu', element: strongSignal };
 
-  // Check for login UI
-  if (isLoginUiPresent()) {
-    // Reset consecutive-clean counter — login UI is present
-    CTX.cleanTicks = 0;
-    CTX.lastCleanTickAt = 0;
-    return false;
+  const workspaceAction = queryDeep(ACTION_SELECTORS)
+    .filter((element) => isVisible(element) && !isDisabled(element))
+    .find((element) => {
+      const text = btnText(element);
+      return text === 'new chat' || text === 'temporary chat';
+    });
+  if (workspaceAction) return { found: true, reason: 'workspace_new_chat', element: workspaceAction };
+
+  const composer = queryDeep([
+    'textarea',
+    'textarea[placeholder*="message" i]',
+    'textarea[placeholder*="ask" i]',
+    'textarea[data-id]',
+  ]).find((element) => isVisible(element));
+  const shell = CHATGPT_WORKSPACE_SHELL_SELECTORS
+    .flatMap((selector) => {
+      try {
+        return queryDeep(selector);
+      } catch {
+        return [];
+      }
+    })
+    .find((element) => isVisible(element));
+  if (composer && shell) return { found: true, reason: 'workspace_shell', element: composer };
+
+  return { found: false, reason: 'no_positive_signal' };
+}
+
+function evaluateChatGPTAuthState() {
+  if (!onChatGPTDomain()) {
+    return { authenticated: false, reason: 'not_chatgpt_host' };
   }
 
-  // No login UI found — advance the consecutive-clean counter
+  const now = Date.now();
+  if (now - CTX.startedAt < SETTLE_MS) {
+    return { authenticated: false, reason: 'settling' };
+  }
+
+  if (isLoginUiPresent()) {
+    CTX.cleanTicks = 0;
+    CTX.lastCleanTickAt = 0;
+    return { authenticated: false, reason: 'login_ui_present' };
+  }
+
   if (CTX.lastCleanTickAt === 0 || now - CTX.lastCleanTickAt >= SETTLE_TICK_GAP_MS) {
     CTX.cleanTicks += 1;
     CTX.lastCleanTickAt = now;
   }
+  if (CTX.cleanTicks < SETTLE_TICKS) {
+    return { authenticated: false, reason: 'awaiting_clean_checks' };
+  }
 
-  // Gate 2: require SETTLE_TICKS consecutive clean checks
-  if (CTX.cleanTicks < SETTLE_TICKS) return false;
+  const loginError = findChatGPTLoginErrorMessage();
+  if (loginError) {
+    return { authenticated: false, reason: 'login_error', detail: loginError };
+  }
 
-  // Both gates passed → genuinely authenticated
-  return true;
+  const signedIn = findSignedInIndicator();
+  if (signedIn.found) {
+    return { authenticated: true, reason: signedIn.reason };
+  }
+
+  const renderedText = getRenderedPageText();
+  if (
+    renderedText.includes('log in or sign up')
+    || renderedText.includes('log in to get responses based on saved chats')
+  ) {
+    return { authenticated: false, reason: 'rendered_signed_out_copy' };
+  }
+
+  return { authenticated: false, reason: 'no_positive_signal' };
 }
 
 // ── Provider helpers ──────────────────────────────────────────
@@ -598,6 +720,9 @@ function findGoogleButton()    { return findThirdPartyButtons().find((el) => btn
 function findMicrosoftButton() { return findThirdPartyButtons().find((el) => btnText(el).includes('microsoft')) || null; }
 
 function getPreferredProviderBtn(cred) {
+  const explicitMethod = getCredentialLoginMethod(cred);
+  if (explicitMethod === 'google') return findGoogleButton();
+  if (explicitMethod === 'email_password') return null;
   const thirdPartyBtns = findThirdPartyButtons();
   if (!thirdPartyBtns.length) return null;
   const hint   = CTX.flowHint;
@@ -1148,7 +1273,7 @@ async function loadCred() {
   }).then((res) => {
     credPromise = null;
     if (!res?.ok) throw new Error(res?.error || 'Credential unavailable');
-    CTX.credential = res.data?.credential || null;
+    CTX.credential = normalizeCredential(res.data?.credential || null);
     return CTX.credential;
   }).catch((err) => { credPromise = null; throw err; });
   return credPromise;
@@ -1295,15 +1420,47 @@ async function run() {
 
 // ── State machine ─────────────────────────────────────────────
 async function tick() {
+  const authEvaluation = evaluateChatGPTAuthState();
+  CTX.lastAuthEvaluation = authEvaluation;
 
-  // ChatGPT owns its own Google OAuth continuation flow.
-  if (onGoogleDomain() && ![PHASE.BOOT, PHASE.AUTH, PHASE.LOAD_CRED].includes(CTX.phase)) {
-    await handleGoogleFlow();
+  if (CTX.authorized && authEvaluation.authenticated) {
+    if (!CTX.authenticatedSeenAt) {
+      CTX.authenticatedSeenAt = Date.now();
+      setStatus('Verifying authentication...');
+      wake(200);
+      return;
+    }
+
+    const confirmAgeMs = Date.now() - CTX.authenticatedSeenAt;
+    if (confirmAgeMs < AUTHENTICATED_CONFIRM_MS) {
+      setStatus('Verifying authentication...');
+      wake(AUTHENTICATED_CONFIRM_MS - confirmAgeMs);
+      return;
+    }
+
+    const reconfirm = evaluateChatGPTAuthState();
+    CTX.lastAuthEvaluation = reconfirm;
+    if (reconfirm.authenticated) {
+      stop('ChatGPT Login Successful', { dismissAfterMs: SUCCESS_BADGE_HIDE_MS });
+      return;
+    }
+
+    CTX.authenticatedSeenAt = 0;
+    setStatus('Checking authentication...');
+    wake(200);
     return;
   }
+  CTX.authenticatedSeenAt = 0;
 
-  // Auth check gated behind settle window
-  if (isChatGPTAuthenticated()) { stop('✓ Signed in successfully', { dismissAfterMs: SUCCESS_BADGE_HIDE_MS }); return; }
+  if (
+    CTX.authorized
+    && authEvaluation.reason === 'login_error'
+    && CTX.submitAt
+    && Date.now() - CTX.submitAt < LOGIN_ERROR_LOOKBACK_MS
+  ) {
+    stop('Invalid Credentials');
+    return;
+  }
 
   switch (CTX.phase) {
 
@@ -1334,6 +1491,7 @@ async function tick() {
         setStatus(`Not authorized yet (${CTX.authRetries}/${MAX_AUTH_RETRIES})...`);
         wake(AUTH_RETRY_DELAY_MS); return;
       }
+      CTX.authorized = true;
       CTX.phase = PHASE.LOAD_CRED;
       wake(0);
       break;
@@ -1345,12 +1503,15 @@ async function tick() {
       if (CTX.credRetries >= MAX_CRED_RETRIES) { stop('Credential unavailable — check dashboard settings.'); return; }
       try {
         const cred = await loadCred();
-        if (!cred?.loginIdentifier || !cred?.password) { stop('Credential incomplete — check dashboard settings.'); return; }
+        if (!cred?.loginIdentifier || (!cred?.password && !isGoogleCredential(cred))) {
+          stop('Credential incomplete — check dashboard settings.');
+          return;
+        }
         if (!CTX.flowHintLoaded) {
           CTX.flowHint = await loadFlowHint(cred);
           CTX.flowHintLoaded = true;
         }
-        setStatus(`Credentials loaded. Flow hint: "${CTX.flowHint || 'none'}"`);
+        setStatus(`Credentials loaded. Login method: "${getCredentialLoginMethod(cred)}"${CTX.flowHint ? ` • Flow hint: "${CTX.flowHint}"` : ''}`);
       } catch (err) {
         CTX.credRetries += 1;
         setStatus(`Credential error: ${err.message} (${CTX.credRetries}/${MAX_CRED_RETRIES})`);
@@ -1365,7 +1526,9 @@ async function tick() {
 
     // ── CHATGPT_LANDING ──────────────────────────────────────
     case PHASE.CHATGPT_LANDING: {
+      const prefersGoogle = isGoogleCredential(CTX.credential);
       if (isOpenAIPasswordPage() || findPasswordInputInModal()){ CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
+      if (prefersGoogle && findThirdPartyButtons().length > 0) { CTX.phase = PHASE.PREFER_PROVIDER; wake(0); return; }
       if (findEmailInputInModal())   { CTX.phase = PHASE.CHATGPT_EMAIL;    wake(0); return; }
       if (findEmailVerificationCodeInput() || isEmailVerificationPage()) { CTX.phase = PHASE.CHATGPT_EMAIL_OTP; wake(0); return; }
       if (findLoginDialog() || findThirdPartyButtons().length > 0) { CTX.phase = PHASE.PREFER_PROVIDER; wake(0); return; }
@@ -1374,7 +1537,14 @@ async function tick() {
         if (btn) {
           CTX.landingClicks += 1;
           setStatus(`Clicking Log In (attempt ${CTX.landingClicks})...`);
-          await sleep(300); btn.click(); wake(1500); return;
+          await sleep(300);
+          if (!safeClick(btn)) {
+            setStatus('Log In button is not clickable yet...');
+            wake(300);
+            return;
+          }
+          wake(1500);
+          return;
         }
       }
       setStatus('Waiting for login modal...');
@@ -1395,22 +1565,40 @@ async function tick() {
     case PHASE.PREFER_PROVIDER: {
       const cred = CTX.credential;
       if (isOpenAIPasswordPage() || findPasswordInputInModal()) { CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
-      if (findEmailInputInModal())    { CTX.phase = PHASE.CHATGPT_EMAIL;    wake(0); return; }
       if (Date.now() < CTX.submitLockUntil) { setStatus('Provider clicked — waiting for OAuth redirect...'); wake(600); return; }
+      if (getCredentialLoginMethod(cred) === 'email_password') {
+        if (findEmailInputInModal()) { CTX.phase = PHASE.CHATGPT_EMAIL; wake(0); return; }
+        setStatus('Using email / password sign-in...');
+        CTX.phase = PHASE.CHATGPT_EMAIL;
+        wake(0);
+        return;
+      }
       const providerBtn = getPreferredProviderBtn(cred);
       if (providerBtn) {
         const label = btnText(providerBtn);
         if (label.includes('google'))    saveFlowHint(cred, LOGIN_FLOW.GOOGLE,    'provider_button');
         if (label.includes('microsoft')) saveFlowHint(cred, LOGIN_FLOW.MICROSOFT, 'provider_button');
         CTX.providerClicks += 1;
+        if (label.includes('google')) CTX.googleSignInClickedAt = Date.now();
         setStatus(`Clicking "${label}" (attempt ${CTX.providerClicks})...`);
-        await sleep(300); providerBtn.click();
+        await sleep(300);
+        if (!safeClick(providerBtn)) {
+          setStatus(`"${label}" is not clickable yet...`);
+          wake(300);
+          return;
+        }
         CTX.submitAt = Date.now();
         CTX.submitLockUntil = Date.now() + SUBMIT_LOCK_MS;
         CTX.phase = PHASE.WAIT_REDIRECT;
         wake(POST_CLICK_SETTLE_MS); return;
       }
-      setStatus('No provider preference — using email/password...');
+      if (isGoogleCredential(cred)) {
+        setStatus('Waiting for Google Authentication option...');
+        wake(500);
+        return;
+      }
+      if (findEmailInputInModal())    { CTX.phase = PHASE.CHATGPT_EMAIL;    wake(0); return; }
+      setStatus('Using email / password sign-in...');
       CTX.phase = PHASE.CHATGPT_EMAIL;
       wake(0);
       break;
@@ -1419,6 +1607,7 @@ async function tick() {
     // ── CHATGPT_EMAIL ────────────────────────────────────────
     case PHASE.CHATGPT_EMAIL: {
       const cred = CTX.credential;
+      if (isGoogleCredential(cred) && findGoogleButton()) { CTX.phase = PHASE.PREFER_PROVIDER; wake(0); return; }
       const emailInput = findEmailInputInModal();
       if (!emailInput) {
         if (isOpenAIPasswordPage() || findPasswordInputInModal()) { CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
@@ -1436,7 +1625,8 @@ async function tick() {
       if (!btn)               { setStatus('Email filled — Continue not found yet...'); wake(300); return; }
       if (isDisabled(btn))    { setStatus('Email filled — Continue not yet enabled...'); wake(250); return; }
       setStatus('Clicking Continue...');
-      await sleep(350); btn.click();
+      await sleep(350);
+      if (!safeClick(btn)) { setStatus('Continue button is not clickable yet...'); wake(250); return; }
       CTX.submitAt = Date.now();
       CTX.submitLockUntil = Date.now() + SUBMIT_LOCK_MS;
       CTX.phase = PHASE.WAIT_REDIRECT;
@@ -1470,7 +1660,8 @@ async function tick() {
       if (!btn)            { setStatus('Password filled — Sign In not found yet...'); wake(300); return; }
       if (isDisabled(btn)) { setStatus('Password filled — Sign In not yet enabled...'); wake(250); return; }
       setStatus('Clicking Sign In...');
-      await sleep(350); btn.click();
+      await sleep(350);
+      if (!safeClick(btn)) { setStatus('Sign In button is not clickable yet...'); wake(250); return; }
       CTX.submitAt = Date.now();
       CTX.submitLockUntil = Date.now() + SUBMIT_LOCK_MS;
       CTX.phase = PHASE.WAIT_REDIRECT;
@@ -1481,21 +1672,39 @@ async function tick() {
     // ── WAIT_REDIRECT ────────────────────────────────────────
     case PHASE.WAIT_REDIRECT: {
       const elapsed = Date.now() - CTX.submitAt;
-      if (isChatGPTAuthenticated()) { stop('✓ Signed in', { dismissAfterMs: SUCCESS_BADGE_HIDE_MS }); return; }
-      if (onGoogleDomain()) { CTX.submitLockUntil = 0; await handleGoogleFlow(); return; }
       if ((onChatGPTDomain() || onAuthDomain()) && findPasswordInputInModal()) { CTX.submitLockUntil = 0; CTX.phase = PHASE.CHATGPT_PASSWORD; wake(0); return; }
       if ((onChatGPTDomain() || onAuthDomain()) && findEmailInputInModal())    { CTX.submitLockUntil = 0; CTX.phase = PHASE.CHATGPT_EMAIL;    wake(0); return; }
-      if (elapsed > 3000) {
-        const body = (document.body?.innerText || '').toLowerCase();
-        if (['incorrect password','wrong password','invalid email','try again','account not found'].some((e) => body.includes(e))) {
-          stop('Login failed — check credentials in dashboard.'); return;
-        }
+      if ((onChatGPTDomain() || onAuthDomain()) && (findEmailVerificationCodeInput() || isEmailVerificationPage())) {
+        CTX.submitLockUntil = 0;
+        CTX.phase = PHASE.CHATGPT_EMAIL_OTP;
+        wake(0);
+        return;
       }
-      if (elapsed > 15000) {
-        setStatus('Timeout — resetting...'); CTX.submitLockUntil = 0;
-        CTX.phase = PHASE.CHATGPT_LANDING; wake(0); return;
+      if (
+        isGoogleCredential(CTX.credential)
+        && CTX.googleSignInClickedAt
+        && elapsed > GOOGLE_AUTH_CANCEL_HINT_MS
+        && findGoogleButton()
+        && !findPasswordInputInModal()
+        && !findEmailInputInModal()
+      ) {
+        stop('Login Cancelled');
+        return;
       }
-      setStatus(`Waiting for redirect... (${Math.ceil((15000 - elapsed) / 1000)}s)`);
+      if (elapsed > 3000 && findChatGPTLoginErrorMessage()) {
+        stop('Invalid Credentials');
+        return;
+      }
+      const timeoutMs = isGoogleCredential(CTX.credential) ? GOOGLE_AUTH_CANCEL_HINT_MS : 20000;
+      if (elapsed > timeoutMs) {
+        stop(isGoogleCredential(CTX.credential) ? 'Authentication Required' : 'Login Failed');
+        return;
+      }
+      setStatus(
+        isGoogleCredential(CTX.credential)
+          ? `Waiting for Google Authentication... (${Math.ceil((timeoutMs - elapsed) / 1000)}s)`
+          : `Waiting for authentication... (${Math.ceil((timeoutMs - elapsed) / 1000)}s)`
+      );
       wake(700);
       break;
     }
@@ -1537,6 +1746,7 @@ function start() {
       if (!auth?.authorized) {
         return;
       }
+      CTX.authorized = true;
     }
 
     ensureBadge();

@@ -164,6 +164,7 @@ const toolSupportsPasswordOptionalCredential = (value) => {
 const toolSupportsCredentialLoginMethodSelection = (value) => {
   const normalizedToolSlug = normalizeToolSlug(typeof value === 'string' ? value : value?.slug || value?.name);
   return normalizedToolSlug === 'behance'
+    || normalizedToolSlug === 'chatgpt'
     || normalizedToolSlug === 'enhancor'
     || normalizedToolSlug === 'elevenlabs'
     || normalizedToolSlug === 'flow'
@@ -248,15 +249,15 @@ const getSharedCredentialLabels = (toolValue) => {
             : 'tool'));
   if (normalizedToolSlug === 'chatgpt') {
     return {
-      singular: 'password',
-      plural: 'passwords',
-      addAction: 'Add new ChatGPT password',
-      listTitle: 'Saved ChatGPT passwords',
-      assignTitle: 'Assign this ChatGPT password',
-      dialogTitle: 'Assign ChatGPT Password',
-      emptyState: 'Save the first ChatGPT password to start building user assignments.',
-      saveNotice: 'ChatGPT password saved. You can now see which users are assigned to this login from the saved password list.',
-      updateAction: 'Update ChatGPT Password',
+      singular: 'login',
+      plural: 'logins',
+      addAction: 'Add new ChatGPT login',
+      listTitle: 'Saved ChatGPT logins',
+      assignTitle: 'Assign this ChatGPT login',
+      dialogTitle: 'Assign ChatGPT Login',
+      emptyState: 'Save the first ChatGPT login to start building user assignments.',
+      saveNotice: 'ChatGPT login saved. You can now see which users are assigned to this login from the saved login list.',
+      updateAction: 'Update ChatGPT Login',
     };
   }
   return {
@@ -3554,7 +3555,7 @@ export default function Tools({ view = 'tools' }) {
                       login_method: e.target.value,
                     })}
                   >
-                    <option value="email_password">Continue with email</option>
+                    <option value="email_password">Continue with email / password</option>
                     <option value="google">Continue with Google</option>
                   </select>
                 )}
@@ -3590,6 +3591,8 @@ export default function Tools({ view = 'tools' }) {
                       ? 'Claude uses email-link sign-in. Save only the email here, then configure the Verification Mailbox below so the extension can fetch the secure sign-in link from Gmail.'
                       : activeCredentialToolSlug === 'behance'
                         ? 'This Behance credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                      : activeCredentialToolSlug === 'chatgpt'
+                        ? 'This ChatGPT credential supports Continue with Google or email / password. Use Google for Google-created ChatGPT accounts. If the Google account is already listed, the extension will select it. If not, it will choose Add another account and continue with the saved Google email and password when Google asks for them.'
                       : activeCredentialToolSlug === 'enhancor'
                         ? 'This Enhancor credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                       : activeCredentialToolSlug === 'elevenlabs'

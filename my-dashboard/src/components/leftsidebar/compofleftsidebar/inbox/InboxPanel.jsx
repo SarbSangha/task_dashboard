@@ -952,7 +952,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
           defaultValue: '',
           multiline: true,
           rows: 5,
-          placeholder: 'Add a reason for the assigned worker(s)...',
+          placeholder: 'Add a reason for the assigned employee(s)...',
         });
         if (comments === null) return;
         await taskAPI.revokeTask(task.id, `${comments || ''}`.trim());

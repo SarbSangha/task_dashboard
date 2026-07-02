@@ -814,12 +814,12 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                               <strong>{formatDateIndia(task.deadline)}</strong>
                             </span>
                           )}
-                          <span className="meta-item worker-meta" title={`Worker: ${getTaskWorkerNames(task)}`}>
+                          <span className="meta-item worker-meta" title={`Assigned To: ${getTaskWorkerNames(task)}`}>
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                               <path d="M20 21a8 8 0 0 0-16 0" />
                               <circle cx="12" cy="7" r="4" />
                             </svg>
-                            <span>Worker</span>
+                            <span>Assigned To</span>
                             {getTaskWorkerNames(task)}
                           </span>
                         </div>

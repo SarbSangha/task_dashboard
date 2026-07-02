@@ -1311,7 +1311,8 @@ function inferToolSlugFromGooglePage() {
 
 function supportsPasswordOptionalGoogleCredential(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
-  return normalizedToolSlug === 'enhancor'
+  return normalizedToolSlug === 'chatgpt'
+    || normalizedToolSlug === 'enhancor'
     || normalizedToolSlug === 'genspark'
     || normalizedToolSlug === 'heygen'
     || normalizedToolSlug === 'kling'
@@ -1850,6 +1851,7 @@ function findGoogleAccountChooserAction(credential) {
 function shouldPreferGoogleAddAccount(toolSlug = STATE.toolSlug) {
   const normalized = normalizeToolSlug(toolSlug);
   return normalized === 'behance'
+    || normalized === 'chatgpt'
     || normalized === 'enhancor'
     || normalized === 'elevenlabs'
     || normalized === 'flow'
@@ -4419,7 +4421,7 @@ async function attemptPasswordStep(credential) {
 
   if (!passwordValue && supportsPasswordOptionalGoogleCredential()) {
     STATE.settled = true;
-    setStatus('Google password step needs manual completion for this Kling account.');
+    setStatus(`Authentication Required: Google password step needs manual completion for this ${getToolDisplayName(normalizedToolSlug)} account.`);
     releasePasswordSavingSuppressed(0);
     return true;
   }

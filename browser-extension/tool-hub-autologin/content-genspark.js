@@ -8,7 +8,35 @@ const KEEP_ALIVE_MS = 2500;
 const ACTION_COOLDOWN_MS = 1800;
 const SUBMIT_COOLDOWN_MS = 5000;
 const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
-const AUTHENTICATED_CONFIRM_MS = 1500;
+// Two independent evaluations must agree, this many ms apart, before we ever
+// report success. Never shorten this to "fix" a slow confirmation — a false
+// "login complete" is worse than a delayed one.
+const AUTHENTICATED_CONFIRM_MS = 2000;
+const LOGIN_ERROR_LOOKBACK_MS = 9000;
+const GOOGLE_SIGNIN_CANCEL_HINT_MS = 45000;
+
+// Phrases that only ever appear when Genspark has rejected a login attempt.
+// Matched against elements semantically marked as alerts/errors, never
+// against the whole page, so unrelated copy can't trip this.
+const LOGIN_ERROR_PHRASES = [
+  'incorrect password',
+  'invalid password',
+  'wrong password',
+  'incorrect email',
+  'invalid email',
+  'email or password is incorrect',
+  'email or password you entered is incorrect',
+  "email and password don't match",
+  'invalid credentials',
+  'invalid login',
+  'account not found',
+  "we couldn't find an account",
+  'no account found',
+  'user not found',
+  'too many attempts',
+  'too many failed attempts',
+  'too many requests',
+];
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -52,7 +80,7 @@ const BROAD_ACTION_SELECTORS = [
 ].join(',');
 
 const STATE = {
-  status: 'Waiting for Genspark',
+  status: 'Opening Genspark...',
   credential: null,
   launchChecked: false,
   launchAuthorized: false,
@@ -70,6 +98,12 @@ const STATE = {
   passwordSavingSuppressed: false,
   passwordSavingRestoreTimer: null,
   upgradeDialogCache: { at: 0, dialog: null },
+  // Authentication verification / failure tracking (kept separate from the
+  // action-execution state above so detection logic never has to reach into
+  // "did we click something" bookkeeping, and vice versa).
+  googleSignInClickedAt: 0,
+  loginErrorStoppedAt: '',
+  lastAuthEvaluation: null,
 };
 
 function normalizeLoginMethod(value) {
@@ -349,6 +383,20 @@ function textSnippet(element, maxLength = 500) {
   return normalizeText(`${element?.textContent || ''}`.slice(0, maxLength));
 }
 
+// Authentication checks must read what the user can actually see. Unlike
+// `textSnippet` (used for small, already-scoped elements like a single
+// dialog), this reads the whole page via `innerText`, which — unlike
+// `textContent` — excludes <script>/<style> payloads and hidden nodes. A
+// large SPA hydration payload sitting before the header in DOM order can
+// otherwise push real "Sign In" / "Sign Up" text out of a small textContent
+// slice, which is exactly the kind of gap that produces a false "logged in"
+// read. The cap here is generous because innerText is already small.
+function getRenderedPageText(maxLength = 20000) {
+  const root = document.body || document.documentElement;
+  const raw = root?.innerText || root?.textContent || '';
+  return normalizeText(raw.slice(0, maxLength));
+}
+
 function isUpgradeOrBillingAction(element) {
   const normalizedText = normalizeText(`${actionText(element)} ${controlHintText(element)} ${element?.getAttribute?.('href') || ''}`);
   const ownText = actionText(element);
@@ -500,8 +548,40 @@ function rootContains(root, element) {
   return root === document || root.contains(element);
 }
 
-function hasVisibleSignedOutAction() {
-  const directSignedOutAction = Array.from(document.querySelectorAll([
+// ---------------------------------------------------------------------------
+// Authentication detection
+//
+// This is the module the rest of the script defers to for "are we actually
+// logged in?" — it is intentionally kept free of any click/fill/submit code
+// so the detection logic can be reasoned about (and tested) independently of
+// login execution. Two rules govern every check here:
+//
+//   1. A visible Sign In / Sign Up / Login control is a hard veto. If one is
+//      present, we are not authenticated, full stop — no positive signal
+//      elsewhere on the page is allowed to override that.
+//   2. "Authenticated" is only ever returned when a POSITIVE, hard-to-fake
+//      signal is present (a sign-out control, or an unambiguous
+//      avatar/account-menu element). Generic marketing copy such as
+//      "new chat" / "library" / "ask anything, create anything" is
+//      deliberately NOT used as evidence — Genspark's own logged-out
+//      marketing page can legitimately contain the same phrases, which is
+//      what produced the original false "Genspark login complete" bug.
+// ---------------------------------------------------------------------------
+
+const SIGNED_OUT_EXACT_TEXT = new Set(['sign in', 'sign up', 'login', 'log in']);
+
+function findSignedOutIndicator() {
+  // Fast path: scan what's actually rendered on screen (innerText), not a
+  // small slice of raw textContent that can be crowded out by hydration
+  // scripts.
+  const pageText = getRenderedPageText();
+  if (pageText.includes('sign in') && pageText.includes('sign up')) {
+    return { found: true, reason: 'rendered_text_sign_in_and_sign_up' };
+  }
+
+  // Direct DOM scan for a visible control whose own text is exactly one of
+  // the sign-in phrases.
+  const directMatch = Array.from(document.querySelectorAll([
     ACTION_SELECTORS,
     '[tabindex]',
     '[onclick]',
@@ -509,69 +589,129 @@ function hasVisibleSignedOutAction() {
     '[data-testid]',
     'div',
     'span',
-  ].join(','))).some((element) => {
+  ].join(','))).find((element) => {
     if (!isVisible(element) || isDisabled(element)) return false;
     const text = normalizeText(element.textContent || element.getAttribute?.('aria-label') || '');
-    return text === 'sign in'
-      || text === 'sign up'
-      || text === 'login'
-      || text === 'log in';
+    return SIGNED_OUT_EXACT_TEXT.has(text);
   });
-  if (directSignedOutAction) return true;
+  if (directMatch) return { found: true, reason: 'visible_sign_in_control', element: directMatch };
 
-  return collectBroadActionCandidates().some((element) => {
+  // Broader candidate scan (covers buttons whose accessible name/hints carry
+  // the phrase even if their raw text has trailing icons/characters).
+  const broadMatch = collectBroadActionCandidates().find((element) => {
     const text = actionText(element);
     const hints = controlHintText(element);
-    return text === 'sign in'
-      || text === 'sign up'
-      || text === 'login'
-      || text === 'log in'
+    return SIGNED_OUT_EXACT_TEXT.has(text)
       || hints.includes('sign in')
       || hints.includes('sign up')
       || hints.includes('login');
   });
+  if (broadMatch) return { found: true, reason: 'hinted_sign_in_control', element: broadMatch };
+
+  return { found: false, reason: 'none' };
 }
 
-function hasAuthenticatedWorkspaceSignal(pageText) {
-  return pageText.includes('upgrade plan')
-    || pageText.includes('business edition')
-    || pageText.includes('sign out')
-    || Boolean(document.querySelector([
-      '[aria-label*="account" i]',
-      '[aria-label*="profile" i]',
-      '[data-testid*="user" i]',
-      '[data-testid*="avatar" i]',
-    ].join(',')));
+const SIGNED_IN_STRONG_SELECTORS = [
+  '[data-testid*="avatar" i]',
+  '[data-testid*="user-avatar" i]',
+  '[data-testid*="user-menu" i]',
+  '[data-testid*="account-menu" i]',
+  '[aria-label*="user menu" i]',
+  '[aria-label*="account menu" i]',
+  '[aria-label*="your profile" i]',
+  '[aria-label*="my profile" i]',
+  'img[alt*="avatar" i]',
+  'img[alt*="profile photo" i]',
+];
+
+function findSignedInIndicator() {
+  const avatarOrMenu = SIGNED_IN_STRONG_SELECTORS
+    .map((selector) => {
+      try {
+        return document.querySelector(selector);
+      } catch {
+        return null;
+      }
+    })
+    .find((element) => isVisible(element));
+  if (avatarOrMenu) return { found: true, reason: 'avatar_or_account_menu', element: avatarOrMenu };
+
+  const signOutControl = collectBroadActionCandidates().find((element) => {
+    const text = actionText(element);
+    const hints = controlHintText(element);
+    return text === 'sign out'
+      || text === 'log out'
+      || text === 'logout'
+      || hints.includes('sign out')
+      || hints.includes('log out')
+      || hints.includes('logout');
+  });
+  if (signOutControl) return { found: true, reason: 'sign_out_control', element: signOutControl };
+
+  return { found: false, reason: 'no_strong_signal' };
 }
 
-function isAuthenticatedGensparkPage() {
+function findLoginErrorMessage() {
+  const errorSelectors = '[role="alert"], [aria-live], [class*="error" i], [class*="danger" i], [class*="invalid" i]';
+  for (const root of getAuthRoots()) {
+    const candidates = root.querySelectorAll ? Array.from(root.querySelectorAll(errorSelectors)) : [];
+    for (const element of candidates) {
+      if (!isVisible(element)) continue;
+      const text = normalizeText(element.textContent || '');
+      if (!text) continue;
+      const match = LOGIN_ERROR_PHRASES.find((phrase) => text.includes(phrase));
+      if (match) return match;
+    }
+  }
+  return '';
+}
+
+// Returns a rich, inspectable result instead of a bare boolean so callers
+// (and anyone debugging via the console) can see *why* a verdict was
+// reached, not just what it was.
+function evaluateAuthState() {
   const host = window.location.hostname;
-  if (!host.includes('genspark.ai') || host === 'login.genspark.ai') return false;
-  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS)) return false;
+  if (!host.includes('genspark.ai')) {
+    return { authenticated: false, reason: 'not_genspark_host' };
+  }
+  if (host === 'login.genspark.ai') {
+    return { authenticated: false, reason: 'login_host' };
+  }
+  if (findInput(EMAIL_SELECTORS) || findInput(PASSWORD_SELECTORS)) {
+    return { authenticated: false, reason: 'credential_form_visible' };
+  }
 
   const path = normalizeText(window.location.pathname || '');
   if (path.includes('login') || path.includes('signin') || path.includes('sign-in') || path.includes('auth')) {
-    return false;
+    return { authenticated: false, reason: 'auth_path' };
   }
 
-  const pageText = textSnippet(document.body || document.documentElement, 8000);
-  const hasAuthPrompt = pageText.includes('login with email')
-    || pageText.includes('continue with google')
-    || pageText.includes('sign in or sign up')
-    || pageText.includes('sign in sign up')
-    || pageText.includes('sign up sign in');
-  if (pageText.includes('sign in') && pageText.includes('sign up')) return false;
-  if (hasVisibleSignedOutAction()) return false;
-  if (!hasAuthPrompt && hasAuthenticatedWorkspaceSignal(pageText)) return true;
+  const signedOut = findSignedOutIndicator();
+  if (signedOut.found) {
+    return { authenticated: false, reason: signedOut.reason };
+  }
 
-  const hasWorkspaceSignal = pageText.includes('new chat')
-    || pageText.includes('library')
-    || pageText.includes('genspark ai workspace')
-    || pageText.includes('ask anything, create anything')
-    || (pageText.includes('ai slides') && pageText.includes('ai sheets') && pageText.includes('ai docs'))
-    || Boolean(document.querySelector('[aria-label*="account" i], [aria-label*="profile" i], [data-testid*="user" i], [data-testid*="avatar" i]'));
+  const loginError = findLoginErrorMessage();
+  if (loginError) {
+    return { authenticated: false, reason: 'login_error', detail: loginError };
+  }
 
-  return hasWorkspaceSignal && !hasAuthPrompt;
+  const signedIn = findSignedInIndicator();
+  if (signedIn.found) {
+    return { authenticated: true, reason: signedIn.reason };
+  }
+
+  // No sign-in control AND no positive proof of a session. This is the
+  // "unproven" state — treat it as NOT authenticated. We would rather stay
+  // in a "verifying" status a little longer than ever report success on a
+  // guess.
+  return { authenticated: false, reason: 'no_positive_signal' };
+}
+
+function isAuthenticatedGensparkPage() {
+  const evaluation = evaluateAuthState();
+  STATE.lastAuthEvaluation = evaluation;
+  return evaluation.authenticated;
 }
 
 function findInput(selectorList) {
@@ -1107,7 +1247,8 @@ function attemptOpenGoogle() {
   if (!canActNow()) return true;
 
   markActionTaken();
-  setStatus('Opening Google sign-in');
+  STATE.googleSignInClickedAt = Date.now();
+  setStatus('Signing in with Google...');
   clickElement(googleAction);
   scheduleAttempt(700);
   return true;
@@ -1119,22 +1260,34 @@ function attemptOpenEmailLogin() {
   if (!canActNow()) return true;
 
   markActionTaken();
-  setStatus('Opening email sign-in');
+  setStatus('Signing in with Email...');
   clickElement(emailAction);
   scheduleAttempt(700);
   return true;
 }
 
 function attemptFlow() {
-  if (isAuthenticatedGensparkPage()) {
+  const evaluation = evaluateAuthState();
+
+  if (evaluation.authenticated) {
     if (!STATE.authenticatedSeenAt) {
       STATE.authenticatedSeenAt = Date.now();
-      setStatus('Checking Genspark login state');
+      setStatus('Verifying Session...');
       scheduleAttempt(AUTHENTICATED_CONFIRM_MS);
       return;
     }
 
     if (Date.now() - STATE.authenticatedSeenAt >= AUTHENTICATED_CONFIRM_MS) {
+      // Second, independent read right before declaring success — the DOM
+      // may have changed in the confirmation window (e.g. a session was
+      // revoked, or a Sign In control re-appeared after a soft navigation).
+      const reconfirm = evaluateAuthState();
+      if (!reconfirm.authenticated) {
+        STATE.authenticatedSeenAt = 0;
+        setStatus('Checking Authentication...');
+        scheduleAttempt(200);
+        return;
+      }
       stop('Genspark login complete');
       return;
     }
@@ -1143,6 +1296,18 @@ function attemptFlow() {
     return;
   }
   STATE.authenticatedSeenAt = 0;
+
+  // A login error only counts as *our* failed attempt if it showed up soon
+  // after we actually submitted credentials — an unrelated stale banner
+  // shouldn't halt the flow before we've tried anything.
+  if (
+    evaluation.reason === 'login_error'
+    && STATE.lastSubmitAt
+    && Date.now() - STATE.lastSubmitAt < LOGIN_ERROR_LOOKBACK_MS
+  ) {
+    stop('Invalid Credentials');
+    return;
+  }
 
   if (!STATE.launchChecked) {
     setStatus('Checking launch authorization');
@@ -1167,12 +1332,21 @@ function attemptFlow() {
   if (!hasCredentialInputs) {
     if (attemptOpenMoreOptions()) return;
     if (attemptOpenGensparkAuth()) return;
-    if (isGoogleCredential() && attemptOpenGoogle()) return;
-    if (!isGoogleCredential() && attemptOpenEmailLogin()) return;
 
-    setStatus(isGoogleCredential()
-      ? 'Waiting for Genspark Google sign-in option'
-      : 'Waiting for Genspark email sign-in option');
+    if (isGoogleCredential()) {
+      const googleFlowLikelyCancelled = Boolean(STATE.googleSignInClickedAt)
+        && (Date.now() - STATE.googleSignInClickedAt) > GOOGLE_SIGNIN_CANCEL_HINT_MS
+        && Boolean(findGoogleLoginAction());
+      if (googleFlowLikelyCancelled) {
+        setStatus('Google Authentication Cancelled — retrying');
+      }
+      if (attemptOpenGoogle()) return;
+      setStatus('Waiting for Genspark Google sign-in option');
+      return;
+    }
+
+    if (attemptOpenEmailLogin()) return;
+    setStatus('Waiting for Genspark email sign-in option');
     return;
   }
 
@@ -1202,7 +1376,7 @@ function attemptFlow() {
   }
 
   if (!isReadyForSubmit(emailInput, passwordInput)) {
-    setStatus('Filling Genspark login form');
+    setStatus('Signing in with Email...');
     return;
   }
 
@@ -1213,7 +1387,7 @@ function attemptFlow() {
 
   const submitButton = findLoginSubmitButton(emailInput, passwordInput);
   STATE.lastSubmitAt = Date.now();
-  setStatus('Submitting Genspark login');
+  setStatus('Signing in with Email...');
   submitLogin(emailInput, passwordInput, submitButton);
   releasePasswordSavingSuppressed(PASSWORD_PROMPT_RESTORE_DELAY_MS);
 }

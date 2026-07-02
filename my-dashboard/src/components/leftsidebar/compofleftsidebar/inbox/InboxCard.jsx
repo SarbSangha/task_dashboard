@@ -47,8 +47,8 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
   const viewerSubmittedPart = normalizedSubmissionMode === 'all' && viewerHasSubmittedPart;
   const hasWorkerSubmissionSummary = !isWorkflowTask && workerStatusRows.length > 1;
   const submissionModeLabel = normalizedSubmissionMode === 'all'
-    ? 'Every worker must submit'
-    : 'Any one worker can submit';
+    ? 'Every employee must submit'
+    : 'Any one employee can submit';
   const startableStatuses = ['pending', 'forwarded', 'assigned', 'need_improvement'];
   const submittableStatuses = ['in_progress'];
   const approvableStatuses = ['submitted', 'under_review', 'approved'];
@@ -651,7 +651,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     return (
       <div className="worker-submission-block full-span">
         <div className="worker-submission-head">
-          <strong>Worker Status</strong>
+          <strong>Employee Status</strong>
           <span>
             {submissionModeLabel} · {workerSubmissionSummary.submitted || 0}/{workerSubmissionSummary.total || workerStatusRows.length} submitted
           </span>
@@ -668,7 +668,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
               >
                 <div className="worker-submission-card-head">
                   <div>
-                    <h4>{worker.name || 'Unknown worker'}</h4>
+                    <h4>{worker.name || 'Unknown employee'}</h4>
                     <p>{worker.department || 'No department'}</p>
                   </div>
                   <span className="worker-submission-status">
@@ -698,7 +698,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
                   <div className="workflow-stage-empty">
                     {worker.started
                       ? `Started${worker.startedAt ? ` at ${formatDateTimeIndia(worker.startedAt)}` : ''}. No result submitted yet.`
-                      : 'This worker has not started yet.'}
+                      : 'This employee has not started yet.'}
                   </div>
                 )}
               </article>
@@ -714,7 +714,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     return (
       <div className="worker-status-strip">
         <div className="worker-status-strip-head">
-          <strong>Worker Status</strong>
+          <strong>Employee Status</strong>
           <span>{submissionModeLabel}</span>
         </div>
         <div className="worker-status-chip-list">
@@ -726,7 +726,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
                 key={worker.id || worker.name}
                 className={`worker-status-chip ${worker.submitted ? 'submitted' : worker.started ? 'progress' : 'pending'}`}
               >
-                <b>{worker.name || 'Unknown worker'}</b>
+                <b>{worker.name || 'Unknown employee'}</b>
                 <span className="worker-status-chip-meta">
                   <em>{status}</em>
                   {worker.submitted && workerSubmittedAt ? (

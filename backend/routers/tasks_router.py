@@ -5290,7 +5290,7 @@ async def submit_task(
             current_user.id,
             "worker_submitted",
             TaskStatus.IN_PROGRESS.value,
-            payload.comments or "Worker submitted their part",
+            payload.comments or "Employee submitted their part",
             {
                 "submissionMode": submission_mode,
                 "submittedUserId": current_user.id,
@@ -5306,8 +5306,8 @@ async def submit_task(
             task,
             task.creator_id,
             "worker_submitted",
-            f"Worker submitted: {task.title}",
-            "One assigned worker submitted their part. Waiting for the remaining workers.",
+            f"Employee submitted: {task.title}",
+            "One assigned employee submitted their part. Waiting for the remaining employees.",
             actor=current_user,
             metadata_json={
                 "submissionMode": submission_mode,

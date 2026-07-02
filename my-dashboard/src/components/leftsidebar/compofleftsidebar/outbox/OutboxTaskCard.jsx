@@ -214,8 +214,8 @@ const OutboxTaskCard = ({
     ? 'all'
     : 'any';
   const submissionModeLabel = normalizedSubmissionMode === 'all'
-    ? 'Every worker must submit'
-    : 'Any one worker can submit';
+    ? 'Every employee must submit'
+    : 'Any one employee can submit';
 
   const senderPrimary = `${createdByName || creator?.name || fromDepartment || 'Unknown sender'}`.trim();
   const senderSecondary = `${fromDepartment || createdByDepartment || creator?.department || ''}`.trim();
@@ -351,7 +351,7 @@ const OutboxTaskCard = ({
     return (
       <div className="extra-col worker-submission-block">
         <div className="worker-submission-head">
-          <h4>Worker Status</h4>
+          <h4>Employee Status</h4>
           <span>
             {submissionModeLabel} · {workerSubmissionSummary.submitted || 0}/{workerSubmissionSummary.total || workerSubmissionRows.length} submitted
           </span>
@@ -367,7 +367,7 @@ const OutboxTaskCard = ({
               >
                 <div className="worker-submission-card-head">
                   <div>
-                    <h5>{worker.name || 'Unknown worker'}</h5>
+                    <h5>{worker.name || 'Unknown employee'}</h5>
                     <p>{worker.department || 'No department'}</p>
                   </div>
                   <span className="worker-submission-status">
@@ -397,7 +397,7 @@ const OutboxTaskCard = ({
                   <div className="worker-submission-empty">
                     {worker.started
                       ? `Started${worker.startedAt ? ` at ${formatDate(worker.startedAt)} ${formatTime(worker.startedAt)}` : ''}. No result submitted yet.`
-                      : 'This worker has not started yet.'}
+                      : 'This employee has not started yet.'}
                   </div>
                 )}
               </article>

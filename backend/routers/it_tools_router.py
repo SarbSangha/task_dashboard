@@ -68,6 +68,7 @@ SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"behance", "canva", "chatgpt", "claude", "
 PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
     "behance": {"email_password", "google"},
+    "chatgpt": {"email_password", "google"},
     "enhancor": {"email_password", "google"},
     "elevenlabs": {"email_password", "google"},
     "flow": {"email_password", "google"},
@@ -195,6 +196,21 @@ def _canonical_tool_slug(value: str) -> str:
     return slug
 
 
+def _canonical_tool_slug_for_tool(tool, fallback: str = "") -> str:
+    if not tool:
+        return _canonical_tool_slug(fallback or "")
+
+    slug_candidate = _canonical_tool_slug(getattr(tool, "slug", "") or "")
+    if slug_candidate and slug_candidate != "tool":
+        return slug_candidate
+
+    name_candidate = _canonical_tool_slug(getattr(tool, "name", "") or "")
+    if name_candidate and name_candidate != "tool":
+        return name_candidate
+
+    return slug_candidate or _canonical_tool_slug(fallback or "")
+
+
 def _tool_supports_password_optional_credential(canonical_tool_slug: str) -> bool:
     return canonical_tool_slug in PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS
 
@@ -206,7 +222,7 @@ def _tool_uses_extension_autofill(tool, *, allow_automation: bool = False) -> bo
         return True
     if allow_automation and tool.launch_mode == "automation":
         return True
-    return _canonical_tool_slug(tool.slug or "") == "elevenlabs"
+    return _canonical_tool_slug_for_tool(tool) == "elevenlabs"
 
 
 def _normalize_credential_login_method(canonical_tool_slug: str, value: Optional[str]) -> str:
@@ -392,7 +408,7 @@ def _build_admin_credential_summaries_by_tool(
     shareable_tool_ids = [
         tool_id
         for tool_id, tool in tool_by_id.items()
-        if _tool_supports_shared_company_credential_assignments(_canonical_tool_slug(tool.slug or ""))
+        if _tool_supports_shared_company_credential_assignments(_canonical_tool_slug_for_tool(tool))
         and company_credential_ids_by_tool_id.get(tool_id)
     ]
     if not shareable_tool_ids:
@@ -881,7 +897,7 @@ def _resolve_user_tool_overrides_map(
 
 def _resolve_tool_credential(db: Session, tool_id: int, user_id: int) -> Optional[ITPortalToolCredential]:
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
-    canonical_tool_slug = _canonical_tool_slug(tool.slug or "") if tool else ""
+    canonical_tool_slug = _canonical_tool_slug_for_tool(tool) if tool else ""
     user_specific_credential = _latest_user_credential_record(db, tool_id, user_id)
 
     if not user_specific_credential or not user_specific_credential.is_active:
@@ -933,7 +949,7 @@ def _resolve_chatgpt_totp_fallback(
     credential: ITPortalToolCredential,
     user_id: int,
 ) -> tuple[Optional[ITPortalTool], Optional[ITPortalToolCredential]]:
-    if _canonical_tool_slug(tool.slug or "") != "chatgpt":
+    if _canonical_tool_slug_for_tool(tool) != "chatgpt":
         return None, None
 
     current_login_identifier = _normalize_login_identifier(
@@ -1265,7 +1281,7 @@ def _find_extension_tool(db: Session, payload: ExtensionCredentialPayload) -> Op
     active_tools = query.all()
     if tool_slug and tool_slug != "tool":
         for tool in active_tools:
-            if _canonical_tool_slug(tool.slug or "") == tool_slug:
+            if _canonical_tool_slug_for_tool(tool) == tool_slug:
                 return tool
 
     if not hostname:
@@ -1388,7 +1404,7 @@ def _resolve_extension_otp_mailbox(
     effective_credential = _effective_credential_for_mailbox_lookup(
         db,
         credential,
-        canonical_tool_slug=_canonical_tool_slug(tool.slug or ""),
+        canonical_tool_slug=_canonical_tool_slug_for_tool(tool),
     )
     credential_email = decrypt_secret(effective_credential.login_identifier_encrypted) if effective_credential else ""
     mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool.id).first()
@@ -2592,7 +2608,7 @@ async def get_extension_credential(
     if not credential:
         raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
 
-    canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
+    canonical_tool_slug = _canonical_tool_slug_for_tool(tool)
     login_method = _normalize_credential_login_method(canonical_tool_slug, credential.login_method)
     login_identifier = decrypt_secret(credential.login_identifier_encrypted)
     password = decrypt_secret(credential.password_encrypted)
@@ -3220,7 +3236,7 @@ async def get_extension_auth_link(
     effective_credential = _effective_credential_for_mailbox_lookup(
         db,
         credential,
-        canonical_tool_slug=_canonical_tool_slug(tool.slug or ""),
+        canonical_tool_slug=_canonical_tool_slug_for_tool(tool),
     )
     credential_email = decrypt_secret(effective_credential.login_identifier_encrypted) if effective_credential else ""
     mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool.id).first()
@@ -3384,7 +3400,7 @@ async def list_credentials(
     )
     serialized_credentials = [_serialize_credential_summary(item) for item in credentials]
 
-    canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
+    canonical_tool_slug = _canonical_tool_slug_for_tool(tool)
     if _tool_supports_shared_company_credential_assignments(canonical_tool_slug):
         company_credential_ids = {
             credential.id
@@ -3441,7 +3457,7 @@ async def upsert_credential(
     tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id).first()
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
-    canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
+    canonical_tool_slug = _canonical_tool_slug_for_tool(tool)
     scope = _validate_scope(payload)
     login_method = _normalize_credential_login_method(canonical_tool_slug, payload.login_method)
 
@@ -3491,7 +3507,7 @@ async def upsert_credential(
                     "New shared Claude credentials require the sign-in email address."
                     if canonical_tool_slug == "claude"
                     else "New shared Google-login credentials require the Google email address."
-                    if canonical_tool_slug in {"behance", "enhancor", "freepik", "genspark", "heygen", "kling", "kling-ai", "klingai", "pinterest"} and login_method == "google"
+                    if canonical_tool_slug in {"behance", "chatgpt", "enhancor", "freepik", "genspark", "heygen", "kling", "kling-ai", "klingai", "pinterest"} and login_method == "google"
                     else "New shared company credentials require both username/email and password"
                 ),
             )
@@ -3716,7 +3732,7 @@ async def launch_tool(
         raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
 
     revealed = None
-    canonical_tool_slug = _canonical_tool_slug(tool.slug or "")
+    canonical_tool_slug = _canonical_tool_slug_for_tool(tool)
     force_extension_autofill_launch = _tool_uses_extension_autofill(tool) and tool.launch_mode != "extension_autofill"
     effective_extension_autofill = _tool_uses_extension_autofill(tool)
     revealed_login_method = _normalize_credential_login_method(canonical_tool_slug, credential.login_method)
