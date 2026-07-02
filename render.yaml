@@ -51,4 +51,4 @@ staticSites:
     autoDeploy: true
     envVars:
       - key: VITE_API_URL
-        sync: false
+        value: https://task-dashboard-fg5d.onrender.com
