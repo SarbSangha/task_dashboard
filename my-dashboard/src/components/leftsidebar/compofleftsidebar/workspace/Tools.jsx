@@ -254,7 +254,7 @@ const getSharedCredentialLabels = (toolValue) => {
       listTitle: 'Saved ChatGPT passwords',
       assignTitle: 'Assign this ChatGPT password',
       dialogTitle: 'Assign ChatGPT Password',
-      emptyState: 'Save the first ChatGPT login to start building user assignments.',
+      emptyState: 'Save the first ChatGPT password to start building user assignments.',
       saveNotice: 'ChatGPT password saved. You can now see which users are assigned to this login from the saved password list.',
       updateAction: 'Update ChatGPT Password',
     };
