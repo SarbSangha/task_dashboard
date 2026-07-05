@@ -2716,6 +2716,23 @@ async def report_extension_usage_event(
     else:
         merged_metadata = dict(payload.metadata or {})
     internal_generation_id = _usage_internal_generation_id(merged_metadata)
+    # Historical-discovery events (source == "asset_history_discovered") carry
+    # the *actual* Kling generation timestamp in metadata.occurredAt, distinct
+    # from "now" (when the extension found it while scanning history). Without
+    # this, created_at would default to the discovery time, which is what was
+    # showing up as the "Date/Time" column in the Kling usage export instead
+    # of when the generation actually happened.
+    historical_occurred_at = None
+    if source == "asset_history_discovered":
+        raw_occurred_at = merged_metadata.get("occurredAt")
+        try:
+            occurred_at_ms = float(raw_occurred_at)
+        except (TypeError, ValueError):
+            occurred_at_ms = 0
+        if occurred_at_ms > 0:
+            candidate_dt = datetime.utcfromtimestamp(occurred_at_ms / 1000)
+            if datetime(2015, 1, 1) <= candidate_dt <= datetime.utcnow():
+                historical_occurred_at = candidate_dt
     if (
         normalized_event_type == "generate_click"
         and f"{source or ''}".strip().lower() == "generate_intent"
@@ -2980,6 +2997,13 @@ async def report_extension_usage_event(
         usage_event.source = final_source
         usage_event.schema_version = schema_version or usage_event.schema_version
         usage_event.confidence = final_confidence
+        if historical_occurred_at:
+            # Dedupe (stable_dedupe_filters above) matches this row back to an
+            # already-existing usage event, so we land here instead of the
+            # create branch. created_at otherwise never gets corrected on
+            # existing rows even after this fix ships — re-scanning history
+            # would silently keep the original (wrong) discovery-time stamp.
+            usage_event.created_at = historical_occurred_at
         usage_event.metadata_json = _merge_usage_metadata(usage_event.metadata_json, merged_metadata)
         usage_event.metadata_json["lastDedupeDecision"] = {
             "decision": "update",
@@ -3026,6 +3050,7 @@ async def report_extension_usage_event(
             schema_version=schema_version,
             confidence=confidence,
             metadata_json=merged_metadata,
+            **({"created_at": historical_occurred_at} if historical_occurred_at else {}),
         )
         db.add(usage_event)
 

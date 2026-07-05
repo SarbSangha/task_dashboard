@@ -2962,6 +2962,120 @@ function reportTradeHistoryRow(row = {}, payload = {}, matchStrategy = 'task_id'
   return 'reconciled';
 }
 
+// ── Historical discovery ─────────────────────────────────────────
+// Asset-history rows normally only get correlated (and thus reported)
+// when they match a generation that was just triggered in this browser
+// session (see isActiveGenerationValid / isKnownKlingTaskId). That means
+// generations that already existed in Kling before the extension was ever
+// connected — or before this tab session started — were silently dropped
+// and never became an ITPortalToolUsageEvent, so reconciliation could
+// never see them as "missing". This path reports those rows too, at
+// lower confidence, so Capture Center can discover pre-existing work.
+function buildAssetHistoryDiscoverySnapshot(row = {}, payload = {}) {
+  const taskId = normalizeKlingTaskId(row?.taskId);
+  const workId = normalizeKlingTaskId(row?.workId);
+  const identity = taskId || workId;
+  if (!identity) return null;
+
+  const mediaAssets = normalizeCapturedMediaAssets(row?.mediaAssets, 'asset_history_discovery');
+  const promptText = normalizePromptCaptureValue(row?.prompt);
+  const createTime = Number(row?.createTime || 0) || null;
+  const capturedAt = Number(payload.capturedAt || Date.now());
+  const eventDate = createTime ? buildLocalDateValue(new Date(createTime)) : buildLocalDateValue(new Date(capturedAt));
+  const creditsBurned = normalizeKlingShowPriceCredits(row?.showPrice);
+  const credentialUsageMetadata = readCredentialUsageMetadata();
+  const usageIdentityMetadata = getUsageIdentityMetadata();
+
+  return {
+    eventType: 'network_generation',
+    eventDate,
+    status: 'settled',
+    promptText,
+    modelLabel: '',
+    durationLabel: '',
+    resolutionLabel: '',
+    expectedCredits: null,
+    creditsBefore: null,
+    creditsAfter: null,
+    creditsBurned,
+    externalEventId: `asset_discovery_${identity}_${createTime || capturedAt}`,
+    generationId: identity,
+    requestId: '',
+    fingerprint: `asset_discovery_${identity}_${createTime || capturedAt}`,
+    source: 'asset_history_discovered',
+    schemaVersion: Number(payload.schemaVersion || 1) || 1,
+    confidence: 0.55,
+    metadata: {
+      // occurredAt carries the real Kling generation timestamp (ms epoch)
+      // separately from when the extension *discovered* it, since the
+      // backend's created_at otherwise defaults to "now" on insert — see
+      // report_extension_usage_event in it_tools_router.py.
+      occurredAt: createTime,
+      stage: 'discovered',
+      source: 'asset_history_discovered',
+      capture: 'asset_history_discovery',
+      klingTaskId: taskId || '',
+      discoveredTaskIds: [identity],
+      mediaAssets,
+      assetHistory: {
+        taskId,
+        workId,
+        createTime,
+        taskType: `${row?.taskType || ''}`.slice(0, 160),
+        capturedAt,
+        networkUrl: `${payload.url || ''}`.slice(0, 1000),
+        httpStatus: Number(payload.httpStatus || 0) || null,
+      },
+      assetShowPrice: creditsBurned ? {
+        raw: Number(row?.showPrice) || null,
+        creditsBurned,
+      } : null,
+      credentialId: credentialUsageMetadata.credentialId,
+      linkedCredentialId: credentialUsageMetadata.linkedCredentialId,
+      credentialLabel: credentialUsageMetadata.credentialLabel,
+      ...usageIdentityMetadata,
+      klingAccountLabel: readTrackedKlingAccountLabel(),
+      historicalDiscovery: true,
+    },
+  };
+}
+
+function reportAssetHistoryDiscoveryRow(row = {}, payload = {}) {
+  const snapshot = buildAssetHistoryDiscoverySnapshot(row, payload);
+  if (!snapshot) return 'invalid';
+  const dedupeKey = ['asset_discovery', snapshot.generationId, snapshot.metadata?.assetHistory?.createTime || ''].filter(Boolean).join('|');
+  if (dedupeKey && USAGE_CTX.networkEventKeys.has(dedupeKey)) return 'duplicate';
+  if (dedupeKey) {
+    USAGE_CTX.networkEventKeys.set(dedupeKey, Date.now());
+    broadcastNetworkUsageClaim(dedupeKey);
+  }
+  reportKlingUsage(snapshot)
+    .then((response) => {
+      const eventId = Number(response?.event?.id || 0);
+      if (eventId > 0) {
+        updateKlingCaptureBadge({
+          lastDbEventId: eventId,
+          lastDbSource: 'asset_history_discovered',
+        });
+      }
+      debugUsageTelemetry('asset_history_discovered_reported', {
+        eventId,
+        taskId: snapshot.generationId,
+        eventDate: snapshot.eventDate,
+      });
+      console.debug('[RMW Kling][historical-discovery] reported usage event', {
+        taskId: snapshot.generationId,
+        eventDate: snapshot.eventDate,
+        eventId,
+      });
+    })
+    .catch((error) => {
+      if (error?.contextInvalidated || isExtensionContextInvalidatedError(error?.message)) return;
+      console.warn('[RMW Kling] Historical asset discovery reporting failed', error);
+    });
+  return 'reported';
+}
+
 function setupUsageBroadcastChannel() {
   if (USAGE_CTX.broadcastChannel || typeof BroadcastChannel !== 'function') return;
   try {
@@ -3572,6 +3686,9 @@ function handleKlingNetworkUsageMessage(event) {
       assetRowsSkippedUnknownGeneration: 0,
       assetRowsWithOutput: 0,
       assetRowsRecoveredTaskId: 0,
+      assetRowsHistoricalDiscovered: 0,
+      assetRowsHistoricalDuplicate: 0,
+      assetRowsHistoricalInvalid: 0,
     };
     const hasActiveGenerationForAssetMatch = isActiveGenerationValid();
     if (hasActiveGenerationForAssetMatch && rows.length) {
@@ -3612,6 +3729,19 @@ function handleKlingNetworkUsageMessage(event) {
         requirePrompt: true,
       });
       if (!matchedByTaskId && !matchedByLinkedAssetId && !matchedByPromptTime) {
+        // Not tied to a generation from this browser session — this is
+        // exactly the case of a pre-existing Kling generation the extension
+        // never witnessed being created. Report it as a historical
+        // discovery instead of silently dropping it, so it can still
+        // surface as a captured usage event for reconciliation.
+        const discoveryResult = reportAssetHistoryDiscoveryRow(row, payload);
+        if (discoveryResult === 'reported') {
+          assetMetrics.assetRowsHistoricalDiscovered += 1;
+        } else if (discoveryResult === 'duplicate') {
+          assetMetrics.assetRowsHistoricalDuplicate += 1;
+        } else {
+          assetMetrics.assetRowsHistoricalInvalid += 1;
+        }
         assetMetrics.assetRowsSkippedUnknownGeneration += 1;
         continue;
       }
@@ -3705,6 +3835,14 @@ function handleKlingNetworkUsageMessage(event) {
       },
     });
     debugUsageTelemetry('asset_history_metrics', assetMetrics);
+    console.debug('[RMW Kling][historical-discovery] asset_history batch summary', {
+      rawRowsSeen: assetMetrics.assetRowsSeen,
+      matchedToActiveGeneration: assetMetrics.assetRowsMatched,
+      historicalDiscovered: assetMetrics.assetRowsHistoricalDiscovered,
+      historicalDuplicate: assetMetrics.assetRowsHistoricalDuplicate,
+      historicalInvalid: assetMetrics.assetRowsHistoricalInvalid,
+      url: `${payload.url || ''}`.slice(0, 200),
+    });
     updateKlingCaptureBadge({
       assetEndpointSeen: true,
       assetRowsSeen: assetMetrics.assetRowsSeen,

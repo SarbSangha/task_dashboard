@@ -15,6 +15,7 @@ from utils.generation_backfill import (
     _find_generation_record_for_candidate,
     _merge_generation_record_metadata,
 )
+from utils.generation_recovery_observability import emit_recovery_log
 
 MISSING_REASON_NO_GENERATION_RECORD = "no_generation_record"
 RECOVERY_SOURCE_LOCAL_CAPTURE_RECONCILIATION = "local_capture_reconciliation"
@@ -285,6 +286,25 @@ def analyze_generation_reconciliation(
         (analysis.database_count / analysis.kling_count) * 100.0,
         2,
     ) if analysis.kling_count else 100.0
+
+    # Temporary stage-by-stage tracing for the missing-generations investigation.
+    # Reconciliation only ever sees ITPortalToolUsageEvent rows — it has no
+    # path to the live Kling API or the extension's in-page cache. If
+    # source_rows is 0 here, no usage events were ever captured for this
+    # date range, which is upstream of reconciliation entirely.
+    emit_recovery_log(
+        "generation_reconciliation_stage_counts",
+        date_from=date_from.isoformat(),
+        date_to=date_to.isoformat(),
+        raw_usage_event_rows=len(source_rows),
+        malformed_count=analysis.malformed_count,
+        skipped_non_generation=analysis.skipped_non_generation,
+        skipped_no_identity=analysis.skipped_no_identity,
+        deduped_kling_candidates=analysis.kling_count,
+        duplicate_source_count=analysis.duplicate_source_count,
+        database_count=analysis.database_count,
+        missing_count=analysis.missing_count,
+    )
     return analysis
 
 
