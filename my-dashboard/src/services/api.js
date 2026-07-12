@@ -1683,6 +1683,16 @@ export const generationRecordsAPI = {
     const response = await api.get('/api/generations/analytics', requestConfig);
     return response.data;
   },
+
+  claim: async (generationId, requestConfig = {}) => {
+    const response = await api.post(`/api/generations/${generationId}/claim`, {}, requestConfig);
+    return response.data;
+  },
+
+  revokeClaim: async (generationId, requestConfig = {}) => {
+    const response = await api.delete(`/api/generations/${generationId}/claim`, requestConfig);
+    return response.data;
+  },
 };
 
 export const generationRecoveryAPI = {

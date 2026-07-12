@@ -2,14 +2,18 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { generationCollectionsAPI, generationRecordsAPI } from '../../../../../services/api';
 import { UserAvatar } from '../../../../common/UserAvatar';
+import { usePermissions } from '../../../../../hooks/usePermissions';
 import { getGenerationMediaKind, formatGenerationDate } from './klingMedia';
 import KlingTagInput from './KlingTagInput';
 import './KlingGenerationDrawer.css';
 
 export default function KlingGenerationDrawer({ generation, onClose, onToggleFavorite, isFavoritePending, canDownload }) {
+  const { isFaculty } = usePermissions();
   const [detail, setDetail] = useState(generation);
   const [tagActionPending, setTagActionPending] = useState(false);
   const [tagError, setTagError] = useState('');
+  const [ownershipActionPending, setOwnershipActionPending] = useState(false);
+  const [ownershipError, setOwnershipError] = useState('');
 
   const [collections, setCollections] = useState([]);
   const [selectedCollectionId, setSelectedCollectionId] = useState('');
@@ -117,6 +121,34 @@ export default function KlingGenerationDrawer({ generation, onClose, onToggleFav
 
   const mediaKind = getGenerationMediaKind(detail);
   const ownershipLabel = detail.ownershipStatus === 'resolved' ? 'Resolved' : 'Unknown';
+
+  const handleClaim = async () => {
+    if (!detail?.id) return;
+    setOwnershipActionPending(true);
+    setOwnershipError('');
+    try {
+      const response = await generationRecordsAPI.claim(detail.id);
+      if (response?.data) setDetail((prev) => ({ ...prev, ...response.data }));
+    } catch (error) {
+      setOwnershipError(error?.response?.data?.detail || 'Could not claim this generation.');
+    } finally {
+      setOwnershipActionPending(false);
+    }
+  };
+
+  const handleRevokeClaim = async () => {
+    if (!detail?.id) return;
+    setOwnershipActionPending(true);
+    setOwnershipError('');
+    try {
+      const response = await generationRecordsAPI.revokeClaim(detail.id);
+      if (response?.data) setDetail((prev) => ({ ...prev, ...response.data }));
+    } catch (error) {
+      setOwnershipError(error?.response?.data?.detail || 'Could not revoke this claim.');
+    } finally {
+      setOwnershipActionPending(false);
+    }
+  };
 
   const copyPrompt = async () => {
     if (!detail.promptText) return;
@@ -258,6 +290,27 @@ export default function KlingGenerationDrawer({ generation, onClose, onToggleFav
             <div>
               <span>Ownership</span>
               <strong>{ownershipLabel}</strong>
+              {detail.ownershipStatus === 'unknown' && (
+                <button
+                  type="button"
+                  className="kling-drawer-action-btn kling-drawer-ownership-btn"
+                  onClick={handleClaim}
+                  disabled={ownershipActionPending}
+                >
+                  {ownershipActionPending ? 'Claiming...' : 'This was done by me'}
+                </button>
+              )}
+              {isFaculty && detail.ownershipSource === 'user_claimed' && (
+                <button
+                  type="button"
+                  className="kling-drawer-action-btn kling-drawer-ownership-btn"
+                  onClick={handleRevokeClaim}
+                  disabled={ownershipActionPending}
+                >
+                  {ownershipActionPending ? 'Revoking...' : 'Revoke claim'}
+                </button>
+              )}
+              {ownershipError && <p className="kling-drawer-inline-error">{ownershipError}</p>}
             </div>
             <div>
               <span>Created</span>

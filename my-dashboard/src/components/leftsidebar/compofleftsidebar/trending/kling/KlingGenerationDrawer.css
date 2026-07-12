@@ -201,6 +201,13 @@
   font-style: italic;
 }
 
+.kling-drawer-ownership-btn {
+  align-self: flex-start;
+  padding: 4px 10px;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
 .kling-drawer-inline-error {
   margin: 8px 0 0;
   font-size: 12px;

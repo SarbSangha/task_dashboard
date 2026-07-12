@@ -477,6 +477,7 @@ def _apply_candidate_to_generation_record(
     candidate: BackfillCandidate,
     *,
     action: str,
+    assign_owner: bool = True,
 ) -> None:
     source_usage_event_id_conflict = bool(
         record.source_usage_event_id
@@ -495,9 +496,15 @@ def _apply_candidate_to_generation_record(
     record.credits_burned = candidate.credits_burned if candidate.credits_burned is not None else record.credits_burned
     record.ingestion_source = "captured"
     record.capture_status = "active"
-    record.owner_user_id = candidate.owner_user_id or record.owner_user_id
-    record.ownership_status = "resolved" if record.owner_user_id else "unknown"
-    record.ownership_source = "usage_event_user_id" if record.owner_user_id else record.ownership_source
+    # Reconciliation-recovered records deliberately skip owner assignment (see
+    # sync_generation_record_from_usage_event's assign_owner param): the usage
+    # event's user_id is just whoever's extension happened to re-discover it,
+    # not necessarily who actually ran the generation. Those enter as unknown
+    # ownership so a real person can claim them instead of being auto-attributed.
+    if assign_owner:
+        record.owner_user_id = candidate.owner_user_id or record.owner_user_id
+        record.ownership_status = "resolved" if record.owner_user_id else "unknown"
+        record.ownership_source = "usage_event_user_id" if record.owner_user_id else record.ownership_source
     if not source_usage_event_id_conflict and candidate.usage_event_id:
         record.source_usage_event_id = candidate.usage_event_id
     record.metadata_json = _merge_generation_record_metadata(
@@ -514,6 +521,7 @@ def sync_generation_record_from_usage_event(
     session: Session,
     usage_event: ITPortalToolUsageEvent,
     *,
+    assign_owner: bool = True,
     logger: Optional[logging.Logger] = None,
 ) -> GenerationRecordSyncResult:
     logger = logger or LOGGER
@@ -554,7 +562,7 @@ def sync_generation_record_from_usage_event(
     if existing:
         try:
             with session.begin_nested():
-                _apply_candidate_to_generation_record(existing, candidate, action="update")
+                _apply_candidate_to_generation_record(existing, candidate, action="update", assign_owner=assign_owner)
                 session.add(existing)
                 session.flush()
             result.updated = True
@@ -571,6 +579,7 @@ def sync_generation_record_from_usage_event(
             result.error_message = exc.__class__.__name__
             return result
 
+    record_owner_user_id = candidate.owner_user_id if assign_owner else None
     record = GenerationRecord(
         provider="kling",
         provider_task_id=candidate.provider_task_id,
@@ -584,9 +593,9 @@ def sync_generation_record_from_usage_event(
         credits_burned=candidate.credits_burned,
         ingestion_source="captured",
         capture_status="active",
-        owner_user_id=candidate.owner_user_id,
-        ownership_status="resolved" if candidate.owner_user_id else "unknown",
-        ownership_source="usage_event_user_id" if candidate.owner_user_id else None,
+        owner_user_id=record_owner_user_id,
+        ownership_status="resolved" if record_owner_user_id else "unknown",
+        ownership_source="usage_event_user_id" if record_owner_user_id else None,
         source_usage_event_id=candidate.usage_event_id,
         metadata_json=_merge_generation_record_metadata(
             {},
@@ -614,7 +623,7 @@ def sync_generation_record_from_usage_event(
             return result
         try:
             with session.begin_nested():
-                _apply_candidate_to_generation_record(existing, candidate, action="update_after_conflict")
+                _apply_candidate_to_generation_record(existing, candidate, action="update_after_conflict", assign_owner=assign_owner)
                 session.add(existing)
                 session.flush()
             result.updated = True

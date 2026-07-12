@@ -643,8 +643,9 @@ def import_generation_recovery_audit(
                 if existing is None:
                     # Record disappeared between analysis and import (rare) —
                     # fall through to the normal create-or-update path instead
-                    # of silently skipping a real gap.
-                    sync_result = sync_generation_record_from_usage_event(session, usage_event)
+                    # of silently skipping a real gap. assign_owner=False: see
+                    # the note on the main create path below.
+                    sync_result = sync_generation_record_from_usage_event(session, usage_event, assign_owner=False)
                     if sync_result.created:
                         record = session.get(GenerationRecord, sync_result.record_id)
                         recovered_at = datetime.utcnow()
@@ -700,7 +701,14 @@ def import_generation_recovery_audit(
             # step, which is what let a re-discovered generation silently drop
             # its newer metadata every time reconciliation ran again instead of
             # refreshing the one canonical record).
-            sync_result = sync_generation_record_from_usage_event(session, usage_event)
+            #
+            # assign_owner=False: the usage event's user_id here is just
+            # whoever's browser extension happened to re-discover this
+            # generation during reconciliation, not necessarily who ran it.
+            # Recovered records enter with unknown ownership; a real person
+            # claims them via the claim endpoint instead of being silently
+            # auto-attributed.
+            sync_result = sync_generation_record_from_usage_event(session, usage_event, assign_owner=False)
 
             if sync_result.skipped:
                 if sync_result.skip_reason == "missing_identity":

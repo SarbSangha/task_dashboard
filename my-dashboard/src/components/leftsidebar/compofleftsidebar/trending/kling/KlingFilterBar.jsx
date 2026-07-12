@@ -14,6 +14,9 @@ export default function KlingFilterBar({
   onResolutionChange,
   ownershipFilter,
   onOwnershipChange,
+  userFilter,
+  userOptions,
+  onUserChange,
   favoritesOnly,
   onToggleFavoritesOnly,
   tagFilter,
@@ -33,6 +36,7 @@ export default function KlingFilterBar({
   allModelsValue,
   allResolutionsValue,
   allOwnershipValue,
+  allUsersValue,
 }) {
   return (
     <div className="kling-filter-bar">
@@ -122,6 +126,22 @@ export default function KlingFilterBar({
             <option value={allOwnershipValue}>All</option>
             <option value="resolved">Resolved</option>
             <option value="unknown">Unknown</option>
+          </select>
+        </label>
+
+        <label className="trendings-filter-select-wrap">
+          <span className="trendings-filter-select-label">User</span>
+          <select
+            className="trendings-filter-select"
+            value={userFilter}
+            onChange={(event) => onUserChange(event.target.value)}
+          >
+            <option value={allUsersValue}>All Users</option>
+            {userOptions.map((user) => (
+              <option key={user.userId} value={user.userId}>
+                {user.name}
+              </option>
+            ))}
           </select>
         </label>
 

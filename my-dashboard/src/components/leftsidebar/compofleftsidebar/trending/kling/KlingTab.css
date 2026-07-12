@@ -548,3 +548,49 @@
   text-transform: uppercase;
   color: var(--color-text-muted);
 }
+
+/* Unclaimed generations explorer */
+
+.kling-unclaimed-intro {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.kling-unclaimed-card {
+  cursor: default;
+}
+
+.kling-unclaimed-card-body-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  width: 100%;
+}
+
+.kling-unclaimed-claim-btn {
+  margin: 0 14px 14px;
+  border: 1px solid var(--color-primary);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color var(--theme-transition-fast), color var(--theme-transition-fast);
+}
+
+.kling-unclaimed-claim-btn:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: var(--color-button-primary-text);
+}
+
+.kling-unclaimed-claim-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

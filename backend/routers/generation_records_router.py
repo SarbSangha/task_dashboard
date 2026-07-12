@@ -147,12 +147,22 @@ async def get_generation_filters(
         .all()
     )
     tags = [row[0] for row in top_tag_rows]
+    owner_rows = (
+        db.query(User.id, User.name)
+        .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
+        .filter(GenerationRecord.archived_at.is_(None))
+        .distinct()
+        .order_by(User.name.asc())
+        .all()
+    )
+    owners = [{"userId": user_id, "name": name} for user_id, name in owner_rows]
     return {
         "success": True,
         "models": models,
         "resolutions": resolutions,
         "ownershipStatuses": sorted(OWNERSHIP_STATUS_OPTIONS),
         "tags": tags,
+        "owners": owners,
     }
 
 
@@ -653,6 +663,83 @@ async def add_generation_tag(
         raise HTTPException(status_code=409, detail="Tag already exists")
 
     return {"success": True, "data": tag_row.to_dict()}
+
+
+@router.post("/{generation_id}/claim")
+async def claim_generation(
+    generation_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_user),
+):
+    """Self-serve claim for a generation reconciliation recovered without an
+    owner (ownership_status="unknown"). Reconciliation no longer guesses an
+    owner from the re-discovering usage event, so these sit unclaimed until
+    the actual creator says "this one is mine"."""
+    generation = db.query(GenerationRecord).filter(GenerationRecord.id == generation_id).first()
+    if not generation:
+        raise HTTPException(status_code=404, detail="Generation not found")
+
+    if generation.ownership_status == "resolved":
+        if generation.owner_user_id == current_user.id:
+            return {"success": True, "data": generation.to_dict()}
+        raise HTTPException(status_code=409, detail="This generation has already been claimed by someone else")
+
+    metadata_json = dict(generation.metadata_json or {})
+    claim_history = list(metadata_json.get("claimHistory") or [])
+    claim_history.append({
+        "action": "claimed",
+        "byUserId": current_user.id,
+        "at": datetime.utcnow().isoformat(),
+    })
+    metadata_json["claimHistory"] = claim_history
+
+    generation.owner_user_id = current_user.id
+    generation.ownership_status = "resolved"
+    generation.ownership_source = "user_claimed"
+    generation.ownership_notes = None
+    generation.metadata_json = metadata_json
+    generation.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(generation)
+    return {"success": True, "data": generation.to_dict()}
+
+
+@router.delete("/{generation_id}/claim")
+async def revoke_generation_claim(
+    generation_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_faculty),
+):
+    """Admin-only undo of a self-serve claim, for when someone claims a
+    generation that isn't actually theirs. Only reverts claims made via the
+    claim endpoint above (ownership_source="user_claimed") — leaves
+    live-capture attributions (ownership_source="usage_event_user_id") alone."""
+    generation = db.query(GenerationRecord).filter(GenerationRecord.id == generation_id).first()
+    if not generation:
+        raise HTTPException(status_code=404, detail="Generation not found")
+    if generation.ownership_source != "user_claimed":
+        raise HTTPException(status_code=400, detail="This generation was not claimed by a user; nothing to revoke")
+
+    metadata_json = dict(generation.metadata_json or {})
+    claim_history = list(metadata_json.get("claimHistory") or [])
+    claim_history.append({
+        "action": "revoked",
+        "byAdminId": current_user.id,
+        "previousOwnerUserId": generation.owner_user_id,
+        "at": datetime.utcnow().isoformat(),
+    })
+    metadata_json["claimHistory"] = claim_history
+
+    generation.owner_user_id = None
+    generation.ownership_status = "unknown"
+    generation.ownership_source = None
+    generation.assigned_by_admin_id = current_user.id
+    generation.assigned_at = datetime.utcnow()
+    generation.metadata_json = metadata_json
+    generation.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(generation)
+    return {"success": True, "data": generation.to_dict()}
 
 
 @router.delete("/{generation_id}/tags/{tag}")

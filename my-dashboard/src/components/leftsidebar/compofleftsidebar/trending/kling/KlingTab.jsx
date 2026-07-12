@@ -10,6 +10,7 @@ import KlingCollectionsExplorer from './KlingCollectionsExplorer';
 import KlingProjectTimeline from './KlingProjectTimeline';
 import KlingUserExplorer from './KlingUserExplorer';
 import KlingUserProfile from './KlingUserProfile';
+import KlingUnclaimedExplorer from './KlingUnclaimedExplorer';
 import KlingAnalyticsPanel from './KlingAnalyticsPanel';
 import KlingCardSkeletonGrid from './KlingCardSkeletonGrid';
 import { parseKlingQuery } from './klingSearchDsl';
@@ -19,6 +20,7 @@ const ALL_DEPARTMENTS = 'all_departments';
 const ALL_MODELS = 'all_models';
 const ALL_RESOLUTIONS = 'all_resolutions';
 const ALL_OWNERSHIP = 'all_ownership';
+const ALL_USERS = 'all_users';
 const PAGE_SIZE = 60;
 const REQUEST_TIMEOUT_MS = 60000;
 
@@ -76,6 +78,8 @@ export default function KlingTab({ isActive }) {
   const [resolutionFilter, setResolutionFilter] = useState(ALL_RESOLUTIONS);
   const [resolutionOptions, setResolutionOptions] = useState([]);
   const [ownershipFilter, setOwnershipFilter] = useState(ALL_OWNERSHIP);
+  const [userFilter, setUserFilter] = useState(ALL_USERS);
+  const [userOptions, setUserOptions] = useState([]);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [datePreset, setDatePreset] = useState('all');
   const [sortBy, setSortBy] = useState('latest');
@@ -144,6 +148,7 @@ export default function KlingTab({ isActive }) {
         setModelOptions(Array.isArray(response?.models) ? response.models : []);
         setResolutionOptions(Array.isArray(response?.resolutions) ? response.resolutions : []);
         setTagOptions(Array.isArray(response?.tags) ? response.tags : []);
+        setUserOptions(Array.isArray(response?.owners) ? response.owners : []);
       } catch (error) {
         console.warn('Failed to load Kling filter options:', error);
       }
@@ -178,6 +183,7 @@ export default function KlingTab({ isActive }) {
         model: modelFilter === ALL_MODELS ? undefined : modelFilter,
         resolution: resolutionFilter === ALL_RESOLUTIONS ? undefined : resolutionFilter,
         ownership_status: ownershipFilter === ALL_OWNERSHIP ? undefined : ownershipFilter,
+        owner_user_id: userFilter === ALL_USERS ? undefined : userFilter,
         is_favorite: favoritesOnly ? true : undefined,
         tag: tagFilter || undefined,
         project_id: projectFilter?.id ?? undefined,
@@ -195,6 +201,7 @@ export default function KlingTab({ isActive }) {
       modelFilter,
       resolutionFilter,
       ownershipFilter,
+      userFilter,
       favoritesOnly,
       tagFilter,
       projectFilter,
@@ -386,6 +393,15 @@ export default function KlingTab({ isActive }) {
         >
           Users
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subView === 'unclaimed'}
+          className={`kling-subnav-tab ${subView === 'unclaimed' ? 'active' : ''}`}
+          onClick={() => setSubView('unclaimed')}
+        >
+          Unclaimed
+        </button>
         {canViewAnalytics && (
           <button
             type="button"
@@ -415,6 +431,9 @@ export default function KlingTab({ isActive }) {
             onResolutionChange={setResolutionFilter}
             ownershipFilter={ownershipFilter}
             onOwnershipChange={setOwnershipFilter}
+            userFilter={userFilter}
+            userOptions={userOptions}
+            onUserChange={setUserFilter}
             favoritesOnly={favoritesOnly}
             onToggleFavoritesOnly={() => setFavoritesOnly((prev) => !prev)}
             tagFilter={tagFilter}
@@ -434,6 +453,7 @@ export default function KlingTab({ isActive }) {
             allModelsValue={ALL_MODELS}
             allResolutionsValue={ALL_RESOLUTIONS}
             allOwnershipValue={ALL_OWNERSHIP}
+            allUsersValue={ALL_USERS}
           />
 
           <div className="kling-results-area">
@@ -467,6 +487,8 @@ export default function KlingTab({ isActive }) {
       {subView === 'collections' && <KlingCollectionsExplorer onSelectCollection={handleSelectCollection} />}
 
       {subView === 'users' && <KlingUserExplorer onSelectUser={handleSelectUser} />}
+
+      {subView === 'unclaimed' && <KlingUnclaimedExplorer onOpenGeneration={setSelectedGeneration} />}
 
       {subView === 'analytics' && canViewAnalytics && <KlingAnalyticsPanel />}
 
