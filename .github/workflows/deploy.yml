@@ -17,6 +17,7 @@ jobs:
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           debug: true
+          command_timeout: 30m
           script: |
             cd /var/www/task_dashboard
 
@@ -31,7 +32,9 @@ jobs:
             echo "Build frontend"
             cd ../my-dashboard
             npm ci
+            echo "Frontend dependencies installed"
             npm run build
+            echo "Frontend build finished"
 
             echo "Restart server"
             cd ..
