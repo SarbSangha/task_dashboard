@@ -28,6 +28,8 @@ jobs:
             cd backend
             python3 -m venv venv
             ./venv/bin/pip install -r requirements.txt
+            echo "Run database migrations"
+            ./venv/bin/python run_db_migrations.py
 
             echo "Build frontend"
             cd ../my-dashboard
