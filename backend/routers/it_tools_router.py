@@ -2835,11 +2835,14 @@ async def report_extension_usage_event(
             dedupe_filters.append(ITPortalToolUsageEvent.fingerprint == fingerprint)
 
         if stable_dedupe_filters and credential:
+            # Matched by credential (the real Kling account), not portal user_id: two
+            # different portal logins (e.g. the actual user, then an admin session
+            # re-scanning the same shared Kling account) must resolve to the same
+            # row instead of each creating their own copy of the same task.
             usage_event = (
                 db.query(ITPortalToolUsageEvent)
                 .filter(
                     ITPortalToolUsageEvent.tool_id == tool.id,
-                    ITPortalToolUsageEvent.user_id == current_user.id,
                     ITPortalToolUsageEvent.credential_id == credential.id,
                     or_(*stable_dedupe_filters),
                 )
@@ -2854,7 +2857,6 @@ async def report_extension_usage_event(
                 db.query(ITPortalToolUsageEvent)
                 .filter(
                     ITPortalToolUsageEvent.tool_id == tool.id,
-                    ITPortalToolUsageEvent.user_id == current_user.id,
                     ITPortalToolUsageEvent.created_at >= datetime.utcnow() - timedelta(hours=6),
                 )
             )
@@ -2878,11 +2880,13 @@ async def report_extension_usage_event(
                 dedupe_match_reason = "metadata_internal_generation_id"
 
         if not usage_event and dedupe_filters:
+            # Same rationale as the stable_dedupe_filters match above: these fields
+            # (generation_id/external_event_id/request_id/fingerprint) identify the
+            # actual provider task, so they must match across portal users too.
             dedupe_query = (
                 db.query(ITPortalToolUsageEvent)
                 .filter(
                     ITPortalToolUsageEvent.tool_id == tool.id,
-                    ITPortalToolUsageEvent.user_id == current_user.id,
                     or_(*dedupe_filters),
                 )
             )

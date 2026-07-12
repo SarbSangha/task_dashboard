@@ -1733,6 +1733,323 @@ function onMutation() {
   if (reactive.includes(CTX.phase)) wake(200);
 }
 
+// ── Raw capture (Phase 2B) ─────────────────────────────────────
+// Independent of the auto-login state machine above: raw capture must work
+// for organic ChatGPT usage too, not only sessions launched via the
+// dashboard, so this never reads/depends on CTX.authorized or CTX.stopped.
+// It's the single place that maps a capture signal (from either
+// content-chatgpt-network.js via postMessage, or
+// content-chatgpt-dom-observer.js via the shared bus) to a Capture
+// Contract event and hands it to the background worker's outbox - see
+// backend/providers/chatgpt/CAPTURE_CONTRACT.md for the wire shape and
+// background-chatgpt-capture.js for what happens to it after that.
+(async function initChatGptCapture() {
+  if (window.top !== window) return; // top frame only - skip OAuth/embed iframes
+  if (!onChatGPTDomain()) return;
+  const bus = window.RMWChatGPTCapture;
+  if (!bus) return; // content-chatgpt-event-builder.js failed to load - fail closed
+
+  // Feature-flag gate (kill switch) - see content-chatgpt-event-builder.js
+  // "Feature flags" section. Master switch: if off, install nothing at all
+  // (no subscribe, no message listener, no initial conversation_opened) -
+  // background-chatgpt-capture.js independently re-checks the same flag
+  // before it ever enqueues/uploads, so this is defense-in-depth, not the
+  // only gate.
+  let flags = await bus.readFeatureFlags();
+  if (!flags.enableCapture) return;
+
+  function currentConversationIdFromLocation() {
+    const match = location.pathname.match(/\/c\/([^/?#]+)/i);
+    return match ? match[1] : '';
+  }
+
+  // Suppresses the DOM title-change fallback when the network layer already
+  // reported the same rename via a PATCH request moments earlier - the title
+  // element re-rendering is a direct side-effect of that same action, not an
+  // independent occurrence, so without this the two capture paths would
+  // build two conversation_renamed events for one user action.
+  const RENAME_DOM_FALLBACK_SUPPRESS_MS = 4000;
+  const recentNetworkRenameAt = new Map();
+
+  // Local, in-memory-only telemetry (per the review request for duplicate/
+  // dropped/failure counters). Not wired into the backend Capture Health
+  // schema (CaptureHealthPingIn's fields are fixed Phase 2A work) - surfaced
+  // via console.debug (gated by enableDebug) for now.
+  const captureTelemetry = {
+    eventsSent: 0,
+    domRenameDuplicatesSuppressed: 0,
+    attachmentsSent: 0,
+  };
+
+  function syncFlagsToNetworkScript() {
+    try {
+      window.postMessage({
+        source: 'rmw-chatgpt-capture-orchestrator',
+        type: 'CHATGPT_CAPTURE_FLAGS_SYNC',
+        payload: {
+          enabled: Boolean(flags.enableCapture && flags.enableNetworkCapture),
+          debug: Boolean(flags.effectiveDebug),
+        },
+      }, location.origin);
+    } catch {}
+  }
+
+  function sendCaptureEvent(event) {
+    if (!event) return;
+    try {
+      if (CTX.credential?.id && !event.credential_id) event.credential_id = CTX.credential.id;
+      captureTelemetry.eventsSent += 1;
+      // Sanitized observability only - event_type/conversation_id/payload
+      // size, never the prompt/response text itself (see Security review in
+      // the Phase 2B report for why payload content never touches console).
+      if (flags.effectiveDebug) {
+        console.debug('[RMW ChatGPT Capture]', event.event_type, {
+          conversationId: event.conversation_id || '',
+          clientEventId: event.client_event_id,
+          captureVersion: event.capture_version,
+          captureMode: flags.captureMode,
+          payloadBytes: (() => { try { return JSON.stringify(event.payload || {}).length; } catch { return 0; } })(),
+          totalSentThisTab: captureTelemetry.eventsSent,
+        });
+      }
+      chrome.runtime.sendMessage({ type: 'CHATGPT_CAPTURE_EVENT', event, tabId: 0 }, () => {
+        void chrome.runtime.lastError; // background owns persistence/retry - nothing to do here
+      });
+    } catch {}
+  }
+
+  function handleCaptureSignal(type, payload) {
+    const E = bus.EVENT_TYPE;
+    const source = bus.CAPTURE_SOURCE;
+    switch (type) {
+      case 'CHATGPT_NAV_CHANGED':
+        sendCaptureEvent(bus.buildEvent(E.CONVERSATION_OPENED, {
+          conversationId: payload.conversationId,
+          payload: { title: document.title, url: payload.url, isNewConversation: Boolean(payload.isNewConversation) },
+        }));
+        break;
+
+      case 'CHATGPT_PROMPT_SUBMITTED':
+        sendCaptureEvent(bus.buildEvent(E.PROMPT_CAPTURED, {
+          conversationId: payload.conversationId,
+          payload: {
+            text: payload.text || '',
+            textLength: (payload.text || '').length,
+            attachments: payload.attachments || [],
+            images: (payload.attachments || []).filter((attachment) => attachment.type === 'image'),
+            files: (payload.attachments || []).filter((attachment) => attachment.type === 'file'),
+            sequenceIndex: bus.nextSequenceIndex(payload.conversationId),
+            promptTimestamp: new Date().toISOString(),
+          },
+        }));
+        break;
+
+      case 'CHATGPT_RESPONSE_STARTED':
+        if (!bus.markTurnStarted(payload.correlationId)) return;
+        sendCaptureEvent(bus.buildEvent(E.RESPONSE_STARTED, {
+          conversationId: payload.conversationId,
+          messageId: payload.messageId,
+          payload: { model: payload.model || undefined, sequenceIndex: bus.nextSequenceIndex(`${payload.conversationId}:response`), startedAt: new Date().toISOString() },
+        }));
+        break;
+
+      case 'CHATGPT_MESSAGE_EDITED':
+        sendCaptureEvent(bus.buildEvent(E.MESSAGE_EDITED, {
+          conversationId: payload.conversationId,
+          messageId: payload.newMessageId || undefined,
+          payload: {
+            originalMessageId: payload.originalMessageId,
+            newMessageId: payload.newMessageId || undefined,
+            newText: payload.newText,
+          },
+        }));
+        break;
+
+      case 'CHATGPT_RESPONSE_COMPLETED':
+        bus.consumeTurn(payload.correlationId);
+        sendCaptureEvent(bus.buildEvent(E.RESPONSE_COMPLETED, {
+          conversationId: payload.conversationId,
+          messageId: payload.messageId,
+          payload: {
+            text: payload.text || '',
+            textLength: (payload.text || '').length,
+            codeBlocks: payload.codeBlocks || [],
+            hasMarkdown: Boolean(payload.hasMarkdown),
+            hasTables: Boolean(payload.hasTables),
+            stopReason: payload.stopReason || undefined,
+            completedAt: new Date().toISOString(),
+          },
+        }));
+        // Note: conversation_created for a brand-new conversation is emitted
+        // separately by the CHATGPT_CONVERSATION_CREATED signal below (fired
+        // once by content-chatgpt-network.js's stream finalizer) - not here,
+        // to avoid building two conversation_created events off the same
+        // underlying occurrence.
+        break;
+
+      case 'CHATGPT_CONVERSATION_CREATED':
+        sendCaptureEvent(bus.buildEvent(E.CONVERSATION_CREATED, {
+          conversationId: payload.conversationId,
+          payload: { title: document.title, url: location.href, model: payload.model || undefined },
+        }));
+        break;
+
+      case 'CHATGPT_CONVERSATION_MUTATED':
+        if (payload.kind === 'renamed') {
+          recentNetworkRenameAt.set(payload.conversationId, Date.now());
+          sendCaptureEvent(bus.buildEvent(E.CONVERSATION_RENAMED, {
+            conversationId: payload.conversationId,
+            payload: { newTitle: payload.newTitle },
+          }));
+        } else if (payload.kind === 'archived') {
+          sendCaptureEvent(bus.buildEvent(E.CONVERSATION_ARCHIVED, {
+            conversationId: payload.conversationId,
+            payload: { archived: Boolean(payload.archived) },
+          }));
+        } else if (payload.kind === 'deleted') {
+          sendCaptureEvent(bus.buildEvent(E.CONVERSATION_DELETED, {
+            conversationId: payload.conversationId,
+            payload: { detectedVia: payload.detectedVia || 'explicit_delete_action' },
+          }));
+        } else {
+          sendCaptureEvent(bus.buildEvent(E.CONVERSATION_UPDATED, {
+            conversationId: payload.conversationId,
+            payload: { changedFields: payload.changedFields || [], values: payload.values || {} },
+          }));
+        }
+        break;
+
+      case 'CHATGPT_FILE_UPLOAD_DETECTED':
+        sendCaptureEvent(bus.buildEvent(E.FILE_UPLOAD_DETECTED, {
+          conversationId: currentConversationIdFromLocation(),
+          payload: {
+            fileName: payload.fileName,
+            mimeType: payload.mimeType || undefined,
+            sizeBytes: payload.sizeBytes || undefined,
+            attachedTo: payload.attachedTo || 'prompt',
+          },
+        }));
+        break;
+
+      case 'CHATGPT_ATTACHMENT_CAPTURED': {
+        // Not part of the lossless capture-event queue - a best-effort
+        // binary upload (see providers/chatgpt/attachments.py). Sent as its
+        // own message type so background doesn't have to special-case a
+        // dataUrl-carrying "event" inside the tiny-JSON event queue.
+        if (!flags.enableCapture) break;
+        captureTelemetry.attachmentsSent += 1;
+        if (flags.effectiveDebug) {
+          console.debug('[RMW ChatGPT Capture] attachment captured', {
+            conversationId: payload.conversationId || '',
+            fileName: payload.fileName,
+            sizeBytes: payload.sizeBytes,
+            totalAttachmentsSent: captureTelemetry.attachmentsSent,
+          });
+        }
+        chrome.runtime.sendMessage({
+          type: 'CHATGPT_CAPTURE_ATTACHMENT',
+          attachment: {
+            conversation_id: payload.conversationId || undefined,
+            kind: 'input',
+            file_name: payload.fileName,
+            mime_type: payload.mimeType,
+            data_url: payload.dataUrl,
+          },
+        }, () => { void chrome.runtime.lastError; });
+        break;
+      }
+
+      // Diagnostic-only network signals - not part of the Capture Contract's
+      // event_type set, never forwarded as their own event.
+      case 'CHATGPT_STREAM_STATUS':
+      case 'CHATGPT_PREPARE_DETECTED':
+        break;
+
+      // ---- DOM fallback signals (content-chatgpt-dom-observer.js) ---------
+      case 'CHATGPT_DOM_TITLE_CHANGED': {
+        const lastNetworkRenameAt = recentNetworkRenameAt.get(payload.conversationId) || 0;
+        if (Date.now() - lastNetworkRenameAt < RENAME_DOM_FALLBACK_SUPPRESS_MS) {
+          captureTelemetry.domRenameDuplicatesSuppressed += 1;
+          if (flags.effectiveDebug) {
+            console.debug('[RMW ChatGPT Capture] suppressed duplicate DOM rename', {
+              conversationId: payload.conversationId,
+              totalSuppressed: captureTelemetry.domRenameDuplicatesSuppressed,
+            });
+          }
+          break;
+        }
+        sendCaptureEvent(bus.buildEvent(E.CONVERSATION_RENAMED, {
+          conversationId: payload.conversationId,
+          payload: { previousTitle: payload.previousTitle, newTitle: payload.newTitle },
+          captureSource: source.DOM_FALLBACK,
+        }));
+        break;
+      }
+
+      case 'CHATGPT_DOM_SIDEBAR_ITEM_REMOVED':
+        sendCaptureEvent(bus.buildEvent(E.CONVERSATION_DELETED, {
+          conversationId: payload.conversationId,
+          payload: { detectedVia: 'sidebar_removal' },
+          captureSource: source.DOM_FALLBACK,
+        }));
+        break;
+
+      case 'CHATGPT_DOM_CANVAS_DETECTED':
+        sendCaptureEvent(bus.buildEvent(E.GENERATION_CAPTURED, {
+          conversationId: payload.conversationId,
+          payload: { outputType: 'canvas' },
+          captureSource: source.DOM_FALLBACK,
+        }));
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  bus.subscribe(handleCaptureSignal);
+  syncFlagsToNetworkScript();
+
+  // Live flag toggling: a kill switch that only takes effect after every
+  // open tab reloads defeats the point of a kill switch. chrome.storage.local
+  // is shared with the background service worker, so flipping the flag from
+  // anywhere re-syncs every open ChatGPT tab's MAIN-world hook within one
+  // storage round-trip - no reload required.
+  try {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local' || !changes.chatGptCaptureFeatureFlags) return;
+      bus.readFeatureFlags().then((nextFlags) => {
+        flags = nextFlags;
+        syncFlagsToNetworkScript();
+      }).catch(() => {});
+    });
+  } catch {}
+
+  // MAIN-world network signals only ever reach this isolated world via
+  // window.postMessage (see content-chatgpt-network.js); DOM-observer
+  // signals reach the bus directly since they share this JS realm. Relaying
+  // postMessage into bus.emitSignal keeps exactly one dispatch path.
+  window.addEventListener('message', (event) => {
+    try {
+      if (event.source !== window) return;
+      if (event.origin !== location.origin) return;
+      if (event.data?.source !== 'rmw-chatgpt-network-telemetry') return;
+      const { type, payload } = event.data;
+      if (!type) return;
+      bus.emitSignal(type, payload || {});
+    } catch {}
+  }, false);
+
+  // The network layer's pushState/replaceState hook only sees *subsequent*
+  // SPA navigations - the very first document load needs its own
+  // conversation_opened here.
+  const initialConversationId = currentConversationIdFromLocation();
+  sendCaptureEvent(bus.buildEvent(bus.EVENT_TYPE.CONVERSATION_OPENED, {
+    conversationId: initialConversationId,
+    payload: { title: document.title, url: location.href, isNewConversation: !initialConversationId },
+  }));
+})();
+
 // ── Entry point ───────────────────────────────────────────────
 function start() {
   const boot = async () => {

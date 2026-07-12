@@ -1,0 +1,121 @@
+.kling-card-menu-portal {
+  position: fixed;
+  z-index: 2147483000;
+  min-width: 210px;
+  max-width: 260px;
+  max-height: min(70vh, 420px);
+  overflow-y: auto;
+  background: var(--color-surface-modal);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  box-shadow: var(--shadow-popover);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: kling-card-menu-in var(--theme-transition-fast) ease-out;
+}
+
+@keyframes kling-card-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.kling-card-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--theme-transition-fast), color var(--theme-transition-fast);
+}
+
+.kling-card-menu-item:hover,
+.kling-card-menu-item:focus-visible {
+  background: var(--color-hover-surface);
+  outline: none;
+}
+
+.kling-card-menu-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-border-strong);
+}
+
+.kling-card-menu-item:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.kling-card-menu-item:disabled:hover {
+  background: transparent;
+}
+
+.kling-card-menu-item-danger {
+  color: var(--color-feedback-error-text);
+}
+
+.kling-card-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  flex: 0 0 auto;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.kling-card-menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--color-border-subtle);
+}
+
+.kling-card-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border-subtle);
+  margin-bottom: 4px;
+}
+
+.kling-card-menu-back {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.kling-card-menu-back:hover,
+.kling-card-menu-back:focus-visible {
+  background: var(--color-hover-surface);
+  color: var(--color-text);
+  outline: none;
+}
+
+.kling-card-menu-empty {
+  margin: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  padding: 6px;
+}

@@ -543,8 +543,6 @@ async def open_file(
     """Open a file from R2 via short-lived signed URL."""
     if not _is_r2_configured():
         raise HTTPException(status_code=500, detail="R2 is not configured on server")
-    if Image is None:
-        raise HTTPException(status_code=503, detail="Thumbnail generation dependency is not installed")
 
     r2_key = _extract_r2_key(path, url)
     if r2_key:

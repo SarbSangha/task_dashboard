@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "RMW Tool Hub Auto Login",
   "description": "Auto-fills approved company tool credentials from the RMW Tool Hub.",
-  "version": "0.1.17",
+  "version": "0.1.23",
   "incognito": "split",
   "icons": {
     "16": "icons/icon16.png",
@@ -10,7 +10,7 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["storage", "cookies", "privacy", "browsingData", "alarms", "contentSettings"],
+  "permissions": ["storage", "unlimitedStorage", "cookies", "privacy", "browsingData", "alarms", "contentSettings"],
   "host_permissions": [
     "http://localhost/*",
     "http://127.0.0.1/*",
@@ -135,10 +135,19 @@
     {
       "matches": [
         "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": ["content-chatgpt-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
         "https://chat.openai.com/*",
         "https://auth.openai.com/*"
       ],
-      "js": ["content-chatgpt.js"],
+      "js": ["content-chatgpt-event-builder.js", "content-chatgpt-dom-observer.js", "content-chatgpt-attachment-capture.js", "content-chatgpt.js"],
       "run_at": "document_idle",
       "all_frames": true,
       "match_about_blank": true

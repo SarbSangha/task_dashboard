@@ -1,5 +1,6 @@
 # main.py - Clean and Consolidated
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,8 @@ from database_config import (
 from db_migrations import ensure_operational_schema
 
 from models_new import User, Task, TaskParticipant, TaskStatusHistory, ArchivedTask, ActivityLog
+import providers.chatgpt  # noqa: F401 (registers ChatGPT Conversation* models onto Base.metadata)
+from providers.chatgpt import router as chatgpt_router
 # Import routers
 from routers import auth_router
 from routers.tasks import router as tasks_router
@@ -42,6 +45,7 @@ from routers import mailbox_admin_router
 from routers import generation_projects_router
 from routers import generation_records_router
 from routers import generation_recovery_router
+from routers import generation_collections_router
 from utils import cache as cache_utils
 
 # Import auth utilities for system status
@@ -222,11 +226,13 @@ async def lifespan(app: FastAPI):
     if _startup_schema_sync_enabled():
         # Prefer external migrations in production; startup schema sync defaults off there.
         _safe_print("\nInitializing operational database...")
+        _safe_print(f"Operational DB target: {_mask_db_url(OPERATIONAL_DB_URL)}")
         Base.metadata.create_all(bind=operational_engine)
         ensure_operational_schema(operational_engine)
         _safe_print(f"Operational database ready: {operational_engine.dialect.name}")
         
         _safe_print("\nInitializing archive database...")
+        _safe_print(f"Archive DB target: {_mask_db_url(ARCHIVE_DB_URL)}")
         ArchiveBase.metadata.create_all(bind=archive_engine)
         _safe_print(f"Archive database ready: {archive_engine.dialect.name}")
     else:
@@ -371,6 +377,15 @@ async def ensure_cors_headers_on_error_responses(request: Request, call_next):
 
 
 # ==================== EXCEPTION HANDLERS ====================
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Temporary diagnostic: 422s give no visibility into which field failed in
+    # the access log line alone - print the field-level errors so they show up
+    # next to the request in this same console.
+    _safe_print(f"422 validation error on {request.method} {request.url.path}: {exc.errors()}")
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler"""
@@ -425,6 +440,10 @@ app.include_router(mailbox_admin_router.router)
 app.include_router(generation_projects_router.router)
 app.include_router(generation_records_router.router)
 app.include_router(generation_recovery_router.router)
+app.include_router(generation_collections_router.router)
+
+# ChatGPT Capture & Conversation Intelligence (Phase 2A: raw capture only)
+app.include_router(chatgpt_router.router)
 
 
 # ==================== ROOT ENDPOINTS ====================
@@ -459,64 +478,64 @@ async def root():
 # ==================== ROOT & STATIC FILES ====================
 
 # Health check (API route)
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint"""
-    try:
-        with OperationalSessionLocal() as op_db:
-            op_db.execute(text("SELECT 1"))
-        op_status = "healthy"
-    except Exception as e:
-        op_status = f"unhealthy: {str(e)}"
-    
-    try:
-        with ArchiveSessionLocal() as ar_db:
-            ar_db.execute(text("SELECT 1"))
-        ar_status = "healthy"
-    except Exception as e:
-        ar_status = f"unhealthy: {str(e)}"
-
-    redis_status = "disabled"
-    if cache_utils.redis_client is not None:
-        try:
-            await cache_utils.redis_client.ping()
-            redis_status = "healthy"
-        except Exception as e:
-            redis_status = f"unhealthy: {str(e)}"
-    elif _redis_configured():
-        redis_status = "unhealthy: REDIS_URL configured but client is unavailable"
-    
-    dispatcher_status = notification_dispatcher.status()
-    dispatcher_healthy = dispatcher_status.get("stopped", 0) == 0
-    redis_healthy = redis_status in {"healthy", "disabled"}
-    overall_status = (
-        "healthy"
-        if (
-            op_status == "healthy"
-            and ar_status == "healthy"
-            and redis_healthy
-            and dispatcher_healthy
-        )
-        else "degraded"
-    )
-    
-    payload = {
-        "status": overall_status,
-        "timestamp": datetime.utcnow().isoformat(),
-        "databases": {
-            "operational": op_status,
-            "archive": ar_status
-        },
-        "redis": redis_status,
-        "notificationDispatcher": dispatcher_status,
-    }
-    if overall_status != "healthy":
-        return JSONResponse(status_code=503, content=payload)
-    return payload
-
 # @app.get("/api/health")
 # async def health_check():
-#     return {"ok": True}
+#     """Health check endpoint"""
+#     try:
+#         with OperationalSessionLocal() as op_db:
+#             op_db.execute(text("SELECT 1"))
+#         op_status = "healthy"
+#     except Exception as e:
+#         op_status = f"unhealthy: {str(e)}"
+    
+#     try:
+#         with ArchiveSessionLocal() as ar_db:
+#             ar_db.execute(text("SELECT 1"))
+#         ar_status = "healthy"
+#     except Exception as e:
+#         ar_status = f"unhealthy: {str(e)}"
+
+#     redis_status = "disabled"
+#     if cache_utils.redis_client is not None:
+#         try:
+#             await cache_utils.redis_client.ping()
+#             redis_status = "healthy"
+#         except Exception as e:
+#             redis_status = f"unhealthy: {str(e)}"
+#     elif _redis_configured():
+#         redis_status = "unhealthy: REDIS_URL configured but client is unavailable"
+    
+#     dispatcher_status = notification_dispatcher.status()
+#     dispatcher_healthy = dispatcher_status.get("stopped", 0) == 0
+#     redis_healthy = redis_status in {"healthy", "disabled"}
+#     overall_status = (
+#         "healthy"
+#         if (
+#             op_status == "healthy"
+#             and ar_status == "healthy"
+#             and redis_healthy
+#             and dispatcher_healthy
+#         )
+#         else "degraded"
+#     )
+    
+#     payload = {
+#         "status": overall_status,
+#         "timestamp": datetime.utcnow().isoformat(),
+#         "databases": {
+#             "operational": op_status,
+#             "archive": ar_status
+#         },
+#         "redis": redis_status,
+#         "notificationDispatcher": dispatcher_status,
+#     }
+#     if overall_status != "healthy":
+#         return JSONResponse(status_code=503, content=payload)
+#     return payload
+
+@app.get("/api/health")
+async def health_check():
+    return {"ok": True}
 
 @app.get("/api/debug/pool")
 async def debug_pool(request: Request):

@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models_new import GenerationRecord, GenerationRecoveryAudit, ITPortalTool, ITPortalToolUsageEvent, User
@@ -13,12 +12,90 @@ from utils.generation_backfill import (
     KLING_TOOL_SLUGS,
     _build_candidate,
     _find_generation_record_for_candidate,
-    _merge_generation_record_metadata,
+    sync_generation_record_from_usage_event,
 )
 from utils.generation_recovery_observability import emit_recovery_log
 
 MISSING_REASON_NO_GENERATION_RECORD = "no_generation_record"
+# A record already exists for this identity, but is missing key fields (prompt,
+# credits, and/or the captured asset URL) that a re-discovered usage event can
+# fill in. Distinct from MISSING_REASON_NO_GENERATION_RECORD: there is no
+# insert here, only a conservative gap-fill of an existing row.
+MISSING_REASON_INCOMPLETE_GENERATION_RECORD = "incomplete_generation_record"
 RECOVERY_SOURCE_LOCAL_CAPTURE_RECONCILIATION = "local_capture_reconciliation"
+
+# Fields whose absence marks an existing GenerationRecord as "incomplete" for
+# reconciliation purposes. Chosen to match the concrete gap this closes: a row
+# that has an identity (provider_task_id) but never got its prompt, credits, or
+# actual generated media captured.
+INCOMPLETENESS_SIGNAL_FIELDS = ("prompt_text", "canonical_asset_url", "credits_burned")
+
+# Fields reconciliation repair is allowed to fill in on an incomplete record.
+# Intentionally broader than INCOMPLETENESS_SIGNAL_FIELDS (also opportunistically
+# fills model/resolution/duration/asset-key/generation-id gaps in the same pass),
+# but every field here is filled with strict gap-fill semantics — see
+# _fill_missing_generation_record_fields.
+FILLABLE_GENERATION_RECORD_FIELDS = (
+    "provider_generation_id",
+    "canonical_asset_url",
+    "canonical_asset_key",
+    "prompt_text",
+    "model_label",
+    "duration_label",
+    "resolution_label",
+)
+
+
+def _is_generation_record_incomplete(record: GenerationRecord) -> bool:
+    return any(
+        getattr(record, field_name) in (None, "")
+        for field_name in INCOMPLETENESS_SIGNAL_FIELDS
+    )
+
+
+def _fill_missing_generation_record_fields(
+    record: GenerationRecord,
+    candidate: BackfillCandidate,
+) -> list[str]:
+    """Strictly gap-fill an existing record from a candidate: only ever sets a
+    field that is currently missing (None/empty) on the record. Never
+    overwrites a value the record already has, even if the candidate's value
+    differs.
+
+    This is deliberately more conservative than
+    utils.generation_backfill._apply_candidate_to_generation_record (used by
+    the live capture path, which prefers the freshest non-empty value and can
+    replace an existing value). Reconciliation repair's job is to complete
+    what's missing, not to second-guess data that's already there — so this is
+    a separate function rather than a mode flag on the shared one.
+    """
+    filled_fields: list[str] = []
+    for field_name in FILLABLE_GENERATION_RECORD_FIELDS:
+        if not getattr(record, field_name) and getattr(candidate, field_name):
+            setattr(record, field_name, getattr(candidate, field_name))
+            filled_fields.append(field_name)
+
+    if record.credits_burned is None and candidate.credits_burned is not None:
+        record.credits_burned = candidate.credits_burned
+        filled_fields.append("credits_burned")
+
+    if not record.source_usage_event_id and candidate.usage_event_id:
+        record.source_usage_event_id = candidate.usage_event_id
+        filled_fields.append("source_usage_event_id")
+
+    if filled_fields:
+        merged_metadata = dict(record.metadata_json or {})
+        repair_history = list(merged_metadata.get("reconciliationRepairs") or [])
+        repair_history.append({
+            "repairedAt": datetime.utcnow().isoformat(),
+            "sourceUsageEventId": candidate.usage_event_id,
+            "filledFields": filled_fields,
+        })
+        merged_metadata["reconciliationRepairs"] = repair_history
+        record.metadata_json = merged_metadata
+        record.updated_at = datetime.utcnow()
+
+    return filled_fields
 
 
 @dataclass
@@ -29,6 +106,12 @@ class ReconciliationAnalysis:
     kling_count: int = 0
     database_count: int = 0
     missing_count: int = 0
+    # Matched an existing record (counted in database_count, NOT missing_count
+    # — missing_count keeps its existing meaning of "zero records exist"), but
+    # that record is missing prompt/credits/captured-asset data. Tracked
+    # separately so reconciliation can repair it without redefining what
+    # "missing" has always meant in this system's stats/UI.
+    incomplete_count: int = 0
     captured_count: int = 0
     recovered_count: int = 0
     capture_success_rate: float = 0.0
@@ -38,6 +121,7 @@ class ReconciliationAnalysis:
     duplicate_source_count: int = 0
     accepted_candidates: list[BackfillCandidate] = field(default_factory=list)
     missing_candidates: list[BackfillCandidate] = field(default_factory=list)
+    incomplete_candidates: list[BackfillCandidate] = field(default_factory=list)
 
     def summary_dict(self) -> dict:
         return {
@@ -47,6 +131,7 @@ class ReconciliationAnalysis:
             "kling_count": self.kling_count,
             "database_count": self.database_count,
             "missing_count": self.missing_count,
+            "incomplete_count": self.incomplete_count,
             "captured_count": self.captured_count,
             "recovered_count": self.recovered_count,
             "capture_success_rate": self.capture_success_rate,
@@ -62,6 +147,12 @@ class RecoveryImportSummary:
     audit_id: int
     snapshot_candidate_count: int = 0
     imported_count: int = 0
+    updated_count: int = 0
+    # Existing records that were missing prompt/credits/captured-asset data and
+    # had those specific gaps filled in (strict gap-fill only — never
+    # overwrites a value that was already set). Distinct from updated_count,
+    # which covers the "found a duplicate re-discovery, refreshed it" case.
+    repaired_count: int = 0
     duplicate_count: int = 0
     invalid_identity_count: int = 0
     malformed_count: int = 0
@@ -74,6 +165,16 @@ class RecoveryImportSummary:
             "audit_id": self.audit_id,
             "snapshot_candidate_count": self.snapshot_candidate_count,
             "imported_count": self.imported_count,
+            # New: how many candidates matched an *existing* GenerationRecord
+            # (by provider_task_id/provider_generation_id/canonical_asset_key/
+            # source_usage_event_id) and had that record refreshed with any new
+            # data, instead of being silently discarded. duplicate_count is kept
+            # for backward compatibility (it still increments alongside this —
+            # existing consumers reading "how many were duplicates" see the same
+            # number as before), but updated_count is the new, accurate signal
+            # for "did we actually do something useful with the re-discovery."
+            "updated_count": self.updated_count,
+            "repaired_count": self.repaired_count,
             "duplicate_count": self.duplicate_count,
             "invalid_identity_count": self.invalid_identity_count,
             "malformed_count": self.malformed_count,
@@ -280,8 +381,15 @@ def analyze_generation_reconciliation(
             analysis.recovered_count += 1
         else:
             analysis.captured_count += 1
+        # A record exists for this identity, so it's correctly excluded from
+        # missing_candidates — but if it's missing prompt/credits/captured
+        # media, flag it for a gap-fill repair on import instead of silently
+        # treating "a record exists" as "this generation is fully captured".
+        if _is_generation_record_incomplete(record):
+            analysis.incomplete_candidates.append(candidate)
 
     analysis.missing_count = len(analysis.missing_candidates)
+    analysis.incomplete_count = len(analysis.incomplete_candidates)
     analysis.capture_success_rate = round(
         (analysis.database_count / analysis.kling_count) * 100.0,
         2,
@@ -353,14 +461,18 @@ def _serialize_missing_candidate(
     }
 
 
-def build_missing_candidate_snapshot(candidates: list[BackfillCandidate]) -> list[dict]:
+def build_missing_candidate_snapshot(
+    candidates: list[BackfillCandidate],
+    *,
+    missing_reason: str = MISSING_REASON_NO_GENERATION_RECORD,
+) -> list[dict]:
     return [
         {
             "source_usage_event_id": candidate.usage_event_id,
             "provider_task_id": candidate.provider_task_id,
             "provider_generation_id": candidate.provider_generation_id,
             "canonical_asset_key": candidate.canonical_asset_key,
-            "missing_reason": MISSING_REASON_NO_GENERATION_RECORD,
+            "missing_reason": missing_reason,
             "confidence": candidate.confidence,
             "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
         }
@@ -374,7 +486,20 @@ def build_recovery_audit_report(
     preview_count: Optional[int] = None,
 ) -> dict:
     report = analysis.summary_dict()
-    report["missing_candidates"] = build_missing_candidate_snapshot(analysis.missing_candidates)
+    # Both genuinely-missing and matched-but-incomplete candidates go into the
+    # same "missing_candidates" snapshot key (kept for backward compatibility —
+    # import_generation_recovery_audit already reads this one key), each
+    # tagged with its own missing_reason so import can branch between
+    # create-or-update and strict-gap-fill-repair. incomplete_candidates is
+    # also exposed on its own for introspection/observability.
+    report["missing_candidates"] = build_missing_candidate_snapshot(
+        analysis.missing_candidates, missing_reason=MISSING_REASON_NO_GENERATION_RECORD
+    ) + build_missing_candidate_snapshot(
+        analysis.incomplete_candidates, missing_reason=MISSING_REASON_INCOMPLETE_GENERATION_RECORD
+    )
+    report["incomplete_candidates"] = build_missing_candidate_snapshot(
+        analysis.incomplete_candidates, missing_reason=MISSING_REASON_INCOMPLETE_GENERATION_RECORD
+    )
     if preview_count is not None:
         report["preview_count"] = preview_count
     return report
@@ -462,12 +587,18 @@ def import_generation_recovery_audit(
 
     summary = RecoveryImportSummary(audit_id=audit.id, snapshot_candidate_count=len(snapshot_items))
     imported_record_ids: list[int] = []
+    updated_record_ids: list[int] = []
+    repaired_record_ids: list[int] = []
     try:
         for snapshot_item in snapshot_items:
             if not isinstance(snapshot_item, dict):
                 summary.malformed_count += 1
                 continue
-            if snapshot_item.get("missing_reason") != MISSING_REASON_NO_GENERATION_RECORD:
+            missing_reason = snapshot_item.get("missing_reason")
+            if missing_reason not in (
+                MISSING_REASON_NO_GENERATION_RECORD,
+                MISSING_REASON_INCOMPLETE_GENERATION_RECORD,
+            ):
                 summary.non_importable_count += 1
                 continue
             if not _snapshot_has_valid_identity(snapshot_item):
@@ -486,81 +617,152 @@ def import_generation_recovery_audit(
                 summary.malformed_count += 1
                 continue
 
-            try:
-                candidate = _build_candidate(usage_event)
-            except Exception:
-                summary.malformed_count += 1
+            if missing_reason == MISSING_REASON_INCOMPLETE_GENERATION_RECORD:
+                # Repair path: a record already exists for this identity (that's
+                # exactly why analysis flagged it "incomplete" rather than
+                # "missing") — only fill whichever fields are currently empty,
+                # never overwrite a value that's already set. This is the fix
+                # for "a row has a task id but prompt/credits/capture are
+                # missing": reconciliation now closes that gap instead of
+                # leaving the record sparse forever because it isn't "missing"
+                # in the create-a-new-row sense.
+                try:
+                    candidate = _build_candidate(usage_event)
+                except Exception:
+                    summary.malformed_count += 1
+                    continue
+                if candidate is None or not (
+                    candidate.provider_task_id
+                    or candidate.provider_generation_id
+                    or candidate.canonical_asset_key
+                ):
+                    summary.invalid_identity_count += 1
+                    continue
+
+                existing = _find_generation_record_for_candidate(session, candidate)
+                if existing is None:
+                    # Record disappeared between analysis and import (rare) —
+                    # fall through to the normal create-or-update path instead
+                    # of silently skipping a real gap.
+                    sync_result = sync_generation_record_from_usage_event(session, usage_event)
+                    if sync_result.created:
+                        record = session.get(GenerationRecord, sync_result.record_id)
+                        recovered_at = datetime.utcnow()
+                        record.ingestion_source = "recovered"
+                        record.recovery_audit_id = audit.id
+                        record.recovered_by_admin_id = requested_by_admin_id
+                        record.recovered_at = recovered_at
+                        session.add(record)
+                        session.flush()
+                        imported_record_ids.append(record.id)
+                        summary.imported_count += 1
+                    elif sync_result.updated:
+                        updated_record_ids.append(sync_result.record_id)
+                        summary.updated_count += 1
+                        summary.duplicate_count += 1
+                    else:
+                        summary.malformed_count += 1
+                    continue
+
+                filled_fields = _fill_missing_generation_record_fields(existing, candidate)
+                session.add(existing)
+                session.flush()
+                if filled_fields:
+                    repaired_record_ids.append(existing.id)
+                    summary.repaired_count += 1
+                else:
+                    # Nothing was actually missing by the time we got here
+                    # (e.g. it was already repaired by an earlier item in this
+                    # same run, or by a concurrent process) — not an error,
+                    # just nothing left to do.
+                    summary.duplicate_count += 1
                 continue
 
-            if candidate is None:
-                summary.malformed_count += 1
-                continue
-            if not (
-                candidate.provider_task_id
-                or candidate.provider_generation_id
-                or candidate.canonical_asset_key
-            ):
-                summary.invalid_identity_count += 1
+            # Delegate the actual insert-or-update to the same idempotent,
+            # race-safe synchronization primitive the live ingestion path uses
+            # (utils.generation_backfill.sync_generation_record_from_usage_event).
+            # It already implements the required behavior end to end:
+            #   - Provider Task ID (then generation ID, then asset key, then
+            #     source usage event id) is the identity lookup, matching the
+            #     Primary Rule.
+            #   - If a match exists: UPDATE that one row in place
+            #     (_apply_candidate_to_generation_record fills in missing
+            #     fields, refreshes the latest asset URL/metadata, never
+            #     inserts a second row).
+            #   - If no match exists: INSERT, and if a concurrent
+            #     writer wins the race on the same identity (IntegrityError),
+            #     it falls back to the same UPDATE path instead of raising —
+            #     so two reconciliation imports racing on the same task id can
+            #     never both insert.
+            # This also means the recovery-import path is no longer a second,
+            # independently-maintained copy of insert/dedupe logic (previously
+            # this function had its own inline check-then-insert with no update
+            # step, which is what let a re-discovered generation silently drop
+            # its newer metadata every time reconciliation ran again instead of
+            # refreshing the one canonical record).
+            sync_result = sync_generation_record_from_usage_event(session, usage_event)
+
+            if sync_result.skipped:
+                if sync_result.skip_reason == "missing_identity":
+                    summary.invalid_identity_count += 1
+                else:
+                    summary.malformed_count += 1
                 continue
 
-            existing = _find_generation_record_for_candidate(session, candidate)
-            if existing is not None:
-                summary.duplicate_count += 1
-                continue
-
-            recovered_at = datetime.utcnow()
-            metadata_json = _merge_generation_record_metadata(
-                {},
-                candidate.metadata_json,
-                action="recover_import",
-                candidate=candidate,
-                source_usage_event_id_conflict=False,
-            )
-            metadata_json["recovery_source"] = RECOVERY_SOURCE_LOCAL_CAPTURE_RECONCILIATION
-            metadata_json["recoveryImport"] = {
-                "auditId": audit.id,
-                "importedAt": recovered_at.isoformat(),
-                "requestedByAdminId": requested_by_admin_id,
-                "missingReason": snapshot_item.get("missing_reason"),
-                "snapshotSourceUsageEventId": source_usage_event_id,
-            }
-            record = GenerationRecord(
-                provider="kling",
-                provider_task_id=candidate.provider_task_id,
-                provider_generation_id=candidate.provider_generation_id,
-                canonical_asset_url=candidate.canonical_asset_url,
-                canonical_asset_key=candidate.canonical_asset_key,
-                prompt_text=candidate.prompt_text,
-                model_label=candidate.model_label,
-                duration_label=candidate.duration_label,
-                resolution_label=candidate.resolution_label,
-                credits_burned=candidate.credits_burned,
-                ingestion_source="recovered",
-                capture_status="active",
-                owner_user_id=None,
-                ownership_status="unknown",
-                ownership_source=None,
-                project_id=None,
-                source_usage_event_id=candidate.usage_event_id,
-                recovery_audit_id=audit.id,
-                recovered_by_admin_id=requested_by_admin_id,
-                recovered_at=recovered_at,
-                metadata_json=metadata_json,
-                created_at=candidate.created_at or recovered_at,
-                updated_at=recovered_at,
-            )
-            try:
-                with session.begin_nested():
-                    session.add(record)
-                    session.flush()
+            if sync_result.created:
+                record = session.get(GenerationRecord, sync_result.record_id)
+                recovered_at = datetime.utcnow()
+                record.ingestion_source = "recovered"
+                record.recovery_audit_id = audit.id
+                record.recovered_by_admin_id = requested_by_admin_id
+                record.recovered_at = recovered_at
+                metadata_json = dict(record.metadata_json or {})
+                metadata_json["recovery_source"] = RECOVERY_SOURCE_LOCAL_CAPTURE_RECONCILIATION
+                metadata_json["recoveryImport"] = {
+                    "auditId": audit.id,
+                    "importedAt": recovered_at.isoformat(),
+                    "requestedByAdminId": requested_by_admin_id,
+                    "missingReason": snapshot_item.get("missing_reason"),
+                    "snapshotSourceUsageEventId": source_usage_event_id,
+                }
+                record.metadata_json = metadata_json
+                session.add(record)
+                session.flush()
                 imported_record_ids.append(record.id)
                 summary.imported_count += 1
-            except IntegrityError:
+            elif sync_result.updated:
+                # A canonical record for this identity already exists (created
+                # by a prior import, a live capture, or a different
+                # reconciliation run) — sync_generation_record_from_usage_event
+                # already refreshed it in place. Record that this audit also
+                # touched it, without overwriting how/when it was originally
+                # created.
+                record = session.get(GenerationRecord, sync_result.record_id)
+                metadata_json = dict(record.metadata_json or {})
+                reconciled_audit_ids = list(metadata_json.get("reconciliationAuditIds") or [])
+                if audit.id not in reconciled_audit_ids:
+                    reconciled_audit_ids.append(audit.id)
+                metadata_json["reconciliationAuditIds"] = reconciled_audit_ids
+                metadata_json["lastReconciledAt"] = datetime.utcnow().isoformat()
+                record.metadata_json = metadata_json
+                session.add(record)
+                session.flush()
+                updated_record_ids.append(record.id)
+                summary.updated_count += 1
+                # Kept for backward compatibility: existing consumers of
+                # duplicate_count (e.g. the Capture Center dashboard) still see
+                # this incremented for every re-discovered generation, exactly
+                # as before — the difference is the record is now actually
+                # refreshed instead of the candidate being discarded.
+                summary.duplicate_count += 1
+            else:
+                # Defensive fallback: neither created, updated, nor skipped.
+                # Should not happen given the sync function's contract, but
+                # never silently drop a candidate without accounting for it.
                 summary.duplicate_count += 1
 
         summary.skipped_count = (
-            summary.duplicate_count
-            + summary.invalid_identity_count
+            summary.invalid_identity_count
             + summary.malformed_count
             + summary.non_importable_count
         )
@@ -572,6 +774,8 @@ def import_generation_recovery_audit(
             {
                 **summary.to_dict(),
                 "imported_record_ids": imported_record_ids,
+                "updated_record_ids": updated_record_ids,
+                "repaired_record_ids": repaired_record_ids,
             }
         )
         report["last_import_summary"] = summary.to_dict()

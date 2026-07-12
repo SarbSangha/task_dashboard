@@ -18,6 +18,8 @@ const ToolsTab = lazy(() => import('./tabs/ToolsTab'));
 const CreditsTab = lazy(() => import('./tabs/CreditsTab'));
 const ChartsTab = lazy(() => import('./tabs/ChartsTab'));
 const CaptureCenterTab = lazy(() => import('./tabs/CaptureCenterTab'));
+const ChatGptCaptureCenterTab = lazy(() => import('./tabs/ChatGptCaptureCenterTab'));
+const AiExplorerTab = lazy(() => import('./tabs/ai-explorer/AiExplorerTab'));
 
 const PRIMARY_TABS = [
   { key: 'overview', label: 'Overview', icon: '📈' },
@@ -28,8 +30,10 @@ const PRIMARY_TABS = [
 ];
 
 const SECONDARY_TABS = [
+  { key: 'ai-explorer', label: 'AI Explorer', icon: '🧭', adminOnly: true },
   { key: 'generation-projects', label: 'Gen Projects', icon: '🎬' },
   { key: 'capture-center', label: 'Capture Center', icon: '🛟', adminOnly: true },
+  { key: 'chatgpt-capture-center', label: 'ChatGPT Capture', icon: '🧠', adminOnly: true },
   { key: 'company', label: 'Company', icon: '🏢' },
   { key: 'Tools', label: 'Tools', icon: '🧰' },
   { key: 'credits', label: 'Credits', icon: '💳' },
@@ -40,9 +44,11 @@ const ALL_TAB_ITEMS = [...PRIMARY_TABS, ...SECONDARY_TABS];
 
 const TAB_COMPONENTS = {
   overview: OverviewTab,
+  'ai-explorer': AiExplorerTab,
   projects: ProjectsTab,
   'generation-projects': GenerationProjectsTab,
   'capture-center': CaptureCenterTab,
+  'chatgpt-capture-center': ChatGptCaptureCenterTab,
   tasks: TasksTab,
   team: TeamTab,
   company: CompanyTab,
@@ -54,9 +60,11 @@ const TAB_COMPONENTS = {
 
 const TAB_SKELETON_VARIANTS = {
   overview: 'overview',
+  'ai-explorer': 'projects',
   projects: 'projects',
   'generation-projects': 'projects',
   'capture-center': 'projects',
+  'chatgpt-capture-center': 'projects',
   tasks: 'overview',
   team: 'team',
   company: 'company',
@@ -204,7 +212,7 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
         {!isMinimized && (
           <div
             className={`workspace-content${
-              activeTab === 'projects' || activeTab === 'generation-projects' || activeTab === 'capture-center'
+              activeTab === 'projects' || activeTab === 'generation-projects' || activeTab === 'capture-center' || activeTab === 'chatgpt-capture-center'
                 ? ' workspace-content-projects'
                 : ''
             }`}

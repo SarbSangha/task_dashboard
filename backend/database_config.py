@@ -43,6 +43,17 @@ def _is_local_runtime() -> bool:
     return True
 
 
+def _should_override_env_file_values() -> bool:
+    explicit = (os.getenv("LOAD_DOTENV_OVERRIDE") or "").strip().lower()
+    if explicit in {"1", "true", "yes", "on"}:
+        return True
+    if explicit in {"0", "false", "no", "off"}:
+        return False
+    # In local dev, prefer the checked-in backend/.env over stale inherited
+    # process env so uvicorn reloads pick up credential changes.
+    return _is_local_runtime()
+
+
 def _prefer_local_supabase_transaction_pooler(url: str) -> str:
     if not url or not _is_local_runtime():
         return url
@@ -64,13 +75,15 @@ def _prefer_local_supabase_transaction_pooler(url: str) -> str:
 def _load_env_file_if_needed(env_path: str | None = None) -> None:
     """
     Lightweight .env loader (no external dependency).
-    Only sets keys that are not already in process env.
+    Local dev defaults to letting backend/.env refresh inherited process env so
+    reloaders pick up credential edits without a full shell restart.
     """
     if not _should_load_env_file():
         return
     env_path = env_path or os.path.join(os.path.dirname(__file__), ".env")
     if not os.path.exists(env_path):
         return
+    override_existing = _should_override_env_file_values()
     try:
         with open(env_path, "r", encoding="utf-8") as fp:
             for raw in fp:
@@ -81,7 +94,7 @@ def _load_env_file_if_needed(env_path: str | None = None) -> None:
                 key = key.strip()
                 value = re.split(r"\s+#", value.strip(), maxsplit=1)[0]
                 value = value.strip().strip('"').strip("'")
-                if key and key not in os.environ:
+                if key and (override_existing or key not in os.environ):
                     os.environ[key] = value
     except Exception:
         # Fallback silently; process env may already be configured by runtime.

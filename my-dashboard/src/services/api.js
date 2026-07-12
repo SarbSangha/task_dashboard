@@ -1530,6 +1530,88 @@ export const generationProjectsAPI = {
     );
     return response.data;
   },
+
+  listDirectory: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/generation-projects/directory',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getProjectGenerationsDirectory: async (projectId, paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      `/api/generation-projects/${projectId}/generations/directory`,
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getTimeline: async (projectId, paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      `/api/generation-projects/${projectId}/timeline`,
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+};
+
+export const generationCollectionsAPI = {
+  listCollections: async (requestConfig = {}) => {
+    const response = await api.get('/api/generation-collections', requestConfig);
+    return response.data;
+  },
+
+  createCollection: async (payload, requestConfig = {}) => {
+    const response = await api.post('/api/generation-collections', payload, requestConfig);
+    return response.data;
+  },
+
+  getCollection: async (collectionId, requestConfig = {}) => {
+    const response = await api.get(`/api/generation-collections/${collectionId}`, requestConfig);
+    return response.data;
+  },
+
+  getCollectionGenerations: async (collectionId, paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      `/api/generation-collections/${collectionId}/generations`,
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  addGeneration: async (collectionId, generationId, requestConfig = {}) => {
+    const response = await api.post(
+      `/api/generation-collections/${collectionId}/generations/${generationId}`,
+      {},
+      requestConfig
+    );
+    return response.data;
+  },
+
+  removeGeneration: async (collectionId, generationId, requestConfig = {}) => {
+    const response = await api.delete(
+      `/api/generation-collections/${collectionId}/generations/${generationId}`,
+      requestConfig
+    );
+    return response.data;
+  },
+
+  listDirectory: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/generation-collections/directory',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getCollectionGenerationsDirectory: async (collectionId, paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      `/api/generation-collections/${collectionId}/generations/directory`,
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
 };
 
 export const generationRecordsAPI = {
@@ -1538,6 +1620,67 @@ export const generationRecordsAPI = {
       '/api/generations/ungrouped',
       buildParamRequestConfig(paramsOrConfig, requestConfig)
     );
+    return response.data;
+  },
+
+  search: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/generations/search',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getById: async (generationId, requestConfig = {}) => {
+    const response = await api.get(`/api/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
+
+  getFilters: async (requestConfig = {}) => {
+    const response = await api.get('/api/generations/filters', requestConfig);
+    return response.data;
+  },
+
+  addFavorite: async (generationId, requestConfig = {}) => {
+    const response = await api.post(`/api/generations/${generationId}/favorite`, {}, requestConfig);
+    return response.data;
+  },
+
+  removeFavorite: async (generationId, requestConfig = {}) => {
+    const response = await api.delete(`/api/generations/${generationId}/favorite`, requestConfig);
+    return response.data;
+  },
+
+  getTags: async (generationId, requestConfig = {}) => {
+    const response = await api.get(`/api/generations/${generationId}/tags`, requestConfig);
+    return response.data;
+  },
+
+  addTag: async (generationId, tag, requestConfig = {}) => {
+    const response = await api.post(`/api/generations/${generationId}/tags`, { tag }, requestConfig);
+    return response.data;
+  },
+
+  removeTag: async (generationId, tag, requestConfig = {}) => {
+    const response = await api.delete(`/api/generations/${generationId}/tags/${encodeURIComponent(tag)}`, requestConfig);
+    return response.data;
+  },
+
+  getUsers: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/generations/users',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getUserProfile: async (userId, requestConfig = {}) => {
+    const response = await api.get(`/api/generations/users/${userId}`, requestConfig);
+    return response.data;
+  },
+
+  getAnalytics: async (requestConfig = {}) => {
+    const response = await api.get('/api/generations/analytics', requestConfig);
     return response.data;
   },
 };
@@ -1572,6 +1715,74 @@ export const generationRecoveryAPI = {
       `/api/admin/generation-recovery/import/${auditId}`,
       {},
       requestConfig
+    );
+    return response.data;
+  },
+};
+
+// ==================== CHATGPT CAPTURE CENTER API (read-only) ====================
+export const chatgptCaptureAPI = {
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/chatgpt/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/chatgpt/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+
+  listConversations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/chatgpt/conversations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getConversation: async (conversationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/chatgpt/conversations/${conversationId}`, requestConfig);
+    return response.data;
+  },
+
+  getConversationMessages: async (conversationId, paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      `/api/providers/chatgpt/conversations/${conversationId}/messages`,
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getConversationAttachments: async (conversationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/chatgpt/conversations/${conversationId}/attachments`, requestConfig);
+    return response.data;
+  },
+
+  getMetrics: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/chatgpt/metrics', requestConfig);
+    return response.data;
+  },
+
+  listUsers: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/chatgpt/users',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getUser: async (userId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/chatgpt/users/${userId}`, requestConfig);
+    return response.data;
+  },
+
+  getUserConversations: async (userId, paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      `/api/providers/chatgpt/users/${userId}/conversations`,
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
     );
     return response.data;
   },

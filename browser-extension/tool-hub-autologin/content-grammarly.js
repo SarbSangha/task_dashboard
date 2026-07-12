@@ -772,7 +772,7 @@ function findLandingLoginAction() {
 
 function looksLikeAuthenticatedWorkspace() {
   const host = window.location.hostname.toLowerCase();
-  if (host === 'app.grammarly.com') {
+  if (host === 'app.grammarly.com' || host === 'coda.grammarly.com') {
     return !findInput(EMAIL_SELECTORS) && !findInput(PASSWORD_SELECTORS);
   }
   return false;
@@ -861,10 +861,13 @@ async function ensureFreshLaunchSession() {
     return true;
   }
 
+  const returnUrl = window.location.href !== LOGIN_URL ? window.location.href : '';
+
   await clearToolSession({ preserveLaunch: true });
   const preparedResponse = await sendRuntimeMessage({
     type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED',
     toolSlug: TOOL_SLUG,
+    returnUrl,
   });
   if (preparedResponse?.ok) {
     STATE.launchPrepared = true;
@@ -905,9 +908,29 @@ function finalizeAutofill(message, { revokeLaunch = true } = {}) {
   STATE.settled = true;
   releasePasswordSavingSuppressed(0);
   setStatus(message);
-  if (revokeLaunch) {
-    revokeDashboardLaunch().catch(() => {});
-  }
+
+  const isSuccess = message === 'Signed in successfully';
+  const returnUrlPromise = isSuccess
+    ? sendRuntimeMessage({ type: 'TOOL_HUB_CONSUME_RETURN_URL', toolSlug: TOOL_SLUG })
+    : Promise.resolve(null);
+
+  // Fetch the stored return URL before revoking the launch record, since revoking
+  // deletes the same storage entry the return URL is stashed on.
+  returnUrlPromise.then((response) => {
+    const returnUrl = `${response?.returnUrl || ''}`.trim();
+    if (returnUrl && returnUrl !== window.location.href) {
+      // Keep the launch ticket alive across this hop: the destination page reloads
+      // fresh and re-checks launch authorization, so revoking here before it lands
+      // would make it look unauthorized, clear the new session, and bounce back to
+      // sign-in in a loop. It gets revoked on the *next* successful settle instead
+      // (this same function, once there's no further return URL to chase).
+      window.location.replace(returnUrl);
+      return;
+    }
+    if (revokeLaunch) {
+      revokeDashboardLaunch().catch(() => {});
+    }
+  });
 }
 
 function requestCredential() {
@@ -997,7 +1020,13 @@ function attemptFill() {
   }
 
   if (looksLikeAuthenticatedWorkspace()) {
-    finalizeAutofill('Signed in successfully');
+    // Don't revoke the launch on a normal success: Grammarly is a multi-document
+    // app, and the user will keep navigating to new document URLs afterward. If we
+    // revoke here, the very next new-doc navigation finds no launch record, looks
+    // unauthorized, and enforceDashboardOnlyAccess() nukes the real session and
+    // forces sign-in again — every time. Let the launch expire on its own TTL
+    // instead so the whole authorized window stays usable.
+    finalizeAutofill('Signed in successfully', { revokeLaunch: false });
     return;
   }
 
@@ -1010,7 +1039,7 @@ function attemptFill() {
   }
 
   if (looksSignedInAfterSubmit()) {
-    finalizeAutofill('Signed in successfully');
+    finalizeAutofill('Signed in successfully', { revokeLaunch: false });
     return;
   }
 

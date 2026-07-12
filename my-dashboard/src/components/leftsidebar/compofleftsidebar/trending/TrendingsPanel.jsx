@@ -2,10 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Grid } from 'react-window';
 import { authAPI, taskAPI } from '../../../../services/api';
 import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowStack';
+import { useNearViewport } from '../../../../hooks/useNearViewport';
+import { useElementSize } from '../../../../hooks/useElementSize';
 import { isMobileViewport } from '../../../../utils/isMobileViewport';
 import WindowControls from '../../../common/WindowControls';
 import { usePermissions } from '../../../../hooks/usePermissions';
 import { buildFileDownloadUrl, buildFileOpenUrl, buildFileThumbnailUrl } from '../../../../utils/fileLinks';
+import KlingTab from './kling/KlingTab';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
@@ -171,67 +174,6 @@ const getMediaFilterLabel = (value) => {
   return `${value || ''}`.toUpperCase();
 };
 
-function useNearViewport(rootMargin = '700px') {
-  const elementRef = useRef(null);
-  const [isNearViewport, setIsNearViewport] = useState(false);
-
-  useEffect(() => {
-    const element = elementRef.current;
-    if (!element || isNearViewport) return undefined;
-
-    if (typeof IntersectionObserver === 'undefined') {
-      setIsNearViewport(true);
-      return undefined;
-    }
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry?.isIntersecting) return;
-        setIsNearViewport(true);
-        observer.disconnect();
-      },
-      { root: null, rootMargin, threshold: 0.01 }
-    );
-
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [isNearViewport, rootMargin]);
-
-  return [elementRef, isNearViewport];
-}
-
-function useElementSize() {
-  const elementRef = useRef(null);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-
-  useEffect(() => {
-    const element = elementRef.current;
-    if (!element) return undefined;
-
-    const updateSize = () => {
-      const rect = element.getBoundingClientRect();
-      setSize((current) => {
-        const width = Math.round(rect.width);
-        const height = Math.round(rect.height);
-        if (current.width === width && current.height === height) return current;
-        return { width, height };
-      });
-    };
-
-    updateSize();
-
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateSize);
-      return () => window.removeEventListener('resize', updateSize);
-    }
-
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-
-  return [elementRef, size];
-}
 
 const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, openUrl, thumbnailUrl }) {
   const [previewRef, isNearViewport] = useNearViewport();
@@ -648,6 +590,7 @@ const TrendingsDirectoryFileList = React.memo(function TrendingsDirectoryFileLis
 const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const { can } = usePermissions();
   const canDownloadRmwData = can('download_rmw_data');
+  const canViewKlingGenerations = can('view_kling_generations');
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -760,7 +703,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen || activeView === 'directory') return;
+    if (!isOpen || activeView === 'directory' || activeView === 'kling') return;
     let cancelled = false;
 
     const load = async () => {
@@ -841,6 +784,8 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const filteredAssets = useMemo(() => assets, [assets]);
   const canLoadMore = hasMore && (Boolean(nextCursor) || nextOffset != null);
   const isDirectoryTab = activeView === 'directory';
+  const isKlingTab = activeView === 'kling';
+  const isDataTab = activeView === 'data';
   const activeDirectoryCriteria = useMemo(
     () => directoryStructure.filter((criterionKey) => criterionKey !== 'none'),
     [directoryStructure]
@@ -1241,7 +1186,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       >
         <div className="trendings-header">
           <h2>RMW Data</h2>
-          {!isMinimized && (
+          {!isMinimized && !isKlingTab && (
             <div className="trendings-header-search">
               <input
                 className="trendings-search"
@@ -1267,8 +1212,8 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={!isDirectoryTab}
-                  className={`trendings-view-tab ${!isDirectoryTab ? 'active' : ''}`}
+                  aria-selected={isDataTab}
+                  className={`trendings-view-tab ${isDataTab ? 'active' : ''}`}
                   onClick={() => setActiveView('data')}
                 >
                   Data
@@ -1282,60 +1227,82 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                 >
                   Directory
                 </button>
-              </div>
-              <div className="trendings-toolbar-status">
-                {isDirectoryTab
-                  ? 'Browse folders first, then load only the files for the selected path.'
-                  : `Fast databank mode is active.${lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}`}
-              </div>
-              <div className="trendings-select-filters">
-                <label className="trendings-filter-select-wrap">
-                  <span className="trendings-filter-select-label">Format</span>
-                  <select
-                    className="trendings-filter-select"
-                    value={filter}
-                    onChange={(event) => setFilter(event.target.value)}
+                {canViewKlingGenerations && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isKlingTab}
+                    className={`trendings-view-tab ${isKlingTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('kling')}
                   >
-                    {MEDIA_FILTERS.map((item) => (
-                      <option key={item} value={item}>
-                        {getMediaFilterLabel(item)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="trendings-filter-select-wrap">
-                  <span className="trendings-filter-select-label">Department</span>
-                  <select
-                    className="trendings-filter-select"
-                    value={departmentFilter}
-                    onChange={(event) => setDepartmentFilter(event.target.value)}
+                    Kling
+                  </button>
+                )}
+              </div>
+              {!isKlingTab && (
+                <div className="trendings-toolbar-status">
+                  {isDirectoryTab
+                    ? 'Browse folders first, then load only the files for the selected path.'
+                    : `Fast databank mode is active.${lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}`}
+                </div>
+              )}
+              {!isKlingTab && (
+                <div className="trendings-select-filters">
+                  <label className="trendings-filter-select-wrap">
+                    <span className="trendings-filter-select-label">Format</span>
+                    <select
+                      className="trendings-filter-select"
+                      value={filter}
+                      onChange={(event) => setFilter(event.target.value)}
+                    >
+                      {MEDIA_FILTERS.map((item) => (
+                        <option key={item} value={item}>
+                          {getMediaFilterLabel(item)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="trendings-filter-select-wrap">
+                    <span className="trendings-filter-select-label">Department</span>
+                    <select
+                      className="trendings-filter-select"
+                      value={departmentFilter}
+                      onChange={(event) => setDepartmentFilter(event.target.value)}
+                    >
+                      {departmentOptions.map((department) => (
+                        <option key={department} value={department}>
+                          {department === ALL_DEPARTMENTS ? 'All Departments' : department}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+              {!isKlingTab && (
+                <div className="trendings-sort-group">
+                  <button
+                    className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
+                    onClick={() => setSortBy('latest')}
                   >
-                    {departmentOptions.map((department) => (
-                      <option key={department} value={department}>
-                        {department === ALL_DEPARTMENTS ? 'All Departments' : department}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <div className="trendings-sort-group">
-                <button
-                  className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
-                  onClick={() => setSortBy('latest')}
-                >
-                  Latest
-                </button>
-                <button
-                  className={`trendings-sort-btn ${sortBy === 'top' ? 'active' : ''}`}
-                  onClick={() => setSortBy('top')}
-                >
-                  Best Format
-                </button>
-              </div>
+                    Latest
+                  </button>
+                  <button
+                    className={`trendings-sort-btn ${sortBy === 'top' ? 'active' : ''}`}
+                    onClick={() => setSortBy('top')}
+                  >
+                    Best Format
+                  </button>
+                </div>
+              )}
             </div>
 
-            <div className={`trendings-content ${isDirectoryTab ? 'trendings-content--directory' : 'trendings-content--data'}`}>
-              {loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
+            <div
+              className={`trendings-content ${
+                isDirectoryTab ? 'trendings-content--directory' : isKlingTab ? 'trendings-content--kling' : 'trendings-content--data'
+              }`}
+            >
+              {!isKlingTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
+              {isKlingTab && <KlingTab isActive={isKlingTab} />}
               {isDirectoryTab && (
                 <div className="trendings-directory-window">
                   <div className="trendings-directory-header">
@@ -1469,7 +1436,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                 </div>
               )}
 
-              {!isDirectoryTab && (
+              {isDataTab && (
                 loading ? (
                   <div className="trendings-state">Loading references...</div>
                 ) : filteredAssets.length === 0 ? (

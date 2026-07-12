@@ -1,5 +1,5 @@
 try {
-  importScripts('background-main.js');
+  importScripts('background-chatgpt-capture.js', 'background-main.js');
 } catch (error) {
   try {
     console.error('RMW Tool Hub background failed to load:', error);

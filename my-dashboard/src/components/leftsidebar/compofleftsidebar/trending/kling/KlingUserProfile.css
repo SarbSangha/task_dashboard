@@ -1,0 +1,114 @@
+.kling-user-profile-shell {
+  width: min(560px, 95vw);
+  max-height: min(85vh, 780px);
+  background: var(--color-surface-modal);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 14px;
+  box-shadow: var(--shadow-popover);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.kling-user-profile-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.kling-user-profile-header h4 {
+  margin: 0 0 2px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.kling-user-profile-header p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.kling-user-profile-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.kling-user-profile-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-muted);
+  border-radius: 10px;
+  padding: 12px 8px;
+}
+
+.kling-user-profile-stat span {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.kling-user-profile-stat label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.kling-user-profile-stat-accent {
+  background: color-mix(in srgb, var(--color-button-primary-bg) 16%, var(--color-surface-muted));
+  border-color: transparent;
+}
+
+.kling-user-profile-stat-accent span {
+  color: var(--color-button-primary-bg);
+}
+
+.kling-user-profile-note {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.kling-user-profile-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kling-user-profile-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--color-text);
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding-bottom: 6px;
+}
+
+.kling-user-profile-list-clickable {
+  cursor: pointer;
+}
+
+.kling-user-profile-list-clickable:hover span:first-child {
+  color: var(--color-link);
+}
+
+@media (max-width: 640px) {
+  .kling-user-profile-shell {
+    width: 100vw;
+  }
+
+  .kling-user-profile-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

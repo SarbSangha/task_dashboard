@@ -42,7 +42,7 @@ const TOOL_SESSION_DOMAINS = {
   freepik: ['freepik.com', 'www.freepik.com', 'magnific.com', 'www.magnific.com'],
   flow: ['labs.google'],
   genspark: ['genspark.ai', 'www.genspark.ai', 'login.genspark.ai'],
-  grammarly: ['grammarly.com', 'www.grammarly.com', 'app.grammarly.com'],
+  grammarly: ['grammarly.com', 'www.grammarly.com', 'app.grammarly.com', 'coda.grammarly.com'],
   higgsfield: ['higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'],
   heygen: ['heygen.com', 'auth.heygen.com', 'app.heygen.com'],
   elevenlabs: ['elevenlabs.io', 'www.elevenlabs.io', 'app.elevenlabs.io'],
@@ -111,6 +111,7 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'grammarly.com',
     'www.grammarly.com',
     'app.grammarly.com',
+    'coda.grammarly.com',
   ],
   higgsfield: [
     'higgsfield.ai',
@@ -409,6 +410,12 @@ function isRecentContinuationReuseAllowed(toolSlug, pageUrl, hostname) {
     return pageHost === 'accounts.google.com';
   }
 
+  if (normalizedToolSlug === 'grammarly') {
+    // isLoginContinuationPage() above already confirmed pageHost is one of
+    // TOOL_LOGIN_CONTINUATION_HOSTS.grammarly (app/coda/www/grammarly.com).
+    return true;
+  }
+
   if (normalizedToolSlug !== 'chatgpt') {
     return false;
   }
@@ -638,12 +645,30 @@ async function setActiveLaunch(tabId, launch) {
       || existingLaunch.usageTrackingTicketExpiresAt
       || 0
     ),
+    returnUrl: `${launch.returnUrl || (sameTicket ? existingLaunch.returnUrl : '') || ''}`.trim(),
     activatedAt: Date.now(),
-    freshSessionPreparedAt: sameTicket ? Number(existingLaunch.freshSessionPreparedAt || 0) : 0,
-    authTransitionAt: sameTicket ? Number(existingLaunch.authTransitionAt || 0) : 0,
-    directCredentialIssuedAt: sameTicket ? Number(existingLaunch.directCredentialIssuedAt || 0) : 0,
-    inheritedCredentialIssuedAt: sameTicket ? Number(existingLaunch.inheritedCredentialIssuedAt || 0) : 0,
-    credentialContinuationCount: sameTicket ? Number(existingLaunch.credentialContinuationCount || 0) : 0,
+    // Prefer continuity fields carried on the incoming `launch` object itself first
+    // (e.g. when getAuthorizedLaunchForTabs() copies an opener/continuation tab's
+    // already-prepared record onto a brand new tab id — that new tab has no
+    // `existingLaunch`, so relying on `sameTicket` alone would wrongly reset
+    // freshSessionPreparedAt to 0 and force a repeat "fresh session" login on
+    // every new tab, e.g. clicking "New doc"). Genuinely new launches built from
+    // a pending-launch ticket don't set these fields, so they still default to 0.
+    freshSessionPreparedAt: Number(
+      launch.freshSessionPreparedAt || (sameTicket ? existingLaunch.freshSessionPreparedAt : 0) || 0
+    ),
+    authTransitionAt: Number(
+      launch.authTransitionAt || (sameTicket ? existingLaunch.authTransitionAt : 0) || 0
+    ),
+    directCredentialIssuedAt: Number(
+      launch.directCredentialIssuedAt || (sameTicket ? existingLaunch.directCredentialIssuedAt : 0) || 0
+    ),
+    inheritedCredentialIssuedAt: Number(
+      launch.inheritedCredentialIssuedAt || (sameTicket ? existingLaunch.inheritedCredentialIssuedAt : 0) || 0
+    ),
+    credentialContinuationCount: Number(
+      launch.credentialContinuationCount || (sameTicket ? existingLaunch.credentialContinuationCount : 0) || 0
+    ),
     clearSessionOnClose: Boolean(
       normalizedToolSlug === 'genspark'
       || normalizedToolSlug === 'claude'
@@ -682,7 +707,7 @@ async function revokeActiveLaunch(tabId, toolSlug = '') {
   return true;
 }
 
-async function markFreshSessionPrepared(tabId, toolSlug = '') {
+async function markFreshSessionPrepared(tabId, toolSlug = '', returnUrl = '') {
   if (!tabId) return false;
   const launchMap = await getActiveLaunchMap();
   const key = `${tabId}`;
@@ -693,9 +718,31 @@ async function markFreshSessionPrepared(tabId, toolSlug = '') {
   }
 
   current.freshSessionPreparedAt = Date.now();
+  if (returnUrl) {
+    current.returnUrl = `${returnUrl}`.trim();
+  }
   launchMap[key] = current;
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
   return true;
+}
+
+async function consumeReturnUrl(tabId, toolSlug = '') {
+  if (!tabId) return '';
+  const launchMap = await getActiveLaunchMap();
+  const key = `${tabId}`;
+  const current = launchMap[key];
+  if (!current) return '';
+  if (toolSlug && normalizeToolSlug(current.toolSlug) !== normalizeToolSlug(toolSlug)) {
+    return '';
+  }
+
+  const returnUrl = `${current.returnUrl || ''}`.trim();
+  if (!returnUrl) return '';
+
+  delete current.returnUrl;
+  launchMap[key] = current;
+  await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+  return returnUrl;
 }
 
 async function markAuthTransition(tabId, toolSlug = '') {
@@ -2115,8 +2162,15 @@ function handleRuntimeMessage(message, sender, sendResponse) {
   }
 
   if (message?.type === 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED') {
-    markFreshSessionPrepared(senderTabId, message.toolSlug)
+    markFreshSessionPrepared(senderTabId, message.toolSlug, message.returnUrl)
       .then((ok) => sendResponse({ ok }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_CONSUME_RETURN_URL') {
+    consumeReturnUrl(senderTabId, message.toolSlug)
+      .then((returnUrl) => sendResponse({ ok: true, returnUrl }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -2254,6 +2308,20 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     return true;
   }
 
+  if (message?.type === 'CHATGPT_CAPTURE_EVENT') {
+    handleChatGptCaptureEventMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'CHATGPT_CAPTURE_ATTACHMENT') {
+    handleChatGptCaptureAttachmentMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (!message || message.type !== 'TOOL_HUB_GET_CREDENTIAL') {
     return false;
   }
@@ -2274,12 +2342,17 @@ runSafeStartupTask(() => chrome.storage?.local?.remove?.('rememberedToolLaunches
 if (chrome?.runtime?.onStartup) {
   chrome.runtime.onStartup.addListener(() => {
     runSafeStartupTask(flushPendingUsageEvents);
+    runSafeStartupTask(runChatGptCaptureFlush);
+    runSafeStartupTask(() => maybeReportChatGptCaptureHealth(true));
+    runSafeStartupTask(() => chrome.alarms.create(CHATGPT_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
   });
 }
 
 if (chrome?.runtime?.onInstalled) {
   chrome.runtime.onInstalled.addListener(() => {
     runSafeStartupTask(flushPendingUsageEvents);
+    runSafeStartupTask(runChatGptCaptureFlush);
+    runSafeStartupTask(() => chrome.alarms.create(CHATGPT_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
   });
 }
 
@@ -2287,6 +2360,12 @@ if (chrome?.alarms?.onAlarm) {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm?.name === USAGE_EVENT_RETRY_ALARM) {
       runSafeStartupTask(flushPendingUsageEvents);
+    }
+    if (alarm?.name === CHATGPT_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runChatGptCaptureFlush);
+    }
+    if (alarm?.name === CHATGPT_CAPTURE_HEALTH_ALARM) {
+      runSafeStartupTask(() => maybeReportChatGptCaptureHealth(true));
     }
   });
 }

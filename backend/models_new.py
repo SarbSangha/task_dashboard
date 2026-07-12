@@ -900,6 +900,7 @@ class GenerationRecord(Base):
         Index("ix_generation_records_owner_status_created_at", "owner_user_id", "ownership_status", "created_at"),
         Index("ix_generation_records_project_created_at", "project_id", "created_at"),
         Index("ix_generation_records_ingestion_created_at", "ingestion_source", "created_at"),
+        Index("ix_generation_records_favorite_created_at", "is_favorite", "created_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -927,6 +928,7 @@ class GenerationRecord(Base):
     recovered_by_admin_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     recovered_at = Column(DateTime)
     metadata_json = Column(JSON)
+    is_favorite = Column(Boolean, nullable=False, default=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
     archived_at = Column(DateTime, index=True)
@@ -961,10 +963,135 @@ class GenerationRecord(Base):
             "recoveredByAdminId": self.recovered_by_admin_id,
             "recoveredAt": serialize_utc_datetime(self.recovered_at),
             "metadata": self.metadata_json or {},
+            "isFavorite": bool(self.is_favorite),
             "createdAt": serialize_utc_datetime(self.created_at),
             "updatedAt": serialize_utc_datetime(self.updated_at),
             "archivedAt": serialize_utc_datetime(self.archived_at),
         }
+
+
+class GenerationTag(Base):
+    __tablename__ = "generation_tags"
+    __table_args__ = (
+        UniqueConstraint("generation_id", "normalized_tag", name="ux_generation_tags_generation_normalized"),
+        Index("ix_generation_tags_normalized_tag", "normalized_tag"),
+        Index("ix_generation_tags_generation_id", "generation_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    generation_id = Column(Integer, ForeignKey("generation_records.id", ondelete="CASCADE"), nullable=False)
+    tag = Column(String(80), nullable=False)
+    normalized_tag = Column(String(80), nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "generationId": self.generation_id,
+            "tag": self.tag,
+            "createdBy": self.created_by,
+            "createdAt": serialize_utc_datetime(self.created_at),
+        }
+
+
+class GenerationCollection(Base):
+    __tablename__ = "generation_collections"
+    __table_args__ = (
+        Index(
+            "ux_generation_collections_owner_normalized_name_active",
+            "owner_user_id", "normalized_name",
+            unique=True,
+            postgresql_where=text("archived_at IS NULL"),
+            sqlite_where=text("archived_at IS NULL"),
+        ),
+        Index("ix_generation_collections_owner_updated_at", "owner_user_id", "updated_at"),
+        Index("ix_generation_collections_archived_at", "archived_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    normalized_name = Column(String(200), nullable=False)
+    description = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+    archived_at = Column(DateTime)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "ownerUserId": self.owner_user_id,
+            "name": self.name,
+            "normalizedName": self.normalized_name,
+            "description": self.description,
+            "createdBy": self.created_by,
+            "updatedBy": self.updated_by,
+            "createdAt": serialize_utc_datetime(self.created_at),
+            "updatedAt": serialize_utc_datetime(self.updated_at),
+            "archivedAt": serialize_utc_datetime(self.archived_at),
+        }
+
+
+class GenerationCollectionMember(Base):
+    __tablename__ = "generation_collection_members"
+    __table_args__ = (
+        UniqueConstraint("collection_id", "generation_id", name="ux_generation_collection_members_collection_generation"),
+        Index("ix_generation_collection_members_collection_id", "collection_id"),
+        Index("ix_generation_collection_members_generation_id", "generation_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    collection_id = Column(Integer, ForeignKey("generation_collections.id", ondelete="CASCADE"), nullable=False)
+    generation_id = Column(Integer, ForeignKey("generation_records.id", ondelete="CASCADE"), nullable=False)
+    added_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    added_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "collectionId": self.collection_id,
+            "generationId": self.generation_id,
+            "addedBy": self.added_by,
+            "addedAt": serialize_utc_datetime(self.added_at),
+        }
+
+
+class GenerationProjectEvent(Base):
+    """Activity log for a generation project's timeline (project_created, generation_assigned, etc.)."""
+    __tablename__ = "generation_project_events"
+    __table_args__ = (
+        Index("ix_generation_project_events_project_created_at", "project_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("generation_projects.id", ondelete="CASCADE"), nullable=False)
+    generation_id = Column(Integer, ForeignKey("generation_records.id", ondelete="SET NULL"))
+    actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    event_type = Column(String(40), nullable=False)
+    description = Column(Text)
+    metadata_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "projectId": self.project_id,
+            "generationId": self.generation_id,
+            "actorUserId": self.actor_user_id,
+            "eventType": self.event_type,
+            "description": self.description,
+            "metadata": self.metadata_json or {},
+            "createdAt": serialize_utc_datetime(self.created_at),
+        }
+
+
+# NOTE: ChatGPT Capture & Conversation Intelligence models now live in
+# providers/chatgpt/models.py (see providers/chatgpt/__init__.py for
+# Base.metadata registration). Kept out of this file per the modular
+# provider architecture: each provider owns its own models/migrations.
 
 
 class ITPortalToolMailbox(Base):

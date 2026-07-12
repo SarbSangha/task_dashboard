@@ -8,6 +8,8 @@ const PERMISSION_MATRIX = {
   view_admin_queue: ['admin'],
   access_workspace: ['admin', 'faculty', 'user'],
   download_rmw_data: ['admin', 'faculty', 'hod', 'spoc', 'employee', 'user'],
+  view_kling_generations: ['admin', 'faculty', 'hod', 'spoc', 'employee', 'user'],
+  view_kling_analytics: ['admin', 'faculty'],
 };
 
 export function normalizeRoles(user) {
@@ -52,7 +54,7 @@ export function resolvePermissionSnapshot(user) {
     isFaculty: roleSet.has('admin') || roleSet.has('faculty'),
     isUser: roleSet.has('user') || roleSet.has('admin') || roleSet.has('faculty'),
     can: (action) => {
-      if (action === 'download_rmw_data' && !hasApprovedLoginAccess) {
+      if ((action === 'download_rmw_data' || action === 'view_kling_generations') && !hasApprovedLoginAccess) {
         return false;
       }
       const allowed = PERMISSION_MATRIX[action] || [];

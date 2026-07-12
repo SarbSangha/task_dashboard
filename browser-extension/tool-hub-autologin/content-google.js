@@ -252,6 +252,11 @@ function isPinterestGoogleFlow(toolSlug = STATE.toolSlug) {
   return normalizedToolSlug === 'pinterest';
 }
 
+function isChatGptGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'chatgpt';
+}
+
 function hasFreepikGooglePasswordValue(input, expectedValue, toolSlug = STATE.toolSlug) {
   if (!isFreepikGoogleFlow(toolSlug)) return false;
   const passwordValue = `${expectedValue || ''}`;
@@ -3192,6 +3197,7 @@ async function handleGoogleTransitionLock() {
         || isGensparkGoogleFlow(toolSlug)
         || isElevenLabsGoogleFlow(toolSlug)
         || isPinterestGoogleFlow(toolSlug)
+        || isChatGptGoogleFlow(toolSlug)
       )
       && passwordValue
     ) {

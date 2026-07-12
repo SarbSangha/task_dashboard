@@ -1,4 +1,5 @@
 from sqlalchemy import text
+from providers.chatgpt.migrations import ensure_chatgpt_postgres_schema, ensure_chatgpt_sqlite_schema
 
 DEFAULT_DEPARTMENT_DIRECTORY = (
     "CREATIVE",
@@ -517,6 +518,7 @@ def _ensure_postgres_schema(conn) -> None:
                 recovered_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 recovered_at TIMESTAMP,
                 metadata_json JSON,
+                is_favorite BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 archived_at TIMESTAMP
@@ -538,6 +540,7 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "generation_records", "recovered_by_admin_id", "INTEGER")
     _pg_add_column_if_missing(conn, "generation_records", "recovered_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "generation_records", "archived_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "generation_records", "is_favorite", "BOOLEAN NOT NULL DEFAULT FALSE")
     if not _pg_constraint_exists(conn, "ck_generation_records_identity_present"):
         conn.execute(
             text(
@@ -592,6 +595,107 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_owner_status_created_at ON generation_records(owner_user_id, ownership_status, created_at DESC)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_project_created_at ON generation_records(project_id, created_at DESC)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_ingestion_created_at ON generation_records(ingestion_source, created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_favorite_created_at ON generation_records(is_favorite, created_at DESC)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS generation_tags (
+                id SERIAL PRIMARY KEY,
+                generation_id INTEGER NOT NULL REFERENCES generation_records(id) ON DELETE CASCADE,
+                tag VARCHAR(80) NOT NULL,
+                normalized_tag VARCHAR(80) NOT NULL,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_tags_generation_normalized
+            ON generation_tags(generation_id, normalized_tag)
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_tags_normalized_tag ON generation_tags(normalized_tag)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_tags_generation_id ON generation_tags(generation_id)"))
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS generation_collections (
+                id SERIAL PRIMARY KEY,
+                owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name VARCHAR(200) NOT NULL,
+                normalized_name VARCHAR(200) NOT NULL,
+                description TEXT,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                archived_at TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_collections_owner_normalized_name_active
+            ON generation_collections(owner_user_id, normalized_name)
+            WHERE archived_at IS NULL
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_collections_owner_updated_at ON generation_collections(owner_user_id, updated_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_collections_archived_at ON generation_collections(archived_at)"))
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS generation_collection_members (
+                id SERIAL PRIMARY KEY,
+                collection_id INTEGER NOT NULL REFERENCES generation_collections(id) ON DELETE CASCADE,
+                generation_id INTEGER NOT NULL REFERENCES generation_records(id) ON DELETE CASCADE,
+                added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                added_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_collection_members_collection_generation
+            ON generation_collection_members(collection_id, generation_id)
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_collection_members_collection_id ON generation_collection_members(collection_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_collection_members_generation_id ON generation_collection_members(generation_id)"))
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS generation_project_events (
+                id SERIAL PRIMARY KEY,
+                project_id INTEGER NOT NULL REFERENCES generation_projects(id) ON DELETE CASCADE,
+                generation_id INTEGER REFERENCES generation_records(id) ON DELETE SET NULL,
+                actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                event_type VARCHAR(40) NOT NULL,
+                description TEXT,
+                metadata_json JSON,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_project_events_project_created_at ON generation_project_events(project_id, created_at DESC)"))
+
+    # ---- ChatGPT Capture & Conversation Intelligence System (see providers/chatgpt/migrations.py) ----
+    ensure_chatgpt_postgres_schema(conn)
+
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_enabled ON tasks(workflow_enabled)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_status ON tasks(workflow_status)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_current_stage_order ON tasks(current_stage_order)"))
@@ -1487,6 +1591,9 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_owner_status_created_at ON generation_records(owner_user_id, ownership_status, created_at)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_project_created_at ON generation_records(project_id, created_at)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_ingestion_created_at ON generation_records(ingestion_source, created_at)"))
+
+        # ---- ChatGPT Capture & Conversation Intelligence System (see providers/chatgpt/migrations.py) ----
+        ensure_chatgpt_sqlite_schema(conn)
 
         conn.execute(
             text(

@@ -382,6 +382,13 @@
   overflow: hidden;
 }
 
+.trendings-content--kling {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
 .trendings-directory-window {
   flex: 1 1 auto;
   min-height: 0;
