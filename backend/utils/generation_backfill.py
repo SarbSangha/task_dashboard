@@ -496,15 +496,20 @@ def _apply_candidate_to_generation_record(
     record.credits_burned = candidate.credits_burned if candidate.credits_burned is not None else record.credits_burned
     record.ingestion_source = "captured"
     record.capture_status = "active"
-    # Reconciliation-recovered records deliberately skip owner assignment (see
-    # sync_generation_record_from_usage_event's assign_owner param): the usage
-    # event's user_id is just whoever's extension happened to re-discover it,
-    # not necessarily who actually ran the generation. Those enter as unknown
-    # ownership so a real person can claim them instead of being auto-attributed.
-    if assign_owner:
-        record.owner_user_id = candidate.owner_user_id or record.owner_user_id
-        record.ownership_status = "resolved" if record.owner_user_id else "unknown"
-        record.ownership_source = "usage_event_user_id" if record.owner_user_id else record.ownership_source
+    # Ownership is sticky: only ever fill it in when the record doesn't have
+    # one yet. Previously this was `candidate.owner_user_id or record.owner_user_id`,
+    # which let *any* later re-capture of the same task_id (e.g. a teammate's
+    # extension re-syncing a shared Kling account's generation history) silently
+    # overwrite a correctly-attributed owner with whoever most recently viewed
+    # it -- that clobbered ~35% of generations company-wide before this fix.
+    # Reconciliation-recovered records additionally skip owner assignment
+    # entirely (see sync_generation_record_from_usage_event's assign_owner
+    # param): the usage event's user_id there is just whoever's extension
+    # happened to re-discover it, not necessarily who ran the generation.
+    if assign_owner and not record.owner_user_id and candidate.owner_user_id:
+        record.owner_user_id = candidate.owner_user_id
+        record.ownership_status = "resolved"
+        record.ownership_source = "usage_event_user_id"
     if not source_usage_event_id_conflict and candidate.usage_event_id:
         record.source_usage_event_id = candidate.usage_event_id
     record.metadata_json = _merge_generation_record_metadata(
