@@ -10,6 +10,7 @@
   --color-surface-elevated: rgba(15, 23, 42, 0.9);
   --color-surface-overlay: rgba(2, 6, 23, 0.58);
   --color-surface-modal: rgba(15, 23, 42, 0.94);
+  --color-surface-modal-solid: #0f172a;
   --color-surface-drawer: rgba(15, 23, 42, 0.96);
   --color-surface-popover: rgba(15, 23, 42, 0.92);
   --color-card: rgba(15, 23, 42, 0.82);
@@ -164,6 +165,7 @@
   --color-surface-elevated: rgba(255, 255, 255, 0.95);
   --color-surface-overlay: rgba(148, 163, 184, 0.28);
   --color-surface-modal: rgba(255, 255, 255, 0.98);
+  --color-surface-modal-solid: #ffffff;
   --color-surface-drawer: rgba(255, 255, 255, 0.98);
   --color-surface-popover: rgba(255, 255, 255, 0.95);
   --color-card: rgba(255, 255, 255, 0.92);

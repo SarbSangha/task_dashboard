@@ -10,15 +10,27 @@ duplicate rows for the same task attributed to two different users.
 
 This script finds those historical duplicate clusters (same tool + same task
 identity + same credential, different user_id), merges the missing fields into the
-row owned by the real (non-admin) user, and removes the extra row(s) -- unless a
-GenerationRecord already points at both rows, in which case it's flagged for manual
-review instead of touched.
+row owned by the real (non-admin) user, and removes the extra row(s).
+
+If both the canonical usage event and the duplicate usage event already spawned
+their own GenerationRecord rows, the script now merges those records too:
+  - keeps the GenerationRecord tied to the canonical usage event,
+  - gap-fills any fields it is missing from the duplicate record,
+  - re-points tags / collection members / project events from the duplicate
+    record onto the canonical one,
+  - then deletes the duplicate GenerationRecord before deleting the duplicate
+    usage event.
 """
 import argparse
 import json
 import logging
 
 from database_config import OperationalSessionLocal
+from merge_duplicate_generation_records import (
+    _merge_metadata as _merge_generation_record_metadata,
+    _merge_scalar as _merge_generation_record_scalar,
+    _repoint_child_rows as _repoint_generation_record_child_rows,
+)
 from models_new import GenerationRecord, ITPortalTool, ITPortalToolUsageEvent, User
 
 KLING_SLUGS = {"kling", "kling-ai", "klingai"}
@@ -40,10 +52,53 @@ def _identity_key(event: ITPortalToolUsageEvent):
     return None
 
 
+def _task_id_count(event: ITPortalToolUsageEvent) -> int:
+    metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
+    ownership = metadata.get("ownership") if isinstance(metadata.get("ownership"), dict) else {}
+    pipeline = metadata.get("pipelineDiagnostics") if isinstance(metadata.get("pipelineDiagnostics"), dict) else {}
+    seen: set[str] = set()
+
+    def push(value: object) -> None:
+        text = f"{value or ''}".strip()
+        if not text:
+            return
+        if text.lower().startswith(("kgen_", "net_", "dom_", "trade_")):
+            return
+        seen.add(text)
+
+    for value in (
+        event.generation_id,
+        event.request_id,
+        metadata.get("klingTaskId"),
+        ownership.get("klingTaskId"),
+    ):
+        push(value)
+    for value in pipeline.get("taskIds") if isinstance(pipeline.get("taskIds"), list) else []:
+        push(value)
+    for value in metadata.get("discoveredTaskIds") if isinstance(metadata.get("discoveredTaskIds"), list) else []:
+        push(value)
+    return len(seen)
+
+
+def _media_asset_count(event: ITPortalToolUsageEvent) -> int:
+    metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
+    media_assets = metadata.get("mediaAssets") if isinstance(metadata.get("mediaAssets"), list) else []
+    return sum(1 for item in media_assets if isinstance(item, dict) and f"{item.get('url') or ''}".strip())
+
+
 def _choose_keep(events: list[ITPortalToolUsageEvent], users_by_id: dict[int, User]) -> ITPortalToolUsageEvent:
-    non_admin = [e for e in events if not _is_admin_user(users_by_id.get(e.user_id))]
-    pool = non_admin or events
-    return sorted(pool, key=lambda e: e.created_at or e.id)[0]
+    def sort_key(event: ITPortalToolUsageEvent):
+        created_rank = -(event.created_at.timestamp() if event.created_at else float(event.id))
+        return (
+            1 if not _is_admin_user(users_by_id.get(event.user_id)) else 0,
+            _task_id_count(event),
+            _media_asset_count(event),
+            1 if (event.prompt_text or "").strip() else 0,
+            created_rank,
+            -event.id,
+        )
+
+    return max(events, key=sort_key)
 
 
 def _merge_scalar(keep: ITPortalToolUsageEvent, dup: ITPortalToolUsageEvent) -> list[str]:
@@ -105,6 +160,94 @@ def _merge_metadata(keep: ITPortalToolUsageEvent, dup: ITPortalToolUsageEvent) -
     keep.metadata_json = keep_meta
 
 
+def _repair_generation_record_owner(
+    record: GenerationRecord,
+    *,
+    keep_event: ITPortalToolUsageEvent,
+    users_by_id: dict[int, User],
+) -> list[str]:
+    changed = []
+    keep_user = users_by_id.get(keep_event.user_id)
+    current_owner = users_by_id.get(record.owner_user_id) if record.owner_user_id else None
+    if (
+        keep_event.user_id
+        and keep_user is not None
+        and not _is_admin_user(keep_user)
+        and (record.owner_user_id is None or _is_admin_user(current_owner))
+    ):
+        record.owner_user_id = keep_event.user_id
+        record.ownership_status = "resolved"
+        if not record.ownership_source:
+            record.ownership_source = "usage_event_user_id"
+        changed.append("owner_user_id")
+    return changed
+
+
+def _merge_generation_record_cluster(
+    session,
+    *,
+    keep_event: ITPortalToolUsageEvent,
+    dup_event: ITPortalToolUsageEvent,
+    generation_records_by_source_event_id: dict[int, GenerationRecord],
+    users_by_id: dict[int, User],
+    apply: bool,
+) -> dict:
+    keep_record = generation_records_by_source_event_id.get(keep_event.id)
+    dup_record = generation_records_by_source_event_id.get(dup_event.id)
+    summary = {
+        "keepRecordId": keep_record.id if keep_record else None,
+        "removedRecordId": dup_record.id if dup_record else None,
+        "changedFields": [],
+        "repointedChildRows": {"tags": 0, "tags_skipped_conflict": 0, "collection_members": 0, "project_events": 0},
+        "adoptedDuplicateRecord": False,
+    }
+
+    if keep_record is not None:
+        if keep_record.source_usage_event_id != keep_event.id:
+            keep_record.source_usage_event_id = keep_event.id
+            summary["changedFields"].append("source_usage_event_id")
+        summary["changedFields"].extend(
+            _repair_generation_record_owner(keep_record, keep_event=keep_event, users_by_id=users_by_id)
+        )
+
+    if dup_record is None:
+        summary["changedFields"] = sorted(set(summary["changedFields"]))
+        return summary
+
+    if keep_record is None:
+        dup_record.source_usage_event_id = keep_event.id
+        summary["keepRecordId"] = dup_record.id
+        summary["adoptedDuplicateRecord"] = True
+        summary["changedFields"].append("source_usage_event_id")
+        summary["changedFields"].extend(
+            _repair_generation_record_owner(dup_record, keep_event=keep_event, users_by_id=users_by_id)
+        )
+        generation_records_by_source_event_id.pop(dup_event.id, None)
+        generation_records_by_source_event_id[keep_event.id] = dup_record
+        summary["changedFields"] = sorted(set(summary["changedFields"]))
+        return summary
+
+    child_summary = _repoint_generation_record_child_rows(
+        session,
+        keep_id=keep_record.id,
+        dup_id=dup_record.id,
+        apply=apply,
+    )
+    for key, value in child_summary.items():
+        summary["repointedChildRows"][key] += value
+
+    if apply:
+        session.delete(dup_record)
+        session.flush()
+        generation_records_by_source_event_id.pop(dup_event.id, None)
+
+    summary["changedFields"].extend(_merge_generation_record_scalar(keep_record, dup_record))
+    _merge_generation_record_metadata(keep_record, dup_record)
+    summary["changedFields"] = sorted(set(summary["changedFields"]))
+
+    return summary
+
+
 def run(session, apply: bool, logger: logging.Logger) -> dict:
     tools = session.query(ITPortalTool).filter(ITPortalTool.slug.in_(KLING_SLUGS)).all()
     tool_ids = [t.id for t in tools]
@@ -115,6 +258,14 @@ def run(session, apply: bool, logger: logging.Logger) -> dict:
         .all()
     )
     users_by_id = {u.id: u for u in session.query(User).all()}
+    event_ids = [event.id for event in events]
+    generation_records_by_source_event_id = {
+        record.source_usage_event_id: record
+        for record in session.query(GenerationRecord)
+        .filter(GenerationRecord.source_usage_event_id.in_(event_ids) if event_ids else False)
+        .all()
+        if record.source_usage_event_id is not None
+    }
 
     groups: dict[tuple, list[ITPortalToolUsageEvent]] = {}
     for event in events:
@@ -126,8 +277,8 @@ def run(session, apply: bool, logger: logging.Logger) -> dict:
 
     clusters_found = 0
     clusters_merged = 0
-    clusters_flagged = 0
     rows_deleted = 0
+    generation_records_deleted = 0
     details = []
 
     for (tool_id, credential_id, identity), group_events in groups.items():
@@ -138,33 +289,26 @@ def run(session, apply: bool, logger: logging.Logger) -> dict:
         keep = _choose_keep(group_events, users_by_id)
         dup_events = [e for e in group_events if e.id != keep.id]
 
-        conflicting = [
-            dup for dup in dup_events
-            if session.query(GenerationRecord.id)
-            .filter(GenerationRecord.source_usage_event_id == dup.id)
-            .first()
-            and session.query(GenerationRecord.id)
-            .filter(GenerationRecord.source_usage_event_id == keep.id)
-            .first()
-        ]
-        if conflicting:
-            clusters_flagged += 1
-            details.append({
-                "status": "flagged_manual_review",
-                "reason": "both keep and duplicate rows have their own GenerationRecord",
-                "toolId": tool_id,
-                "credentialId": credential_id,
-                "identity": identity,
-                "keepEventId": keep.id,
-                "keepUserId": keep.user_id,
-                "conflictingEventIds": [d.id for d in conflicting],
-            })
-            continue
-
         changed_fields = []
+        generation_record_merges = []
         for dup in dup_events:
             changed_fields.extend(_merge_scalar(keep, dup))
             _merge_metadata(keep, dup)
+            generation_summary = _merge_generation_record_cluster(
+                session,
+                keep_event=keep,
+                dup_event=dup,
+                generation_records_by_source_event_id=generation_records_by_source_event_id,
+                users_by_id=users_by_id,
+                apply=apply,
+            )
+            generation_record_merges.append(generation_summary)
+            if (
+                generation_summary.get("removedRecordId") is not None
+                and generation_summary.get("keepRecordId") is not None
+                and not generation_summary.get("adoptedDuplicateRecord")
+            ):
+                generation_records_deleted += 1
 
         cluster_detail = {
             "status": "merged" if apply else "would_merge",
@@ -176,19 +320,13 @@ def run(session, apply: bool, logger: logging.Logger) -> dict:
             "removedEventIds": [d.id for d in dup_events],
             "removedUserIds": [d.user_id for d in dup_events],
             "changedFields": sorted(set(changed_fields)),
+            "generationRecordMerges": generation_record_merges,
         }
         details.append(cluster_detail)
         clusters_merged += 1
 
         if apply:
             for dup in dup_events:
-                orphaned_record = (
-                    session.query(GenerationRecord)
-                    .filter(GenerationRecord.source_usage_event_id == dup.id)
-                    .first()
-                )
-                if orphaned_record:
-                    orphaned_record.source_usage_event_id = keep.id
                 session.delete(dup)
                 rows_deleted += 1
             session.flush()
@@ -203,13 +341,13 @@ def run(session, apply: bool, logger: logging.Logger) -> dict:
         "eventsScanned": len(events),
         "clustersFound": clusters_found,
         "clustersMerged": clusters_merged,
-        "clustersFlaggedForManualReview": clusters_flagged,
         "rowsDeleted": rows_deleted,
+        "generationRecordsDeleted": generation_records_deleted,
         "details": details,
     }
     logger.info(
-        "Duplicate merge %s: clusters_found=%s merged=%s flagged=%s rows_deleted=%s",
-        summary["mode"], clusters_found, clusters_merged, clusters_flagged, rows_deleted,
+        "Duplicate merge %s: clusters_found=%s merged=%s rows_deleted=%s generation_records_deleted=%s",
+        summary["mode"], clusters_found, clusters_merged, rows_deleted, generation_records_deleted,
     )
     return summary
 

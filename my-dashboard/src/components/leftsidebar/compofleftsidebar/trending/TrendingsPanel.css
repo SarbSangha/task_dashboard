@@ -25,7 +25,7 @@
   max-width: none;
   height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
-  background: var(--color-surface-modal);
+  background: var(--color-surface-modal-solid);
   border: 1px solid var(--color-border-subtle);
   border-radius: 18px;
   z-index: 1200;
