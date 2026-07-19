@@ -35,6 +35,7 @@ const PRIMARY_TABS = [
   { key: 'projects', label: 'Projects', icon: '📁' },
   { key: 'team', label: 'Team', icon: '👥' },
   { key: 'analytics', label: 'Analytics', icon: '📊' },
+  { key: 'Tools', label: 'Tools', icon: '🧰' },
 ];
 
 const SECONDARY_TABS = [
@@ -43,7 +44,6 @@ const SECONDARY_TABS = [
   { key: 'capture-center', label: 'Capture Center', icon: '🛟', adminOnly: true },
   { key: 'chatgpt-capture-center', label: 'ChatGPT Capture', icon: '🧠', adminOnly: true },
   { key: 'company', label: 'Company', icon: '🏢' },
-  { key: 'Tools', label: 'Tools', icon: '🧰' },
   { key: 'credits', label: 'Credits', icon: '💳' },
   { key: 'charts', label: 'Charts', icon: '📉' },
 ];
