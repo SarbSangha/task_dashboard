@@ -127,6 +127,44 @@ class ConversationAttachmentsOut(BaseModel):
     data: list[dict[str, Any]]
 
 
+class CaptureMediaIn(BaseModel):
+    """Body of POST /capture/media - the additive media-asset capture layer
+    (see providers/chatgpt/media.py). Same "not part of the lossless event
+    batch" reasoning as CaptureAttachmentIn - a data_url payload is a large
+    binary upload, not a tiny JSON event."""
+
+    provider_conversation_id: Optional[str] = Field(default=None, max_length=160)
+    message_id: Optional[str] = Field(default=None, max_length=160)
+    assistant_message_id: Optional[str] = Field(default=None, max_length=160)
+    correlation_id: Optional[str] = Field(default=None, max_length=160)
+    media_type: str = Field(..., max_length=40)
+    generated: bool = True
+    data_url: Optional[str] = None
+    source_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    file_name: Optional[str] = Field(default=None, max_length=500)
+    mime_type: Optional[str] = Field(default=None, max_length=120)
+    width: Optional[int] = None
+    height: Optional[int] = None
+    duration_ms: Optional[int] = None
+    provider_asset_id: Optional[str] = Field(default=None, max_length=160)
+    prompt: Optional[str] = None
+    alt_text: Optional[str] = None
+    source: Optional[str] = Field(default=None, max_length=255)
+    display_order: Optional[int] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class CaptureMediaOut(BaseModel):
+    success: bool = True
+    data: dict[str, Any]
+
+
+class ConversationMediaOut(BaseModel):
+    success: bool = True
+    data: list[dict[str, Any]]
+
+
 class CaptureMetricsOut(BaseModel):
     success: bool = True
     data: dict[str, Any]

@@ -8,6 +8,8 @@ import hashlib
 import json
 import secrets
 import os
+import threading
+import time
 from fastapi import HTTPException, Cookie, Header
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from models_new import User
@@ -31,6 +33,27 @@ _SESSION_SALT = "rmw-session-v1"
 _RESET_SALT = "rmw-reset-v1"
 _REDIS_CLIENT = None
 _REDIS_DISABLED = False
+_REDIS_DISABLED_AT: Optional[float] = None
+# A transient Redis blip must not permanently 500 every authenticated request
+# for the rest of the process's life (see _get_redis_client) - retry after
+# this cooldown instead of staying disabled until a manual restart. Short in
+# production, where Redis is required and expected to be available (recover
+# from a real blip fast). Much longer when Redis is merely optional (local
+# dev without a Redis server running at all, the common case per
+# backend/.env's REDIS_URL pointing at localhost) - otherwise every ~30s one
+# request pays the full ~4s connect+ping timeout for a server that was never
+# going to be there, which is what made "Unable to load IT tools" and similar
+# pages intermittently stall for several seconds (confirmed live: localhost
+# Redis was unreachable and AUTH_REQUIRE_REDIS was unset).
+_REDIS_RECONNECT_COOLDOWN_SECONDS_REQUIRED = 30
+_REDIS_RECONNECT_COOLDOWN_SECONDS_OPTIONAL = 600
+# Non-blocking single-flight lock: once the cooldown elapses, many worker
+# threads can notice at once (verified under load: 20 concurrent /me calls
+# all reconnecting simultaneously drove P50 to ~7s, since "localhost" resolves
+# to both ::1 and 127.0.0.1 and each failed attempt alone costs ~4s). Only the
+# thread that acquires this lock actually retries; everyone else treats the
+# state as still-disabled for this one call rather than piling on.
+_REDIS_RECONNECT_LOCK = threading.Lock()
 
 
 def _is_production() -> bool:
@@ -52,6 +75,10 @@ def _memory_fallback_allowed() -> bool:
     return not _redis_required()
 
 
+def _redis_reconnect_cooldown_seconds() -> float:
+    return _REDIS_RECONNECT_COOLDOWN_SECONDS_REQUIRED if _redis_required() else _REDIS_RECONNECT_COOLDOWN_SECONDS_OPTIONAL
+
+
 def _get_session_serializer() -> URLSafeTimedSerializer:
     secret_key = (os.getenv("SECRET_KEY") or "").strip()
     if not secret_key:
@@ -71,34 +98,87 @@ def _get_reset_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret_key=secret_key, salt=_RESET_SALT)
 
 
-def _get_redis_client():
-    global _REDIS_CLIENT, _REDIS_DISABLED
-    if redis is None:
-        if _redis_required():
-            raise RuntimeError("Redis package is required for production authentication state.")
-        return None
-    if _REDIS_DISABLED:
-        if _redis_required():
-            raise RuntimeError("Redis authentication state is disabled after a connection failure.")
-        return None
-    if _REDIS_CLIENT is not None:
-        return _REDIS_CLIENT
+def _mark_redis_disabled() -> None:
+    """Invalidate the cached client and start the reconnect cooldown.
+
+    Called on any Redis failure - both an initial connect failure and a
+    failure of an already-established client mid-use - so a stale/dead
+    client is never reused indefinitely and a transient outage recovers on
+    its own once the cooldown elapses, instead of requiring a restart.
+    """
+    global _REDIS_CLIENT, _REDIS_DISABLED, _REDIS_DISABLED_AT
+    _REDIS_DISABLED = True
+    _REDIS_DISABLED_AT = time.monotonic()
+    _REDIS_CLIENT = None
+
+
+def _connect_redis_locked():
+    """Perform the actual (slow) connect+ping. Caller must hold _REDIS_RECONNECT_LOCK
+    for this entire call, not just the state toggle around it - a released lock
+    during the connection attempt itself would let other threads slip through
+    and pile on for its full 2-4s duration (verified under load)."""
+    global _REDIS_CLIENT
     redis_url = (os.getenv("REDIS_URL") or "").strip()
     if not redis_url:
         if _redis_required():
             raise RuntimeError("REDIS_URL is required for production authentication state.")
-        _REDIS_DISABLED = True
+        _mark_redis_disabled()
         return None
     try:
-        client = redis.Redis.from_url(redis_url, decode_responses=True)
+        client = redis.Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
         client.ping()
         _REDIS_CLIENT = client
         return _REDIS_CLIENT
     except Exception:
-        _REDIS_DISABLED = True
+        _mark_redis_disabled()
         if _redis_required():
             raise
         return None
+
+
+def _get_redis_client():
+    global _REDIS_DISABLED
+    if redis is None:
+        if _redis_required():
+            raise RuntimeError("Redis package is required for production authentication state.")
+        return None
+    if _REDIS_CLIENT is not None:
+        return _REDIS_CLIENT
+    if _REDIS_DISABLED:
+        cooldown_elapsed = (
+            _REDIS_DISABLED_AT is not None
+            and (time.monotonic() - _REDIS_DISABLED_AT) >= _redis_reconnect_cooldown_seconds()
+        )
+        if not cooldown_elapsed:
+            if _redis_required():
+                raise RuntimeError("Redis authentication state is disabled after a connection failure.")
+            return None
+    # No client yet - either this is the very first attempt, or a prior
+    # failure's cooldown just elapsed. Either way, at most one thread should
+    # pay the connect cost. Non-blocking acquire, held for the *entire*
+    # connect+ping attempt: whichever thread gets here first does the real
+    # work; every other concurrent caller just treats this one call as
+    # unavailable instead of also attempting to connect (verified under load:
+    # without holding the lock across the full attempt, 20 concurrent callers
+    # each independently paid the ~4s connect cost, driving P50 to ~7s).
+    if not _REDIS_RECONNECT_LOCK.acquire(blocking=False):
+        if _redis_required():
+            raise RuntimeError("Redis authentication state is disabled after a connection failure.")
+        return None
+    try:
+        if _REDIS_CLIENT is not None:
+            # Another thread already won the race and connected before we
+            # acquired the lock.
+            return _REDIS_CLIENT
+        _REDIS_DISABLED = False
+        return _connect_redis_locked()
+    finally:
+        _REDIS_RECONNECT_LOCK.release()
 
 
 def _redis_setex(key: str, ttl: int, value: str) -> None:
@@ -108,7 +188,7 @@ def _redis_setex(key: str, ttl: int, value: str) -> None:
     try:
         client.setex(key, ttl, value)
     except Exception:
-        return
+        _mark_redis_disabled()
 
 
 def _redis_get(key: str) -> Optional[str]:
@@ -118,6 +198,7 @@ def _redis_get(key: str) -> Optional[str]:
     try:
         return client.get(key)
     except Exception:
+        _mark_redis_disabled()
         return None
 
 
@@ -128,7 +209,7 @@ def _redis_delete(*keys: str) -> None:
     try:
         client.delete(*keys)
     except Exception:
-        return
+        _mark_redis_disabled()
 
 
 def _token_digest(token: str) -> str:
@@ -269,7 +350,7 @@ def _decode_session_token(token: str) -> Tuple[int, Optional[datetime], Optional
         if revoked and datetime.utcnow() <= revoked["expires_at"]:
             raise HTTPException(status_code=401, detail="Session revoked")
         if revoked:
-            del REVOKED_SESSION_STORE[token]
+            REVOKED_SESSION_STORE.pop(token, None)
 
     if _redis_get(_revoked_key(token)):
         raise HTTPException(status_code=401, detail="Session revoked")
@@ -279,7 +360,7 @@ def _decode_session_token(token: str) -> Tuple[int, Optional[datetime], Optional
         session = SESSION_STORE.get(token)
         if session:
             if datetime.utcnow() > session["expires_at"]:
-                del SESSION_STORE[token]
+                SESSION_STORE.pop(token, None)
                 raise HTTPException(status_code=401, detail="Session expired")
             return int(session["user_id"]), session.get("created_at"), session.get("session_fingerprint")
 
@@ -368,8 +449,7 @@ def get_request_session_token(
 
 def invalidate_session(token: str):
     """Remove session token"""
-    if token in SESSION_STORE:
-        del SESSION_STORE[token]
+    SESSION_STORE.pop(token, None)
     _redis_delete(_session_key(token))
     if _memory_fallback_allowed():
         REVOKED_SESSION_STORE[token] = {
@@ -390,7 +470,7 @@ def revoke_user_sessions(db: Session, user_id: int, revoked_at: Optional[datetim
     for token, data in list(SESSION_STORE.items()):
         if int(data.get("user_id") or 0) != int(user_id):
             continue
-        del SESSION_STORE[token]
+        SESSION_STORE.pop(token, None)
         if _memory_fallback_allowed():
             REVOKED_SESSION_STORE[token] = {
                 "expires_at": effective_revoked_at + timedelta(seconds=SESSION_MAX_AGE_SECONDS)
@@ -442,7 +522,7 @@ def _ensure_latest_reset_token(email: str, token: str) -> None:
         if latest and datetime.utcnow() <= latest["expires_at"]:
             latest_digest = latest.get("digest")
         elif latest:
-            del RESET_EMAIL_LATEST_DIGEST[normalized_email]
+            RESET_EMAIL_LATEST_DIGEST.pop(normalized_email, None)
     if latest_digest and latest_digest != token_digest:
         raise HTTPException(status_code=400, detail="Token superseded")
 
@@ -453,7 +533,7 @@ def verify_reset_token(token: str) -> str:
         reset_data = RESET_TOKEN_STORE.get(token)
         if reset_data:
             if datetime.utcnow() > reset_data["expires_at"]:
-                del RESET_TOKEN_STORE[token]
+                RESET_TOKEN_STORE.pop(token, None)
                 _redis_delete(_reset_key(token))
                 raise HTTPException(status_code=400, detail="Token expired")
             email = reset_data["email"]
@@ -491,12 +571,12 @@ def verify_reset_token(token: str) -> str:
 def invalidate_reset_token(token: str):
     """Remove reset token"""
     email = ""
-    if token in RESET_TOKEN_STORE:
-        email = (RESET_TOKEN_STORE[token].get("email") or "").strip().lower()
-        del RESET_TOKEN_STORE[token]
+    entry = RESET_TOKEN_STORE.pop(token, None)
+    if entry:
+        email = (entry.get("email") or "").strip().lower()
         latest = RESET_EMAIL_LATEST_DIGEST.get(email)
         if latest and latest.get("digest") == _token_digest(token):
-            del RESET_EMAIL_LATEST_DIGEST[email]
+            RESET_EMAIL_LATEST_DIGEST.pop(email, None)
     else:
         redis_reset = _redis_get(_reset_key(token))
         if redis_reset:
@@ -517,15 +597,15 @@ def invalidate_reset_token(token: str):
 def cleanup_expired_sessions():
     """Remove expired sessions"""
     now = datetime.utcnow()
-    expired = [token for token, data in SESSION_STORE.items() 
+    expired = [token for token, data in SESSION_STORE.items()
                if now > data["expires_at"]]
     for token in expired:
-        del SESSION_STORE[token]
+        SESSION_STORE.pop(token, None)
 
     expired_revoked = [token for token, data in REVOKED_SESSION_STORE.items()
                        if now > data["expires_at"]]
     for token in expired_revoked:
-        del REVOKED_SESSION_STORE[token]
+        REVOKED_SESSION_STORE.pop(token, None)
 
     return len(expired)
 
@@ -533,14 +613,14 @@ def cleanup_expired_sessions():
 def cleanup_expired_reset_tokens():
     """Remove expired reset tokens"""
     now = datetime.utcnow()
-    expired = [token for token, data in RESET_TOKEN_STORE.items() 
+    expired = [token for token, data in RESET_TOKEN_STORE.items()
                if now > data["expires_at"]]
     for token in expired:
-        del RESET_TOKEN_STORE[token]
+        RESET_TOKEN_STORE.pop(token, None)
     expired_latest = [
         email for email, data in RESET_EMAIL_LATEST_DIGEST.items()
         if now > data["expires_at"]
     ]
     for email in expired_latest:
-        del RESET_EMAIL_LATEST_DIGEST[email]
+        RESET_EMAIL_LATEST_DIGEST.pop(email, None)
     return len(expired)

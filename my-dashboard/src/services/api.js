@@ -1771,6 +1771,11 @@ export const chatgptCaptureAPI = {
     return response.data;
   },
 
+  getConversationMedia: async (conversationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/chatgpt/conversations/${conversationId}/media`, requestConfig);
+    return response.data;
+  },
+
   getMetrics: async (requestConfig = {}) => {
     const response = await api.get('/api/providers/chatgpt/metrics', requestConfig);
     return response.data;

@@ -2431,7 +2431,7 @@ def _resolve_usage_event_actor(
 
 
 @router.get("/access-status")
-async def get_tools_access_status(
+def get_tools_access_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db),
 ):
@@ -2442,7 +2442,7 @@ async def get_tools_access_status(
 
 
 @router.get("/tools")
-async def list_tools(
+def list_tools(
     current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
@@ -2471,7 +2471,7 @@ async def list_tools(
 
 
 @router.post("/tools")
-async def create_tool(
+def create_tool(
     payload: ToolCreatePayload,
     current_user: User = Depends(require_admin_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
@@ -2511,7 +2511,7 @@ async def create_tool(
 
 
 @router.patch("/tools/{tool_id}")
-async def update_tool(
+def update_tool(
     tool_id: int,
     payload: ToolUpdatePayload,
     current_user: User = Depends(require_admin_with_workplace_tools_access),
@@ -2557,7 +2557,7 @@ async def update_tool(
 
 
 @router.delete("/tools/{tool_id}")
-async def delete_tool(
+def delete_tool(
     tool_id: int,
     current_user: User = Depends(require_admin_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
@@ -2579,7 +2579,7 @@ async def delete_tool(
 
 
 @router.post("/extension/credential")
-async def get_extension_credential(
+def get_extension_credential(
     payload: ExtensionCredentialPayload,
     current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
@@ -2657,7 +2657,7 @@ async def get_extension_credential(
 
 
 @router.post("/extension/usage-event")
-async def report_extension_usage_event(
+def report_extension_usage_event(
     payload: ExtensionUsageEventPayload,
     request: Request,
     db: Session = Depends(get_operational_db),
@@ -3334,7 +3334,7 @@ async def get_extension_auth_link(
 
 
 @router.post("/extension/totp")
-async def get_extension_totp(
+def get_extension_totp(
     payload: OtpRequestPayload,
     current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
@@ -3413,7 +3413,7 @@ async def get_extension_totp(
 
 
 @router.get("/tools/{tool_id}/credentials")
-async def list_credentials(
+def list_credentials(
     tool_id: int,
     current_user: User = Depends(require_admin_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
@@ -3477,7 +3477,7 @@ async def list_credentials(
 
 
 @router.post("/tools/{tool_id}/credentials")
-async def upsert_credential(
+def upsert_credential(
     tool_id: int,
     payload: CredentialUpsertPayload,
     current_user: User = Depends(require_admin_with_workplace_tools_access),
@@ -3681,7 +3681,7 @@ async def upsert_credential(
 
 
 @router.delete("/tools/{tool_id}/credentials/{credential_id}")
-async def delete_credential(
+def delete_credential(
     tool_id: int,
     credential_id: int,
     current_user: User = Depends(require_admin_with_workplace_tools_access),
@@ -3746,7 +3746,7 @@ async def delete_credential(
 
 
 @router.post("/tools/{tool_id}/launch")
-async def launch_tool(
+def launch_tool(
     tool_id: int,
     request: Request,
     current_user: User = Depends(get_current_user_with_workplace_tools_access),
@@ -3840,7 +3840,7 @@ async def launch_tool(
 
 
 @router.get("/usage-report")
-async def get_tool_usage_report(
+def get_tool_usage_report(
     tool_slug: Optional[str] = None,
     selected_date: Optional[str] = None,
     date_from: Optional[str] = None,
@@ -4094,7 +4094,7 @@ async def get_tool_usage_report(
 
 
 @router.get("/usage-report/kling/export")
-async def export_kling_usage_report(
+def export_kling_usage_report(
     selected_date: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -4248,7 +4248,7 @@ async def export_kling_usage_report(
 
 
 @router.get("/usage-report/kling/export/raw")
-async def export_kling_raw_usage_report(
+def export_kling_raw_usage_report(
     selected_date: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -4409,7 +4409,7 @@ async def export_kling_raw_usage_report(
 
 
 @router.get("/launch-history")
-async def get_tool_launch_history(
+def get_tool_launch_history(
     selected_date: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -4564,7 +4564,7 @@ async def get_tool_launch_history(
 
 
 @router.get("/launch/{ticket}", response_class=HTMLResponse)
-async def launch_with_ticket(
+def launch_with_ticket(
     ticket: str,
     db: Session = Depends(get_operational_db),
 ):

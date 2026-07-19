@@ -1743,10 +1743,92 @@ function onMutation() {
 // Contract event and hands it to the background worker's outbox - see
 // backend/providers/chatgpt/CAPTURE_CONTRACT.md for the wire shape and
 // background-chatgpt-capture.js for what happens to it after that.
+// ---- Diagnostic trace (temporary, instrumentation-only) -------------------
+// Forensic instrumentation for the "response_started/response_completed
+// never emitted" investigation. Persists to chrome.storage.local (not just
+// console.debug) so a run with DevTools closed is still inspectable
+// afterward - console output during a DevTools-closed run is lost forever,
+// which would make the very Run-A-vs-Run-B comparison this exists for
+// impossible. Never becomes a ConversationCaptureEvent, never reaches the
+// backend - purely local, purely temporary, removed once the investigation
+// concludes.
+const CAPTURE_TRACE_STORAGE_KEY = 'chatGptCaptureTraceLogV1';
+// Raised again: full per-frame tracing (frame_received + a mutation trace
+// for every single delta, uncapped up to 4000 per turn on the MAIN-world
+// side) means one long response's complete protocol timeline alone can run
+// into the thousands of entries. Sized for at least one complete long-turn
+// capture without the oldest (bootstrap/init) entries getting evicted
+// mid-turn.
+const CAPTURE_TRACE_MAX_ENTRIES = 8000;
+let captureTraceLog = [];
+
+function persistCaptureTrace() {
+  try {
+    chrome.storage.local.set({ [CAPTURE_TRACE_STORAGE_KEY]: captureTraceLog });
+  } catch {}
+  // Kept live (reassigned on every write, not just once at load) since
+  // captureTraceLog itself gets reassigned to a new array on clear - a
+  // one-time `window.__chatgptProtocolTrace = captureTraceLog` at module
+  // load would go stale after that.
+  try { window.__chatgptProtocolTrace = captureTraceLog; } catch {}
+}
+
+// Bootstrap checkpoints (bus existence, domain/frame gating) intentionally
+// always record - they run before feature flags can possibly have loaded,
+// and volume is a handful of entries per page load, not per SSE chunk.
+function recordCaptureTrace(step, detail, source, at) {
+  captureTraceLog.push({ step, at: at || Date.now(), source: source || 'isolated_world', detail: detail || {} });
+  if (captureTraceLog.length > CAPTURE_TRACE_MAX_ENTRIES) {
+    captureTraceLog.splice(0, captureTraceLog.length - CAPTURE_TRACE_MAX_ENTRIES);
+  }
+  persistCaptureTrace();
+}
+
+// Manual inspection helpers - reachable from this content script's own
+// console context (DevTools console context dropdown -> this file), or via
+// chrome.storage.local.get('chatGptCaptureTraceLogV1', console.log) from
+// anywhere (background page, popup, or this same console) regardless of
+// whether DevTools was open during the actual run being inspected.
+try {
+  window.__rmwDumpCaptureTrace = () => {
+    console.table(captureTraceLog.map((entry) => ({
+      step: entry.step,
+      at: new Date(entry.at).toISOString(),
+      source: entry.source,
+      detail: JSON.stringify(entry.detail),
+    })));
+    return captureTraceLog;
+  };
+  window.__rmwClearCaptureTrace = () => {
+    captureTraceLog = [];
+    persistCaptureTrace();
+  };
+  // console.table()/console.log() become unusable well before a long
+  // response's full protocol timeline (thousands of frame/mutation
+  // entries) - this downloads the complete, structured trace as a real
+  // .json file so it can be searched, diffed, and compared across runs
+  // programmatically instead of read off a truncated table.
+  window.__rmwExportCaptureTrace = () => {
+    const filename = `protocol-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    const blob = new Blob([JSON.stringify(captureTraceLog, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    return { entries: captureTraceLog.length, filename };
+  };
+} catch {}
+
 (async function initChatGptCapture() {
-  if (window.top !== window) return; // top frame only - skip OAuth/embed iframes
-  if (!onChatGPTDomain()) return;
+  recordCaptureTrace('isolated_world_capture_init_started', { href: location.href });
+  if (window.top !== window) { recordCaptureTrace('isolated_world_skip_iframe', {}); return; } // top frame only - skip OAuth/embed iframes
+  if (!onChatGPTDomain()) { recordCaptureTrace('isolated_world_skip_not_chatgpt_domain', { hostname: location.hostname }); return; }
   const bus = window.RMWChatGPTCapture;
+  recordCaptureTrace('isolated_world_bus_check', { busExists: Boolean(bus) });
   if (!bus) return; // content-chatgpt-event-builder.js failed to load - fail closed
 
   // Feature-flag gate (kill switch) - see content-chatgpt-event-builder.js
@@ -1756,6 +1838,7 @@ function onMutation() {
   // before it ever enqueues/uploads, so this is defense-in-depth, not the
   // only gate.
   let flags = await bus.readFeatureFlags();
+  recordCaptureTrace('isolated_world_flags_loaded', { enableCapture: flags.enableCapture, enableNetworkCapture: flags.enableNetworkCapture, effectiveDebug: flags.effectiveDebug });
   if (!flags.enableCapture) return;
 
   function currentConversationIdFromLocation() {
@@ -1818,6 +1901,341 @@ function onMutation() {
     } catch {}
   }
 
+  // ---- Authoritative assistant-content fetch (Slice A) --------------------
+  // The streaming SSE reconstruction in content-chatgpt-network.js
+  // (applyJsonPointerPatch/applyStreamPatch) guesses at an undocumented,
+  // unverified patch-operation vocabulary - confirmed against real production
+  // captures to silently drop large spans of text mid-stream (see
+  // CAPTURE_CONTRACT.md's response_completed section). Rather than continue
+  // guessing at that vocabulary, once the stream ends we re-fetch the
+  // conversation's own authoritative state from ChatGPT's stable
+  // conversation-fetch endpoint (the same one the ChatGPT UI itself uses to
+  // load a past conversation from the sidebar) and read the assistant
+  // message straight from there. The streamed text stays as a fallback only
+  // - this must never make capture LESS reliable than before, only more
+  // faithful when it succeeds.
+
+  function assetPointerToFileId(assetPointer) {
+    return `${assetPointer || ''}`.replace(/^file-service:\/\//, '').trim();
+  }
+
+  async function resolveAndUploadImagePart(part, conversationId) {
+    const fileId = assetPointerToFileId(part.assetPointer);
+    if (!fileId) return part;
+    try {
+      const downloadRes = await fetch(`${location.origin}/backend-api/files/${fileId}/download`, { credentials: 'include' });
+      if (!downloadRes.ok) return part; // leave the part as-is (assetPointer only) - not fatal to the rest of the message
+      const downloadJson = await downloadRes.json();
+      const downloadUrl = downloadJson?.download_url;
+      if (!downloadUrl) return part;
+      const blob = await (await fetch(downloadUrl)).blob();
+      const dataUrl = await bus.readFileAsDataUrl(blob);
+      // Reuses the exact upload path already wired for user-input
+      // attachments (see the CHATGPT_ATTACHMENT_CAPTURED case below) - just
+      // kind: 'output', the column already reserved for this in
+      // ConversationCaptureAttachment.
+      chrome.runtime.sendMessage({
+        type: 'CHATGPT_CAPTURE_ATTACHMENT',
+        attachment: {
+          conversation_id: conversationId || undefined,
+          kind: 'output',
+          file_name: fileId,
+          mime_type: blob.type || undefined,
+          data_url: dataUrl,
+        },
+      }, () => { void chrome.runtime.lastError; });
+      return { ...part, uploaded: true };
+    } catch {
+      // Per-image failure never aborts the rest of the message - the other
+      // content parts (text, other images) are still worth keeping.
+      return part;
+    }
+  }
+
+  function buildContentPartsFromMessage(message) {
+    const parts = message?.content?.parts;
+    if (!Array.isArray(parts)) return null; // unrecognized shape - caller falls back to stream text
+    return parts.map((part, index) => {
+      if (typeof part === 'string') {
+        return { type: 'markdown', order: index, text: part };
+      }
+      if (part && typeof part === 'object' && part.content_type === 'image_asset_pointer') {
+        return {
+          type: 'image',
+          order: index,
+          assetPointer: part.asset_pointer || '',
+          width: part.width || undefined,
+          height: part.height || undefined,
+          sizeBytes: part.size_bytes || undefined,
+        };
+      }
+      // Anything else (code-interpreter output, browsing display, etc.) -
+      // never silently dropped, matches this codebase's lossless-capture
+      // philosophy elsewhere (raw payload_json storage, unknown event_types
+      // logged not rejected).
+      return { type: 'attachment', order: index, raw: part };
+    });
+  }
+
+  async function fetchAuthoritativeAssistantContent(conversationId, messageId, attempt = 1) {
+    recordCaptureTrace('authoritative_fetch_attempt', { conversationId, messageId, attempt }, 'isolated_world');
+    if (!conversationId || !messageId) {
+      recordCaptureTrace('authoritative_fetch_missing_ids', { conversationId, messageId }, 'isolated_world');
+      return null;
+    }
+    try {
+      const url = `${location.origin}/backend-api/conversation/${conversationId}`;
+      const res = await fetch(url, {
+        credentials: 'include',
+        headers: { accept: 'application/json' },
+      });
+      recordCaptureTrace('authoritative_fetch_response', { conversationId, messageId, status: res.status, ok: res.ok, url }, 'isolated_world');
+      if (!res.ok) return null;
+      const data = await res.json();
+      const mappingKeys = data?.mapping ? Object.keys(data.mapping) : null;
+      const message = data?.mapping?.[messageId]?.message;
+      recordCaptureTrace('authoritative_fetch_mapping_lookup', {
+        conversationId,
+        messageId,
+        messageFound: Boolean(message),
+        mappingKeyCount: mappingKeys ? mappingKeys.length : null,
+        // Only useful if the lookup failed - shows whether messageId is
+        // simply absent, or present under a different case/format, without
+        // dumping the entire (potentially large) mapping object.
+        messageIdPresentInMapping: mappingKeys ? mappingKeys.includes(messageId) : null,
+        sampleMappingKeys: !message && mappingKeys ? mappingKeys.slice(-5) : null,
+      }, 'isolated_world');
+      if (!message) {
+        // Possible eventual-consistency race right after the stream ends -
+        // retry once, short backoff, before giving up to the fallback.
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          return fetchAuthoritativeAssistantContent(conversationId, messageId, attempt + 1);
+        }
+        return null;
+      }
+      let contentParts = buildContentPartsFromMessage(message);
+      recordCaptureTrace('authoritative_fetch_content_parts_built', {
+        conversationId,
+        messageId,
+        contentPartsIsNull: contentParts === null,
+        partCount: Array.isArray(contentParts) ? contentParts.length : null,
+        messageContentType: message?.content?.content_type || null,
+        messageContentKeys: message?.content ? Object.keys(message.content) : null,
+      }, 'isolated_world');
+      if (!contentParts) return null;
+      contentParts = await Promise.all(
+        contentParts.map((part) => (part.type === 'image' ? resolveAndUploadImagePart(part, conversationId) : part))
+      );
+      const text = contentParts.filter((part) => part.type === 'markdown').map((part) => part.text).join('');
+      const citations = message?.metadata?.content_references || [];
+      recordCaptureTrace('authoritative_fetch_succeeded', { conversationId, messageId, textLength: text.length }, 'isolated_world');
+      return {
+        contentParts,
+        citations,
+        text,
+        hasMarkdown: bus.looksLikeMarkdown(text),
+        hasTables: bus.looksLikeTable(text),
+        codeBlocks: bus.extractCodeBlocks(text),
+      };
+    } catch (error) {
+      recordCaptureTrace('authoritative_fetch_threw', { conversationId, messageId, error: `${error?.message || error}` }, 'isolated_world');
+      return null;
+    }
+  }
+
+  // Positional comparison, not an LCS-based diff - sufficient for evidence
+  // (length delta, where divergence starts/ends, how many characters
+  // differ), not meant to be a merge algorithm. Generic over any labeled
+  // pair so it works for all three (stream, dom, authoritative) combinations.
+  function compareTexts(labelA, textA, labelB, textB) {
+    const a = textA || '';
+    const b = textB || '';
+    const minLength = Math.min(a.length, b.length);
+    let firstDifferingIndex = -1;
+    for (let i = 0; i < minLength; i += 1) {
+      if (a[i] !== b[i]) { firstDifferingIndex = i; break; }
+    }
+    if (firstDifferingIndex === -1 && a.length !== b.length) firstDifferingIndex = minLength;
+    let lastDifferingIndex = -1;
+    for (let i = 0; i < minLength; i += 1) {
+      const charA = a[a.length - 1 - i];
+      const charB = b[b.length - 1 - i];
+      if (charA !== charB) {
+        lastDifferingIndex = Math.max(a.length - 1 - i, b.length - 1 - i);
+        break;
+      }
+    }
+    let differingCharCount = 0;
+    for (let i = 0; i < minLength; i += 1) {
+      if (a[i] !== b[i]) differingCharCount += 1;
+    }
+    differingCharCount += Math.abs(a.length - b.length);
+    return {
+      pair: `${labelA}_vs_${labelB}`,
+      [`${labelA}Length`]: a.length,
+      [`${labelB}Length`]: b.length,
+      lengthDiff: b.length - a.length,
+      firstDifferingIndex,
+      lastDifferingIndex,
+      differingCharCount,
+      identical: differingCharCount === 0,
+    };
+  }
+
+  async function sha256Hex(text) {
+    try {
+      const bytes = new TextEncoder().encode(text || '');
+      const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+      return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    } catch {
+      return null;
+    }
+  }
+
+  // ---- Layer D: rendered DOM capture -------------------------------------
+  // Reads the finished assistant turn directly from the page's own rendered
+  // output - what the user actually sees, with zero dependency on
+  // understanding ChatGPT's streaming wire protocol at all. Selector
+  // strategy is best-effort: data-message-author-role/data-message-id are a
+  // long-standing ChatGPT DOM convention, but this has NOT been verified
+  // against a live session in this investigation (no browser access) - the
+  // trace records exactly which strategy (if any) found something, so this
+  // is self-correcting from real data on first use rather than a silent
+  // guess.
+  function captureRenderedDomText(messageId) {
+    try {
+      let container = null;
+      let strategyUsed = null;
+      if (messageId) {
+        container = document.querySelector(`[data-message-id="${messageId}"][data-message-author-role="assistant"]`)
+          || document.querySelector(`[data-message-id="${messageId}"]`);
+        if (container) strategyUsed = 'message-id-exact';
+      }
+      if (!container) {
+        const candidates = document.querySelectorAll('[data-message-author-role="assistant"]');
+        if (candidates.length) {
+          container = candidates[candidates.length - 1];
+          strategyUsed = 'last-assistant-turn-fallback';
+        }
+      }
+      if (!container) {
+        recordCaptureTrace('dom_capture_no_container_found', { messageId }, 'isolated_world');
+        return null;
+      }
+      const text = container.innerText || container.textContent || '';
+      recordCaptureTrace('dom_capture_succeeded', {
+        messageId,
+        strategyUsed,
+        textLength: text.length,
+        textFirst80: text.slice(0, 80),
+        textLast80: text.length > 80 ? text.slice(-80) : text,
+      }, 'isolated_world');
+      return text;
+    } catch (error) {
+      recordCaptureTrace('dom_capture_threw', { messageId, error: `${error?.message || error}` }, 'isolated_world');
+      return null;
+    }
+  }
+
+  async function buildAndSendResponseCompletedEvent(payload) {
+    // Gather all three independent representations before deciding anything
+    // - per the validation-pipeline requirement, none of them silently wins
+    // without the other two being captured and compared first.
+    const authoritative = await fetchAuthoritativeAssistantContent(payload.conversationId, payload.messageId);
+    const streamText = payload.text || '';
+    // Small settle delay - the DOM read races the same eventual-consistency
+    // window the authoritative-fetch retry already accounts for (React
+    // hasn't necessarily finished its final render the instant our
+    // end_turn/[DONE] signal fires).
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const domText = captureRenderedDomText(payload.messageId) || '';
+    const authoritativeText = authoritative ? authoritative.text : '';
+
+    const [streamHash, domHash, authoritativeHash] = await Promise.all([
+      sha256Hex(streamText),
+      sha256Hex(domText),
+      sha256Hex(authoritativeText),
+    ]);
+
+    const comparisons = {
+      streamVsDom: domText ? compareTexts('stream', streamText, 'dom', domText) : null,
+      streamVsAuthoritative: authoritative ? compareTexts('stream', streamText, 'authoritative', authoritativeText) : null,
+      domVsAuthoritative: (domText && authoritative) ? compareTexts('dom', domText, 'authoritative', authoritativeText) : null,
+    };
+
+    // The consistency-validator record: hashes first (cheap, unambiguous
+    // "are these identical" check), then the positional diff only matters
+    // when they're not. This is logged unconditionally, regardless of
+    // which source the event below ends up using - the validation and the
+    // selection decision are deliberately kept separate.
+    recordCaptureTrace('validation_result', {
+      correlationId: payload.correlationId,
+      conversationId: payload.conversationId,
+      messageId: payload.messageId,
+      streamHash,
+      domHash,
+      authoritativeHash,
+      streamLength: streamText.length,
+      domLength: domText.length,
+      authoritativeLength: authoritativeText.length,
+      streamEqualsDom: Boolean(domText) && streamHash === domHash,
+      streamEqualsAuthoritative: Boolean(authoritative) && streamHash === authoritativeHash,
+      domEqualsAuthoritative: Boolean(domText) && Boolean(authoritative) && domHash === authoritativeHash,
+      comparisons,
+    }, 'isolated_world');
+
+    recordCaptureTrace('state_transition', {
+      correlationId: payload.correlationId,
+      previousState: 'FETCH_AUTHORITATIVE',
+      newState: 'COMPLETE',
+      detail: { usedSource: authoritative ? 'authoritative_fetch' : 'stream_fallback' },
+    }, 'isolated_world');
+
+    // Selection logic is UNCHANGED from before this validation pass -
+    // authoritative fetch wins when available, stream text is the fallback.
+    // The DOM capture and full 3-way comparison above are evidence-gathering
+    // only at this stage, not yet wired into this decision.
+    sendCaptureEvent(bus.buildEvent(bus.EVENT_TYPE.RESPONSE_COMPLETED, {
+      conversationId: payload.conversationId,
+      messageId: payload.messageId,
+      payload: {
+        text: authoritative ? authoritative.text : streamText,
+        textLength: (authoritative ? authoritative.text : streamText).length,
+        codeBlocks: authoritative ? authoritative.codeBlocks : (payload.codeBlocks || []),
+        hasMarkdown: authoritative ? authoritative.hasMarkdown : Boolean(payload.hasMarkdown),
+        hasTables: authoritative ? authoritative.hasTables : Boolean(payload.hasTables),
+        contentParts: authoritative ? authoritative.contentParts : undefined,
+        citations: authoritative ? authoritative.citations : undefined,
+        contentSource: authoritative ? 'authoritative_fetch' : 'stream_fallback',
+        stopReason: payload.stopReason || undefined,
+        completedAt: new Date().toISOString(),
+      },
+    }));
+  }
+
+  // Additive media-capture hook - calls the function above completely
+  // unchanged, then separately triggers DOM/network/observer-based media
+  // capture via content-chatgpt-media-capture.js (a different file, zero
+  // shared state). Wrapped in try/catch so a media-capture failure can
+  // never propagate back into this response-completion path. This
+  // function's body, its call site below (which now invokes it instead of
+  // buildAndSendResponseCompletedEvent directly), and the matching one-line
+  // addition inside the CHATGPT_RESPONSE_STARTED case above (which starts
+  // the DOM observer early) are the only changes this feature makes to
+  // this file - media capture deliberately does not read from or depend on
+  // buildAndSendResponseCompletedEvent/fetchAuthoritativeAssistantContent's
+  // internals, since the authoritative fetch they use has been observed
+  // failing 100% of the time in production (see
+  // RESPONSE_RECONSTRUCTION_REPORT.md) and media capture must not inherit
+  // that single point of failure.
+  function handleResponseCompletion(payload) {
+    buildAndSendResponseCompletedEvent(payload);
+    try {
+      window.RMWChatGptMediaCapture?.captureGeneratedMediaForResponse?.(payload);
+    } catch {}
+  }
+
   function handleCaptureSignal(type, payload) {
     const E = bus.EVENT_TYPE;
     const source = bus.CAPTURE_SOURCE;
@@ -1832,6 +2250,7 @@ function onMutation() {
       case 'CHATGPT_PROMPT_SUBMITTED':
         sendCaptureEvent(bus.buildEvent(E.PROMPT_CAPTURED, {
           conversationId: payload.conversationId,
+          messageId: payload.newMessageId || undefined,
           payload: {
             text: payload.text || '',
             textLength: (payload.text || '').length,
@@ -1844,14 +2263,26 @@ function onMutation() {
         }));
         break;
 
-      case 'CHATGPT_RESPONSE_STARTED':
-        if (!bus.markTurnStarted(payload.correlationId)) return;
+      case 'CHATGPT_RESPONSE_STARTED': {
+        const turnStarted = bus.markTurnStarted(payload.correlationId);
+        recordCaptureTrace('isolated_world_received_response_started', { correlationId: payload.correlationId, turnStarted }, 'isolated_world');
+        if (!turnStarted) return;
         sendCaptureEvent(bus.buildEvent(E.RESPONSE_STARTED, {
           conversationId: payload.conversationId,
           messageId: payload.messageId,
           payload: { model: payload.model || undefined, sequenceIndex: bus.nextSequenceIndex(`${payload.conversationId}:response`), startedAt: new Date().toISOString() },
         }));
+        // Additive media-capture hook, mirrors the one at
+        // CHATGPT_RESPONSE_COMPLETED below - starts watching the DOM as
+        // early as possible so images that render progressively during
+        // generation are still caught, not just ones present at
+        // end_turn. Wrapped in try/catch so it can never affect the line
+        // above; does not touch any existing variable/state in this case.
+        try {
+          window.RMWChatGptMediaCapture?.observeGeneratedMediaForResponse?.(payload);
+        } catch {}
         break;
+      }
 
       case 'CHATGPT_MESSAGE_EDITED':
         sendCaptureEvent(bus.buildEvent(E.MESSAGE_EDITED, {
@@ -1865,27 +2296,30 @@ function onMutation() {
         }));
         break;
 
-      case 'CHATGPT_RESPONSE_COMPLETED':
-        bus.consumeTurn(payload.correlationId);
-        sendCaptureEvent(bus.buildEvent(E.RESPONSE_COMPLETED, {
-          conversationId: payload.conversationId,
-          messageId: payload.messageId,
-          payload: {
-            text: payload.text || '',
-            textLength: (payload.text || '').length,
-            codeBlocks: payload.codeBlocks || [],
-            hasMarkdown: Boolean(payload.hasMarkdown),
-            hasTables: Boolean(payload.hasTables),
-            stopReason: payload.stopReason || undefined,
-            completedAt: new Date().toISOString(),
-          },
-        }));
+      case 'CHATGPT_RESPONSE_COMPLETED': {
+        // Mirrors the markTurnStarted() guard above: consumeTurn() returns
+        // undefined for a turn that was already consumed (the double-
+        // finalize() bug in content-chatgpt-network.js, now fixed there too
+        // as defense in depth) - without this guard a second finalize() for
+        // the same turn would build a second response_completed event.
+        const turn = bus.consumeTurn(payload.correlationId);
+        recordCaptureTrace('isolated_world_received_response_completed', { correlationId: payload.correlationId, turnConsumed: Boolean(turn) }, 'isolated_world');
+        if (!turn) return;
+        // Fire-and-forget: buildAndSendResponseCompletedEvent awaits the
+        // authoritative conversation-fetch (with its own fallback-on-failure
+        // built in) before calling sendCaptureEvent - never blocks this
+        // synchronous signal handler. handleResponseCompletion() calls it
+        // unchanged, then additively triggers media capture - see that
+        // function's own comment for why this is the only touch to this
+        // file the media capture feature makes.
+        handleResponseCompletion(payload);
         // Note: conversation_created for a brand-new conversation is emitted
         // separately by the CHATGPT_CONVERSATION_CREATED signal below (fired
         // once by content-chatgpt-network.js's stream finalizer) - not here,
         // to avoid building two conversation_created events off the same
         // underlying occurrence.
         break;
+      }
 
       case 'CHATGPT_CONVERSATION_CREATED':
         sendCaptureEvent(bus.buildEvent(E.CONVERSATION_CREATED, {
@@ -2037,6 +2471,23 @@ function onMutation() {
       const { type, payload } = event.data;
       if (!type) return;
       bus.emitSignal(type, payload || {});
+    } catch {}
+  }, false);
+
+  // Diagnostic trace relay from content-chatgpt-network.js's MAIN-world
+  // trace() helper - separate channel/source from the Capture Contract
+  // signals above, gated on the existing debug flag (unlike the always-on
+  // isolated-world bootstrap checkpoints above, these can fire once per SSE
+  // chunk/frame so volume actually matters here).
+  window.addEventListener('message', (event) => {
+    try {
+      if (event.source !== window) return;
+      if (event.origin !== location.origin) return;
+      if (event.data?.source !== 'rmw-chatgpt-capture-trace') return;
+      if (!flags.effectiveDebug) return;
+      const { step, at, detail } = event.data;
+      if (!step) return;
+      recordCaptureTrace(step, detail, 'main_world', at);
     } catch {}
   }, false);
 

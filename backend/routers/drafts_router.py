@@ -133,7 +133,7 @@ def get_current_user_from_session(
 
 # ==================== CREATE DRAFT ====================
 @router.post("/save")
-async def save_draft(
+def save_draft(
     draft_data: DraftCreate,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session)
@@ -211,7 +211,7 @@ async def save_draft(
 
 # ==================== GET ALL DRAFTS ====================
 @router.get("/")
-async def get_drafts(
+def get_drafts(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session)
 ):
@@ -241,7 +241,7 @@ async def get_drafts(
 
 # ==================== GET LATEST DRAFT ====================
 @router.get("/latest")
-async def get_latest_draft(
+def get_latest_draft(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session)
 ):
@@ -269,7 +269,7 @@ async def get_latest_draft(
 
 
 @router.get("/{draft_id}")
-async def get_draft_by_id(
+def get_draft_by_id(
     draft_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session)
@@ -296,7 +296,7 @@ async def get_draft_by_id(
 
 # ==================== UPDATE DRAFT ====================
 @router.put("/{draft_id}")
-async def update_draft(
+def update_draft(
     draft_id: int,
     draft_data: DraftCreate,
     db: Session = Depends(get_operational_db),
@@ -363,7 +363,7 @@ async def update_draft(
 
 # ==================== DELETE DRAFT ====================
 @router.delete("/{draft_id}")
-async def delete_draft(
+def delete_draft(
     draft_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session)

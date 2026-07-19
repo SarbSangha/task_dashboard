@@ -30,7 +30,7 @@ def get_current_user_from_session(
 
 # ==================== GET ARCHIVED TASKS ====================
 @router.get("/tasks")
-async def get_archived_tasks(
+def get_archived_tasks(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     reason: Optional[str] = Query(None, description="Filter by archive reason"),
@@ -90,7 +90,7 @@ async def get_archived_tasks(
 
 # ==================== GET ARCHIVED TASK DETAILS ====================
 @router.get("/tasks/{archive_id}")
-async def get_archived_task_details(
+def get_archived_task_details(
     archive_id: int,
     operational_db: Session = Depends(get_operational_db),
     archive_db: Session = Depends(get_archive_db),
@@ -138,7 +138,7 @@ async def get_archived_task_details(
 
 # ==================== RESTORE ARCHIVED TASK ====================
 @router.post("/tasks/{archive_id}/restore")
-async def restore_archived_task(
+def restore_archived_task(
     archive_id: int,
     operational_db: Session = Depends(get_operational_db),
     archive_db: Session = Depends(get_archive_db),
@@ -220,7 +220,7 @@ async def restore_archived_task(
 
 # ==================== GET ACTIVITY LOG ====================
 @router.get("/activity")
-async def get_activity_log(
+def get_activity_log(
     limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
     action_filter: Optional[str] = Query(None, description="Filter by action type"),
@@ -275,7 +275,7 @@ async def get_activity_log(
 
 # ==================== GET TASK COMPLETE HISTORY ====================
 @router.get("/tasks/{task_id}/history")
-async def get_task_complete_history(
+def get_task_complete_history(
     task_id: int,
     operational_db: Session = Depends(get_operational_db),
     archive_db: Session = Depends(get_archive_db),
@@ -309,7 +309,7 @@ async def get_task_complete_history(
 
 # ==================== GET MY ACTIVITY SUMMARY ====================
 @router.get("/activity/summary")
-async def get_activity_summary(
+def get_activity_summary(
     days: int = Query(30, description="Number of days to analyze"),
     operational_db: Session = Depends(get_operational_db),
     archive_db: Session = Depends(get_archive_db),
@@ -355,7 +355,7 @@ async def get_activity_summary(
 
 # ==================== PERMANENTLY DELETE ARCHIVED TASK ====================
 @router.delete("/tasks/{archive_id}/permanent")
-async def permanently_delete_archived_task(
+def permanently_delete_archived_task(
     archive_id: int,
     operational_db: Session = Depends(get_operational_db),
     archive_db: Session = Depends(get_archive_db),

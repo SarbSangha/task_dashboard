@@ -58,7 +58,7 @@ function renderPreviewBody(file, previewUrl) {
   );
 }
 
-export default function FilePreviewModal({ file, title, subtitle, onClose }) {
+export default function FilePreviewModal({ file, title, subtitle, metadata, onClose }) {
   const previewUrl = buildFileOpenUrl(file);
   const label = title || getFileDisplayName(file, 'Attachment');
 
@@ -98,6 +98,16 @@ export default function FilePreviewModal({ file, title, subtitle, onClose }) {
           </button>
         </div>
         <div className="file-preview-modal-body">{renderPreviewBody(file, previewUrl)}</div>
+        {Array.isArray(metadata) && metadata.length > 0 ? (
+          <dl className="file-preview-modal-meta">
+            {metadata.map((item) => (
+              <div key={item.label} className="file-preview-modal-meta-row">
+                <dt>{item.label}</dt>
+                <dd>{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
       </div>
     </div>,
     document.body

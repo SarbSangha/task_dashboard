@@ -1829,28 +1829,52 @@ function isGooglePolicyFooterAction(element) {
     || label.includes('terms of service');
 }
 
+const CHOOSER_ROW_SELECTOR = 'button, [role="button"], [role="link"], [data-view-id], [data-email], [data-identifier], li, div[tabindex], span[tabindex]';
+
+function extractEmailsFromText(text) {
+  const matches = `${text || ''}`.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [];
+  return matches.map((email) => email.toLowerCase());
+}
+
 function findGoogleAccountChooserAction(credential) {
   const loginIdentifier = normalizeText(credential?.loginIdentifier || '');
   if (!loginIdentifier) return null;
 
   const chooserPanel = findGoogleChooserPanel() || document;
-  const candidates = collectUniqueElements([
-    ...collectChooserActionCandidates(chooserPanel),
-    ...Array.from(chooserPanel.querySelectorAll(ACTION_SELECTORS)),
-  ]).filter((element) => !isDisabled(element) && isVisible(element));
+  const allElements = Array.from(chooserPanel.querySelectorAll('*')).filter((element) => isVisible(element));
 
-  const exactDataMatch = candidates.find((element) => {
+  const exactDataMatch = allElements.find((element) => {
     const dataEmail = normalizeText(element?.getAttribute?.('data-email'));
     const dataIdentifier = normalizeText(element?.getAttribute?.('data-identifier'));
     return dataEmail === loginIdentifier || dataIdentifier === loginIdentifier;
   });
-  if (exactDataMatch) return exactDataMatch;
+  if (exactDataMatch) {
+    const row = exactDataMatch.closest?.(CHOOSER_ROW_SELECTOR);
+    if (row && isVisible(row) && !isDisabled(row)) return row;
+    if (isVisible(exactDataMatch) && !isDisabled(exactDataMatch)) return exactDataMatch;
+  }
 
-  return candidates.find((element) => {
-    const label = actionText(element);
-    const hints = controlHintText(element);
-    return label.includes(loginIdentifier) || hints.includes(loginIdentifier);
-  }) || null;
+  // Match against the element's own direct text (not aggregated descendant text) so a
+  // large wrapper whose innerText happens to span multiple accounts can't be mistaken for
+  // the row belonging to loginIdentifier. Only an exact email-address match counts -
+  // partial substring matches previously caused clicks on the wrong account.
+  for (const element of allElements) {
+    const ownText = Array.from(element.childNodes || [])
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent || '')
+      .join(' ');
+    if (!extractEmailsFromText(ownText).includes(loginIdentifier)) continue;
+
+    let current = element;
+    while (current && current !== chooserPanel && current !== document.body) {
+      if (current.matches?.(CHOOSER_ROW_SELECTOR) && isVisible(current) && !isDisabled(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+  }
+
+  return null;
 }
 
 function shouldPreferGoogleAddAccount(toolSlug = STATE.toolSlug) {
@@ -3493,6 +3517,7 @@ async function attemptKlingGooglePasswordStep(credential) {
     enforceProtectedGooglePasswordMask(input);
     ensureProtectedGooglePasswordMaskLoop(input);
     STATE.lastPasswordFilledAt = Date.now();
+    armGooglePasswordSubmitPause();
     STATE.passwordSubmitted = false;
     setStatus('Filled Google password');
     scheduleAttempt(Math.max(INPUT_SETTLE_MS, GOOGLE_PASSWORD_SETTLE_MS));
@@ -3511,6 +3536,24 @@ async function attemptKlingGooglePasswordStep(credential) {
   if (STATE.passwordSubmitted && Date.now() - STATE.lastPasswordSubmitAt < GOOGLE_PASSWORD_POST_SUBMIT_WAIT_MS) {
     setStatus('Google password submitted, waiting for sign-in');
     scheduleAttempt(GOOGLE_AUTH_TRANSITION_POLL_MS);
+    return true;
+  }
+
+  // Give Google's own page JS a moment to settle after we typed, and re-verify the value
+  // is still exactly what we expect right before submitting. Submitting on a value that
+  // hasn't actually settled (e.g. a React re-render still in flight) can produce a
+  // rejected/incomplete submission, which then requires a full retype-and-resubmit cycle -
+  // this mirrors the readiness check already used by the other Google password steps.
+  const submitPauseRemaining = getGooglePasswordSubmitPauseRemaining();
+  if (submitPauseRemaining > 0) {
+    setStatus('Google password filled, pausing before submit');
+    scheduleAttempt(submitPauseRemaining);
+    return true;
+  }
+
+  if (!(await isGooglePasswordReadyForSubmit(input, passwordValue))) {
+    setStatus('Waiting for Google password to settle');
+    scheduleAttempt(200);
     return true;
   }
 
@@ -3785,6 +3828,12 @@ async function attemptElevenLabsGooglePopupFlow(credential) {
       return true;
     }
     return false;
+  }
+
+  if (credential?.loginMethod && !isGoogleLoginCredential(credential)) {
+    setStatus('Selected credential is not configured for Google sign-in');
+    STATE.settled = true;
+    return true;
   }
 
   if (await attemptKlingGoogleDeveloperInfoStep()) return true;

@@ -1582,19 +1582,16 @@ function isKlingTabUrl(value = '') {
   return /(^|\.)kling\.ai$|(^|\.)klingai\.com$/.test(hostname);
 }
 
-async function allowKlingGooglePopups() {
+function isElevenLabsTabUrl(value = '') {
+  const hostname = normalizeHostname(value || '');
+  return /(^|\.)elevenlabs\.io$/.test(hostname);
+}
+
+async function allowGooglePopupsForPrimaryPatterns(primaryPatterns, probeUrl, toolLabel) {
   if (!chrome?.contentSettings?.popups?.set) {
     throw new Error('Chrome popup content setting API is unavailable.');
   }
 
-  const primaryPatterns = [
-    'https://kling.ai/*',
-    'https://[*.]kling.ai/*',
-    'https://*.kling.ai/*',
-    'https://klingai.com/*',
-    'https://[*.]klingai.com/*',
-    'https://*.klingai.com/*',
-  ];
   const secondaryPatterns = [
     undefined,
     '<all_urls>',
@@ -1631,7 +1628,7 @@ async function allowKlingGooglePopups() {
   }
 
   if (!applied.length) {
-    throw new Error(errors[0]?.error || 'Chrome rejected all Kling popup content settings.');
+    throw new Error(errors[0]?.error || `Chrome rejected all ${toolLabel} popup content settings.`);
   }
 
   const probes = [];
@@ -1639,7 +1636,7 @@ async function allowKlingGooglePopups() {
     for (const incognito of [false, true]) {
       try {
         const result = await chrome.contentSettings.popups.get({
-          primaryUrl: 'https://kling.ai/app',
+          primaryUrl: probeUrl,
           secondaryUrl: 'https://accounts.google.com/',
           incognito,
         });
@@ -1651,6 +1648,33 @@ async function allowKlingGooglePopups() {
   }
 
   return { applied, errors: errors.slice(0, 12), probes };
+}
+
+async function allowKlingGooglePopups() {
+  return allowGooglePopupsForPrimaryPatterns(
+    [
+      'https://kling.ai/*',
+      'https://[*.]kling.ai/*',
+      'https://*.kling.ai/*',
+      'https://klingai.com/*',
+      'https://[*.]klingai.com/*',
+      'https://*.klingai.com/*',
+    ],
+    'https://kling.ai/app',
+    'Kling'
+  );
+}
+
+async function allowElevenLabsGooglePopups() {
+  return allowGooglePopupsForPrimaryPatterns(
+    [
+      'https://elevenlabs.io/*',
+      'https://[*.]elevenlabs.io/*',
+      'https://*.elevenlabs.io/*',
+    ],
+    'https://elevenlabs.io/app/sign-in',
+    'ElevenLabs'
+  );
 }
 
 const googleOauthRecoveryWindows = new Map();
@@ -1699,7 +1723,8 @@ async function openRecoveredGoogleOauthPopup(url, senderTab = null) {
     const popupTabId = Array.isArray(createdWindow?.tabs) ? Number(createdWindow.tabs[0]?.id || 0) || null : null;
     if (popupTabId && senderTab?.id) {
       const openerLaunch = await getActiveLaunch(senderTab.id, 'kling-ai')
-        || await getActiveLaunch(senderTab.id, 'kling');
+        || await getActiveLaunch(senderTab.id, 'kling')
+        || await getActiveLaunch(senderTab.id, 'elevenlabs');
       if (openerLaunch?.ticket) {
         await setActiveLaunch(popupTabId, openerLaunch);
       }
@@ -2244,8 +2269,8 @@ function handleRuntimeMessage(message, sender, sendResponse) {
   }
 
   if (message?.type === 'TOOL_HUB_OPEN_GOOGLE_OAUTH_POPUP') {
-    if (!isKlingTabUrl(sender?.tab?.url || '')) {
-      sendResponse({ ok: false, error: 'Google OAuth popup recovery is only allowed from Kling tabs.' });
+    if (!isKlingTabUrl(sender?.tab?.url || '') && !isElevenLabsTabUrl(sender?.tab?.url || '')) {
+      sendResponse({ ok: false, error: 'Google OAuth popup recovery is only allowed from Kling or ElevenLabs tabs.' });
       return true;
     }
     openRecoveredGoogleOauthPopup(`${message.url || ''}`.trim(), sender?.tab || null)
@@ -2261,6 +2286,18 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     }
 
     allowKlingGooglePopups()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_ALLOW_ELEVENLABS_GOOGLE_POPUPS') {
+    if (!isElevenLabsTabUrl(sender?.tab?.url || '')) {
+      sendResponse({ ok: false, error: 'ElevenLabs popup allowance is only allowed from ElevenLabs tabs.' });
+      return true;
+    }
+
+    allowElevenLabsGooglePopups()
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -2317,6 +2354,13 @@ function handleRuntimeMessage(message, sender, sendResponse) {
 
   if (message?.type === 'CHATGPT_CAPTURE_ATTACHMENT') {
     handleChatGptCaptureAttachmentMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'CHATGPT_MEDIA_CAPTURED') {
+    handleChatGptCaptureMediaMessage(message)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

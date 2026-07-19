@@ -30,7 +30,7 @@ def get_current_user_from_session(
 
 # ==================== APPROVAL ENDPOINTS ====================
 @router.get("/pending")
-async def get_pending_approvals(
+def get_pending_approvals(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_from_session)
 ):
@@ -56,7 +56,7 @@ async def get_pending_approvals(
 
 
 @router.post("/{task_id}/approve")
-async def approve_task(
+def approve_task(
     task_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_from_session)
@@ -92,7 +92,7 @@ async def approve_task(
 
 
 @router.post("/{task_id}/reject")
-async def reject_task(
+def reject_task(
     task_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_from_session)

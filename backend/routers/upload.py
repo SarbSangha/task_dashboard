@@ -340,7 +340,7 @@ def _upload_to_r2(file: UploadFile, timestamp_ms: int, relative_path: Optional[s
 
 
 @router.post("/api/uploads/presign")
-async def create_presigned_uploads(
+def create_presigned_uploads(
     payload: UploadPreparePayload,
     _current_user: User = Depends(get_current_user),
 ):
@@ -431,7 +431,7 @@ async def create_presigned_uploads(
 
 
 @router.post("/api/uploads/multipart/complete")
-async def complete_multipart_upload(
+def complete_multipart_upload(
     payload: MultipartCompletePayload,
     _current_user: User = Depends(get_current_user),
 ):
@@ -467,7 +467,7 @@ async def complete_multipart_upload(
 
 
 @router.post("/api/uploads/multipart/abort")
-async def abort_multipart_upload(
+def abort_multipart_upload(
     payload: MultipartAbortPayload,
     _current_user: User = Depends(get_current_user),
 ):
@@ -492,7 +492,7 @@ async def abort_multipart_upload(
 
 
 @router.post("/upload")
-async def upload_files(
+def upload_files(
     files: List[UploadFile] = File(...),
     relative_paths: List[str] = Form(default=[]),
 ):
@@ -536,7 +536,7 @@ async def upload_files(
 
 
 @router.get("/api/files/open")
-async def open_file(
+def open_file(
     url: Optional[str] = Query(None),
     path: Optional[str] = Query(None),
 ):
@@ -564,7 +564,7 @@ async def open_file(
 
 
 @router.get("/api/files/thumbnail")
-async def thumbnail_file(
+def thumbnail_file(
     url: Optional[str] = Query(None),
     path: Optional[str] = Query(None),
     width: int = Query(360, ge=120, le=960),
@@ -623,7 +623,7 @@ async def thumbnail_file(
 
 
 @router.get("/api/files/download")
-async def download_file(
+def download_file(
     filename: Optional[str] = Query(None),
     url: Optional[str] = Query(None),
     path: Optional[str] = Query(None),
@@ -652,7 +652,7 @@ async def download_file(
 
 
 @router.get("/api/files/download-folder")
-async def download_folder(
+def download_folder(
     name: Optional[str] = Query(None),
     path: List[str] = Query(default=[]),
     relative_paths: List[str] = Query(default=[], alias="relative_path"),

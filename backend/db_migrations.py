@@ -621,6 +621,50 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_tags_normalized_tag ON generation_tags(normalized_tag)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_tags_generation_id ON generation_tags(generation_id)"))
 
+    # Tier 1 cost analytics: credit -> currency conversion rates, keyed by Kling account.
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS tool_credit_rates (
+                id SERIAL PRIMARY KEY,
+                credential_id INTEGER REFERENCES it_portal_tool_credentials(id) ON DELETE CASCADE,
+                provider VARCHAR(40),
+                tool_id INTEGER REFERENCES it_portal_tools(id) ON DELETE CASCADE,
+                currency VARCHAR(8) NOT NULL DEFAULT 'INR',
+                package_credits NUMERIC(14,4),
+                package_rupees NUMERIC(14,4),
+                rate_per_credit NUMERIC(12,4) NOT NULL,
+                effective_from DATE NOT NULL DEFAULT CURRENT_DATE,
+                effective_to DATE,
+                notes TEXT,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    # Idempotent column adds (in case the table pre-dates the credential-keyed columns).
+    _pg_add_column_if_missing(conn, "tool_credit_rates", "credential_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "tool_credit_rates", "package_credits", "NUMERIC(14,4)")
+    _pg_add_column_if_missing(conn, "tool_credit_rates", "package_rupees", "NUMERIC(14,4)")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_credit_rates_credential_effective ON tool_credit_rates(credential_id, effective_from)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_credit_rates_provider_effective ON tool_credit_rates(provider, effective_from)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_credit_rates_tool_effective ON tool_credit_rates(tool_id, effective_from)"))
+    # Seed a single global default rate (1 credit = 1 INR) used as fallback for
+    # records with no linkable Kling account. Only inserted if no global row exists.
+    conn.execute(
+        text(
+            """
+            INSERT INTO tool_credit_rates (credential_id, provider, tool_id, currency, rate_per_credit, effective_from, notes, created_at)
+            SELECT NULL, NULL, NULL, 'INR', 1.0000, CURRENT_DATE, 'Seed global fallback; edit in admin', CURRENT_TIMESTAMP
+            WHERE NOT EXISTS (
+                SELECT 1 FROM tool_credit_rates
+                WHERE credential_id IS NULL AND provider IS NULL AND tool_id IS NULL
+            )
+            """
+        )
+    )
+
     conn.execute(
         text(
             """
@@ -960,6 +1004,69 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_is_active ON web_push_subscriptions(is_active)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_created_at ON web_push_subscriptions(created_at)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_push_subscriptions_updated_at ON web_push_subscriptions(updated_at)"))
+
+    # ---- Report distribution layer ----
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS saved_reports (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                definition_json JSON NOT NULL,
+                html_snapshot TEXT,
+                owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                department VARCHAR(255),
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_saved_reports_owner ON saved_reports(owner_user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_saved_reports_created_at ON saved_reports(created_at)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS report_schedules (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                definition_json JSON NOT NULL,
+                cadence VARCHAR(20) NOT NULL DEFAULT 'weekly',
+                hour_utc INTEGER NOT NULL DEFAULT 8,
+                weekday INTEGER,
+                day_of_month INTEGER,
+                recipients_json JSON,
+                formats_json JSON,
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                next_run_at TIMESTAMP,
+                last_run_at TIMESTAMP,
+                last_status VARCHAR(40),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_report_schedules_next_run ON report_schedules(next_run_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_report_schedules_active ON report_schedules(active)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS report_audit_log (
+                id SERIAL PRIMARY KEY,
+                report_id INTEGER,
+                schedule_id INTEGER,
+                action VARCHAR(40) NOT NULL,
+                format VARCHAR(20),
+                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                detail TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_report_audit_created_at ON report_audit_log(created_at)"))
 
 
 def ensure_operational_schema(engine) -> None:

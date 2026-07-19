@@ -11,6 +11,7 @@ import GroupMessagePanel from './compofleftsidebar/messagesystem/GroupMessagePan
 import WorkSpaceButton from './compofleftsidebar/WorkSpaceButton';
 import AdminQueueButton from './compofleftsidebar/adminqueue/AdminQueueButton';
 import TrendingsButton from './compofleftsidebar/trending/TrendingsButton';
+import ReportsButton from './compofleftsidebar/ReportsButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
 import OutboxModal from './compofleftsidebar/outbox/OutboxModal';
 import WorkSpaceModal from './compofleftsidebar/workspace/WorkSpaceModal';
@@ -18,6 +19,7 @@ import InboxPanel from './compofleftsidebar/inbox/InboxPanel';
 import TrackingPanel from './compofleftsidebar/tracking/TrackingPanel';
 import AdminRequestPanel from './compofleftsidebar/adminqueue/AdminRequestPanel';
 import TrendingsPanel from './compofleftsidebar/trending/TrendingsPanel';
+import ReportsPanel from '../reports/ReportsPanel';
 import { usePermissions } from '../../hooks/usePermissions';
 
 const PANEL_TO_ACTIVE = {
@@ -28,6 +30,7 @@ const PANEL_TO_ACTIVE = {
   messages: 'message-system',
   'admin-queue': 'admin-queue',
   trendings: 'trendings',
+  reports: 'reports',
   'create-task': 'create-task',
 };
 
@@ -166,6 +169,9 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
 
   const openAdminQueue = () => goTo('admin-queue');
   const closeAdminQueue = () => closePanel('admin-queue');
+
+  const openReports = () => goTo('reports');
+  const closeReports = () => closePanel('reports');
 
   useEffect(() => {
     if (isCreateTaskVisible) return;
@@ -314,6 +320,18 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
             )}
           </div>
 
+          {/* ── ANALYTICS ── */}
+          <div className="nav-section">
+            <div className="nav-section-header">
+              <span className="nav-section-label">Analytics</span>
+            </div>
+
+            <ReportsButton
+              isActive={activeItem === 'reports'}
+              onClick={openReports}
+            />
+          </div>
+
         </nav>
       </aside>
 
@@ -380,6 +398,13 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
         onClose={closeAdminQueue}
         onMinimizedChange={(isMinimized) => setPanelMinimized('admin-queue', isMinimized)}
         onActivate={() => activatePanel('admin-queue')}
+      />
+
+      <ReportsPanel
+        isOpen={isPanelVisible('reports')}
+        onClose={closeReports}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('reports', isMinimized)}
+        onActivate={() => activatePanel('reports')}
       />
     </>
   );

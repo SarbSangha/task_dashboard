@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ConversationChatView from './ConversationChatView';
 import ConversationHeaderCard from './ConversationHeaderCard';
-import ConversationTimelineLog from './ConversationTimelineLog';
-import RawEventsList from './RawEventsList';
+import DeveloperConsole from './DeveloperConsole';
+import GenerationWorkspace from './GenerationWorkspace';
 import { chatgptCaptureAPI } from '../../../../../../services/api';
 import { normalizeApiError } from './chatgptCaptureUtils';
 
 const VIEW_TABS = [
   { key: 'conversation', label: 'Conversation' },
-  { key: 'timeline', label: 'Timeline' },
-  { key: 'raw', label: 'Raw Events' },
+  { key: 'developer', label: 'Developer Console' },
 ];
 
 export default function ConversationDetailPanel({ conversationId, onClose, emptyStateMode = 'conversation' }) {
@@ -28,6 +27,11 @@ export default function ConversationDetailPanel({ conversationId, onClose, empty
   const [messagesError, setMessagesError] = useState('');
 
   const [conversationAttachments, setConversationAttachments] = useState([]);
+  const [conversationMedia, setConversationMedia] = useState([]);
+  const [mediaLoading, setMediaLoading] = useState(false);
+  // Conversation-context toggle: OFF by default (clean generation workspace).
+  // When ON, the full conversation chat is shown beneath the workspace.
+  const [contextOn, setContextOn] = useState(false);
 
   const loadTimeline = useCallback(async (id) => {
     if (!id) return;
@@ -85,14 +89,73 @@ export default function ConversationDetailPanel({ conversationId, onClose, empty
     }
   }, []);
 
+  const loadConversationMedia = useCallback(async (id) => {
+    if (!id) return;
+    setMediaLoading(true);
+    try {
+      const response = await chatgptCaptureAPI.getConversationMedia(id);
+      setConversationMedia(response.data || []);
+    } catch {
+      // Generated/response images - same best-effort posture as attachments:
+      // a failed fetch just means no gallery, never an error over the chat.
+      setConversationMedia([]);
+    } finally {
+      setMediaLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!conversationId) return;
     setViewTab('conversation');
+    setContextOn(false);
     loadTimeline(conversationId);
     loadConversationDetail(conversationId);
     loadConversationMessages(conversationId);
     loadConversationAttachments(conversationId);
-  }, [conversationId, loadTimeline, loadConversationDetail, loadConversationMessages, loadConversationAttachments]);
+    loadConversationMedia(conversationId);
+  }, [conversationId, loadTimeline, loadConversationDetail, loadConversationMessages, loadConversationAttachments, loadConversationMedia]);
+
+  const galleryMedia = useMemo(
+    () => (conversationMedia || []).filter((item) => item.url),
+    [conversationMedia]
+  );
+
+  const handleRefresh = useCallback(() => {
+    if (!conversationId) return;
+    loadTimeline(conversationId);
+    loadConversationDetail(conversationId);
+    loadConversationMessages(conversationId);
+    loadConversationAttachments(conversationId);
+    loadConversationMedia(conversationId);
+  }, [conversationId, loadTimeline, loadConversationDetail, loadConversationMessages, loadConversationAttachments, loadConversationMedia]);
+
+  const handleViewMedia = useCallback(() => {
+    setViewTab('conversation');
+    setContextOn(false);
+  }, []);
+
+  const handleExport = useCallback(() => {
+    if (!conversationId) return;
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      conversation: conversationDetail,
+      messages: conversationMessages?.messages || [],
+      media: conversationMedia,
+    };
+    try {
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `chatgpt-conversation-${conversationId}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    } catch {
+      // best-effort client-side export - nothing to surface if the browser blocks it
+    }
+  }, [conversationId, conversationDetail, conversationMessages, conversationMedia]);
 
   const eventsById = useMemo(() => new Map(timelineEvents.map((event) => [event.id, event])), [timelineEvents]);
   const isTimelineTruncated = Boolean(
@@ -105,13 +168,15 @@ export default function ConversationDetailPanel({ conversationId, onClose, empty
         <div className="chatgpt-capture-empty-state">
           {emptyStateMode === 'user' ? (
             <>
+              <span className="chatgpt-capture-empty-icon" aria-hidden="true">👥</span>
               <strong>Select a user</strong>
-              <p>Choose a person on the left to see their captured ChatGPT conversations.</p>
+              <p>Choose a person on the left to explore their ChatGPT activity.</p>
             </>
           ) : (
             <>
+              <span className="chatgpt-capture-empty-icon" aria-hidden="true">💬</span>
               <strong>Select a conversation</strong>
-              <p>Choose a conversation on the left to see what was captured - the prompt, the response, and any images or files.</p>
+              <p>View prompts, responses, and generated assets here.</p>
             </>
           )}
         </div>
@@ -146,6 +211,11 @@ export default function ConversationDetailPanel({ conversationId, onClose, empty
           detail={conversationDetail}
           loading={conversationDetailLoading}
           error={conversationDetailError}
+          hasMedia={galleryMedia.length > 0}
+          onRefresh={handleRefresh}
+          onViewMedia={handleViewMedia}
+          onViewRaw={() => setViewTab('developer')}
+          onExport={handleExport}
         />
       </div>
 
@@ -155,30 +225,51 @@ export default function ConversationDetailPanel({ conversationId, onClose, empty
         </p>
       )}
 
-      {viewTab === 'conversation' && (
-        <ConversationChatView
-          messages={conversationMessages?.messages}
-          truncated={conversationMessages?.truncated}
-          totalEvents={conversationMessages?.totalEvents}
-          eventsById={eventsById}
-          storedAttachments={conversationAttachments}
-          ownerName={conversationDetail?.ownerName}
-          loading={messagesLoading}
-          error={messagesError}
-        />
-      )}
+      {viewTab === 'conversation' && (() => {
+        const hasWorkspace = mediaLoading || galleryMedia.length > 0;
+        // Full conversation shows when there's no generation workspace (a
+        // text-only conversation - unchanged behavior) OR when the user turns
+        // the Conversation-context toggle on.
+        const showChat = !hasWorkspace || contextOn;
+        return (
+          <>
+            {hasWorkspace && (
+              <GenerationWorkspace
+                media={galleryMedia}
+                messages={conversationMessages?.messages || []}
+                loading={mediaLoading}
+                contextOn={contextOn}
+                onContextChange={setContextOn}
+              />
+            )}
+            {showChat && hasWorkspace && (
+              <div className="cgpt-context-heading">💬 Full conversation</div>
+            )}
+            {showChat && (
+              <ConversationChatView
+                messages={conversationMessages?.messages}
+                truncated={conversationMessages?.truncated}
+                totalEvents={conversationMessages?.totalEvents}
+                eventsById={eventsById}
+                storedAttachments={conversationAttachments}
+                ownerName={conversationDetail?.ownerName}
+                conversationModel={conversationDetail?.model}
+                onOpenWorkspace={galleryMedia.length > 0 ? handleViewMedia : undefined}
+                loading={messagesLoading}
+                error={messagesError}
+              />
+            )}
+          </>
+        );
+      })()}
 
-      {viewTab === 'timeline' && (
-        <ConversationTimelineLog events={timelineEvents} loading={timelineLoading} error={timelineError} />
-      )}
-
-      {viewTab === 'raw' && (
-        <RawEventsList
+      {viewTab === 'developer' && (
+        <DeveloperConsole
           events={timelineEvents}
+          media={conversationMedia}
+          detail={conversationDetail}
           loading={timelineLoading}
           error={timelineError}
-          emptyTitle="No events"
-          emptyBody="Nothing has been captured for this conversation."
         />
       )}
     </div>

@@ -83,7 +83,7 @@ def _tags_by_generation_id(db: Session, generation_ids: list[int]) -> dict[int, 
 
 
 @router.get("/ungrouped")
-async def list_ungrouped_generations(
+def list_ungrouped_generations(
     limit: int = Query(DEFAULT_UNGROUPED_PAGE_SIZE, ge=1, le=MAX_UNGROUPED_PAGE_SIZE),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_operational_db),
@@ -118,7 +118,7 @@ async def list_ungrouped_generations(
 
 
 @router.get("/filters")
-async def get_generation_filters(
+def get_generation_filters(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
@@ -167,7 +167,7 @@ async def get_generation_filters(
 
 
 @router.get("/search")
-async def search_generations(
+def search_generations(
     q: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     owner_user_id: Optional[int] = Query(None),
@@ -296,7 +296,7 @@ def _top_model_by_user_id(db: Session, user_ids: list[int]) -> dict[int, str]:
 
 
 @router.get("/users")
-async def list_generation_users_directory(
+def list_generation_users_directory(
     q: Optional[str] = Query(None),
     limit: int = Query(DEFAULT_UNGROUPED_PAGE_SIZE, ge=1, le=MAX_UNGROUPED_PAGE_SIZE),
     offset: int = Query(0, ge=0),
@@ -363,7 +363,7 @@ async def list_generation_users_directory(
 
 
 @router.get("/users/{user_id}")
-async def get_generation_user_profile(
+def get_generation_user_profile(
     user_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -430,7 +430,7 @@ async def get_generation_user_profile(
 
 
 @router.get("/analytics")
-async def get_generation_analytics(
+def get_generation_analytics(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_faculty),
 ):
@@ -521,7 +521,7 @@ async def get_generation_analytics(
 
 
 @router.get("/{generation_id}")
-async def get_generation_detail(
+def get_generation_detail(
     generation_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -541,7 +541,7 @@ async def get_generation_detail(
 
 
 @router.post("/{generation_id}/favorite")
-async def add_generation_favorite(
+def add_generation_favorite(
     generation_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -564,7 +564,7 @@ async def add_generation_favorite(
 
 
 @router.delete("/{generation_id}/favorite")
-async def remove_generation_favorite(
+def remove_generation_favorite(
     generation_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -587,7 +587,7 @@ async def remove_generation_favorite(
 
 
 @router.get("/{generation_id}/tags")
-async def list_generation_tags(
+def list_generation_tags(
     generation_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -605,7 +605,7 @@ async def list_generation_tags(
 
 
 @router.post("/{generation_id}/tags", status_code=201)
-async def add_generation_tag(
+def add_generation_tag(
     generation_id: int,
     payload: GenerationTagCreatePayload,
     db: Session = Depends(get_operational_db),
@@ -666,7 +666,7 @@ async def add_generation_tag(
 
 
 @router.post("/{generation_id}/claim")
-async def claim_generation(
+def claim_generation(
     generation_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -705,7 +705,7 @@ async def claim_generation(
 
 
 @router.delete("/{generation_id}/claim")
-async def revoke_generation_claim(
+def revoke_generation_claim(
     generation_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_faculty),
@@ -743,7 +743,7 @@ async def revoke_generation_claim(
 
 
 @router.delete("/{generation_id}/tags/{tag}")
-async def remove_generation_tag(
+def remove_generation_tag(
     generation_id: int,
     tag: str,
     db: Session = Depends(get_operational_db),

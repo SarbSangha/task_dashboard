@@ -218,18 +218,17 @@ export default function UserListSidebar({ selectedUserId, onSelectUser }) {
 
       {(users.length > 0 || usersLoading) && (
         <div className="chatgpt-capture-conv-list" ref={listWrapRef}>
-          {listSize.width > 0 && listSize.height > 0 && (
-            <List
-              className="chatgpt-capture-virtual-list"
-              rowComponent={UserCard}
-              rowProps={rowProps}
-              rowCount={Math.max(rowCount, usersLoading ? 6 : 0)}
-              rowHeight={USER_CARD_HEIGHT}
-              onRowsRendered={handleRowsRendered}
-              overscanCount={4}
-              style={{ height: listSize.height, width: listSize.width }}
-            />
-          )}
+          <List
+            className="chatgpt-capture-virtual-list"
+            rowComponent={UserCard}
+            rowProps={rowProps}
+            rowCount={Math.max(rowCount, usersLoading ? 6 : 0)}
+            rowHeight={USER_CARD_HEIGHT}
+            onRowsRendered={handleRowsRendered}
+            overscanCount={4}
+            defaultHeight={480}
+            style={{ height: listSize.height || '100%', width: listSize.width || '100%' }}
+          />
         </div>
       )}
     </div>

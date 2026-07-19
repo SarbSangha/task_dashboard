@@ -49,7 +49,8 @@ graph TD
 | `audience` | enum[] | Roles who should see it (§6). |
 | `priorityTier` | 1–5 | Tier (§7). |
 | `dataSources` | enum[] | Tables required (§8) — drives auto-enable/disable. |
-| `readiness` | ✅/🟡/🔴 | Data availability today. |
+| `readiness` | ✅/🟡/🔴 | *Can the data support this?* (§9a) |
+| `status` | enum | *Has the product built this report?* `implemented` / `available` / `coming_soon` / `planned` / `deprecated` (§9a). |
 | `confidence` | enum | How trustworthy the answer is: `high` / `medium` / `low` (§9a). |
 | `calculationType` | enum | How the value is produced: `simple` / `aggregate` / `derived` / `forecast` / `ai_generated` (§9a). |
 | `relatedQuestions` | id[] | Drill-down / follow-up path (§9). |
@@ -130,6 +131,23 @@ Drives auto-enable. Grounded in the actual schema:
 > **Note:** there is **no `credit_transactions` table** — credit spend = `it_portal_tool_usage_events.credits_burned` costed via `tool_credit_rates`. Storage, latency, retry, token-billing tables **do not exist yet** (their questions are 🔴 and depend on future sources: `generation_latency`, `asset_events`, `token_usage`).
 
 ---
+
+## 9b. Readiness vs Status (two different maturities)
+
+- **`readiness`** answers *can the data support this question?* (a data/engineering fact).
+- **`status`** answers *has the product actually built this report?* (a product fact).
+
+They are independent — a question can be data-ready but not yet built, or built on data that is only partial.
+
+| status | Meaning | UI treatment |
+|--------|---------|--------------|
+| `implemented` | Live in the app today. | Fully interactive. |
+| `available` | Data ready; report not built yet. | "Build this" CTA. |
+| `coming_soon` | On the near-term roadmap. | Badged, non-interactive. |
+| `planned` | Backlog / needs capture or model. | Roadmap tab. |
+| `deprecated` | Retired. | Hidden unless "show all". |
+
+Example: *Total Credits Burned* → readiness ✅ / status `implemented`; *Cost Forecast* → 🟡 / `coming_soon`; *Prompt Similarity* → 🔴 / `planned`; a retired report → ✅ / `deprecated`.
 
 ## 9a. Confidence & calculation type
 

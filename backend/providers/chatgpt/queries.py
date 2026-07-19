@@ -33,7 +33,15 @@ from providers.chatgpt.constants import (
     PROVIDER,
 )
 from providers.chatgpt.health import compute_capture_health_status
-from providers.chatgpt.models import ConversationCaptureAttachment, ConversationCaptureEvent, ConversationCaptureHealth
+from providers.chatgpt.models import (
+    ConversationCaptureAttachment,
+    ConversationCaptureEvent,
+    ConversationCaptureHealth,
+    ConversationMediaAsset,
+    ConversationPrompt,
+    ConversationRecord,
+    ConversationResponse,
+)
 from models_new import User
 from utils.datetime_utils import serialize_utc_datetime
 
@@ -256,6 +264,28 @@ def list_conversations(db: Session, *, filters: EventFilters, limit: int, offset
             else:
                 files += 1
             attachment_counts_by_conversation[conversation_id] = (images, files)
+
+        # Generated/response media assets (ConversationMediaAsset) count toward
+        # the same "images" total shown in the conversation summary - separate
+        # table from ConversationCaptureAttachment (uploaded files) above, so
+        # it's a separate query folded into the same running tally. Only
+        # url-bearing (stored) rows count, matching what the gallery renders.
+        media_rows = (
+            db.query(
+                ConversationMediaAsset.provider_conversation_id,
+                func.count(ConversationMediaAsset.id),
+            )
+            .filter(
+                ConversationMediaAsset.provider == PROVIDER,
+                ConversationMediaAsset.provider_conversation_id.in_(conversation_ids),
+                ConversationMediaAsset.url.isnot(None),
+            )
+            .group_by(ConversationMediaAsset.provider_conversation_id)
+            .all()
+        )
+        for conversation_id, media_count in media_rows:
+            images, files = attachment_counts_by_conversation.get(conversation_id, (0, 0))
+            attachment_counts_by_conversation[conversation_id] = (images + int(media_count or 0), files)
 
     items = []
     for row in page_rows:
@@ -609,6 +639,23 @@ def _count_real_attachments(
             images += 1
         else:
             files += 1
+
+    # Generated/response media assets (ConversationMediaAsset) count toward
+    # "images" too - same "count the same rows the gallery renders" rule as
+    # this function's docstring: only url-bearing (stored) rows, so the header
+    # number always matches the gallery. Video assets are counted as images
+    # here for now (the header has no separate "videos" field yet); revisit
+    # when video capture actually lands.
+    media_query = db.query(func.count(ConversationMediaAsset.id)).filter(
+        ConversationMediaAsset.provider == PROVIDER,
+        ConversationMediaAsset.url.isnot(None),
+    )
+    if conversation_id is not None:
+        media_query = media_query.filter(ConversationMediaAsset.provider_conversation_id == conversation_id)
+    if user_id is not None:
+        media_query = media_query.filter(ConversationMediaAsset.user_id == user_id)
+    images += int(media_query.scalar() or 0)
+
     return images, files
 
 
@@ -816,18 +863,95 @@ def get_conversation_detail(db: Session, conversation_id: str) -> Optional[dict]
     }
 
 
+def _list_conversation_messages_from_normalized(db: Session, record: ConversationRecord, *, limit: int) -> dict:
+    """Phase 3 read path: builds the identical wire shape the raw-event
+    reconstruction below produces, from ConversationPrompt/ConversationResponse
+    rows instead - so ConversationChatView.jsx needs zero awareness of which
+    path served it. Used once a conversation has been normalized (see
+    normalization.py); conversations captured before normalization existed
+    fall through to the raw-event path."""
+    prompts = (
+        db.query(ConversationPrompt)
+        .filter(ConversationPrompt.conversation_id == record.id)
+        .order_by(ConversationPrompt.sequence_index.asc(), ConversationPrompt.id.asc())
+        .all()
+    )
+    responses = (
+        db.query(ConversationResponse)
+        .filter(ConversationResponse.conversation_id == record.id)
+        .order_by(ConversationResponse.sequence_index.asc(), ConversationResponse.id.asc())
+        .all()
+    )
+
+    entries: list[tuple[datetime, dict]] = []
+    for prompt in prompts:
+        timestamp = prompt.prompt_timestamp or prompt.created_at
+        entries.append((timestamp, {
+            "id": f"prompt-{prompt.source_capture_event_id}" if prompt.source_capture_event_id else f"prompt-db-{prompt.id}",
+            "role": "user",
+            "text": prompt.prompt_text or "",
+            "timestamp": serialize_utc_datetime(timestamp),
+            "edited": False,
+            "pending": False,
+            "attachments": _build_attachment_list({
+                "images": prompt.images_json or [],
+                "files": prompt.files_json or [],
+                "attachments": prompt.attachments_json or [],
+            }),
+            "contentParts": prompt.content_parts_json,
+            "sourceEventIds": [prompt.source_capture_event_id] if prompt.source_capture_event_id else [],
+        }))
+    for response in responses:
+        timestamp = response.response_timestamp or response.created_at
+        entries.append((timestamp, {
+            "id": f"response-{response.source_capture_event_id}" if response.source_capture_event_id else f"response-db-{response.id}",
+            "role": "assistant",
+            "text": response.response_text or "",
+            "model": None,
+            "timestamp": serialize_utc_datetime(timestamp),
+            "edited": False,
+            "pending": False,
+            "hasMarkdown": bool(response.has_markdown),
+            "codeBlocks": response.code_blocks_json or [],
+            "contentParts": response.content_parts_json,
+            "citations": response.citations_json,
+            "attachments": [],
+            "sourceEventIds": [response.source_capture_event_id] if response.source_capture_event_id else [],
+        }))
+
+    entries.sort(key=lambda item: item[0] or datetime.min)
+    messages = [entry[1] for entry in entries[:limit]]
+
+    return {
+        "conversationId": record.provider_conversation_id,
+        "messages": messages,
+        "truncated": len(entries) > limit,
+        "totalEvents": len(entries),
+    }
+
+
 def list_conversation_messages(db: Session, conversation_id: str, *, limit: int = 200) -> Optional[dict]:
     """Normalized chat messages for one conversation - the API this feature's
     UI actually wants (role/text/timestamp/attachments), not raw events.
 
-    Best-effort chronological reconstruction, same heuristic previously
-    implemented client-side (see chatgptCaptureUtils.buildConversationTurns):
-    Phase 3 (ConversationRecord/ConversationPrompt/ConversationResponse) does
-    not exist yet, so there's no stored notion of "this response answers that
-    prompt" - a response_started/response_completed pair is treated as the
-    answer to whatever prompt_captured most recently preceded it, since
-    conversations are turn-based and events are already chronological.
+    Prefers Phase 3 normalized rows (ConversationPrompt/ConversationResponse)
+    when they exist for this conversation. Falls back to a best-effort
+    chronological reconstruction directly from the raw event log (same
+    heuristic previously implemented client-side, see
+    chatgptCaptureUtils.buildConversationTurns) for conversations captured
+    before normalization existed - a response_started/response_completed pair
+    is treated as the answer to whatever prompt_captured most recently
+    preceded it, since conversations are turn-based and events are already
+    chronological.
     """
+    record = (
+        db.query(ConversationRecord)
+        .filter(ConversationRecord.provider == PROVIDER, ConversationRecord.provider_conversation_id == conversation_id)
+        .first()
+    )
+    if record and (record.prompt_count or record.response_count):
+        return _list_conversation_messages_from_normalized(db, record, limit=limit)
+
     events = _conversation_events(db, conversation_id)
     if not events:
         return None
@@ -885,6 +1009,8 @@ def list_conversation_messages(db: Session, conversation_id: str, *, limit: int 
                 open_assistant_message["model"] = payload.get("model") or open_assistant_message.get("model")
                 open_assistant_message["hasMarkdown"] = bool(payload.get("hasMarkdown"))
                 open_assistant_message["codeBlocks"] = payload.get("codeBlocks") or []
+                open_assistant_message["contentParts"] = payload.get("contentParts")
+                open_assistant_message["citations"] = payload.get("citations")
                 open_assistant_message["timestamp"] = serialize_utc_datetime(event.created_at)
                 open_assistant_message["sourceEventIds"].append(event.id)
             else:
@@ -900,6 +1026,8 @@ def list_conversation_messages(db: Session, conversation_id: str, *, limit: int 
                     "pending": False,
                     "hasMarkdown": bool(payload.get("hasMarkdown")),
                     "codeBlocks": payload.get("codeBlocks") or [],
+                    "contentParts": payload.get("contentParts"),
+                    "citations": payload.get("citations"),
                     "attachments": [],
                     "sourceEventIds": [event.id],
                 })
@@ -950,6 +1078,30 @@ def list_conversation_attachments(db: Session, conversation_id: str) -> list[dic
             ConversationCaptureAttachment.provider_conversation_id == conversation_id,
         )
         .order_by(ConversationCaptureAttachment.created_at.desc())
+        .all()
+    )
+    return [record.to_dict() for record in records]
+
+
+def list_conversation_media(db: Session, conversation_id: str) -> list[dict]:
+    """Generated/response media assets (see media.py -> ConversationMediaAsset)
+    for one conversation, in display order. Only rows that actually have a
+    stored R2 url are returned - a 'pending' row (no bytes yet, or a source
+    the server couldn't fetch) has nothing renderable, so it would only show
+    as a broken thumbnail in the gallery. The row's `url` is the raw
+    (private) R2 url; the dashboard renders it through /api/files/open?url=,
+    which extracts the key and issues a short-lived signed redirect."""
+    records = (
+        db.query(ConversationMediaAsset)
+        .filter(
+            ConversationMediaAsset.provider == PROVIDER,
+            ConversationMediaAsset.provider_conversation_id == conversation_id,
+            ConversationMediaAsset.url.isnot(None),
+        )
+        .order_by(
+            ConversationMediaAsset.display_order.asc().nullslast(),
+            ConversationMediaAsset.created_at.asc(),
+        )
         .all()
     )
     return [record.to_dict() for record in records]

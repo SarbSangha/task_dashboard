@@ -13,10 +13,10 @@ but lives in its own package per the modular provider architecture (see
 | 1 | Data model & migrations (`models.py`, `migrations.py`) | Done |
 | 2A | Backend raw capture ingestion (`capture.py`, `router.py` - `POST /api/providers/chatgpt/capture/events`) | Done |
 | 2A.5 | Browser capture architecture review | In review |
-| 2B | Browser extension capture (`content-chatgpt-network.js` + isolated-world adapter) | Pending |
-| 3 | Normalization (`ConversationCaptureEvent` -> `ConversationRecord`/`Prompt`/`Response`/`Asset`) + query router | Pending |
+| 2B | Browser extension capture (`content-chatgpt-network.js` + isolated-world adapter) | Done for text/prompt capture; assistant content now sourced from an authoritative post-stream fetch rather than SSE reconstruction - see `RESPONSE_RECONSTRUCTION_REPORT.md`. Unverified against a live ChatGPT session (no browser available to the implementer) - needs a real-session smoke test before being called fully verified. |
+| 3 | Normalization (`ConversationCaptureEvent` -> `ConversationRecord`/`Prompt`/`Response`/`Asset`) + query router | Done (`normalization.py`), invoked inline from `router.py` after each ingest. Historical events need a one-time `scripts/backfill_chatgpt_normalization.py` run. |
 | 4 | Recovery (`recovery.py`) | Pending |
-| 5 | Capture Center frontend integration | Pending |
+| 5 | Capture Center frontend integration | Ordered content-part rendering (text/image interleaving) done - see `ConversationContentParts.jsx`. Broader Capture Center UI work still pending. |
 | 6 | Analytics (`analytics.py`) | Pending |
 
 ## Capture flow (raw-first, same philosophy as Kling)
@@ -84,8 +84,16 @@ upgrades.
   distinct from `last_successful_upload_at` (backend confirmed receiving
   one) specifically so "idle user, empty queue" and "active user, nothing
   arriving" don't look identical.
+- `normalization.py` - Phase 3: normalizes `ConversationCaptureEvent` rows
+  into `ConversationRecord`/`ConversationPrompt`/`ConversationResponse`/
+  `ConversationGeneratedAsset`, invoked inline from `router.py` after each
+  ingest. Idempotent on `provider_message_id`/`provider_asset_id`.
 - `CAPTURE_CONTRACT.md` - the extension<->backend wire contract + compatibility matrix.
 - `EXTENSION_CAPTURE_DESIGN.md` - Phase 2A.5 browser-capture architecture review.
+- `RESPONSE_RECONSTRUCTION_REPORT.md` - root cause + fix for assistant-response
+  capture (why responses showed as missing/garbled, and the ordered
+  content-part model that replaced the old flat text + separate-images
+  layout).
 - `__init__.py` - imports `.models` so tables register on `Base.metadata`.
 
 ## Ownership model

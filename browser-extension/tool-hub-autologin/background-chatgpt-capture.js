@@ -325,6 +325,66 @@ async function handleChatGptCaptureAttachmentMessage(message) {
   }
 }
 
+async function postChatGptCaptureMedia(settings, media) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (settings.sessionToken) headers['X-Session-Id'] = settings.sessionToken;
+
+  const response = await fetch(`${settings.apiBase}/api/providers/chatgpt/capture/media`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify(media),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    const error = new Error(buildApiErrorMessage(data, response, 'ChatGPT media upload failed', settings));
+    error.status = response.status;
+    throw error;
+  }
+  // httpStatus attached (not part of the backend's own response body) so the
+  // content-script trace can log it without a second round-trip - the body
+  // itself (data.data: the CaptureMediaOut asset dict, including id/
+  // enrichmentStatus) was already being fetched and discarded before this
+  // instrumentation pass; nothing about the request/response itself changes.
+  return { ...data, httpStatus: response.status };
+}
+
+// Additive media-capture layer (Phase 2) - same best-effort, not-lossless
+// posture as postChatGptCaptureAttachment/handleChatGptCaptureAttachmentMessage
+// just above: a media asset (image/video bytes or metadata) doesn't belong
+// in the persisted retry queue used for tiny JSON capture events. One
+// attempt, logged on failure, never retried - losing a generated-image
+// capture is an acceptable tradeoff text capture never makes.
+async function handleChatGptCaptureMediaMessage(message) {
+  const media = message?.media;
+  if (!media || typeof media !== 'object' || !media.media_type) {
+    return { ok: false, error: 'Invalid media payload' };
+  }
+  const flags = await readChatGptCaptureFeatureFlags();
+  if (!flags.enableCapture) {
+    return { ok: true, uploaded: false, reason: 'capture_disabled' };
+  }
+  if (flags.captureMode === 'DRY_RUN') {
+    return { ok: true, uploaded: false, reason: 'dry_run' };
+  }
+  try {
+    const settings = await getSettings();
+    const data = await postChatGptCaptureMedia(settings, media);
+    // Threads the backend response (httpStatus, and data.data - the stored
+    // ConversationMediaAsset dict, including id/enrichmentStatus) back to
+    // the content script - previously fetched and silently discarded, which
+    // is why stage 8 (Backend Response) of the media capture trace couldn't
+    // be observed at all. Upload behavior/retries are unchanged.
+    return { ok: true, uploaded: true, data };
+  } catch (error) {
+    if (flags.effectiveDebug) {
+      console.warn('[RMW ChatGPT Capture] media upload failed (not retried)', error?.message || error);
+    }
+    return { ok: false, error: error?.message || 'Media upload failed', httpStatus: error?.status || null };
+  }
+}
+
 async function flushChatGptCaptureQueue() {
   const now = Date.now();
   const queue = await readChatGptCaptureQueue();

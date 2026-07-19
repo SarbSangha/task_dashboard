@@ -1,5 +1,6 @@
 {
     "cSpell.words": [
         "cands"
-    ]
+    ],
+    "python.defaultInterpreterPath": "${workspaceFolder}/backend/venv/Scripts/python.exe"
 }

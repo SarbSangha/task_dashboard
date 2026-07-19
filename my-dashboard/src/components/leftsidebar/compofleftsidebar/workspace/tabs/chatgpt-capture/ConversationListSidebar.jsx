@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { List } from 'react-window';
 import { SkeletonBlock } from '../../../../../ui/Skeleton';
+import ConversationCard from './ConversationCard';
+import ConversationFilters from './ConversationFilters';
+import { applyConversationFilters, DEFAULT_CONVERSATION_FILTERS } from './conversationFilterHelpers';
 import { chatgptCaptureAPI } from '../../../../../../services/api';
 import { useElementSize } from '../../../../../../hooks/useElementSize';
 import { useDebouncedValue } from './useDebouncedValue';
 import { usePinnedConversations } from './usePinnedConversations';
-import { formatCount, formatRelativeTime, getHealthStatusMeta, normalizeApiError } from './chatgptCaptureUtils';
+import { normalizeApiError } from './chatgptCaptureUtils';
 
 const CONVERSATION_PAGE_SIZE = 20;
 const EVENT_TYPE_OPTIONS = [
@@ -23,78 +26,11 @@ const EVENT_TYPE_OPTIONS = [
   'file_upload_detected',
   'file_download_detected',
 ];
-const CONVERSATION_CARD_HEIGHT = 128;
+const CONVERSATION_CARD_HEIGHT = 150;
 const SORT_OPTIONS = [
   { key: 'recent', label: 'Most recent' },
   { key: 'messages', label: 'Most messages' },
 ];
-
-function ConversationCard({ ariaAttributes, index, style, conversations, selectedConversationId, onSelect, isPinned, onTogglePin }) {
-  const conversation = conversations[index];
-
-  if (!conversation) {
-    return (
-      <div {...ariaAttributes} style={style} className="chatgpt-capture-conv-card-wrap">
-        <div className="chatgpt-capture-conv-card loading" aria-hidden="true">
-          <SkeletonBlock width="60%" height={14} />
-          <SkeletonBlock width="90%" height={11} style={{ marginTop: 8 }} />
-          <SkeletonBlock width="80%" height={11} style={{ marginTop: 6 }} />
-        </div>
-      </div>
-    );
-  }
-
-  const isSelected = conversation.conversationId === selectedConversationId;
-  const healthMeta = getHealthStatusMeta(conversation.captureHealth);
-  const pinned = isPinned(conversation.conversationId);
-
-  return (
-    <div {...ariaAttributes} style={style} className="chatgpt-capture-conv-card-wrap">
-      <button
-        type="button"
-        className={`chatgpt-capture-pin-btn${pinned ? ' pinned' : ''}`}
-        aria-label={pinned ? 'Unpin conversation' : 'Pin conversation'}
-        aria-pressed={pinned}
-        onClick={(event) => {
-          event.stopPropagation();
-          onTogglePin(conversation.conversationId);
-        }}
-      >
-        {pinned ? '★' : '☆'}
-      </button>
-      <button
-        type="button"
-        className={`chatgpt-capture-conv-card${isSelected ? ' selected' : ''}`}
-        aria-current={isSelected ? 'true' : undefined}
-        onClick={() => onSelect(conversation.conversationId, conversation.title)}
-      >
-        <div className="chatgpt-capture-conv-card-top">
-          <span className="chatgpt-capture-conv-card-title">{conversation.title || conversation.conversationId}</span>
-          <span className={`chatgpt-capture-health-dot tone-${healthMeta.tone}`} title={healthMeta.label} aria-hidden="true" />
-        </div>
-
-        {conversation.firstPromptPreview && (
-          <p className="chatgpt-capture-conv-card-preview">
-            <span className="chatgpt-capture-conv-card-preview-role">You:</span> {conversation.firstPromptPreview}
-          </p>
-        )}
-        {conversation.lastResponsePreview && (
-          <p className="chatgpt-capture-conv-card-preview">
-            <span className="chatgpt-capture-conv-card-preview-role">ChatGPT:</span> {conversation.lastResponsePreview}
-          </p>
-        )}
-
-        <div className="chatgpt-capture-conv-card-meta">
-          {conversation.model && <span className="chatgpt-capture-chip">{conversation.model}</span>}
-          <span>{formatCount(conversation.promptsCount + conversation.responsesCount)} msgs</span>
-          {conversation.imagesCount > 0 && <span>🖼️ {conversation.imagesCount}</span>}
-          {conversation.filesCount > 0 && <span>📄 {conversation.filesCount}</span>}
-          <span className="chatgpt-capture-conv-card-time">{formatRelativeTime(conversation.lastSeenAt)}</span>
-        </div>
-      </button>
-    </div>
-  );
-}
 
 export default function ConversationListSidebar({ selectedConversationId, onSelectConversation, userId, userName, onBackToUsers }) {
   const { isPinned, togglePin } = usePinnedConversations();
@@ -104,6 +40,10 @@ export default function ConversationListSidebar({ selectedConversationId, onSele
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [sortKey, setSortKey] = useState('recent');
+  const [convFilters, setConvFilters] = useState(DEFAULT_CONVERSATION_FILTERS);
+  // Filters collapsed by default (progressive disclosure) — search + sort stay
+  // visible; the rest folds away so the conversation list gets the space.
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [captureVersionFilter, setCaptureVersionFilter] = useState('');
   const [extensionVersionFilter, setExtensionVersionFilter] = useState('');
@@ -220,24 +160,57 @@ export default function ConversationListSidebar({ selectedConversationId, onSele
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  const filtersActive = convFilters.type !== 'all' || convFilters.status !== 'any' || convFilters.time !== 'any';
+
+  // Count every applied filter so the collapsed "Filters" control can show a
+  // badge — the user always knows narrowing is in effect without expanding it.
+  const activeFilterCount =
+    (eventTypeFilter ? 1 : 0)
+    + (convFilters.type !== 'all' ? 1 : 0)
+    + (convFilters.status !== 'any' ? 1 : 0)
+    + (convFilters.time !== 'any' ? 1 : 0)
+    + (dateFrom ? 1 : 0)
+    + (dateTo ? 1 : 0)
+    + (isAdvancedSearchActive ? 1 : 0);
+
+  const handleResetAllFilters = useCallback(() => {
+    setEventTypeFilter('');
+    setConvFilters(DEFAULT_CONVERSATION_FILTERS);
+    setDateFrom('');
+    setDateTo('');
+    setCaptureVersionFilter('');
+    setExtensionVersionFilter('');
+    setClientEventIdFilter('');
+  }, []);
+
   const sortedConversations = useMemo(() => {
+    const filtered = applyConversationFilters(conversations, convFilters);
     const base = sortKey !== 'messages'
-      ? conversations
-      : [...conversations].sort((a, b) => (b.promptsCount + b.responsesCount) - (a.promptsCount + a.responsesCount));
+      ? filtered
+      : [...filtered].sort((a, b) => (b.promptsCount + b.responsesCount) - (a.promptsCount + a.responsesCount));
     // Pinned conversations float to the top of whatever the chosen sort
     // produced, same as Gmail's starred-first convention - within each group
     // (pinned / not pinned) the sort order above is preserved.
     return [...base].sort((a, b) => Number(isPinned(b.conversationId)) - Number(isPinned(a.conversationId)));
-  }, [conversations, sortKey, isPinned]);
+  }, [conversations, convFilters, sortKey, isPinned]);
+
+  const handleFilterChange = useCallback((axis, key) => {
+    setConvFilters((prev) => ({ ...prev, [axis]: key }));
+  }, []);
 
   const [listWrapRef, listSize] = useElementSize();
 
   const rowProps = useMemo(
-    () => ({ conversations: sortedConversations, selectedConversationId, onSelect: onSelectConversation, isPinned, onTogglePin: togglePin }),
-    [sortedConversations, selectedConversationId, onSelectConversation, isPinned, togglePin]
+    () => ({ conversations: sortedConversations, selectedConversationId, onSelect: onSelectConversation, isPinned, onTogglePin: togglePin, userName: userId ? userName : undefined }),
+    [sortedConversations, selectedConversationId, onSelectConversation, isPinned, togglePin, userId, userName]
   );
 
-  const rowCount = conversations.length < conversationsTotal ? conversations.length + 1 : conversations.length;
+  // Row count follows the FILTERED list (what's actually rendered). The +1
+  // sentinel (a loading card) is kept whenever the server still has more to
+  // page in, so infinite-scroll keeps working even while a quick filter is
+  // narrowing the loaded set.
+  const hasMoreToLoad = conversations.length < conversationsTotal;
+  const rowCount = sortedConversations.length + (hasMoreToLoad ? 1 : 0);
 
   const handleRowsRendered = useCallback(
     ({ stopIndex }) => {
@@ -267,17 +240,18 @@ export default function ConversationListSidebar({ selectedConversationId, onSele
           onChange={(event) => setSearchInput(event.target.value)}
         />
         <div className="chatgpt-capture-filter-row">
-          <select
-            className="chatgpt-capture-select"
-            aria-label="Filter by event type"
-            value={eventTypeFilter}
-            onChange={(event) => setEventTypeFilter(event.target.value)}
+          <button
+            type="button"
+            className={`chatgpt-capture-filter-toggle${filtersOpen ? ' open' : ''}${activeFilterCount > 0 ? ' active' : ''}`}
+            onClick={() => setFiltersOpen((prev) => !prev)}
+            aria-expanded={filtersOpen}
           >
-            <option value="">All event types</option>
-            {EVENT_TYPE_OPTIONS.map((type) => (
-              <option key={type} value={type}>{type.replace(/_/g, ' ')}</option>
-            ))}
-          </select>
+            <span className="chatgpt-capture-filter-toggle-label">
+              <span aria-hidden="true">⚙</span> Filters
+            </span>
+            {activeFilterCount > 0 && <span className="chatgpt-capture-filter-badge">{activeFilterCount}</span>}
+            <span className="chatgpt-capture-filter-caret" aria-hidden="true">▾</span>
+          </button>
           <select
             className="chatgpt-capture-select"
             aria-label="Sort conversations"
@@ -289,48 +263,70 @@ export default function ConversationListSidebar({ selectedConversationId, onSele
             ))}
           </select>
         </div>
-        <div className="chatgpt-capture-date-filters">
-          <label>
-            <span>From</span>
-            <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
-          </label>
-          <label>
-            <span>To</span>
-            <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
-          </label>
-        </div>
-        <button
-          type="button"
-          className="chatgpt-capture-secondary-btn"
-          onClick={() => setAdvancedOpen((prev) => !prev)}
-          aria-expanded={advancedOpen}
-        >
-          {advancedOpen ? 'Hide advanced' : 'Advanced search'}
-        </button>
-        {advancedOpen && (
-          <div className="chatgpt-capture-advanced-filters">
-            <input
-              type="text"
-              aria-label="Filter by capture version"
-              placeholder="Capture version"
-              value={captureVersionFilter}
-              onChange={(event) => setCaptureVersionFilter(event.target.value)}
-              inputMode="numeric"
-            />
-            <input
-              type="text"
-              aria-label="Filter by extension version"
-              placeholder="Extension version"
-              value={extensionVersionFilter}
-              onChange={(event) => setExtensionVersionFilter(event.target.value)}
-            />
-            <input
-              type="text"
-              aria-label="Filter by client event id"
-              placeholder="Client event id"
-              value={clientEventIdFilter}
-              onChange={(event) => setClientEventIdFilter(event.target.value)}
-            />
+
+        {filtersOpen && (
+          <div className="chatgpt-capture-filter-drawer">
+            <select
+              className="chatgpt-capture-select"
+              aria-label="Filter by event type"
+              value={eventTypeFilter}
+              onChange={(event) => setEventTypeFilter(event.target.value)}
+            >
+              <option value="">All event types</option>
+              {EVENT_TYPE_OPTIONS.map((type) => (
+                <option key={type} value={type}>{type.replace(/_/g, ' ')}</option>
+              ))}
+            </select>
+            <ConversationFilters filters={convFilters} onChange={handleFilterChange} />
+            <div className="chatgpt-capture-date-filters">
+              <label>
+                <span>From</span>
+                <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
+              </label>
+              <label>
+                <span>To</span>
+                <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
+              </label>
+            </div>
+            <button
+              type="button"
+              className="chatgpt-capture-secondary-btn"
+              onClick={() => setAdvancedOpen((prev) => !prev)}
+              aria-expanded={advancedOpen}
+            >
+              {advancedOpen ? 'Hide advanced' : 'Advanced search'}
+            </button>
+            {advancedOpen && (
+              <div className="chatgpt-capture-advanced-filters">
+                <input
+                  type="text"
+                  aria-label="Filter by capture version"
+                  placeholder="Capture version"
+                  value={captureVersionFilter}
+                  onChange={(event) => setCaptureVersionFilter(event.target.value)}
+                  inputMode="numeric"
+                />
+                <input
+                  type="text"
+                  aria-label="Filter by extension version"
+                  placeholder="Extension version"
+                  value={extensionVersionFilter}
+                  onChange={(event) => setExtensionVersionFilter(event.target.value)}
+                />
+                <input
+                  type="text"
+                  aria-label="Filter by client event id"
+                  placeholder="Client event id"
+                  value={clientEventIdFilter}
+                  onChange={(event) => setClientEventIdFilter(event.target.value)}
+                />
+              </div>
+            )}
+            {activeFilterCount > 0 && (
+              <button type="button" className="chatgpt-capture-filter-clear" onClick={handleResetAllFilters}>
+                Clear all filters
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -365,25 +361,35 @@ export default function ConversationListSidebar({ selectedConversationId, onSele
 
           {!conversationsLoading && !conversationsError && conversations.length === 0 && (
             <div className="chatgpt-capture-empty-state compact">
-              <strong>No conversations found</strong>
-              <p>Try widening your filters, or open ChatGPT with the extension active to generate new capture events.</p>
+              <span className="chatgpt-capture-empty-icon" aria-hidden="true">🗂️</span>
+              <strong>No conversations captured yet</strong>
+              <p>Open ChatGPT with the extension active, or widen your search, and captured conversations will appear here.</p>
             </div>
           )}
 
-          {(conversations.length > 0 || conversationsLoading) && (
+          {!conversationsLoading && conversations.length > 0 && sortedConversations.length === 0 && !hasMoreToLoad && filtersActive && (
+            <div className="chatgpt-capture-empty-state compact">
+              <strong>No conversations match these filters</strong>
+              <p>Clear the filters, or scroll to load more conversations.</p>
+              <button type="button" className="chatgpt-capture-secondary-btn" onClick={() => setConvFilters(DEFAULT_CONVERSATION_FILTERS)}>
+                Clear filters
+              </button>
+            </div>
+          )}
+
+          {(conversations.length > 0 || conversationsLoading) && !(conversations.length > 0 && sortedConversations.length === 0 && !hasMoreToLoad) && (
             <div className="chatgpt-capture-conv-list" ref={listWrapRef}>
-              {listSize.width > 0 && listSize.height > 0 && (
-                <List
-                  className="chatgpt-capture-virtual-list"
-                  rowComponent={ConversationCard}
-                  rowProps={rowProps}
-                  rowCount={Math.max(rowCount, conversationsLoading ? 6 : 0)}
-                  rowHeight={CONVERSATION_CARD_HEIGHT}
-                  onRowsRendered={handleRowsRendered}
-                  overscanCount={4}
-                  style={{ height: listSize.height, width: listSize.width }}
-                />
-              )}
+              <List
+                className="chatgpt-capture-virtual-list"
+                rowComponent={ConversationCard}
+                rowProps={rowProps}
+                rowCount={Math.max(rowCount, conversationsLoading ? 6 : 0)}
+                rowHeight={CONVERSATION_CARD_HEIGHT}
+                onRowsRendered={handleRowsRendered}
+                overscanCount={4}
+                defaultHeight={480}
+                style={{ height: listSize.height || '100%', width: listSize.width || '100%' }}
+              />
             </div>
           )}
         </>

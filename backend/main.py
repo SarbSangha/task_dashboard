@@ -46,6 +46,9 @@ from routers import generation_projects_router
 from routers import generation_records_router
 from routers import generation_recovery_router
 from routers import generation_collections_router
+from routers import reports_router
+from routers import credit_rates_router
+from routers import report_distribution_router
 from utils import cache as cache_utils
 
 # Import auth utilities for system status
@@ -378,7 +381,7 @@ async def ensure_cors_headers_on_error_responses(request: Request, call_next):
 
 # ==================== EXCEPTION HANDLERS ====================
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
+def validation_exception_handler(request: Request, exc: RequestValidationError):
     # Temporary diagnostic: 422s give no visibility into which field failed in
     # the access log line alone - print the field-level errors so they show up
     # next to the request in this same console.
@@ -387,7 +390,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
+def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler"""
     _safe_print(f"Unhandled exception: {exc}")
     traceback_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
@@ -445,10 +448,15 @@ app.include_router(generation_collections_router.router)
 # ChatGPT Capture & Conversation Intelligence (Phase 2A: raw capture only)
 app.include_router(chatgpt_router.router)
 
+# Reports / Business Intelligence (AI Intelligence Command Center)
+app.include_router(reports_router.router)
+app.include_router(credit_rates_router.router)
+app.include_router(report_distribution_router.router)
+
 
 # ==================== ROOT ENDPOINTS ====================
 @app.get("/")
-async def root():
+def root():
     """Root endpoint - API info"""
     if os.path.exists("dist/index.html"):
         return FileResponse("dist/index.html")
@@ -487,7 +495,7 @@ async def health_check():
         op_status = "healthy"
     except Exception as e:
         op_status = f"unhealthy: {str(e)}"
-    
+
     try:
         with ArchiveSessionLocal() as ar_db:
             ar_db.execute(text("SELECT 1"))
@@ -504,7 +512,7 @@ async def health_check():
             redis_status = f"unhealthy: {str(e)}"
     elif _redis_configured():
         redis_status = "unhealthy: REDIS_URL configured but client is unavailable"
-    
+
     dispatcher_status = notification_dispatcher.status()
     dispatcher_healthy = dispatcher_status.get("stopped", 0) == 0
     redis_healthy = redis_status in {"healthy", "disabled"}
@@ -518,7 +526,7 @@ async def health_check():
         )
         else "degraded"
     )
-    
+
     payload = {
         "status": overall_status,
         "timestamp": datetime.utcnow().isoformat(),
@@ -533,12 +541,8 @@ async def health_check():
         return JSONResponse(status_code=503, content=payload)
     return payload
 
-# @app.get("/api/health")
-# async def health_check():
-#     return {"ok": True}
-
 @app.get("/api/debug/pool")
-async def debug_pool(request: Request):
+def debug_pool(request: Request):
     """Local-only database pool diagnostics for production incidents."""
     if not _is_local_request(request):
         raise HTTPException(status_code=404, detail="Not found")
@@ -554,7 +558,7 @@ async def debug_pool(request: Request):
 
 
 @app.get("/api/system/status")
-async def system_status():
+def system_status():
     """Get system status"""
     now = time.time()
     cached_payload = _SYSTEM_STATUS_CACHE.get("payload")
@@ -594,7 +598,7 @@ if os.path.exists("dist"):
     
     # Catch-all for SPA routing (MUST BE LAST)
     @app.get("/{full_path:path}")
-    async def serve_react_app(full_path: str):
+    def serve_react_app(full_path: str):
         """Serve React app for all non-API routes"""
         # Skip API routes
         if full_path.startswith("api/"):
@@ -606,7 +610,7 @@ else:
     _safe_print("dist folder not found - API only mode")
     
     @app.get("/")
-    async def root_no_frontend():
+    def root_no_frontend():
         return {
             "name": "Task Management System API",
             "version": "2.0.0",

@@ -99,6 +99,28 @@ export function formatAbsoluteTime(value) {
   }).format(parsed);
 }
 
+// Short clock time (e.g. "10:32 AM") for per-message timestamps.
+export function formatClockTime(value) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(parsed);
+}
+
+// Day label for message time-grouping: "Today", "Yesterday", else a date.
+export function formatDayLabel(value) {
+  if (!value) return 'Undated';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Undated';
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const today = startOfDay(new Date());
+  const day = startOfDay(parsed);
+  const diffDays = Math.round((today - day) / (24 * 60 * 60 * 1000));
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  return new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'long', day: 'numeric' }).format(parsed);
+}
+
 const RELATIVE_UNITS = [
   { limit: 60, divisor: 1, unit: 'second' },
   { limit: 3600, divisor: 60, unit: 'minute' },
@@ -146,6 +168,27 @@ export function toGalleryAttachment(attachment) {
     originalName: attachment.fileName,
     filename: attachment.fileName,
     mimetype: attachment.mimeType,
+  };
+}
+
+/**
+ * Adapts a ConversationMediaAsset (backend camelCase: url, mimeType, prompt,
+ * mediaType, id) into the same {path, url, originalName, filename, mimetype}
+ * shape ChatAttachmentGallery expects - reusing the existing gallery/lightbox
+ * rather than building a second one. Media assets have no storagePath (the
+ * model stores only the R2 `url`), so `path` is omitted and the gallery falls
+ * back to `url`, which the /api/files/open proxy resolves to a signed
+ * redirect (the raw R2 url is private). The prompt, when present, makes a far
+ * nicer caption than a filename.
+ */
+export function toGalleryMediaAsset(mediaAsset) {
+  const label = mediaAsset.prompt || `${mediaAsset.mediaType || 'media'}-${mediaAsset.id}`;
+  return {
+    path: undefined,
+    url: mediaAsset.url,
+    originalName: label,
+    filename: label,
+    mimetype: mediaAsset.mimeType || (mediaAsset.mediaType?.includes('video') ? 'video/mp4' : 'image/jpeg'),
   };
 }
 

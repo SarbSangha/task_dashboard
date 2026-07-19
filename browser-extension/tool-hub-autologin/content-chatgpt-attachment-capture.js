@@ -45,15 +45,6 @@
     });
   }
 
-  function readFileAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-  }
-
   async function captureImageFile(file) {
     if (!file || !file.type || !file.type.startsWith('image/')) return;
     if (file.size > MAX_ATTACHMENT_BYTES) return; // silently skip - best-effort, not an error worth surfacing
@@ -61,7 +52,7 @@
     try {
       const [conversationId, dataUrl] = await Promise.all([
         waitForConversationId(),
-        readFileAsDataUrl(file),
+        bus.readFileAsDataUrl(file),
       ]);
       bus.emitSignal('CHATGPT_ATTACHMENT_CAPTURED', {
         conversationId,

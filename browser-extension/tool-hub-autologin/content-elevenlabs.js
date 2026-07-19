@@ -5,6 +5,15 @@ const MIN_RUN_GAP_MS = 500;
 const KEEP_ALIVE_MS = 2500;
 const ACTION_COOLDOWN_MS = 1800;
 const SUBMIT_COOLDOWN_MS = 5000;
+// Firebase's Google popup handshake (elevenlabs.io/__/auth/handler -> accounts.google.com)
+// includes deliberately human-paced email/password typing, a pre-submit pause, and can
+// wait up to GOOGLE_PASSWORD_POST_SUBMIT_WAIT_MS (18s) after submitting the password for
+// the transition to resolve - content-google.js gives the whole handshake up to
+// GOOGLE_AUTH_TRANSITION_TIMEOUT_MS (60s) to complete. Re-clicking "Sign in with Google"
+// from here before that window elapses can interrupt a popup that is still legitimately
+// mid-flow (e.g. right after the password is submitted), forcing the entire email+password
+// sequence to restart. Keep this in lockstep with content-google.js's 60s ceiling.
+const GOOGLE_CLICK_COOLDOWN_MS = 60000;
 const LAUNCH_RETRY_DELAY_MS = 500;
 const MAX_LAUNCH_RETRIES = 10;
 
@@ -59,6 +68,9 @@ const STATE = {
   authPageSeenAt: 0,
   googleClickAttempts: 0,
   lastGoogleClickAt: 0,
+  googlePopupAllowAppliedAt: 0,
+  googlePopupAllowFailedAt: 0,
+  googlePopupAllowRequestedAt: 0,
 };
 
 function normalizeLoginMethod(value) {
@@ -593,15 +605,29 @@ function findAuthOpenAction() {
   }) || null;
 }
 
+function isCookieConsentBannerText(text) {
+  // Detailed consent-management panel (categories: strictly necessary/preferences/statistics).
+  if (
+    text.includes('cookie settings')
+    && (text.includes('strictly necessary') || text.includes('preferences') || text.includes('statistics'))
+  ) {
+    return true;
+  }
+  // Simple "we value your privacy / accept all cookies" style banner. This variant has no
+  // "cookie settings" text at all, so it was previously never detected or dismissed, and
+  // could sit on screen intercepting clicks meant for the real sign-in controls beneath it.
+  return (
+    text.includes('value your privacy')
+    || text.includes('uses cookies')
+    || text.includes('use cookies')
+  ) && text.includes('cookie');
+}
+
 function findCookieConsentAction() {
   const roots = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], section, aside, div'))
     .filter((element) => isVisible(element));
 
-  const cookieRoot = roots.find((element) => {
-    const text = actionText(element);
-    return text.includes('cookie settings')
-      && (text.includes('strictly necessary') || text.includes('preferences') || text.includes('statistics'));
-  });
+  const cookieRoot = roots.find((element) => isCookieConsentBannerText(actionText(element)));
   if (!cookieRoot) return null;
 
   const candidates = collectBroadActionCandidates()
@@ -613,7 +639,7 @@ function findCookieConsentAction() {
       }
     });
 
-  const preferredLabels = ['accept selection', 'reject all', 'accept all', 'save preferences'];
+  const preferredLabels = ['accept selection', 'reject all', 'accept all', 'accept all cookies', 'save preferences'];
   for (const label of preferredLabels) {
     const match = candidates.find((element) => actionText(element) === label);
     if (match) return match;
@@ -639,6 +665,15 @@ function attemptDismissCookieConsent() {
   }
   scheduleAttempt(500);
   return true;
+}
+
+function isFirebaseAuthHandlerPage() {
+  try {
+    const path = normalizeText(new URL(window.location.href).pathname);
+    return path.includes('/__/auth/');
+  } catch {
+    return false;
+  }
 }
 
 function isAuthenticatedElevenLabsPage() {
@@ -737,6 +772,40 @@ function attemptOpenAuth() {
   return true;
 }
 
+function requestGooglePopupAllowance() {
+  return sendRuntimeMessage({ type: 'TOOL_HUB_ALLOW_ELEVENLABS_GOOGLE_POPUPS' })
+    .then((response) => {
+      if (response?.ok) {
+        STATE.googlePopupAllowAppliedAt = Date.now();
+        STATE.googlePopupAllowFailedAt = 0;
+      } else {
+        STATE.googlePopupAllowFailedAt = Date.now();
+      }
+      return response;
+    })
+    .catch(() => {
+      STATE.googlePopupAllowFailedAt = Date.now();
+    });
+}
+
+function ensureGooglePopupsAllowed() {
+  const now = Date.now();
+  if (STATE.googlePopupAllowAppliedAt && now - STATE.googlePopupAllowAppliedAt < 10 * 60 * 1000) {
+    return true;
+  }
+  if (STATE.googlePopupAllowFailedAt && now - STATE.googlePopupAllowFailedAt < 30000) {
+    return true;
+  }
+  if (STATE.googlePopupAllowRequestedAt && now - STATE.googlePopupAllowRequestedAt < 2500) {
+    return false;
+  }
+
+  STATE.googlePopupAllowRequestedAt = now;
+  setStatus('Allowing ElevenLabs Google popup');
+  requestGooglePopupAllowance().then(() => scheduleAttempt(0));
+  return false;
+}
+
 function attemptOpenGoogle() {
   const googleAction = findGoogleLoginAction();
   if (!googleAction) return false;
@@ -751,9 +820,13 @@ function attemptOpenGoogle() {
     scheduleAttempt(300);
     return true;
   }
-  if (STATE.lastGoogleClickAt && Date.now() - STATE.lastGoogleClickAt < 2500) {
+  if (!ensureGooglePopupsAllowed()) {
+    scheduleAttempt(300);
+    return true;
+  }
+  if (STATE.lastGoogleClickAt && Date.now() - STATE.lastGoogleClickAt < GOOGLE_CLICK_COOLDOWN_MS) {
     setStatus('Waiting for ElevenLabs Google sign-in redirect');
-    scheduleAttempt(500);
+    scheduleAttempt(800);
     return true;
   }
   if (STATE.googleClickAttempts >= 2) {
@@ -788,6 +861,12 @@ function attemptFlow() {
   }
 
   if (attemptDismissCookieConsent()) return;
+
+  if (isFirebaseAuthHandlerPage()) {
+    setStatus('Waiting for Google to complete sign-in');
+    scheduleAttempt(500);
+    return;
+  }
 
   if (isAuthenticatedElevenLabsPage()) {
     complete();
@@ -875,6 +954,16 @@ function scheduleAttempt(delay = 0) {
 function start() {
   ensureStatusBadge();
   captureLaunchTicket();
+
+  // Warm up the popup content-setting allowance in the background as early as
+  // possible so the round trip to the service worker is already resolved by the
+  // time the flow reaches the actual "Sign in with Google" click. Requesting it
+  // lazily right before the click added latency that could tip the first attempt
+  // past ElevenLabs' own client-side sign-in timeout, causing a visible
+  // "Unable to sign in" flash before our retry (which no longer pays that
+  // round-trip cost) completed successfully.
+  STATE.googlePopupAllowRequestedAt = Date.now();
+  requestGooglePopupAllowance();
 
   STATE.observer = new MutationObserver(() => scheduleAttempt(350));
   STATE.observer.observe(document.body || document.documentElement, {

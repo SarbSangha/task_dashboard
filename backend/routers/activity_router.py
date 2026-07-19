@@ -200,7 +200,7 @@ def serialize_activity_snapshot(
 
 
 @router.post("/start-session")
-async def start_session(
+def start_session(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
@@ -221,7 +221,7 @@ async def start_session(
 
 
 @router.post("/heartbeat")
-async def heartbeat(
+def heartbeat(
     payload: HeartbeatPayload,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -257,7 +257,7 @@ async def heartbeat(
 
 
 @router.post("/update-status")
-async def update_status(
+def update_status(
     payload: StatusPayload,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -277,7 +277,7 @@ async def update_status(
 
 
 @router.post("/end-session")
-async def end_session(
+def end_session(
     payload: Optional[StatusPayload] = None,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -305,7 +305,7 @@ async def end_session(
 
 
 @router.get("/my-activity")
-async def my_activity(
+def my_activity(
     activity_date: Optional[date] = Query(None, alias="date"),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -328,7 +328,7 @@ async def my_activity(
 
 
 @router.get("/users/{user_id}")
-async def user_activity(
+def user_activity(
     user_id: int,
     activity_date: Optional[date] = Query(None, alias="date"),
     db: Session = Depends(get_operational_db),
@@ -364,7 +364,7 @@ async def user_activity(
 
 
 @router.get("/department")
-async def department_activity(
+def department_activity(
     activity_date: Optional[date] = Query(None, alias="date"),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -406,7 +406,7 @@ async def department_activity(
 
 
 @router.get("/all-users")
-async def all_users_activity(
+def all_users_activity(
     activity_date: Optional[date] = Query(None, alias="date"),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_faculty),
@@ -441,7 +441,7 @@ async def all_users_activity(
 
 
 @router.get("/live-stats")
-async def live_stats(
+def live_stats(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_faculty),
 ):

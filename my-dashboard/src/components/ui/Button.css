@@ -1,0 +1,124 @@
+/* Button — shared hierarchy. Variants map onto --color-button-* tokens. */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast),
+    transform var(--theme-transition-fast),
+    opacity var(--theme-transition-fast);
+}
+
+.ui-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.ui-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Sizes */
+.ui-btn-sm {
+  min-height: 32px;
+  padding: 0 var(--space-5);
+  font-size: var(--text-sm);
+}
+
+.ui-btn-md {
+  min-height: 40px;
+  padding: 0 var(--space-6);
+  font-size: var(--text-base);
+}
+
+/* Primary */
+.ui-btn-primary {
+  border-color: color-mix(in srgb, var(--color-primary-strong) 72%, transparent);
+  background: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
+}
+
+.ui-btn-primary:hover:not(:disabled) {
+  background: var(--color-button-primary-bg-hover);
+  transform: translateY(-1px);
+}
+
+/* Secondary */
+.ui-btn-secondary {
+  border-color: var(--color-border);
+  background: var(--color-button-secondary-bg);
+  color: var(--color-button-secondary-text);
+}
+
+.ui-btn-secondary:hover:not(:disabled) {
+  background: var(--color-button-secondary-bg-hover);
+  border-color: var(--color-border-strong);
+}
+
+/* Ghost */
+.ui-btn-ghost {
+  background: var(--color-button-ghost-bg);
+  color: var(--color-button-ghost-text);
+}
+
+.ui-btn-ghost:hover:not(:disabled) {
+  background: var(--color-button-ghost-bg-hover);
+}
+
+/* Danger */
+.ui-btn-danger {
+  border-color: color-mix(in srgb, var(--color-feedback-error-text) 40%, transparent);
+  background: var(--color-button-destructive-bg);
+  color: var(--color-button-destructive-text);
+}
+
+.ui-btn-danger:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+/* Icon-only (square). Pair with aria-label. */
+.ui-btn-icon {
+  gap: 0;
+}
+
+.ui-btn.ui-btn-icon.ui-btn-md { min-width: 40px; padding: 0; }
+.ui-btn.ui-btn-icon.ui-btn-sm { min-width: 32px; padding: 0; }
+
+.ui-btn-icon.ui-btn-secondary,
+.ui-btn-icon.ui-btn-ghost {
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+}
+
+.ui-btn-icon.ui-btn-secondary:hover:not(:disabled),
+.ui-btn-icon.ui-btn-ghost:hover:not(:disabled) {
+  background: var(--color-hover-surface);
+  border-color: var(--color-border);
+  color: var(--color-text);
+}
+
+.ui-btn-glyph {
+  display: inline-flex;
+  align-items: center;
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+@media (pointer: coarse) {
+  .ui-btn-sm { min-height: 40px; }
+  .ui-btn-md { min-height: 44px; }
+}

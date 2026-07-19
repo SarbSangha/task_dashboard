@@ -1,8 +1,10 @@
 # providers/chatgpt/router.py
 """
-API surface for the ChatGPT provider. Phase 2A: raw capture ingestion only -
-no conversation/project/search endpoints yet (Phase 3).
+API surface for the ChatGPT provider. Phase 2A raw capture ingestion, plus
+Phase 3 normalization triggered inline after each ingest (see
+providers.chatgpt.normalization).
 """
+import logging
 from datetime import date
 from typing import Optional
 
@@ -15,6 +17,8 @@ from providers.chatgpt import queries as chatgpt_queries
 from providers.chatgpt.attachments import AttachmentCaptureError, store_attachment
 from providers.chatgpt.capture import ingest_capture_event, resolve_chatgpt_credential, resolve_chatgpt_tool
 from providers.chatgpt.health import capture_health_to_dict, get_capture_health_for_user, record_health_ping
+from providers.chatgpt.media import MediaCaptureError, store_media_asset
+from providers.chatgpt.normalization import normalize_capture_events_batch
 from providers.chatgpt.queries import EventFilters
 from providers.chatgpt.schemas import (
     CaptureAttachmentIn,
@@ -26,10 +30,13 @@ from providers.chatgpt.schemas import (
     CaptureEventsResponse,
     CaptureHealthOut,
     CaptureHealthPingIn,
+    CaptureMediaIn,
+    CaptureMediaOut,
     CaptureMetricsOut,
     ConversationAttachmentsOut,
     ConversationDetailOut,
     ConversationListOut,
+    ConversationMediaOut,
     ConversationMessagesOut,
     PaginationOut,
     UserDetailOut,
@@ -38,10 +45,11 @@ from providers.chatgpt.schemas import (
 from utils.permissions import require_admin, require_user
 
 router = APIRouter(prefix="/api/providers/chatgpt", tags=["chatgpt"])
+logger = logging.getLogger("chatgpt_router")
 
 
 @router.post("/capture/events", response_model=CaptureEventsResponse)
-async def capture_events(
+def capture_events(
     payload: CaptureEventsRequest,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -66,6 +74,7 @@ async def capture_events(
     credential_id = credential.id if credential else None
 
     results = []
+    newly_created_events = []
     for item in payload.events:
         outcome = ingest_capture_event(
             db,
@@ -85,6 +94,10 @@ async def capture_events(
             extension_session_id=item.extension_session_id,
             event_date=item.event_date,
         )
+        if outcome.status == "created" and outcome.event is not None:
+            # Duplicates are skipped: they were already normalized on their
+            # first "created" pass.
+            newly_created_events.append(outcome.event)
         results.append(
             CaptureEventResult(
                 client_event_id=item.client_event_id,
@@ -94,11 +107,26 @@ async def capture_events(
             )
         )
 
+    if newly_created_events:
+        # Phase 3 normalization is best-effort relative to raw capture (each
+        # event above is already durably committed by ingest_capture_event)
+        # - batched into one commit for the whole request rather than one
+        # per event, since a request can carry up to 200 events and the
+        # operational database is a remote Postgres; see
+        # normalize_capture_events_batch's docstring for why that matters.
+        # A normalization failure here must never turn a successful,
+        # lossless ingest into an error response.
+        try:
+            normalize_capture_events_batch(db, newly_created_events)
+        except Exception:
+            logger.exception("chatgpt normalization batch failed for %d event(s)", len(newly_created_events))
+            db.rollback()
+
     return CaptureEventsResponse(success=True, results=results)
 
 
 @router.post("/capture/health", response_model=CaptureHealthOut)
-async def report_capture_health(
+def report_capture_health(
     payload: CaptureHealthPingIn,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -130,7 +158,7 @@ async def report_capture_health(
 
 
 @router.get("/capture/health", response_model=CaptureHealthOut)
-async def get_capture_health(
+def get_capture_health(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
@@ -142,7 +170,7 @@ async def get_capture_health(
 
 
 @router.post("/capture/attachments", response_model=CaptureAttachmentOut)
-async def capture_attachment(
+def capture_attachment(
     payload: CaptureAttachmentIn,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -165,13 +193,54 @@ async def capture_attachment(
     return CaptureAttachmentOut(data=record.to_dict())
 
 
+@router.post("/capture/media", response_model=CaptureMediaOut)
+def capture_media(
+    payload: CaptureMediaIn,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_user),
+):
+    """Additive media-asset capture (generated/response images and videos),
+    separate from both the lossless /capture/events batch and the
+    /capture/attachments binary-upload path - see providers/chatgpt/media.py.
+    Does not read or write anything the text-capture pipeline
+    (capture.py/normalization.py) touches."""
+    try:
+        asset = store_media_asset(
+            db,
+            user=current_user,
+            provider_conversation_id=payload.provider_conversation_id,
+            message_id=payload.message_id,
+            assistant_message_id=payload.assistant_message_id,
+            correlation_id=payload.correlation_id,
+            media_type=payload.media_type,
+            generated=payload.generated,
+            data_url=payload.data_url,
+            source_url=payload.source_url,
+            thumbnail_url=payload.thumbnail_url,
+            file_name=payload.file_name,
+            mime_type=payload.mime_type,
+            width=payload.width,
+            height=payload.height,
+            duration_ms=payload.duration_ms,
+            provider_asset_id=payload.provider_asset_id,
+            prompt=payload.prompt,
+            alt_text=payload.alt_text,
+            source=payload.source,
+            display_order=payload.display_order,
+            metadata=payload.metadata,
+        )
+    except MediaCaptureError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    return CaptureMediaOut(data=asset.to_dict())
+
+
 # ==================== CAPTURE CENTER (read-only) ====================
 # Everything below is admin-gated: raw captured events/conversations expose
 # usage across every user's ChatGPT sessions, not just the caller's own -
 # same posture as generation_recovery_router's Capture Center for Kling.
 
 @router.get("/events", response_model=CaptureEventListOut)
-async def list_capture_events(
+def list_capture_events(
     conversation_id: Optional[str] = None,
     event_type: Optional[str] = None,
     client_event_id: Optional[str] = None,
@@ -205,7 +274,7 @@ async def list_capture_events(
 
 
 @router.get("/events/{event_id}", response_model=CaptureEventDetailOut)
-async def get_capture_event(
+def get_capture_event(
     event_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
@@ -217,7 +286,7 @@ async def get_capture_event(
 
 
 @router.get("/conversations", response_model=ConversationListOut)
-async def list_capture_conversations(
+def list_capture_conversations(
     conversation_id: Optional[str] = None,
     event_type: Optional[str] = None,
     date_from: Optional[date] = None,
@@ -237,7 +306,7 @@ async def list_capture_conversations(
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailOut)
-async def get_conversation_detail(
+def get_conversation_detail(
     conversation_id: str,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
@@ -249,7 +318,7 @@ async def get_conversation_detail(
 
 
 @router.get("/conversations/{conversation_id}/messages", response_model=ConversationMessagesOut)
-async def get_conversation_messages(
+def get_conversation_messages(
     conversation_id: str,
     limit: int = Query(default=200, ge=1, le=chatgpt_queries.MAX_EVENTS_LIMIT),
     db: Session = Depends(get_operational_db),
@@ -262,7 +331,7 @@ async def get_conversation_messages(
 
 
 @router.get("/conversations/{conversation_id}/attachments", response_model=ConversationAttachmentsOut)
-async def get_conversation_attachments(
+def get_conversation_attachments(
     conversation_id: str,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
@@ -270,8 +339,21 @@ async def get_conversation_attachments(
     return ConversationAttachmentsOut(data=chatgpt_queries.list_conversation_attachments(db, conversation_id))
 
 
+@router.get("/conversations/{conversation_id}/media", response_model=ConversationMediaOut)
+def get_conversation_media(
+    conversation_id: str,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Generated/response media assets (ConversationMediaAsset) for one
+    conversation - the read side of the media capture layer (see media.py).
+    Separate from /attachments (uploaded files); the dashboard renders these
+    as a gallery via /api/files/open?url=."""
+    return ConversationMediaOut(data=chatgpt_queries.list_conversation_media(db, conversation_id))
+
+
 @router.get("/metrics", response_model=CaptureMetricsOut)
-async def get_capture_metrics(
+def get_capture_metrics(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
@@ -279,7 +361,7 @@ async def get_capture_metrics(
 
 
 @router.get("/users", response_model=UserListOut)
-async def list_capture_users(
+def list_capture_users(
     q: Optional[str] = None,
     health: Optional[str] = None,
     department: Optional[str] = None,
@@ -296,7 +378,7 @@ async def list_capture_users(
 
 
 @router.get("/users/{user_id}", response_model=UserDetailOut)
-async def get_capture_user(
+def get_capture_user(
     user_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
@@ -308,7 +390,7 @@ async def get_capture_user(
 
 
 @router.get("/users/{user_id}/conversations", response_model=ConversationListOut)
-async def list_user_capture_conversations(
+def list_user_capture_conversations(
     user_id: int,
     event_type: Optional[str] = None,
     date_from: Optional[date] = None,

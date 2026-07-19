@@ -1,135 +1,36 @@
-import { useMemo, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { useMemo } from 'react';
 import { SkeletonBlock } from '../../../../../ui/Skeleton';
-import ChatAttachmentGallery from '../../../../../common/chat/ChatAttachmentGallery';
-import EventDetailPanel from './EventDetailPanel';
-import {
-  formatRelativeTime,
-  matchStoredAttachments,
-  sanitizeResponseText,
-  toGalleryAttachment,
-} from './chatgptCaptureUtils';
-
-const ROLE_META = {
-  user: { icon: '👤', label: null },
-  assistant: { icon: '🤖', label: 'ChatGPT' },
-  system: { icon: '📎', label: 'System' },
-};
-
-function AttachmentSection({ label, icon, attachments }) {
-  if (!attachments.length) return null;
-  return (
-    <div className="chatgpt-capture-chat-media">
-      <span className="chatgpt-capture-chat-media-label">{icon} {label}</span>
-      <ChatAttachmentGallery attachments={attachments.map(toGalleryAttachment)} />
-    </div>
-  );
-}
-
-function ChatMessage({ message, ownerName, eventsById, storedAttachments }) {
-  const [expanded, setExpanded] = useState(false);
-  const roleMeta = ROLE_META[message.role] || ROLE_META.system;
-  const displayName = message.role === 'user' ? (ownerName || 'User') : (roleMeta.label || message.model || 'ChatGPT');
-  const sourceEvents = (message.sourceEventIds || []).map((id) => eventsById.get(id)).filter(Boolean);
-
-  // Real, previewable files (matched by filename against what was actually
-  // uploaded to R2 - see chatgptCaptureUtils.matchStoredAttachments) vs.
-  // placeholders the network layer observed a filename for but never got
-  // bytes for (a file type the DOM capture doesn't handle yet, or the
-  // upload failed - best-effort, not lossless, see
-  // content-chatgpt-attachment-capture.js).
-  const kind = message.role === 'assistant' ? 'output' : 'input';
-  const matched = useMemo(
-    () => matchStoredAttachments(message.attachments, storedAttachments).filter((item) => item.kind === kind),
-    [message.attachments, storedAttachments, kind]
-  );
-  const matchedImages = useMemo(() => matched.filter((item) => (item.mimeType || '').startsWith('image/')), [matched]);
-  const matchedFiles = useMemo(() => matched.filter((item) => !(item.mimeType || '').startsWith('image/')), [matched]);
-  const matchedFileNames = useMemo(() => new Set(matched.map((item) => item.fileName)), [matched]);
-  const unmatchedPlaceholders = (message.attachments || []).filter((item) => !matchedFileNames.has(item.label));
-
-  const displayText = message.role === 'assistant' ? sanitizeResponseText(message.text) : message.text;
-
-  return (
-    <div className={`chatgpt-capture-chat-turn role-${message.role}`}>
-      <div className="chatgpt-capture-chat-turn-head">
-        <span className="chatgpt-capture-chat-turn-avatar" aria-hidden="true">{roleMeta.icon}</span>
-        <span className="chatgpt-capture-chat-turn-role">{displayName}</span>
-        {message.edited && <span className="chatgpt-capture-badge tone-warning">Edited</span>}
-        <span className="chatgpt-capture-chat-turn-time">{formatRelativeTime(message.timestamp)}</span>
-      </div>
-
-      <div className="chatgpt-capture-chat-turn-body">
-        {message.pending ? (
-          <span className="chatgpt-capture-chat-pending">Waiting for response…</span>
-        ) : displayText ? (
-          message.role === 'assistant' ? (
-            <div className="chatgpt-capture-markdown">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayText}</ReactMarkdown>
-            </div>
-          ) : (
-            <p className="chatgpt-capture-plain-text">{displayText}</p>
-          )
-        ) : (
-          // Data Integrity: never hide a genuine capture gap behind an empty
-          // bubble - an assistant turn that exists (this message was built
-          // from a real response_started/response_completed event) but has
-          // no text means the capture failed for this specific turn, and
-          // that should be visible, not silently blank.
-          <span className="chatgpt-capture-chat-pending tone-warning">
-            {message.role === 'assistant' ? 'Response was not captured.' : '(empty)'}
-          </span>
-        )}
-      </div>
-
-      <AttachmentSection label={kind === 'output' ? 'Generated Images' : 'Input Images'} icon={kind === 'output' ? '🎨' : '📷'} attachments={matchedImages} />
-      <AttachmentSection label="Files" icon="📄" attachments={matchedFiles} />
-
-      {unmatchedPlaceholders.length > 0 && (
-        <div className="chatgpt-capture-chat-attachments">
-          {unmatchedPlaceholders.map((attachment, index) => (
-            <span key={`${attachment.kind}-${index}`} className="chatgpt-capture-badge tone-warning">
-              {attachment.kind === 'image' ? '🖼️' : '📄'} {attachment.label} - uploaded but not associated with this message.
-            </span>
-          ))}
-        </div>
-      )}
-
-      {sourceEvents.length > 0 && (
-        <>
-          <button
-            type="button"
-            className="chatgpt-capture-chat-turn-expand"
-            onClick={() => setExpanded((prev) => !prev)}
-            aria-expanded={expanded}
-          >
-            {expanded ? 'Hide developer details ▲' : 'Developer details ▼'}
-          </button>
-
-          {expanded && (
-            <div className="chatgpt-capture-chat-turn-dev">
-              {sourceEvents.map((event) => (
-                <EventDetailPanel key={event.id} event={event} />
-              ))}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
+import ChatMessageCard from './ChatMessageCard';
+import { formatDayLabel } from './chatgptCaptureUtils';
 
 export default function ConversationChatView({
   messages,
   eventsById,
   storedAttachments,
   ownerName,
+  conversationModel,
+  onOpenWorkspace,
   loading,
   error,
   truncated,
   totalEvents,
 }) {
+  // Group consecutive messages by day for subtle time separators (Today /
+  // Yesterday / date), so the timestamp context isn't repeated on every line.
+  const groups = useMemo(() => {
+    const result = [];
+    let current = null;
+    for (const message of messages || []) {
+      const label = formatDayLabel(message.timestamp);
+      if (!current || current.label !== label) {
+        current = { label, messages: [] };
+        result.push(current);
+      }
+      current.messages.push(message);
+    }
+    return result;
+  }, [messages]);
+
   if (loading) {
     return (
       <div className="chatgpt-capture-chat-view" aria-hidden="true">
@@ -151,7 +52,7 @@ export default function ConversationChatView({
   }
 
   return (
-    <div className="chatgpt-capture-chat-view">
+    <div className="chatgpt-capture-chat-view cgpt-chat-view">
       {truncated && (
         <p className="chatgpt-capture-inline-note">
           Showing the most recent messages from {totalEvents} captured events for this conversation.
@@ -160,19 +61,27 @@ export default function ConversationChatView({
 
       {(!messages || messages.length === 0) ? (
         <div className="chatgpt-capture-empty-state compact">
-          <strong>No chat content captured yet</strong>
-          <p>This conversation has lifecycle events (open/rename/etc.) but no prompt or response text yet. Check the Raw Events tab to see everything captured.</p>
+          <span className="chatgpt-capture-empty-icon" aria-hidden="true">💬</span>
+          <strong>No messages captured</strong>
+          <p>Conversation data will appear here once prompts and responses are captured.</p>
         </div>
       ) : (
-        <div className="chatgpt-capture-chat-turns">
-          {messages.map((message) => (
-            <ChatMessage
-              key={message.id}
-              message={message}
-              ownerName={ownerName}
-              eventsById={eventsById}
-              storedAttachments={storedAttachments}
-            />
+        <div className="cgpt-chat-column">
+          {groups.map((group) => (
+            <section key={`${group.label}-${group.messages[0]?.id}`} className="cgpt-chat-daygroup">
+              <div className="cgpt-chat-daydivider"><span>{group.label}</span></div>
+              {group.messages.map((message) => (
+                <ChatMessageCard
+                  key={message.id}
+                  message={message}
+                  ownerName={ownerName}
+                  eventsById={eventsById}
+                  storedAttachments={storedAttachments}
+                  conversationModel={conversationModel}
+                  onOpenWorkspace={onOpenWorkspace}
+                />
+              ))}
+            </section>
           ))}
         </div>
       )}

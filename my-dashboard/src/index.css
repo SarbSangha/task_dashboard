@@ -154,9 +154,77 @@
   --color-danger-icon: #ef4444;
   --skeleton-base: rgba(255, 255, 255, 0.08);
   --skeleton-highlight: rgba(255, 255, 255, 0.18);
+
+  /* =========================================================================
+     DESIGN SYSTEM SCALE (added 2026-07 redesign)
+     Theme-independent primitives: spacing, radius, typography. Defined once
+     here in the base :root so every surface can share one rhythm instead of
+     hardcoding pixel values ad-hoc. Elevation lives below and is themed.
+     ========================================================================= */
+
+  /* Spacing — 4px base step. Use for padding, gaps, and margins. */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 20px;
+  --space-8: 24px;
+  --space-9: 32px;
+  --space-10: 40px;
+  --space-11: 48px;
+  --space-12: 64px;
+
+  /* Radius */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+
+  /* Type scale */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 28px;
+
+  /* Semantic type roles (map onto the scale above) */
+  --font-page-title: var(--text-2xl);
+  --font-section-title: var(--text-lg);
+  --font-body: var(--text-md);
+  --font-meta: var(--text-sm);
+
+  /* Weights */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* Line heights */
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  /* Calm elevation (dark theme values). New names — legacy --shadow-* tokens
+     are intentionally left untouched so existing screens don't shift. Dark
+     surfaces lean on borders, so drops are near-invisible here by design. */
+  --elevation-1: 0 1px 2px rgba(2, 6, 23, 0.28), 0 1px 3px rgba(2, 6, 23, 0.22);
+  --elevation-2: 0 4px 14px rgba(2, 6, 23, 0.36);
+  --elevation-popover: 0 12px 32px rgba(2, 6, 23, 0.5);
 }
 
 :root[data-theme='light'] {
+  /* Calm elevation (light theme) — soft, neutral, low-spread. */
+  --elevation-1: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --elevation-2: 0 4px 14px rgba(15, 23, 42, 0.08);
+  --elevation-popover: 0 12px 32px rgba(15, 23, 42, 0.14);
+
   --color-page: #eef5ff;
   --color-page-accent: rgba(125, 211, 252, 0.32);
   --color-page-accent-strong: rgba(191, 219, 254, 0.5);

@@ -93,6 +93,41 @@ OWNERSHIP_STATUS_RESOLVED = "resolved"
 # ConversationGeneratedAsset.output_type values.
 OUTPUT_TYPES = ("image", "chart", "canvas", "code", "document", "table", "download", "file")
 
+# ConversationMediaAsset.media_type values (additive media capture layer -
+# see providers/chatgpt/media.py). Deliberately NOT added to ALL_EVENT_TYPES/
+# the raw ConversationCaptureEvent log - media capture follows the same
+# pattern attachments.py already established for binary uploads (its own
+# docstring: "an attachment is a large binary upload, not a tiny JSON event"),
+# going straight to POST /capture/media -> ConversationMediaAsset, not
+# through the lossless raw-event queue.
+MEDIA_TYPE_GENERATED_IMAGE = "generated_image"
+MEDIA_TYPE_GENERATED_VIDEO = "generated_video"
+MEDIA_TYPE_RESPONSE_IMAGE = "response_image"
+MEDIA_TYPE_RESPONSE_VIDEO = "response_video"
+MEDIA_TYPES = (
+    MEDIA_TYPE_GENERATED_IMAGE,
+    MEDIA_TYPE_GENERATED_VIDEO,
+    MEDIA_TYPE_RESPONSE_IMAGE,
+    MEDIA_TYPE_RESPONSE_VIDEO,
+)
+
+# ConversationMediaAsset.status values.
+MEDIA_STATUS_PENDING = "pending"
+MEDIA_STATUS_STORED = "stored"
+MEDIA_STATUS_FAILED = "failed"
+
+# ConversationMediaAsset.enrichment_status - deliberately separate from
+# `status` above. `status` describes whether we have the asset's actual
+# bytes/URL (the thing that matters for rendering it in a gallery);
+# `enrichment_status` describes whether the richer authoritative-fetch-only
+# fields (provider_asset_id, prompt) have been attached yet. A DOM/network-
+# discovered asset is fully STORED and displayable while still PENDING
+# enrichment - the two are independent axes on purpose, so an authoritative-
+# fetch outage (see RESPONSE_RECONSTRUCTION_REPORT.md) degrades captured
+# assets to "missing a caption/id", never to "missing entirely".
+ENRICHMENT_STATUS_PENDING = "pending"
+ENRICHMENT_STATUS_ENRICHED = "enriched"
+
 # ConversationCaptureHealth derived `status` (computed at read time in
 # health.py - never stored, since "is the last ping stale" changes with wall
 # clock time even when no new ping arrives). Priority order when multiple

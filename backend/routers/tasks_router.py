@@ -1,5 +1,6 @@
 from collections import defaultdict
 import base64
+import concurrent.futures
 import json
 
 from fastapi import HTTPException, Depends, Query, Cookie, Header, Request, WebSocket, WebSocketDisconnect
@@ -142,6 +143,7 @@ class NotificationDispatcher:
         self.queue: asyncio.Queue[tuple[int, dict]] = asyncio.Queue(maxsize=max_queue_size)
         self.worker_count = max(1, worker_count)
         self._workers: list[asyncio.Task] = []
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.dropped = 0
         self.failures = 0
         self.push_timeout_seconds = max(1, _int_env("NOTIFICATION_PUSH_TIMEOUT_SECONDS", 5))
@@ -151,6 +153,7 @@ class NotificationDispatcher:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        self._loop = loop
         self._workers = [worker for worker in self._workers if not worker.done()]
         missing_workers = self.worker_count - len(self._workers)
         if missing_workers <= 0:
@@ -168,8 +171,52 @@ class NotificationDispatcher:
             await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers = []
 
+    def _put_nowait(
+        self,
+        user_id: int,
+        payload: dict,
+        result_future: "concurrent.futures.Future[bool] | None" = None,
+    ) -> None:
+        try:
+            self.queue.put_nowait((user_id, payload))
+            ok = True
+        except asyncio.QueueFull:
+            self.dropped += 1
+            ok = False
+        if result_future is not None and not result_future.done():
+            result_future.set_result(ok)
+
     def enqueue(self, user_id: int, payload: dict) -> bool:
         self.start()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # Called from a FastAPI worker thread (a sync def endpoint) or
+            # asyncio.to_thread, not the event loop thread. put_nowait() can
+            # wake a waiting _worker() via a Future tied to this loop, and
+            # completing that Future off-thread is not safe (see
+            # asyncio.BaseEventLoop.call_soon / _check_thread) - hand the
+            # actual put back to the loop via call_soon_threadsafe instead.
+            # A concurrent.futures.Future round-trip keeps this call's return
+            # value exact (dispatch_notification_outbox_batch relies on it
+            # for retry accounting), not an optimistic guess.
+            if self._loop is None:
+                self.dropped += 1
+                return False
+            result_future: concurrent.futures.Future = concurrent.futures.Future()
+            try:
+                self._loop.call_soon_threadsafe(self._put_nowait, user_id, payload, result_future)
+            except RuntimeError:
+                # Loop is closed (e.g. a request thread still finishing work
+                # during process shutdown) - degrade the same way every other
+                # failure path here does, not an unhandled exception.
+                self.dropped += 1
+                return False
+            try:
+                return result_future.result(timeout=5)
+            except concurrent.futures.TimeoutError:
+                return False
+
         try:
             self.queue.put_nowait((user_id, payload))
             return True
@@ -3430,7 +3477,7 @@ def _count_matching_task_assets(
     return total_matches
 
 
-async def validate_project_id(
+def validate_project_id(
     project_id: str = Query(..., min_length=4),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -3457,7 +3504,7 @@ async def validate_project_id(
     }
 
 
-async def generate_project_id(
+def generate_project_id(
     payload: ProjectIdGeneratePayload,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -3485,7 +3532,7 @@ async def generate_project_id(
     }
 
 
-async def validate_task_id(
+def validate_task_id(
     task_id: str = Query(..., min_length=4),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -3500,7 +3547,7 @@ async def validate_task_id(
     }
 
 
-async def generate_task_id(
+def generate_task_id(
     payload: TaskIdGeneratePayload,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -4197,7 +4244,7 @@ def _start_workflow_stage(
     }
 
 
-async def get_task_workflow(
+def get_task_workflow(
     task_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -4411,7 +4458,7 @@ async def update_task_stage(
 
 
 @cache_response(ttl=15, vary_by_user=True, namespace="tasks_inbox")
-async def get_inbox(
+def get_inbox(
     request: Request,
     include_read: bool = Query(True),
     q: Optional[str] = Query(None),
@@ -4543,7 +4590,7 @@ async def get_inbox(
 
 
 @cache_response(ttl=15, vary_by_user=True, namespace="tasks_outbox")
-async def get_outbox(
+def get_outbox(
     request: Request,
     q: Optional[str] = Query(None),
     page: int = Query(0, ge=0),
@@ -4604,7 +4651,7 @@ async def get_outbox(
 
 
 @cache_response(ttl=60, vary_by_user=True, namespace="tasks_all")
-async def get_all_user_tasks(
+def get_all_user_tasks(
     request: Request,
     status: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
@@ -4722,7 +4769,7 @@ async def get_all_user_tasks(
 
 
 @cache_response(ttl=180, vary_by_user=False, namespace="tasks_reference_suggestions")
-async def get_task_reference_suggestions(
+def get_task_reference_suggestions(
     request: Request,
     limit: int = Query(300, ge=50, le=500),
     db: Session = Depends(get_operational_db),
@@ -4796,7 +4843,7 @@ async def get_task_reference_suggestions(
 
 
 @cache_response(ttl=90, vary_by_user=False, namespace="tasks_assets")
-async def get_task_assets(
+def get_task_assets(
     request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(60, ge=1, le=120),
@@ -4840,7 +4887,7 @@ async def get_task_assets(
 
 
 @cache_response(ttl=60, vary_by_user=True, namespace="tasks_assets_directory_groups")
-async def get_task_asset_directory_groups(
+def get_task_asset_directory_groups(
     request: Request,
     group_by: str = Query(...),
     media_type: str = Query("all"),
@@ -4884,7 +4931,7 @@ async def get_task_asset_directory_groups(
 
 
 @cache_response(ttl=60, vary_by_user=True, namespace="tasks_assets_directory_files")
-async def get_task_asset_directory_files(
+def get_task_asset_directory_files(
     request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(60, ge=1, le=120),
@@ -4930,7 +4977,7 @@ async def get_task_asset_directory_files(
 
 
 @cache_response(ttl=30, vary_by_user=True, namespace="tasks_unread")
-async def get_unread_count(
+def get_unread_count(
     request: Request,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -4983,7 +5030,7 @@ async def mark_task_seen(
     return {"success": True, "taskId": task_id}
 
 
-async def get_forward_targets(
+def get_forward_targets(
     task_id: Optional[int] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -6512,7 +6559,7 @@ async def edit_task_result(
     return {"success": True, "message": "Result updated"}
 
 
-async def add_comment(
+def add_comment(
     task_id: int,
     payload: TaskCommentPayload,
     db: Session = Depends(get_operational_db),
@@ -6622,7 +6669,7 @@ async def add_comment(
     }
 
 
-async def get_comments(
+def get_comments(
     task_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(40, ge=1, le=100),
@@ -6754,7 +6801,7 @@ async def get_comments(
 
 
 @cache_response(ttl=15, vary_by_user=True, namespace="tasks_notifications")
-async def get_my_notifications(
+def get_my_notifications(
     request: Request,
     unread_only: bool = Query(False),
     db: Session = Depends(get_operational_db),
@@ -6796,7 +6843,7 @@ async def get_my_notifications(
 
 
 @cache_response(ttl=15, vary_by_user=True, namespace="tasks_outbox_unread")
-async def get_outbox_unread_count(
+def get_outbox_unread_count(
     request: Request,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -6864,7 +6911,7 @@ async def delete_notification(
     return {"success": True, "message": "Notification removed"}
 
 
-async def get_web_push_config(
+def get_web_push_config(
     current_user: User = Depends(get_current_user_from_session),
 ):
     if not current_user:
@@ -6873,7 +6920,7 @@ async def get_web_push_config(
     return _web_push_status_payload()
 
 
-async def subscribe_web_push(
+def subscribe_web_push(
     payload: WebPushSubscriptionUpsertPayload,
     request: Request,
     db: Session = Depends(get_operational_db),
@@ -6917,7 +6964,7 @@ async def subscribe_web_push(
     return {"success": True, "enabled": True}
 
 
-async def unsubscribe_web_push(
+def unsubscribe_web_push(
     payload: WebPushSubscriptionDeletePayload,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
@@ -6945,7 +6992,7 @@ async def unsubscribe_web_push(
     return {"success": True}
 
 
-async def debug_current_user(
+def debug_current_user(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):

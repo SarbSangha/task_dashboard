@@ -139,26 +139,35 @@ export default function ChatGptExplorerBody({ breadcrumbPrefix = ['ChatGPT'] }) 
         {selectedConversationId && <span>{selectedConversationTitle || 'Conversation'}</span>}
       </div>
 
-      <div className="chatgpt-capture-actions">
-        <button
-          type="button"
-          className="chatgpt-capture-primary-btn"
-          onClick={() => fetchMetrics({ announce: true })}
-          disabled={metricsLoading}
-        >
-          {metricsLoading ? 'Refreshing…' : 'Refresh Metrics'}
-        </button>
-        <button
-          type="button"
-          className="chatgpt-capture-secondary-btn chatgpt-capture-devtools-toggle"
-          onClick={() => setDrawerOpen(true)}
-          aria-expanded={drawerOpen}
-        >
-          🛠 Developer Tools
-        </button>
-      </div>
+      {/* Workspace-level chrome (metrics + their Refresh / Developer Tools
+          controls) is admin observability, not reading material — hide the
+          whole band once a conversation is open so the transcript gets the
+          space, and so "Refresh Metrics" isn't offered while metrics are
+          hidden. It all returns on the user / conversation-list views. */}
+      {!selectedConversationId && (
+        <>
+          <div className="chatgpt-capture-actions">
+            <button
+              type="button"
+              className="chatgpt-capture-primary-btn"
+              onClick={() => fetchMetrics({ announce: true })}
+              disabled={metricsLoading}
+            >
+              {metricsLoading ? 'Refreshing…' : 'Refresh Metrics'}
+            </button>
+            <button
+              type="button"
+              className="chatgpt-capture-secondary-btn chatgpt-capture-devtools-toggle"
+              onClick={() => setDrawerOpen(true)}
+              aria-expanded={drawerOpen}
+            >
+              🛠 Developer Tools
+            </button>
+          </div>
 
-      <MetricsOverview metrics={metrics} loading={metricsLoading} error={metricsError} />
+          <MetricsOverview metrics={metrics} loading={metricsLoading} error={metricsError} />
+        </>
+      )}
 
       <div className={`chatgpt-capture-three-col${selectedConversationId ? ' has-selection' : ''}`}>
         <div className="chatgpt-capture-col-sidebar">

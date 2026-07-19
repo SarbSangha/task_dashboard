@@ -103,7 +103,7 @@ def _serialize_collection_with_owner(collection: GenerationCollection, owner: Op
 
 
 @router.get("/directory")
-async def list_generation_collections_directory(
+def list_generation_collections_directory(
     q: Optional[str] = Query(None),
     limit: int = Query(DEFAULT_COLLECTION_PAGE_SIZE, ge=1, le=MAX_COLLECTION_PAGE_SIZE),
     offset: int = Query(0, ge=0),
@@ -150,7 +150,7 @@ async def list_generation_collections_directory(
 
 
 @router.get("")
-async def list_generation_collections(
+def list_generation_collections(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
@@ -174,7 +174,7 @@ async def list_generation_collections(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_generation_collection(
+def create_generation_collection(
     payload: GenerationCollectionCreatePayload,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -219,7 +219,7 @@ async def create_generation_collection(
 
 
 @router.get("/{collection_id}")
-async def get_generation_collection(
+def get_generation_collection(
     collection_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -235,7 +235,7 @@ async def get_generation_collection(
 
 
 @router.get("/{collection_id}/generations")
-async def list_generation_collection_generations(
+def list_generation_collection_generations(
     collection_id: int,
     limit: int = Query(DEFAULT_COLLECTION_PAGE_SIZE, ge=1, le=MAX_COLLECTION_PAGE_SIZE),
     offset: int = Query(0, ge=0),
@@ -272,7 +272,7 @@ async def list_generation_collection_generations(
 
 
 @router.get("/{collection_id}/generations/directory")
-async def list_generation_collection_generations_directory(
+def list_generation_collection_generations_directory(
     collection_id: int,
     limit: int = Query(DEFAULT_COLLECTION_PAGE_SIZE, ge=1, le=MAX_COLLECTION_PAGE_SIZE),
     offset: int = Query(0, ge=0),
@@ -323,7 +323,7 @@ async def list_generation_collection_generations_directory(
 
 
 @router.post("/{collection_id}/generations/{generation_id}", status_code=status.HTTP_201_CREATED)
-async def add_generation_to_collection(
+def add_generation_to_collection(
     collection_id: int,
     generation_id: int,
     db: Session = Depends(get_operational_db),
@@ -380,7 +380,7 @@ async def add_generation_to_collection(
 
 
 @router.delete("/{collection_id}/generations/{generation_id}")
-async def remove_generation_from_collection(
+def remove_generation_from_collection(
     collection_id: int,
     generation_id: int,
     db: Session = Depends(get_operational_db),

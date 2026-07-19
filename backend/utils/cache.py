@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -5,6 +6,7 @@ import os
 from functools import wraps
 
 from fastapi import Request
+from starlette.concurrency import run_in_threadpool
 
 try:
     import redis.asyncio as redis
@@ -152,14 +154,26 @@ def cache_response(
     vary_by_user: bool = True,
     namespace: str | None = None,
 ):
-    """Cache FastAPI GET endpoint responses in Redis when available."""
+    """Cache FastAPI GET endpoint responses in Redis when available.
+
+    Works with both `async def` and plain `def` endpoint functions - sync
+    functions run via run_in_threadpool (same as FastAPI's own dispatch for
+    a sync path operation) so they never block the event loop here either.
+    """
 
     def decorator(func):
+        is_coroutine = asyncio.iscoroutinefunction(func)
+
+        async def _call(*args, **kwargs):
+            if is_coroutine:
+                return await func(*args, **kwargs)
+            return await run_in_threadpool(func, *args, **kwargs)
+
         @wraps(func)
         async def wrapper(*args, **kwargs):
             request = _resolve_request(args, kwargs)
             if request is None:
-                return await func(*args, **kwargs)
+                return await _call(*args, **kwargs)
 
             key = _build_cache_key(request, vary_by_user, namespace=namespace)
 
@@ -171,7 +185,7 @@ def cache_response(
                 except Exception as exc:  # pragma: no cover - depends on runtime infra
                     logger.warning("Redis read failed for %s: %s", key, exc)
 
-            result = await func(*args, **kwargs)
+            result = await _call(*args, **kwargs)
 
             if redis_client is not None:
                 try:

@@ -66,7 +66,7 @@ def _serialize_audit(audit: GenerationRecoveryAudit) -> dict:
 
 
 @router.get("/reconcile")
-async def reconcile_generation_recovery(
+def reconcile_generation_recovery(
     date_from: str = Query(..., description="Inclusive YYYY-MM-DD start date"),
     date_to: str | None = Query(None, description="Inclusive YYYY-MM-DD end date"),
     db: Session = Depends(get_operational_db),
@@ -138,7 +138,7 @@ async def reconcile_generation_recovery(
 
 
 @router.get("/missing")
-async def preview_missing_generations(
+def preview_missing_generations(
     date_from: str = Query(..., description="Inclusive YYYY-MM-DD start date"),
     date_to: str | None = Query(None, description="Inclusive YYYY-MM-DD end date"),
     limit: int = Query(100, ge=1, le=500),
@@ -230,7 +230,7 @@ async def preview_missing_generations(
 
 
 @router.post("/import/{audit_id}")
-async def import_missing_generations_from_audit(
+def import_missing_generations_from_audit(
     audit_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
@@ -317,7 +317,7 @@ async def import_missing_generations_from_audit(
 
 
 @router.get("/audits")
-async def list_generation_recovery_audits(
+def list_generation_recovery_audits(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_operational_db),
@@ -344,7 +344,7 @@ async def list_generation_recovery_audits(
 
 
 @router.get("/metrics")
-async def generation_recovery_metrics(
+def generation_recovery_metrics(
     current_user: User = Depends(require_admin),
 ):
     emit_recovery_log(

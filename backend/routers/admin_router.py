@@ -112,7 +112,7 @@ def _archive_deleted_user_identity(user: User) -> None:
 
 
 @router.get("/pending-signups")
-async def pending_signups(
+def pending_signups(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
@@ -139,7 +139,7 @@ async def pending_signups(
 
 
 @router.get("/requests/pending")
-async def pending_requests(
+def pending_requests(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
@@ -167,7 +167,7 @@ async def pending_requests(
 
 
 @router.post("/approve-user/{user_id}")
-async def approve_user(
+def approve_user(
     user_id: int,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
@@ -196,7 +196,7 @@ async def approve_user(
 
 
 @router.post("/reject-user/{user_id}")
-async def reject_user(
+def reject_user(
     user_id: int,
     payload: RejectPayload,
     current_user: User = Depends(require_admin),
@@ -224,7 +224,7 @@ async def reject_user(
 
 
 @router.post("/requests/{request_id}/review")
-async def review_request(
+def review_request(
     request_id: int,
     payload: ReviewPayload,
     current_user: User = Depends(require_admin),
@@ -316,7 +316,7 @@ async def review_request(
 
 
 @router.post("/deactivate-user/{user_id}")
-async def deactivate_user(
+def deactivate_user(
     user_id: int,
     payload: Optional[RejectPayload] = None,
     current_user: User = Depends(require_admin),
@@ -350,7 +350,7 @@ async def deactivate_user(
 
 
 @router.post("/activate-user/{user_id}")
-async def activate_user(
+def activate_user(
     user_id: int,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
@@ -380,7 +380,7 @@ async def activate_user(
 
 
 @router.post("/delete-user/{user_id}")
-async def delete_user_account(
+def delete_user_account(
     user_id: int,
     payload: Optional[DeleteUserPayload] = None,
     current_user: User = Depends(require_admin),
@@ -433,7 +433,7 @@ async def delete_user_account(
 
 
 @router.post("/users/{user_id}/password")
-async def admin_change_user_password(
+def admin_change_user_password(
     user_id: int,
     payload: AdminPasswordChangePayload,
     current_user: User = Depends(require_admin),
@@ -465,7 +465,7 @@ async def admin_change_user_password(
 
 
 @router.patch("/users/workplace-policy/bulk")
-async def bulk_set_workplace_policy(
+def bulk_set_workplace_policy(
     payload: BulkWorkplacePolicyPayload,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
@@ -505,7 +505,7 @@ async def bulk_set_workplace_policy(
 
 
 @router.patch("/users/{user_id}/workplace-policy")
-async def set_user_workplace_policy(
+def set_user_workplace_policy(
     user_id: int,
     payload: WorkplacePolicyPayload,
     current_user: User = Depends(require_admin),
@@ -537,7 +537,7 @@ async def set_user_workplace_policy(
 
 
 @router.get("/deleted-users")
-async def deleted_users(
+def deleted_users(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
@@ -550,7 +550,7 @@ async def deleted_users(
 
 
 @router.get("/all-users")
-async def all_users(
+def all_users(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
@@ -578,7 +578,7 @@ async def all_users(
 
 
 @router.get("/departments")
-async def list_departments(
+def list_departments(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):

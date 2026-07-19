@@ -147,7 +147,7 @@
         "https://chat.openai.com/*",
         "https://auth.openai.com/*"
       ],
-      "js": ["content-chatgpt-event-builder.js", "content-chatgpt-dom-observer.js", "content-chatgpt-attachment-capture.js", "content-chatgpt.js"],
+      "js": ["content-chatgpt-event-builder.js", "content-chatgpt-dom-observer.js", "content-chatgpt-attachment-capture.js", "content-chatgpt-media-capture.js", "content-chatgpt.js"],
       "run_at": "document_idle",
       "all_frames": true,
       "match_about_blank": true

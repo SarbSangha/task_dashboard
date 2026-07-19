@@ -7,6 +7,7 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, Cookie, Request, Header
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, or_, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -678,7 +679,7 @@ def _create_password_change_request(db: Session, current_user: User, new_passwor
 # ==================== AUTH ENDPOINTS ====================
 # ==================== REGISTER ====================
 @router.post("/register")
-async def register(
+def register(
     user_data: UserRegister,
     db: Session = Depends(get_operational_db)
 ):
@@ -970,7 +971,8 @@ async def get_current_user_profile(
     try:
         cached_user = await _get_auth_response_cache(resolved_session_id)
         if cached_user:
-            verify_session_token(
+            await run_in_threadpool(
+                verify_session_token,
                 resolved_session_id,
                 db,
                 create_session_fingerprint(request.headers.get("user-agent")),
@@ -981,7 +983,8 @@ async def get_current_user_profile(
                 "cached": True,
             }
 
-        user = resolve_session_user(
+        user = await run_in_threadpool(
+            resolve_session_user,
             resolved_session_id,
             db,
             session_fingerprint=create_session_fingerprint(request.headers.get("user-agent")),
@@ -1004,7 +1007,7 @@ async def get_current_user_profile(
 
 
 @router.get("/profile")
-async def get_profile(
+def get_profile(
     current_user: User = Depends(get_current_user),
 ):
     return {
@@ -1144,7 +1147,7 @@ async def update_profile(
 
 
 @router.get("/department/{department_name}/users")
-async def get_users_by_department(
+def get_users_by_department(
     department_name: str,
     role: Optional[str] = None,
     db: Session = Depends(get_operational_db)
@@ -1202,7 +1205,7 @@ async def get_users_by_department(
 
 @router.get("/departments")
 @cache_response(ttl=300, vary_by_user=False, namespace="auth_departments")
-async def get_all_departments(
+def get_all_departments(
     request: Request,
     db: Session = Depends(get_operational_db)
 ):
@@ -1225,7 +1228,7 @@ async def get_all_departments(
 
 
 @router.get("/employee-id/options")
-async def get_employee_id_options(
+def get_employee_id_options(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -1241,7 +1244,7 @@ async def get_employee_id_options(
 
 
 @router.post("/profile-change/request")
-async def request_profile_change(
+def request_profile_change(
     payload: ProfileChangeRequestPayload,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db)
@@ -1292,7 +1295,7 @@ async def request_profile_change(
 
 
 @router.get("/profile-change/latest")
-async def latest_profile_change_status(
+def latest_profile_change_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db)
 ):
@@ -1313,7 +1316,7 @@ async def latest_profile_change_status(
 
 
 @router.post("/password-change/request")
-async def request_password_change(
+def request_password_change(
     payload: PasswordChangeRequestPayload,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db)
@@ -1323,7 +1326,7 @@ async def request_password_change(
 
 
 @router.get("/password-change/latest")
-async def latest_password_change_status(
+def latest_password_change_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_operational_db)
 ):
@@ -1344,7 +1347,7 @@ async def latest_password_change_status(
 
 
 @router.get("/admin/pending-signups")
-async def admin_pending_signups(
+def admin_pending_signups(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db)
 ):
@@ -1368,7 +1371,7 @@ async def admin_pending_signups(
 
 
 @router.get("/admin/pending-profile-changes")
-async def admin_pending_profile_changes(
+def admin_pending_profile_changes(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db)
 ):
@@ -1392,7 +1395,7 @@ async def admin_pending_profile_changes(
 
 
 @router.get("/admin/pending-password-changes")
-async def admin_pending_password_changes(
+def admin_pending_password_changes(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db)
 ):
@@ -1416,7 +1419,7 @@ async def admin_pending_password_changes(
 
 
 @router.post("/admin/requests/{request_id}/review")
-async def admin_review_request(
+def admin_review_request(
     request_id: int,
     decision: ApprovalDecision,
     current_user: User = Depends(require_admin),

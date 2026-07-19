@@ -137,7 +137,7 @@ def _get_project_or_404_for_directory(db: Session, project_id: int) -> Generatio
 
 
 @router.get("/directory")
-async def list_generation_projects_directory(
+def list_generation_projects_directory(
     q: Optional[str] = Query(None),
     limit: int = Query(DEFAULT_GENERATION_PAGE_SIZE, ge=1, le=MAX_GENERATION_PAGE_SIZE),
     offset: int = Query(0, ge=0),
@@ -196,7 +196,7 @@ async def list_generation_projects_directory(
 
 
 @router.get("")
-async def list_generation_projects(
+def list_generation_projects(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
@@ -220,7 +220,7 @@ async def list_generation_projects(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_generation_project(
+def create_generation_project(
     payload: GenerationProjectCreatePayload,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -276,7 +276,7 @@ async def create_generation_project(
 
 
 @router.get("/{project_id}")
-async def get_generation_project(
+def get_generation_project(
     project_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
@@ -300,7 +300,7 @@ async def get_generation_project(
 
 
 @router.get("/{project_id}/generations")
-async def list_generation_project_generations(
+def list_generation_project_generations(
     project_id: int,
     limit: int = Query(DEFAULT_GENERATION_PAGE_SIZE, ge=1, le=MAX_GENERATION_PAGE_SIZE),
     offset: int = Query(0, ge=0),
@@ -338,7 +338,7 @@ async def list_generation_project_generations(
 
 
 @router.get("/{project_id}/generations/directory")
-async def list_generation_project_generations_directory(
+def list_generation_project_generations_directory(
     project_id: int,
     limit: int = Query(DEFAULT_GENERATION_PAGE_SIZE, ge=1, le=MAX_GENERATION_PAGE_SIZE),
     offset: int = Query(0, ge=0),
@@ -389,7 +389,7 @@ async def list_generation_project_generations_directory(
 
 
 @router.post("/{project_id}/generations/{generation_id}")
-async def assign_generation_to_project(
+def assign_generation_to_project(
     project_id: int,
     generation_id: int,
     db: Session = Depends(get_operational_db),
@@ -447,7 +447,7 @@ async def assign_generation_to_project(
 
 
 @router.delete("/{project_id}/generations/{generation_id}")
-async def remove_generation_from_project(
+def remove_generation_from_project(
     project_id: int,
     generation_id: int,
     db: Session = Depends(get_operational_db),
@@ -484,7 +484,7 @@ async def remove_generation_from_project(
 
 
 @router.get("/{project_id}/timeline")
-async def get_generation_project_timeline(
+def get_generation_project_timeline(
     project_id: int,
     limit: int = Query(DEFAULT_GENERATION_PAGE_SIZE, ge=1, le=MAX_GENERATION_PAGE_SIZE),
     offset: int = Query(0, ge=0),

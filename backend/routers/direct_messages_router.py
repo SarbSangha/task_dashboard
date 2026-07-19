@@ -404,7 +404,7 @@ def _build_direct_receipt_lookup(
 
 
 @router.get("/users")
-async def list_direct_message_users(
+def list_direct_message_users(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -423,7 +423,7 @@ async def list_direct_message_users(
 
 
 @router.get("/conversations")
-async def list_direct_conversations(
+def list_direct_conversations(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -527,7 +527,7 @@ async def list_direct_conversations(
 
 
 @router.get("/unread-counts")
-async def get_direct_unread_counts(
+def get_direct_unread_counts(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -574,7 +574,7 @@ async def get_direct_unread_counts(
 
 
 @router.get("/conversations/{other_user_id}/messages")
-async def list_direct_messages(
+def list_direct_messages(
     other_user_id: int,
     before_message_id: Optional[int] = Query(default=None, ge=1),
     limit: int = Query(default=50, ge=1, le=300),
@@ -635,7 +635,7 @@ async def list_direct_messages(
 
 
 @router.post("/conversations/{other_user_id}/messages/mark-delivered")
-async def mark_direct_messages_delivered(
+def mark_direct_messages_delivered(
     other_user_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
@@ -679,7 +679,7 @@ async def mark_direct_messages_delivered(
 
 
 @router.post("/conversations/{other_user_id}/messages/mark-read")
-async def mark_direct_messages_read(
+def mark_direct_messages_read(
     other_user_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
@@ -724,7 +724,7 @@ async def mark_direct_messages_read(
 
 
 @router.post("/conversations/{other_user_id}/typing")
-async def send_direct_typing_indicator(
+def send_direct_typing_indicator(
     other_user_id: int,
     payload: TypingPayload,
     db: Session = Depends(get_operational_db),
@@ -776,7 +776,7 @@ def _get_direct_message_for_conversation(
 
 
 @router.post("/conversations/{other_user_id}/messages/{message_id}/reaction")
-async def set_direct_message_reaction(
+def set_direct_message_reaction(
     other_user_id: int,
     message_id: int,
     payload: ReactionPayload,
@@ -842,7 +842,7 @@ async def set_direct_message_reaction(
 
 
 @router.delete("/conversations/{other_user_id}/messages/{message_id}/reaction")
-async def remove_direct_message_reaction(
+def remove_direct_message_reaction(
     other_user_id: int,
     message_id: int,
     db: Session = Depends(get_operational_db),
@@ -892,7 +892,7 @@ async def remove_direct_message_reaction(
 
 
 @router.patch("/conversations/{other_user_id}/messages/{message_id}")
-async def edit_direct_message(
+def edit_direct_message(
     other_user_id: int,
     message_id: int,
     payload: MessageEditPayload,
@@ -945,7 +945,7 @@ async def edit_direct_message(
 
 
 @router.delete("/conversations/{other_user_id}/messages/{message_id}")
-async def delete_direct_message(
+def delete_direct_message(
     other_user_id: int,
     message_id: int,
     db: Session = Depends(get_operational_db),
@@ -1001,7 +1001,7 @@ async def delete_direct_message(
 
 
 @router.post("/conversations/{other_user_id}/messages")
-async def send_direct_message(
+def send_direct_message(
     other_user_id: int,
     payload: DirectMessagePayload,
     db: Session = Depends(get_operational_db),

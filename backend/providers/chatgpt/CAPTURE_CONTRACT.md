@@ -116,9 +116,28 @@ Fired once, when the assistant's stream opens. No text yet.
 ```
 
 ### `response_completed`
-Fired once, when the stream ends, with the full assembled text. Streaming
-deltas in between are never sent as events (see README.md "Streaming
-capture") - this is the only response payload carrying content.
+Fired once, when the stream ends. Streaming deltas in between are never sent
+as events (see README.md "Streaming capture").
+
+As of the extension version that introduced `contentParts`/`citations`/
+`contentSource` below, the primary content source is no longer the streamed
+text itself - the extension re-fetches the conversation's own authoritative
+state (`GET /backend-api/conversation/{id}`) once the stream ends and reads
+the assistant message straight from there, since the streamed
+JSON-patch reconstruction was confirmed (against real production captures)
+to silently drop large spans of text. `contentSource` tells you which path
+produced this event:
+
+- `"authoritative_fetch"` - `contentParts` is the source of truth for
+  rendering order (text/image/etc. interleaved exactly as ChatGPT produced
+  them). `text` is a derived join of the markdown parts, kept for
+  search/back-compat/preview only - don't use it for faithful rendering.
+- `"stream_fallback"` - the authoritative fetch failed or returned an
+  unrecognized shape; only `text`/`codeBlocks`/`hasMarkdown`/`hasTables` are
+  populated, exactly as before this field existed. `contentParts`/`citations`
+  are absent. This path exists so capture never regresses to losing an event
+  entirely if the authoritative endpoint's shape has drifted.
+
 ```json
 {
   "text": "string",
@@ -126,14 +145,48 @@ capture") - this is the only response payload carrying content.
   "codeBlocks": [{ "language": "optional string", "code": "string" }],
   "hasMarkdown": true,
   "hasTables": false,
-  "images": [{ "url": "string" }],
-  "files": [{ "name": "string" }],
-  "artifacts": [{ "type": "string", "url": "optional string" }],
+  "contentSource": "authoritative_fetch | stream_fallback",
+  "contentParts": [
+    { "type": "markdown", "order": 0, "text": "string" },
+    { "type": "image", "order": 1, "assetPointer": "file-service://file-id", "width": 0, "height": 0, "sizeBytes": 0, "uploaded": true },
+    { "type": "attachment", "order": 2, "raw": {} }
+  ],
+  "citations": [{}],
   "reasoningMetadata": {},
   "completedAt": "ISO 8601 string",
   "stopReason": "optional string"
 }
 ```
+
+`contentParts`/`citations`/`contentSource` are optional, additive fields -
+per this file's own versioning rule, adding an optional field does not
+require a `capture_version` bump. `images`/`files`/`artifacts` (documented in
+earlier versions of this file) were never actually populated by any shipped
+extension version and are superseded by `contentParts`; they're removed here
+rather than kept as permanently-unpopulated dead fields.
+
+Each `contentParts` entry's `type` is one of:
+- `"markdown"` - a text segment, in ChatGPT's own markdown (headings, bold,
+  italic, lists, block quotes, GFM tables, inline/fenced code, links are all
+  literal markdown syntax within `text` - render with a standard markdown
+  renderer, don't reparse).
+- `"image"` - a generated image. `assetPointer` is ChatGPT's internal
+  `file-service://` reference; when `uploaded: true`, the actual bytes have
+  been captured via `POST /capture/attachments` with `kind: "output"` and can
+  be looked up by matching `assetPointer`'s file id against
+  `conversation_capture_attachments.file_name`. When `uploaded` is absent,
+  resolving the image failed for this turn (not fatal to the rest of the
+  message) and only the pointer is known.
+- `"attachment"` - any other content-part shape ChatGPT's message object
+  contained (code-interpreter output, browsing display, etc.) that this
+  contract doesn't yet model explicitly. `raw` carries the untouched object -
+  lossless, never silently dropped, same philosophy as raw event capture.
+
+`citations` is the untouched `message.metadata.content_references` array
+when present - captured losslessly but not yet resolved into inline
+hyperlinks (the marker syntax ChatGPT embeds in `text` to reference a
+citation needs a live sample to parse correctly; see the engineering report's
+Known Limitations).
 
 ### `generation_captured`
 For images/charts/canvas/code/documents/tables/downloads produced by a

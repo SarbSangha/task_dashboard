@@ -34,6 +34,17 @@ def _pg_add_column_if_missing(conn, table_name: str, column_name: str, sql_type:
     conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"))
 
 
+def _sqlite_column_exists(conn, table_name: str, column_name: str) -> bool:
+    rows = conn.execute(text(f"PRAGMA table_info('{table_name}')")).mappings().all()
+    return any(row["name"] == column_name for row in rows)
+
+
+def _sqlite_add_column_if_missing(conn, table_name: str, column_name: str, sql_type: str) -> None:
+    if _sqlite_column_exists(conn, table_name, column_name):
+        return
+    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"))
+
+
 def ensure_chatgpt_postgres_schema(conn) -> None:
     conn.execute(
         text(
@@ -317,6 +328,13 @@ def ensure_chatgpt_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_responses_conversation_sequence ON conversation_responses(conversation_id, sequence_index)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_responses_prompt_id ON conversation_responses(prompt_id)"))
 
+    # Ordered content-part model (Phase 3 normalization) - preserves
+    # text/image/etc. interleaving that the original flat text_json/images_json
+    # columns above can't represent. Additive, both tables pre-date this.
+    _pg_add_column_if_missing(conn, "conversation_prompts", "content_parts_json", "JSON")
+    _pg_add_column_if_missing(conn, "conversation_responses", "content_parts_json", "JSON")
+    _pg_add_column_if_missing(conn, "conversation_responses", "citations_json", "JSON")
+
     conn.execute(
         text(
             """
@@ -458,6 +476,59 @@ def ensure_chatgpt_postgres_schema(conn) -> None:
     )
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_capture_attachments_conversation_id ON conversation_capture_attachments(provider_conversation_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_capture_attachments_created_at ON conversation_capture_attachments(created_at)"))
+
+    # ---- Media capture layer (additive, Phase 1) - own table, does not
+    # touch any text-capture table above. ----------------------------------
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_media_assets (
+                id SERIAL PRIMARY KEY,
+                conversation_id INTEGER REFERENCES conversation_records(id) ON DELETE CASCADE,
+                provider VARCHAR(40) NOT NULL DEFAULT 'chatgpt',
+                provider_conversation_id VARCHAR(160),
+                message_id VARCHAR(160),
+                assistant_message_id VARCHAR(160),
+                correlation_id VARCHAR(160),
+                media_type VARCHAR(40) NOT NULL,
+                generated BOOLEAN NOT NULL DEFAULT TRUE,
+                url TEXT,
+                source_url TEXT,
+                thumbnail_url TEXT,
+                mime_type VARCHAR(120),
+                width INTEGER,
+                height INTEGER,
+                duration_ms INTEGER,
+                provider_asset_id VARCHAR(160),
+                prompt TEXT,
+                alt_text TEXT,
+                source VARCHAR(255),
+                display_order INTEGER,
+                status VARCHAR(40) NOT NULL DEFAULT 'pending',
+                enrichment_status VARCHAR(40) NOT NULL DEFAULT 'pending',
+                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                metadata_json JSON,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    # Additive for installs where conversation_media_assets already existed
+    # before enrichment_status was introduced (DOM/network capture landing
+    # ahead of - and no longer blocked on - authoritative-fetch enrichment).
+    _pg_add_column_if_missing(conn, "conversation_media_assets", "enrichment_status", "VARCHAR(40) NOT NULL DEFAULT 'pending'")
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_conversation_media_assets_provider_asset_id
+            ON conversation_media_assets(provider, provider_asset_id)
+            WHERE provider_asset_id IS NOT NULL
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_media_assets_conversation_created_at ON conversation_media_assets(conversation_id, created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_media_assets_provider_conversation_id ON conversation_media_assets(provider_conversation_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_media_assets_enrichment_status ON conversation_media_assets(enrichment_status)"))
 
 
 def ensure_chatgpt_sqlite_schema(conn) -> None:
@@ -719,6 +790,12 @@ def ensure_chatgpt_sqlite_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_responses_conversation_sequence ON conversation_responses(conversation_id, sequence_index)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_responses_prompt_id ON conversation_responses(prompt_id)"))
 
+    # Ordered content-part model (Phase 3 normalization) - see the matching
+    # comment in ensure_chatgpt_postgres_schema.
+    _sqlite_add_column_if_missing(conn, "conversation_prompts", "content_parts_json", "JSON")
+    _sqlite_add_column_if_missing(conn, "conversation_responses", "content_parts_json", "JSON")
+    _sqlite_add_column_if_missing(conn, "conversation_responses", "citations_json", "JSON")
+
     conn.execute(
         text(
             """
@@ -869,3 +946,55 @@ def ensure_chatgpt_sqlite_schema(conn) -> None:
     )
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_capture_attachments_conversation_id ON conversation_capture_attachments(provider_conversation_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_capture_attachments_created_at ON conversation_capture_attachments(created_at)"))
+
+    # ---- Media capture layer (additive, Phase 1) - own table, does not
+    # touch any text-capture table above. ----------------------------------
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_media_assets (
+                id INTEGER PRIMARY KEY,
+                conversation_id INTEGER,
+                provider VARCHAR(40) NOT NULL DEFAULT 'chatgpt',
+                provider_conversation_id VARCHAR(160),
+                message_id VARCHAR(160),
+                assistant_message_id VARCHAR(160),
+                correlation_id VARCHAR(160),
+                media_type VARCHAR(40) NOT NULL,
+                generated BOOLEAN NOT NULL DEFAULT 1,
+                url TEXT,
+                source_url TEXT,
+                thumbnail_url TEXT,
+                mime_type VARCHAR(120),
+                width INTEGER,
+                height INTEGER,
+                duration_ms INTEGER,
+                provider_asset_id VARCHAR(160),
+                prompt TEXT,
+                alt_text TEXT,
+                source VARCHAR(255),
+                display_order INTEGER,
+                status VARCHAR(40) NOT NULL DEFAULT 'pending',
+                enrichment_status VARCHAR(40) NOT NULL DEFAULT 'pending',
+                user_id INTEGER,
+                metadata_json JSON,
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY(conversation_id) REFERENCES conversation_records (id) ON DELETE CASCADE,
+                FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
+            )
+            """
+        )
+    )
+    _sqlite_add_column_if_missing(conn, "conversation_media_assets", "enrichment_status", "VARCHAR(40) NOT NULL DEFAULT 'pending'")
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_conversation_media_assets_provider_asset_id
+            ON conversation_media_assets(provider, provider_asset_id)
+            WHERE provider_asset_id IS NOT NULL
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_media_assets_conversation_created_at ON conversation_media_assets(conversation_id, created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_media_assets_provider_conversation_id ON conversation_media_assets(provider_conversation_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_media_assets_enrichment_status ON conversation_media_assets(enrichment_status)"))

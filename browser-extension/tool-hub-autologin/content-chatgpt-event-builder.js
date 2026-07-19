@@ -98,6 +98,42 @@
     return extensionVersion;
   }
 
+  // ---- Shared helpers (isolated world) --------------------------------
+  // Used by both content-chatgpt-attachment-capture.js (input attachments)
+  // and content-chatgpt.js's authoritative-fetch image resolution (output
+  // attachments) - one implementation instead of two copies.
+  function readFileAsDataUrl(fileOrBlob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(fileOrBlob);
+    });
+  }
+
+  // Duplicated (not shared) from content-chatgpt-network.js's private
+  // copies - that file runs in the MAIN world and cannot reach this bus.
+  // Kept here too so content-chatgpt.js can recompute these off
+  // authoritatively-fetched text without reimplementing them a third time.
+  function looksLikeMarkdown(text) {
+    return /(^|\n)#{1,6}\s|\*\*[^*]+\*\*|`[^`]+`|(^|\n)[-*]\s/.test(text || '');
+  }
+
+  function looksLikeTable(text) {
+    return /\|.+\|\n\|[-:| ]+\|/.test(text || '');
+  }
+
+  function extractCodeBlocks(text) {
+    const blocks = [];
+    const pattern = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g;
+    let match = pattern.exec(text || '');
+    while (match && blocks.length < 20) {
+      blocks.push({ language: match[1] || undefined, code: (match[2] || '').slice(0, 8000) });
+      match = pattern.exec(text || '');
+    }
+    return blocks;
+  }
+
   function generateClientEventId() {
     try {
       if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID();
@@ -213,5 +249,9 @@
     emitSignal,
     readFeatureFlags,
     getCachedFeatureFlags,
+    readFileAsDataUrl,
+    looksLikeMarkdown,
+    looksLikeTable,
+    extractCodeBlocks,
   };
 })();

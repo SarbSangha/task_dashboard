@@ -611,7 +611,7 @@ def _serialize_groups(
 
 @router.get("/users")
 @cache_response(ttl=120, vary_by_user=False, namespace="group_users")
-async def list_group_users(
+def list_group_users(
     request: Request,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
@@ -640,7 +640,7 @@ async def list_group_users(
 
 @router.get("")
 @cache_response(ttl=30, vary_by_user=True, namespace="groups_mine")
-async def list_my_groups(
+def list_my_groups(
     request: Request,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
@@ -665,7 +665,7 @@ async def list_my_groups(
 
 
 @router.get("/unread-counts")
-async def get_group_unread_counts(
+def get_group_unread_counts(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -723,7 +723,7 @@ async def get_group_unread_counts(
 
 
 @router.post("")
-async def create_group(
+def create_group(
     payload: GroupCreatePayload,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
@@ -773,7 +773,7 @@ async def create_group(
 
 
 @router.post("/{group_id}/members")
-async def add_group_members(
+def add_group_members(
     group_id: int,
     payload: GroupMembersPayload,
     db: Session = Depends(get_operational_db),
@@ -820,7 +820,7 @@ async def add_group_members(
 
 
 @router.delete("/{group_id}/members/{user_id}")
-async def remove_group_member(
+def remove_group_member(
     group_id: int,
     user_id: int,
     db: Session = Depends(get_operational_db),
@@ -844,7 +844,7 @@ async def remove_group_member(
 
 
 @router.patch("/{group_id}/members/{user_id}/role")
-async def update_group_member_role(
+def update_group_member_role(
     group_id: int,
     user_id: int,
     payload: GroupRolePayload,
@@ -869,7 +869,7 @@ async def update_group_member_role(
 
 
 @router.get("/{group_id}/messages")
-async def list_group_messages(
+def list_group_messages(
     group_id: int,
     before_message_id: Optional[int] = Query(default=None, ge=1),
     limit: int = Query(default=50, ge=1, le=300),
@@ -929,7 +929,7 @@ async def list_group_messages(
 
 
 @router.post("/{group_id}/messages/mark-delivered")
-async def mark_group_messages_delivered(
+def mark_group_messages_delivered(
     group_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
@@ -970,7 +970,7 @@ async def mark_group_messages_delivered(
 
 
 @router.post("/{group_id}/messages/mark-read")
-async def mark_group_messages_read(
+def mark_group_messages_read(
     group_id: int,
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user),
@@ -1013,7 +1013,7 @@ async def mark_group_messages_read(
 
 
 @router.post("/{group_id}/typing")
-async def send_group_typing_indicator(
+def send_group_typing_indicator(
     group_id: int,
     payload: TypingPayload,
     db: Session = Depends(get_operational_db),
@@ -1048,7 +1048,7 @@ async def send_group_typing_indicator(
 
 
 @router.post("/{group_id}/messages/{message_id}/reaction")
-async def set_group_message_reaction(
+def set_group_message_reaction(
     group_id: int,
     message_id: int,
     payload: ReactionPayload,
@@ -1128,7 +1128,7 @@ async def set_group_message_reaction(
 
 
 @router.delete("/{group_id}/messages/{message_id}/reaction")
-async def remove_group_message_reaction(
+def remove_group_message_reaction(
     group_id: int,
     message_id: int,
     db: Session = Depends(get_operational_db),
@@ -1192,7 +1192,7 @@ async def remove_group_message_reaction(
 
 
 @router.patch("/{group_id}/messages/{message_id}")
-async def edit_group_message(
+def edit_group_message(
     group_id: int,
     message_id: int,
     payload: MessageEditPayload,
@@ -1276,7 +1276,7 @@ async def edit_group_message(
 
 
 @router.delete("/{group_id}/messages/{message_id}")
-async def delete_group_message(
+def delete_group_message(
     group_id: int,
     message_id: int,
     db: Session = Depends(get_operational_db),
@@ -1346,7 +1346,7 @@ async def delete_group_message(
 
 
 @router.post("/{group_id}/messages")
-async def send_group_message(
+def send_group_message(
     group_id: int,
     payload: GroupMessagePayload,
     db: Session = Depends(get_operational_db),

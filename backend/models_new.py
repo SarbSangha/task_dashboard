@@ -1,5 +1,5 @@
 # models_new.py - New Database Models
-from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Boolean, ForeignKey, JSON, Float, Enum as SQLEnum, Index, UniqueConstraint, CheckConstraint, text
+from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Boolean, ForeignKey, JSON, Float, Numeric, Enum as SQLEnum, Index, UniqueConstraint, CheckConstraint, text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from database_config import Base, ArchiveBase
@@ -765,6 +765,67 @@ class ITPortalToolUsageEvent(Base):
         }
 
 
+class ToolCreditRate(Base):
+    """Credit -> currency conversion rates for cost/ROI analytics.
+
+    Rates are keyed primarily by ``credential_id`` (an IT-portal Kling account):
+    different accounts buy credits at a different rupee price, so each carries its
+    own rate. A record is costed by resolving the account it came from
+    (``generation_records.source_usage_event_id`` -> usage event -> ``credential_id``);
+    records with no linkable account fall back to the global default row
+    (``credential_id``, ``tool_id`` and ``provider`` all NULL).
+
+    Pricing is entered as a package (``package_credits`` bought for
+    ``package_rupees``); ``rate_per_credit`` is the derived per-credit rate and is
+    the value used for costing. A row is active on a date when
+    ``effective_from <= date`` and (``effective_to`` IS NULL OR ``date <= effective_to``).
+    """
+
+    __tablename__ = "tool_credit_rates"
+    __table_args__ = (
+        Index("ix_tool_credit_rates_credential_effective", "credential_id", "effective_from"),
+        Index("ix_tool_credit_rates_provider_effective", "provider", "effective_from"),
+        Index("ix_tool_credit_rates_tool_effective", "tool_id", "effective_from"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    credential_id = Column(
+        Integer, ForeignKey("it_portal_tool_credentials.id", ondelete="CASCADE"), index=True
+    )  # the Kling account this rate applies to; NULL = global default
+    provider = Column(String(40), index=True)  # e.g. 'kling'; retained for the global default row
+    tool_id = Column(Integer, ForeignKey("it_portal_tools.id", ondelete="CASCADE"), index=True)  # optional
+    currency = Column(String(8), nullable=False, default="INR")
+    package_credits = Column(Numeric(14, 4))  # credits bought in the package (input)
+    package_rupees = Column(Numeric(14, 4))   # rupees paid for the package (input)
+    rate_per_credit = Column(Numeric(12, 4), nullable=False)  # derived: package_rupees / package_credits
+    effective_from = Column(
+        Date, nullable=False, default=lambda: datetime.utcnow().date(), server_default=text("CURRENT_DATE")
+    )
+    effective_to = Column(Date)  # NULL = still current
+    notes = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(
+        DateTime, default=datetime.utcnow, nullable=False, index=True, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "credentialId": self.credential_id,
+            "provider": self.provider,
+            "toolId": self.tool_id,
+            "currency": self.currency,
+            "packageCredits": float(self.package_credits) if self.package_credits is not None else None,
+            "packageRupees": float(self.package_rupees) if self.package_rupees is not None else None,
+            "ratePerCredit": float(self.rate_per_credit) if self.rate_per_credit is not None else None,
+            "effectiveFrom": self.effective_from.isoformat() if self.effective_from else None,
+            "effectiveTo": self.effective_to.isoformat() if self.effective_to else None,
+            "notes": self.notes,
+            "createdBy": self.created_by,
+            "createdAt": serialize_utc_datetime(self.created_at),
+        }
+
+
 class GenerationProject(Base):
     __tablename__ = "generation_projects"
     __table_args__ = (
@@ -1252,4 +1313,100 @@ class ActivityLog(ArchiveBase):
             "action": self.action,
             "details": self.details,
             "timestamp": serialize_utc_datetime(self.timestamp)
+        }
+
+
+# ==================== REPORT DISTRIBUTION MODELS ====================
+
+class SavedReport(Base):
+    """A report built in the Report Builder, saved to the library for reuse/export/history."""
+    __tablename__ = "saved_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    definition_json = Column(JSON, nullable=False)  # {branding, blocks}
+    html_snapshot = Column(Text)                    # rendered HTML at save time
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    department = Column(String(255), index=True)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def to_dict(self, include_definition=False):
+        data = {
+            "id": self.id,
+            "name": self.name,
+            "ownerUserId": self.owner_user_id,
+            "department": self.department,
+            "version": self.version,
+            "createdAt": serialize_utc_datetime(self.created_at),
+            "updatedAt": serialize_utc_datetime(self.updated_at),
+        }
+        if include_definition:
+            data["definition"] = self.definition_json or {}
+        return data
+
+
+class ReportSchedule(Base):
+    """A recurring report: render + export + (optional) email on a cadence."""
+    __tablename__ = "report_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    definition_json = Column(JSON, nullable=False)
+    cadence = Column(String(20), nullable=False, default="weekly")  # daily|weekly|monthly
+    hour_utc = Column(Integer, nullable=False, default=8)
+    weekday = Column(Integer)          # 0=Mon (weekly)
+    day_of_month = Column(Integer)     # 1-28 (monthly)
+    recipients_json = Column(JSON)     # ["a@x.com", ...]
+    formats_json = Column(JSON)        # ["pdf","xlsx"]
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    next_run_at = Column(DateTime, index=True)
+    last_run_at = Column(DateTime)
+    last_status = Column(String(40))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "cadence": self.cadence,
+            "hourUtc": self.hour_utc,
+            "weekday": self.weekday,
+            "dayOfMonth": self.day_of_month,
+            "recipients": self.recipients_json or [],
+            "formats": self.formats_json or [],
+            "active": bool(self.active),
+            "ownerUserId": self.owner_user_id,
+            "nextRunAt": serialize_utc_datetime(self.next_run_at),
+            "lastRunAt": serialize_utc_datetime(self.last_run_at),
+            "lastStatus": self.last_status,
+            "createdAt": serialize_utc_datetime(self.created_at),
+        }
+
+
+class ReportAuditLog(Base):
+    """Traceability for report actions: created, exported, deleted, run, sent, email_skipped."""
+    __tablename__ = "report_audit_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_id = Column(Integer, index=True)
+    schedule_id = Column(Integer, index=True)
+    action = Column(String(40), nullable=False, index=True)
+    format = Column(String(20))
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    detail = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "reportId": self.report_id,
+            "scheduleId": self.schedule_id,
+            "action": self.action,
+            "format": self.format,
+            "userId": self.user_id,
+            "detail": self.detail,
+            "createdAt": serialize_utc_datetime(self.created_at),
         }

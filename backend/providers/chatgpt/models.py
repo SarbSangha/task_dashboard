@@ -304,6 +304,7 @@ class ConversationPrompt(Base):
     images_json = Column(JSON)
     files_json = Column(JSON)
     code_blocks_json = Column(JSON)
+    content_parts_json = Column(JSON)
     prompt_metadata_json = Column(JSON)
     prompt_timestamp = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
@@ -324,6 +325,7 @@ class ConversationPrompt(Base):
             "images": self.images_json or [],
             "files": self.files_json or [],
             "codeBlocks": self.code_blocks_json or [],
+            "contentParts": self.content_parts_json or [],
             "promptMetadata": self.prompt_metadata_json or {},
             "promptTimestamp": serialize_utc_datetime(self.prompt_timestamp),
             "createdAt": serialize_utc_datetime(self.created_at),
@@ -359,6 +361,8 @@ class ConversationResponse(Base):
     images_json = Column(JSON)
     files_json = Column(JSON)
     artifacts_json = Column(JSON)
+    content_parts_json = Column(JSON)
+    citations_json = Column(JSON)
     reasoning_metadata_json = Column(JSON)
     response_status = Column(String(40), nullable=False, default="completed", index=True)
     response_timestamp = Column(DateTime)
@@ -383,6 +387,8 @@ class ConversationResponse(Base):
             "images": self.images_json or [],
             "files": self.files_json or [],
             "artifacts": self.artifacts_json or [],
+            "contentParts": self.content_parts_json or [],
+            "citations": self.citations_json or [],
             "reasoningMetadata": self.reasoning_metadata_json or {},
             "responseStatus": self.response_status,
             "responseTimestamp": serialize_utc_datetime(self.response_timestamp),
@@ -623,5 +629,91 @@ class ConversationCaptureAttachment(Base):
             # this (same mechanism the rest of the app already uses for
             # uploaded files).
             "storagePath": self.storage_path,
+            "createdAt": serialize_utc_datetime(self.created_at),
+        }
+
+
+class ConversationMediaAsset(Base):
+    """Media capture layer (additive, Phase 1) - deliberately its own table,
+    not a reuse of ConversationGeneratedAsset (response_id/prompt_id-scoped,
+    a narrower purpose) or ConversationCaptureAttachment (raw-bytes-for-the-
+    media-viewer, kind is a strict input/output binary). This table is the
+    one place every media asset type (generated_image, generated_video,
+    response_image, response_video) lands, regardless of which capture path
+    (authoritative-fetch content parts, citation content_references, or a
+    future DOM MutationObserver) produced it - see
+    RESPONSE_RECONSTRUCTION_REPORT.md-adjacent media capture plan for the
+    full architecture. Never written to by the text-capture pipeline; text
+    capture's existing tables/columns are untouched by this addition.
+    """
+    __tablename__ = "conversation_media_assets"
+    __table_args__ = (
+        Index(
+            "ux_conversation_media_assets_provider_asset_id",
+            "provider", "provider_asset_id",
+            unique=True,
+            postgresql_where=text("provider_asset_id IS NOT NULL"),
+            sqlite_where=text("provider_asset_id IS NOT NULL"),
+        ),
+        Index("ix_conversation_media_assets_conversation_created_at", "conversation_id", "created_at"),
+        # provider_conversation_id already gets ix_conversation_media_assets_provider_conversation_id
+        # from Column(index=True) below - no separate Index() needed (matches the established
+        # pattern on ConversationCaptureEvent/ConversationCaptureHealth above).
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversation_records.id", ondelete="CASCADE"), index=True)
+    provider = Column(String(40), nullable=False, default="chatgpt", index=True)
+    provider_conversation_id = Column(String(160), index=True)
+    message_id = Column(String(160), index=True)
+    assistant_message_id = Column(String(160), index=True)
+    correlation_id = Column(String(160), index=True)
+    media_type = Column(String(40), nullable=False, index=True)  # generated_image | generated_video | response_image | response_video
+    generated = Column(Boolean, nullable=False, default=True)
+    url = Column(Text)  # our own stable R2 URL, once uploaded
+    source_url = Column(Text)  # ChatGPT's original URL, may be short-lived/expiring
+    thumbnail_url = Column(Text)
+    mime_type = Column(String(120))
+    width = Column(Integer)
+    height = Column(Integer)
+    duration_ms = Column(Integer)
+    provider_asset_id = Column(String(160), index=True)
+    prompt = Column(Text)
+    alt_text = Column(Text)
+    source = Column(String(255))
+    display_order = Column(Integer)
+    status = Column(String(40), nullable=False, default="pending", index=True)  # pending | stored | failed
+    enrichment_status = Column(String(40), nullable=False, default="pending", index=True)  # pending | enriched
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    metadata_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "conversationId": self.conversation_id,
+            "provider": self.provider,
+            "providerConversationId": self.provider_conversation_id,
+            "messageId": self.message_id,
+            "assistantMessageId": self.assistant_message_id,
+            "correlationId": self.correlation_id,
+            "mediaType": self.media_type,
+            "generated": bool(self.generated),
+            "url": self.url,
+            "sourceUrl": self.source_url,
+            "thumbnailUrl": self.thumbnail_url,
+            "mimeType": self.mime_type,
+            "width": self.width,
+            "height": self.height,
+            "durationMs": self.duration_ms,
+            "providerAssetId": self.provider_asset_id,
+            "prompt": self.prompt,
+            "altText": self.alt_text,
+            "source": self.source,
+            "displayOrder": self.display_order,
+            "status": self.status,
+            "enrichmentStatus": self.enrichment_status,
+            "userId": self.user_id,
+            "metadata": self.metadata_json or {},
             "createdAt": serialize_utc_datetime(self.created_at),
         }
