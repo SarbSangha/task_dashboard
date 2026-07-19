@@ -1690,14 +1690,17 @@ def prompts_trends(
     )
     top_themes = [{"theme": t or "untagged", "count": int(c)} for t, c in tag_rows]
 
+    # Build the grouping expression once and reuse the same object, so SELECT and
+    # GROUP BY render identical bind params (otherwise Postgres raises GroupingError).
+    model_label_expr = func.coalesce(func.nullif(GenerationRecord.model_label, ""), "Unknown")
     model_rows = (
         _gen_prompt_query(db, start_dt, end_exclusive, department)
         .with_entities(
-            func.coalesce(func.nullif(GenerationRecord.model_label, ""), "Unknown"),
+            model_label_expr,
             func.count(GenerationRecord.id),
             func.sum(_SUCCESS_CASE),
         )
-        .group_by(func.coalesce(func.nullif(GenerationRecord.model_label, ""), "Unknown"))
+        .group_by(model_label_expr)
         .order_by(func.count(GenerationRecord.id).desc())
         .limit(8)
         .all()
@@ -2367,14 +2370,16 @@ def recommendations(
         ))
 
     # ---- Model routing (success by model) ----
+    # Same object in SELECT and GROUP BY to avoid Postgres GroupingError.
+    model_label_expr = func.coalesce(func.nullif(GenerationRecord.model_label, ""), "Unknown")
     model_rows = (
         _gen_prompt_query(db, start_dt, end_exclusive, department)
         .with_entities(
-            func.coalesce(func.nullif(GenerationRecord.model_label, ""), "Unknown"),
+            model_label_expr,
             func.count(GenerationRecord.id),
             func.sum(_SUCCESS_CASE),
         )
-        .group_by(func.coalesce(func.nullif(GenerationRecord.model_label, ""), "Unknown"))
+        .group_by(model_label_expr)
         .all()
     )
     models = [
