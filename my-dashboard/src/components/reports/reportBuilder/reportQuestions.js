@@ -119,3 +119,43 @@ export const READINESS_META = {
   needs_capture: { badge: '🟡', label: 'Partial data', color: '#b45309' },
   future: { badge: '🔴', label: 'No data captured yet', color: '#b91c1c' },
 };
+
+// Question -> live answer binding. `api` is a reportsAPI method; `items` are
+// [dotted-path-into-response, label, unit?]. Only questions with real data are
+// bound; the report then renders the actual numbers instead of a placeholder.
+export const ANSWER_BINDINGS = {
+  // Executive
+  'q-ex-1': { api: 'usersSummary', items: [['kpis.activeUsers.value', 'Active users'], ['kpis.avgSessionMinutes.value', 'Avg session', 'min']] },
+  'q-ex-2': { api: 'executive', items: [['kpis.aiAdoptionRate.value', 'AI adoption', '%'], ['kpis.aiGenerations.value', 'AI generations']] },
+  'q-ex-5': { api: 'costSummary', items: [['kpis.totalCost.value', 'Total cost', '₹'], ['kpis.totalCredits.value', 'Total credits']] },
+  'q-ex-6': { api: 'executive', items: [['kpis.aiGenerations.value', 'AI generations'], ['kpis.activeUsers.value', 'Active users']] },
+  // Kling
+  'q-kl-1': { api: 'klingSummary', items: [['kpis.totalVideos.value', 'Total videos'], ['kpis.creditsConsumed.value', 'Credits', 'cr'], ['kpis.uniqueUsers.value', 'Accounts']] },
+  'q-kl-2': { api: 'klingSummary', items: [['kpis.uniqueUsers.value', 'Active accounts'], ['kpis.avgVideosPerUser.value', 'Avg videos/account']] },
+  'q-kl-4': { api: 'klingSummary', items: [['kpis.successRate.value', 'Success rate', '%']] },
+  'q-kl-5': { api: 'klingTiming', items: [['peakHour.hour', 'Peak hour (IST)'], ['peakDay.day', 'Busiest day']] },
+  // ChatGPT
+  'q-cg-1': { api: 'chatgptSummary', items: [['kpis.conversations.value', 'Conversations'], ['kpis.prompts.value', 'Prompts'], ['kpis.uniqueUsers.value', 'Users']] },
+  'q-cg-4': { api: 'chatgptSummary', items: [['kpis.avgPromptsPerConversation.value', 'Prompts/chat']] },
+  // Cost
+  'q-co-1': { api: 'costSummary', items: [['kpis.totalCredits.value', 'Total credits'], ['kpis.totalCost.value', 'Total cost', '₹']] },
+  'q-co-2': { api: 'costSummary', items: [['kpis.wastedCredits.value', 'Wasted credits'], ['wastedPct', 'Wasted', '%']] },
+  'q-co-3': { api: 'costSummary', items: [['kpis.costPerOutput.value', 'Credits/output']] },
+  // User
+  'q-us-1': { api: 'usersSummary', items: [['kpis.activeUsers.value', 'Active users'], ['kpis.avgSessionMinutes.value', 'Avg session', 'min']] },
+  // Task
+  'q-ta-1': { api: 'tasksSummary', items: [['kpis.tasksCompleted.value', 'Tasks completed'], ['kpis.avgCycleHours.value', 'Avg cycle', 'h']] },
+  'q-ta-4': { api: 'tasksSummary', items: [['kpis.onTimeRate.value', 'On-time', '%']] },
+};
+
+const getPath = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+
+export const resolveAnswerItems = (binding, data) =>
+  binding.items.map(([path, label, unit]) => {
+    let v = getPath(data, path);
+    if (v === null || v === undefined || v === '') return { label, value: '—' };
+    if (typeof v === 'number') v = Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    return { label, value: unit ? `${v} ${unit}` : `${v}` };
+  });
+
+export const answerApiFor = (id) => ANSWER_BINDINGS[id]?.api || null;

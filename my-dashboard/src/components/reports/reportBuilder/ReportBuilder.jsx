@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { reportsAPI, downloadBlobResponse } from '../../../services/reports';
 import SectionHeader from '../primitives/SectionHeader';
-import { REPORT_QUESTIONS, QUESTION_CATEGORIES, READINESS_META } from './reportQuestions';
+import { REPORT_QUESTIONS, QUESTION_CATEGORIES, READINESS_META, ANSWER_BINDINGS, resolveAnswerItems, answerApiFor } from './reportQuestions';
 import { buildReportHtml, liveSnapshotItems } from './reportTemplate';
 import './ReportBuilder.css';
 
@@ -134,17 +134,42 @@ const ReportBuilder = ({ filters }) => {
     }
   };
 
-  // Fetch live data, bake snapshots into a self-contained definition, render HTML.
+  // Fetch live data (for live-data blocks AND question answer-bindings), bake
+  // snapshots into a self-contained definition, render HTML with real numbers.
   const buildAll = async () => {
+    const p = { start: filters?.start, end: filters?.end, department: filters?.department };
+    const fetchers = {
+      executive: () => reportsAPI.executive(p),
+      klingSummary: () => reportsAPI.klingSummary(p),
+      klingTiming: () => reportsAPI.klingTiming(p),
+      costSummary: () => reportsAPI.costSummary(p),
+      usersSummary: () => reportsAPI.usersSummary(p),
+      chatgptSummary: () => reportsAPI.chatgptSummary(p),
+      tasksSummary: () => reportsAPI.tasksSummary(p),
+    };
     const kinds = new Set(blocks.map((b) => b.kind));
-    const live = {};
-    try {
-      const p = { start: filters?.start, end: filters?.end, department: filters?.department };
-      if (kinds.has('live-exec')) live.exec = await reportsAPI.executive(p);
-      if (kinds.has('live-kling')) live.kling = await reportsAPI.klingSummary(p);
-      if (kinds.has('live-cost')) live.cost = await reportsAPI.costSummary(p);
-    } catch { /* live blocks degrade gracefully */ }
-    const enriched = blocks.map((b) => (b.kind.startsWith('live-') ? { ...b, snapshotItems: liveSnapshotItems(b.kind, live) } : b));
+    const needed = new Set();
+    if (kinds.has('live-exec')) needed.add('executive');
+    if (kinds.has('live-kling')) needed.add('klingSummary');
+    if (kinds.has('live-cost')) needed.add('costSummary');
+    blocks.forEach((b) => {
+      if (b.kind === 'question') { const api = answerApiFor(b.id); if (api && fetchers[api]) needed.add(api); }
+    });
+
+    const data = {};
+    await Promise.all([...needed].map(async (api) => {
+      try { data[api] = await fetchers[api](); } catch { /* degrade gracefully */ }
+    }));
+    const live = { exec: data.executive, kling: data.klingSummary, cost: data.costSummary };
+
+    const enriched = blocks.map((b) => {
+      if (b.kind.startsWith('live-')) return { ...b, snapshotItems: liveSnapshotItems(b.kind, live) };
+      if (b.kind === 'question') {
+        const bind = ANSWER_BINDINGS[b.id];
+        if (bind && data[bind.api]) return { ...b, answerItems: resolveAnswerItems(bind, data[bind.api]) };
+      }
+      return b;
+    });
     const readiness = computeReadiness(blocks);
     const meta = { kind: readiness.state === 'spec-only' ? 'specification' : 'report', coverage: readiness.coverage };
     const html = buildReportHtml({ branding, blocks: enriched, live, meta });

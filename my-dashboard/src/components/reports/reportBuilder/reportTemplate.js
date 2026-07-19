@@ -75,6 +75,18 @@ const dataCheckHtml = (block) => {
   return `<p class="datacheck" style="margin:6px 0 10px;padding:6px 10px;border-radius:6px;font-size:12px;color:${m.color};background:${m.bg}">${m.badge} <strong>${m.label}</strong>${note}</p>`;
 };
 
+// When the question is bound to live data, render the real answer (KPI cards)
+// instead of the placeholder banner. Partial (needs_capture) still shows a caveat.
+const answerHtml = (block) => {
+  if (Array.isArray(block.answerItems) && block.answerItems.length) {
+    const caveat = block.readiness === 'needs_capture' && block.dataNote
+      ? `<p class="datacheck" style="margin:2px 0 8px;padding:6px 10px;border-radius:6px;font-size:11px;color:#b45309;background:#fdf3e7">🟡 Partial — ${esc(block.dataNote)}</p>`
+      : '';
+    return `<p class="datacheck" style="margin:6px 0 8px;padding:6px 10px;border-radius:6px;font-size:12px;color:#15803d;background:#e9f7ef">✅ <strong>Answer</strong> — live data for the selected period</p>${caveat}${kpiCardsHtml(block.answerItems)}`;
+  }
+  return dataCheckHtml(block);
+};
+
 function blockHtml(block, idx, live) {
   const n = idx + 1;
   switch (block.kind) {
@@ -83,7 +95,7 @@ function blockHtml(block, idx, live) {
         <section class="block">
           ${sectionHead(n, block.q)}
           ${block.why ? `<p class="lead"><strong>Why it matters:</strong> ${esc(block.why)}</p>` : ''}
-          ${dataCheckHtml(block)}
+          ${answerHtml(block)}
           <div class="qmeta">
             ${block.metric ? `<div class="qmeta-item"><span class="qmeta-lab">Metric</span><span class="qmeta-val">${esc(block.metric)}</span></div>` : ''}
             ${block.decision ? `<div class="qmeta-item"><span class="qmeta-lab">Decision</span><span class="qmeta-val">${esc(block.decision)}</span></div>` : ''}
