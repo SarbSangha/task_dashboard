@@ -38,12 +38,55 @@ const costKpis = (d) => {
     { value: num(k.wastedCredits?.value), label: 'Wasted Credits' },
   ];
 };
+const usersKpis = (d) => {
+  const k = d?.kpis || {};
+  return [
+    { value: num(k.activeUsers?.value), label: 'Active Users' },
+    { value: num(d?.dau), label: 'DAU' },
+    { value: num(d?.wau), label: 'WAU' },
+    { value: num(d?.mau), label: 'MAU' },
+    { value: `${num(k.avgSessionMinutes?.value)}m`, label: 'Avg Session' },
+  ];
+};
+const tasksKpis = (d) => {
+  const k = d?.kpis || {};
+  return [
+    { value: num(k.tasksCompleted?.value), label: 'Tasks Completed' },
+    { value: `${num(k.completionRate?.value)}%`, label: 'Completion Rate' },
+    { value: `${num(k.avgCycleHours?.value)}h`, label: 'Avg Cycle' },
+    { value: `${num(k.onTimeRate?.value)}%`, label: 'On-Time' },
+  ];
+};
+const promptsKpis = (d) => {
+  const k = d?.kpis || {};
+  return [
+    { value: num(k.totalPrompts?.value), label: 'Prompts' },
+    { value: num(k.uniquePrompts?.value), label: 'Unique Prompts' },
+    { value: `${num(k.successfulPct?.value)}%`, label: 'Success' },
+    { value: `${num(k.reuseRate?.value)}%`, label: 'Reuse Rate' },
+    { value: num(k.avgLength?.value), label: 'Avg Length' },
+  ];
+};
+const chatgptKpis = (d) => {
+  const k = d?.kpis || {};
+  return [
+    { value: num(k.conversations?.value), label: 'Conversations' },
+    { value: num(k.prompts?.value), label: 'Prompts' },
+    { value: num(k.responses?.value), label: 'Responses' },
+    { value: num(k.uniqueUsers?.value), label: 'Users' },
+    { value: num(k.avgPromptsPerConversation?.value), label: 'Prompts / Chat' },
+  ];
+};
 
 // Exposed so the builder can bake live values into a saved definition (snapshotItems).
 export const liveSnapshotItems = (kind, live) => {
   if (kind === 'live-exec') return live?.exec ? execKpis(live.exec) : [];
   if (kind === 'live-kling') return live?.kling ? klingKpis(live.kling) : [];
   if (kind === 'live-cost') return live?.cost ? costKpis(live.cost) : [];
+  if (kind === 'live-users') return live?.users ? usersKpis(live.users) : [];
+  if (kind === 'live-tasks') return live?.tasks ? tasksKpis(live.tasks) : [];
+  if (kind === 'live-prompts') return live?.prompts ? promptsKpis(live.prompts) : [];
+  if (kind === 'live-chatgpt') return live?.chatgpt ? chatgptKpis(live.chatgpt) : [];
   return [];
 };
 
@@ -119,6 +162,14 @@ function blockHtml(block, idx, live) {
       return `<section class="block">${sectionHead(n, 'Kling Video Intelligence')}${live.kling ? kpiCardsHtml(klingKpis(live.kling)) : '<p class="muted">No data available.</p>'}</section>`;
     case 'live-cost':
       return `<section class="block">${sectionHead(n, 'Cost Intelligence')}${live.cost ? kpiCardsHtml(costKpis(live.cost)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-users':
+      return `<section class="block">${sectionHead(n, 'User Intelligence')}${live.users ? kpiCardsHtml(usersKpis(live.users)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-tasks':
+      return `<section class="block">${sectionHead(n, 'Task Intelligence')}${live.tasks ? kpiCardsHtml(tasksKpis(live.tasks)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-prompts':
+      return `<section class="block">${sectionHead(n, 'Prompt Intelligence')}${live.prompts ? kpiCardsHtml(promptsKpis(live.prompts)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-chatgpt':
+      return `<section class="block">${sectionHead(n, 'ChatGPT Intelligence')}${live.chatgpt ? kpiCardsHtml(chatgptKpis(live.chatgpt)) : '<p class="muted">No data available.</p>'}</section>`;
     case 'table': {
       const cols = block.columns || ['Project Phase', 'Target Date', 'Allocation', 'Status'];
       return `

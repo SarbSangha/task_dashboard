@@ -11,7 +11,11 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 const BLOCK_LIBRARY = [
   { kind: 'live-exec', title: 'Executive KPIs', desc: 'Live active users, generations, adoption, cost', live: true },
   { kind: 'live-kling', title: 'Kling Summary', desc: 'Live videos, creators, success, credits', live: true },
+  { kind: 'live-chatgpt', title: 'ChatGPT Summary', desc: 'Live conversations, prompts, responses, users', live: true },
   { kind: 'live-cost', title: 'Cost Summary', desc: 'Live credits, cost/output, waste', live: true },
+  { kind: 'live-users', title: 'User Summary', desc: 'Live active users, DAU/WAU/MAU, sessions', live: true },
+  { kind: 'live-tasks', title: 'Task Summary', desc: 'Live completed, completion rate, cycle time, on-time', live: true },
+  { kind: 'live-prompts', title: 'Prompt Summary', desc: 'Live prompts, unique, success, reuse, length', live: true },
   { kind: 'kpis', title: 'Custom KPI Cards', desc: 'Three editable metric cards' },
   { kind: 'text', title: 'Narrative / Text', desc: 'A written section' },
   { kind: 'table', title: 'Milestone Table', desc: 'Editable phase / allocation table' },
@@ -146,12 +150,17 @@ const ReportBuilder = ({ filters }) => {
       usersSummary: () => reportsAPI.usersSummary(p),
       chatgptSummary: () => reportsAPI.chatgptSummary(p),
       tasksSummary: () => reportsAPI.tasksSummary(p),
+      promptsSummary: () => reportsAPI.promptsSummary(p),
+    };
+    // Which live-data block maps to which endpoint.
+    const LIVE_BLOCK_API = {
+      'live-exec': 'executive', 'live-kling': 'klingSummary', 'live-cost': 'costSummary',
+      'live-users': 'usersSummary', 'live-tasks': 'tasksSummary',
+      'live-prompts': 'promptsSummary', 'live-chatgpt': 'chatgptSummary',
     };
     const kinds = new Set(blocks.map((b) => b.kind));
     const needed = new Set();
-    if (kinds.has('live-exec')) needed.add('executive');
-    if (kinds.has('live-kling')) needed.add('klingSummary');
-    if (kinds.has('live-cost')) needed.add('costSummary');
+    Object.entries(LIVE_BLOCK_API).forEach(([kind, api]) => { if (kinds.has(kind)) needed.add(api); });
     blocks.forEach((b) => {
       if (b.kind === 'question') { const api = answerApiFor(b.id); if (api && fetchers[api]) needed.add(api); }
     });
@@ -160,7 +169,11 @@ const ReportBuilder = ({ filters }) => {
     await Promise.all([...needed].map(async (api) => {
       try { data[api] = await fetchers[api](); } catch { /* degrade gracefully */ }
     }));
-    const live = { exec: data.executive, kling: data.klingSummary, cost: data.costSummary };
+    const live = {
+      exec: data.executive, kling: data.klingSummary, cost: data.costSummary,
+      users: data.usersSummary, tasks: data.tasksSummary,
+      prompts: data.promptsSummary, chatgpt: data.chatgptSummary,
+    };
 
     const enriched = blocks.map((b) => {
       if (b.kind.startsWith('live-')) return { ...b, snapshotItems: liveSnapshotItems(b.kind, live) };
