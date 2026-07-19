@@ -10,7 +10,7 @@ const PRESETS = [
   { key: 'custom', label: 'Custom' },
 ];
 
-const GlobalFilters = ({ filters, preset, onChange, departments = [] }) => {
+const GlobalFilters = ({ filters, preset, onChange, departments = [], klingAccounts = [] }) => {
   const setPreset = (key) => {
     if (key === 'custom') {
       onChange({ preset: 'custom' });
@@ -86,6 +86,23 @@ const GlobalFilters = ({ filters, preset, onChange, departments = [] }) => {
           <option value="chatgpt">ChatGPT</option>
         </select>
       </div>
+
+      {klingAccounts.length > 0 && (
+        <div className="rpt-filter-group">
+          <span className="rpt-filter-label">Kling user</span>
+          <select
+            className="rpt-select"
+            value={filters.account || 'all'}
+            onChange={(e) => onChange({ account: e.target.value })}
+            title="Filter Kling views to one account/user"
+          >
+            <option value="all">All users</option>
+            {klingAccounts.map((a) => (
+              <option key={a.credentialId} value={a.credentialId}>{a.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
     </div>
   );
 };

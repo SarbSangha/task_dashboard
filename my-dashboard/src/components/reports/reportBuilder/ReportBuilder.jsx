@@ -141,7 +141,7 @@ const ReportBuilder = ({ filters }) => {
   // Fetch live data (for live-data blocks AND question answer-bindings), bake
   // snapshots into a self-contained definition, render HTML with real numbers.
   const buildAll = async () => {
-    const p = { start: filters?.start, end: filters?.end, department: filters?.department };
+    const p = { start: filters?.start, end: filters?.end, department: filters?.department, account: filters?.account };
     const fetchers = {
       executive: () => reportsAPI.executive(p),
       klingSummary: () => reportsAPI.klingSummary(p),

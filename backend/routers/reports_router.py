@@ -252,7 +252,30 @@ def report_filters(
         .limit(100)
         .all()
     ]
-    return {"success": True, "departments": departments, "providers": providers, "models": models}
+    # Kling accounts (credential -> person name / email) for the account filter.
+    wide_start = datetime(2000, 1, 1)
+    wide_end = datetime.utcnow() + timedelta(days=1)
+    label_map = _kling_account_label_map(db, wide_start, wide_end)
+    emails = {e.lower() for e in label_map.values() if e and "@" in e}
+    email_to_name = {}
+    if emails:
+        for name, email in db.query(User.name, User.email).filter(func.lower(User.email).in_(list(emails))).all():
+            if email and name:
+                email_to_name[email.lower()] = name
+    kling_accounts = sorted(
+        [
+            {"credentialId": cid, "label": (email_to_name.get((e or "").lower()) or e or f"Account #{cid}")}
+            for cid, e in label_map.items()
+        ],
+        key=lambda a: a["label"].lower(),
+    )
+    return {
+        "success": True,
+        "departments": departments,
+        "providers": providers,
+        "models": models,
+        "klingAccounts": kling_accounts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -558,8 +581,8 @@ IST_INTERVAL = text("interval '330 minutes'")
 KLING_GENERATION_EVENT = "network_generation"  # the observed, settled generation
 
 
-def _kling_usage_query(db: Session, start_dt, end_exclusive):
-    return (
+def _kling_usage_query(db: Session, start_dt, end_exclusive, account=None):
+    q = (
         db.query(ITPortalToolUsageEvent)
         .join(ITPortalTool, ITPortalToolUsageEvent.tool_id == ITPortalTool.id)
         .filter(
@@ -568,6 +591,12 @@ def _kling_usage_query(db: Session, start_dt, end_exclusive):
             ITPortalToolUsageEvent.created_at < end_exclusive,
         )
     )
+    if account not in (None, "", "all"):
+        try:
+            q = q.filter(ITPortalToolUsageEvent.credential_id == int(account))
+        except (TypeError, ValueError):
+            pass
+    return q
 
 
 def _kling_account_label_map(db: Session, start_dt, end_exclusive) -> dict:
@@ -604,6 +633,7 @@ def _kling_account_label_map(db: Session, start_dt, end_exclusive) -> dict:
 def kling_accounts(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
+    account: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_faculty),
 ):
@@ -611,6 +641,7 @@ def kling_accounts(
 
     Answers 'which account is burning the most credits / money', account efficiency
     and share of spend — the meaningful cost-centre cut given single-login capture.
+    When ``account`` (a credential id) is given, restricts to that one account.
     """
     start_dt, end_exclusive, _ps, _pe, days = _resolve_period(start, end)
     rate_expr, currency, _default_rate = _credit_rate_context(db)  # keys on credential_id
@@ -633,7 +664,7 @@ def kling_accounts(
                 email_to_name[email.lower()] = name
 
     rows = (
-        _kling_usage_query(db, start_dt, end_exclusive)
+        _kling_usage_query(db, start_dt, end_exclusive, account=account)
         .with_entities(
             ITPortalToolUsageEvent.credential_id,
             func.count(ITPortalToolUsageEvent.id),

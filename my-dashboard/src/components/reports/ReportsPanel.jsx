@@ -89,12 +89,14 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     staleTime: 10 * 60_000,
   });
   const departments = filtersQuery.data?.departments || [];
+  const klingAccounts = filtersQuery.data?.klingAccounts || [];
 
   const queryFilters = useMemo(() => {
     const f = { start: filters.start, end: filters.end };
     if (filters.department && filters.department !== 'all') f.department = filters.department;
+    if (filters.account && filters.account !== 'all') f.account = filters.account;
     return f;
-  }, [filters.start, filters.end, filters.department]);
+  }, [filters.start, filters.end, filters.department, filters.account]);
 
   const updateFilters = (patch) => {
     if (patch.preset) setPreset(patch.preset);
@@ -197,7 +199,7 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         </div>
 
         {!isMinimized && (
-          <GlobalFilters filters={filters} preset={preset} onChange={updateFilters} departments={departments} />
+          <GlobalFilters filters={filters} preset={preset} onChange={updateFilters} departments={departments} klingAccounts={klingAccounts} />
         )}
 
         {!isMinimized && (
