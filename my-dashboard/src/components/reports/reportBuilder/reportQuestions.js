@@ -21,7 +21,7 @@ const RAW_QUESTIONS = [
   { id: 'q-kl-3', cat: 'Kling', q: 'Which departments generate the most video content?', why: 'Shows where video work concentrates.', metric: 'Videos by department', decision: 'Allocate credits to heavy teams.' },
   { id: 'q-kl-4', cat: 'Kling', q: 'What is the Kling generation success rate?', why: 'Reliability drains time, credits and trust.', metric: 'Success vs failure %', decision: 'Escalate reliability fixes.' },
   { id: 'q-kl-5', cat: 'Kling', q: 'When are peak Kling usage hours?', why: 'Peaks drive capacity and support planning.', metric: 'Generations by hour', decision: 'Align capacity to peaks.' },
-  { id: 'q-kl-6', cat: 'Kling', q: 'How much Kling credit does each user consume in the selected period?', why: 'Shows which users/accounts drive credit spend so budgets and caps can be targeted.', metric: 'Credits & ₹ cost per Kling account (user), for the date range', decision: 'Cap or coach the heaviest consumers; plan credit purchases.' },
+  { id: 'q-kl-6', cat: 'Kling', q: 'How much Kling credit does each user consume, and on which Kling account, in the selected period?', why: 'Shows which person drove spend and on whose shared Kling account, so budgets and caps can be targeted.', metric: 'Credits & ₹ cost per person × Kling account, for the date range', decision: 'Cap or coach the heaviest consumers; reconcile shared-account usage.' },
 
   // ChatGPT
   { id: 'q-cg-1', cat: 'ChatGPT', q: 'How much is ChatGPT being used across the org?', why: 'Measures conversational-AI adoption.', metric: 'Conversations · prompts · users', decision: 'Size support and seats.' },
@@ -141,10 +141,10 @@ export const ANSWER_BINDINGS = {
   'q-kl-6': {
     api: 'klingAccountsByUser',
     table: {
-      columns: ['User', 'Email', 'Generations', 'Credits', 'Cost', 'Share'],
-      rows: (d) => (d.accounts || []).slice(0, 200).map((a) => [
-        a.label,
-        a.accountEmail || '',
+      columns: ['User', 'Kling account used', 'Generations', 'Credits', 'Cost', 'Share'],
+      rows: (d) => (d.accounts || []).slice(0, 300).map((a) => [
+        a.personName || a.label,
+        a.klingAccount || a.klingAccountEmail || '—',
         Number(a.generations || 0).toLocaleString(),
         Number(a.credits || 0).toLocaleString(undefined, { maximumFractionDigits: 1 }),
         `${d.currency || 'INR'} ${Number(a.cost || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,

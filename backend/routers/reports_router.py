@@ -657,67 +657,86 @@ def kling_accounts(
     cost_expr = func.coalesce(func.sum(sane_credits * rate_expr), 0)
     gen_filter = ITPortalToolUsageEvent.event_type == KLING_GENERATION_EVENT
 
-    by_user = (by or "account").lower() == "user"
-    group_col = ITPortalToolUsageEvent.user_id if by_user else ITPortalToolUsageEvent.credential_id
+    mode = (by or "account").lower()
+    if mode == "user-account":
+        group_cols = (ITPortalToolUsageEvent.user_id, ITPortalToolUsageEvent.credential_id)
+    elif mode == "user":
+        group_cols = (ITPortalToolUsageEvent.user_id,)
+    else:
+        group_cols = (ITPortalToolUsageEvent.credential_id,)
 
     rows = (
         _kling_usage_query(db, start_dt, end_exclusive, account=account)
         .with_entities(
-            group_col,
+            *group_cols,
             func.count(ITPortalToolUsageEvent.id),
             func.count(ITPortalToolUsageEvent.id).filter(gen_filter),
             func.coalesce(func.sum(sane_credits), 0),
             cost_expr,
         )
-        .group_by(group_col)
+        .group_by(*group_cols)
         .all()
     )
 
-    # Resolve each group key to a human label.
-    if by_user:
-        # user_id captured at generation time = the actual person (splits shared accounts).
-        ids = [r[0] for r in rows if r[0] is not None]
-        users = {
-            uid: (name, email)
-            for uid, name, email in db.query(User.id, User.name, User.email).filter(User.id.in_(ids)).all()
-        } if ids else {}
+    # Account (credential) label resolver: owner name where the email matches a user.
+    label_map = _kling_account_label_map(db, start_dt, end_exclusive)
+    emails = {e.lower() for e in label_map.values() if e and "@" in e}
+    email_to_name = {}
+    if emails:
+        for name, email in db.query(User.name, User.email).filter(func.lower(User.email).in_(list(emails))).all():
+            if email and name:
+                email_to_name[email.lower()] = name
 
-        def resolve(key):
-            name, email = users.get(key, (None, None))
-            return (name or f"User #{key}", name, email)
-    else:
-        label_map = _kling_account_label_map(db, start_dt, end_exclusive)
-        emails = {e.lower() for e in label_map.values() if e and "@" in e}
-        email_to_name = {}
-        if emails:
-            for name, email in db.query(User.name, User.email).filter(func.lower(User.email).in_(list(emails))).all():
-                if email and name:
-                    email_to_name[email.lower()] = name
+    def account_label(cid):
+        email = label_map.get(cid)
+        person = email_to_name.get(email.lower()) if email else None
+        return (person or email or (f"Account #{cid}" if cid is not None else "Unlinked"), person, email)
 
-        def resolve(key):
-            email = label_map.get(key)
-            person = email_to_name.get(email.lower()) if email else None
-            return (person or email or (f"Account #{key}" if key is not None else "Unlinked"), person, email)
+    # Generating-person resolver.
+    uid_needed = set(r[0] for r in rows) if mode in ("user", "user-account") else set()
+    users = {
+        uid: (name, email)
+        for uid, name, email in db.query(User.id, User.name, User.email).filter(User.id.in_([x for x in uid_needed if x is not None])).all()
+    } if uid_needed else {}
 
-    total_credits = sum(float(r[3]) for r in rows)
+    def user_label(uid):
+        name, email = users.get(uid, (None, None))
+        return (name or f"User #{uid}", name, email)
+
+    ncols = len(group_cols)
+    total_credits = sum(float(r[ncols + 2]) for r in rows)
     accounts = []
-    for key, events, gens, credits, cost in rows:
+    for r in rows:
+        keys = r[:ncols]
+        events, gens, credits, cost = r[ncols], r[ncols + 1], r[ncols + 2], r[ncols + 3]
         credits = float(credits)
         gens = int(gens or 0)
-        label, person, email = resolve(key)
-        accounts.append({
-            "credentialId": None if by_user else key,
-            "userId": key if by_user else None,
-            "label": label,
-            "personName": person,
-            "accountEmail": email,
+        entry = {
             "events": int(events),
             "generations": gens,
             "credits": round(credits, 1),
             "cost": round(float(cost), 2),
             "avgCreditsPerGeneration": round(credits / gens, 1) if gens else 0.0,
             "creditSharePct": round(credits / total_credits * 100.0, 1) if total_credits else 0.0,
-        })
+        }
+        if mode == "user-account":
+            uid, cid = keys
+            uname, _, uemail = user_label(uid)
+            alabel, aowner, aemail = account_label(cid)
+            entry.update({
+                "userId": uid, "credentialId": cid,
+                "label": uname, "personName": uname, "accountEmail": uemail,
+                "klingAccount": alabel, "klingAccountEmail": aemail,
+            })
+        elif mode == "user":
+            (uid,) = keys
+            uname, _, uemail = user_label(uid)
+            entry.update({"userId": uid, "credentialId": None, "label": uname, "personName": uname, "accountEmail": uemail})
+        else:
+            (cid,) = keys
+            alabel, aowner, aemail = account_label(cid)
+            entry.update({"credentialId": cid, "userId": None, "label": alabel, "personName": aowner, "accountEmail": aemail})
+        accounts.append(entry)
     accounts.sort(key=lambda a: a["cost"], reverse=True)
 
     return {

@@ -152,7 +152,7 @@ const ReportBuilder = ({ filters }) => {
       tasksSummary: () => reportsAPI.tasksSummary(p),
       promptsSummary: () => reportsAPI.promptsSummary(p),
       klingAccounts: () => reportsAPI.klingAccounts(p),
-      klingAccountsByUser: () => reportsAPI.klingAccounts({ ...p, by: 'user' }),
+      klingAccountsByUser: () => reportsAPI.klingAccounts({ ...p, by: 'user-account' }),
     };
     // Which live-data block maps to which endpoint.
     const LIVE_BLOCK_API = {
