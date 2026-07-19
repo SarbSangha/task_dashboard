@@ -1,0 +1,1133 @@
+{
+  "version": "1.0",
+  "description": "Enterprise AI Analytics library seed. Implements enterprise-analytics-architecture.md. 12 dashboards + reports (taxonomy) and fully-worked exemplar questions demonstrating every field. Remaining v1 questions migrate into the same `questions` shape.",
+  "enums": {
+    "domains": [
+      "EXECUTIVE",
+      "FINANCE",
+      "DEPARTMENT",
+      "USER",
+      "PRODUCTIVITY",
+      "OPERATIONS",
+      "RELIABILITY",
+      "AI",
+      "TIME",
+      "SECURITY",
+      "FORECASTING",
+      "RECOMMENDATIONS"
+    ],
+    "audiences": [
+      "EXECUTIVE",
+      "FINANCE",
+      "DEPARTMENT_HEAD",
+      "AI_TEAM",
+      "OPERATIONS",
+      "ADMINISTRATOR",
+      "INDIVIDUAL_EMPLOYEE"
+    ],
+    "priorityTiers": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "readiness": [
+      "available",
+      "needs_capture",
+      "future"
+    ],
+    "readinessBadge": {
+      "available": "✅",
+      "needs_capture": "🟡",
+      "future": "🔴"
+    },
+    "visualizations": [
+      "kpi",
+      "trend-line",
+      "area",
+      "bar",
+      "ranked-bar",
+      "stacked-bar",
+      "grouped-bar",
+      "donut",
+      "pie",
+      "pareto",
+      "histogram",
+      "heatmap",
+      "scatter",
+      "quadrant",
+      "funnel",
+      "gauge",
+      "treemap",
+      "box-plot",
+      "control-chart",
+      "forecast-band",
+      "waterfall",
+      "table",
+      "scorecard",
+      "slope",
+      "impact-effort-matrix"
+    ],
+    "dataSources": [
+      "users",
+      "user_activities",
+      "tasks",
+      "chatgpt",
+      "tool_usage_events",
+      "generation_records",
+      "credit_rates",
+      "tools",
+      "credentials",
+      "audit",
+      "generation_latency",
+      "asset_events",
+      "token_usage"
+    ],
+    "confidence": [
+      "high",
+      "medium",
+      "low"
+    ],
+    "calculationType": [
+      "simple",
+      "aggregate",
+      "derived",
+      "forecast",
+      "ai_generated"
+    ]
+  },
+  "audienceRoleMap": {
+    "EXECUTIVE": [
+      "admin",
+      "executive"
+    ],
+    "FINANCE": [
+      "finance",
+      "admin"
+    ],
+    "DEPARTMENT_HEAD": [
+      "hod"
+    ],
+    "AI_TEAM": [
+      "ai_team",
+      "faculty"
+    ],
+    "OPERATIONS": [
+      "operations",
+      "admin",
+      "faculty"
+    ],
+    "ADMINISTRATOR": [
+      "admin"
+    ],
+    "INDIVIDUAL_EMPLOYEE": [
+      "employee",
+      "user"
+    ]
+  },
+  "dashboards": [
+    {
+      "id": "DASH-EXEC",
+      "domain": "EXECUTIVE",
+      "name": "Executive Dashboard",
+      "objective": "AI ROI, adoption, cost and risk at a glance.",
+      "audience": [
+        "EXECUTIVE",
+        "ADMINISTRATOR"
+      ],
+      "reports": [
+        {
+          "id": "RPT-EXEC-INVEST",
+          "name": "AI Investment Summary",
+          "objective": "Is AI investment paying off?",
+          "questionIds": [
+            "EXEC-003",
+            "EXEC-005",
+            "EXEC-016",
+            "EXEC-018"
+          ]
+        },
+        {
+          "id": "RPT-EXEC-ADOPT",
+          "name": "Organization Adoption",
+          "objective": "Is adoption broad and growing?",
+          "questionIds": [
+            "EXEC-001",
+            "EXEC-004",
+            "EXEC-019",
+            "EXEC-009"
+          ]
+        },
+        {
+          "id": "RPT-EXEC-BUDGET",
+          "name": "Budget & Cost",
+          "objective": "Is spend under control?",
+          "questionIds": [
+            "EXEC-002",
+            "EXEC-008",
+            "EXEC-011",
+            "EXEC-021"
+          ]
+        },
+        {
+          "id": "RPT-EXEC-PROD",
+          "name": "Productivity & Impact",
+          "objective": "Is AI producing business value?",
+          "questionIds": [
+            "EXEC-005",
+            "EXEC-016",
+            "EXEC-023"
+          ]
+        },
+        {
+          "id": "RPT-EXEC-RISK",
+          "name": "Risk & Governance",
+          "objective": "Any red flags?",
+          "questionIds": [
+            "EXEC-013",
+            "EXEC-022"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-FIN",
+      "domain": "FINANCE",
+      "name": "Finance Dashboard",
+      "objective": "Spend, unit economics, budget and optimization.",
+      "audience": [
+        "FINANCE",
+        "EXECUTIVE"
+      ],
+      "reports": [
+        {
+          "id": "RPT-FIN-CREDIT",
+          "name": "Credit Consumption",
+          "objective": "How fast are we burning credits?",
+          "questionIds": [
+            "FIN-002",
+            "FIN-013",
+            "FIN-014"
+          ]
+        },
+        {
+          "id": "RPT-FIN-COST-BREAKDOWN",
+          "name": "Cost Breakdown",
+          "objective": "Where does the money go and who owns it?",
+          "questionIds": [
+            "FIN-004",
+            "FIN-005",
+            "FIN-011",
+            "FIN-003"
+          ]
+        },
+        {
+          "id": "RPT-FIN-UNIT",
+          "name": "Unit Economics",
+          "objective": "What does one output cost?",
+          "questionIds": [
+            "FIN-003",
+            "FIN-020",
+            "FIN-012"
+          ]
+        },
+        {
+          "id": "RPT-FIN-FORECAST",
+          "name": "Budget & Forecast",
+          "objective": "What will we spend next period?",
+          "questionIds": [
+            "FIN-010",
+            "FIN-022",
+            "FIN-017"
+          ]
+        },
+        {
+          "id": "RPT-FIN-COST-OPT",
+          "name": "Cost Optimization",
+          "objective": "Cut cost without losing output.",
+          "questionIds": [
+            "FIN-009",
+            "FIN-007",
+            "FIN-024"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-DEPT",
+      "domain": "DEPARTMENT",
+      "name": "Department Dashboard",
+      "objective": "Team efficiency, adoption, cost and training needs.",
+      "audience": [
+        "DEPARTMENT_HEAD",
+        "EXECUTIVE"
+      ],
+      "reports": [
+        {
+          "id": "RPT-DEPT-EFF",
+          "name": "Department Efficiency",
+          "objective": "Which teams turn spend into output?",
+          "questionIds": [
+            "DEPT-001",
+            "DEPT-004",
+            "DEPT-022"
+          ]
+        },
+        {
+          "id": "RPT-DEPT-ADOPT",
+          "name": "Department Adoption",
+          "objective": "Who is under-adopting?",
+          "questionIds": [
+            "DEPT-005",
+            "DEPT-010",
+            "DEPT-017"
+          ]
+        },
+        {
+          "id": "RPT-DEPT-COST",
+          "name": "Department Cost",
+          "objective": "Team cost ownership.",
+          "questionIds": [
+            "DEPT-003",
+            "DEPT-013",
+            "DEPT-015"
+          ]
+        },
+        {
+          "id": "RPT-DEPT-TRAIN",
+          "name": "Training Needs",
+          "objective": "Who needs enablement?",
+          "questionIds": [
+            "DEPT-018",
+            "DEPT-002"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-USER",
+      "domain": "USER",
+      "name": "User & Adoption Dashboard",
+      "objective": "Engagement, retention, maturity, activation.",
+      "audience": [
+        "ADMINISTRATOR",
+        "DEPARTMENT_HEAD"
+      ],
+      "reports": [
+        {
+          "id": "RPT-USER-ENGAGE",
+          "name": "Engagement",
+          "objective": "DAU/WAU/MAU and stickiness.",
+          "questionIds": [
+            "USER-001",
+            "USER-018",
+            "USER-010"
+          ]
+        },
+        {
+          "id": "RPT-USER-RETAIN",
+          "name": "Retention & Churn",
+          "objective": "Do users stick?",
+          "questionIds": [
+            "USER-004",
+            "USER-009",
+            "USER-021"
+          ]
+        },
+        {
+          "id": "RPT-USER-MATURE",
+          "name": "Maturity & Champions",
+          "objective": "Who leads and who lags?",
+          "questionIds": [
+            "USER-007",
+            "USER-008",
+            "USER-028"
+          ]
+        },
+        {
+          "id": "RPT-USER-ACTIVATE",
+          "name": "Activation & Onboarding",
+          "objective": "Do new users reach value?",
+          "questionIds": [
+            "USER-013",
+            "USER-014",
+            "USER-025"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-PROD",
+      "domain": "PRODUCTIVITY",
+      "name": "Productivity Dashboard",
+      "objective": "Output, AI business value, efficiency, waste.",
+      "audience": [
+        "DEPARTMENT_HEAD",
+        "EXECUTIVE"
+      ],
+      "reports": [
+        {
+          "id": "RPT-PROD-OUTPUT",
+          "name": "Output & Throughput",
+          "objective": "How much work gets done?",
+          "questionIds": [
+            "PROD-002",
+            "PROD-003",
+            "PROD-011"
+          ]
+        },
+        {
+          "id": "RPT-PROD-VALUE",
+          "name": "AI Business Value",
+          "objective": "Do AI users deliver more?",
+          "questionIds": [
+            "PROD-001",
+            "PROD-018",
+            "PROD-021"
+          ]
+        },
+        {
+          "id": "RPT-PROD-EFF",
+          "name": "Efficiency Leaders",
+          "objective": "Who is most efficient?",
+          "questionIds": [
+            "PROD-004",
+            "PROD-012",
+            "PROD-013"
+          ]
+        },
+        {
+          "id": "RPT-PROD-WASTE",
+          "name": "Rework & Waste",
+          "objective": "Where is effort wasted?",
+          "questionIds": [
+            "PROD-006",
+            "PROD-009"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-OPS",
+      "domain": "OPERATIONS",
+      "name": "Operations Dashboard",
+      "objective": "Live usage, reliability, latency, capture health.",
+      "audience": [
+        "OPERATIONS",
+        "ADMINISTRATOR"
+      ],
+      "reports": [
+        {
+          "id": "RPT-OPS-LIVE",
+          "name": "Live Usage",
+          "objective": "What is happening right now?",
+          "questionIds": [
+            "OPS-002",
+            "OPS-001",
+            "OPS-019"
+          ]
+        },
+        {
+          "id": "RPT-OPS-REL",
+          "name": "Reliability & Failures",
+          "objective": "Is it working?",
+          "questionIds": [
+            "OPS-012",
+            "OPS-021",
+            "OPS-005"
+          ]
+        },
+        {
+          "id": "RPT-OPS-LATENCY",
+          "name": "Latency & Queue",
+          "objective": "Is it fast enough?",
+          "questionIds": [
+            "OPS-009",
+            "OPS-010",
+            "OPS-011"
+          ]
+        },
+        {
+          "id": "RPT-OPS-CAPTURE",
+          "name": "Capture Health",
+          "objective": "Can we trust the data?",
+          "questionIds": [
+            "OPS-003",
+            "OPS-006",
+            "OPS-015"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-REL",
+      "domain": "RELIABILITY",
+      "name": "Reliability & Quality Dashboard",
+      "objective": "Success/failure, quality, recovery, model reliability.",
+      "audience": [
+        "OPERATIONS",
+        "AI_TEAM"
+      ],
+      "reports": [
+        {
+          "id": "RPT-REL-SUCCESS",
+          "name": "Success & Failure",
+          "objective": "How reliable are generations?",
+          "questionIds": [
+            "REL-001",
+            "REL-002",
+            "REL-003"
+          ]
+        },
+        {
+          "id": "RPT-REL-QUALITY",
+          "name": "Quality Scoring",
+          "objective": "Is output good?",
+          "questionIds": [
+            "REL-009",
+            "REL-012",
+            "REL-018"
+          ]
+        },
+        {
+          "id": "RPT-REL-RECOVERY",
+          "name": "Capture & Recovery",
+          "objective": "Do we recover missing data?",
+          "questionIds": [
+            "REL-005",
+            "REL-019",
+            "REL-021"
+          ]
+        },
+        {
+          "id": "RPT-REL-MODEL",
+          "name": "Model Reliability",
+          "objective": "Which models fail?",
+          "questionIds": [
+            "REL-004",
+            "REL-017",
+            "REL-023"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-AI",
+      "domain": "AI",
+      "name": "AI Intelligence Dashboard",
+      "objective": "Prompt & model performance, golden library, output mix.",
+      "audience": [
+        "AI_TEAM"
+      ],
+      "reports": [
+        {
+          "id": "RPT-AI-PROMPT",
+          "name": "Prompt Performance",
+          "objective": "Which prompts work?",
+          "questionIds": [
+            "AI-002",
+            "AI-003",
+            "AI-006"
+          ]
+        },
+        {
+          "id": "RPT-AI-MODEL",
+          "name": "Model Comparison",
+          "objective": "Which model is best value?",
+          "questionIds": [
+            "AI-009",
+            "AI-011",
+            "AI-015"
+          ]
+        },
+        {
+          "id": "RPT-AI-GOLDEN",
+          "name": "Golden Prompt Library",
+          "objective": "Institutionalise best prompts.",
+          "questionIds": [
+            "AI-008",
+            "AI-021",
+            "AI-005"
+          ]
+        },
+        {
+          "id": "RPT-AI-MIX",
+          "name": "Output Mix",
+          "objective": "What are we generating?",
+          "questionIds": [
+            "AI-010",
+            "AI-016",
+            "AI-017"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-TIME",
+      "domain": "TIME",
+      "name": "Time Intelligence Dashboard",
+      "objective": "Peaks, trends, seasonality, heatmaps.",
+      "audience": [
+        "OPERATIONS",
+        "DEPARTMENT_HEAD"
+      ],
+      "reports": [
+        {
+          "id": "RPT-TIME-PEAK",
+          "name": "Peak Analysis",
+          "objective": "When is demand highest?",
+          "questionIds": [
+            "TIME-001",
+            "TIME-002",
+            "TIME-003"
+          ]
+        },
+        {
+          "id": "RPT-TIME-TREND",
+          "name": "Trends",
+          "objective": "Where is usage heading?",
+          "questionIds": [
+            "TIME-005",
+            "TIME-006",
+            "TIME-009"
+          ]
+        },
+        {
+          "id": "RPT-TIME-SEASON",
+          "name": "Seasonality",
+          "objective": "What are the repeating patterns?",
+          "questionIds": [
+            "TIME-004",
+            "TIME-015",
+            "TIME-016"
+          ]
+        },
+        {
+          "id": "RPT-TIME-HEAT",
+          "name": "Heatmaps",
+          "objective": "Exact busy/quiet windows.",
+          "questionIds": [
+            "TIME-003",
+            "TIME-008",
+            "TIME-010"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-SEC",
+      "domain": "SECURITY",
+      "name": "Security & Governance Dashboard",
+      "objective": "Access, anomaly/abuse, credential hygiene, policy.",
+      "audience": [
+        "ADMINISTRATOR"
+      ],
+      "reports": [
+        {
+          "id": "RPT-SEC-ACCESS",
+          "name": "Access & Audit",
+          "objective": "Who did what, when?",
+          "questionIds": [
+            "SEC-006",
+            "SEC-008",
+            "SEC-012"
+          ]
+        },
+        {
+          "id": "RPT-SEC-ANOMALY",
+          "name": "Anomaly & Abuse",
+          "objective": "Any misuse?",
+          "questionIds": [
+            "SEC-001",
+            "SEC-002",
+            "SEC-009"
+          ]
+        },
+        {
+          "id": "RPT-SEC-CRED",
+          "name": "Credential Hygiene",
+          "objective": "Are credentials safe?",
+          "questionIds": [
+            "SEC-010",
+            "SEC-014",
+            "SEC-018"
+          ]
+        },
+        {
+          "id": "RPT-SEC-POLICY",
+          "name": "Policy Compliance",
+          "objective": "Are policies followed?",
+          "questionIds": [
+            "SEC-004",
+            "SEC-005",
+            "SEC-016"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-FCST",
+      "domain": "FORECASTING",
+      "name": "Forecasting Dashboard",
+      "objective": "Demand, cost, capacity and churn forecasts.",
+      "audience": [
+        "FINANCE",
+        "EXECUTIVE",
+        "OPERATIONS"
+      ],
+      "reports": [
+        {
+          "id": "RPT-FCST-DEMAND",
+          "name": "Demand Forecast",
+          "objective": "How much usage is coming?",
+          "questionIds": [
+            "FCST-001",
+            "FCST-004",
+            "FCST-009"
+          ]
+        },
+        {
+          "id": "RPT-FCST-COST",
+          "name": "Cost Forecast",
+          "objective": "What will it cost?",
+          "questionIds": [
+            "FCST-002",
+            "FCST-011",
+            "FCST-020"
+          ]
+        },
+        {
+          "id": "RPT-FCST-CAP",
+          "name": "Capacity Planning",
+          "objective": "When do we hit a ceiling?",
+          "questionIds": [
+            "FCST-003",
+            "FCST-005",
+            "FCST-016"
+          ]
+        },
+        {
+          "id": "RPT-FCST-CHURN",
+          "name": "Churn Forecast",
+          "objective": "Who will disengage?",
+          "questionIds": [
+            "FCST-010",
+            "FCST-012"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DASH-REC",
+      "domain": "RECOMMENDATIONS",
+      "name": "Recommendations Dashboard",
+      "objective": "Prioritised, evidence-based next actions.",
+      "audience": [
+        "EXECUTIVE",
+        "FINANCE",
+        "OPERATIONS",
+        "DEPARTMENT_HEAD"
+      ],
+      "reports": [
+        {
+          "id": "RPT-REC-COST",
+          "name": "Cost Actions",
+          "objective": "Cut cost, keep output.",
+          "questionIds": [
+            "REC-002",
+            "REC-005",
+            "REC-014"
+          ]
+        },
+        {
+          "id": "RPT-REC-ENABLE",
+          "name": "Enablement Actions",
+          "objective": "Grow adoption & skill.",
+          "questionIds": [
+            "REC-006",
+            "REC-007",
+            "REC-008"
+          ]
+        },
+        {
+          "id": "RPT-REC-REL",
+          "name": "Reliability Actions",
+          "objective": "Reduce waste & failures.",
+          "questionIds": [
+            "REC-009",
+            "REC-012"
+          ]
+        },
+        {
+          "id": "RPT-REC-ROADMAP",
+          "name": "Analytics Roadmap",
+          "objective": "What to instrument next.",
+          "questionIds": [
+            "REC-010",
+            "REC-020"
+          ]
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "FIN-004",
+      "domain": "FINANCE",
+      "dashboardId": "DASH-FIN",
+      "reportId": "RPT-FIN-COST-BREAKDOWN",
+      "question": "Which department consumes the most AI budget?",
+      "why": "Departmental cost ownership and fairness.",
+      "metric": "₹ spent by department (credits_burned × rate)",
+      "visualization": "ranked-bar",
+      "businessImpact": "High AI expenditure concentrated in one team.",
+      "threshold": "any department > 25% of total ₹",
+      "recommendedAction": "Review that department's usage policy; confirm output justifies spend.",
+      "audience": [
+        "EXECUTIVE",
+        "FINANCE",
+        "DEPARTMENT_HEAD"
+      ],
+      "priorityTier": 2,
+      "dataSources": [
+        "tool_usage_events",
+        "credit_rates",
+        "users"
+      ],
+      "readiness": "needs_capture",
+      "confidence": "low",
+      "calculationType": "aggregate",
+      "relatedQuestions": [
+        "USER-028",
+        "AI-014",
+        "AI-011",
+        "REC-005"
+      ],
+      "tags": [
+        "cost",
+        "department",
+        "budget",
+        "governance"
+      ]
+    },
+    {
+      "id": "FIN-003",
+      "domain": "FINANCE",
+      "dashboardId": "DASH-FIN",
+      "reportId": "RPT-FIN-UNIT",
+      "question": "What is cost per successful generation (₹)?",
+      "why": "Unit economics decide whether to scale.",
+      "metric": "₹ ÷ successful generation",
+      "visualization": "kpi",
+      "businessImpact": "Rising unit cost erodes ROI as usage scales.",
+      "threshold": "₹/output > 1.2× trailing-30-day median",
+      "recommendedAction": "Route to a cheaper model/account; investigate failure waste.",
+      "audience": [
+        "FINANCE",
+        "EXECUTIVE"
+      ],
+      "priorityTier": 1,
+      "dataSources": [
+        "tool_usage_events",
+        "generation_records",
+        "credit_rates"
+      ],
+      "readiness": "needs_capture",
+      "confidence": "medium",
+      "calculationType": "derived",
+      "relatedQuestions": [
+        "FIN-009",
+        "REL-001",
+        "AI-011"
+      ],
+      "tags": [
+        "cost",
+        "unit-economics",
+        "efficiency"
+      ]
+    },
+    {
+      "id": "FIN-009",
+      "domain": "FINANCE",
+      "dashboardId": "DASH-FIN",
+      "reportId": "RPT-FIN-COST-OPT",
+      "question": "How much ₹ is wasted on failed/unused output?",
+      "why": "Waste is the fastest recoverable cost.",
+      "metric": "Wasted ₹ + % of spend",
+      "visualization": "stacked-bar",
+      "businessImpact": "Direct margin leak; recoverable without cutting output.",
+      "threshold": "wasted > 10% of total ₹",
+      "recommendedAction": "Fund the top reliability fix (see REC-009).",
+      "audience": [
+        "FINANCE",
+        "OPERATIONS",
+        "EXECUTIVE"
+      ],
+      "priorityTier": 2,
+      "dataSources": [
+        "tool_usage_events",
+        "generation_records",
+        "credit_rates"
+      ],
+      "readiness": "needs_capture",
+      "confidence": "medium",
+      "calculationType": "derived",
+      "relatedQuestions": [
+        "REL-002",
+        "REC-009"
+      ],
+      "tags": [
+        "cost",
+        "waste",
+        "reliability"
+      ]
+    },
+    {
+      "id": "FIN-007",
+      "domain": "FINANCE",
+      "dashboardId": "DASH-FIN",
+      "reportId": "RPT-FIN-COST-OPT",
+      "question": "How does ₹/credit differ across accounts (package pricing)?",
+      "why": "Different accounts bought credits at different rupee rates.",
+      "metric": "rate_per_credit by account",
+      "visualization": "bar",
+      "businessImpact": "Buying future credits on a costly account overpays.",
+      "threshold": "any active account > 1.5× the cheapest account's rate",
+      "recommendedAction": "Direct new purchases to the cheapest-rate account/plan.",
+      "audience": [
+        "FINANCE",
+        "ADMINISTRATOR"
+      ],
+      "priorityTier": 2,
+      "dataSources": [
+        "credit_rates",
+        "credentials"
+      ],
+      "readiness": "available",
+      "confidence": "high",
+      "calculationType": "simple",
+      "relatedQuestions": [
+        "FIN-002",
+        "FCST-003"
+      ],
+      "tags": [
+        "cost",
+        "pricing",
+        "procurement"
+      ]
+    },
+    {
+      "id": "EXEC-002",
+      "domain": "EXECUTIVE",
+      "dashboardId": "DASH-EXEC",
+      "reportId": "RPT-EXEC-BUDGET",
+      "question": "What is total AI spend, and is it under control?",
+      "why": "Board accountability for consumption.",
+      "metric": "Total ₹ + MoM trend",
+      "visualization": "kpi",
+      "businessImpact": "Uncontrolled growth erodes ROI.",
+      "threshold": "MoM ₹ growth > +20% for 2 consecutive months",
+      "recommendedAction": "Trigger consumption guardrails; review top-spending accounts.",
+      "audience": [
+        "EXECUTIVE",
+        "FINANCE",
+        "ADMINISTRATOR"
+      ],
+      "priorityTier": 1,
+      "dataSources": [
+        "tool_usage_events",
+        "credit_rates"
+      ],
+      "readiness": "needs_capture",
+      "confidence": "high",
+      "calculationType": "aggregate",
+      "relatedQuestions": [
+        "FIN-001",
+        "FIN-004",
+        "REC-005"
+      ],
+      "tags": [
+        "executive",
+        "cost",
+        "budget"
+      ]
+    },
+    {
+      "id": "EXEC-013",
+      "domain": "EXECUTIVE",
+      "dashboardId": "DASH-EXEC",
+      "reportId": "RPT-EXEC-RISK",
+      "question": "Is usage concentrated in a few people/accounts (key-person risk)?",
+      "why": "Resilience of the AI capability.",
+      "metric": "Top-N share of usage & ₹ (HHI)",
+      "visualization": "pareto",
+      "businessImpact": "Over-dependence on one account/person is a continuity risk.",
+      "threshold": "top 2 accounts > 80% of volume",
+      "recommendedAction": "Formalise ownership; distribute/back up critical accounts.",
+      "audience": [
+        "EXECUTIVE",
+        "ADMINISTRATOR"
+      ],
+      "priorityTier": 3,
+      "dataSources": [
+        "tool_usage_events",
+        "credentials"
+      ],
+      "readiness": "available",
+      "confidence": "high",
+      "calculationType": "derived",
+      "relatedQuestions": [
+        "USER-028",
+        "SEC-009"
+      ],
+      "tags": [
+        "risk",
+        "concentration",
+        "governance"
+      ]
+    },
+    {
+      "id": "USER-028",
+      "domain": "USER",
+      "dashboardId": "DASH-USER",
+      "reportId": "RPT-USER-MATURE",
+      "question": "Which employees/accounts generate the highest value per credit spent?",
+      "why": "Identifies who is worth the spend and whose pattern to replicate.",
+      "metric": "Output (or successful generations) ÷ credits, per account",
+      "visualization": "ranked-bar",
+      "businessImpact": "Reveals efficiency leaders and laggards for the same budget.",
+      "threshold": "bottom-quartile efficiency < 0.5× the median",
+      "recommendedAction": "Coach low-efficiency accounts; document and spread leaders' practices.",
+      "audience": [
+        "DEPARTMENT_HEAD",
+        "EXECUTIVE",
+        "FINANCE"
+      ],
+      "priorityTier": 2,
+      "dataSources": [
+        "tool_usage_events",
+        "credit_rates",
+        "credentials"
+      ],
+      "readiness": "needs_capture",
+      "confidence": "medium",
+      "calculationType": "derived",
+      "relatedQuestions": [
+        "AI-014",
+        "AI-011",
+        "REC-003"
+      ],
+      "tags": [
+        "efficiency",
+        "value",
+        "user",
+        "cost"
+      ]
+    },
+    {
+      "id": "OPS-001",
+      "domain": "OPERATIONS",
+      "dashboardId": "DASH-OPS",
+      "reportId": "RPT-OPS-LIVE",
+      "question": "What are the peak usage hours across the platform?",
+      "why": "Capacity and support planning.",
+      "metric": "Generations/activity by hour (IST)",
+      "visualization": "bar",
+      "businessImpact": "Under-provisioned peaks cause slowdowns and failures.",
+      "threshold": "peak-hour load > 2× daily average",
+      "recommendedAction": "Align capacity/support coverage to the peak window.",
+      "audience": [
+        "OPERATIONS",
+        "ADMINISTRATOR"
+      ],
+      "priorityTier": 2,
+      "dataSources": [
+        "tool_usage_events"
+      ],
+      "readiness": "available",
+      "confidence": "high",
+      "calculationType": "aggregate",
+      "relatedQuestions": [
+        "OPS-009",
+        "FCST-005",
+        "TIME-003"
+      ],
+      "tags": [
+        "time",
+        "capacity",
+        "operations"
+      ]
+    },
+    {
+      "id": "REL-002",
+      "domain": "RELIABILITY",
+      "dashboardId": "DASH-REL",
+      "reportId": "RPT-REL-SUCCESS",
+      "question": "What are the top failure reasons?",
+      "why": "Directs the reliability fix that recovers the most.",
+      "metric": "Failure count by reason",
+      "visualization": "pareto",
+      "businessImpact": "The top 1-2 reasons usually explain most wasted spend.",
+      "threshold": "any single reason > 30% of failures",
+      "recommendedAction": "Fund the fix for the top failure reason first.",
+      "audience": [
+        "OPERATIONS",
+        "AI_TEAM"
+      ],
+      "priorityTier": 3,
+      "dataSources": [
+        "generation_records"
+      ],
+      "readiness": "future",
+      "confidence": "low",
+      "calculationType": "aggregate",
+      "relatedQuestions": [
+        "FIN-009",
+        "REC-009"
+      ],
+      "tags": [
+        "reliability",
+        "failure",
+        "waste"
+      ]
+    },
+    {
+      "id": "REC-005",
+      "domain": "RECOMMENDATIONS",
+      "dashboardId": "DASH-REC",
+      "reportId": "RPT-REC-COST",
+      "question": "Where can we cut cost without losing output?",
+      "why": "Protects margin as usage scales.",
+      "metric": "Waste % + cost outliers + cheaper-model opportunities",
+      "visualization": "waterfall",
+      "businessImpact": "Turns cost diagnostics into a concrete savings plan.",
+      "threshold": "identified savings > 5% of monthly ₹",
+      "recommendedAction": "Route to cheaper models, cap outliers, fix top waste driver.",
+      "audience": [
+        "EXECUTIVE",
+        "FINANCE",
+        "OPERATIONS"
+      ],
+      "priorityTier": 2,
+      "dataSources": [
+        "tool_usage_events",
+        "credit_rates",
+        "generation_records"
+      ],
+      "readiness": "needs_capture",
+      "confidence": "medium",
+      "calculationType": "ai_generated",
+      "relatedQuestions": [
+        "FIN-009",
+        "AI-011",
+        "REC-002"
+      ],
+      "tags": [
+        "cost",
+        "optimization",
+        "action"
+      ]
+    }
+  ]
+}
