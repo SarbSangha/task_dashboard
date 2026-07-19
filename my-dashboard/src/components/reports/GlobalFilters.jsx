@@ -6,6 +6,7 @@ const PRESETS = [
   { key: '7d', label: '7 Days' },
   { key: '30d', label: '30 Days' },
   { key: '90d', label: '90 Days' },
+  { key: 'all', label: 'All Time' },
   { key: 'custom', label: 'Custom' },
 ];
 

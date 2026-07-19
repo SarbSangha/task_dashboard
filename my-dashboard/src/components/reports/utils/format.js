@@ -9,6 +9,10 @@ export const toISODate = (d) => {
 export const presetRange = (preset) => {
   const end = new Date();
   const start = new Date();
+  if (preset === 'all') {
+    // All time — start far enough back to include every record from the beginning.
+    return { start: '2000-01-01', end: toISODate(end) };
+  }
   if (preset === 'today') {
     // start = today
   } else if (preset === '7d') {
