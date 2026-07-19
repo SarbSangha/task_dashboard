@@ -577,6 +577,9 @@ def kling_users(
 # credits that generation_records lacks. IST (+05:30) is used for hour-of-day so
 # "peak hours" reflect the working day, not UTC.
 KLING_TOOL_SLUGS = ("kling", "kling-ai", "klingai")
+# Ignore obviously-garbage per-event credit values (e.g. a captured credits_before
+# of 123456789) so a couple of bad rows don't dominate credit/cost totals.
+MAX_SANE_KLING_CREDITS = 3000
 IST_INTERVAL = text("interval '330 minutes'")
 KLING_GENERATION_EVENT = "network_generation"  # the observed, settled generation
 
@@ -634,58 +637,77 @@ def kling_accounts(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     account: Optional[str] = Query(None),
+    by: Optional[str] = Query("account"),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
-    """Per Kling account (credential): usage, credits and real ₹ cost.
+    """Per Kling account (credential) OR per generating user: usage, credits and ₹ cost.
 
-    Answers 'which account is burning the most credits / money', account efficiency
-    and share of spend — the meaningful cost-centre cut given single-login capture.
-    When ``account`` (a credential id) is given, restricts to that one account.
+    ``by='account'`` (default) groups by the shared Kling login. ``by='user'`` groups
+    by the actual person who generated (usage-event ``user_id``) — so shared accounts
+    are split back to the individual employee. ``account`` (a credential id) restricts
+    to one account (combine with by='user' to see who used that shared account).
     """
     start_dt, end_exclusive, _ps, _pe, days = _resolve_period(start, end)
     rate_expr, currency, _default_rate = _credit_rate_context(db)  # keys on credential_id
-    cost_expr = func.coalesce(func.sum(ITPortalToolUsageEvent.credits_burned * rate_expr), 0)
+    sane_credits = case(
+        (ITPortalToolUsageEvent.credits_burned.between(0, MAX_SANE_KLING_CREDITS), ITPortalToolUsageEvent.credits_burned),
+        else_=0,
+    )
+    cost_expr = func.coalesce(func.sum(sane_credits * rate_expr), 0)
     gen_filter = ITPortalToolUsageEvent.event_type == KLING_GENERATION_EVENT
 
-    # Each Kling account is a login (usually a person's email); resolve its
-    # human label from the captured metadata so the cut reads "by account/user".
-    label_map = _kling_account_label_map(db, start_dt, end_exclusive)
-    # Map account email -> the platform user's name (case-insensitive), so the
-    # table shows the person (e.g. "mansi gupta") wherever the account email
-    # matches a real user; otherwise it falls back to the email.
-    emails = {e.lower() for e in label_map.values() if e and "@" in e}
-    email_to_name = {}
-    if emails:
-        for name, email in (
-            db.query(User.name, User.email).filter(func.lower(User.email).in_(list(emails))).all()
-        ):
-            if email and name:
-                email_to_name[email.lower()] = name
+    by_user = (by or "account").lower() == "user"
+    group_col = ITPortalToolUsageEvent.user_id if by_user else ITPortalToolUsageEvent.credential_id
 
     rows = (
         _kling_usage_query(db, start_dt, end_exclusive, account=account)
         .with_entities(
-            ITPortalToolUsageEvent.credential_id,
+            group_col,
             func.count(ITPortalToolUsageEvent.id),
             func.count(ITPortalToolUsageEvent.id).filter(gen_filter),
-            func.coalesce(func.sum(ITPortalToolUsageEvent.credits_burned), 0),
+            func.coalesce(func.sum(sane_credits), 0),
             cost_expr,
         )
-        .group_by(ITPortalToolUsageEvent.credential_id)
+        .group_by(group_col)
         .all()
     )
 
+    # Resolve each group key to a human label.
+    if by_user:
+        # user_id captured at generation time = the actual person (splits shared accounts).
+        ids = [r[0] for r in rows if r[0] is not None]
+        users = {
+            uid: (name, email)
+            for uid, name, email in db.query(User.id, User.name, User.email).filter(User.id.in_(ids)).all()
+        } if ids else {}
+
+        def resolve(key):
+            name, email = users.get(key, (None, None))
+            return (name or f"User #{key}", name, email)
+    else:
+        label_map = _kling_account_label_map(db, start_dt, end_exclusive)
+        emails = {e.lower() for e in label_map.values() if e and "@" in e}
+        email_to_name = {}
+        if emails:
+            for name, email in db.query(User.name, User.email).filter(func.lower(User.email).in_(list(emails))).all():
+                if email and name:
+                    email_to_name[email.lower()] = name
+
+        def resolve(key):
+            email = label_map.get(key)
+            person = email_to_name.get(email.lower()) if email else None
+            return (person or email or (f"Account #{key}" if key is not None else "Unlinked"), person, email)
+
     total_credits = sum(float(r[3]) for r in rows)
     accounts = []
-    for cid, events, gens, credits, cost in rows:
+    for key, events, gens, credits, cost in rows:
         credits = float(credits)
         gens = int(gens or 0)
-        email = label_map.get(cid)
-        person = email_to_name.get(email.lower()) if email else None
-        label = person or email or (f"Account #{cid}" if cid is not None else "Unlinked")
+        label, person, email = resolve(key)
         accounts.append({
-            "credentialId": cid,
+            "credentialId": None if by_user else key,
+            "userId": key if by_user else None,
             "label": label,
             "personName": person,
             "accountEmail": email,

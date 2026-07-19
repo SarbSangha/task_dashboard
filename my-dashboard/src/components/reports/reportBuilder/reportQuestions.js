@@ -77,7 +77,7 @@ const READINESS = {
   'q-kl-3': { readiness: 'future', dataNote: 'department is not captured on Kling generations (single shared ADMIN login)' },
   'q-kl-4': { readiness: 'needs_capture', dataNote: 'every generation is captured as “active” — real failure status is not recorded' },
   'q-kl-5': { readiness: 'available' },
-  'q-kl-6': { readiness: 'needs_capture', dataNote: 'grouped by Kling account/login (usually the user’s email), not by employee record' },
+  'q-kl-6': { readiness: 'available', dataNote: 'attributed to the person who generated (captured per generation); a small share logs under the shared Administrator account' },
   // ChatGPT
   'q-cg-1': { readiness: 'available' },
   'q-cg-2': { readiness: 'available' },
@@ -136,14 +136,15 @@ export const ANSWER_BINDINGS = {
   'q-kl-2': { api: 'klingSummary', items: [['kpis.uniqueUsers.value', 'Active accounts'], ['kpis.avgVideosPerUser.value', 'Avg videos/account']] },
   'q-kl-4': { api: 'klingSummary', items: [['kpis.successRate.value', 'Success rate', '%']] },
   'q-kl-5': { api: 'klingTiming', items: [['peakHour.hour', 'Peak hour (IST)'], ['peakDay.day', 'Busiest day']] },
-  // Table answer: credit consumption per Kling account (user) for the date range.
+  // Table answer: credit consumption per generating PERSON for the date range
+  // (splits shared Kling accounts back to the individual, via usage-event user_id).
   'q-kl-6': {
-    api: 'klingAccounts',
+    api: 'klingAccountsByUser',
     table: {
-      columns: ['User', 'Account (email)', 'Generations', 'Credits', 'Cost', 'Share'],
+      columns: ['User', 'Email', 'Generations', 'Credits', 'Cost', 'Share'],
       rows: (d) => (d.accounts || []).slice(0, 200).map((a) => [
-        a.personName || a.label,
-        a.accountEmail || (a.personName ? '' : a.label),
+        a.label,
+        a.accountEmail || '',
         Number(a.generations || 0).toLocaleString(),
         Number(a.credits || 0).toLocaleString(undefined, { maximumFractionDigits: 1 }),
         `${d.currency || 'INR'} ${Number(a.cost || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
