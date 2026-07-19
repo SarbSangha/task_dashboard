@@ -120,12 +120,22 @@ const dataCheckHtml = (block) => {
 
 // When the question is bound to live data, render the real answer (KPI cards)
 // instead of the placeholder banner. Partial (needs_capture) still shows a caveat.
+const answerBanner = '<p class="datacheck" style="margin:6px 0 8px;padding:6px 10px;border-radius:6px;font-size:12px;color:#15803d;background:#e9f7ef">✅ <strong>Answer</strong> — live data for the selected period</p>';
+const partialCaveat = (block) => (block.readiness === 'needs_capture' && block.dataNote
+  ? `<p class="datacheck" style="margin:2px 0 8px;padding:6px 10px;border-radius:6px;font-size:11px;color:#b45309;background:#fdf3e7">🟡 Partial — ${esc(block.dataNote)}</p>`
+  : '');
+
 const answerHtml = (block) => {
+  if (block.answerTable && Array.isArray(block.answerTable.rows) && block.answerTable.rows.length) {
+    const { columns, rows } = block.answerTable;
+    const table = `<table class="tbl">
+      <thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map((r) => `<tr>${r.map((cell) => `<td>${esc(cell)}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table>`;
+    return `${answerBanner}${partialCaveat(block)}${table}`;
+  }
   if (Array.isArray(block.answerItems) && block.answerItems.length) {
-    const caveat = block.readiness === 'needs_capture' && block.dataNote
-      ? `<p class="datacheck" style="margin:2px 0 8px;padding:6px 10px;border-radius:6px;font-size:11px;color:#b45309;background:#fdf3e7">🟡 Partial — ${esc(block.dataNote)}</p>`
-      : '';
-    return `<p class="datacheck" style="margin:6px 0 8px;padding:6px 10px;border-radius:6px;font-size:12px;color:#15803d;background:#e9f7ef">✅ <strong>Answer</strong> — live data for the selected period</p>${caveat}${kpiCardsHtml(block.answerItems)}`;
+    return `${answerBanner}${partialCaveat(block)}${kpiCardsHtml(block.answerItems)}`;
   }
   return dataCheckHtml(block);
 };

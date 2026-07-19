@@ -21,6 +21,7 @@ const RAW_QUESTIONS = [
   { id: 'q-kl-3', cat: 'Kling', q: 'Which departments generate the most video content?', why: 'Shows where video work concentrates.', metric: 'Videos by department', decision: 'Allocate credits to heavy teams.' },
   { id: 'q-kl-4', cat: 'Kling', q: 'What is the Kling generation success rate?', why: 'Reliability drains time, credits and trust.', metric: 'Success vs failure %', decision: 'Escalate reliability fixes.' },
   { id: 'q-kl-5', cat: 'Kling', q: 'When are peak Kling usage hours?', why: 'Peaks drive capacity and support planning.', metric: 'Generations by hour', decision: 'Align capacity to peaks.' },
+  { id: 'q-kl-6', cat: 'Kling', q: 'How much Kling credit does each user consume in the selected period?', why: 'Shows which users/accounts drive credit spend so budgets and caps can be targeted.', metric: 'Credits & ₹ cost per Kling account (user), for the date range', decision: 'Cap or coach the heaviest consumers; plan credit purchases.' },
 
   // ChatGPT
   { id: 'q-cg-1', cat: 'ChatGPT', q: 'How much is ChatGPT being used across the org?', why: 'Measures conversational-AI adoption.', metric: 'Conversations · prompts · users', decision: 'Size support and seats.' },
@@ -76,6 +77,7 @@ const READINESS = {
   'q-kl-3': { readiness: 'future', dataNote: 'department is not captured on Kling generations (single shared ADMIN login)' },
   'q-kl-4': { readiness: 'needs_capture', dataNote: 'every generation is captured as “active” — real failure status is not recorded' },
   'q-kl-5': { readiness: 'available' },
+  'q-kl-6': { readiness: 'needs_capture', dataNote: 'grouped by Kling account/login (usually the user’s email), not by employee record' },
   // ChatGPT
   'q-cg-1': { readiness: 'available' },
   'q-cg-2': { readiness: 'available' },
@@ -134,6 +136,20 @@ export const ANSWER_BINDINGS = {
   'q-kl-2': { api: 'klingSummary', items: [['kpis.uniqueUsers.value', 'Active accounts'], ['kpis.avgVideosPerUser.value', 'Avg videos/account']] },
   'q-kl-4': { api: 'klingSummary', items: [['kpis.successRate.value', 'Success rate', '%']] },
   'q-kl-5': { api: 'klingTiming', items: [['peakHour.hour', 'Peak hour (IST)'], ['peakDay.day', 'Busiest day']] },
+  // Table answer: credit consumption per Kling account (user) for the date range.
+  'q-kl-6': {
+    api: 'klingAccounts',
+    table: {
+      columns: ['User / Account', 'Generations', 'Credits', 'Cost', 'Share'],
+      rows: (d) => (d.accounts || []).slice(0, 25).map((a) => [
+        a.label,
+        Number(a.generations || 0).toLocaleString(),
+        Number(a.credits || 0).toLocaleString(undefined, { maximumFractionDigits: 1 }),
+        `${d.currency || 'INR'} ${Number(a.cost || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
+        `${a.creditSharePct ?? 0}%`,
+      ]),
+    },
+  },
   // ChatGPT
   'q-cg-1': { api: 'chatgptSummary', items: [['kpis.conversations.value', 'Conversations'], ['kpis.prompts.value', 'Prompts'], ['kpis.uniqueUsers.value', 'Users']] },
   'q-cg-4': { api: 'chatgptSummary', items: [['kpis.avgPromptsPerConversation.value', 'Prompts/chat']] },
@@ -157,5 +173,10 @@ export const resolveAnswerItems = (binding, data) =>
     if (typeof v === 'number') v = Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 1 });
     return { label, value: unit ? `${v} ${unit}` : `${v}` };
   });
+
+export const resolveAnswerTable = (binding, data) => ({
+  columns: binding.table.columns,
+  rows: binding.table.rows(data) || [],
+});
 
 export const answerApiFor = (id) => ANSWER_BINDINGS[id]?.api || null;

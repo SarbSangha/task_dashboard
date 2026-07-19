@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { reportsAPI, downloadBlobResponse } from '../../../services/reports';
 import SectionHeader from '../primitives/SectionHeader';
-import { REPORT_QUESTIONS, QUESTION_CATEGORIES, READINESS_META, ANSWER_BINDINGS, resolveAnswerItems, answerApiFor } from './reportQuestions';
+import { REPORT_QUESTIONS, QUESTION_CATEGORIES, READINESS_META, ANSWER_BINDINGS, resolveAnswerItems, resolveAnswerTable, answerApiFor } from './reportQuestions';
 import { buildReportHtml, liveSnapshotItems } from './reportTemplate';
 import './ReportBuilder.css';
 
@@ -151,6 +151,7 @@ const ReportBuilder = ({ filters }) => {
       chatgptSummary: () => reportsAPI.chatgptSummary(p),
       tasksSummary: () => reportsAPI.tasksSummary(p),
       promptsSummary: () => reportsAPI.promptsSummary(p),
+      klingAccounts: () => reportsAPI.klingAccounts(p),
     };
     // Which live-data block maps to which endpoint.
     const LIVE_BLOCK_API = {
@@ -179,7 +180,10 @@ const ReportBuilder = ({ filters }) => {
       if (b.kind.startsWith('live-')) return { ...b, snapshotItems: liveSnapshotItems(b.kind, live) };
       if (b.kind === 'question') {
         const bind = ANSWER_BINDINGS[b.id];
-        if (bind && data[bind.api]) return { ...b, answerItems: resolveAnswerItems(bind, data[bind.api]) };
+        if (bind && data[bind.api]) {
+          if (bind.table) return { ...b, answerTable: resolveAnswerTable(bind, data[bind.api]) };
+          if (bind.items) return { ...b, answerItems: resolveAnswerItems(bind, data[bind.api]) };
+        }
       }
       return b;
     });
