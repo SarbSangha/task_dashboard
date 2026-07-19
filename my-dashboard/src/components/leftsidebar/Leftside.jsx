@@ -38,7 +38,7 @@ const getPanelFromPath = (pathname = '') =>
   pathname.replace(/^\/dashboard\/?/, '').split('/')[0] || '';
 
 const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
-  const { can } = usePermissions();
+  const { can, isAdmin } = usePermissions();
   const navigate = useNavigate();
   const location = useLocation();
   const { pathname, search } = location;
@@ -320,17 +320,19 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
             )}
           </div>
 
-          {/* ── ANALYTICS ── */}
-          <div className="nav-section">
-            <div className="nav-section-header">
-              <span className="nav-section-label">Analytics</span>
-            </div>
+          {/* ── ANALYTICS (admin only) ── */}
+          {isAdmin && (
+            <div className="nav-section">
+              <div className="nav-section-header">
+                <span className="nav-section-label">Analytics</span>
+              </div>
 
-            <ReportsButton
-              isActive={activeItem === 'reports'}
-              onClick={openReports}
-            />
-          </div>
+              <ReportsButton
+                isActive={activeItem === 'reports'}
+                onClick={openReports}
+              />
+            </div>
+          )}
 
         </nav>
       </aside>

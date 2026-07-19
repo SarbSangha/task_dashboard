@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from database_config import get_operational_db
 from models_new import ActivityStatus, GenerationRecord, GenerationTag, ITPortalTool, ITPortalToolUsageEvent, Task, TaskStatus, TaskStatusHistory, ToolCreditRate, User, UserActivity
 from providers.chatgpt.models import ConversationPrompt, ConversationRecord
-from utils.permissions import require_faculty
+from utils.permissions import require_admin
 
 router = APIRouter(prefix="/api/reports", tags=["Reports"])
 
@@ -225,7 +225,7 @@ def _is_image_filter(query):
 @router.get("/filters")
 def report_filters(
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     departments = [
         row[0]
@@ -287,7 +287,7 @@ def executive_summary(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
 
@@ -373,7 +373,7 @@ def kling_summary(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
 
@@ -427,7 +427,7 @@ def kling_trends(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
 
@@ -499,7 +499,7 @@ def kling_users(
     department: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
 
@@ -635,7 +635,7 @@ def kling_accounts(
     end: Optional[str] = Query(None),
     account: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     """Per Kling account (credential): usage, credits and real ₹ cost.
 
@@ -717,7 +717,7 @@ def kling_timing(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     """When Kling generations happen: hour-of-day, day-of-week and a day×hour heatmap (IST)."""
     start_dt, end_exclusive, _ps, _pe, days = _resolve_period(start, end)
@@ -763,7 +763,7 @@ def kling_funnel(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     """Capture funnel and model mix: attempts vs settled generations, and which Kling models are used."""
     start_dt, end_exclusive, _ps, _pe, days = _resolve_period(start, end)
@@ -831,7 +831,7 @@ def chatgpt_summary(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
 
@@ -882,7 +882,7 @@ def chatgpt_trends(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
 
@@ -952,7 +952,7 @@ def chatgpt_users(
     department: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
 
@@ -1011,7 +1011,7 @@ def cost_summary(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
     rate_expr, currency, _default_rate = _credit_rate_context(db)
@@ -1074,7 +1074,7 @@ def cost_breakdown(
     department: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
     rate_expr, currency, _default_rate = _credit_rate_context(db)
@@ -1214,7 +1214,7 @@ def users_summary(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
     d_start = start_dt.date()
@@ -1275,7 +1275,7 @@ def users_activity_trends(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
     d_start = start_dt.date()
@@ -1340,7 +1340,7 @@ def users_retention(
     weeks: int = Query(8, ge=2, le=16),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     today = date.today()
     lookback_start = today - timedelta(weeks=weeks)
@@ -1446,7 +1446,7 @@ def users_power_users(
     department: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, days = _resolve_period(start, end)
     d_start = start_dt.date()
@@ -1629,7 +1629,7 @@ def prompts_summary(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
     norm_expr = func.lower(func.trim(GenerationRecord.prompt_text))
@@ -1706,7 +1706,7 @@ def prompts_trends(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
 
@@ -1777,7 +1777,7 @@ def prompts_golden(
     department: Optional[str] = Query(None),
     limit: int = Query(60, ge=1, le=120),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     from collections import Counter
 
@@ -1870,7 +1870,7 @@ def prompts_engineers(
     department: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
     norm_expr = func.lower(func.trim(GenerationRecord.prompt_text))
@@ -1964,7 +1964,7 @@ def tasks_summary(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
 
@@ -2036,7 +2036,7 @@ def tasks_trends(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
 
@@ -2112,7 +2112,7 @@ def tasks_bottlenecks(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
     now = datetime.utcnow()
@@ -2222,7 +2222,7 @@ def tasks_ai_impact(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     """User-level correlation between AI usage and task productivity. NOT causal, NOT per-task."""
     start_dt, end_exclusive, _ps, _pe, days = _resolve_period(start, end)
@@ -2353,7 +2353,7 @@ def recommendations(
     department: Optional[str] = Query(None),
     type: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_faculty),
+    current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, days = _resolve_period(start, end)
     period_days = max(days, 1)

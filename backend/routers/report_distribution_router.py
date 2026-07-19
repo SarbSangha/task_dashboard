@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
 from models_new import ReportAuditLog, ReportSchedule, SavedReport, User
-from utils.permissions import require_admin, require_faculty, has_any_role
+from utils.permissions import require_admin, has_any_role
 from utils.report_render import build_html
 from utils.report_exports import export_report, available_formats, ExportUnavailable
 from utils.report_email import email_status, send_report_email
@@ -83,7 +83,7 @@ def _compute_next_run(cadence, hour, weekday, dom, base=None):
 # Capabilities
 # ---------------------------------------------------------------------------
 @router.get("/distribution/capabilities")
-def capabilities(current_user: User = Depends(require_faculty)):
+def capabilities(current_user: User = Depends(require_admin)):
     return {"success": True, "formats": available_formats(), "email": email_status()}
 
 
@@ -91,7 +91,7 @@ def capabilities(current_user: User = Depends(require_faculty)):
 # Library (saved reports / history)
 # ---------------------------------------------------------------------------
 @router.post("/library")
-def save_report(body: SaveReportIn, db: Session = Depends(get_operational_db), current_user: User = Depends(require_faculty)):
+def save_report(body: SaveReportIn, db: Session = Depends(get_operational_db), current_user: User = Depends(require_admin)):
     row = SavedReport(
         name=body.name, definition_json=body.definition, html_snapshot=body.htmlSnapshot,
         owner_user_id=current_user.id, department=body.department, version=1,
@@ -105,7 +105,7 @@ def save_report(body: SaveReportIn, db: Session = Depends(get_operational_db), c
 
 
 @router.get("/library")
-def list_reports(db: Session = Depends(get_operational_db), current_user: User = Depends(require_faculty)):
+def list_reports(db: Session = Depends(get_operational_db), current_user: User = Depends(require_admin)):
     q = db.query(SavedReport)
     if not _is_admin(current_user):
         q = q.filter(SavedReport.owner_user_id == current_user.id)
@@ -129,7 +129,7 @@ class AdhocExportIn(BaseModel):
 
 
 @router.post("/library/export")
-def adhoc_export(body: AdhocExportIn, db: Session = Depends(get_operational_db), current_user: User = Depends(require_faculty)):
+def adhoc_export(body: AdhocExportIn, db: Session = Depends(get_operational_db), current_user: User = Depends(require_admin)):
     try:
         data, mime, ext = export_report(body.definition or {}, body.format, html_snapshot=body.htmlSnapshot)
     except ExportUnavailable as exc:
@@ -150,13 +150,13 @@ def _get_owned_report(db, report_id, current_user):
 
 
 @router.get("/library/{report_id}")
-def get_report(report_id: int, db: Session = Depends(get_operational_db), current_user: User = Depends(require_faculty)):
+def get_report(report_id: int, db: Session = Depends(get_operational_db), current_user: User = Depends(require_admin)):
     row = _get_owned_report(db, report_id, current_user)
     return {"success": True, "data": row.to_dict(include_definition=True)}
 
 
 @router.delete("/library/{report_id}")
-def delete_report(report_id: int, db: Session = Depends(get_operational_db), current_user: User = Depends(require_faculty)):
+def delete_report(report_id: int, db: Session = Depends(get_operational_db), current_user: User = Depends(require_admin)):
     row = _get_owned_report(db, report_id, current_user)
     _audit(db, "deleted", report_id=row.id, user_id=current_user.id, detail=row.name)
     db.delete(row)
@@ -166,7 +166,7 @@ def delete_report(report_id: int, db: Session = Depends(get_operational_db), cur
 
 @router.get("/library/{report_id}/export")
 def export_saved_report(report_id: int, format: str = Query("pdf"),
-                        db: Session = Depends(get_operational_db), current_user: User = Depends(require_faculty)):
+                        db: Session = Depends(get_operational_db), current_user: User = Depends(require_admin)):
     row = _get_owned_report(db, report_id, current_user)
     definition = row.definition_json or {}
     try:
@@ -183,7 +183,7 @@ def export_saved_report(report_id: int, format: str = Query("pdf"),
 # Schedules
 # ---------------------------------------------------------------------------
 @router.post("/schedules")
-def create_schedule(body: ScheduleIn, db: Session = Depends(get_operational_db), current_user: User = Depends(require_faculty)):
+def create_schedule(body: ScheduleIn, db: Session = Depends(get_operational_db), current_user: User = Depends(require_admin)):
     nxt = _compute_next_run(body.cadence, body.hourUtc, body.weekday, body.dayOfMonth)
     row = ReportSchedule(
         name=body.name, definition_json=body.definition, cadence=body.cadence, hour_utc=body.hourUtc,
@@ -199,7 +199,7 @@ def create_schedule(body: ScheduleIn, db: Session = Depends(get_operational_db),
 
 
 @router.get("/schedules")
-def list_schedules(db: Session = Depends(get_operational_db), current_user: User = Depends(require_faculty)):
+def list_schedules(db: Session = Depends(get_operational_db), current_user: User = Depends(require_admin)):
     q = db.query(ReportSchedule)
     if not _is_admin(current_user):
         q = q.filter(ReportSchedule.owner_user_id == current_user.id)
@@ -208,7 +208,7 @@ def list_schedules(db: Session = Depends(get_operational_db), current_user: User
 
 
 @router.delete("/schedules/{schedule_id}")
-def delete_schedule(schedule_id: int, db: Session = Depends(get_operational_db), current_user: User = Depends(require_faculty)):
+def delete_schedule(schedule_id: int, db: Session = Depends(get_operational_db), current_user: User = Depends(require_admin)):
     row = db.query(ReportSchedule).filter(ReportSchedule.id == schedule_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Schedule not found")
