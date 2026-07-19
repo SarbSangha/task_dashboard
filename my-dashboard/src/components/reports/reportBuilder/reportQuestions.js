@@ -140,9 +140,10 @@ export const ANSWER_BINDINGS = {
   'q-kl-6': {
     api: 'klingAccounts',
     table: {
-      columns: ['User / Account', 'Generations', 'Credits', 'Cost', 'Share'],
-      rows: (d) => (d.accounts || []).slice(0, 25).map((a) => [
-        a.label,
+      columns: ['User', 'Account (email)', 'Generations', 'Credits', 'Cost', 'Share'],
+      rows: (d) => (d.accounts || []).slice(0, 200).map((a) => [
+        a.personName || a.label,
+        a.accountEmail || (a.personName ? '' : a.label),
         Number(a.generations || 0).toLocaleString(),
         Number(a.credits || 0).toLocaleString(undefined, { maximumFractionDigits: 1 }),
         `${d.currency || 'INR'} ${Number(a.cost || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,

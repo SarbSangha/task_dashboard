@@ -620,6 +620,17 @@ def kling_accounts(
     # Each Kling account is a login (usually a person's email); resolve its
     # human label from the captured metadata so the cut reads "by account/user".
     label_map = _kling_account_label_map(db, start_dt, end_exclusive)
+    # Map account email -> the platform user's name (case-insensitive), so the
+    # table shows the person (e.g. "mansi gupta") wherever the account email
+    # matches a real user; otherwise it falls back to the email.
+    emails = {e.lower() for e in label_map.values() if e and "@" in e}
+    email_to_name = {}
+    if emails:
+        for name, email in (
+            db.query(User.name, User.email).filter(func.lower(User.email).in_(list(emails))).all()
+        ):
+            if email and name:
+                email_to_name[email.lower()] = name
 
     rows = (
         _kling_usage_query(db, start_dt, end_exclusive)
@@ -639,9 +650,14 @@ def kling_accounts(
     for cid, events, gens, credits, cost in rows:
         credits = float(credits)
         gens = int(gens or 0)
+        email = label_map.get(cid)
+        person = email_to_name.get(email.lower()) if email else None
+        label = person or email or (f"Account #{cid}" if cid is not None else "Unlinked")
         accounts.append({
             "credentialId": cid,
-            "label": label_map.get(cid) or (f"Account #{cid}" if cid is not None else "Unlinked"),
+            "label": label,
+            "personName": person,
+            "accountEmail": email,
             "events": int(events),
             "generations": gens,
             "credits": round(credits, 1),
