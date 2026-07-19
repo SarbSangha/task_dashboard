@@ -14,8 +14,14 @@ const BLOCK_LIBRARY = [
   { kind: 'live-chatgpt', title: 'ChatGPT Summary', desc: 'Live conversations, prompts, responses, users', live: true },
   { kind: 'live-cost', title: 'Cost Summary', desc: 'Live credits, cost/output, waste', live: true },
   { kind: 'live-users', title: 'User Summary', desc: 'Live active users, DAU/WAU/MAU, sessions', live: true },
+  { kind: 'live-retention', title: 'User Retention', desc: 'Live D1/D7/D30 retention + churn risk', live: true },
+  { kind: 'live-power-users', title: 'Power Users', desc: 'Live top generators + concentration', live: true },
+  { kind: 'live-maturity', title: 'User AI Maturity', desc: 'Live maturity-level distribution', live: true },
   { kind: 'live-tasks', title: 'Task Summary', desc: 'Live completed, completion rate, cycle time, on-time', live: true },
+  { kind: 'live-ai-impact', title: 'Task AI Impact', desc: 'Live AI vs non-AI throughput & cycle deltas', live: true },
   { kind: 'live-prompts', title: 'Prompt Summary', desc: 'Live prompts, unique, success, reuse, length', live: true },
+  { kind: 'live-golden-prompts', title: 'Golden Prompts', desc: 'Live golden count, unique, reuse, scanned', live: true },
+  { kind: 'live-prompt-leaderboard', title: 'Prompt Leaderboard', desc: 'Live top prompt engineers + score', live: true },
   { kind: 'kpis', title: 'Custom KPI Cards', desc: 'Three editable metric cards' },
   { kind: 'text', title: 'Narrative / Text', desc: 'A written section' },
   { kind: 'table', title: 'Milestone Table', desc: 'Editable phase / allocation table' },
@@ -153,12 +159,20 @@ const ReportBuilder = ({ filters }) => {
       promptsSummary: () => reportsAPI.promptsSummary(p),
       klingAccounts: () => reportsAPI.klingAccounts(p),
       klingAccountsByUser: () => reportsAPI.klingAccounts({ ...p, by: 'user-account' }),
+      usersRetention: () => reportsAPI.usersRetention(),
+      usersPowerUsers: () => reportsAPI.usersPowerUsers({ ...p, limit: 50 }),
+      promptsGolden: () => reportsAPI.promptsGolden(p),
+      promptsEngineers: () => reportsAPI.promptsEngineers({ ...p, limit: 50 }),
+      tasksAiImpact: () => reportsAPI.tasksAiImpact(p),
     };
     // Which live-data block maps to which endpoint.
     const LIVE_BLOCK_API = {
       'live-exec': 'executive', 'live-kling': 'klingSummary', 'live-cost': 'costSummary',
       'live-users': 'usersSummary', 'live-tasks': 'tasksSummary',
       'live-prompts': 'promptsSummary', 'live-chatgpt': 'chatgptSummary',
+      'live-retention': 'usersRetention', 'live-power-users': 'usersPowerUsers',
+      'live-maturity': 'usersPowerUsers', 'live-golden-prompts': 'promptsGolden',
+      'live-prompt-leaderboard': 'promptsEngineers', 'live-ai-impact': 'tasksAiImpact',
     };
     const kinds = new Set(blocks.map((b) => b.kind));
     const needed = new Set();
@@ -175,6 +189,9 @@ const ReportBuilder = ({ filters }) => {
       exec: data.executive, kling: data.klingSummary, cost: data.costSummary,
       users: data.usersSummary, tasks: data.tasksSummary,
       prompts: data.promptsSummary, chatgpt: data.chatgptSummary,
+      retention: data.usersRetention, powerUsers: data.usersPowerUsers,
+      golden: data.promptsGolden, engineers: data.promptsEngineers,
+      aiImpact: data.tasksAiImpact,
     };
 
     const enriched = blocks.map((b) => {

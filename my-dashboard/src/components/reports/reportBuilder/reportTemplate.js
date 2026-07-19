@@ -78,6 +78,60 @@ const chatgptKpis = (d) => {
   ];
 };
 
+// ---- Sub-section extractors ----
+const retentionKpis = (d) => {
+  const w = d?.windows || {};
+  return [
+    { value: `${num(w.d1)}%`, label: 'D1 Retention' },
+    { value: `${num(w.d7)}%`, label: 'D7 Retention' },
+    { value: `${num(w.d30)}%`, label: 'D30 Retention' },
+    { value: num(d?.churnRisk), label: 'Churn Risk' },
+  ];
+};
+const powerUsersKpis = (d) => {
+  const top = (d?.users || [])[0];
+  return [
+    { value: num(d?.totalGenerations), label: 'Total Generations' },
+    { value: `${num(d?.concentration?.top10SharePct)}%`, label: 'Top-10 Share' },
+    { value: top ? top.name : '—', label: 'Top User' },
+  ];
+};
+const maturityKpis = (d) => {
+  const dist = d?.distribution || [];
+  const lvl = (name) => (dist.find((x) => x.level === name) || {}).count;
+  return [
+    { value: num(lvl('AI Champion')), label: 'AI Champions' },
+    { value: num(lvl('Practitioner')), label: 'Practitioners' },
+    { value: num(lvl('Explorer')), label: 'Explorers' },
+    { value: num(lvl('Beginner')), label: 'Beginners' },
+  ];
+};
+const goldenKpis = (d) => {
+  const s = d?.stats || {};
+  return [
+    { value: num(s.goldenCount), label: 'Golden Prompts' },
+    { value: num(s.uniquePrompts), label: 'Unique Prompts' },
+    { value: `${num(s.reuseRate)}%`, label: 'Reuse Rate' },
+    { value: num(s.scanned), label: 'Prompts Scanned' },
+  ];
+};
+const promptEngineersKpis = (d) => {
+  const eng = d?.engineers || [];
+  const top = eng[0];
+  return [
+    { value: num(eng.length), label: 'Prompt Engineers' },
+    { value: top ? top.name : '—', label: 'Top Engineer' },
+    { value: top ? num(top.performanceScore) : '—', label: 'Top Score' },
+  ];
+};
+const aiImpactKpis = (d) => {
+  const dl = d?.deltas || {};
+  return [
+    { value: `${num(dl.throughputPct)}%`, label: 'Throughput Δ (AI vs non-AI)' },
+    { value: `${num(dl.cycleFasterPct)}%`, label: 'Cycle Time Faster' },
+  ];
+};
+
 // Exposed so the builder can bake live values into a saved definition (snapshotItems).
 export const liveSnapshotItems = (kind, live) => {
   if (kind === 'live-exec') return live?.exec ? execKpis(live.exec) : [];
@@ -87,6 +141,12 @@ export const liveSnapshotItems = (kind, live) => {
   if (kind === 'live-tasks') return live?.tasks ? tasksKpis(live.tasks) : [];
   if (kind === 'live-prompts') return live?.prompts ? promptsKpis(live.prompts) : [];
   if (kind === 'live-chatgpt') return live?.chatgpt ? chatgptKpis(live.chatgpt) : [];
+  if (kind === 'live-retention') return live?.retention ? retentionKpis(live.retention) : [];
+  if (kind === 'live-power-users') return live?.powerUsers ? powerUsersKpis(live.powerUsers) : [];
+  if (kind === 'live-maturity') return live?.powerUsers ? maturityKpis(live.powerUsers) : [];
+  if (kind === 'live-golden-prompts') return live?.golden ? goldenKpis(live.golden) : [];
+  if (kind === 'live-prompt-leaderboard') return live?.engineers ? promptEngineersKpis(live.engineers) : [];
+  if (kind === 'live-ai-impact') return live?.aiImpact ? aiImpactKpis(live.aiImpact) : [];
   return [];
 };
 
@@ -180,6 +240,18 @@ function blockHtml(block, idx, live) {
       return `<section class="block">${sectionHead(n, 'Prompt Intelligence')}${live.prompts ? kpiCardsHtml(promptsKpis(live.prompts)) : '<p class="muted">No data available.</p>'}</section>`;
     case 'live-chatgpt':
       return `<section class="block">${sectionHead(n, 'ChatGPT Intelligence')}${live.chatgpt ? kpiCardsHtml(chatgptKpis(live.chatgpt)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-retention':
+      return `<section class="block">${sectionHead(n, 'User Retention')}${live.retention ? kpiCardsHtml(retentionKpis(live.retention)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-power-users':
+      return `<section class="block">${sectionHead(n, 'Power Users')}${live.powerUsers ? kpiCardsHtml(powerUsersKpis(live.powerUsers)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-maturity':
+      return `<section class="block">${sectionHead(n, 'User AI Maturity')}${live.powerUsers ? kpiCardsHtml(maturityKpis(live.powerUsers)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-golden-prompts':
+      return `<section class="block">${sectionHead(n, 'Golden Prompt Library')}${live.golden ? kpiCardsHtml(goldenKpis(live.golden)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-prompt-leaderboard':
+      return `<section class="block">${sectionHead(n, 'Prompt Leaderboard')}${live.engineers ? kpiCardsHtml(promptEngineersKpis(live.engineers)) : '<p class="muted">No data available.</p>'}</section>`;
+    case 'live-ai-impact':
+      return `<section class="block">${sectionHead(n, 'Task AI Impact')}${live.aiImpact ? kpiCardsHtml(aiImpactKpis(live.aiImpact)) : '<p class="muted">No data available.</p>'}</section>`;
     case 'table': {
       const cols = block.columns || ['Project Phase', 'Target Date', 'Allocation', 'Status'];
       return `
