@@ -11,6 +11,7 @@ require an external baseline (productivity lift, ROI) are returned as null with
 fabricating a value.
 """
 
+import json
 import math
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
@@ -570,23 +571,32 @@ def _kling_usage_query(db: Session, start_dt, end_exclusive):
 
 
 def _kling_account_label_map(db: Session, start_dt, end_exclusive) -> dict:
-    """Resolve each Kling credential_id to its most-frequent human label
-    (klingAccountLabel — typically the account's email) from captured metadata."""
-    label_expr = func.json_extract_path_text(ITPortalToolUsageEvent.metadata_json, "klingAccountLabel")
+    """Resolve each Kling credential_id to its captured human label
+    (klingAccountLabel — typically the account's email).
+
+    Read in Python rather than via SQL ``->>`` because some captured metadata
+    contains a NUL char (\\u0000) that Postgres cannot convert to text. DISTINCT ON
+    keeps this to one (most-recent) metadata row per credential in the window.
+    """
     rows = (
         _kling_usage_query(db, start_dt, end_exclusive)
-        .with_entities(ITPortalToolUsageEvent.credential_id, label_expr, func.count(ITPortalToolUsageEvent.id))
-        .filter(label_expr.isnot(None), label_expr != "")
-        .group_by(ITPortalToolUsageEvent.credential_id, label_expr)
+        .filter(ITPortalToolUsageEvent.credential_id.isnot(None))
+        .with_entities(ITPortalToolUsageEvent.credential_id, ITPortalToolUsageEvent.metadata_json)
+        .order_by(ITPortalToolUsageEvent.credential_id, ITPortalToolUsageEvent.created_at.desc())
+        .distinct(ITPortalToolUsageEvent.credential_id)
         .all()
     )
-    best_count: dict = {}
     label_map: dict = {}
-    for cid, label, count in rows:
-        c = int(count)
-        if label and c > best_count.get(cid, -1):
-            best_count[cid] = c
-            label_map[cid] = label
+    for cid, md in rows:
+        if isinstance(md, str):
+            try:
+                md = json.loads(md)
+            except Exception:
+                md = None
+        if isinstance(md, dict):
+            label = md.get("klingAccountLabel")
+            if label:
+                label_map[cid] = label
     return label_map
 
 

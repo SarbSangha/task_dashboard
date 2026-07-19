@@ -11,6 +11,7 @@ All endpoints are admin-gated. Costing itself lives in reports_router; this rout
 only manages the rate rows the costing reads.
 """
 
+import json
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -20,7 +21,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
-from models_new import ITPortalTool, ITPortalToolCredential, ToolCreditRate, User
+from models_new import ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent, ToolCreditRate, User
 from utils.credential_crypto import decrypt_secret
 from utils.permissions import require_admin
 
@@ -41,6 +42,40 @@ class RateUpsertPayload(BaseModel):
 def _account_label(cred: ITPortalToolCredential) -> str:
     identifier = decrypt_secret(cred.login_identifier_encrypted) if cred.login_identifier_encrypted else None
     return identifier or (cred.notes or "").strip() or f"Account #{cred.id}"
+
+
+def _kling_account_label_map(db: Session) -> dict:
+    """Resolve each Kling credential_id to its captured account label
+    (``klingAccountLabel`` — usually the account email).
+
+    The label is read in Python, not via a SQL ``->>`` extraction, because some
+    captured metadata contains a NUL char (``\\u0000``) that Postgres cannot
+    convert to text (it raises UntranslatableCharacter). DISTINCT ON keeps this
+    to one (most-recent) metadata row per credential.
+    """
+    rows = (
+        db.query(ITPortalToolUsageEvent.credential_id, ITPortalToolUsageEvent.metadata_json)
+        .join(ITPortalTool, ITPortalToolUsageEvent.tool_id == ITPortalTool.id)
+        .filter(
+            func.lower(func.coalesce(ITPortalTool.slug, "")).in_(KLING_SLUGS),
+            ITPortalToolUsageEvent.credential_id.isnot(None),
+        )
+        .order_by(ITPortalToolUsageEvent.credential_id, ITPortalToolUsageEvent.created_at.desc())
+        .distinct(ITPortalToolUsageEvent.credential_id)
+        .all()
+    )
+    label_map: dict = {}
+    for cid, md in rows:
+        if isinstance(md, str):
+            try:
+                md = json.loads(md)
+            except Exception:
+                md = None
+        if isinstance(md, dict):
+            label = md.get("klingAccountLabel")
+            if label:
+                label_map[cid] = label
+    return label_map
 
 
 def _current_rate_row(db: Session, credential_id: Optional[int]) -> Optional[ToolCreditRate]:
@@ -67,6 +102,7 @@ def list_credit_rates(
 ):
     """List Kling accounts with their current effective rate, plus the global default."""
     global_row = _current_rate_row(db, None)
+    label_map = _kling_account_label_map(db)  # real account names from captured metadata
 
     credentials = (
         db.query(ITPortalToolCredential, ITPortalTool)
@@ -83,7 +119,7 @@ def list_credit_rates(
             "credentialId": cred.id,
             "toolName": tool.name,
             "toolSlug": tool.slug,
-            "label": _account_label(cred),
+            "label": label_map.get(cred.id) or _account_label(cred),
             "isActive": bool(cred.is_active),
             "currentRate": cur.to_dict() if cur else None,
         })
