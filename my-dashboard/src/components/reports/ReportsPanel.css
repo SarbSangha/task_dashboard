@@ -363,3 +363,181 @@ table.rpt-heatmap { border-collapse: separate; border-spacing: 3px; font-size: 1
   .rpt-filters { padding: 10px 14px; }
 }
 @media (prefers-reduced-motion: reduce) { .rpt-tree { transition: none; } }
+
+/* Clickable KPI card (drills into the detail behind the number) */
+.rpt-kpi-drill { cursor: pointer; border-radius: 12px; transition: transform .12s ease, box-shadow .12s ease; }
+.rpt-kpi-drill:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.12); }
+.rpt-kpi-drill:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+/* ---- Move to canvas: send any analytics level into the Report Builder ---- */
+.rpt-to-canvas {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-primary);
+  background: transparent;
+  border: 1px solid var(--color-primary);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.rpt-to-canvas:hover { background: var(--color-primary); color: #fff; }
+.rpt-to-canvas:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.rpt-canvas-badge {
+  padding: 5px 11px;
+  margin-right: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--color-primary);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rpt-canvas-badge:hover { filter: brightness(1.08); }
+
+.rpt-canvas-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  z-index: 40;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  background: #101f3f;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+}
+
+
+/* ---- Prompt detail: who used a prompt, and the output it produced ---- */
+.rpt-prompt-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 61;
+  width: min(1020px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 18px 20px 22px;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
+}
+
+.rpt-prompt-text {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text);
+  background: var(--color-secondary);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 0 6px 6px 0;
+  max-height: 140px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.rpt-output-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.rpt-prompt-card {
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.rpt-prompt-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
+}
+
+
+/* ---- ChatGPT message thread (level 5 of the chat drill) ---- */
+.rpt-chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: var(--color-secondary);
+  border-radius: 8px;
+}
+
+.rpt-chat-msg {
+  display: grid;
+  grid-template-columns: 74px 1fr;
+  gap: 10px;
+  align-items: start;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.rpt-chat-role {
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: center;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.rpt-chat-msg.user .rpt-chat-role { color: #fff; background: var(--color-primary); }
+.rpt-chat-msg.assistant .rpt-chat-role { color: var(--color-text); background: var(--color-border); }
+
+.rpt-chat-body {
+  padding: 7px 10px;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+
+/* ---- Per-chart canvas button + the question each block answers ---- */
+.rpt-chart-canvas {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-primary);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0.75;
+  transition: opacity 0.14s ease, background 0.14s ease, color 0.14s ease;
+}
+.rpt-card:hover .rpt-chart-canvas { opacity: 1; }
+.rpt-chart-canvas:hover {
+  color: #fff;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.rpt-chart-q {
+  margin: -2px 0 8px;
+  font-size: 11.5px;
+  font-style: italic;
+  line-height: 1.45;
+  color: var(--color-text-muted);
+}

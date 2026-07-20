@@ -9,7 +9,7 @@ import InsightBanner from '../primitives/InsightBanner';
 import ChartFrame, { ChartTooltip } from '../primitives/ChartFrame';
 import { formatNumber, formatFull, formatDayLabel } from '../utils/format';
 
-const TaskProductivity = ({ filters }) => {
+const TaskProductivity = ({ filters, onAddToCanvas }) => {
   const theme = useChartTheme();
   const summaryQ = useQuery({ queryKey: ['reports', 'tasks', 'summary', filters], queryFn: () => reportsAPI.tasksSummary(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
   const trendsQ = useQuery({ queryKey: ['reports', 'tasks', 'trends', filters], queryFn: () => reportsAPI.tasksTrends(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
@@ -57,7 +57,7 @@ const TaskProductivity = ({ filters }) => {
       </div>
 
       <div className="rpt-grid cols-2">
-        <ChartFrame title="Tasks completed" hint="Daily" height={250}>
+        <ChartFrame title="Tasks completed" blockKind="live-task-trend" onAddToCanvas={onAddToCanvas} hint="Daily" height={250}>
           <AreaChart data={trends.daily || []} margin={{ top: 8, right: 12, bottom: 0, left: -8 }}>
             <defs>
               <linearGradient id="tpDone" x1="0" y1="0" x2="0" y2="1">
@@ -73,7 +73,7 @@ const TaskProductivity = ({ filters }) => {
           </AreaChart>
         </ChartFrame>
 
-        <ChartFrame title="Completed by department" hint="Top teams" height={250}>
+        <ChartFrame title="Completed by department" blockKind="live-task-dept" onAddToCanvas={onAddToCanvas} hint="Top teams" height={250}>
           <BarChart data={(trends.byDepartment || []).slice(0, 8)} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
             <CartesianGrid stroke={theme.grid} horizontal={false} />
             <XAxis type="number" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} tickFormatter={formatNumber} />

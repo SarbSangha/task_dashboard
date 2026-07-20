@@ -14,7 +14,10 @@ export const presetRange = (preset) => {
     return { start: '2000-01-01', end: toISODate(end) };
   }
   if (preset === 'today') {
-    // start = today
+    // start = end = today
+  } else if (preset === 'yesterday') {
+    start.setDate(end.getDate() - 1);
+    end.setDate(end.getDate() - 1);
   } else if (preset === '7d') {
     start.setDate(end.getDate() - 6);
   } else if (preset === '30d') {

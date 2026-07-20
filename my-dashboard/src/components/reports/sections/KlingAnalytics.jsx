@@ -8,11 +8,13 @@ import { reportsAPI } from '../../../services/reports';
 import { useChartTheme } from '../hooks/useChartTheme';
 import SectionHeader from '../primitives/SectionHeader';
 import KpiCard from '../primitives/KpiCard';
+import { ToCanvasButton, DrillableKpi } from './ExecutiveDashboard';
 import InsightBanner from '../primitives/InsightBanner';
 import ChartFrame, { ChartTooltip } from '../primitives/ChartFrame';
 import DataTable from '../primitives/DataTable';
 import KlingAccountsPanel from './KlingAccountsPanel';
 import { formatNumber, formatFull, formatDayLabel, formatHour, initialsOf } from '../utils/format';
+import { chartClick as rawChartClick } from '../utils/chartClick';
 
 const UserCell = ({ row }) => (
   <span className="rpt-user-cell">
@@ -28,7 +30,7 @@ const successPill = (rate) => {
   return <span className={`rpt-pill ${cls}`}>{rate}%</span>;
 };
 
-const KlingAnalytics = ({ filters, onOpenUser }) => {
+const KlingAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
   const theme = useChartTheme();
 
   const summaryQ = useQuery({ queryKey: ['reports', 'kling', 'summary', filters], queryFn: () => reportsAPI.klingSummary(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
@@ -58,12 +60,27 @@ const KlingAnalytics = ({ filters, onOpenUser }) => {
 
   const dateLabel = filters?.start && filters?.end ? `${filters.start} → ${filters.end}` : 'selected range';
 
+  // Chart data, hoisted so the click handlers can resolve a datum by index.
+  const dailyData = trends.daily || [];
+  const deptData = (trends.byDepartment || []).slice(0, 8);
+  const hourData = trends.byHour || [];
+
+  const chartClick = (data, pick) => rawChartClick(data, pick, !!onDrill);
+
   return (
     <div>
       <SectionHeader
         title="Kling Intelligence"
         subtitle={`Video generation analytics for Kling AI across the ${dateLabel}. Click any creator to open their detailed profile.`}
-      />
+      >
+        {onAddToCanvas && (
+          <ToCanvasButton
+            label="Move KPIs to canvas"
+            title="Add the Kling summary KPIs to the Report Builder"
+            onClick={() => onAddToCanvas({ kind: 'live-kling' }, 'Kling summary KPIs')}
+          />
+        )}
+      </SectionHeader>
 
       {summaryQ.isError ? (
         <div className="rpt-error">Failed to load Kling summary: {summaryQ.error?.response?.data?.detail || summaryQ.error?.message}</div>
@@ -85,17 +102,24 @@ const KlingAnalytics = ({ filters, onOpenUser }) => {
             </InsightBanner>
           )}
 
+          {/* Same ladder as the executive cards, scoped to Kling:
+              who → the days they generated → that day's generations and credits. */}
           <div className="rpt-kpi-grid">
-            <KpiCard label="Total Kling Videos" metric={k.totalVideos} />
-            <KpiCard label="Unique Kling Users" metric={k.uniqueUsers} />
+            <DrillableKpi label="Total Kling Videos" metric={k.totalVideos} onDrill={onDrill} view="contributors:generations:kling" hint="See who generated" />
+            <DrillableKpi label="Unique Kling Users" metric={k.uniqueUsers} onDrill={onDrill} view="contributors:generations:kling" hint="See the creators" />
             <KpiCard label="Avg Videos / User" metric={k.avgVideosPerUser} format="full" />
             <KpiCard label="Success Rate" metric={k.successRate} format="pct" />
-            <KpiCard label="Credits Consumed" metric={k.creditsConsumed} />
+            <DrillableKpi label="Credits Consumed" metric={k.creditsConsumed} onDrill={onDrill} view="contributors:cost:kling" hint="See who spent the credits" />
           </div>
 
           <div className="rpt-grid cols-2">
-            <ChartFrame title="Video generation trend" hint="Daily" height={250}>
-              <AreaChart data={trends.daily || []} margin={{ top: 8, right: 12, bottom: 0, left: -8 }}>
+            <ChartFrame title="Video generation trend" blockKind="live-kling-trend" onAddToCanvas={onAddToCanvas} hint={onDrill ? 'Daily · click a day' : 'Daily'} height={250}>
+              <AreaChart
+                data={dailyData}
+                margin={{ top: 8, right: 12, bottom: 0, left: -8 }}
+                onClick={chartClick(dailyData, (d) => d.date && onDrill('contributors:generations:kling', { date: d.date }))}
+                style={onDrill ? { cursor: 'pointer' } : undefined}
+              >
                 <defs>
                   <linearGradient id="klingTrend" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor={theme.primary} stopOpacity={0.45} />
@@ -110,8 +134,14 @@ const KlingAnalytics = ({ filters, onOpenUser }) => {
               </AreaChart>
             </ChartFrame>
 
-            <ChartFrame title="Generation by department" hint="Top teams" height={250}>
-              <BarChart data={(trends.byDepartment || []).slice(0, 8)} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
+            <ChartFrame title="Generation by department" blockKind="live-kling-dept" onAddToCanvas={onAddToCanvas} hint={onDrill ? 'Top teams · click a bar' : 'Top teams'} height={250}>
+              <BarChart
+                data={deptData}
+                layout="vertical"
+                margin={{ top: 4, right: 16, bottom: 0, left: 8 }}
+                onClick={chartClick(deptData, (d) => d.department && onDrill('contributors:generations:kling', { department: d.department }))}
+                style={onDrill ? { cursor: 'pointer' } : undefined}
+              >
                 <CartesianGrid stroke={theme.grid} horizontal={false} />
                 <XAxis type="number" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} tickFormatter={formatNumber} />
                 <YAxis type="category" dataKey="department" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} width={96} />
@@ -120,17 +150,22 @@ const KlingAnalytics = ({ filters, onOpenUser }) => {
               </BarChart>
             </ChartFrame>
 
-            <ChartFrame title="Peak usage hours" hint="Videos by hour of day" height={230}>
-              <BarChart data={trends.byHour || []} margin={{ top: 4, right: 12, bottom: 0, left: -8 }}>
+            <ChartFrame title="Peak usage hours" blockKind="live-kling-hours" onAddToCanvas={onAddToCanvas} hint={onDrill ? 'By hour of day (IST) · click a bar' : 'By hour of day (IST)'} height={230}>
+              <BarChart
+                data={hourData}
+                margin={{ top: 4, right: 12, bottom: 0, left: -8 }}
+                onClick={chartClick(hourData, (d) => d.hour != null && onDrill('contributors:generations:kling', { hour: d.hour }))}
+                style={onDrill ? { cursor: 'pointer' } : undefined}
+              >
                 <CartesianGrid stroke={theme.grid} vertical={false} />
                 <XAxis dataKey="hour" tickFormatter={formatHour} tick={{ fill: theme.axis, fontSize: 10 }} tickLine={false} axisLine={{ stroke: theme.grid }} interval={1} />
                 <YAxis tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} width={34} tickFormatter={formatNumber} />
-                <Tooltip cursor={{ fill: theme.grid }} content={<ChartTooltip labelFormatter={(h) => `${formatHour(h)} hour`} />} />
+                <Tooltip cursor={{ fill: theme.grid }} content={<ChartTooltip labelFormatter={(h) => `${formatHour(h)} IST`} />} />
                 <Bar dataKey="videos" name="Videos" fill={theme.info} radius={[4, 4, 0, 0]} isAnimationActive={false} />
               </BarChart>
             </ChartFrame>
 
-            <ChartFrame title="Success vs failure" hint="Generation outcomes" height={230}>
+            <ChartFrame title="Success vs failure" blockKind="live-kling-outcomes" onAddToCanvas={onAddToCanvas} hint="Generation outcomes" height={230}>
               <PieChart>
                 <Pie
                   data={trends.successVsFailure || []}

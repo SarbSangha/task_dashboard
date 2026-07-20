@@ -1347,6 +1347,31 @@ class SavedReport(Base):
         return data
 
 
+class AppSetting(Base):
+    """Small key/value store for admin-editable settings (e.g. SMTP delivery).
+
+    Secrets inside ``value_json`` are encrypted with the same Fernet helper the
+    tool credentials use — never store a password here in clear text.
+    """
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(80), nullable=False, unique=True, index=True)
+    value_json = Column(JSON, nullable=False, default=dict)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow,
+                        server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow,
+                        onupdate=datetime.utcnow, server_default=text("CURRENT_TIMESTAMP"))
+
+    def to_dict(self):
+        return {
+            "key": self.key,
+            "value": self.value_json or {},
+            "updatedAt": serialize_utc_datetime(self.updated_at),
+        }
+
+
 class ReportSchedule(Base):
     """A recurring report: render + export + (optional) email on a cadence."""
     __tablename__ = "report_schedules"

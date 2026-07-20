@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { reportsAPI } from '../../../services/reports';
 import SectionHeader from '../primitives/SectionHeader';
 
@@ -12,7 +12,126 @@ const fmtDate = (iso) => {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 };
 
+// Sender configuration. The password is write-only: the API never returns it,
+// so a blank field means "keep the stored one" rather than "clear it".
+const EmailSettings = ({ email, onSaved, flash }) => {
+  const [open, setOpen] = useState(!email.configured);
+  const [busy, setBusy] = useState(false);
+  const [testTo, setTestTo] = useState('');
+  const [cfg, setCfg] = useState({
+    host: '', port: 587, username: '', password: '', fromAddress: '', fromName: '', useTls: true,
+  });
+  const [loaded, setLoaded] = useState(false);
+
+  // Seed from the server's current status once it arrives.
+  if (!loaded && email.host !== undefined) {
+    setCfg((c) => ({
+      ...c,
+      host: email.host || '',
+      port: email.port || 587,
+      username: email.username || '',
+      fromAddress: email.from || '',
+      fromName: email.fromName || '',
+      useTls: email.useTls !== false,
+    }));
+    setLoaded(true);
+  }
+
+  const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
+
+  const save = async () => {
+    if (!cfg.host.trim() || !cfg.fromAddress.trim()) { flash('SMTP host and sender address are required.'); return; }
+    setBusy(true);
+    try {
+      await reportsAPI.emailSettingsSave(cfg);
+      setCfg((c) => ({ ...c, password: '' }));
+      flash('Email settings saved.');
+      onSaved?.();
+    } catch (e) {
+      flash(`Save failed: ${e?.response?.data?.detail || e.message}`);
+    } finally { setBusy(false); }
+  };
+
+  const test = async () => {
+    if (!testTo.trim()) { flash('Enter an address to send the test to.'); return; }
+    setBusy(true);
+    try {
+      const r = await reportsAPI.emailSettingsTest(testTo.trim());
+      flash(r.success ? `Test email sent to ${testTo}.` : `Test failed: ${r.detail}`);
+      onSaved?.();
+    } catch (e) {
+      flash(`Test failed: ${e?.response?.data?.detail || e.message}`);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="rpt-form" style={{ marginBottom: 14 }}>
+      <div className="rpt-card-head" style={{ marginBottom: open ? 12 : 0 }}>
+        <h3 className="rpt-card-title">Sender email (SMTP)</h3>
+        <span className="rpt-card-hint">
+          {email.configured
+            ? `Sending as ${email.fromName ? `${email.fromName} <${email.from}>` : email.from} via ${email.host}`
+            : 'Not configured — schedules will not send'}
+        </span>
+        <button className="rpt-mini-btn" onClick={() => setOpen((v) => !v)}>{open ? 'Hide' : 'Configure'}</button>
+      </div>
+
+      {open && (
+        <>
+          <div className="rpt-form-row">
+            <label>SMTP host
+              <input value={cfg.host} onChange={(e) => set('host', e.target.value)} placeholder="smtp.gmail.com" />
+            </label>
+            <label>Port
+              <input type="number" value={cfg.port} onChange={(e) => set('port', Number(e.target.value))} placeholder="587" />
+            </label>
+            <label>Our email (sender)
+              <input value={cfg.fromAddress} onChange={(e) => set('fromAddress', e.target.value)} placeholder="reports@rmwcreative.in" />
+            </label>
+            <label>Sender name
+              <input value={cfg.fromName} onChange={(e) => set('fromName', e.target.value)} placeholder="RMWeye Reports" />
+            </label>
+            <label>SMTP username
+              <input value={cfg.username} onChange={(e) => set('username', e.target.value)} placeholder="reports@rmwcreative.in" />
+            </label>
+            <label>{email.hasPassword ? 'SMTP password (saved — blank keeps it)' : 'SMTP password'}
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={cfg.password}
+                onChange={(e) => set('password', e.target.value)}
+                placeholder={email.hasPassword ? '••••••••' : 'app password'}
+              />
+            </label>
+          </div>
+
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, margin: '8px 0' }}>
+            <input type="checkbox" checked={cfg.useTls} onChange={(e) => set('useTls', e.target.checked)} />
+            Use STARTTLS (leave on for port 587; port 465 uses implicit TLS automatically)
+          </label>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="rb-generate" style={{ width: 'auto', padding: '10px 18px' }} disabled={busy} onClick={save}>
+              {busy ? 'Working…' : 'Save settings'}
+            </button>
+            <label style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <input
+                style={{ minWidth: 220 }}
+                value={testTo}
+                onChange={(e) => setTestTo(e.target.value)}
+                placeholder="you@company.com"
+              />
+            </label>
+            <button className="rpt-mini-btn" disabled={busy || !email.configured} onClick={test}>Send test email</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
 const ScheduledReports = () => {
+  const queryClient = useQueryClient();
   const [toast, setToast] = useState(null);
   const [form, setForm] = useState({ name: '', sourceId: '', cadence: 'weekly', hourUtc: 8, weekday: 0, dayOfMonth: 1, recipients: '', formats: ['pdf'] });
   const [creating, setCreating] = useState(false);
@@ -75,16 +194,25 @@ const ScheduledReports = () => {
     <div>
       <SectionHeader
         title="Scheduled Reports"
-        subtitle="Deliver a saved report on a recurring cadence. Firing is triggered by the run-due endpoint (wired to your deploy cron); email sends only when SMTP is configured."
+        subtitle="Deliver a saved report on a recurring cadence. The server checks for due schedules every few minutes and emails them automatically — configure the sender below first."
       />
 
       <div className={`rpt-banner ${email.configured ? 'ok' : 'warn'}`}>
         <span>
           {email.configured
             ? <>Email delivery is <b>active</b> (from {email.from}). Due schedules will render, export and email their recipients.</>
-            : <><b>Email is not configured.</b> Schedules are stored and will render + audit on run, but nothing is sent until <code>SMTP_HOST</code>/<code>SMTP_FROM</code> env vars are set. No silent "sent" status.</>}
+            : <><b>Email is not configured.</b> Schedules are stored and will render + audit on run, but nothing is sent until you set the sender below. No silent "sent" status.</>}
         </span>
       </div>
+
+      <EmailSettings
+        email={email}
+        flash={flash}
+        onSaved={() => {
+          queryClient.invalidateQueries({ queryKey: ['reports', 'schedules'] });
+          queryClient.invalidateQueries({ queryKey: ['reports', 'caps'] });
+        }}
+      />
 
       {/* Create form */}
       <div className="rpt-form">

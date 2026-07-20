@@ -621,6 +621,23 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_tags_normalized_tag ON generation_tags(normalized_tag)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_tags_generation_id ON generation_tags(generation_id)"))
 
+    # Admin-editable settings (SMTP delivery for scheduled reports, etc).
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id SERIAL PRIMARY KEY,
+                key VARCHAR(80) NOT NULL UNIQUE,
+                value_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_app_settings_key ON app_settings(key)"))
+
     # Tier 1 cost analytics: credit -> currency conversion rates, keyed by Kling account.
     conn.execute(
         text(

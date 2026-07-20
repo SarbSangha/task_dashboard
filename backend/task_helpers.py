@@ -87,18 +87,27 @@ class TaskHelpers:
     def mark_as_read(task_id: int, user_id: int, db: Session) -> bool:
         """Mark a task as read for a specific user"""
         try:
-            participant = db.query(TaskParticipant).filter(
+            # One user can hold several roles on a task; get_unread_count counts
+            # a task as unread while ANY of their rows is unread, so all of them
+            # must be marked — not just the first.
+            participants = db.query(TaskParticipant).filter(
                 TaskParticipant.task_id == task_id,
                 TaskParticipant.user_id == user_id
-            ).first()
-            
-            if participant and not participant.is_read:
-                participant.is_read = True
-                participant.read_at = datetime.utcnow()
+            ).all()
+
+            now = datetime.utcnow()
+            changed = False
+            for participant in participants:
+                if not participant.is_read:
+                    participant.is_read = True
+                    participant.read_at = now
+                    changed = True
+
+            if changed:
                 db.commit()
                 print(f"Task {task_id} marked as read by user {user_id}")
                 return True
-            
+
             return False
             
         except Exception as e:

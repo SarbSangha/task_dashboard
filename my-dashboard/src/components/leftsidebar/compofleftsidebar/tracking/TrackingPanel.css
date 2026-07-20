@@ -523,10 +523,7 @@
   opacity: 0.7;
 }
 
-.task-project-meta {
-  max-width: min(260px, 36vw);
-}
-
+.task-project-meta,
 .task-priority-badge,
 .task-status-badge,
 .task-deadline-badge,
@@ -538,6 +535,11 @@
   background: var(--color-surface-muted);
   color: var(--color-text-secondary);
   max-width: min(280px, 44vw);
+}
+
+/* Declared after the shared pill rule so the narrower project cap still wins. */
+.task-project-meta {
+  max-width: min(260px, 36vw);
 }
 
 .task-priority-badge {

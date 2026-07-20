@@ -22,7 +22,7 @@ const UserCell = ({ row }) => (
   </span>
 );
 
-const ChatGPTAnalytics = ({ filters }) => {
+const ChatGPTAnalytics = ({ filters, onOpenUser, onAddToCanvas }) => {
   const theme = useChartTheme();
 
   const summaryQ = useQuery({ queryKey: ['reports', 'chatgpt', 'summary', filters], queryFn: () => reportsAPI.chatgptSummary(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
@@ -87,7 +87,7 @@ const ChatGPTAnalytics = ({ filters }) => {
           </div>
 
           <div className="rpt-grid cols-2">
-            <ChartFrame title="Conversation volume trend" hint="Daily" height={250}>
+            <ChartFrame title="Conversation volume trend" blockKind="live-cg-trend" onAddToCanvas={onAddToCanvas} hint="Daily" height={250}>
               <AreaChart data={trends.daily || []} margin={{ top: 8, right: 12, bottom: 0, left: -8 }}>
                 <defs>
                   <linearGradient id="cgTrend" x1="0" y1="0" x2="0" y2="1">
@@ -103,7 +103,7 @@ const ChatGPTAnalytics = ({ filters }) => {
               </AreaChart>
             </ChartFrame>
 
-            <ChartFrame title="Model mix" hint="Share of conversations" height={250}>
+            <ChartFrame title="Model mix" blockKind="live-cg-models" onAddToCanvas={onAddToCanvas} hint="Share of conversations" height={250}>
               <PieChart>
                 <Pie data={trends.byModel || []} dataKey="conversations" nameKey="model" innerRadius={52} outerRadius={82} paddingAngle={2} isAnimationActive={false}>
                   {(trends.byModel || []).map((entry, i) => <Cell key={i} fill={theme.series[i % theme.series.length]} />)}
@@ -113,7 +113,7 @@ const ChatGPTAnalytics = ({ filters }) => {
               </PieChart>
             </ChartFrame>
 
-            <ChartFrame title="Conversations by department" hint="Top teams" height={240}>
+            <ChartFrame title="Conversations by department" blockKind="live-cg-dept" onAddToCanvas={onAddToCanvas} hint="Top teams" height={240}>
               <BarChart data={(trends.byDepartment || []).slice(0, 8)} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
                 <CartesianGrid stroke={theme.grid} horizontal={false} />
                 <XAxis type="number" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} tickFormatter={formatNumber} />
@@ -123,7 +123,7 @@ const ChatGPTAnalytics = ({ filters }) => {
               </BarChart>
             </ChartFrame>
 
-            <ChartFrame title="Peak usage hours" hint="Conversations by hour" height={240}>
+            <ChartFrame title="Peak usage hours" blockKind="live-cg-hours" onAddToCanvas={onAddToCanvas} hint="Conversations by hour" height={240}>
               <BarChart data={trends.byHour || []} margin={{ top: 4, right: 12, bottom: 0, left: -8 }}>
                 <CartesianGrid stroke={theme.grid} vertical={false} />
                 <XAxis dataKey="hour" tickFormatter={formatHour} tick={{ fill: theme.axis, fontSize: 10 }} tickLine={false} axisLine={{ stroke: theme.grid }} interval={1} />
@@ -139,7 +139,12 @@ const ChatGPTAnalytics = ({ filters }) => {
               <h3 className="rpt-card-title" style={{ fontSize: 14 }}>ChatGPT user leaderboard</h3>
               <span className="rpt-card-hint">{users.length} users</span>
             </div>
-            <DataTable columns={columns} rows={users} initialSort="conversations" />
+            <DataTable
+              columns={columns}
+              rows={users}
+              initialSort="conversations"
+              onRowClick={onOpenUser ? (row) => onOpenUser(row.userId, row.name) : undefined}
+            />
           </div>
         </>
       )}

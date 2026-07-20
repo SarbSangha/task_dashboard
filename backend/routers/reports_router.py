@@ -17,13 +17,13 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import case, func, literal, or_, text
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import String, and_, case, func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
-from models_new import ActivityStatus, GenerationRecord, GenerationTag, ITPortalTool, ITPortalToolUsageEvent, Task, TaskStatus, TaskStatusHistory, ToolCreditRate, User, UserActivity
-from providers.chatgpt.models import ConversationPrompt, ConversationRecord
+from models_new import ActivityStatus, GenerationRecord, GenerationTag, ITPortalTool, ITPortalToolUsageEvent, ParticipantRole, Task, TaskParticipant, TaskStatus, TaskStatusHistory, ToolCreditRate, User, UserActivity
+from providers.chatgpt.models import ConversationPrompt, ConversationRecord, ConversationResponse
 from utils.permissions import require_admin
 
 router = APIRouter(prefix="/api/reports", tags=["Reports"])
@@ -90,7 +90,7 @@ def _metric(current, previous, *, baseline_required: bool = False):
 # ---------------------------------------------------------------------------
 # Query building blocks
 # ---------------------------------------------------------------------------
-def _gen_query(db: Session, start_dt, end_exclusive, department: Optional[str], provider: Optional[str] = None):
+def _gen_query(db: Session, start_dt, end_exclusive, department: Optional[str], provider: Optional[str] = None, user: Optional[int] = None):
     q = (
         db.query(GenerationRecord)
         .filter(
@@ -103,6 +103,8 @@ def _gen_query(db: Session, start_dt, end_exclusive, department: Optional[str], 
         q = q.filter(GenerationRecord.provider == provider)
     if department and department != "all":
         q = q.join(User, GenerationRecord.owner_user_id == User.id).filter(User.department == department)
+    if user:
+        q = q.filter(GenerationRecord.owner_user_id == user)
     return q
 
 
@@ -183,12 +185,27 @@ def _success_count(query) -> int:
     )
 
 
+# A user is "active on a day" when a row exists with a login or heartbeats.
+_ACTIVE_ROW = or_(UserActivity.login_time.isnot(None), UserActivity.heartbeat_count > 0)
+
+
 def _active_users(db: Session, start_dt, end_exclusive, department: Optional[str]) -> int:
-    q = db.query(func.count(func.distinct(User.id))).filter(
-        User.is_deleted.is_(False),
-        User.last_login.isnot(None),
-        User.last_login >= start_dt,
-        User.last_login < end_exclusive,
+    """Distinct users present in the window, measured from captured presence.
+
+    Deliberately NOT User.last_login: that column only moves on a fresh
+    authentication, so anyone whose session persists across days reads as
+    inactive even while they are using the product. Counting user_activities
+    rows also keeps this KPI identical to its /users/active drill-down.
+    """
+    q = (
+        db.query(func.count(func.distinct(UserActivity.user_id)))
+        .join(User, UserActivity.user_id == User.id)
+        .filter(
+            User.is_deleted.is_(False),
+            UserActivity.date >= start_dt.date(),
+            UserActivity.date < end_exclusive.date(),
+            _ACTIVE_ROW,
+        )
     )
     if department and department != "all":
         q = q.filter(User.department == department)
@@ -200,6 +217,18 @@ def _total_users(db: Session, department: Optional[str]) -> int:
     if department and department != "all":
         q = q.filter(User.department == department)
     return int(q.scalar() or 0)
+
+
+# Timestamps are stored in UTC but the whole team works in IST, so any
+# hour-of-day reporting has to be shifted before bucketing — otherwise the
+# 6pm IST peak is reported as a 12:30pm one.
+LOCAL_TZ_OFFSET = timedelta(minutes=330)  # Asia/Kolkata, UTC+5:30
+LOCAL_TZ_LABEL = "IST"
+
+
+def _local_hour(dt) -> int:
+    """Hour of day in the reporting timezone (IST) for a UTC timestamp."""
+    return (dt + LOCAL_TZ_OFFSET).hour
 
 
 # A generation is treated as a "video" when it carries a duration label,
@@ -269,12 +298,40 @@ def report_filters(
         ],
         key=lambda a: a["label"].lower(),
     )
+    # Kling users: the PEOPLE who actually generated, as distinct from the
+    # shared Kling logins above — several people share one credential.
+    kling_user_rows = (
+        db.query(
+            User.id, User.name, User.department,
+            func.count(GenerationRecord.id).label("generations"),
+        )
+        .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
+        .filter(
+            User.is_deleted.is_(False),
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.provider == KLING_PROVIDER,
+        )
+        .group_by(User.id, User.name, User.department)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .all()
+    )
+    kling_users = [
+        {
+            "userId": uid,
+            "name": name or f"User #{uid}",
+            "department": dept or "Unassigned",
+            "generations": int(count or 0),
+        }
+        for uid, name, dept, count in kling_user_rows
+    ]
+
     return {
         "success": True,
         "departments": departments,
         "providers": providers,
         "models": models,
         "klingAccounts": kling_accounts,
+        "klingUsers": kling_users,
     }
 
 
@@ -372,18 +429,19 @@ def kling_summary(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
 
     def block(s, e):
-        base = _gen_query(db, s, e, department, provider=KLING_PROVIDER)
+        base = _gen_query(db, s, e, department, provider=KLING_PROVIDER, user=user)
         total = _count(base)
-        success = _success_count(_gen_query(db, s, e, department, provider=KLING_PROVIDER))
-        credits = _credits(_gen_query(db, s, e, department, provider=KLING_PROVIDER))
+        success = _success_count(_gen_query(db, s, e, department, provider=KLING_PROVIDER, user=user))
+        credits = _credits(_gen_query(db, s, e, department, provider=KLING_PROVIDER, user=user))
         unique_users = int(
-            _gen_query(db, s, e, department, provider=KLING_PROVIDER)
+            _gen_query(db, s, e, department, provider=KLING_PROVIDER, user=user)
             .with_entities(func.count(func.distinct(GenerationRecord.owner_user_id)))
             .scalar()
             or 0
@@ -400,7 +458,7 @@ def kling_summary(
 
     # Status breakdown for an honest success/failure view.
     status_rows = (
-        _gen_query(db, start_dt, end_exclusive, department, provider=KLING_PROVIDER)
+        _gen_query(db, start_dt, end_exclusive, department, provider=KLING_PROVIDER, user=user)
         .with_entities(GenerationRecord.capture_status, func.count(GenerationRecord.id))
         .group_by(GenerationRecord.capture_status)
         .all()
@@ -426,6 +484,7 @@ def kling_trends(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
@@ -433,7 +492,7 @@ def kling_trends(
 
     # Daily generation trend.
     daily_rows = (
-        _gen_query(db, start_dt, end_exclusive, department, provider=KLING_PROVIDER)
+        _gen_query(db, start_dt, end_exclusive, department, provider=KLING_PROVIDER, user=user)
         .with_entities(
             func.date(GenerationRecord.created_at).label("day"),
             func.count(GenerationRecord.id).label("count"),
@@ -464,7 +523,7 @@ def kling_trends(
 
     # Peak usage hour (DB-agnostic: bucket created_at in Python).
     created_rows = (
-        _gen_query(db, start_dt, end_exclusive, department, provider=KLING_PROVIDER)
+        _gen_query(db, start_dt, end_exclusive, department, provider=KLING_PROVIDER, user=user)
         .with_entities(GenerationRecord.created_at, GenerationRecord.capture_status)
         .all()
     )
@@ -473,7 +532,7 @@ def kling_trends(
     failure_total = 0
     for created_at, status in created_rows:
         if created_at is not None:
-            hour_buckets[created_at.hour] += 1
+            hour_buckets[_local_hour(created_at)] += 1
         if status in SUCCESS_STATUSES:
             success_total += 1
         else:
@@ -497,6 +556,7 @@ def kling_users(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
@@ -522,6 +582,8 @@ def kling_users(
     )
     if department and department != "all":
         rows = rows.filter(User.department == department)
+    if user:
+        rows = rows.filter(User.id == user)
     rows = (
         rows.group_by(User.id, User.name, User.avatar, User.department)
         .order_by(func.count(GenerationRecord.id).desc())
@@ -986,6 +1048,220 @@ def chatgpt_trends(
     return {"success": True, "daily": daily, "byModel": by_model, "byDepartment": by_department, "byHour": by_hour}
 
 
+@router.get("/chatgpt/user-timeline")
+def chatgpt_user_timeline(
+    userId: int = Query(...),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """One person's ChatGPT activity per day — when they actually chatted.
+
+    This is the chat-side counterpart to /users/timeline: it reports conversation
+    and message volume per day plus the first/last chat time, rather than logins.
+    """
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+    u = db.query(User).filter(User.id == userId).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    day_expr = func.date(ConversationRecord.created_at)
+    rows = (
+        db.query(
+            day_expr.label("day"),
+            func.count(ConversationRecord.id).label("conversations"),
+            func.coalesce(func.sum(ConversationRecord.prompt_count), 0).label("prompts"),
+            func.coalesce(func.sum(ConversationRecord.response_count), 0).label("responses"),
+            func.min(ConversationRecord.created_at).label("first_at"),
+            func.max(ConversationRecord.created_at).label("last_at"),
+            func.count(func.distinct(ConversationRecord.model_label)).label("models"),
+        )
+        .filter(
+            ConversationRecord.archived_at.is_(None),
+            ConversationRecord.provider == CHATGPT_PROVIDER,
+            ConversationRecord.owner_user_id == userId,
+            ConversationRecord.created_at >= start_dt,
+            ConversationRecord.created_at < end_exclusive,
+        )
+        .group_by(day_expr)
+        .order_by(day_expr.desc())
+        .all()
+    )
+
+    timeline = []
+    for day, convos, prompts, responses, first_at, last_at, models in rows:
+        convos = int(convos or 0)
+        prompts = int(prompts or 0)
+        responses = int(responses or 0)
+        timeline.append({
+            "date": day.isoformat() if hasattr(day, "isoformat") else str(day),
+            "conversations": convos,
+            "prompts": prompts,
+            "responses": responses,
+            "messages": prompts + responses,
+            "avgDepth": round(prompts / convos, 1) if convos else 0.0,
+            "models": int(models or 0),
+            "firstAt": first_at.isoformat() if first_at else None,
+            "lastAt": last_at.isoformat() if last_at else None,
+        })
+
+    return {
+        "success": True,
+        "user": {"userId": u.id, "name": u.name, "department": u.department, "avatar": u.avatar},
+        "totals": {
+            "days": len(timeline),
+            "conversations": sum(t["conversations"] for t in timeline),
+            "prompts": sum(t["prompts"] for t in timeline),
+            "messages": sum(t["messages"] for t in timeline),
+        },
+        "timeline": timeline,
+    }
+
+
+@router.get("/chatgpt/conversations")
+def chatgpt_conversations(
+    userId: int = Query(...),
+    date: Optional[str] = Query(None),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """The individual chats — title, time, model and depth — for a person/day."""
+    if date:
+        try:
+            day = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        start_dt = datetime.combine(day, datetime.min.time())
+        end_exclusive = start_dt + timedelta(days=1)
+    else:
+        start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    rows = (
+        db.query(ConversationRecord)
+        .filter(
+            ConversationRecord.archived_at.is_(None),
+            ConversationRecord.provider == CHATGPT_PROVIDER,
+            ConversationRecord.owner_user_id == userId,
+            ConversationRecord.created_at >= start_dt,
+            ConversationRecord.created_at < end_exclusive,
+        )
+        .order_by(ConversationRecord.created_at.asc())
+        .limit(limit)
+        .all()
+    )
+
+    conversations = [{
+        "conversationId": c.id,
+        "time": c.created_at.isoformat() if c.created_at else None,
+        "providerTime": c.provider_created_time.isoformat() if c.provider_created_time else None,
+        "title": (c.title or "Untitled chat")[:180],
+        "model": c.model_label,
+        "prompts": int(c.prompt_count or 0),
+        "responses": int(c.response_count or 0),
+        "messages": int(c.prompt_count or 0) + int(c.response_count or 0),
+        "url": c.conversation_url,
+        "pinned": bool(c.is_pinned),
+    } for c in rows]
+
+    return {
+        "success": True,
+        "count": len(conversations),
+        "totals": {
+            "conversations": len(conversations),
+            "prompts": sum(c["prompts"] for c in conversations),
+            "messages": sum(c["messages"] for c in conversations),
+        },
+        "conversations": conversations,
+    }
+
+
+@router.get("/chatgpt/conversation-messages")
+def chatgpt_conversation_messages(
+    conversationId: int = Query(...),
+    limit: int = Query(200, ge=1, le=500),
+    maxChars: int = Query(4000, ge=200, le=20000),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """The actual message thread for one conversation: prompts and responses.
+
+    Interleaved by sequence so it reads like the original chat. Long bodies are
+    truncated to keep the payload sane; ``truncated`` flags which were cut.
+    """
+    conv = db.query(ConversationRecord).filter(ConversationRecord.id == conversationId).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    prompts = (
+        db.query(ConversationPrompt)
+        .filter(ConversationPrompt.conversation_id == conversationId)
+        .order_by(ConversationPrompt.sequence_index.asc(), ConversationPrompt.id.asc())
+        .limit(limit)
+        .all()
+    )
+    responses = (
+        db.query(ConversationResponse)
+        .filter(ConversationResponse.conversation_id == conversationId)
+        .order_by(ConversationResponse.sequence_index.asc(), ConversationResponse.id.asc())
+        .limit(limit)
+        .all()
+    )
+
+    def clip(txt):
+        t = (txt or "").strip()
+        return (t[:maxChars], len(t) > maxChars, len(t))
+
+    messages = []
+    for p in prompts:
+        body, cut, full_len = clip(p.prompt_text)
+        messages.append({
+            "role": "user",
+            "sequence": int(p.sequence_index or 0),
+            "text": body,
+            "truncated": cut,
+            "length": full_len,
+            "time": (p.prompt_timestamp or p.created_at).isoformat() if (p.prompt_timestamp or p.created_at) else None,
+            "sortKey": (int(p.sequence_index or 0), 0, p.id),
+        })
+    for r in responses:
+        body, cut, full_len = clip(r.response_text)
+        messages.append({
+            "role": "assistant",
+            "sequence": int(r.sequence_index or 0),
+            "text": body,
+            "truncated": cut,
+            "length": full_len,
+            "time": r.created_at.isoformat() if r.created_at else None,
+            "sortKey": (int(r.sequence_index or 0), 1, r.id),
+        })
+
+    messages.sort(key=lambda m: m["sortKey"])
+    for m in messages:
+        m.pop("sortKey", None)
+
+    return {
+        "success": True,
+        "conversation": {
+            "conversationId": conv.id,
+            "title": (conv.title or "Untitled chat")[:180],
+            "model": conv.model_label,
+            "url": conv.conversation_url,
+            "time": conv.created_at.isoformat() if conv.created_at else None,
+        },
+        "count": len(messages),
+        "totals": {
+            "prompts": sum(1 for m in messages if m["role"] == "user"),
+            "responses": sum(1 for m in messages if m["role"] == "assistant"),
+            "emptyResponses": sum(1 for m in messages if m["role"] == "assistant" and not m["text"]),
+        },
+        "messages": messages,
+    }
+
+
 @router.get("/chatgpt/users")
 def chatgpt_users(
     start: Optional[str] = Query(None),
@@ -1005,7 +1281,10 @@ def chatgpt_users(
             User.department,
             func.count(ConversationRecord.id).label("conversations"),
             func.coalesce(func.sum(ConversationRecord.prompt_count), 0).label("prompts"),
+            func.coalesce(func.sum(ConversationRecord.response_count), 0).label("responses"),
             func.max(ConversationRecord.created_at).label("last_active"),
+            func.min(ConversationRecord.created_at).label("first_active"),
+            func.count(func.distinct(func.date(ConversationRecord.created_at))).label("days"),
         )
         .join(ConversationRecord, ConversationRecord.owner_user_id == User.id)
         .filter(
@@ -1025,9 +1304,10 @@ def chatgpt_users(
     )
 
     users = []
-    for rank, (uid, name, avatar, dept, conversations, prompts, last_active) in enumerate(rows, start=1):
+    for rank, (uid, name, avatar, dept, conversations, prompts, responses, last_active, first_active, days) in enumerate(rows, start=1):
         conversations = int(conversations)
         prompts = int(prompts)
+        responses = int(responses)
         users.append({
             "rank": rank,
             "userId": uid,
@@ -1036,11 +1316,25 @@ def chatgpt_users(
             "department": dept or "Unassigned",
             "conversations": conversations,
             "prompts": prompts,
+            "responses": responses,
+            "messages": prompts + responses,
             "avgDepth": round(prompts / conversations, 1) if conversations else 0.0,
+            "activeDays": int(days or 0),
+            "firstActive": first_active.isoformat() if first_active else None,
             "lastActive": last_active.isoformat() if last_active else None,
         })
 
-    return {"success": True, "users": users}
+    return {
+        "success": True,
+        "count": len(users),
+        "totals": {
+            "users": len(users),
+            "conversations": sum(u["conversations"] for u in users),
+            "prompts": sum(u["prompts"] for u in users),
+            "messages": sum(u["messages"] for u in users),
+        },
+        "users": users,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1229,10 +1523,6 @@ def cost_breakdown(
 # ---------------------------------------------------------------------------
 # User Intelligence  (real presence data from user_activities)
 # ---------------------------------------------------------------------------
-# A user is "active on a day" when a row exists with a login or heartbeats.
-_ACTIVE_ROW = or_(UserActivity.login_time.isnot(None), UserActivity.heartbeat_count > 0)
-
-
 def _active_users_between(db: Session, d_start, d_end_inclusive, department: Optional[str]) -> int:
     q = (
         db.query(func.count(func.distinct(UserActivity.user_id)))
@@ -1647,7 +1937,455 @@ def _norm_prompt(text: Optional[str]) -> str:
     return " ".join(str(text).lower().split())[:400]
 
 
-def _gen_prompt_query(db: Session, start_dt, end_exclusive, department: Optional[str]):
+@router.get("/users/active")
+def users_active(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Who was actually active in the window — the drill-down behind the Active Users KPI."""
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+    q = (
+        db.query(
+            User.id, User.name, User.avatar, User.department, User.email,
+            func.count(func.distinct(UserActivity.date)).label("active_days"),
+            func.coalesce(func.sum(UserActivity.total_session_duration), 0).label("session_secs"),
+            func.coalesce(func.sum(UserActivity.active_time), 0).label("active_secs"),
+            func.max(UserActivity.last_seen).label("last_seen"),
+        )
+        .join(UserActivity, UserActivity.user_id == User.id)
+        .filter(
+            User.is_deleted.is_(False),
+            UserActivity.date >= start_dt.date(),
+            UserActivity.date < end_exclusive.date(),
+            _ACTIVE_ROW,
+        )
+    )
+    if department and department != "all":
+        q = q.filter(User.department == department)
+    rows = (
+        q.group_by(User.id, User.name, User.avatar, User.department, User.email)
+        .order_by(func.count(func.distinct(UserActivity.date)).desc())
+        .limit(limit)
+        .all()
+    )
+    users = []
+    for rank, (uid, name, avatar, dept, email, days, secs, active_secs, last_seen) in enumerate(rows, start=1):
+        users.append({
+            "rank": rank,
+            "userId": uid,
+            "name": name or "Unknown",
+            "avatar": avatar,
+            "department": dept or "Unassigned",
+            "email": email,
+            "activeDays": int(days or 0),
+            "sessionMinutes": round(float(secs or 0) / 60.0, 1),
+            "activeMinutes": round(float(active_secs or 0) / 60.0, 1),
+            "lastSeen": last_seen.isoformat() if last_seen else None,
+        })
+    return {"success": True, "count": len(users), "users": users}
+
+
+@router.get("/users/contributors")
+def users_contributors(
+    metric: str = Query("generations"),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+    hour: Optional[int] = Query(None, ge=0, le=23),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Who produced a given output KPI — the drill behind Generations / Videos / Images / Cost.
+
+    Every row carries all four measures so the same payload backs any of the
+    cards; `metric` only decides the sort order. `provider` scopes it to one
+    tool (e.g. 'kling'), and `hour` (0-23, IST) scopes it to one hour-of-day so
+    the peak-usage bars can drill to the people behind them.
+    """
+    metric = (metric or "generations").strip().lower()
+    if metric not in {"generations", "videos", "images", "credits", "cost"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported metric '{metric}'")
+
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+    rate_expr, currency, _default = _credit_rate_context(db)
+
+    video_case = case(
+        (and_(GenerationRecord.duration_label.isnot(None), GenerationRecord.duration_label != ""), 1),
+        else_=0,
+    )
+    q = _with_cost_join(
+        db.query(GenerationRecord)
+        .filter(
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.created_at >= start_dt,
+            GenerationRecord.created_at < end_exclusive,
+            GenerationRecord.owner_user_id.isnot(None),
+        )
+        .join(User, GenerationRecord.owner_user_id == User.id)
+    )
+    if department and department != "all":
+        q = q.filter(User.department == department)
+    if provider and provider != "all":
+        q = q.filter(GenerationRecord.provider == provider)
+    if hour is not None:
+        # Match the IST bucketing used by the peak-usage chart.
+        q = q.filter(
+            func.extract("hour", GenerationRecord.created_at + text("interval '330 minutes'")) == hour
+        )
+
+    gen_count = func.count(GenerationRecord.id)
+    video_count = func.coalesce(func.sum(video_case), 0)
+    credit_sum = func.coalesce(func.sum(GenerationRecord.credits_burned), 0)
+    cost_sum = _cost_sum_expr(rate_expr)
+    first_at = func.min(GenerationRecord.created_at)
+    last_at = func.max(GenerationRecord.created_at)
+    active_days = func.count(func.distinct(func.date(GenerationRecord.created_at)))
+
+    order_by = {
+        "generations": gen_count,
+        "videos": video_count,
+        "images": gen_count - video_count,
+        "credits": credit_sum,
+        "cost": cost_sum,
+    }[metric]
+
+    rows = (
+        q.with_entities(
+            User.id, User.name, User.avatar, User.department,
+            gen_count.label("gens"), video_count.label("videos"),
+            credit_sum.label("credits"), cost_sum.label("cost"),
+            active_days.label("days"), first_at.label("first_at"), last_at.label("last_at"),
+        )
+        .group_by(User.id, User.name, User.avatar, User.department)
+        .order_by(order_by.desc())
+        .limit(limit)
+        .all()
+    )
+
+    users = []
+    total_gens = 0
+    for rank, (uid, name, avatar, dept, gens, videos, credits, cost, days, first_at_v, last_at_v) in enumerate(rows, start=1):
+        gens = int(gens or 0)
+        videos = int(videos or 0)
+        total_gens += gens
+        users.append({
+            "rank": rank,
+            "userId": uid,
+            "name": name or "Unknown",
+            "avatar": avatar,
+            "department": dept or "Unassigned",
+            "generations": gens,
+            "videos": videos,
+            "images": gens - videos,
+            "credits": round(float(credits or 0), 2),
+            "cost": round(float(cost or 0), 2),
+            "activeDays": int(days or 0),
+            "firstAt": first_at_v.isoformat() if first_at_v else None,
+            "lastAt": last_at_v.isoformat() if last_at_v else None,
+        })
+    for u in users:
+        u["sharePct"] = round(u["generations"] / total_gens * 100, 1) if total_gens else 0.0
+
+    return {
+        "success": True,
+        "metric": metric,
+        "provider": provider or "all",
+        "hour": hour,
+        "timezone": LOCAL_TZ_LABEL,
+        "currency": currency,
+        "count": len(users),
+        "totals": {
+            "generations": total_gens,
+            "credits": round(sum(u["credits"] for u in users), 2),
+            "cost": round(sum(u["cost"] for u in users), 2),
+        },
+        "users": users,
+    }
+
+
+@router.get("/users/generation-timeline")
+def user_generation_timeline(
+    userId: int = Query(...),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    provider: Optional[str] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """A single user's timeline of the days they actually generated on.
+
+    This is the output-side counterpart to /users/timeline: instead of logins it
+    reports, per day, what the person produced and what it cost — the level-3
+    drill when you enter from Generations / Videos / Images / Cost.
+    """
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+    u = db.query(User).filter(User.id == userId).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    rate_expr, currency, _default = _credit_rate_context(db)
+    day_expr = func.date(GenerationRecord.created_at)
+    video_case = case(
+        (and_(GenerationRecord.duration_label.isnot(None), GenerationRecord.duration_label != ""), 1),
+        else_=0,
+    )
+
+    base_q = db.query(GenerationRecord).filter(
+        GenerationRecord.archived_at.is_(None),
+        GenerationRecord.owner_user_id == userId,
+        GenerationRecord.created_at >= start_dt,
+        GenerationRecord.created_at < end_exclusive,
+    )
+    if provider and provider != "all":
+        base_q = base_q.filter(GenerationRecord.provider == provider)
+
+    rows = (
+        _with_cost_join(base_q)
+        .with_entities(
+            day_expr.label("day"),
+            func.count(GenerationRecord.id).label("gens"),
+            func.coalesce(func.sum(video_case), 0).label("videos"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+            _cost_sum_expr(rate_expr).label("cost"),
+            func.min(GenerationRecord.created_at).label("first_at"),
+            func.max(GenerationRecord.created_at).label("last_at"),
+            func.count(func.distinct(GenerationRecord.model_label)).label("models"),
+        )
+        .group_by(day_expr)
+        .order_by(day_expr.desc())
+        .all()
+    )
+
+    timeline = []
+    for day, gens, videos, credits, cost, first_at, last_at, models in rows:
+        gens = int(gens or 0)
+        videos = int(videos or 0)
+        credits = float(credits or 0)
+        timeline.append({
+            "date": day.isoformat() if hasattr(day, "isoformat") else str(day),
+            "generations": gens,
+            "videos": videos,
+            "images": gens - videos,
+            "credits": round(credits, 2),
+            "cost": round(float(cost or 0), 2),
+            "avgCredits": round(credits / gens, 2) if gens else 0.0,
+            "models": int(models or 0),
+            "firstAt": first_at.isoformat() if first_at else None,
+            "lastAt": last_at.isoformat() if last_at else None,
+        })
+
+    return {
+        "success": True,
+        "currency": currency,
+        "provider": provider or "all",
+        "user": {
+            "userId": u.id, "name": u.name, "email": u.email,
+            "department": u.department, "avatar": u.avatar,
+        },
+        "totals": {
+            "days": len(timeline),
+            "generations": sum(t["generations"] for t in timeline),
+            "videos": sum(t["videos"] for t in timeline),
+            "images": sum(t["images"] for t in timeline),
+            "credits": round(sum(t["credits"] for t in timeline), 2),
+            "cost": round(sum(t["cost"] for t in timeline), 2),
+        },
+        "timeline": timeline,
+    }
+
+
+@router.get("/users/timeline")
+def user_timeline(
+    userId: int = Query(...),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """A single user's login/session timeline — when they logged in and for how long."""
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+    u = db.query(User).filter(User.id == userId).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    rows = (
+        db.query(UserActivity)
+        .filter(
+            UserActivity.user_id == userId,
+            UserActivity.date >= start_dt.date(),
+            UserActivity.date < end_exclusive.date(),
+        )
+        .order_by(UserActivity.date.desc())
+        .all()
+    )
+    timeline = [{
+        "date": r.date.isoformat() if r.date else None,
+        "loginTime": r.login_time.isoformat() if r.login_time else None,
+        "logoutTime": r.logout_time.isoformat() if r.logout_time else None,
+        "sessionMinutes": round((r.total_session_duration or 0) / 60.0, 1),
+        "activeMinutes": round((r.active_time or 0) / 60.0, 1),
+        "idleMinutes": round((r.idle_time or 0) / 60.0, 1),
+        "status": (r.status.value if hasattr(r.status, "value") else r.status) if r.status else None,
+        "heartbeats": int(r.heartbeat_count or 0),
+        "lastSeen": r.last_seen.isoformat() if r.last_seen else None,
+    } for r in rows]
+
+    return {
+        "success": True,
+        "user": {
+            "userId": u.id, "name": u.name, "email": u.email,
+            "department": u.department, "avatar": u.avatar,
+        },
+        "totals": {
+            "days": len(timeline),
+            "sessionMinutes": round(sum(t["sessionMinutes"] for t in timeline), 1),
+            "activeMinutes": round(sum(t["activeMinutes"] for t in timeline), 1),
+        },
+        "timeline": timeline,
+    }
+
+
+@router.get("/users/day")
+def user_day(
+    userId: int = Query(...),
+    date: str = Query(...),
+    provider: Optional[str] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """One person, one day: their session, task activity, tool usage and generations."""
+    try:
+        day = datetime.strptime(date, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+
+    u = db.query(User).filter(User.id == userId).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    day_start = datetime.combine(day, datetime.min.time())
+    day_end = day_start + timedelta(days=1)
+    enum_val = lambda v: (v.value if hasattr(v, "value") else v) if v is not None else None
+
+    # 1) Session / presence for the day
+    act = db.query(UserActivity).filter(UserActivity.user_id == userId, UserActivity.date == day).first()
+    activity = None
+    if act:
+        activity = {
+            "loginTime": act.login_time.isoformat() if act.login_time else None,
+            "logoutTime": act.logout_time.isoformat() if act.logout_time else None,
+            "sessionMinutes": round((act.total_session_duration or 0) / 60.0, 1),
+            "activeMinutes": round((act.active_time or 0) / 60.0, 1),
+            "idleMinutes": round((act.idle_time or 0) / 60.0, 1),
+            "status": enum_val(act.status),
+            "heartbeats": int(act.heartbeat_count or 0),
+        }
+
+    # 2) Tasks this person created that day
+    tasks_created = [{
+        "taskNumber": t.task_number,
+        "title": t.title,
+        "status": enum_val(t.status),
+        "priority": enum_val(t.priority),
+        "createdAt": t.created_at.isoformat() if t.created_at else None,
+    } for t in (
+        db.query(Task)
+        .filter(Task.creator_id == userId, Task.created_at >= day_start, Task.created_at < day_end,
+                Task.is_deleted.is_(False))
+        .order_by(Task.created_at.asc()).limit(100).all()
+    )]
+
+    # 3) What they did to tasks that day (status history is the real action log)
+    task_actions = [{
+        "time": h.timestamp.isoformat() if h.timestamp else None,
+        "action": h.action,
+        "statusTo": h.status_to,
+        "taskNumber": t.task_number,
+        "title": t.title,
+    } for h, t in (
+        db.query(TaskStatusHistory, Task)
+        .join(Task, TaskStatusHistory.task_id == Task.id)
+        .filter(TaskStatusHistory.user_id == userId,
+                TaskStatusHistory.timestamp >= day_start, TaskStatusHistory.timestamp < day_end)
+        .order_by(TaskStatusHistory.timestamp.asc()).limit(100).all()
+    )]
+
+    # 4) Tool usage that day (credits bounded so garbage rows don't skew the day)
+    sane = case(
+        (ITPortalToolUsageEvent.credits_burned.between(0, MAX_SANE_KLING_CREDITS), ITPortalToolUsageEvent.credits_burned),
+        else_=0,
+    )
+    tool_usage = [{
+        "tool": name or "Unknown",
+        "events": int(cnt),
+        "credits": round(float(cr or 0), 1),
+    } for name, cnt, cr in (
+        db.query(ITPortalTool.name, func.count(ITPortalToolUsageEvent.id), func.coalesce(func.sum(sane), 0))
+        .join(ITPortalToolUsageEvent, ITPortalToolUsageEvent.tool_id == ITPortalTool.id)
+        .filter(ITPortalToolUsageEvent.user_id == userId,
+                ITPortalToolUsageEvent.created_at >= day_start, ITPortalToolUsageEvent.created_at < day_end)
+        .group_by(ITPortalTool.name)
+        .order_by(func.count(ITPortalToolUsageEvent.id).desc()).all()
+    )]
+
+    # 5) Generations that day. Sourced from GenerationRecord — the same table the
+    #    executive KPIs and the generation timeline count, so levels 3 and 4
+    #    reconcile. (Usage events above stay event-level: they can outnumber or
+    #    undercount records, so they drive tool activity, not output totals.)
+    gen_day_q = db.query(GenerationRecord).filter(
+        GenerationRecord.archived_at.is_(None),
+        GenerationRecord.owner_user_id == userId,
+        GenerationRecord.created_at >= day_start,
+        GenerationRecord.created_at < day_end,
+    )
+    if provider and provider != "all":
+        gen_day_q = gen_day_q.filter(GenerationRecord.provider == provider)
+    gen_total, gen_credits = (
+        gen_day_q.with_entities(
+            func.count(GenerationRecord.id),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0),
+        ).first() or (0, 0)
+    )
+    GEN_ROW_LIMIT = 200
+    generations = [{
+        "time": g.created_at.isoformat() if g.created_at else None,
+        "model": g.model_label,
+        "duration": g.duration_label,
+        "resolution": g.resolution_label,
+        "credits": round(float(g.credits_burned or 0), 1) if (g.credits_burned or 0) <= MAX_SANE_KLING_CREDITS else None,
+        "prompt": (g.prompt_text or "")[:220],
+    } for g in (
+        gen_day_q.order_by(GenerationRecord.created_at.asc()).limit(GEN_ROW_LIMIT).all()
+    )]
+
+    return {
+        "success": True,
+        "date": day.isoformat(),
+        "user": {"userId": u.id, "name": u.name, "email": u.email, "department": u.department, "avatar": u.avatar},
+        "activity": activity,
+        "tasksCreated": tasks_created,
+        "taskActions": task_actions,
+        "toolUsage": tool_usage,
+        "generations": generations,
+        # Rows are capped for payload size; the counts below are the true totals.
+        "generationsTruncated": int(gen_total or 0) > len(generations),
+        "totals": {
+            "tasksCreated": len(tasks_created),
+            "taskActions": len(task_actions),
+            "generations": int(gen_total or 0),
+            "credits": round(float(gen_credits or 0), 1),
+            "toolEvents": sum(t["events"] for t in tool_usage),
+        },
+    }
+
+
+def _gen_prompt_query(db: Session, start_dt, end_exclusive, department: Optional[str], user: Optional[int] = None):
     """Generation records that carry a prompt, in-window, non-archived."""
     q = (
         db.query(GenerationRecord)
@@ -1661,7 +2399,370 @@ def _gen_prompt_query(db: Session, start_dt, end_exclusive, department: Optional
     )
     if department and department != "all":
         q = q.join(User, GenerationRecord.owner_user_id == User.id).filter(User.department == department)
+    if user:
+        q = q.filter(GenerationRecord.owner_user_id == user)
     return q
+
+
+def _prompt_norm():
+    """Normalised prompt text — the same key prompts_summary counts as 'unique'."""
+    return func.lower(func.trim(GenerationRecord.prompt_text))
+
+
+@router.get("/prompts/contributors")
+def prompts_contributors(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Per-person prompt volume, uniqueness and reuse — the drill behind the prompt KPIs.
+
+    Reuse is computed the same way as the KPI card: 1 - unique/total, so a person
+    who leans on a small set of proven prompts shows a high rate.
+    """
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+    norm = _prompt_norm()
+
+    rows = (
+        _gen_prompt_query(db, start_dt, end_exclusive, department)
+        .join(User, GenerationRecord.owner_user_id == User.id)
+        .with_entities(
+            User.id, User.name, User.avatar, User.department,
+            func.count(GenerationRecord.id).label("total"),
+            func.count(func.distinct(norm)).label("uniq"),
+            func.sum(case((GenerationRecord.capture_status.in_(SUCCESS_STATUSES), 1), else_=0)).label("success"),
+            func.avg(func.length(GenerationRecord.prompt_text)).label("avg_len"),
+            func.count(func.distinct(func.date(GenerationRecord.created_at))).label("days"),
+        )
+        .group_by(User.id, User.name, User.avatar, User.department)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .limit(limit)
+        .all()
+    )
+
+    users = []
+    for rank, (uid, name, avatar, dept, total, uniq, success, avg_len, days) in enumerate(rows, start=1):
+        total = int(total or 0)
+        uniq = int(uniq or 0)
+        users.append({
+            "rank": rank,
+            "userId": uid,
+            "name": name or "Unknown",
+            "avatar": avatar,
+            "department": dept or "Unassigned",
+            "prompts": total,
+            "uniquePrompts": uniq,
+            "reusedPrompts": total - uniq,
+            "reuseRate": round((1 - (uniq / total)) * 100, 1) if total else 0.0,
+            "successPct": round((int(success or 0) / total) * 100, 1) if total else 0.0,
+            "avgLength": int(round(float(avg_len or 0))),
+            "activeDays": int(days or 0),
+        })
+
+    # Unique counts are per-person; summing them would double-count a prompt two
+    # people both used. Recompute the true distinct across the whole scope.
+    overall_unique = int(
+        _gen_prompt_query(db, start_dt, end_exclusive, department)
+        .with_entities(func.count(func.distinct(norm)))
+        .scalar() or 0
+    )
+    overall_total = int(
+        _gen_prompt_query(db, start_dt, end_exclusive, department)
+        .with_entities(func.count(GenerationRecord.id))
+        .scalar() or 0
+    )
+    return {
+        "success": True,
+        "count": len(users),
+        "totals": {
+            "prompts": overall_total,
+            "uniquePrompts": overall_unique,
+            "reuseRate": round((1 - (overall_unique / overall_total)) * 100, 1) if overall_total else 0.0,
+        },
+        "users": users,
+    }
+
+
+@router.get("/prompts/user-timeline")
+def prompts_user_timeline(
+    userId: int = Query(...),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """One person's prompt activity per day — level 3 of the prompt drill."""
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+    u = db.query(User).filter(User.id == userId).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    norm = _prompt_norm()
+    day_expr = func.date(GenerationRecord.created_at)
+    rows = (
+        _gen_prompt_query(db, start_dt, end_exclusive, None)
+        .filter(GenerationRecord.owner_user_id == userId)
+        .with_entities(
+            day_expr.label("day"),
+            func.count(GenerationRecord.id).label("total"),
+            func.count(func.distinct(norm)).label("uniq"),
+            func.sum(case((GenerationRecord.capture_status.in_(SUCCESS_STATUSES), 1), else_=0)).label("success"),
+            func.avg(func.length(GenerationRecord.prompt_text)).label("avg_len"),
+        )
+        .group_by(day_expr)
+        .order_by(day_expr.desc())
+        .all()
+    )
+
+    timeline = []
+    for day, total, uniq, success, avg_len in rows:
+        total = int(total or 0)
+        uniq = int(uniq or 0)
+        timeline.append({
+            "date": day.isoformat() if hasattr(day, "isoformat") else str(day),
+            "prompts": total,
+            "uniquePrompts": uniq,
+            "reusedPrompts": total - uniq,
+            "reuseRate": round((1 - (uniq / total)) * 100, 1) if total else 0.0,
+            "successPct": round((int(success or 0) / total) * 100, 1) if total else 0.0,
+            "avgLength": int(round(float(avg_len or 0))),
+        })
+
+    return {
+        "success": True,
+        "user": {"userId": u.id, "name": u.name, "department": u.department, "avatar": u.avatar},
+        "totals": {
+            "days": len(timeline),
+            "prompts": sum(t["prompts"] for t in timeline),
+            # Distinct across the whole window — NOT the sum of the daily uniques,
+            # which counts a prompt reused on another day twice.
+            "uniquePrompts": int(
+                _gen_prompt_query(db, start_dt, end_exclusive, None)
+                .filter(GenerationRecord.owner_user_id == userId)
+                .with_entities(func.count(func.distinct(norm)))
+                .scalar() or 0
+            ),
+        },
+        "timeline": timeline,
+    }
+
+
+@router.get("/prompts/list")
+def prompts_list(
+    userId: Optional[int] = Query(None),
+    date: Optional[str] = Query(None),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    repeatedOnly: bool = Query(False),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """The actual prompt texts — the deepest level of the prompt drill.
+
+    Grouped by normalised text so a prompt used ten times is one row with a use
+    count, which is what makes ``repeatedOnly`` meaningful for the reuse drill.
+    """
+    if date:
+        try:
+            day = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        start_dt = datetime.combine(day, datetime.min.time())
+        end_exclusive = start_dt + timedelta(days=1)
+    else:
+        start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    norm = _prompt_norm()
+    q = _gen_prompt_query(db, start_dt, end_exclusive, department)
+    if userId is not None:
+        q = q.filter(GenerationRecord.owner_user_id == userId)
+
+    uses = func.count(GenerationRecord.id)
+    rows = (
+        q.with_entities(
+            norm.label("norm"),
+            func.min(GenerationRecord.prompt_text).label("text"),
+            uses.label("uses"),
+            func.sum(case((GenerationRecord.capture_status.in_(SUCCESS_STATUSES), 1), else_=0)).label("success"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+            func.min(GenerationRecord.created_at).label("first_at"),
+            func.max(GenerationRecord.created_at).label("last_at"),
+            func.count(func.distinct(GenerationRecord.owner_user_id)).label("people"),
+        )
+        .group_by(norm)
+        .having(uses > 1 if repeatedOnly else literal(True))
+        .order_by(uses.desc(), func.max(GenerationRecord.created_at).desc())
+        .limit(limit)
+        .all()
+    )
+
+    prompts = []
+    for rank, (_n, text, n_uses, success, credits, first_at, last_at, people) in enumerate(rows, start=1):
+        n_uses = int(n_uses or 0)
+        prompts.append({
+            "rank": rank,
+            "prompt": (text or "").strip(),
+            "promptHash": _prompt_hash(text),
+            "uses": n_uses,
+            "successPct": round((int(success or 0) / n_uses) * 100, 1) if n_uses else 0.0,
+            "credits": round(float(credits or 0), 2),
+            "people": int(people or 0),
+            "length": len((text or "").strip()),
+            "firstAt": first_at.isoformat() if first_at else None,
+            "lastAt": last_at.isoformat() if last_at else None,
+        })
+
+    return {
+        "success": True,
+        "count": len(prompts),
+        "repeatedOnly": repeatedOnly,
+        "totals": {"uses": sum(p["uses"] for p in prompts), "distinct": len(prompts)},
+        "prompts": prompts,
+    }
+
+
+def _prompt_hash(text: Optional[str]) -> str:
+    """Stable id for a prompt, keyed on the same normalisation golden uses."""
+    import hashlib
+
+    return hashlib.md5(_norm_prompt(text).encode("utf-8")).hexdigest()
+
+
+def _asset_urls(record) -> dict:
+    """Best available playable/viewable URLs for a generation."""
+    url = record.canonical_asset_url
+    thumb = None
+    md = record.metadata_json if isinstance(record.metadata_json, dict) else {}
+    assets = md.get("mediaAssets")
+    if isinstance(assets, list):
+        for a in assets:
+            if not isinstance(a, dict):
+                continue
+            if not url:
+                url = a.get("permanentUrl") or a.get("storageUrl") or a.get("url") or None
+            key = (a.get("key") or "").lower()
+            mime = (a.get("mimeType") or "").lower()
+            if thumb is None and ("thumb" in key or "cover" in key or mime.startswith("image/")):
+                thumb = a.get("permanentUrl") or a.get("storageUrl") or a.get("url") or None
+    return {"assetUrl": url, "thumbnailUrl": thumb}
+
+
+@router.get("/prompts/detail")
+def prompt_detail(
+    hash: str = Query(..., min_length=8, max_length=64),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    limit: int = Query(120, ge=1, le=300),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Everything behind one prompt: who used it and what it produced.
+
+    A reused prompt often spans several people, so this returns the per-person
+    breakdown alongside the individual generations (with asset URLs) so the
+    actual output can be watched.
+    """
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    q = (
+        db.query(GenerationRecord, User)
+        .join(User, GenerationRecord.owner_user_id == User.id)
+        .filter(
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.created_at >= start_dt,
+            GenerationRecord.created_at < end_exclusive,
+            GenerationRecord.prompt_text.isnot(None),
+            GenerationRecord.prompt_text != "",
+        )
+    )
+    if department and department != "all":
+        q = q.filter(User.department == department)
+
+    matches = []
+    for rec, usr in q.order_by(GenerationRecord.created_at.asc()).limit(GOLDEN_FETCH_CAP).all():
+        if _prompt_hash(rec.prompt_text) == hash:
+            matches.append((rec, usr))
+
+    if not matches:
+        raise HTTPException(status_code=404, detail="Prompt not found in this period")
+
+    by_user: dict[int, dict] = {}
+    generations = []
+    total_credits = 0.0
+    success_total = 0
+
+    for rec, usr in matches:
+        ok = rec.capture_status in SUCCESS_STATUSES
+        credits = float(rec.credits_burned or 0)
+        total_credits += credits
+        success_total += 1 if ok else 0
+
+        u = by_user.setdefault(usr.id, {
+            "userId": usr.id, "name": usr.name or "Unknown", "avatar": usr.avatar,
+            "department": usr.department or "Unassigned",
+            "uses": 0, "success": 0, "credits": 0.0, "firstAt": None, "lastAt": None,
+        })
+        u["uses"] += 1
+        u["success"] += 1 if ok else 0
+        u["credits"] += credits
+        ts = rec.created_at
+        if ts:
+            if u["firstAt"] is None or ts < u["firstAt"]:
+                u["firstAt"] = ts
+            if u["lastAt"] is None or ts > u["lastAt"]:
+                u["lastAt"] = ts
+
+        generations.append({
+            "generationId": rec.id,
+            "time": rec.created_at.isoformat() if rec.created_at else None,
+            "userId": usr.id,
+            "userName": usr.name or "Unknown",
+            "model": rec.model_label,
+            "duration": rec.duration_label,
+            "resolution": rec.resolution_label,
+            "credits": round(credits, 2),
+            "status": rec.capture_status,
+            "success": ok,
+            **_asset_urls(rec),
+        })
+
+    users = []
+    for u in by_user.values():
+        users.append({
+            **u,
+            "credits": round(u["credits"], 2),
+            "successPct": round((u["success"] / u["uses"]) * 100, 1) if u["uses"] else 0.0,
+            "firstAt": u["firstAt"].isoformat() if u["firstAt"] else None,
+            "lastAt": u["lastAt"].isoformat() if u["lastAt"] else None,
+        })
+    users.sort(key=lambda x: -x["uses"])
+    for i, u in enumerate(users, start=1):
+        u["rank"] = i
+
+    generations.sort(key=lambda g: g["time"] or "", reverse=True)
+    uses = len(matches)
+
+    return {
+        "success": True,
+        "promptHash": hash,
+        "prompt": matches[0][0].prompt_text or "",
+        "totals": {
+            "uses": uses,
+            "people": len(users),
+            "successPct": round((success_total / uses) * 100, 1) if uses else 0.0,
+            "credits": round(total_credits, 2),
+            "withAsset": sum(1 for g in generations if g["assetUrl"]),
+        },
+        "users": users,
+        "generations": generations[:limit],
+        "generationsTruncated": len(generations) > limit,
+    }
 
 
 @router.get("/prompts/summary")
@@ -1859,6 +2960,7 @@ def prompts_golden(
                 "uses": 0, "success": 0, "owners": set(), "credits": 0.0,
                 "creator": {"name": name or "Unknown", "avatar": avatar, "userId": owner_id},
                 "model": model_label, "depts": Counter(), "sample": (prompt_text or "")[:280],
+                "hash": _prompt_hash(prompt_text),
             }
             agg[norm] = a
         a["uses"] += 1
@@ -1882,6 +2984,7 @@ def prompts_golden(
         top_dept = a["depts"].most_common(1)[0][0] if a["depts"] else "Unassigned"
         golden.append({
             "prompt": a["sample"],
+            "promptHash": a["hash"],
             "uses": a["uses"],
             "successRate": success_rate,
             "uniqueUsers": len(a["owners"]),
@@ -1999,6 +3102,163 @@ def _task_dept(q, department):
     return q
 
 
+def _completed_at_expr():
+    """When a task was completed, resilient to the unset-``completed_at`` gap.
+
+    Most COMPLETED rows never had ``completed_at`` written, so relying on that
+    column alone reports a ~0% completion rate. The status-history row that
+    moved the task to 'completed' carries the real timestamp, so fall back to it.
+    """
+    hist = (
+        select(func.min(TaskStatusHistory.timestamp))
+        .where(
+            TaskStatusHistory.task_id == Task.id,
+            func.lower(TaskStatusHistory.status_to) == "completed",
+        )
+        .correlate(Task)
+        .scalar_subquery()
+    )
+    return func.coalesce(Task.completed_at, hist)
+
+
+@router.get("/tasks/contributors")
+def tasks_contributors(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    priority: Optional[str] = Query(None),
+    date: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Per-person task load: what they CREATED vs what they RECEIVED.
+
+    'Created' is authorship (``Task.creator_id``); 'received' is assignment
+    (``TaskParticipant`` with the assignee role). Both carry their own completed
+    counts, so a person who raises a lot but finishes little is visible.
+    ``date`` narrows to a single day for the created-vs-completed drill;
+    ``priority`` narrows to one priority band.
+    """
+    if date:
+        try:
+            day = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        start_dt = datetime.combine(day, datetime.min.time())
+        end_exclusive = start_dt + timedelta(days=1)
+    else:
+        start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    completed_at = _completed_at_expr()
+    in_window = and_(completed_at.isnot(None), completed_at >= start_dt, completed_at < end_exclusive)
+    is_done = Task.status == TaskStatus.COMPLETED
+
+    def scoped(q):
+        q = _task_dept(q, department)
+        if priority and priority != "all":
+            q = q.filter(func.lower(func.cast(Task.priority, String)) == priority.lower())
+        return q
+
+    # --- Created by each person, in window ---
+    created_q = scoped(
+        db.query(
+            Task.creator_id.label("uid"),
+            func.count(Task.id).label("created"),
+            func.sum(case((and_(is_done, in_window), 1), else_=0)).label("created_done"),
+        ).filter(
+            Task.is_deleted.is_(False),
+            Task.created_at >= start_dt,
+            Task.created_at < end_exclusive,
+        )
+    ).group_by(Task.creator_id)
+
+    # --- Received (assigned to) each person, in window ---
+    received_q = scoped(
+        db.query(
+            TaskParticipant.user_id.label("uid"),
+            func.count(func.distinct(Task.id)).label("received"),
+            func.count(func.distinct(case((and_(is_done, in_window), Task.id)))).label("received_done"),
+        )
+        .join(Task, TaskParticipant.task_id == Task.id)
+        .filter(
+            Task.is_deleted.is_(False),
+            TaskParticipant.role == ParticipantRole.ASSIGNEE,
+            TaskParticipant.is_active.is_(True),
+            Task.created_at >= start_dt,
+            Task.created_at < end_exclusive,
+        )
+    ).group_by(TaskParticipant.user_id)
+
+    agg: dict[int, dict] = {}
+    for uid, created, created_done in created_q.all():
+        if uid is None:
+            continue
+        agg.setdefault(uid, {}).update(created=int(created or 0), createdCompleted=int(created_done or 0))
+    for uid, received, received_done in received_q.all():
+        if uid is None:
+            continue
+        agg.setdefault(uid, {}).update(received=int(received or 0), receivedCompleted=int(received_done or 0))
+    if not agg:
+        return {"success": True, "count": 0, "totals": {}, "users": [], "period": {"start": str(start_dt.date()), "end": str((end_exclusive - timedelta(days=1)).date())}}
+
+    people = {
+        u.id: u for u in db.query(User).filter(User.id.in_(list(agg.keys()))).all()
+    }
+    users = []
+    for uid, v in agg.items():
+        u = people.get(uid)
+        created = v.get("created", 0)
+        received = v.get("received", 0)
+        c_done = v.get("createdCompleted", 0)
+        r_done = v.get("receivedCompleted", 0)
+        users.append({
+            "userId": uid,
+            "name": (u.name if u else None) or "Unknown",
+            "avatar": u.avatar if u else None,
+            "department": (u.department if u else None) or "Unassigned",
+            "created": created,
+            "createdCompleted": c_done,
+            "received": received,
+            "receivedCompleted": r_done,
+            "total": created + received,
+            "completed": c_done + r_done,
+            "completionRate": round((r_done / received) * 100, 1) if received else 0.0,
+        })
+    users.sort(key=lambda x: (-x["total"], x["name"]))
+    for i, u in enumerate(users[:limit], start=1):
+        u["rank"] = i
+    users = users[:limit]
+
+    # Totals are DISTINCT task counts, not column sums: one task has a creator
+    # and may have several assignees, so summing the per-person rows would
+    # double-count it and drift away from the KPI card.
+    base = scoped(
+        db.query(Task).filter(
+            Task.is_deleted.is_(False),
+            Task.created_at >= start_dt,
+            Task.created_at < end_exclusive,
+        )
+    )
+    total_created = int(base.with_entities(func.count(Task.id)).scalar() or 0)
+    total_completed = int(
+        base.filter(is_done, in_window).with_entities(func.count(Task.id)).scalar() or 0
+    )
+
+    return {
+        "success": True,
+        "count": len(users),
+        "priority": priority or "all",
+        "period": {"start": str(start_dt.date()), "end": str((end_exclusive - timedelta(days=1)).date())},
+        "totals": {
+            "created": total_created,
+            "completed": total_completed,
+            "completionRate": round(total_completed / total_created * 100, 1) if total_created else 0.0,
+        },
+        "users": users,
+    }
+
+
 @router.get("/tasks/summary")
 def tasks_summary(
     start: Optional[str] = Query(None),
@@ -2013,10 +3273,12 @@ def tasks_summary(
         q = db.query(func.count(Task.id)).filter(Task.is_deleted.is_(False), Task.created_at >= s, Task.created_at < e)
         return int(_task_dept(q, department).scalar() or 0)
 
+    completed_at = _completed_at_expr()
+
     def completed_count(s, e):
         q = db.query(func.count(Task.id)).filter(
             Task.is_deleted.is_(False), Task.status == TaskStatus.COMPLETED,
-            Task.completed_at.isnot(None), Task.completed_at >= s, Task.completed_at < e,
+            completed_at.isnot(None), completed_at >= s, completed_at < e,
         )
         return int(_task_dept(q, department).scalar() or 0)
 
@@ -2027,9 +3289,9 @@ def tasks_summary(
     comp_rate_prv = round((completed_prv / created_prv) * 100.0, 1) if created_prv else 0.0
 
     # Cycle time + on-time from completed-in-range tasks (bounded fetch).
-    comp_q = db.query(Task.created_at, Task.completed_at, Task.deadline).filter(
+    comp_q = db.query(Task.created_at, completed_at, Task.deadline).filter(
         Task.is_deleted.is_(False), Task.status == TaskStatus.COMPLETED,
-        Task.completed_at.isnot(None), Task.completed_at >= start_dt, Task.completed_at < end_exclusive,
+        completed_at.isnot(None), completed_at >= start_dt, completed_at < end_exclusive,
     )
     comp_rows = _task_dept(comp_q, department).limit(TASK_FETCH_CAP).all()
     cycle_hours = [h for h in (_hours_between(c, d) for c, d, _dl in comp_rows) if h is not None and h >= 0]
@@ -2048,12 +3310,12 @@ def tasks_summary(
 
     completed_daily = (
         _task_dept(
-            db.query(func.date(Task.completed_at), func.count(Task.id)).filter(
+            db.query(func.date(completed_at), func.count(Task.id)).filter(
                 Task.is_deleted.is_(False), Task.status == TaskStatus.COMPLETED,
-                Task.completed_at.isnot(None), Task.completed_at >= start_dt, Task.completed_at < end_exclusive,
+                completed_at.isnot(None), completed_at >= start_dt, completed_at < end_exclusive,
             ), department,
         )
-        .group_by(func.date(Task.completed_at)).order_by(func.date(Task.completed_at).asc()).all()
+        .group_by(func.date(completed_at)).order_by(func.date(completed_at).asc()).all()
     )
     series = [{"date": str(d), "value": int(c)} for d, c in completed_daily]
 

@@ -11,17 +11,51 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 const BLOCK_LIBRARY = [
   { kind: 'live-exec', title: 'Executive KPIs', desc: 'Live active users, generations, adoption, cost', live: true },
   { kind: 'live-kling', title: 'Kling Summary', desc: 'Live videos, creators, success, credits', live: true },
+  { kind: 'live-kling-trend', title: 'Kling · Generation Trend', desc: 'Live daily video generation trend', live: true },
+  { kind: 'live-kling-dept', title: 'Kling · By Department', desc: 'Live generations by department', live: true },
+  { kind: 'live-kling-hours', title: 'Kling · Peak Usage Hours', desc: 'Live videos by hour of day', live: true },
+  { kind: 'live-kling-outcomes', title: 'Kling · Success vs Failure', desc: 'Live success/failure outcomes', live: true },
+  { kind: 'live-kling-leaderboard', title: 'Kling · Creator Leaderboard', desc: 'Live table: user, dept, videos, success, credits', live: true },
   { kind: 'live-chatgpt', title: 'ChatGPT Summary', desc: 'Live conversations, prompts, responses, users', live: true },
+  { kind: 'live-cg-trend', title: 'ChatGPT · Conversation Trend', desc: 'Live daily conversation volume', live: true },
+  { kind: 'live-cg-models', title: 'ChatGPT · Model Mix', desc: 'Live share of conversations by model', live: true },
+  { kind: 'live-cg-dept', title: 'ChatGPT · By Department', desc: 'Live conversations by department', live: true },
+  { kind: 'live-cg-hours', title: 'ChatGPT · Peak Usage Hours', desc: 'Live conversations by hour of day', live: true },
+  { kind: 'live-cg-users', title: 'ChatGPT · Top Users', desc: 'Live table: user, dept, conversations, prompts, depth', live: true },
   { kind: 'live-cost', title: 'Cost Summary', desc: 'Live credits, cost/output, waste', live: true },
   { kind: 'live-users', title: 'User Summary', desc: 'Live active users, DAU/WAU/MAU, sessions', live: true },
+  { kind: 'live-ua-daily', title: 'User · Daily Active Users', desc: 'Live DAU trend', live: true },
+  { kind: 'live-ua-session', title: 'User · Avg Session Duration', desc: 'Live daily average session minutes', live: true },
+  { kind: 'live-ua-dept', title: 'User · Active by Department', desc: 'Live active users per department', live: true },
   { kind: 'live-retention', title: 'User Retention', desc: 'Live D1/D7/D30 retention + churn risk', live: true },
   { kind: 'live-power-users', title: 'Power Users', desc: 'Live top generators + concentration', live: true },
+  { kind: 'live-power-users-table', title: 'User · Power Users (table)', desc: 'Live table: user, generations, credits, level, score', live: true },
   { kind: 'live-maturity', title: 'User AI Maturity', desc: 'Live maturity-level distribution', live: true },
+  { kind: 'live-maturity-dist', title: 'User · Maturity Distribution', desc: 'Live bars per maturity level', live: true },
   { kind: 'live-tasks', title: 'Task Summary', desc: 'Live completed, completion rate, cycle time, on-time', live: true },
+  { kind: 'live-task-trend', title: 'Task · Created vs Completed', desc: 'Live daily created/completed table', live: true },
+  { kind: 'live-task-dept', title: 'Task · By Department', desc: 'Live created/completed/rate per department', live: true },
+  { kind: 'live-task-priority', title: 'Task · By Priority', desc: 'Live volume & completion by priority', live: true },
   { kind: 'live-ai-impact', title: 'Task AI Impact', desc: 'Live AI vs non-AI throughput & cycle deltas', live: true },
+  { kind: 'live-ai-cohorts', title: 'Task · AI vs Non-AI Cohorts', desc: 'Live cohort table: users, tasks, cycle', live: true },
+  { kind: 'live-ai-dept', title: 'Task · Dept Adoption vs Productivity', desc: 'Live department AI adoption scatter', live: true },
   { kind: 'live-prompts', title: 'Prompt Summary', desc: 'Live prompts, unique, success, reuse, length', live: true },
+  { kind: 'live-prompt-volume', title: 'Prompt · Volume', desc: 'Live daily prompt volume', live: true },
+  { kind: 'live-prompt-success', title: 'Prompt · Success Over Time', desc: 'Live daily prompt success rate', live: true },
+  { kind: 'live-prompt-models', title: 'Prompt · Success by Model', desc: 'Live success rate per model', live: true },
+  { kind: 'live-prompt-themes', title: 'Prompt · Top Themes', desc: 'Live most common prompt themes', live: true },
   { kind: 'live-golden-prompts', title: 'Golden Prompts', desc: 'Live golden count, unique, reuse, scanned', live: true },
+  { kind: 'live-golden-table', title: 'Prompt · Golden Library (table)', desc: 'Live table: prompt, uses, success, creator', live: true },
   { kind: 'live-prompt-leaderboard', title: 'Prompt Leaderboard', desc: 'Live top prompt engineers + score', live: true },
+  { kind: 'live-engineers-table', title: 'Prompt · Engineers (table)', desc: 'Live table: engineer, prompts, success, score', live: true },
+  { kind: 'live-cost-trend', title: 'Cost · Credit Spend Trend', desc: 'Live daily credit spend', live: true },
+  { kind: 'live-cost-dept', title: 'Cost · Spend by Department', desc: 'Live credits per department', live: true },
+  { kind: 'live-cost-tool', title: 'Cost · Share by Tool', desc: 'Live credit share per tool', live: true },
+  { kind: 'live-cost-spenders', title: 'Cost · Top Spenders (table)', desc: 'Live table: user, credits, cost, outputs', live: true },
+  { kind: 'live-active-users', title: 'Executive · Active Users', desc: 'Live table: who was active, days, session time', live: true },
+  { kind: 'live-contributors', title: 'Executive · Output Contributors', desc: 'Live table: who generated, videos, images, credits, share', live: true },
+  { kind: 'live-task-contributors', title: 'Task · Load by Person', desc: 'Live table: created vs received tasks, each with completed', live: true },
+  { kind: 'live-prompt-contributors', title: 'Prompt · Authors', desc: 'Live table: prompts, unique, reused, reuse rate per person', live: true },
   { kind: 'kpis', title: 'Custom KPI Cards', desc: 'Three editable metric cards' },
   { kind: 'text', title: 'Narrative / Text', desc: 'A written section' },
   { kind: 'table', title: 'Milestone Table', desc: 'Editable phase / allocation table' },
@@ -32,6 +66,23 @@ const defaultPayload = (kind, extra) => {
   if (kind === 'text') return { heading: 'Executive Summary', body: 'Summarise the key findings and strategic direction here.' };
   if (kind === 'table') return { title: 'Structural Overview & Projections', columns: ['Project Phase', 'Target Date', 'Allocation', 'Status'], rows: [['Phase 1: Brand Alignment', 'Q1 2026', '$45,000', 'Completed'], ['Phase 2: Digital Frameworks', 'Q2 2026', '$80,000', 'In Progress'], ['Phase 3: Scale & Syndication', 'Q3 2026', '$125,000', 'Pending']] };
   return { ...extra };
+};
+
+// Drill blocks carry their own scope (a user, a date) instead of just the global filters.
+const DRILL_KINDS = {
+  'live-active-users': 'Active users table',
+  'live-contributors': 'Contributor table',
+  'live-task-contributors': 'Task load table',
+  'live-prompt-contributors': 'Prompt authors table',
+  'live-prompt-timeline': 'Prompt timeline',
+  'live-prompt-list': 'Prompt list',
+  'live-prompt-detail': 'Prompt detail',
+  'live-chat-timeline': 'Chat timeline',
+  'live-chat-day': 'Chat list',
+  'live-chat-messages': 'Chat messages',
+  'live-user-timeline': 'Login timeline',
+  'live-user-generations': 'Generation timeline',
+  'live-user-day': 'Day detail',
 };
 
 // Pre-generation report readiness: how much of the report is actually backed by data.
@@ -52,7 +103,7 @@ const computeReadiness = (blocks) => {
   return { totalQ: qs.length, available, partial, future, live, coverage, state };
 };
 
-const ReportBuilder = ({ filters }) => {
+const ReportBuilder = ({ filters, incoming, onIncomingConsumed }) => {
   const [tab, setTab] = useState('questions');
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('All');
@@ -72,6 +123,26 @@ const ReportBuilder = ({ filters }) => {
   }, []);
 
   const flash = (msg, ms = 3200) => { setToast(msg); setTimeout(() => setToast(null), ms); };
+
+  // Blocks sent here by "Add to canvas" from the analytics sections.
+  //
+  // Ingestion must be idempotent: StrictMode runs mount effects twice in dev,
+  // and `onIncomingConsumed` is an inline arrow whose identity changes on every
+  // parent render, so this effect can fire more than once for the same queue.
+  // Tracking consumed `_qid`s in a ref makes a repeat run a no-op instead of a
+  // duplicate block.
+  const consumedRef = useRef(new Set());
+  useEffect(() => {
+    if (!incoming?.length) return;
+    const fresh = incoming.filter((x) => x._qid && !consumedRef.current.has(x._qid));
+    if (fresh.length) {
+      fresh.forEach((x) => consumedRef.current.add(x._qid));
+      setBlocks((b) => [...b, ...fresh.map(({ _qid, ...rest }) => ({ uid: uid(), ...rest }))]);
+      setTab('blocks');
+      flash(`${fresh.length} block${fresh.length === 1 ? '' : 's'} added to the canvas.`);
+    }
+    onIncomingConsumed?.();
+  }, [incoming, onIncomingConsumed]);
 
   const [branding, setBranding] = useState({
     brandName: 'RITZ MEDIA WORLD',
@@ -164,6 +235,14 @@ const ReportBuilder = ({ filters }) => {
       promptsGolden: () => reportsAPI.promptsGolden(p),
       promptsEngineers: () => reportsAPI.promptsEngineers({ ...p, limit: 50 }),
       tasksAiImpact: () => reportsAPI.tasksAiImpact(p),
+      klingTrends: () => reportsAPI.klingTrends(p),
+      klingUsers: () => reportsAPI.klingUsers({ ...p, limit: 50 }),
+      chatgptTrends: () => reportsAPI.chatgptTrends(p),
+      chatgptUsers: () => reportsAPI.chatgptUsers({ ...p, limit: 50 }),
+      usersActivityTrends: () => reportsAPI.usersActivityTrends(p),
+      tasksTrends: () => reportsAPI.tasksTrends(p),
+      promptsTrends: () => reportsAPI.promptsTrends(p),
+      costBreakdown: () => reportsAPI.costBreakdown({ ...p, limit: 50 }),
     };
     // Which live-data block maps to which endpoint.
     const LIVE_BLOCK_API = {
@@ -173,6 +252,22 @@ const ReportBuilder = ({ filters }) => {
       'live-retention': 'usersRetention', 'live-power-users': 'usersPowerUsers',
       'live-maturity': 'usersPowerUsers', 'live-golden-prompts': 'promptsGolden',
       'live-prompt-leaderboard': 'promptsEngineers', 'live-ai-impact': 'tasksAiImpact',
+      'live-kling-trend': 'klingTrends', 'live-kling-dept': 'klingTrends',
+      'live-kling-hours': 'klingTrends', 'live-kling-outcomes': 'klingTrends',
+      'live-kling-leaderboard': 'klingUsers',
+      'live-cg-trend': 'chatgptTrends', 'live-cg-models': 'chatgptTrends',
+      'live-cg-dept': 'chatgptTrends', 'live-cg-hours': 'chatgptTrends',
+      'live-cg-users': 'chatgptUsers',
+      'live-ua-daily': 'usersActivityTrends', 'live-ua-session': 'usersActivityTrends',
+      'live-ua-dept': 'usersActivityTrends',
+      'live-power-users-table': 'usersPowerUsers', 'live-maturity-dist': 'usersPowerUsers',
+      'live-task-trend': 'tasksTrends', 'live-task-dept': 'tasksTrends', 'live-task-priority': 'tasksTrends',
+      'live-ai-cohorts': 'tasksAiImpact', 'live-ai-dept': 'tasksAiImpact',
+      'live-prompt-volume': 'promptsTrends', 'live-prompt-success': 'promptsTrends',
+      'live-prompt-models': 'promptsTrends', 'live-prompt-themes': 'promptsTrends',
+      'live-golden-table': 'promptsGolden', 'live-engineers-table': 'promptsEngineers',
+      'live-cost-trend': 'costBreakdown', 'live-cost-dept': 'costBreakdown',
+      'live-cost-tool': 'costBreakdown', 'live-cost-spenders': 'costBreakdown',
     };
     const kinds = new Set(blocks.map((b) => b.kind));
     const needed = new Set();
@@ -192,9 +287,50 @@ const ReportBuilder = ({ filters }) => {
       retention: data.usersRetention, powerUsers: data.usersPowerUsers,
       golden: data.promptsGolden, engineers: data.promptsEngineers,
       aiImpact: data.tasksAiImpact,
+      klingTrends: data.klingTrends, klingUsers: data.klingUsers,
+      chatgptTrends: data.chatgptTrends, chatgptUsers: data.chatgptUsers,
+      activityTrends: data.usersActivityTrends, tasksTrends: data.tasksTrends,
+      promptsTrends: data.promptsTrends, costBreakdown: data.costBreakdown,
     };
 
+    // Drill blocks are parameterised (a user, a date), so each fetches its own
+    // snapshot rather than sharing the period-wide payloads above.
+    const DRILL_FETCH = {
+      'live-active-users': (b) => reportsAPI.usersActive({
+        ...p,
+        ...(b.start && b.end ? { start: b.start, end: b.end } : {}),
+        ...(b.department ? { department: b.department } : {}),
+        limit: 200,
+      }),
+      'live-contributors': (b) => reportsAPI.usersContributors({
+        ...p,
+        ...(b.date ? { start: b.date, end: b.date } : {}),
+        ...(b.department ? { department: b.department } : {}),
+        metric: b.metric || 'generations', provider: b.provider, hour: b.hour, limit: 200,
+      }),
+      'live-task-contributors': (b) => reportsAPI.tasksContributors({ ...p, date: b.date, priority: b.priority, limit: 200 }),
+      'live-prompt-contributors': () => reportsAPI.promptsContributors({ ...p, limit: 200 }),
+      'live-prompt-timeline': (b) => reportsAPI.promptsUserTimeline({ ...p, userId: b.userId }),
+      'live-prompt-list': (b) => reportsAPI.promptsList({ ...p, userId: b.userId, date: b.date, repeatedOnly: b.repeatedOnly, limit: 200 }),
+      'live-prompt-detail': (b) => reportsAPI.promptDetail({ ...p, hash: b.promptHash, limit: 120 }),
+      'live-chat-timeline': (b) => reportsAPI.chatgptUserTimeline({ ...p, userId: b.userId }),
+      'live-chat-day': (b) => reportsAPI.chatgptConversations({ userId: b.userId, date: b.date, limit: 200 }),
+      'live-chat-messages': (b) => reportsAPI.chatgptConversationMessages({ conversationId: b.conversationId, limit: 300 }),
+      'live-user-timeline': (b) => reportsAPI.userTimeline({ userId: b.userId }),
+      'live-user-generations': (b) => reportsAPI.userGenerationTimeline({ ...p, userId: b.userId, provider: b.provider }),
+      'live-user-day': (b) => reportsAPI.userDay({ userId: b.userId, date: b.date, provider: b.provider }),
+    };
+    const drills = {};
+    await Promise.all(
+      blocks
+        .filter((b) => DRILL_FETCH[b.kind])
+        .map(async (b) => {
+          try { drills[b.uid] = await DRILL_FETCH[b.kind](b); } catch { /* degrade gracefully */ }
+        }),
+    );
+
     const enriched = blocks.map((b) => {
+      if (DRILL_FETCH[b.kind]) return { ...b, drill: drills[b.uid] || null };
       if (b.kind.startsWith('live-')) return { ...b, snapshotItems: liveSnapshotItems(b.kind, live) };
       if (b.kind === 'question') {
         const bind = ANSWER_BINDINGS[b.id];
@@ -327,7 +463,13 @@ const ReportBuilder = ({ filters }) => {
                 </div>
 
                 {b.kind === 'question' && <div className="rb-block-body"><strong>{b.q}</strong><span className="rb-muted">{b.metric} · {b.decision}</span></div>}
-                {b.kind.startsWith('live-') && <div className="rb-block-body rb-muted">Live KPI cards — populated from real data at generate time.</div>}
+                {b.kind.startsWith('live-') && (
+                  <div className="rb-block-body rb-muted">
+                    {DRILL_KINDS[b.kind]
+                      ? <>{DRILL_KINDS[b.kind]}{b.label ? ` · ${b.label}` : ''}{b.scopeLabel ? ` · ${b.scopeLabel}` : ''}{b.metricTitle ? ` · ${b.metricTitle}` : ''}{b.hour != null ? ` · ${b.hour}:00 IST` : ''}{b.userName ? ` · ${b.userName}` : ''}{b.date ? ` · ${b.date}` : ''}{b.title ? ` · ${b.title}` : ''} — fetched at generate time.</>
+                      : 'Live KPI cards — populated from real data at generate time.'}
+                  </div>
+                )}
 
                 {b.kind === 'text' && (
                   <div className="rb-block-body rb-edit">

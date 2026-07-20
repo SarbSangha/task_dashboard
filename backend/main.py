@@ -57,6 +57,7 @@ from auth import get_password_hash
 from auth import cleanup_expired_reset_tokens, cleanup_expired_sessions
 from routers.tasks_router import notification_dispatcher
 from services.notification_outbox_service import dispatch_notification_outbox_batch
+from routers.report_distribution_router import process_due_schedules
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
@@ -195,6 +196,30 @@ async def _periodic_auth_store_cleanup(interval_seconds: int = 3600) -> None:
             _safe_print(f"Auth cleanup failed: {exc}")
 
 
+async def _periodic_report_schedule_dispatch(interval_seconds: int = 300) -> None:
+    """Fire due report schedules (daily/weekly/monthly email delivery).
+
+    Without this loop a saved schedule never runs — the run-due endpoint exists
+    but nothing was calling it, so schedules sat pending forever.
+    """
+    while True:
+        await asyncio.sleep(max(60, interval_seconds))
+        db = OperationalSessionLocal()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(process_due_schedules, db),
+                timeout=max(30, _int_env("REPORT_SCHEDULE_TIMEOUT_SECONDS", 300)),
+            )
+            if result.get("processed"):
+                sent = sum(1 for r in result.get("results", []) if r.get("status") == "sent")
+                _safe_print(f"Report schedules processed={result['processed']} sent={sent}")
+        except Exception as exc:
+            db.rollback()
+            _safe_print(f"Report schedule dispatch failed: {exc}")
+        finally:
+            db.close()
+
+
 async def _periodic_notification_outbox_dispatch(interval_seconds: int = 30) -> None:
     while True:
         await asyncio.sleep(max(5, interval_seconds))
@@ -309,6 +334,10 @@ async def lifespan(app: FastAPI):
         _periodic_notification_outbox_dispatch(_int_env("NOTIFICATION_OUTBOX_INTERVAL_SECONDS", 30)),
         name="notification-outbox-dispatch",
     )
+    report_schedule_task = asyncio.create_task(
+        _periodic_report_schedule_dispatch(_int_env("REPORT_SCHEDULE_INTERVAL_SECONDS", 300)),
+        name="report-schedule-dispatch",
+    )
     _safe_print(f"Frontend: {_display_frontend_url()}\n")
     
     try:
@@ -316,7 +345,10 @@ async def lifespan(app: FastAPI):
     finally:
         auth_cleanup_task.cancel()
         notification_outbox_task.cancel()
-        await asyncio.gather(auth_cleanup_task, notification_outbox_task, return_exceptions=True)
+        report_schedule_task.cancel()
+        await asyncio.gather(
+            auth_cleanup_task, notification_outbox_task, report_schedule_task, return_exceptions=True
+        )
         await notification_dispatcher.stop()
     
     _safe_print("\nShutting down gracefully...")

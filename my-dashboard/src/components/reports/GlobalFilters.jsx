@@ -3,6 +3,7 @@ import { presetRange } from './utils/format';
 
 const PRESETS = [
   { key: 'today', label: 'Today' },
+  { key: 'yesterday', label: 'Yesterday' },
   { key: '7d', label: '7 Days' },
   { key: '30d', label: '30 Days' },
   { key: '90d', label: '90 Days' },
@@ -10,7 +11,7 @@ const PRESETS = [
   { key: 'custom', label: 'Custom' },
 ];
 
-const GlobalFilters = ({ filters, preset, onChange, departments = [], klingAccounts = [] }) => {
+const GlobalFilters = ({ filters, preset, onChange, departments = [], klingAccounts = [], klingUsers = [] }) => {
   const setPreset = (key) => {
     if (key === 'custom') {
       onChange({ preset: 'custom' });
@@ -89,16 +90,35 @@ const GlobalFilters = ({ filters, preset, onChange, departments = [], klingAccou
 
       {klingAccounts.length > 0 && (
         <div className="rpt-filter-group">
-          <span className="rpt-filter-label">Kling user</span>
+          <span className="rpt-filter-label">Kling account</span>
           <select
             className="rpt-select"
             value={filters.account || 'all'}
             onChange={(e) => onChange({ account: e.target.value })}
-            title="Filter Kling views to one account/user"
+            title="Filter Kling views to one Kling login/credential"
           >
-            <option value="all">All users</option>
+            <option value="all">All accounts</option>
             {klingAccounts.map((a) => (
               <option key={a.credentialId} value={a.credentialId}>{a.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {klingUsers.length > 0 && (
+        <div className="rpt-filter-group">
+          <span className="rpt-filter-label">Kling user</span>
+          <select
+            className="rpt-select"
+            value={filters.klingUser || 'all'}
+            onChange={(e) => onChange({ klingUser: e.target.value })}
+            title="Filter to the person who actually generated"
+          >
+            <option value="all">All users</option>
+            {klingUsers.map((u) => (
+              <option key={u.userId} value={u.userId}>
+                {u.name}{u.department ? ` — ${u.department}` : ''} ({u.generations})
+              </option>
             ))}
           </select>
         </div>

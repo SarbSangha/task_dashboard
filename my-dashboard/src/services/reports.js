@@ -63,6 +63,21 @@ export const reportsAPI = {
     return res.data;
   },
 
+  chatgptUserTimeline: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/chatgpt/user-timeline', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  chatgptConversations: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/chatgpt/conversations', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  chatgptConversationMessages: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/chatgpt/conversation-messages', withParams(params, requestConfig));
+    return res.data;
+  },
+
   chatgptUsers: async (params = {}, requestConfig = {}) => {
     const res = await api.get('/api/reports/chatgpt/users', withParams(params, requestConfig));
     return res.data;
@@ -93,6 +108,31 @@ export const reportsAPI = {
     return res.data;
   },
 
+  usersActive: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/users/active', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  usersContributors: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/users/contributors', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  userGenerationTimeline: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/users/generation-timeline', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  userTimeline: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/users/timeline', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  userDay: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/users/day', withParams(params, requestConfig));
+    return res.data;
+  },
+
   usersPowerUsers: async (params = {}, requestConfig = {}) => {
     const res = await api.get('/api/reports/users/power-users', withParams(params, requestConfig));
     return res.data;
@@ -100,6 +140,26 @@ export const reportsAPI = {
 
   promptsSummary: async (params = {}, requestConfig = {}) => {
     const res = await api.get('/api/reports/prompts/summary', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  promptsContributors: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/prompts/contributors', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  promptsUserTimeline: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/prompts/user-timeline', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  promptsList: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/prompts/list', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  promptDetail: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/prompts/detail', withParams(params, requestConfig));
     return res.data;
   },
 
@@ -120,6 +180,11 @@ export const reportsAPI = {
 
   tasksSummary: async (params = {}, requestConfig = {}) => {
     const res = await api.get('/api/reports/tasks/summary', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  tasksContributors: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/tasks/contributors', withParams(params, requestConfig));
     return res.data;
   },
 
@@ -154,6 +219,12 @@ export const reportsAPI = {
     (await api.delete(`/api/reports/credit-rates/${rateId}`, { timeout: REPORTS_TIMEOUT_MS })).data,
 
   // ---- Distribution layer ----
+  emailSettings: async () => (await api.get('/api/reports/settings/email')).data,
+  emailSettingsSave: async (payload) =>
+    (await api.put('/api/reports/settings/email', payload, { timeout: REPORTS_TIMEOUT_MS })).data,
+  emailSettingsTest: async (to) =>
+    (await api.post('/api/reports/settings/email/test', { to }, { timeout: REPORTS_TIMEOUT_MS })).data,
+
   distributionCapabilities: async () => (await api.get('/api/reports/distribution/capabilities')).data,
 
   saveReport: async (payload) => (await api.post('/api/reports/library', payload, { timeout: REPORTS_TIMEOUT_MS })).data,

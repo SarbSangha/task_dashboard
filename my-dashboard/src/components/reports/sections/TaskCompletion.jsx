@@ -5,9 +5,11 @@ import { reportsAPI } from '../../../services/reports';
 import { useChartTheme } from '../hooks/useChartTheme';
 import SectionHeader from '../primitives/SectionHeader';
 import KpiCard from '../primitives/KpiCard';
+import { ToCanvasButton, DrillableKpi } from './ExecutiveDashboard';
 import InsightBanner from '../primitives/InsightBanner';
 import ChartFrame, { ChartTooltip } from '../primitives/ChartFrame';
 import { formatNumber, formatDayLabel } from '../utils/format';
+import { chartClick as rawChartClick } from '../utils/chartClick';
 
 const STATUS_TONE = (theme) => ({
   completed: theme.success, approved: theme.success, rejected: theme.danger, cancelled: theme.danger,
@@ -15,7 +17,7 @@ const STATUS_TONE = (theme) => ({
 });
 const prettyStatus = (s) => `${s}`.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
 
-const TaskCompletion = ({ filters }) => {
+const TaskCompletion = ({ filters, onDrill, onAddToCanvas }) => {
   const theme = useChartTheme();
   const summaryQ = useQuery({ queryKey: ['reports', 'tasks', 'summary', filters], queryFn: () => reportsAPI.tasksSummary(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
   const trendsQ = useQuery({ queryKey: ['reports', 'tasks', 'trends', filters], queryFn: () => reportsAPI.tasksTrends(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
@@ -36,12 +38,26 @@ const TaskCompletion = ({ filters }) => {
 
   const statusData = (trends.statusDistribution || []).map((s) => ({ ...s, label: prettyStatus(s.status) }));
 
+  // Hoisted so the click handlers can resolve the clicked datum by index.
+  const dailyData = trends.daily || [];
+  const priorityData = trends.byPriority || [];
+
+  const chartClick = (data, pick) => rawChartClick(data, pick, !!onDrill);
+
   return (
     <div>
       <SectionHeader
         title="Completion Analysis"
         subtitle="Are tasks getting finished — and where does work stall, slip or get rejected? Created-versus-completed flow, status mix and delivery reliability."
-      />
+      >
+        {onAddToCanvas && (
+          <ToCanvasButton
+            label="Move KPIs to canvas"
+            title="Add the task completion KPIs to the Report Builder"
+            onClick={() => onAddToCanvas({ kind: 'live-tasks' }, 'Task completion KPIs')}
+          />
+        )}
+      </SectionHeader>
 
       <InsightBanner
         recommendation={
@@ -56,15 +72,20 @@ const TaskCompletion = ({ filters }) => {
       </InsightBanner>
 
       <div className="rpt-kpi-grid">
-        <KpiCard label="Completion Rate" metric={k.completionRate} format="pct" />
-        <KpiCard label="Tasks Created" metric={{ value: summaryQ.data?.tasksCreated, deltaPct: null, direction: 'flat' }} />
-        <KpiCard label="On-time Rate" metric={k.onTimeRate} format="pct" />
+        <DrillableKpi label="Completion Rate" metric={k.completionRate} format="pct" onDrill={onDrill} view="task-contributors" hint="See who created and received these tasks" />
+        <DrillableKpi label="Tasks Created" metric={{ value: summaryQ.data?.tasksCreated, deltaPct: null, direction: 'flat' }} onDrill={onDrill} view="task-contributors" hint="See who created and received these tasks" />
+        <DrillableKpi label="On-time Rate" metric={k.onTimeRate} format="pct" onDrill={onDrill} view="task-contributors" hint="See who created and received these tasks" />
         <KpiCard label="Rework / Rejection" metric={{ value: bottQ.data?.reworkRate, unit: '%', deltaPct: null, direction: 'flat' }} format="pct" />
       </div>
 
       <div className="rpt-grid cols-2">
-        <ChartFrame title="Created vs completed" hint="Daily flow" height={250}>
-          <LineChart data={trends.daily || []} margin={{ top: 8, right: 12, bottom: 0, left: -8 }}>
+        <ChartFrame title="Created vs completed" blockKind="live-task-trend" onAddToCanvas={onAddToCanvas} hint={onDrill ? 'Daily flow · click a day' : 'Daily flow'} height={250}>
+          <LineChart
+            data={dailyData}
+            margin={{ top: 8, right: 12, bottom: 0, left: -8 }}
+            onClick={chartClick(dailyData, (d) => d.date && onDrill('task-contributors', { date: d.date }))}
+            style={onDrill ? { cursor: 'pointer' } : undefined}
+          >
             <CartesianGrid stroke={theme.grid} vertical={false} />
             <XAxis dataKey="date" tickFormatter={formatDayLabel} tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={{ stroke: theme.grid }} minTickGap={24} />
             <YAxis tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} width={36} tickFormatter={formatNumber} />
@@ -87,8 +108,13 @@ const TaskCompletion = ({ filters }) => {
           </BarChart>
         </ChartFrame>
 
-        <ChartFrame title="Completion rate by priority" hint="High priority should not lag" height={240}>
-          <BarChart data={trends.byPriority || []} margin={{ top: 4, right: 12, bottom: 0, left: -8 }}>
+        <ChartFrame title="Completion rate by priority" blockKind="live-task-priority" onAddToCanvas={onAddToCanvas} hint={onDrill ? 'Click a priority' : 'High priority should not lag'} height={240}>
+          <BarChart
+            data={priorityData}
+            margin={{ top: 4, right: 12, bottom: 0, left: -8 }}
+            onClick={chartClick(priorityData, (d) => d.priority && onDrill('task-contributors', { priority: d.priority }))}
+            style={onDrill ? { cursor: 'pointer' } : undefined}
+          >
             <CartesianGrid stroke={theme.grid} vertical={false} />
             <XAxis dataKey="priority" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={{ stroke: theme.grid }} tickFormatter={prettyStatus} />
             <YAxis tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} width={38} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
@@ -97,8 +123,13 @@ const TaskCompletion = ({ filters }) => {
           </BarChart>
         </ChartFrame>
 
-        <ChartFrame title="Volume by priority" hint="Created vs completed" height={240}>
-          <BarChart data={trends.byPriority || []} margin={{ top: 4, right: 12, bottom: 0, left: -8 }}>
+        <ChartFrame title="Volume by priority" blockKind="live-task-priority" onAddToCanvas={onAddToCanvas} hint={onDrill ? 'Created vs completed · click a priority' : 'Created vs completed'} height={240}>
+          <BarChart
+            data={priorityData}
+            margin={{ top: 4, right: 12, bottom: 0, left: -8 }}
+            onClick={chartClick(priorityData, (d) => d.priority && onDrill('task-contributors', { priority: d.priority }))}
+            style={onDrill ? { cursor: 'pointer' } : undefined}
+          >
             <CartesianGrid stroke={theme.grid} vertical={false} />
             <XAxis dataKey="priority" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={{ stroke: theme.grid }} tickFormatter={prettyStatus} />
             <YAxis tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} width={36} tickFormatter={formatNumber} />

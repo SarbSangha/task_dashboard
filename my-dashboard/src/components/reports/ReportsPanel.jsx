@@ -29,6 +29,11 @@ import ReportBuilderV2 from './reportBuilderV2/ReportBuilderV2';
 import ReportHistory from './sections/ReportHistory';
 import ScheduledReports from './sections/ScheduledReports';
 import UserDetail from './sections/UserDetail';
+import ActiveUsersDrill from './sections/ActiveUsersDrill';
+import ContributorsDrill, { CONTRIBUTOR_METRICS, PROVIDER_LABELS } from './sections/ContributorsDrill';
+import TaskContributorsDrill from './sections/TaskContributorsDrill';
+import PromptDrill from './sections/PromptDrill';
+import ChatGptUsersDrill from './sections/ChatGptUsersDrill';
 import ComingSoon from './sections/ComingSoon';
 import './ReportsPanel.css';
 
@@ -74,6 +79,8 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [section, setSection] = useState('executive');
   const [drill, setDrill] = useState(null); // { userId, userName }
   const [treeOpen, setTreeOpen] = useState(false);
+  const [canvasQueue, setCanvasQueue] = useState([]);
+  const [canvasToast, setCanvasToast] = useState(null);
 
   const [preset, setPreset] = useState('30d');
   const [filters, setFilters] = useState(() => ({ ...presetRange('30d'), department: 'all', tool: 'all' }));
@@ -90,13 +97,16 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   });
   const departments = filtersQuery.data?.departments || [];
   const klingAccounts = filtersQuery.data?.klingAccounts || [];
+  const klingUsers = filtersQuery.data?.klingUsers || [];
 
   const queryFilters = useMemo(() => {
     const f = { start: filters.start, end: filters.end };
     if (filters.department && filters.department !== 'all') f.department = filters.department;
     if (filters.account && filters.account !== 'all') f.account = filters.account;
+    // The person who generated, as opposed to the shared Kling login above.
+    if (filters.klingUser && filters.klingUser !== 'all') f.user = filters.klingUser;
     return f;
-  }, [filters.start, filters.end, filters.department, filters.account]);
+  }, [filters.start, filters.end, filters.department, filters.account, filters.klingUser]);
 
   const updateFilters = (patch) => {
     if (patch.preset) setPreset(patch.preset);
@@ -122,32 +132,170 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
 
   if (!isOpen) return null;
 
-  const openUser = (userId, userName) => setDrill({ userId, userName });
+  // `mode` carries the entry metric down: coming from an output KPI, level 3 is
+  // the generation timeline rather than the login timeline.
+  const openUser = (userId, userName, mode = 'activity', provider, focusDate) =>
+    setDrill({ userId, userName, mode, provider, focusDate });
+
+  // "Add to canvas" from any analytics level: queue the block, tell the user,
+  // and leave them where they are so they can keep drilling.
+  //
+  // Each queued block carries a unique `_qid` so the builder can ingest it
+  // exactly once. Without it, StrictMode's double-invoked mount effect (and any
+  // re-render before the queue drains) appends the same block twice.
+  const addToCanvas = (block, label) => {
+    const _qid = `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    setCanvasQueue((q) => [...q, { ...block, _qid }]);
+    setCanvasToast(`${label} added to the Report Builder canvas.`);
+    setTimeout(() => setCanvasToast(null), 3200);
+  };
 
   const renderContent = () => {
-    if (drill) {
-      return <UserDetail userId={drill.userId} userName={drill.userName} onBack={() => setDrill(null)} />;
+    // Drill order: a specific user wins; otherwise a KPI drill view (e.g. active users).
+    if (drill?.userId) {
+      return (
+        <UserDetail
+          userId={drill.userId}
+          userName={drill.userName}
+          mode={drill.mode}
+          provider={drill.provider}
+          focusDate={drill.focusDate}
+          onBack={() => setDrill(null)}
+          onAddToCanvas={addToCanvas}
+        />
+      );
     }
-    if (section === 'executive') return <ExecutiveDashboard filters={queryFilters} />;
-    if (section === 'kling') return <KlingAnalytics filters={queryFilters} onOpenUser={openUser} />;
-    if (section === 'chatgpt') return <ChatGPTAnalytics filters={queryFilters} />;
+    if (drill?.view === 'active-users') {
+      // DAU/WAU/MAU and chart clicks pass their own window/department;
+      // plain Active Users falls back to the global filters.
+      const scoped = {
+        ...queryFilters,
+        ...(drill.start && drill.end ? { start: drill.start, end: drill.end } : {}),
+        ...(drill.department ? { department: drill.department } : {}),
+      };
+      // A single-day scope means we already know the day — open it directly.
+      const focusDate = drill.start && drill.start === drill.end ? drill.start : undefined;
+      return (
+        <ActiveUsersDrill
+          filters={scoped}
+          label={drill.label}
+          initialSort={drill.sort}
+          onOpenUser={(userId, userName) => openUser(userId, userName, 'activity', undefined, focusDate)}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
+    if (drill?.view === 'chatgpt-users') {
+      return (
+        <ChatGptUsersDrill
+          filters={queryFilters}
+          onOpenUser={(userId, userName) => openUser(userId, userName, 'chat')}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
+    if (drill?.view === 'prompt-drill') {
+      return <PromptDrill mode={drill.mode} filters={queryFilters} onAddToCanvas={addToCanvas} />;
+    }
+    if (drill?.view === 'task-contributors') {
+      return (
+        <TaskContributorsDrill
+          date={drill.date}
+          priority={drill.priority}
+          filters={queryFilters}
+          onOpenUser={(userId, userName) => openUser(userId, userName, 'activity', undefined, drill.date)}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
+    if (drill?.view?.startsWith('contributors:')) {
+      // view = "contributors:<metric>[:<provider>]"
+      const [, metric, provider] = drill.view.split(':');
+      return (
+        <ContributorsDrill
+          metric={metric}
+          provider={provider}
+          date={drill.date}
+          hour={drill.hour}
+          department={drill.department}
+          filters={queryFilters}
+          // With a specific day in context, skip the timeline and open that day directly.
+          onOpenUser={(userId, userName) => openUser(userId, userName, 'output', provider, drill.date)}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
+    if (section === 'executive') return <ExecutiveDashboard filters={queryFilters} onDrill={(view) => setDrill({ view })} onAddToCanvas={addToCanvas} />;
+    if (section === 'kling') {
+      return (
+        <KlingAnalytics
+          filters={queryFilters}
+          onOpenUser={(userId, userName) => openUser(userId, userName, 'output', 'kling')}
+          onDrill={(view, ctx) => setDrill({ view, ...ctx })}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
+    if (section === 'chatgpt') {
+      return (
+        <ChatGPTAnalytics
+          filters={queryFilters}
+          onOpenUser={(userId, userName) => openUser(userId, userName, 'chat')}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
     if (section === 'credit-usage' || section === 'token-analysis' || section === 'roi-analysis') {
-      return <CostIntelligence view={section} filters={queryFilters} onOpenUser={openUser} />;
+      return (
+        <CostIntelligence
+          view={section}
+          filters={queryFilters}
+          onOpenUser={(userId, userName) => openUser(userId, userName, 'output')}
+          onDrill={(v, ctx) => setDrill({ view: v, ...ctx })}
+          onAddToCanvas={addToCanvas}
+        />
+      );
     }
-    if (section === 'user-activity') return <UserActivity filters={queryFilters} />;
+    if (section === 'user-activity') {
+      return (
+        <UserActivity
+          filters={queryFilters}
+          onDrill={(view, ctx) => setDrill({ view, ...ctx })}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
     if (section === 'user-retention') return <UserRetention filters={queryFilters} />;
     if (section === 'power-users') return <PowerUsers filters={queryFilters} onOpenUser={openUser} />;
     if (section === 'ai-maturity') return <UserMaturity filters={queryFilters} />;
-    if (section === 'prompt-performance') return <PromptPerformance filters={queryFilters} />;
-    if (section === 'golden-prompts') return <GoldenPrompts filters={queryFilters} />;
+    if (section === 'prompt-performance') {
+      return (
+        <PromptPerformance
+          filters={queryFilters}
+          onDrill={(view, ctx) => setDrill({ view, ...ctx })}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
+    if (section === 'golden-prompts') return <GoldenPrompts filters={queryFilters} onAddToCanvas={addToCanvas} />;
     if (section === 'prompt-leaderboard') return <PromptLeaderboard filters={queryFilters} onOpenUser={openUser} />;
     if (section === 'prompt-evolution') return <PromptEvolution filters={queryFilters} />;
-    if (section === 'productivity') return <TaskProductivity filters={queryFilters} />;
-    if (section === 'completion') return <TaskCompletion filters={queryFilters} />;
+    if (section === 'productivity') return <TaskProductivity filters={queryFilters} onAddToCanvas={addToCanvas} />;
+    if (section === 'completion') {
+      return (
+        <TaskCompletion
+          filters={queryFilters}
+          onDrill={(view, ctx) => setDrill({ view, ...ctx })}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
     if (section === 'task-ai-impact') return <TaskAIImpact filters={queryFilters} />;
     if (section === 'bottlenecks') return <TaskBottlenecks filters={queryFilters} />;
     if (section === 'recommendations') return <Recommendations filters={queryFilters} />;
-    if (section === 'report-builder') return <ReportBuilder filters={queryFilters} />;
+    if (section === 'report-builder') {
+      return <ReportBuilder filters={queryFilters} incoming={canvasQueue} onIncomingConsumed={() => setCanvasQueue([])} />;
+    }
     if (section === 'library') return <ReportBuilderV2 />;
     if (section === 'report-history') return <ReportHistory />;
     if (section === 'scheduled-reports') return <ScheduledReports />;
@@ -183,12 +331,34 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                   <span>AI Intelligence Command Center</span>
                   <span>›</span>
                   <b>{SECTION_LABELS[section]}</b>
-                  {drill && (<><span>›</span><b>{drill.userName}</b></>)}
+                  {drill?.view === 'active-users' && (<><span>›</span><b>Active Users</b></>)}
+                  {drill?.view === 'task-contributors' && (<><span>›</span><b>Task Load</b></>)}
+                  {drill?.view === 'chatgpt-users' && (<><span>›</span><b>ChatGPT Users</b></>)}
+                  {drill?.view === 'prompt-drill' && (<><span>›</span><b>{drill.mode === 'reuse' ? 'Prompt Reuse' : 'Prompts by Person'}</b></>)}
+                  {drill?.view?.startsWith('contributors:') && (
+                    <>
+                      <span>›</span>
+                      <b>
+                        {[PROVIDER_LABELS[drill.view.split(':')[2]], CONTRIBUTOR_METRICS[drill.view.split(':')[1]]?.title || 'Contributors']
+                          .filter(Boolean).join(' · ')}
+                      </b>
+                    </>
+                  )}
+                  {drill?.userId && (<><span>›</span><b>{drill.userName}</b></>)}
                 </div>
               )}
             </div>
           </div>
           <div className="rpt-header-spacer" />
+          {!isMinimized && canvasQueue.length > 0 && (
+            <button
+              className="rpt-canvas-badge"
+              onClick={() => selectSection('report-builder')}
+              title="Open the Report Builder to see the queued blocks"
+            >
+              {canvasQueue.length} on canvas →
+            </button>
+          )}
           <WindowControls
             isMinimized={isMinimized}
             isMaximized={isMaximized}
@@ -199,7 +369,7 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         </div>
 
         {!isMinimized && (
-          <GlobalFilters filters={filters} preset={preset} onChange={updateFilters} departments={departments} klingAccounts={klingAccounts} />
+          <GlobalFilters filters={filters} preset={preset} onChange={updateFilters} departments={departments} klingAccounts={klingAccounts} klingUsers={klingUsers} />
         )}
 
         {!isMinimized && (
@@ -212,6 +382,8 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
             </div>
           </div>
         )}
+
+        {canvasToast && <div className="rpt-canvas-toast">{canvasToast}</div>}
       </div>
     </>
   );

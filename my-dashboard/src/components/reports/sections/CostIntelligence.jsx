@@ -8,12 +8,14 @@ import { reportsAPI } from '../../../services/reports';
 import { usePermissions } from '../../../hooks/usePermissions';
 import { useChartTheme } from '../hooks/useChartTheme';
 import SectionHeader from '../primitives/SectionHeader';
+import { ToCanvasButton, DrillableKpi } from './ExecutiveDashboard';
 import KpiCard from '../primitives/KpiCard';
 import InsightBanner from '../primitives/InsightBanner';
 import ChartFrame, { ChartTooltip } from '../primitives/ChartFrame';
 import DataTable from '../primitives/DataTable';
 import CreditRatesAdmin from './CreditRatesAdmin';
 import { formatNumber, formatFull, formatDayLabel, initialsOf } from '../utils/format';
+import { chartClick as rawChartClick } from '../utils/chartClick';
 
 const VIEW_META = {
   'credit-usage': { title: 'Credit Usage', subtitle: 'Where AI credits are spent — by department, tool and user — and how much is lost to failed work.' },
@@ -30,7 +32,7 @@ const UserCell = ({ row }) => (
   </span>
 );
 
-const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser }) => {
+const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser, onDrill, onAddToCanvas }) => {
   const theme = useChartTheme();
   const { isAdmin } = usePermissions();
 
@@ -78,9 +80,25 @@ const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser }) => {
     );
   }
 
+  // Hoisted so the click handler resolves the clicked datum by index.
+  const deptData = (bd.byDepartment || []).slice(0, 8);
+
+  const chartClick = (data, pick) => rawChartClick(data, pick, !!onDrill);
+
   return (
     <div>
-      <SectionHeader title={meta.title} subtitle={meta.subtitle} />
+      <SectionHeader title={meta.title} subtitle={meta.subtitle}>
+        {onAddToCanvas && (view === 'credit-usage' || view === 'token-analysis') && (
+          <ToCanvasButton
+            label="Move KPIs to canvas"
+            title="Add the cost KPIs to the Report Builder"
+            onClick={() => onAddToCanvas(
+              view === 'token-analysis' ? { kind: 'live-chatgpt' } : { kind: 'live-cost' },
+              view === 'token-analysis' ? 'ChatGPT KPIs' : 'Cost KPIs',
+            )}
+          />
+        )}
+      </SectionHeader>
 
       {/* ---------- CREDIT USAGE ---------- */}
       {view === 'credit-usage' && (
@@ -101,15 +119,15 @@ const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser }) => {
           </InsightBanner>
 
           <div className="rpt-kpi-grid">
-            <KpiCard label={`Total Cost (${currency})`} metric={k.totalCost} format="full" />
-            <KpiCard label="Total Credits" metric={k.totalCredits} />
+            <DrillableKpi label={`Total Cost (${currency})`} metric={k.totalCost} format="full" onDrill={onDrill} view="contributors:cost" hint="See who spent it, by day and generation" />
+            <DrillableKpi label="Total Credits" metric={k.totalCredits} onDrill={onDrill} view="contributors:credits" hint="See who consumed the credits" />
             <KpiCard label={`Cost / Output (${currency})`} metric={k.costPerOutputCurrency} format="full" />
             <KpiCard label="Wasted Credits" metric={k.wastedCredits} />
             <KpiCard label="ROI" metric={k.roi} />
           </div>
 
           <div className="rpt-grid cols-2">
-            <ChartFrame title="Credit spend trend" hint="Daily" height={250}>
+            <ChartFrame title="Credit spend trend" blockKind="live-cost-trend" onAddToCanvas={onAddToCanvas} hint="Daily" height={250}>
               <AreaChart data={bd.daily || []} margin={{ top: 8, right: 12, bottom: 0, left: -4 }}>
                 <defs>
                   <linearGradient id="costTrend" x1="0" y1="0" x2="0" y2="1">
@@ -125,7 +143,7 @@ const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser }) => {
               </AreaChart>
             </ChartFrame>
 
-            <ChartFrame title="Credit share by tool" hint="Provider mix" height={250}>
+            <ChartFrame title="Credit share by tool" blockKind="live-cost-tool" onAddToCanvas={onAddToCanvas} hint="Provider mix" height={250}>
               <PieChart>
                 <Pie data={bd.byProvider || []} dataKey="credits" nameKey="provider" innerRadius={52} outerRadius={82} paddingAngle={2} isAnimationActive={false}>
                   {(bd.byProvider || []).map((entry, i) => <Cell key={i} fill={theme.series[i % theme.series.length]} />)}
@@ -135,8 +153,14 @@ const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser }) => {
               </PieChart>
             </ChartFrame>
 
-            <ChartFrame title="Credit spend by department" hint="Top teams" height={250}>
-              <BarChart data={(bd.byDepartment || []).slice(0, 8)} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
+            <ChartFrame title="Credit spend by department" blockKind="live-cost-dept" onAddToCanvas={onAddToCanvas} hint={onDrill ? 'Top teams · click a bar' : 'Top teams'} height={250}>
+              <BarChart
+                data={deptData}
+                layout="vertical"
+                margin={{ top: 4, right: 16, bottom: 0, left: 8 }}
+                onClick={chartClick(deptData, (d) => d.department && onDrill('contributors:credits', { department: d.department }))}
+                style={onDrill ? { cursor: 'pointer' } : undefined}
+              >
                 <CartesianGrid stroke={theme.grid} horizontal={false} />
                 <XAxis type="number" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} tickFormatter={formatNumber} />
                 <YAxis type="category" dataKey="department" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} width={96} />
@@ -170,9 +194,10 @@ const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser }) => {
       {view === 'token-analysis' && (
         <>
           <div className="rpt-kpi-grid">
-            <KpiCard label="ChatGPT Messages" metric={{ value: cgSummaryQ.data?.messages?.total ?? 0, deltaPct: null, direction: 'flat' }} />
+            <DrillableKpi label="ChatGPT Users" metric={cgSummaryQ.data?.kpis?.uniqueUsers} onDrill={onDrill} view="chatgpt-users" hint="See who they are, with conversations, prompts and messages" />
+            <DrillableKpi label="ChatGPT Messages" metric={{ value: cgSummaryQ.data?.messages?.total ?? 0, deltaPct: null, direction: 'flat' }} onDrill={onDrill} view="chatgpt-users" hint="See the messages per person" />
             <KpiCard label="Avg Messages / Chat" metric={{ value: cgSummaryQ.data?.messages?.avgPerConversation ?? 0, deltaPct: null, direction: 'flat' }} format="full" />
-            <KpiCard label="Prompts Sent" metric={cgSummaryQ.data?.kpis?.prompts} />
+            <DrillableKpi label="Prompts Sent" metric={cgSummaryQ.data?.kpis?.prompts} onDrill={onDrill} view="chatgpt-users" hint="See the prompts per person" />
             <KpiCard label="Cost / Successful Output" metric={k.costPerOutput} format="full" />
           </div>
 

@@ -5010,18 +5010,37 @@ async def mark_task_seen(
 
     mark_seen(db, task_id, current_user.id)
 
-    participation = (
+    # A user can hold several roles on one task (creator+assignee,
+    # approver+assignee after a forward, ...). The unread count is a DISTINCT
+    # count over rows where is_read is False, so marking only the first row
+    # leaves the task counted as unread forever. Mark every active row.
+    participations = (
         db.query(TaskParticipant)
         .filter(
             TaskParticipant.task_id == task_id,
             TaskParticipant.user_id == current_user.id,
             TaskParticipant.is_active == True,
         )
-        .first()
+        .all()
     )
-    if participation and not participation.is_read:
-        participation.is_read = True
-        participation.read_at = datetime.utcnow()
+    now = datetime.utcnow()
+    for participation in participations:
+        if not participation.is_read:
+            participation.is_read = True
+            participation.read_at = now
+
+    # Notifications live in their own table, so opening the task left its
+    # "task received / started / approved" entries unread and the notification
+    # badge never cleared. Reading the task reads its notifications too.
+    (
+        db.query(TaskNotification)
+        .filter(
+            TaskNotification.task_id == task_id,
+            TaskNotification.user_id == current_user.id,
+            TaskNotification.is_read == False,
+        )
+        .update({"is_read": True, "read_at": now}, synchronize_session=False)
+    )
 
     db.commit()
     await invalidate_pattern(TASK_UNREAD_CACHE_PATTERN)
@@ -5705,6 +5724,14 @@ async def forward_task(
             role = ParticipantRole.SPOC
 
         ensure_participant(db, task.id, target.id, role)
+
+        # Forwarding to someone who is not an HOD/SPOC hands them the work, not
+        # an approval. Without an ASSIGNEE row they cannot start or submit
+        # (submit_task requires ASSIGNEE), so the task lands in their list as
+        # read-only. Add it alongside their review role — participation is
+        # per-role, so nothing they could already do is lost.
+        if role == ParticipantRole.APPROVER:
+            ensure_participant(db, task.id, target.id, ParticipantRole.ASSIGNEE)
         db.add(
             TaskForward(
                 task_id=task.id,
