@@ -2130,7 +2130,11 @@ def user_generation_timeline(
         raise HTTPException(status_code=404, detail="User not found")
 
     rate_expr, currency, _default = _credit_rate_context(db)
-    day_expr = func.date(GenerationRecord.created_at)
+    # created_at is stored in UTC; the team works in IST. Bucket the day and the
+    # first/last "window" times in IST (+05:30) so production (UTC server) shows
+    # the same local days and window as everyone expects, instead of UTC.
+    ist_created_at = GenerationRecord.created_at + IST_INTERVAL
+    day_expr = func.date(ist_created_at)
     video_case = case(
         (and_(GenerationRecord.duration_label.isnot(None), GenerationRecord.duration_label != ""), 1),
         else_=0,
@@ -2153,8 +2157,8 @@ def user_generation_timeline(
             func.coalesce(func.sum(video_case), 0).label("videos"),
             func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
             _cost_sum_expr(rate_expr).label("cost"),
-            func.min(GenerationRecord.created_at).label("first_at"),
-            func.max(GenerationRecord.created_at).label("last_at"),
+            func.min(ist_created_at).label("first_at"),
+            func.max(ist_created_at).label("last_at"),
             func.count(func.distinct(GenerationRecord.model_label)).label("models"),
         )
         .group_by(day_expr)
