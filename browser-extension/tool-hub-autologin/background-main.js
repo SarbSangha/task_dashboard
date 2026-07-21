@@ -22,8 +22,23 @@ const DASHBOARD_HOST_SUFFIXES = [
 const FLOW_HOME_URL = 'https://labs.google/fx';
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
-const DIRECT_TICKET_ONLY_TOOLS = new Set(['behance', 'claude', 'genspark', 'pinterest']);
-const CLEAR_SESSION_ON_CLOSE_TOOLS = new Set(['behance', 'claude', 'freepik', 'genspark', 'pinterest', 'flow']);
+// Strict dashboard-only: these tools only auto-fill when opened with a direct
+// per-tab launch ticket from the dashboard. Pending-launch activation, opener
+// inheritance and recent-launch reuse are all refused, so a manual/direct visit
+// (typed URL, bookmark, or navigating to the login page) can never auto-fill.
+const DIRECT_TICKET_ONLY_TOOLS = new Set([
+  'behance', 'claude', 'genspark', 'pinterest', 'suno', 'epidemic-sound', 'splice', 'enhancor',
+  'canva', 'chatgpt', 'elevenlabs', 'envato', 'flow', 'freepik', 'grammarly', 'heygen',
+  'higgsfield', 'kling', 'kling-ai', 'klingai',
+]);
+// Tools whose session is wiped when the launched tab closes, so a shared
+// dashboard login does not linger. Google-login tools launch in incognito and
+// clear automatically; the email/password tools below launch in a normal
+// window where cookies would otherwise persist and leak the shared session.
+const CLEAR_SESSION_ON_CLOSE_TOOLS = new Set([
+  'behance', 'claude', 'freepik', 'genspark', 'pinterest', 'flow',
+  'envato', 'grammarly', 'higgsfield',
+]);
 const TOOL_SESSION_DOMAINS = {
   behance: [
     'behance.net',
@@ -50,6 +65,9 @@ const TOOL_SESSION_DOMAINS = {
   'kling-ai': ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   klingai: ['kling.ai', 'www.kling.ai', 'klingai.com', 'www.klingai.com', 'app.klingai.com'],
   pinterest: ['pinterest.com', 'www.pinterest.com', 'in.pinterest.com'],
+  suno: ['suno.com', 'www.suno.com', 'studio-api.prod.suno.com'],
+  'epidemic-sound': ['epidemicsound.com', 'www.epidemicsound.com', 'login.epidemicsound.com'],
+  splice: ['splice.com', 'www.splice.com', 'auth.splice.com'],
 };
 const TOOL_OPTIONAL_SESSION_DOMAINS = {
   behance: ['accounts.google.com', 'google.com', '.google.com'],
@@ -162,6 +180,24 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'pinterest.com',
     'www.pinterest.com',
     'in.pinterest.com',
+    'accounts.google.com',
+  ],
+  suno: [
+    'suno.com',
+    'www.suno.com',
+    'studio-api.prod.suno.com',
+    'accounts.google.com',
+  ],
+  'epidemic-sound': [
+    'epidemicsound.com',
+    'www.epidemicsound.com',
+    'login.epidemicsound.com',
+    'accounts.google.com',
+  ],
+  splice: [
+    'splice.com',
+    'www.splice.com',
+    'auth.splice.com',
     'accounts.google.com',
   ],
 };
@@ -410,6 +446,18 @@ function isRecentContinuationReuseAllowed(toolSlug, pageUrl, hostname) {
     return pageHost === 'accounts.google.com';
   }
 
+  if (normalizedToolSlug === 'epidemic-sound') {
+    // Epidemic Sound hands off from the marketing site to a separate login
+    // origin (login.epidemicsound.com) before Google, so allow the launch to be
+    // re-bound on that origin and on accounts.google.com.
+    return pageHost === 'login.epidemicsound.com' || pageHost === 'accounts.google.com';
+  }
+
+  if (normalizedToolSlug === 'splice') {
+    // Splice uses a separate Auth0 login origin (auth.splice.com) before Google.
+    return pageHost === 'auth.splice.com' || pageHost === 'accounts.google.com';
+  }
+
   if (normalizedToolSlug === 'grammarly') {
     // isLoginContinuationPage() above already confirmed pageHost is one of
     // TOOL_LOGIN_CONTINUATION_HOSTS.grammarly (app/coda/www/grammarly.com).
@@ -576,7 +624,25 @@ async function getRecentContinuationLaunch(toolSlug, hostname, pageUrl) {
 
 async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug, hostname = '', pageUrl = '') {
   if (DIRECT_TICKET_ONLY_TOOLS.has(normalizeToolSlug(toolSlug))) {
-    return getActiveLaunch(primaryTabId, toolSlug);
+    const directLaunch = await getActiveLaunch(primaryTabId, toolSlug);
+    if (directLaunch?.ticket) {
+      return directLaunch;
+    }
+    // Google/OAuth often opens in a separate popup or tab. Inherit the direct
+    // launch from the opener tab (which must itself hold a real dashboard
+    // launch) and bind it to this tab. This does NOT reopen the manual-visit
+    // gap: a directly/manually opened tab has no launch to inherit, and
+    // pending-launch activation + recent-launch reuse remain refused.
+    if (fallbackTabId && fallbackTabId !== primaryTabId) {
+      const inheritedDirectLaunch = await getActiveLaunch(fallbackTabId, toolSlug);
+      if (inheritedDirectLaunch?.ticket) {
+        if (primaryTabId) {
+          await setActiveLaunch(primaryTabId, inheritedDirectLaunch);
+        }
+        return inheritedDirectLaunch;
+      }
+    }
+    return null;
   }
 
   const primaryLaunch = await getActiveLaunch(primaryTabId, toolSlug);
@@ -877,19 +943,33 @@ async function clearToolSession(toolSlug, options = {}) {
   const domains = getToolSessionDomains(toolSlug, options);
   let removed = 0;
 
-  for (const domain of domains) {
-    const cookies = await chrome.cookies.getAll({ domain });
-    for (const cookie of cookies) {
-      const host = `${cookie.domain || ''}`.replace(/^\./, '');
-      if (!host) continue;
-      const url = `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path || '/'}`;
-      const result = await chrome.cookies.remove({
-        url,
-        name: cookie.name,
-        storeId: cookie.storeId,
-      }).catch(() => null);
-      if (result) {
-        removed += 1;
+  // Clear from every cookie store (default AND incognito). Tools launched in
+  // incognito keep their session in a separate store, so clearing only the
+  // default store would leave the shared login usable in the incognito session.
+  let storeIds = [undefined];
+  try {
+    const cookieStores = await chrome.cookies.getAllCookieStores();
+    if (Array.isArray(cookieStores) && cookieStores.length) {
+      storeIds = cookieStores.map((store) => store.id);
+    }
+  } catch {}
+
+  for (const storeId of storeIds) {
+    for (const domain of domains) {
+      const query = storeId ? { domain, storeId } : { domain };
+      const cookies = await chrome.cookies.getAll(query).catch(() => []);
+      for (const cookie of cookies) {
+        const host = `${cookie.domain || ''}`.replace(/^\./, '');
+        if (!host) continue;
+        const url = `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path || '/'}`;
+        const result = await chrome.cookies.remove({
+          url,
+          name: cookie.name,
+          storeId: cookie.storeId,
+        }).catch(() => null);
+        if (result) {
+          removed += 1;
+        }
       }
     }
   }
@@ -1180,8 +1260,20 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   const tabId = message.tabId || senderTabId || 0;
   const normalizedToolSlug = normalizeToolSlug(message.toolSlug);
   const providedExtensionTicket = `${message.extensionTicket || ''}`.trim();
-  const directLaunch = await getActiveLaunch(tabId, message.toolSlug);
+  let directLaunch = await getActiveLaunch(tabId, message.toolSlug);
   const requiresDirectTicket = DIRECT_TICKET_ONLY_TOOLS.has(normalizedToolSlug);
+  // Direct-ticket tools whose Google/OAuth step opened in a popup or new tab:
+  // inherit the direct launch from the opener tab (which holds the real
+  // dashboard launch) and bind it to this tab so it counts as a direct launch.
+  if (requiresDirectTicket && !directLaunch?.ticket && openerTabId && openerTabId !== tabId) {
+    const openerLaunch = await getActiveLaunch(openerTabId, message.toolSlug);
+    if (openerLaunch?.ticket) {
+      if (tabId) {
+        await setActiveLaunch(tabId, openerLaunch);
+      }
+      directLaunch = openerLaunch;
+    }
+  }
   const inheritedLaunch = directLaunch?.ticket || requiresDirectTicket
     ? null
     : await getActiveLaunch(openerTabId, message.toolSlug);

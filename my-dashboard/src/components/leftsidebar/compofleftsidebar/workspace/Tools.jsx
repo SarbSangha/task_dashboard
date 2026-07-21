@@ -174,7 +174,10 @@ const toolSupportsCredentialLoginMethodSelection = (value) => {
     || normalizedToolSlug === 'pinterest'
     || normalizedToolSlug === 'kling-ai'
     || normalizedToolSlug === 'klingai'
-    || normalizedToolSlug === 'kling';
+    || normalizedToolSlug === 'kling'
+    || normalizedToolSlug === 'suno'
+    || normalizedToolSlug === 'epidemic-sound'
+    || normalizedToolSlug === 'splice';
 };
 
 const getDefaultCredentialLoginMethod = (value) => {
@@ -190,6 +193,12 @@ const shouldLaunchExtensionToolInIncognito = (toolSlug, loginMethod) => {
   const normalizedLoginMethod = `${loginMethod || ''}`.trim().toLowerCase();
   if (normalizedToolSlug === 'canva') return true;
   if (normalizedToolSlug === 'elevenlabs') return true;
+  // Email/password tools that launch in a normal window otherwise leave the
+  // shared session in the profile after the window closes. Launch them in
+  // incognito so the browser isolates and auto-clears the session on close.
+  if (normalizedToolSlug === 'envato') return true;
+  if (normalizedToolSlug === 'grammarly') return true;
+  if (normalizedToolSlug === 'higgsfield') return true;
   return normalizedLoginMethod === 'google';
 };
 
@@ -214,6 +223,9 @@ const getAuthenticatorSeedToolLabel = (toolSlug) => {
   if (normalizedToolSlug === 'heygen') return 'HeyGen';
   if (normalizedToolSlug === 'pinterest') return 'Pinterest';
   if (normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai') return 'Kling';
+  if (normalizedToolSlug === 'suno') return 'Suno';
+  if (normalizedToolSlug === 'epidemic-sound') return 'Epidemic Sound';
+  if (normalizedToolSlug === 'splice') return 'Splice';
   return 'Google';
 };
 
@@ -3605,6 +3617,12 @@ export default function Tools({ view = 'tools' }) {
                           ? 'This Genspark credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                         : activeCredentialToolSlug === 'pinterest'
                           ? 'This Pinterest credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                        : activeCredentialToolSlug === 'suno'
+                          ? 'This Suno credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                        : activeCredentialToolSlug === 'epidemic-sound'
+                          ? 'This Epidemic Sound credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                        : activeCredentialToolSlug === 'splice'
+                          ? 'This Splice credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                           : 'This Kling credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'}
                   </div>
                 )}

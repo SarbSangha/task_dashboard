@@ -57,6 +57,12 @@
     "https://*.elevenlabs.io/*",
     "https://pinterest.com/*",
     "https://*.pinterest.com/*",
+    "https://suno.com/*",
+    "https://*.suno.com/*",
+    "https://epidemicsound.com/*",
+    "https://*.epidemicsound.com/*",
+    "https://splice.com/*",
+    "https://*.splice.com/*",
     "https://google.com/*",
     "https://*.google.com/*",
     "https://labs.google/*",
@@ -219,6 +225,30 @@
         "https://*.pinterest.com/*"
       ],
       "js": ["content-pinterest.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://suno.com/*",
+        "https://*.suno.com/*"
+      ],
+      "js": ["content-suno.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://epidemicsound.com/*",
+        "https://*.epidemicsound.com/*"
+      ],
+      "js": ["content-epidemicsound.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://splice.com/*",
+        "https://*.splice.com/*"
+      ],
+      "js": ["content-splice.js"],
       "run_at": "document_idle"
     },
     {

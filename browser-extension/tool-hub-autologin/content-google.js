@@ -1,4 +1,5 @@
 (() => {
+const GOOGLE_SCRIPT_VERSION = 'debug-2026-07-21-google-02';
 const LOGIN_FLOW_STORAGE_KEY = 'rmw_chatgpt_login_flow_hints_v1';
 const LOGIN_FLOW_HINT_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const FLOW_EXTENSION_TICKET_STORAGE_KEY = 'rmw_flow_google_extension_ticket';
@@ -252,6 +253,21 @@ function isPinterestGoogleFlow(toolSlug = STATE.toolSlug) {
   return normalizedToolSlug === 'pinterest';
 }
 
+function isSunoGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'suno';
+}
+
+function isEpidemicSoundGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'epidemic-sound';
+}
+
+function isSpliceGoogleFlow(toolSlug = STATE.toolSlug) {
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
+  return normalizedToolSlug === 'splice';
+}
+
 function isChatGptGoogleFlow(toolSlug = STATE.toolSlug) {
   const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
   return normalizedToolSlug === 'chatgpt';
@@ -274,7 +290,10 @@ function shouldProtectGooglePasswordReveal(toolSlug = STATE.toolSlug) {
     || isGensparkGoogleFlow(toolSlug)
     || isElevenLabsGoogleFlow(toolSlug)
     || isHeyGenGoogleFlow(toolSlug)
-    || isPinterestGoogleFlow(toolSlug);
+    || isPinterestGoogleFlow(toolSlug)
+    || isSunoGoogleFlow(toolSlug)
+    || isEpidemicSoundGoogleFlow(toolSlug)
+    || isSpliceGoogleFlow(toolSlug);
 }
 
 function shouldAggressivelyDisableGoogleRevealControls(toolSlug = STATE.toolSlug) {
@@ -298,7 +317,10 @@ function supportsGoogleAuthenticatorAutomation(toolSlug = STATE.toolSlug) {
     || normalizedToolSlug === 'pinterest'
     || normalizedToolSlug === 'kling'
     || normalizedToolSlug === 'kling-ai'
-    || normalizedToolSlug === 'klingai';
+    || normalizedToolSlug === 'klingai'
+    || normalizedToolSlug === 'suno'
+    || normalizedToolSlug === 'epidemic-sound'
+    || normalizedToolSlug === 'splice';
 }
 
 function getToolDisplayName(toolSlug = STATE.toolSlug) {
@@ -313,6 +335,9 @@ function getToolDisplayName(toolSlug = STATE.toolSlug) {
   if (normalizedToolSlug === 'heygen') return 'HeyGen';
   if (normalizedToolSlug === 'pinterest') return 'Pinterest';
   if (normalizedToolSlug === 'kling' || normalizedToolSlug === 'kling-ai' || normalizedToolSlug === 'klingai') return 'Kling';
+  if (normalizedToolSlug === 'suno') return 'Suno';
+  if (normalizedToolSlug === 'epidemic-sound') return 'Epidemic Sound';
+  if (normalizedToolSlug === 'splice') return 'Splice';
   return 'Google';
 }
 
@@ -371,7 +396,7 @@ function ensureStatusBadge() {
   badge.style.boxShadow = '0 8px 24px rgba(15, 23, 42, 0.28)';
   badge.style.pointerEvents = 'none';
   badge.style.whiteSpace = 'pre-wrap';
-  badge.textContent = STATE.status || 'Starting auto-login';
+  badge.textContent = `Google auto-login ${GOOGLE_SCRIPT_VERSION}\n${STATE.status || 'Starting auto-login'}`;
   (document.body || document.documentElement).appendChild(badge);
   return badge;
 }
@@ -381,7 +406,7 @@ function setStatus(message) {
   STATE.status = message;
   const badge = ensureStatusBadge();
   if (badge) {
-    badge.textContent = `Google auto-login\n${message}`;
+    badge.textContent = `Google auto-login ${GOOGLE_SCRIPT_VERSION}\n${message}`;
   }
   console.debug('[RMW Google Auto Login]', message);
 }
@@ -1020,7 +1045,7 @@ function readStoredGoogleLastToolSlug() {
 }
 
 function listKnownGoogleToolSlugs() {
-  return ['flow', 'behance', 'chatgpt', 'enhancor', 'elevenlabs', 'freepik', 'genspark', 'heygen', 'kling-ai', 'pinterest'];
+  return ['flow', 'behance', 'chatgpt', 'enhancor', 'elevenlabs', 'freepik', 'genspark', 'heygen', 'kling-ai', 'pinterest', 'suno', 'epidemic-sound', 'splice'];
 }
 
 function inferStoredGoogleToolSlug() {
@@ -1207,6 +1232,27 @@ function inferToolSlugFromGooglePage() {
     ))) {
       return 'pinterest';
     }
+
+    if (values.some((value) => (
+      value.includes('suno.com')
+      || value.includes('studio-api.prod.suno.com')
+    ))) {
+      return 'suno';
+    }
+
+    if (values.some((value) => (
+      value.includes('epidemicsound.com')
+      || value.includes('login.epidemicsound.com')
+    ))) {
+      return 'epidemic-sound';
+    }
+
+    if (values.some((value) => (
+      value.includes('splice.com')
+      || value.includes('auth.splice.com')
+    ))) {
+      return 'splice';
+    }
   } catch {}
 
   const currentPageText = pageText();
@@ -1311,6 +1357,40 @@ function inferToolSlugFromGooglePage() {
     return 'pinterest';
   }
 
+  if (
+    currentPageText.includes('continue to suno')
+    || currentPageText.includes('to continue to suno')
+    || currentPageText.includes('review suno')
+    || currentPageText.includes('signing back in to suno')
+    || currentPageText.includes('suno privacy policy')
+    || currentPageText.includes('suno terms of service')
+  ) {
+    return 'suno';
+  }
+
+  if (
+    currentPageText.includes('continue to epidemic sound')
+    || currentPageText.includes('to continue to epidemic sound')
+    || currentPageText.includes('continue to epidemicsound')
+    || currentPageText.includes('review epidemic sound')
+    || currentPageText.includes('signing back in to epidemic sound')
+    || currentPageText.includes('epidemic sound privacy policy')
+    || currentPageText.includes('epidemic sound terms of service')
+  ) {
+    return 'epidemic-sound';
+  }
+
+  if (
+    currentPageText.includes('continue to splice')
+    || currentPageText.includes('to continue to splice')
+    || currentPageText.includes('review splice')
+    || currentPageText.includes('signing back in to splice')
+    || currentPageText.includes('splice privacy policy')
+    || currentPageText.includes('splice terms of service')
+  ) {
+    return 'splice';
+  }
+
   return inferStoredGoogleToolSlug();
 }
 
@@ -1322,7 +1402,10 @@ function supportsPasswordOptionalGoogleCredential(toolSlug = STATE.toolSlug) {
     || normalizedToolSlug === 'heygen'
     || normalizedToolSlug === 'kling'
     || normalizedToolSlug === 'kling-ai'
-    || normalizedToolSlug === 'klingai';
+    || normalizedToolSlug === 'klingai'
+    || normalizedToolSlug === 'suno'
+    || normalizedToolSlug === 'epidemic-sound'
+    || normalizedToolSlug === 'splice';
 }
 
 function isGoogleIdentifierUrl() {
@@ -1889,7 +1972,10 @@ function shouldPreferGoogleAddAccount(toolSlug = STATE.toolSlug) {
     || normalized === 'pinterest'
     || normalized === 'kling'
     || normalized === 'kling-ai'
-    || normalized === 'klingai';
+    || normalized === 'klingai'
+    || normalized === 'suno'
+    || normalized === 'epidemic-sound'
+    || normalized === 'splice';
 }
 
 function findGoogleChooserPanel() {
@@ -1960,6 +2046,44 @@ function findGoogleUseAnotherAccountAction() {
   }
 
   return null;
+}
+
+// Coordinate-based click on the exact rendered text (e.g. "Use another account"
+// or the credential email) so Google's obfuscated chooser DOM cannot defeat the
+// row finders. Targets the precise text position, so it never hits a wrapper.
+function clickGoogleChooserTextNode(textValues = []) {
+  const values = textValues.map(normalizeText).filter(Boolean);
+  if (!values.length) return false;
+
+  const root = document.body || document.documentElement;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    const text = normalizeText(node.nodeValue);
+    if (text && values.some((value) => text === value || text.includes(value))) {
+      const parent = node.parentElement;
+      if (parent && isVisible(parent)) {
+        try {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const rect = Array.from(range.getClientRects()).find((item) => item.width > 0 && item.height > 0)
+            || range.getBoundingClientRect();
+          range.detach?.();
+          if (rect && rect.width > 0 && rect.height > 0) {
+            const pointX = rect.left + (rect.width / 2);
+            const pointY = rect.top + (rect.height / 2);
+            const pointed = document.elementFromPoint(pointX, pointY);
+            const target = findRealClickableTarget(pointed) || pointed || parent;
+            if (target && isVisible(target) && activateActionElement(target)) {
+              return true;
+            }
+          }
+        } catch {}
+      }
+    }
+    node = walker.nextNode();
+  }
+  return false;
 }
 
 function isGoogleAccountChooserPage() {
@@ -2646,7 +2770,7 @@ function findNextButton(kind, input = null) {
 }
 
 function isGoogleConsentContinueScreen() {
-  if (!isBehanceGoogleFlow() && !isKlingGoogleFlow() && !isEnhancorGoogleFlow() && !isGensparkGoogleFlow() && !isElevenLabsGoogleFlow() && !isPinterestGoogleFlow()) return false;
+  if (!isBehanceGoogleFlow() && !isKlingGoogleFlow() && !isEnhancorGoogleFlow() && !isGensparkGoogleFlow() && !isElevenLabsGoogleFlow() && !isPinterestGoogleFlow() && !isSunoGoogleFlow() && !isEpidemicSoundGoogleFlow() && !isSpliceGoogleFlow()) return false;
   if (findGoogleEmailInput() || findGooglePasswordInput()) return false;
 
   const text = pageText();
@@ -2708,7 +2832,37 @@ function isGoogleConsentContinueScreen() {
     || text.includes('pinterest privacy policy')
     || text.includes('pinterest terms of service');
 
-  return (mentionsBehance || mentionsKling || mentionsEnhancor || mentionsGenspark || mentionsElevenLabs || mentionsPinterest)
+  const mentionsSuno = text.includes("you're signing back in to suno")
+    || text.includes('youre signing back in to suno')
+    || text.includes('signing back in to suno')
+    || text.includes('continue to suno')
+    || text.includes('to continue to suno')
+    || text.includes('review suno')
+    || text.includes("suno's privacy")
+    || text.includes('suno privacy policy')
+    || text.includes('suno terms of service');
+
+  const mentionsEpidemicSound = text.includes("you're signing back in to epidemic sound")
+    || text.includes('youre signing back in to epidemic sound')
+    || text.includes('signing back in to epidemic sound')
+    || text.includes('continue to epidemic sound')
+    || text.includes('to continue to epidemic sound')
+    || text.includes('review epidemic sound')
+    || text.includes("epidemic sound's privacy")
+    || text.includes('epidemic sound privacy policy')
+    || text.includes('epidemic sound terms of service');
+
+  const mentionsSplice = text.includes("you're signing back in to splice")
+    || text.includes('youre signing back in to splice')
+    || text.includes('signing back in to splice')
+    || text.includes('continue to splice')
+    || text.includes('to continue to splice')
+    || text.includes('review splice')
+    || text.includes("splice's privacy")
+    || text.includes('splice privacy policy')
+    || text.includes('splice terms of service');
+
+  return (mentionsBehance || mentionsKling || mentionsEnhancor || mentionsGenspark || mentionsElevenLabs || mentionsPinterest || mentionsSuno || mentionsEpidemicSound || mentionsSplice)
     && text.includes('sign in with google')
     && text.includes('continue');
 }
@@ -3371,14 +3525,27 @@ async function attemptKlingGoogleChooserStep(credential) {
     return true;
   }
 
-  if (addAccountAction) {
+  // Fall back to "Use another account" whenever the credential account is not in
+  // the chooser list — even for tools not in shouldPreferGoogleAddAccount — so we
+  // never sit forever on the chooser. (Matches the non-wrapper chooser path.)
+  const resolvedAddAccountAction = addAccountAction || findGoogleUseAnotherAccountAction();
+  if (resolvedAddAccountAction) {
     setStatus('Choosing Google add account');
-    if (!activateActionElement(addAccountAction)) {
+    if (!activateActionElement(resolvedAddAccountAction)) {
       setStatus('Google add-account option not ready');
       scheduleAttempt(300);
       return true;
     }
 
+    STATE.googleAddAccountPendingAt = Date.now();
+    STATE.emailSubmitted = false;
+    scheduleAttempt(700);
+    return true;
+  }
+
+  // Last resort: click the rendered "Use another account" text directly.
+  if (clickGoogleChooserTextNode(['use another account', 'add another account', 'add account'])) {
+    setStatus('Choosing Google add account');
     STATE.googleAddAccountPendingAt = Date.now();
     STATE.emailSubmitted = false;
     scheduleAttempt(700);
@@ -3885,6 +4052,123 @@ async function attemptHeyGenGooglePopupFlow(credential) {
 
   if (isKlingGoogleRelevantSurface()) {
     setStatus('Waiting for HeyGen Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
+async function attemptSunoGooglePopupFlow(credential) {
+  if (!isSunoGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(toolSlug))) {
+    if (isKlingGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (credential?.loginMethod && !isGoogleLoginCredential(credential)) {
+    setStatus('Selected credential is not configured for Google sign-in');
+    STATE.settled = true;
+    return true;
+  }
+
+  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
+  // Suno uses Google's standard chooser/password pages; reuse the stable
+  // Kling sequence while keeping this route isolated from Kling itself.
+  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptFlowTotpStep()) return true;
+  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptGoogleConsentContinueStep()) return true;
+  if (await attemptKlingGoogleEmailStep(credential)) return true;
+
+  if (isKlingGoogleRelevantSurface()) {
+    setStatus('Waiting for Suno Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
+async function attemptEpidemicSoundGooglePopupFlow(credential) {
+  if (!isEpidemicSoundGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(toolSlug))) {
+    if (isKlingGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (credential?.loginMethod && !isGoogleLoginCredential(credential)) {
+    setStatus('Selected credential is not configured for Google sign-in');
+    STATE.settled = true;
+    return true;
+  }
+
+  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
+  // Epidemic Sound uses Google's standard chooser/password pages; reuse the
+  // stable Kling sequence while keeping this route isolated from Kling itself.
+  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptFlowTotpStep()) return true;
+  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptGoogleConsentContinueStep()) return true;
+  if (await attemptKlingGoogleEmailStep(credential)) return true;
+
+  if (isKlingGoogleRelevantSurface()) {
+    setStatus('Waiting for Epidemic Sound Google popup step');
+    scheduleAttempt(300);
+    return true;
+  }
+  return false;
+}
+
+async function attemptSpliceGooglePopupFlow(credential) {
+  if (!isSpliceGoogleFlow()) return false;
+
+  const toolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+  if (toolSlug) {
+    STATE.toolSlug = toolSlug;
+  }
+
+  if (!credential?.loginIdentifier || (!credential?.password && !supportsPasswordOptionalGoogleCredential(toolSlug))) {
+    if (isKlingGoogleRelevantSurface()) {
+      requestCredential();
+      return true;
+    }
+    return false;
+  }
+
+  if (credential?.loginMethod && !isGoogleLoginCredential(credential)) {
+    setStatus('Selected credential is not configured for Google sign-in');
+    STATE.settled = true;
+    return true;
+  }
+
+  if (await attemptKlingGoogleDeveloperInfoStep()) return true;
+  // Splice uses Google's standard chooser/password pages; reuse the stable
+  // Kling sequence while keeping this route isolated from Kling itself.
+  if (!isGooglePasswordUrl() && await attemptKlingGoogleChooserStep(credential)) return true;
+  if (await attemptFlowTotpStep()) return true;
+  if (await attemptKlingGooglePasswordStep(credential)) return true;
+  if (await attemptGoogleConsentContinueStep()) return true;
+  if (await attemptKlingGoogleEmailStep(credential)) return true;
+
+  if (isKlingGoogleRelevantSurface()) {
+    setStatus('Waiting for Splice Google popup step');
     scheduleAttempt(300);
     return true;
   }
@@ -4974,6 +5258,9 @@ async function attemptFill() {
   if (await attemptGensparkGooglePopupFlow(credential)) return;
   if (await attemptElevenLabsGooglePopupFlow(credential)) return;
   if (await attemptHeyGenGooglePopupFlow(credential)) return;
+  if (await attemptSunoGooglePopupFlow(credential)) return;
+  if (await attemptEpidemicSoundGooglePopupFlow(credential)) return;
+  if (await attemptSpliceGooglePopupFlow(credential)) return;
   if (await attemptPinterestGooglePopupFlow(credential)) return;
   if (await attemptBehanceGooglePopupFlow(credential)) return;
 

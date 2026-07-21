@@ -62,9 +62,12 @@ HOSTNAME_EQUIVALENT_GROUPS = (
     {"heygen.com", "www.heygen.com", "auth.heygen.com", "app.heygen.com"},
     {"kling.ai", "klingai.com", "app.klingai.com"},
     {"pinterest.com", "www.pinterest.com", "in.pinterest.com"},
+    {"suno.com", "www.suno.com", "studio-api.prod.suno.com"},
+    {"epidemicsound.com", "www.epidemicsound.com", "login.epidemicsound.com"},
+    {"splice.com", "www.splice.com", "auth.splice.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
-SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"behance", "canva", "chatgpt", "claude", "enhancor", "elevenlabs", "eleven-labs", "eleven-lab", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow", "pinterest", "pintrest"}
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"behance", "canva", "chatgpt", "claude", "enhancor", "elevenlabs", "eleven-labs", "eleven-lab", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow", "pinterest", "pintrest", "suno", "epidemic-sound", "epidemicsound", "epidemic", "splice"}
 PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
     "behance": {"email_password", "google"},
@@ -79,6 +82,9 @@ TOOL_CREDENTIAL_LOGIN_METHODS = {
     "kling-ai": {"email_password", "google"},
     "klingai": {"email_password", "google"},
     "pinterest": {"email_password", "google"},
+    "suno": {"email_password", "google"},
+    "epidemic-sound": {"email_password", "google"},
+    "splice": {"email_password", "google"},
 }
 
 
@@ -193,6 +199,8 @@ def _canonical_tool_slug(value: str) -> str:
         return "elevenlabs"
     if slug == "pintrest":
         return "pinterest"
+    if slug in {"epidemicsound", "epidemic", "epidemic-sounds"}:
+        return "epidemic-sound"
     return slug
 
 
@@ -3536,7 +3544,7 @@ def upsert_credential(
                     "New shared Claude credentials require the sign-in email address."
                     if canonical_tool_slug == "claude"
                     else "New shared Google-login credentials require the Google email address."
-                    if canonical_tool_slug in {"behance", "chatgpt", "enhancor", "freepik", "genspark", "heygen", "kling", "kling-ai", "klingai", "pinterest"} and login_method == "google"
+                    if canonical_tool_slug in {"behance", "chatgpt", "enhancor", "freepik", "genspark", "heygen", "kling", "kling-ai", "klingai", "pinterest", "suno", "epidemic-sound", "splice"} and login_method == "google"
                     else "New shared company credentials require both username/email and password"
                 ),
             )
