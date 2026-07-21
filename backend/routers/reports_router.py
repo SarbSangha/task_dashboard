@@ -2309,6 +2309,8 @@ def user_day(
     tasks_created = [{
         "taskNumber": t.task_number,
         "title": t.title,
+        "projectName": t.project_name,
+        "taskType": t.task_type,
         "status": enum_val(t.status),
         "priority": enum_val(t.priority),
         "createdAt": t.created_at.isoformat() if t.created_at else None,
@@ -2323,9 +2325,13 @@ def user_day(
     task_actions = [{
         "time": h.timestamp.isoformat() if h.timestamp else None,
         "action": h.action,
+        "statusFrom": h.status_from,
         "statusTo": h.status_to,
         "taskNumber": t.task_number,
         "title": t.title,
+        "projectName": t.project_name,
+        "taskType": t.task_type,
+        "priority": enum_val(t.priority),
     } for h, t in (
         db.query(TaskStatusHistory, Task)
         .join(Task, TaskStatusHistory.task_id == Task.id)
@@ -2378,6 +2384,8 @@ def user_day(
         "resolution": g.resolution_label,
         "credits": round(float(g.credits_burned or 0), 1) if (g.credits_burned or 0) <= MAX_SANE_KLING_CREDITS else None,
         "prompt": (g.prompt_text or "")[:220],
+        "assetUrl": g.canonical_asset_url or None,
+        "generationId": g.provider_generation_id or g.provider_task_id or None,
     } for g in (
         gen_day_q.order_by(GenerationRecord.created_at.asc()).limit(GEN_ROW_LIMIT).all()
     )]

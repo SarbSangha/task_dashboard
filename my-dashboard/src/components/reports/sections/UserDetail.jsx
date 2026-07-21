@@ -580,10 +580,28 @@ const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas })
           {((d.tasksCreated || []).length + (d.taskActions || []).length) ? (
             <ul style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: 12 }}>
               {(d.tasksCreated || []).map((x) => (
-                <li key={`c-${x.taskNumber}`}>Created <b>{x.taskNumber}</b> — {x.title} <span className="rpt-pill muted">{x.status}</span></li>
+                <li key={`c-${x.taskNumber}`} style={{ marginBottom: 4 }}>
+                  Created <b>{x.taskNumber}</b>{x.title ? <> — {x.title}</> : null} <span className="rpt-pill muted">{x.status}</span>
+                  {(x.projectName || x.taskType || x.priority) && (
+                    <div className="rpt-muted" style={{ fontSize: 11, marginTop: 1 }}>
+                      {x.projectName ? <>Project: <b>{x.projectName}</b></> : null}
+                      {x.taskType ? <>{x.projectName ? ' · ' : ''}Type: {x.taskType}</> : null}
+                      {x.priority ? <>{(x.projectName || x.taskType) ? ' · ' : ''}Priority: {x.priority}</> : null}
+                    </div>
+                  )}
+                </li>
               ))}
               {(d.taskActions || []).map((x, i) => (
-                <li key={`a-${i}`}>{time(x.time)} — <b>{x.action}</b> {x.statusTo ? `→ ${x.statusTo}` : ''} on {x.taskNumber} <span className="rpt-muted">{x.title}</span></li>
+                <li key={`a-${i}`} style={{ marginBottom: 4 }}>
+                  {time(x.time)} — <b>{x.action}</b> {x.statusTo ? `→ ${x.statusTo}` : ''} on <b>{x.taskNumber}</b>
+                  {x.title ? <> — {x.title}</> : null}
+                  {(x.projectName || x.priority) && (
+                    <div className="rpt-muted" style={{ fontSize: 11, marginTop: 1 }}>
+                      {x.projectName ? <>Project: <b>{x.projectName}</b></> : null}
+                      {x.priority ? <>{x.projectName ? ' · ' : ''}Priority: {x.priority}</> : null}
+                    </div>
+                  )}
+                </li>
               ))}
             </ul>
           ) : <p className="rpt-kpi-prev">No task activity that day.</p>}
@@ -603,6 +621,7 @@ const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas })
                 <thead><tr style={{ textAlign: 'left', color: 'var(--color-text-muted)' }}>
                   <th style={{ padding: '4px' }}>Time</th><th style={{ padding: '4px' }}>Model</th>
                   <th style={{ padding: '4px', textAlign: 'right' }}>Credits</th><th style={{ padding: '4px' }}>Prompt</th>
+                  <th style={{ padding: '4px' }}>Output</th>
                 </tr></thead>
                 <tbody>
                   {d.generations.map((g, i) => (
@@ -611,6 +630,19 @@ const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas })
                       <td style={{ padding: '4px' }}>{g.model || '—'}</td>
                       <td style={{ padding: '4px', textAlign: 'right' }}>{g.credits == null ? '—' : formatFull(g.credits)}</td>
                       <td style={{ padding: '4px' }}>{(g.prompt || '—').slice(0, 90)}</td>
+                      <td style={{ padding: '4px', whiteSpace: 'nowrap' }}>
+                        {g.assetUrl ? (
+                          <a
+                            href={g.assetUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ color: 'var(--color-primary)', fontWeight: 600, textDecoration: 'none' }}
+                            title="Open this generation in a new tab"
+                          >
+                            View
+                          </a>
+                        ) : '—'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

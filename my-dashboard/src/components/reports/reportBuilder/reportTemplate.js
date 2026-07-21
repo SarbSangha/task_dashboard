@@ -359,8 +359,8 @@ const dayKpis = (d) => {
 };
 const dayToolRows = (d) => (d?.toolUsage || []).map((x) => [esc(x.tool || '—'), num(x.events), num(x.credits)]);
 const dayTaskRows = (d) => [
-  ...(d?.tasksCreated || []).map((x) => ['Created', esc(x.taskNumber), esc(x.title), esc(x.status || '—')]),
-  ...(d?.taskActions || []).map((x) => [esc(x.action || 'Action'), esc(x.taskNumber), esc(x.title), esc(x.statusTo || '—')]),
+  ...(d?.tasksCreated || []).map((x) => ['Created', esc(x.taskNumber), esc(x.projectName || '—'), esc(x.title), esc(x.status || '—')]),
+  ...(d?.taskActions || []).map((x) => [esc(x.action || 'Action'), esc(x.taskNumber), esc(x.projectName || '—'), esc(x.title), esc(x.statusTo || '—')]),
 ];
 const dayGenRows = (d) => (d?.generations || []).slice(0, 60).map((g) => [
   clock(g.time), esc(g.model || '—'), g.credits == null ? '—' : num(g.credits), esc((g.prompt || '—').slice(0, 120)),
@@ -613,7 +613,7 @@ function blockBody(block, idx, live) {
         <h3 class="subsec">Tool usage</h3>
         ${tools.length ? simpleTableHtml(['Tool', 'Events', 'Credits'], tools) : '<p class="muted">No tool usage recorded.</p>'}
         <h3 class="subsec">Tasks</h3>
-        ${tasks.length ? simpleTableHtml(['Action', 'Task', 'Title', 'Status'], tasks) : '<p class="muted">No task activity that day.</p>'}
+        ${tasks.length ? simpleTableHtml(['Action', 'Task', 'Project', 'Title', 'Status'], tasks) : '<p class="muted">No task activity that day.</p>'}
         <h3 class="subsec">Generations</h3>
         ${d.generationsTruncated ? `<p class="muted">Showing the first ${num(gens.length)} of ${num(d.totals?.generations)} generations.</p>` : ''}
         ${gens.length ? simpleTableHtml(['Time', 'Model', 'Credits', 'Prompt'], gens) : '<p class="muted">No generations that day.</p>'}</section>`;
