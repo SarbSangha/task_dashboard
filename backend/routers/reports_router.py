@@ -231,6 +231,19 @@ def _local_hour(dt) -> int:
     return (dt + LOCAL_TZ_OFFSET).hour
 
 
+def _ist_iso(dt) -> Optional[str]:
+    """Serialize a UTC-naive timestamp as IST wall-clock ISO for report display.
+
+    created_at columns are stored in UTC (datetime.utcnow). The report frontends
+    render times with `new Date(iso).toLocaleTimeString()`, which shows a naive
+    ISO string as-is, so baking the +05:30 offset here makes those columns read in
+    IST regardless of the server/browser timezone. Use this for UTC-stored
+    timestamps (generations, tool-usage events, conversations) — NOT for values
+    that are already stored in local time.
+    """
+    return (dt + LOCAL_TZ_OFFSET).isoformat() if dt else None
+
+
 # A generation is treated as a "video" when it carries a duration label,
 # otherwise it is counted as an image. Kling clips always carry a duration.
 def _is_video_filter(query):
@@ -1066,15 +1079,16 @@ def chatgpt_user_timeline(
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
 
-    day_expr = func.date(ConversationRecord.created_at)
+    ist_conv_at = ConversationRecord.created_at + IST_INTERVAL  # UTC-stored; bucket/window in IST
+    day_expr = func.date(ist_conv_at)
     rows = (
         db.query(
             day_expr.label("day"),
             func.count(ConversationRecord.id).label("conversations"),
             func.coalesce(func.sum(ConversationRecord.prompt_count), 0).label("prompts"),
             func.coalesce(func.sum(ConversationRecord.response_count), 0).label("responses"),
-            func.min(ConversationRecord.created_at).label("first_at"),
-            func.max(ConversationRecord.created_at).label("last_at"),
+            func.min(ist_conv_at).label("first_at"),
+            func.max(ist_conv_at).label("last_at"),
             func.count(func.distinct(ConversationRecord.model_label)).label("models"),
         )
         .filter(
@@ -2358,7 +2372,7 @@ def user_day(
     )
     GEN_ROW_LIMIT = 200
     generations = [{
-        "time": g.created_at.isoformat() if g.created_at else None,
+        "time": _ist_iso(g.created_at),
         "model": g.model_label,
         "duration": g.duration_label,
         "resolution": g.resolution_label,
@@ -2505,7 +2519,7 @@ def prompts_user_timeline(
         raise HTTPException(status_code=404, detail="User not found")
 
     norm = _prompt_norm()
-    day_expr = func.date(GenerationRecord.created_at)
+    day_expr = func.date(GenerationRecord.created_at + IST_INTERVAL)  # bucket by IST day
     rows = (
         _gen_prompt_query(db, start_dt, end_exclusive, None)
         .filter(GenerationRecord.owner_user_id == userId)
