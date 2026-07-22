@@ -512,6 +512,17 @@ def _apply_candidate_to_generation_record(
         record.ownership_source = "usage_event_user_id"
     if not source_usage_event_id_conflict and candidate.usage_event_id:
         record.source_usage_event_id = candidate.usage_event_id
+    # Anchor created_at to the EARLIEST known occurrence of this generation.
+    # History re-discovery reports the same clip later (its discovery time is a
+    # larger timestamp than the real generation), so taking the min does two
+    # things: it stops a re-scan from pushing a correctly-dated record forward
+    # to its discovery day, and it pulls a previously mis-dated record (one
+    # created at discovery time before the historical-occurredAt fix) back to
+    # the real generation time. Without this, the Reports module — which filters
+    # GenerationRecord.created_at — keeps double-counting old clips (and their
+    # credits) into whatever day they were rediscovered.
+    if candidate.created_at and (record.created_at is None or candidate.created_at < record.created_at):
+        record.created_at = candidate.created_at
     record.metadata_json = _merge_generation_record_metadata(
         record.metadata_json,
         candidate.metadata_json,

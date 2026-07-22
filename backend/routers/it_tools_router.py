@@ -2993,7 +2993,16 @@ def report_extension_usage_event(
         usage_event.credential_id = credential.id if credential else usage_event.credential_id
         usage_event.event_type = normalized_event_type
         usage_event.status = final_status
-        usage_event.event_date = parsed_event_date or usage_event.event_date
+        # event_date is what the usage-report export + daily aggregates filter on.
+        # Anchor it to the EARLIEST known occurrence of this generation. A later
+        # duplicate of the same clip (a re-fetch, a trade-history reconciliation,
+        # a history rescan) must NEVER push event_date forward to its capture day
+        # -- doing so is exactly what made July-16 generations leak into a July-22
+        # export and inflate that day's credits. historical_occurred_at, when
+        # present, is the true generation time and always wins.
+        incoming_event_date = historical_occurred_at.date() if historical_occurred_at else parsed_event_date
+        if incoming_event_date and (usage_event.event_date is None or incoming_event_date < usage_event.event_date):
+            usage_event.event_date = incoming_event_date
         usage_event.model_label = (payload.model_label or "").strip() or usage_event.model_label
         usage_event.duration_label = (payload.duration_label or "").strip() or usage_event.duration_label
         usage_event.resolution_label = (payload.resolution_label or "").strip() or usage_event.resolution_label
@@ -3016,6 +3025,8 @@ def report_extension_usage_event(
             # existing rows even after this fix ships — re-scanning history
             # would silently keep the original (wrong) discovery-time stamp.
             usage_event.created_at = historical_occurred_at
+            # (event_date was already anchored to the earliest occurrence above,
+            # with historical_occurred_at.date() taking precedence.)
         usage_event.metadata_json = _merge_usage_metadata(usage_event.metadata_json, merged_metadata)
         usage_event.metadata_json["lastDedupeDecision"] = {
             "decision": "update",
@@ -3044,7 +3055,12 @@ def report_extension_usage_event(
             credential_id=credential.id if credential else None,
             user_id=current_user.id,
             event_type=normalized_event_type,
-            event_date=parsed_event_date or datetime.utcnow().date(),
+            # For history-discovered events, key event_date off the real
+            # generation time (historical_occurred_at) so it matches created_at;
+            # otherwise the discovery day would misattribute credits to the wrong
+            # date in the usage-report export and daily aggregates.
+            event_date=parsed_event_date
+            or (historical_occurred_at.date() if historical_occurred_at else datetime.utcnow().date()),
             status=normalized_status,
             model_label=(payload.model_label or "").strip() or None,
             duration_label=(payload.duration_label or "").strip() or None,
