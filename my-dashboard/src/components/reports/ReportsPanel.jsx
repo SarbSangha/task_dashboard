@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import WindowControls from '../common/WindowControls';
 import { useMinimizedWindowStack } from '../../hooks/useMinimizedWindowStack';
 import { isMobileViewport } from '../../utils/isMobileViewport';
-import { reportsAPI } from '../../services/reports';
+import { reportsAPI, downloadBlobResponse } from '../../services/reports';
 import { presetRange } from './utils/format';
 import GlobalFilters from './GlobalFilters';
 import ReportsSidebarTree from './ReportsSidebarTree';
@@ -81,6 +81,10 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [treeOpen, setTreeOpen] = useState(false);
   const [canvasQueue, setCanvasQueue] = useState([]);
   const [canvasToast, setCanvasToast] = useState(null);
+  const [workbookBusy, setWorkbookBusy] = useState(false);
+  const [showRangeMenu, setShowRangeMenu] = useState(false);
+  const [customStart, setCustomStart] = useState(() => presetRange('15d').start);
+  const [customEnd, setCustomEnd] = useState(() => presetRange('15d').end);
 
   const [preset, setPreset] = useState('30d');
   const [filters, setFilters] = useState(() => ({ ...presetRange('30d'), department: 'all', tool: 'all' }));
@@ -119,6 +123,35 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     setSection(key);
     setDrill(null);
     setTreeOpen(false);
+  };
+
+  // Fetch and download the multi-sheet executive Excel workbook for a window.
+  // `range` = { start, end } (YYYY-MM-DD); omitted → server default (15-day cycle).
+  const downloadWorkbook = async (range) => {
+    if (workbookBusy) return;
+    setShowRangeMenu(false);
+    setWorkbookBusy(true);
+    setCanvasToast('Generating Excel report…');
+    try {
+      const params = range?.start && range?.end ? { start: range.start, end: range.end } : {};
+      const res = await reportsAPI.aiWorkbook(params);
+      downloadBlobResponse(res, 'AI-Usage-Report.xlsx');
+      setCanvasToast('Excel report downloaded.');
+    } catch (err) {
+      setCanvasToast(err?.response?.status === 403
+        ? 'You need admin access to download the report.'
+        : 'Could not generate the Excel report. Please try again.');
+    } finally {
+      setWorkbookBusy(false);
+      setTimeout(() => setCanvasToast(null), 3200);
+    }
+  };
+
+  const pickPreset = (preset) => downloadWorkbook(presetRange(preset));
+  const downloadCustom = () => {
+    if (!customStart || !customEnd) return;
+    const [start, end] = customStart <= customEnd ? [customStart, customEnd] : [customEnd, customStart];
+    downloadWorkbook({ start, end });
   };
 
   const handleToggleMinimize = () => {
@@ -350,6 +383,48 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
             </div>
           </div>
           <div className="rpt-header-spacer" />
+          {!isMinimized && (
+            <div className="rpt-workbook-wrap">
+              <button
+                className="rpt-workbook-btn"
+                onClick={() => setShowRangeMenu((v) => !v)}
+                disabled={workbookBusy}
+                aria-haspopup="menu"
+                aria-expanded={showRangeMenu}
+                title="Download the full multi-sheet Excel report (Dashboard, Overview, Tool Master, Employee Summary, ChatGPT & Kling logs)"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                {workbookBusy ? 'Generating…' : 'Download Excel'}
+                {!workbookBusy && <span className="rpt-workbook-caret" aria-hidden="true">▾</span>}
+              </button>
+              {showRangeMenu && (
+                <>
+                  <div className="rpt-range-backdrop" onClick={() => setShowRangeMenu(false)} />
+                  <div className="rpt-range-menu" role="menu">
+                    <div className="rpt-range-title">Report period</div>
+                    <button className="rpt-range-item" role="menuitem" onClick={() => pickPreset('today')}>Today</button>
+                    <button className="rpt-range-item" role="menuitem" onClick={() => pickPreset('tomorrow')}>Tomorrow</button>
+                    <button className="rpt-range-item" role="menuitem" onClick={() => pickPreset('15d')}>Last 15 days</button>
+                    <button className="rpt-range-item" role="menuitem" onClick={() => pickPreset('30d')}>Last 30 days</button>
+                    <div className="rpt-range-sep" />
+                    <div className="rpt-range-custom">
+                      <span className="rpt-range-sublabel">Custom range</span>
+                      <div className="rpt-range-dates">
+                        <input type="date" value={customStart} max={customEnd} onChange={(e) => setCustomStart(e.target.value)} aria-label="Start date" />
+                        <span className="rpt-range-arrow">→</span>
+                        <input type="date" value={customEnd} min={customStart} onChange={(e) => setCustomEnd(e.target.value)} aria-label="End date" />
+                      </div>
+                      <button className="rpt-range-generate" onClick={downloadCustom} disabled={!customStart || !customEnd}>
+                        Generate
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           {!isMinimized && canvasQueue.length > 0 && (
             <button
               className="rpt-canvas-badge"

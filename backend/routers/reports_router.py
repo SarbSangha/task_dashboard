@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import String, and_, case, func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
@@ -4008,3 +4009,38 @@ def recommendations(
     }
     return {"success": True, "recommendations": recs, "summary": summary,
             "note": "Evidence-based suggestions from real aggregates. Confidence is heuristic (data volume x effect size), not statistical. Acceptance/outcome tracking is future architecture."}
+
+
+# ---------------------------------------------------------------------------
+# Downloadable executive workbook (multi-sheet .xlsx)
+# ---------------------------------------------------------------------------
+@router.get("/ai-workbook.xlsx")
+def ai_workbook_xlsx(
+    start: Optional[str] = Query(None, description="Window start date (YYYY-MM-DD)."),
+    end: Optional[str] = Query(None, description="Window end date (YYYY-MM-DD)."),
+    ref: Optional[str] = Query(None, description="Cycle end date (YYYY-MM-DD); used only when start/end are omitted. Defaults to today."),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """
+    Generate and stream the seven-sheet AI Tool Usage workbook (Read Me,
+    Dashboard, Overview, Tool Master, Employee Summary, ChatGPT + Kling logs).
+
+    Reporting window: pass ``start`` and ``end`` for a custom range; otherwise a
+    rolling 15-day cycle ending on ``ref`` (default today) is used.
+
+    Fully server-rendered from live data — no template file, no manual editing.
+    """
+    from utils.ai_report import build_ai_workbook
+
+    data, mimetype, filename = build_ai_workbook(
+        db,
+        start=_parse_date(start),
+        end=_parse_date(end),
+        ref_date=_parse_date(ref),
+    )
+    return Response(
+        content=data,
+        media_type=mimetype,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

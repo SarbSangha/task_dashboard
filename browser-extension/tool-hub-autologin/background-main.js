@@ -1041,9 +1041,16 @@ async function savePasswordSavingSuppressionState(state) {
   });
 }
 
-async function setPasswordSavingSuppressedForTab(tabId, suppressed) {
+async function setPasswordSavingSuppressedForTab(tabId, suppressed, isIncognito = false) {
   if (!tabId) {
     throw new Error('Active tab required.');
+  }
+
+  // Incognito never persists saved passwords, so there is nothing to suppress
+  // and Chrome doesn't let the extension flip the (regular-profile) setting for
+  // an incognito tab. Report success so the auto-login proceeds to fill.
+  if (isIncognito) {
+    return { suppressed: Boolean(suppressed), incognito: true };
   }
 
   let state = await getPasswordSavingSuppressionState();
@@ -2319,7 +2326,7 @@ function handleRuntimeMessage(message, sender, sendResponse) {
   }
 
   if (message?.type === 'TOOL_HUB_SET_PASSWORD_SAVING_SUPPRESSED') {
-    setPasswordSavingSuppressedForTab(senderTabId, Boolean(message.suppressed))
+    setPasswordSavingSuppressedForTab(senderTabId, Boolean(message.suppressed), Boolean(sender?.tab?.incognito))
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

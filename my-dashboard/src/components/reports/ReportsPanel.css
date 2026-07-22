@@ -402,6 +402,103 @@ table.rpt-heatmap { border-collapse: separate; border-spacing: 3px; font-size: 1
 }
 .rpt-canvas-badge:hover { filter: brightness(1.08); }
 
+.rpt-workbook-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  margin-right: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: #1f3864;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rpt-workbook-btn:hover { filter: brightness(1.12); }
+.rpt-workbook-btn:disabled { opacity: 0.6; cursor: progress; }
+.rpt-workbook-btn svg { flex-shrink: 0; }
+.rpt-workbook-caret { font-size: 10px; margin-left: 1px; opacity: 0.85; }
+
+.rpt-workbook-wrap { position: relative; display: inline-flex; }
+
+.rpt-range-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.rpt-range-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 41;
+  width: 232px;
+  padding: 8px;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e2e6ee);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(16, 31, 63, 0.18);
+}
+.rpt-range-title {
+  padding: 4px 8px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #6b7280);
+}
+.rpt-range-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text, #1f2937);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.rpt-range-item:hover { background: var(--color-hover, #eef2fb); color: #1f3864; }
+.rpt-range-sep { height: 1px; margin: 6px 4px; background: var(--color-border, #e2e6ee); }
+.rpt-range-custom { padding: 2px 8px 4px; }
+.rpt-range-sublabel {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted, #6b7280);
+}
+.rpt-range-dates { display: flex; align-items: center; gap: 6px; }
+.rpt-range-dates input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  font-size: 12px;
+  color: var(--color-text, #1f2937);
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #d7dce8);
+  border-radius: 7px;
+}
+.rpt-range-arrow { color: var(--color-text-muted, #9aa3b2); font-size: 12px; }
+.rpt-range-generate {
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: #1f3864;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.rpt-range-generate:hover { filter: brightness(1.12); }
+.rpt-range-generate:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .rpt-canvas-toast {
   position: absolute;
   left: 50%;

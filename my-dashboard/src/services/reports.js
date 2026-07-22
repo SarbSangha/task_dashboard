@@ -232,6 +232,12 @@ export const reportsAPI = {
   getReport: async (id) => (await api.get(`/api/reports/library/${id}`)).data,
   deleteReport: async (id) => (await api.delete(`/api/reports/library/${id}`)).data,
 
+  // One-click executive workbook (multi-sheet .xlsx). Returns the raw axios
+  // blob response so callers can hand it to downloadBlobResponse(). Given a
+  // longer timeout — the workbook is rendered server-side from live data.
+  aiWorkbook: async (params = {}, requestConfig = {}) =>
+    api.get('/api/reports/ai-workbook.xlsx', { params, responseType: 'blob', timeout: 120000, ...requestConfig }),
+
   exportSavedReport: async (id, format) =>
     api.get(`/api/reports/library/${id}/export`, { params: { format }, responseType: 'blob', timeout: REPORTS_TIMEOUT_MS }),
   exportAdhoc: async (payload) =>

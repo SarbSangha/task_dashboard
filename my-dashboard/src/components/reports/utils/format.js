@@ -15,11 +15,16 @@ export const presetRange = (preset) => {
   }
   if (preset === 'today') {
     // start = end = today
+  } else if (preset === 'tomorrow') {
+    start.setDate(end.getDate() + 1);
+    end.setDate(end.getDate() + 1);
   } else if (preset === 'yesterday') {
     start.setDate(end.getDate() - 1);
     end.setDate(end.getDate() - 1);
   } else if (preset === '7d') {
     start.setDate(end.getDate() - 6);
+  } else if (preset === '15d') {
+    start.setDate(end.getDate() - 14);
   } else if (preset === '30d') {
     start.setDate(end.getDate() - 29);
   } else if (preset === '90d') {
