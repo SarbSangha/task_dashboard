@@ -29,7 +29,7 @@ function isAllowedDashboardPage() {
   if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
   return DASHBOARD_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
 }
-
+// tool da na standardize karna
 function normalizeToolSlug(value) {
   const normalized = `${value || ''}`.trim().toLowerCase();
   if (normalized === 'chat-gpt') return 'chatgpt';

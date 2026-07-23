@@ -196,6 +196,54 @@ def _unique_headers(cols: Sequence[Col]) -> list[str]:
     return out
 
 
+def table_header(
+    ws: Worksheet,
+    cols: Sequence[Col],
+    *,
+    row: int,
+    start_col: int = 1,
+    apply_widths: bool = True,
+) -> int:
+    """Write one styled navy header row. Returns the next row.
+
+    ``apply_widths=False`` lets a nested sub-table reuse the header styling
+    without fighting the host sheet's column widths.
+    """
+    for j, header in enumerate(_unique_headers(cols)):
+        cell = ws.cell(row=row, column=start_col + j, value=header)
+        cell.font = T.FONT_HEADER
+        cell.fill = T.FILL_HEADER
+        cell.alignment = T.ALIGN_CENTER
+        cell.border = T.BORDER_HEADER
+    ws.row_dimensions[row].height = 28
+    if apply_widths:
+        for j, col in enumerate(cols):
+            ws.column_dimensions[col_letter(start_col + j)].width = col.width
+    return row + 1
+
+
+def table_row(
+    ws: Worksheet,
+    cols: Sequence[Col],
+    item: Any,
+    *,
+    row_idx: int,
+    start_col: int = 1,
+    fill=None,
+) -> int:
+    """Write one styled body row for ``item``. Returns the next row."""
+    base = fill or T.FILL_WHITE
+    for j, col in enumerate(cols):
+        cell = ws.cell(row=row_idx, column=start_col + j, value=col.value(item))
+        cell.font = T.FONT_BODY
+        cell.fill = base
+        cell.alignment = _ALIGN.get(col.align, T.ALIGN_LEFT)
+        cell.border = T.BORDER_CELL
+        if col.fmt:
+            cell.number_format = col.fmt
+    return row_idx + 1
+
+
 def data_table(
     ws: Worksheet,
     cols: Sequence[Col],
@@ -206,6 +254,7 @@ def data_table(
     table_name: Optional[str] = None,
     row_fill: Optional[Callable[[int, Any], Any]] = None,
     zebra: bool = True,
+    autofilter: bool = True,
 ) -> int:
     """
     Render a fully styled table and (optionally) wrap it in an Excel table.
@@ -214,39 +263,18 @@ def data_table(
     (used for provider colour-coding and adoption status). It takes precedence
     over zebra striping. Returns the next free row after the table.
     """
-    headers = _unique_headers(cols)
     ncol = len(cols)
     header_row = start_row
     end_col = start_col + ncol - 1
 
-    # Header
-    for j, h in enumerate(headers):
-        cell = ws.cell(row=header_row, column=start_col + j, value=h)
-        cell.font = T.FONT_HEADER
-        cell.fill = T.FILL_HEADER
-        cell.alignment = T.ALIGN_CENTER
-        cell.border = T.BORDER_HEADER
-    ws.row_dimensions[header_row].height = 28
+    table_header(ws, cols, row=header_row, start_col=start_col, apply_widths=True)
 
     # Body
-    r = header_row
     for i, row in enumerate(rows):
-        r = header_row + 1 + i
         explicit = row_fill(i, row) if row_fill else None
         base = explicit or (T.FILL_ALT if (zebra and i % 2 == 1) else T.FILL_WHITE)
-        for j, col in enumerate(cols):
-            cell = ws.cell(row=r, column=start_col + j, value=col.value(row))
-            cell.font = T.FONT_BODY
-            cell.fill = base
-            cell.alignment = _ALIGN.get(col.align, T.ALIGN_LEFT)
-            cell.border = T.BORDER_CELL
-            if col.fmt:
-                cell.number_format = col.fmt
+        table_row(ws, cols, row, row_idx=header_row + 1 + i, start_col=start_col, fill=base)
     last_row = header_row + len(rows)
-
-    # Column widths
-    for j, col in enumerate(cols):
-        ws.column_dimensions[col_letter(start_col + j)].width = col.width
 
     # Excel table (auto-filter + sortable). Requires at least the header row.
     if table_name:
@@ -261,8 +289,9 @@ def data_table(
             showLastColumn=False,
         )
         ws.add_table(table)
-    else:
-        # No ListObject -> still give an auto-filter for sortability.
+    elif autofilter:
+        # No ListObject -> still give an auto-filter for sortability. Skipped for
+        # nested/grouped sub-tables (a sheet supports only one auto-filter).
         ws.auto_filter.ref = (
             f"{col_letter(start_col)}{header_row}:{col_letter(end_col)}{max(last_row, header_row)}"
         )

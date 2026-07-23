@@ -26,9 +26,9 @@ _DESCRIPTION = (
 _LEGEND = [
     ("Adoption Status", "Not Used = 0 tools · Using 1 Tool · Using Multiple Tools = 2+ tools in the period."),
     ("Composite Score", "ChatGPT sessions + Kling videos for the employee this period."),
-    ("AI Maturity", "Dormant · Explorer (1–5) · Adopter (6–15) · Power User (16–40) · Champion (40+)."),
-    ("ChatGPT Session", "One captured prompt/response interaction."),
-    ("Kling Generation", "One video generation record."),
+    ("Employee drill-down", "On Employee Summary, click a highlighted employee name to open their date-wise ChatGPT + Kling activity log."),
+    ("ChatGPT Session", "One captured prompt (counted from the conversation prompt counter)."),
+    ("Kling Generation", "One Kling usage event — the actual generation performed on the tool."),
     ("Credits", "Kling platform credits consumed (the real spend signal)."),
     ("— (em dash)", "No activity / not captured for this field."),
 ]
@@ -36,8 +36,8 @@ _LEGEND = [
 _NOTES = [
     "Fully auto-generated: no cell is hand-edited. Re-running replaces every sheet.",
     "Covers the selected reporting period (see Report Metadata); the default is a rolling 15-day cycle.",
-    "Raw-log sheets are capped for file size; per-employee totals always reflect the full period.",
-    "Data tables are Excel Tables — sort and filter directly from the header dropdowns.",
+    "On Employee Summary, use the + controls in the left margin to expand employee → date → tool → that day's log.",
+    "Employee Summary has filter dropdowns on its header row; totals always reflect the full period.",
     "Adding a new AI tool (Claude, Gemini, …) lights up automatically; no layout change needed.",
 ]
 

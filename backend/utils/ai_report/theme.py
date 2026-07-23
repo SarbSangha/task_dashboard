@@ -87,6 +87,10 @@ FONT_NUM = Font(name=FONT_NAME, size=10, color=TEXT_BODY)
 FONT_CALLOUT = Font(name=FONT_NAME, size=11, bold=True, color=NAVY)
 FONT_LABEL = Font(name=FONT_NAME, size=10, bold=True, color=TEXT_MUTED)
 FONT_NOTE = Font(name=FONT_NAME, size=9, color=TEXT_MUTED)
+# Clickable drill-down links (employee name -> their activity sheet, and back).
+LINK_BLUE = "0563C1"
+FONT_LINK = Font(name=FONT_NAME, size=10, color=LINK_BLUE, underline="single")
+FONT_LINK_BOLD = Font(name=FONT_NAME, size=10, bold=True, color=LINK_BLUE, underline="single")
 
 # --------------------------------------------------------------------------- #
 # Alignment
