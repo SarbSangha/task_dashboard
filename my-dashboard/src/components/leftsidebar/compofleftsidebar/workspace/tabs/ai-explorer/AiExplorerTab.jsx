@@ -6,8 +6,12 @@ import './AiExplorerTab.css';
 // plug into this same shell eventually (see the AI Explorer plan) - listed
 // here even before they're built so the switcher honestly shows what's
 // coming rather than only ever showing the one provider that exists today.
+// Freepik moved to RMW Data (Trendings panel -> "Freepik" view tab, next to
+// Kling) so it isn't duplicated here - same "already built, but lives
+// elsewhere" placeholder treatment Kling already got.
 const PROVIDERS = [
   { key: 'chatgpt', label: 'ChatGPT', icon: '🧠', enabled: true },
+  { key: 'freepik', label: 'Freepik', icon: '🖼️', enabled: false },
   { key: 'claude', label: 'Claude', icon: '🤖', enabled: false },
   { key: 'gemini', label: 'Gemini', icon: '✨', enabled: false },
   { key: 'kling', label: 'Kling', icon: '🎬', enabled: false },

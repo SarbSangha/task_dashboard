@@ -1,27 +1,25 @@
 import { FILTER_GROUPS } from './conversationFilterHelpers';
 
-// Grouped Type / Status / Time filter chips for the conversation sidebar.
-// Controlled: parent owns the { type, status, time } state.
+// Type / Status / Time filters as a row of dropdowns (one select per axis)
+// instead of stacked pill-button groups. Controlled: parent owns the
+// { type, status, time } state.
 export default function ConversationFilters({ filters, onChange }) {
   return (
     <div className="cgpt-conv-filters">
       {FILTER_GROUPS.map((group) => (
-        <div key={group.axis} className="cgpt-conv-filter-group">
+        <label key={group.axis} className="cgpt-conv-filter-group">
           <span className="cgpt-conv-filter-label">{group.label}</span>
-          <div className="chatgpt-capture-quick-filters" role="group" aria-label={`Filter by ${group.label}`}>
+          <select
+            className="chatgpt-capture-select"
+            aria-label={`Filter by ${group.label}`}
+            value={filters[group.axis]}
+            onChange={(event) => onChange(group.axis, event.target.value)}
+          >
             {group.options.map((opt) => (
-              <button
-                key={opt.key}
-                type="button"
-                className={`chatgpt-capture-quick-filter${filters[group.axis] === opt.key ? ' active' : ''}`}
-                aria-pressed={filters[group.axis] === opt.key}
-                onClick={() => onChange(group.axis, opt.key)}
-              >
-                {opt.label}
-              </button>
+              <option key={opt.key} value={opt.key}>{opt.label}</option>
             ))}
-          </div>
-        </div>
+          </select>
+        </label>
       ))}
     </div>
   );

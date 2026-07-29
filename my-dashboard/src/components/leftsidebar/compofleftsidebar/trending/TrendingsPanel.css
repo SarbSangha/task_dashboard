@@ -60,10 +60,12 @@
 
 .trendings-header {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) minmax(280px, 540px) auto;
+  grid-template-columns: minmax(120px, 180px) minmax(280px, 540px) auto;
   align-items: center;
-  gap: 18px;
-  padding: 24px 20px;
+  gap: 16px;
+  height: 52px;
+  min-height: 52px;
+  padding: 0 16px;
   background: var(--color-surface-elevated);
   border-bottom: 1px solid var(--color-border-subtle);
   box-shadow: var(--shadow-soft);
@@ -72,7 +74,9 @@
 .trendings-header h2 {
   margin: 0;
   color: var(--color-text);
-  letter-spacing: 0.2px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   min-width: 0;
   white-space: nowrap;
 }
@@ -85,11 +89,11 @@
   border: 1px solid var(--color-button-outline-border);
   background: var(--color-button-ghost-bg);
   color: var(--color-button-ghost-text);
-  border-radius: 8px;
-  width: 34px;
-  height: 34px;
+  border-radius: 7px;
+  width: 30px;
+  height: 30px;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1;
   display: flex;
   align-items: center;
@@ -134,14 +138,14 @@
 }
 
 .trendings-control-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
   border: 1px solid var(--color-button-outline-border);
   background: var(--color-button-ghost-bg);
   color: var(--color-button-ghost-text);
   cursor: pointer;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1;
   transition:
     background-color var(--theme-transition-fast),
@@ -224,9 +228,10 @@
   border: 1px solid var(--color-input-border);
   background: var(--color-input-bg);
   color: var(--color-input-text);
-  border-radius: 10px;
-  height: 40px;
-  padding: 0 16px;
+  border-radius: 8px;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
   outline: none;
   transition:
     background-color var(--theme-transition-base),
@@ -386,6 +391,25 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  padding: 0;
+}
+
+.trendings-content--freepik {
+  display: flex;
+  flex-direction: column;
+  /* Unlike Kling's grid (react-window + useElementSize, which actively
+     measures its own container via ResizeObserver and always finds some
+     scrollable area, however small), Freepik's grid is plain CSS and depends
+     on .chatgpt-capture-tab's own `overflow-y: auto` to scroll internally -
+     which in turn needs a definite height from `height: 100%` cascading
+     through this flex chain. That percentage-height-through-flex chain is
+     fragile; if it doesn't resolve, `overflow: hidden` here would hard-clip
+     everything below the fold with no way to reach it (no scrollbar at all -
+     exactly the "content just ends, dashboard behind shows through" symptom
+     reported). Scrolling here instead, at the outer level that definitely
+     has a real height from the parent flex layout, is what actually
+     guarantees the rest of the grid is reachable. */
+  overflow: auto;
   padding: 0;
 }
 
@@ -1374,6 +1398,8 @@
 
   .trendings-header {
     grid-template-columns: 1fr auto;
+    height: auto;
+    padding: 10px 16px;
     gap: 12px;
   }
 

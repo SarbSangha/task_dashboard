@@ -6,7 +6,7 @@ import DataTable from '../primitives/DataTable';
 import { formatNumber, formatFull, initialsOf } from '../utils/format';
 import { ToCanvasButton } from './ExecutiveDashboard';
 
-export const PROVIDER_LABELS = { kling: 'Kling', chatgpt: 'ChatGPT' };
+export const PROVIDER_LABELS = { kling: 'Kling', chatgpt: 'ChatGPT', freepik: 'Freepik' };
 
 // Which KPI card opened this drill, and how to describe it.
 export const CONTRIBUTOR_METRICS = {

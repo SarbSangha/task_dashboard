@@ -9,6 +9,7 @@ import WindowControls from '../../../common/WindowControls';
 import { usePermissions } from '../../../../hooks/usePermissions';
 import { buildFileDownloadUrl, buildFileOpenUrl, buildFileThumbnailUrl } from '../../../../utils/fileLinks';
 import KlingTab from './kling/KlingTab';
+import FreepikExplorerBody from '../workspace/tabs/freepik-capture/FreepikExplorerBody';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
@@ -588,9 +589,21 @@ const TrendingsDirectoryFileList = React.memo(function TrendingsDirectoryFileLis
 });
 
 const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
-  const { can } = usePermissions();
+  const { can, isAdmin } = usePermissions();
   const canDownloadRmwData = can('download_rmw_data');
   const canViewKlingGenerations = can('view_kling_generations');
+  // Freepik's Capture Center has always been admin-only (same gate
+  // FreepikExplorerBody enforces internally) rather than a separate granular
+  // permission key like Kling's - reusing isAdmin here just keeps the tab
+  // button itself from appearing for people who'd only see its access-denied
+  // message anyway.
+  const canViewFreepikGenerations = isAdmin;
+  // Lifted up here (rather than owned inside FreepikExplorerBody/KlingTab) so
+  // the search input can live in the panel's own header row, in the same
+  // slot the Data tab's "Search across all formats..." box uses, per the
+  // "search bar should sit between RMW Data and the window controls" request.
+  const [freepikSearchInput, setFreepikSearchInput] = useState('');
+  const [klingSearchInput, setKlingSearchInput] = useState('');
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -612,6 +625,15 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const minimizedWindowStyle = useMinimizedWindowStack('trendings-panel', isOpen && isMinimized);
   const [activeView, setActiveView] = useState('data');
+
+  // Freepik's grid isn't virtualized like Kling's (which actively measures
+  // its own container and always finds some scrollable area). It used to
+  // force the whole panel into maximized mode to work around that, but that
+  // fought the user's own window sizing (jumping to full-screen on tab
+  // switch and staying there after navigating away). The
+  // `.trendings-content--freepik { overflow: auto }` rule below now
+  // guarantees the grid is reachable at any panel size, so no forced resize
+  // is needed - Freepik behaves like every other tab.
   const [directoryStructure, setDirectoryStructure] = useState(() => loadDirectoryStructurePreference());
   const [selectedDirectoryNodes, setSelectedDirectoryNodes] = useState({});
   const [directoryGroupsByKey, setDirectoryGroupsByKey] = useState({});
@@ -785,6 +807,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const canLoadMore = hasMore && (Boolean(nextCursor) || nextOffset != null);
   const isDirectoryTab = activeView === 'directory';
   const isKlingTab = activeView === 'kling';
+  const isFreepikTab = activeView === 'freepik';
   const isDataTab = activeView === 'data';
   const activeDirectoryCriteria = useMemo(
     () => directoryStructure.filter((criterionKey) => criterionKey !== 'none'),
@@ -1186,13 +1209,35 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       >
         <div className="trendings-header">
           <h2>RMW Data</h2>
-          {!isMinimized && !isKlingTab && (
+          {!isMinimized && !isKlingTab && !isFreepikTab && (
             <div className="trendings-header-search">
               <input
                 className="trendings-search"
                 placeholder="Search across all formats..."
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isFreepikTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search prompts..."
+                aria-label="Search Freepik generations by prompt or creation id"
+                value={freepikSearchInput}
+                onChange={(e) => setFreepikSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isKlingTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder='Search prompts, models, users, projects... (try department:Marketing status:resolved)'
+                aria-label="Search Kling generations"
+                value={klingSearchInput}
+                onChange={(e) => setKlingSearchInput(e.target.value)}
               />
             </div>
           )}
@@ -1238,15 +1283,26 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                     Kling
                   </button>
                 )}
+                {canViewFreepikGenerations && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isFreepikTab}
+                    className={`trendings-view-tab ${isFreepikTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('freepik')}
+                  >
+                    Freepik
+                  </button>
+                )}
               </div>
-              {!isKlingTab && (
+              {!isKlingTab && !isFreepikTab && (
                 <div className="trendings-toolbar-status">
                   {isDirectoryTab
                     ? 'Browse folders first, then load only the files for the selected path.'
                     : `Fast databank mode is active.${lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}`}
                 </div>
               )}
-              {!isKlingTab && (
+              {!isKlingTab && !isFreepikTab && (
                 <div className="trendings-select-filters">
                   <label className="trendings-filter-select-wrap">
                     <span className="trendings-filter-select-label">Format</span>
@@ -1278,7 +1334,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                   </label>
                 </div>
               )}
-              {!isKlingTab && (
+              {!isKlingTab && !isFreepikTab && (
                 <div className="trendings-sort-group">
                   <button
                     className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
@@ -1298,11 +1354,18 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
 
             <div
               className={`trendings-content ${
-                isDirectoryTab ? 'trendings-content--directory' : isKlingTab ? 'trendings-content--kling' : 'trendings-content--data'
+                isDirectoryTab
+                  ? 'trendings-content--directory'
+                  : isKlingTab
+                    ? 'trendings-content--kling'
+                    : isFreepikTab
+                      ? 'trendings-content--freepik'
+                      : 'trendings-content--data'
               }`}
             >
-              {!isKlingTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
-              {isKlingTab && <KlingTab isActive={isKlingTab} />}
+              {!isKlingTab && !isFreepikTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
+              {isKlingTab && <KlingTab isActive={isKlingTab} searchInput={klingSearchInput} />}
+              {isFreepikTab && <FreepikExplorerBody searchInput={freepikSearchInput} />}
               {isDirectoryTab && (
                 <div className="trendings-directory-window">
                   <div className="trendings-directory-header">

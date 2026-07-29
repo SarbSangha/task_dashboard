@@ -29,9 +29,11 @@ export default function ConversationDetailPanel({ conversationId, onClose, empty
   const [conversationAttachments, setConversationAttachments] = useState([]);
   const [conversationMedia, setConversationMedia] = useState([]);
   const [mediaLoading, setMediaLoading] = useState(false);
-  // Conversation-context toggle: OFF by default (clean generation workspace).
-  // When ON, the full conversation chat is shown beneath the workspace.
-  const [contextOn, setContextOn] = useState(false);
+  // Conversation-context toggle: ON by default so the ChatGPT-style message
+  // view is what people see first; the generation workspace still shows above
+  // it when the conversation has media. Turning it off hides the chat to
+  // leave just the media workspace.
+  const [contextOn, setContextOn] = useState(true);
 
   const loadTimeline = useCallback(async (id) => {
     if (!id) return;
@@ -107,7 +109,7 @@ export default function ConversationDetailPanel({ conversationId, onClose, empty
   useEffect(() => {
     if (!conversationId) return;
     setViewTab('conversation');
-    setContextOn(false);
+    setContextOn(true);
     loadTimeline(conversationId);
     loadConversationDetail(conversationId);
     loadConversationMessages(conversationId);

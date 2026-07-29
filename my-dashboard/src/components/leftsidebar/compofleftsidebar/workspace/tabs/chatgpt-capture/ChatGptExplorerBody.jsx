@@ -4,8 +4,10 @@ import { chatgptCaptureAPI } from '../../../../../../services/api';
 import MetricsOverview from './MetricsOverview';
 import UserListSidebar from './UserListSidebar';
 import ConversationListSidebar from './ConversationListSidebar';
+import ConversationSearchHeader from './ConversationSearchHeader';
 import ConversationDetailPanel from './ConversationDetailPanel';
 import DeveloperToolsDrawer from './DeveloperToolsDrawer';
+import { useConversationSearch } from './useConversationSearch';
 import { normalizeApiError } from './chatgptCaptureUtils';
 import '../ChatGptCaptureCenterTab.css';
 
@@ -169,28 +171,34 @@ export default function ChatGptExplorerBody({ breadcrumbPrefix = ['ChatGPT'] }) 
         </>
       )}
 
-      <div className={`chatgpt-capture-three-col${selectedConversationId ? ' has-selection' : ''}`}>
-        <div className="chatgpt-capture-col-sidebar">
-          {selectedUserId ? (
-            <ConversationListSidebar
-              selectedConversationId={selectedConversationId}
-              onSelectConversation={handleSelectConversation}
-              userId={selectedUserId}
-              userName={selectedUserName}
-              onBackToUsers={handleBackToUsers}
-            />
-          ) : (
-            <UserListSidebar selectedUserId={selectedUserId} onSelectUser={handleSelectUser} />
-          )}
-        </div>
-        <div className="chatgpt-capture-col-detail">
+      {selectedUserId ? (
+        <UserConversationsSection
+          userId={selectedUserId}
+          userName={selectedUserName}
+          selectedConversationId={selectedConversationId}
+          onSelectConversation={handleSelectConversation}
+          onBackToUsers={handleBackToUsers}
+        >
           <ConversationDetailPanel
             conversationId={selectedConversationId}
             onClose={handleCloseConversation}
-            emptyStateMode={selectedUserId ? 'conversation' : 'user'}
+            emptyStateMode="conversation"
           />
+        </UserConversationsSection>
+      ) : (
+        <div className="chatgpt-capture-three-col">
+          <div className="chatgpt-capture-col-sidebar">
+            <UserListSidebar selectedUserId={selectedUserId} onSelectUser={handleSelectUser} />
+          </div>
+          <div className="chatgpt-capture-col-detail">
+            <ConversationDetailPanel
+              conversationId={selectedConversationId}
+              onClose={handleCloseConversation}
+              emptyStateMode="user"
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       <DeveloperToolsDrawer
         open={drawerOpen}
@@ -205,5 +213,35 @@ export default function ChatGptExplorerBody({ breadcrumbPrefix = ['ChatGPT'] }) 
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Owns useConversationSearch for the duration a user's conversation list is
+ * being browsed - split out as its own component (rather than called
+ * conditionally inside ChatGptExplorerBody) so the hook only runs while this
+ * section is actually mounted, same as the fetching it drives only used to
+ * happen while ConversationListSidebar itself was mounted.
+ */
+function UserConversationsSection({ userId, userName, selectedConversationId, onSelectConversation, onBackToUsers, children }) {
+  const search = useConversationSearch({ userId, selectedConversationId, onSelectConversation });
+
+  return (
+    <>
+      <ConversationSearchHeader {...search} />
+      <div className={`chatgpt-capture-three-col${selectedConversationId ? ' has-selection' : ''}`}>
+        <div className="chatgpt-capture-col-sidebar">
+          <ConversationListSidebar
+            selectedConversationId={selectedConversationId}
+            onSelectConversation={onSelectConversation}
+            userId={userId}
+            userName={userName}
+            onBackToUsers={onBackToUsers}
+            search={search}
+          />
+        </div>
+        <div className="chatgpt-capture-col-detail">{children}</div>
+      </div>
+    </>
   );
 }

@@ -10,6 +10,7 @@ import ReportsSidebarTree from './ReportsSidebarTree';
 import ExecutiveDashboard from './sections/ExecutiveDashboard';
 import KlingAnalytics from './sections/KlingAnalytics';
 import ChatGPTAnalytics from './sections/ChatGPTAnalytics';
+import FreepikAnalytics from './sections/FreepikAnalytics';
 import CostIntelligence from './sections/CostIntelligence';
 import UserActivity from './sections/UserActivity';
 import UserRetention from './sections/UserRetention';
@@ -42,6 +43,7 @@ const SECTION_LABELS = {
   adoption: 'AI Adoption',
   kling: 'Kling Analytics',
   chatgpt: 'ChatGPT Analytics',
+  freepik: 'Freepik Analytics',
   'other-tools': 'Other Tools',
   'user-activity': 'User Activity',
   'user-retention': 'User Retention',
@@ -274,6 +276,16 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         <ChatGPTAnalytics
           filters={queryFilters}
           onOpenUser={(userId, userName) => openUser(userId, userName, 'chat')}
+          onAddToCanvas={addToCanvas}
+        />
+      );
+    }
+    if (section === 'freepik') {
+      return (
+        <FreepikAnalytics
+          filters={queryFilters}
+          onOpenUser={(userId, userName) => openUser(userId, userName, 'output', 'freepik')}
+          onDrill={(view, ctx) => setDrill({ view, ...ctx })}
           onAddToCanvas={addToCanvas}
         />
       );

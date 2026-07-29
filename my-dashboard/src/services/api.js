@@ -1803,6 +1803,61 @@ export const chatgptCaptureAPI = {
   },
 };
 
+// ==================== FREEPIK / MAGNIFIC CAPTURE CENTER API ====================
+export const freepikCaptureAPI = {
+  listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/freepik/generations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getGeneration: async (generationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/freepik/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
+
+  getMetrics: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/freepik/metrics', requestConfig);
+    return response.data;
+  },
+
+  getCreditsByOwner: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/freepik/analytics/credits-by-owner',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  listUsers: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/freepik/users',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getUser: async (userId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/freepik/users/${userId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/freepik/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/freepik/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+};
+
 // ==================== IT PROFILE / TOOL VAULT API ====================
 export const itToolsAPI = {
   getAccessStatus: async (requestConfig = {}) => {

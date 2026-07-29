@@ -16,11 +16,9 @@ function AttachmentSection({ label, icon, attachments }) {
   );
 }
 
-export default function ChatMessageCard({ message, ownerName, eventsById, storedAttachments, conversationModel, onOpenWorkspace }) {
+export default function ChatMessageCard({ message, eventsById, storedAttachments, conversationModel, onOpenWorkspace }) {
   const [expanded, setExpanded] = useState(false);
-  const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
-  const displayName = isUser ? (ownerName || 'User') : (isAssistant ? 'ChatGPT' : 'System');
   const sourceEvents = (message.sourceEventIds || []).map((id) => eventsById.get(id)).filter(Boolean);
 
   const kind = isAssistant ? 'output' : 'input';
@@ -53,15 +51,6 @@ export default function ChatMessageCard({ message, ownerName, eventsById, stored
 
   return (
     <div className={`cgpt-msg role-${message.role}`}>
-      <MessageHeader
-        role={message.role}
-        displayName={displayName}
-        model={conversationModel}
-        timestamp={message.timestamp}
-        edited={message.edited}
-        status={status}
-      />
-
       <div className="cgpt-msg-bubble">
         <div className="cgpt-msg-body">
           {message.pending ? (
@@ -102,6 +91,14 @@ export default function ChatMessageCard({ message, ownerName, eventsById, stored
           )}
         </div>
       </div>
+
+      <MessageHeader
+        role={message.role}
+        model={conversationModel}
+        timestamp={message.timestamp}
+        edited={message.edited}
+        status={status}
+      />
 
       {sourceEvents.length > 0 && (
         <>

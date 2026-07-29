@@ -16,6 +16,7 @@ import './Menu.css';
  *     { key: 'gen', label: 'Gen Projects', icon: '🎬', active: false, onSelect },
  *     { type: 'separator' },
  *     { key: 'del', label: 'Delete', icon: '🗑', variant: 'danger', onSelect },
+ *     { type: 'info', icon: '💬', label: '15 messages' }, // read-only data row, no onSelect
  *   ]
  *
  * Provide a custom trigger with `renderTrigger(triggerProps, { open })`, or
@@ -198,6 +199,14 @@ export default function Menu({
               }
               if (item.type === 'separator') {
                 return <div key={`sep-${index}`} className="ui-menu-separator" role="separator" />;
+              }
+              if (item.type === 'info') {
+                return (
+                  <div key={item.key || `info-${index}`} className="ui-menu-info" role="presentation">
+                    {item.icon != null && <span className="ui-menu-item-icon" aria-hidden="true">{item.icon}</span>}
+                    <span className="ui-menu-item-label">{item.label}</span>
+                  </div>
+                );
               }
               return (
                 <button

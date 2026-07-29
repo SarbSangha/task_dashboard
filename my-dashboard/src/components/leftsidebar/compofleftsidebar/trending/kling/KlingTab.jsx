@@ -61,7 +61,7 @@ function resolveDateRange(preset) {
   return { dateFrom: undefined, dateTo: undefined };
 }
 
-export default function KlingTab({ isActive }) {
+export default function KlingTab({ isActive, searchInput = '' }) {
   const { can } = usePermissions();
   const { user } = useAuth();
   const currentUserId = user?.id ?? null;
@@ -69,7 +69,6 @@ export default function KlingTab({ isActive }) {
   const canViewAnalytics = can('view_kling_analytics');
 
   const [subView, setSubView] = useState('all');
-  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState(ALL_DEPARTMENTS);
   const [departmentOptions, setDepartmentOptions] = useState([ALL_DEPARTMENTS]);
@@ -418,8 +417,6 @@ export default function KlingTab({ isActive }) {
       {subView === 'all' && (
         <>
           <KlingFilterBar
-            searchInput={searchInput}
-            onSearchInputChange={setSearchInput}
             departmentFilter={departmentFilter}
             departmentOptions={departmentOptions}
             onDepartmentChange={setDepartmentFilter}

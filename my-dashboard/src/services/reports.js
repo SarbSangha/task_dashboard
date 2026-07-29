@@ -53,6 +53,21 @@ export const reportsAPI = {
     return res.data;
   },
 
+  freepikSummary: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/freepik/summary', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  freepikTrends: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/freepik/trends', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  freepikUsers: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/freepik/users', withParams(params, requestConfig));
+    return res.data;
+  },
+
   chatgptSummary: async (params = {}, requestConfig = {}) => {
     const res = await api.get('/api/reports/chatgpt/summary', withParams(params, requestConfig));
     return res.data;

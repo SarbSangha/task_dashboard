@@ -1,6 +1,6 @@
 import { SkeletonBlock } from '../../../../../ui/Skeleton';
-import ConversationStats from './ConversationStats';
-import { formatRelativeTime, getHealthStatusMeta } from './chatgptCaptureUtils';
+import Menu from '../../../../../ui/Menu';
+import { formatCount, formatRelativeTime, getHealthStatusMeta } from './chatgptCaptureUtils';
 
 const STATUS_ICON = { success: '🟢', warning: '🟡', error: '🔴', muted: '⚪' };
 
@@ -39,6 +39,20 @@ export default function ConversationCard({
   const typeIcon = hasImages ? '🖼' : '💬';
   const promptPreview = conversation.firstPromptPreview || conversation.lastResponsePreview;
 
+  // Everything beyond title/preview/time is secondary - tucked behind the ⋮
+  // menu (progressive disclosure) so the list stays scannable at a glance,
+  // same approach as the conversation detail header's own action menu.
+  const detailItems = [
+    { type: 'info', icon: STATUS_ICON[health.tone] || '⚪', label: health.label },
+    { type: 'separator' },
+    { type: 'info', icon: '💬', label: `${formatCount(messages)} messages` },
+    { type: 'info', icon: '🖼', label: `${formatCount(conversation.imagesCount || 0)} images` },
+    { type: 'info', icon: '📄', label: `${formatCount(conversation.filesCount || 0)} files` },
+    (userName || conversation.model) && { type: 'separator' },
+    userName && { type: 'info', icon: '👤', label: userName },
+    conversation.model && { type: 'info', icon: '🧠', label: conversation.model },
+  ].filter(Boolean);
+
   return (
     <div {...ariaAttributes} style={style} className="chatgpt-capture-conv-card-wrap">
       <button
@@ -53,6 +67,26 @@ export default function ConversationCard({
       >
         {pinned ? '★' : '☆'}
       </button>
+      <Menu
+        align="end"
+        menuLabel="Conversation details"
+        items={detailItems}
+        className="cgpt-conv-card-menu"
+        renderTrigger={(triggerProps, { open }) => (
+          <button
+            {...triggerProps}
+            className={`cgpt-conv-card-menu-btn${open ? ' open' : ''}`}
+            aria-label="Conversation details"
+            title="Details"
+            onClick={(event) => {
+              event.stopPropagation();
+              triggerProps.onClick(event);
+            }}
+          >
+            ⋮
+          </button>
+        )}
+      />
       <button
         type="button"
         className={`chatgpt-capture-conv-card cgpt-conv-card${isSelected ? ' selected' : ''}`}
@@ -62,7 +96,7 @@ export default function ConversationCard({
         <div className="cgpt-conv-card-top">
           <span className="cgpt-conv-card-icon" aria-hidden="true">{typeIcon}</span>
           <span className="cgpt-conv-card-title">{conversation.title || conversation.conversationId}</span>
-          <span className={`cgpt-conv-card-status tone-${health.tone}`} title={health.label}>
+          <span className={`cgpt-conv-card-status tone-${health.tone}`} aria-hidden="true">
             {STATUS_ICON[health.tone] || '⚪'}
           </span>
         </div>
@@ -72,13 +106,7 @@ export default function ConversationCard({
         )}
 
         <div className="cgpt-conv-card-foot">
-          <ConversationStats messages={messages} images={conversation.imagesCount || 0} files={conversation.filesCount || 0} />
           <span className="cgpt-conv-card-time">{formatRelativeTime(conversation.lastSeenAt)}</span>
-        </div>
-
-        <div className="cgpt-conv-card-tags">
-          {userName && <span className="cgpt-conv-card-user">👤 {userName}</span>}
-          {conversation.model && <span className="chatgpt-capture-chip">{conversation.model}</span>}
         </div>
       </button>
     </div>
