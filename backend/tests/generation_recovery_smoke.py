@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import sys
 from datetime import date, datetime, timezone
@@ -18,6 +19,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from models_new import (  # noqa: E402
     Base,
+    GenerationProject,
     GenerationRecord,
     GenerationRecoveryAudit,
     ITPortalTool,
@@ -44,10 +46,17 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(
     bind=engine,
+    # generation_projects belongs here even though this suite never queries it:
+    # generation_backfill._generation_tables_available gates every write on all
+    # THREE of (generation_projects, generation_records,
+    # generation_recovery_audits) being present, and returns skip_reason
+    # "schema_missing" otherwise. Omitting it made the recovery import silently
+    # import nothing and report the candidate as "malformed".
     tables=[
         User.__table__,
         ITPortalTool.__table__,
         ITPortalToolUsageEvent.__table__,
+        GenerationProject.__table__,
         GenerationRecoveryAudit.__table__,
         GenerationRecord.__table__,
     ],
@@ -63,8 +72,15 @@ def _utc_now_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _run(coro):
-    return asyncio.run(coro)
+def _run(result):
+    """The handlers under test have been both `async def` and plain `def` over
+    the life of this file; asyncio.run() on a plain return value raises
+    "An asyncio.Future, a coroutine or an awaitable is required", which is what
+    had this whole suite failing at import-time and silently providing no
+    cover. Await only when there is actually something to await."""
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
 
 
 def _create_user(*, email: str, name: str, is_admin: bool) -> int:
@@ -362,7 +378,29 @@ def main() -> int:
 
     duplicate_import_response = _call_import(admin_id, import_audit_id)
     _assert(duplicate_import_response["data"]["imported_count"] == 0, "Re-import should not create duplicate generation records")
-    _assert(duplicate_import_response["data"]["duplicate_count"] == 1, "Re-import should report the already imported record as duplicate")
+    # This audit's snapshot holds TWO candidates, and on a re-run both are
+    # already satisfied, from different code paths:
+    #   - the "no_generation_record" one was created by the first import, so
+    #     sync_generation_record_from_usage_event now reports it as updated;
+    #   - the "incomplete_generation_record" one was repaired by the first
+    #     import, so _fill_missing_generation_record_fields finds nothing left
+    #     to fill and takes its "nothing to do" branch.
+    # Both increment duplicate_count. The old expectation of 1 predates the
+    # repair path existing at all (see the comment on that branch in
+    # utils/generation_recovery.py) and was never re-checked, because this
+    # suite could not run.
+    _assert(
+        duplicate_import_response["data"]["updated_count"] == 1,
+        f"Re-import should update the previously imported record, got {duplicate_import_response['data']['updated_count']}",
+    )
+    _assert(
+        duplicate_import_response["data"]["repaired_count"] == 0,
+        f"Re-import should find nothing left to repair, got {duplicate_import_response['data']['repaired_count']}",
+    )
+    _assert(
+        duplicate_import_response["data"]["duplicate_count"] == 2,
+        f"Re-import should report both candidates as duplicates, got {duplicate_import_response['data']['duplicate_count']}",
+    )
     _assert(duplicate_import_response["audit"]["imported_count"] == 1, "Audit imported_count should remain cumulative across reruns")
     print("PASS recovery import idempotency")
 

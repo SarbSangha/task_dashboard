@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import sys
 from datetime import datetime, timezone
@@ -16,7 +17,13 @@ os.environ.setdefault("ARCHIVE_DATABASE_URL", os.environ["DATABASE_URL"])
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from models_new import Base, GenerationProject, GenerationRecord, User  # noqa: E402
+from models_new import (  # noqa: E402
+    Base,
+    GenerationProject,
+    GenerationProjectEvent,
+    GenerationRecord,
+    User,
+)
 from routers.generation_projects_router import (  # noqa: E402
     assign_generation_to_project,
     create_generation_project,
@@ -38,8 +45,20 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(
     bind=engine,
-    tables=[User.__table__, GenerationProject.__table__, GenerationRecord.__table__],
+    tables=[User.__table__, GenerationProject.__table__,
+        GenerationProjectEvent.__table__, GenerationRecord.__table__],
 )
+
+
+def _run(result):
+    """The handlers under test have been both `async def` and plain `def` over
+    the life of this file; asyncio.run() on a plain return value raises
+    "An asyncio.Future, a coroutine or an awaitable is required", which is what
+    had this whole suite failing and silently providing no cover. Await only
+    when there is actually something to await."""
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -70,7 +89,7 @@ def _create_project(user_id: int, name: str) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
         payload = GenerationProjectCreatePayload(name=name)
-        return asyncio.run(create_generation_project(payload, db=db, current_user=user))
+        return _run(create_generation_project(payload, db=db, current_user=user))
 
 
 def _create_generation(
@@ -113,7 +132,7 @@ def _create_generation(
 def _assign(project_id: int, generation_id: int, user_id: int) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
-        return asyncio.run(
+        return _run(
             assign_generation_to_project(
                 project_id=project_id,
                 generation_id=generation_id,
@@ -126,7 +145,7 @@ def _assign(project_id: int, generation_id: int, user_id: int) -> dict:
 def _remove(project_id: int, generation_id: int, user_id: int) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
-        return asyncio.run(
+        return _run(
             remove_generation_from_project(
                 project_id=project_id,
                 generation_id=generation_id,
@@ -139,7 +158,7 @@ def _remove(project_id: int, generation_id: int, user_id: int) -> dict:
 def _list_ungrouped(user_id: int) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
-        return asyncio.run(list_ungrouped_generations(db=db, current_user=user))
+        return _run(list_ungrouped_generations(db=db, current_user=user))
 
 
 def main() -> int:

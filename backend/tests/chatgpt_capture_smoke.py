@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import sys
 from datetime import datetime, timedelta
@@ -40,6 +41,17 @@ Base.metadata.create_all(
 )
 
 
+def _run(result):
+    """The handlers under test have been both `async def` and plain `def` over
+    the life of this file; asyncio.run() on a plain return value raises
+    "An asyncio.Future, a coroutine or an awaitable is required", which is what
+    had this whole suite failing and silently providing no cover. Await only
+    when there is actually something to await."""
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
+
+
 def _assert(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -73,21 +85,21 @@ def _post_events(user_id: int, events: list[CaptureEventIn]) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
         payload = CaptureEventsRequest(events=events)
-        response = asyncio.run(capture_events(payload, db=db, current_user=user))
+        response = _run(capture_events(payload, db=db, current_user=user))
         return response.model_dump()
 
 
 def _post_health(user_id: int, ping: CaptureHealthPingIn) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
-        response = asyncio.run(report_capture_health(ping, db=db, current_user=user))
+        response = _run(report_capture_health(ping, db=db, current_user=user))
         return response.model_dump()
 
 
 def _get_health(user_id: int) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
-        response = asyncio.run(get_capture_health(db=db, current_user=user))
+        response = _run(get_capture_health(db=db, current_user=user))
         return response.model_dump()
 
 

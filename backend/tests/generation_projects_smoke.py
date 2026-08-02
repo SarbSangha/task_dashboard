@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import sys
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ os.environ.setdefault("ARCHIVE_DATABASE_URL", os.environ["DATABASE_URL"])
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from models_new import Base, GenerationProject, GenerationRecord, User  # noqa: E402
+from models_new import Base, GenerationProject, GenerationProjectEvent, GenerationRecord, User  # noqa: E402
 from routers.generation_projects_router import (  # noqa: E402
     GenerationProjectCreatePayload,
     create_generation_project,
@@ -35,8 +36,28 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(
     bind=engine,
-    tables=[User.__table__, GenerationProject.__table__, GenerationRecord.__table__],
+    # GenerationProjectEvent is written by the router's audit trail
+    # (utils.generation_events.record_generation_project_event) on every
+    # create/rename/archive, so it has to exist here or the very first
+    # create_project() call dies on "no such table".
+    tables=[
+        User.__table__,
+        GenerationProject.__table__,
+        GenerationProjectEvent.__table__,
+        GenerationRecord.__table__,
+    ],
 )
+
+
+def _run(result):
+    """The handlers under test have been both `async def` and plain `def` over
+    the life of this file; asyncio.run() on a plain return value raises
+    "An asyncio.Future, a coroutine or an awaitable is required", which is what
+    had this whole suite failing and silently providing no cover. Await only
+    when there is actually something to await."""
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -67,25 +88,25 @@ def _create_project(user_id: int, name: str, description: str | None = None) -> 
     with SessionLocal() as db:
         user = db.get(User, user_id)
         payload = GenerationProjectCreatePayload(name=name, description=description)
-        return asyncio.run(create_generation_project(payload, db=db, current_user=user))
+        return _run(create_generation_project(payload, db=db, current_user=user))
 
 
 def _list_projects(user_id: int) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
-        return asyncio.run(list_generation_projects(db=db, current_user=user))
+        return _run(list_generation_projects(db=db, current_user=user))
 
 
 def _get_project(user_id: int, project_id: int) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
-        return asyncio.run(get_generation_project(project_id=project_id, db=db, current_user=user))
+        return _run(get_generation_project(project_id=project_id, db=db, current_user=user))
 
 
 def _list_project_generations(user_id: int, project_id: int, limit: int = 24, offset: int = 0) -> dict:
     with SessionLocal() as db:
         user = db.get(User, user_id)
-        return asyncio.run(
+        return _run(
             list_generation_project_generations(
                 project_id=project_id,
                 limit=limit,
