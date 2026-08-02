@@ -135,7 +135,7 @@ const ContributorsDrill = ({ metric = 'generations', provider, date, hour, depar
               {users.length} contributor{users.length === 1 ? '' : 's'}
             </h3>
             <span className="rpt-card-hint">
-              {formatNumber(totals.generations)} generations · {formatFull(totals.credits)} credits
+              {formatNumber(totals.generations)} generations · {formatFull(totals.credits)} credits · {formatFull(totals.cost)} cost
               {when ? ` · ${when}` : ''} · click a row for the detail
             </span>
           </div>

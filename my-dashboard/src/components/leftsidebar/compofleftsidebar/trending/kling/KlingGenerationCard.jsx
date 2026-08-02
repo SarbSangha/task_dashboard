@@ -122,6 +122,17 @@ export const KlingGenerationCard = React.memo(function KlingGenerationCard({
         {generation.projectName || 'Ungrouped'}
       </p>
 
+      {(generation.linkedTaskName || generation.linkedClientName) && (
+        <div className="kling-card-tags">
+          {generation.linkedTaskName && (
+            <span className="kling-card-tag-chip" title="Linked task">📋 {generation.linkedTaskName}</span>
+          )}
+          {generation.linkedClientName && (
+            <span className="kling-card-tag-chip" title="Linked client">🏢 {generation.linkedClientName}</span>
+          )}
+        </div>
+      )}
+
       {Array.isArray(generation.tags) && generation.tags.length > 0 && (
         <div className="kling-card-tags">
           {generation.tags.slice(0, 2).map((tag) => (

@@ -216,6 +216,44 @@ function runChatGptCaptureFlush() {
   return chatGptCaptureFlushInFlight;
 }
 
+// MV3 service workers can be suspended by Chrome at any moment they aren't
+// actively processing something, and a bare setTimeout dies with the worker
+// - unlike chrome.alarms, it does not survive a suspend/wake cycle.
+// scheduleChatGptCaptureFlush()'s debounce is intentionally setTimeout-based
+// (so a burst of rapid capture events uploads as one batch, not one request
+// per event) and works fine whenever the worker happens to still be alive
+// when it fires - reliably true during a busy dev/test session that keeps
+// triggering activity, far from guaranteed for a normal user's single
+// conversation. If the worker is torn down first, the event isn't just
+// delayed - it's stranded permanently: scheduleChatGptCaptureRetry() (which
+// DOES use chrome.alarms) is only ever reached from inside
+// flushChatGptCaptureQueue() itself, so if the very first flush attempt
+// never runs, no alarm-based retry gets armed either, and the periodic
+// health alarm (every 5 min) only reports stats - it never checks for or
+// flushes a stuck queue. Confirmed in production: a real, complete ChatGPT
+// conversation on a normal (non-continuously-active) install never reached
+// the backend at all, with nothing left to ever retry it.
+//
+// This is the fix: arm a real chrome.alarms wake-up on every enqueue, not
+// only after a flush has already run once. Creating an alarm with the same
+// name replaces any existing one, so a burst of events just keeps pushing
+// this out - it settles to ~1 minute after the last event in the burst,
+// same debounce intent as the setTimeout above, just as a guaranteed
+// backstop rather than the fast path. If the setTimeout already flushed the
+// queue by the time this fires, flushChatGptCaptureQueue() is a harmless
+// no-op against an empty queue.
+function armChatGptCaptureFlushBackstop() {
+  try {
+    if (chrome?.alarms?.create) {
+      // 1 minute is the practical floor Chrome enforces for a packed/
+      // published extension's alarm granularity - matching it here (rather
+      // than something shorter that would only work while unpacked) so this
+      // backstop behaves identically in both.
+      chrome.alarms.create(CHATGPT_CAPTURE_RETRY_ALARM, { delayInMinutes: 1 });
+    }
+  } catch {}
+}
+
 async function enqueueChatGptCaptureEvent(event) {
   const now = Date.now();
   const queue = await readChatGptCaptureQueue();
@@ -235,8 +273,25 @@ async function enqueueChatGptCaptureEvent(event) {
   chatGptCaptureTelemetry.captureVersionDeltaCounts[captureVersionKey] =
     Number(chatGptCaptureTelemetry.captureVersionDeltaCounts[captureVersionKey] || 0) + 1;
 
+  armChatGptCaptureFlushBackstop();
+
+  // manifest.json's "incognito": "split" gives an incognito window a fully
+  // separate extension instance - its own service worker, its own
+  // chrome.storage.local, its own queue (deliberately, so a tool launched in
+  // incognito doesn't share cookies/session with a normal-window launch of
+  // the same shared credential). The cost: Chrome deletes that entire
+  // instance's storage - queue and any alarm armed against it included - the
+  // moment the last incognito window closes. Neither the debounce above nor
+  // its chrome.alarms backstop can survive that: both assume the browsing
+  // context will still exist to be woken up later, which is exactly what
+  // incognito's lifetime guarantees do NOT promise. The only safe move in an
+  // incognito instance is to not defer at all - attempt the upload
+  // immediately, so it has actually left the queue before anyone has a
+  // chance to close the window. This does not touch normal-window behavior,
+  // which still benefits from the debounce's batching.
+  const isIncognitoInstance = Boolean(chrome.extension?.inIncognitoContext);
   const readyCount = queue.filter((item) => Number(item.nextAttemptAt || 0) <= now).length;
-  if (readyCount >= CHATGPT_CAPTURE_FLUSH_EVENT_THRESHOLD) {
+  if (isIncognitoInstance || readyCount >= CHATGPT_CAPTURE_FLUSH_EVENT_THRESHOLD) {
     runChatGptCaptureFlush();
   } else {
     scheduleChatGptCaptureFlush();
@@ -464,6 +519,27 @@ async function flushChatGptCaptureQueue() {
       chatGptCaptureHealthState.lastFailedUploadAt = Date.now();
       if (!chatGptCaptureHealthState.offlineSince) chatGptCaptureHealthState.offlineSince = Date.now();
       chatGptCaptureTelemetry.totalUploadFailures += 1;
+
+      // REMOVED: a prior version cleared the cached sessionToken here on a
+      // 401/403, assuming getSettings()'s "if empty, read from cookies"
+      // fallback would then repopulate it. That fallback
+      // (readSessionTokenFromCookies) looks for a cookie named session_id -
+      // this app's real auth is a bearer token read from the dashboard tab's
+      // own localStorage (rmw_session_token_v1) and pushed over via
+      // TOOL_HUB_SYNC_AUTH_CONTEXT, not a cookie, so that fallback always
+      // returns empty here. Clearing the token had nothing left to restore
+      // it: content-dashboard.js's resync only fired when it detected the
+      // DASHBOARD's own token changing, which it hadn't - only our cached
+      // copy had been wiped - so every later flush kept sending no session
+      // header and 401ing forever. That turned an ordinary early-page-load
+      // auth race (which credential-loading survives fine via its own quick
+      // retry loop, visible in the extension's own console as "(1/4)...
+      // (2/4)...") into a permanent failure for the rest of the session -
+      // confirmed live: zero ChatGPT captures ever reached the backend for
+      // an otherwise fully working login+conversation. The actual fix is in
+      // content-dashboard.js: its resync no longer depends on detecting a
+      // change, so a wiped cache gets repopulated within seconds regardless
+      // of why it was wiped.
 
       const latestQueue = await readChatGptCaptureQueue();
       const errorMessage = `${error?.message || error || 'ChatGPT capture upload failed'}`.slice(0, 500);

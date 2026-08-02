@@ -22,6 +22,8 @@ export default function GenerationsBrowser({
   onOpenGeneration,
   searchInput,
   ownershipFilter,
+  taskFilter,
+  clientFilter,
   onTotalChange,
 }) {
   const [generations, setGenerations] = useState([]);
@@ -41,6 +43,8 @@ export default function GenerationsBrowser({
         const response = await freepikCaptureAPI.listGenerations({
           owner_user_id: ownerUserId || undefined,
           ownership_status: ownershipFilter || undefined,
+          linked_task_id: taskFilter || undefined,
+          linked_client_id: clientFilter || undefined,
           q: (searchInput || '').trim() || undefined,
           limit: GENERATION_PAGE_SIZE,
           offset,
@@ -58,7 +62,7 @@ export default function GenerationsBrowser({
         }
       }
     },
-    [ownerUserId, ownershipFilter, searchInput]
+    [ownerUserId, ownershipFilter, taskFilter, clientFilter, searchInput]
   );
 
   useEffect(() => {

@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from models_new import ITPortalTool, ITPortalToolUsageEvent, User
 from providers.chatgpt.models import ConversationPrompt, ConversationRecord, ConversationResponse
+from providers.freepik.models import FreepikGeneration
 
 from .providers import PROVIDERS, provider_meta
 
@@ -37,6 +38,10 @@ from .providers import PROVIDERS, provider_meta
 CYCLE_DAYS = 15                 # the "15-day cycle" from the reference report
 RAW_ROW_CAP = 20_000            # max rows rendered into each raw-log sheet
 CHATGPT = "chatgpt"
+FREEPIK = "freepik"
+# The only Freepik tool that produces a video (confirmed against real
+# captured payloads) - everything else produces a still image.
+FREEPIK_VIDEO_TOOL = "video-generator"
 
 # Kling usage lives in ITPortalToolUsageEvent (the true "generation done on the
 # tool" log), NOT GenerationRecord (a deduplicated asset table that undercounts
@@ -83,18 +88,28 @@ class Employee:
     kling_videos: int = 0
     kling_credits: float = 0.0
     kling_last: Optional[date] = None
+    freepik_generations: int = 0
+    freepik_images: int = 0
+    freepik_videos: int = 0
+    freepik_credits_charged: float = 0.0
+    freepik_credits_estimated: float = 0.0
+    freepik_last: Optional[date] = None
 
     @property
     def tools_used(self) -> int:
-        return (1 if self.chatgpt_sessions else 0) + (1 if self.kling_videos else 0)
+        return (
+            (1 if self.chatgpt_sessions else 0)
+            + (1 if self.kling_videos else 0)
+            + (1 if self.freepik_generations else 0)
+        )
 
     @property
     def total_usage(self) -> int:
-        return self.chatgpt_sessions + self.kling_videos
+        return self.chatgpt_sessions + self.kling_videos + self.freepik_generations
 
     @property
     def composite_score(self) -> int:
-        return self.chatgpt_sessions + self.kling_videos
+        return self.chatgpt_sessions + self.kling_videos + self.freepik_generations
 
     @property
     def adoption_status(self) -> str:
@@ -158,6 +173,15 @@ class Event:
     gen_time: Optional[float] = None
     status: str = ""
     ref_id: str = ""             # conversation id / generation id
+    # "Image" | "Video" - only meaningful for Freepik (a mixed-media tool;
+    # Kling is video-only and ChatGPT is text, so both leave this blank).
+    kind: str = ""
+    # Client Mapping (the admin-curated Client list, see GenerationClient /
+    # utils/client_gate.py) - populated for Freepik and Kling, the two
+    # providers with a pre-generation Task/Client picker. Blank for ChatGPT
+    # (grouped under the sheet's "No Client" bucket), same convention `kind`
+    # already uses for provider-specific fields.
+    client_name: str = ""
 
 
 @dataclass
@@ -190,6 +214,36 @@ class KlingEvent:
     kling_id: str
     project: str
     status: str
+    client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+
+
+@dataclass
+class FreepikEvent:
+    when: date
+    employee_id: str
+    employee_name: str
+    department: str
+    prompt: str
+    tool: str                    # "image-generator" | "video-generator" | ...
+    model: str                   # mode/service, e.g. "pro-1.5"
+    resolution: str
+    credits_charged: Optional[float]
+    credits_estimated: Optional[float]
+    family_id: str
+    creation_id: str
+    status: str
+    client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+
+    @property
+    def is_video(self) -> bool:
+        # Confirmed against real captured payloads: "video-generator" is the
+        # only Freepik tool that produces a clip; everything else (
+        # "text-to-image", upscalers, etc.) produces a still image.
+        return self.tool == "video-generator"
+
+    @property
+    def kind(self) -> str:
+        return "Video" if self.is_video else "Image"
 
 
 @dataclass
@@ -216,10 +270,11 @@ class DailyPoint:
     day: date
     chatgpt: int
     kling: int
+    freepik: int = 0
 
     @property
     def total(self) -> int:
-        return self.chatgpt + self.kling
+        return self.chatgpt + self.kling + self.freepik
 
 
 @dataclass
@@ -237,8 +292,13 @@ class Kpis:
     employees_using_ai: int
     adoption_pct: float
     total_sessions: int          # ChatGPT prompt events
-    total_generations: int       # Kling videos
-    total_credits: float
+    total_generations: int       # Kling videos + Freepik generations
+    total_credits: float         # Kling credits + Freepik credits charged
+    total_freepik_generations: int = 0
+    total_freepik_images: int = 0
+    total_freepik_videos: int = 0
+    total_freepik_credits_charged: float = 0.0
+    total_freepik_credits_estimated: float = 0.0
 
 
 @dataclass
@@ -249,6 +309,7 @@ class ReportDataset:
     tools: list[ToolInfo]
     chatgpt_events: list[ChatGptEvent]
     kling_events: list[KlingEvent]
+    freepik_events: list[FreepikEvent]
     merged_events: list[Event]
     tool_usage: list[ToolUsage]
     dept_adoption: list[DeptAdoption]
@@ -338,24 +399,29 @@ def build_dataset(
     cg_end = period.end_exclusive - LOCAL_TZ_OFFSET
     # Kling usage events are filtered on their IST ``event_date`` directly.
     kling_tool_ids = _kling_tool_ids(db)
+    # Freepik's provider_created_at is UTC-stored too (same shift as ChatGPT).
+    fp_start = period.start_dt - LOCAL_TZ_OFFSET
+    fp_end = period.end_exclusive - LOCAL_TZ_OFFSET
 
     employees = _load_employees(db)
     by_uid = {emp.user_id: emp for emp in employees}
 
     _apply_chatgpt_aggregates(db, cg_start, cg_end, by_uid)
     _apply_kling_aggregates(db, period, kling_tool_ids, by_uid)
+    _apply_freepik_aggregates(db, fp_start, fp_end, by_uid)
 
     chatgpt_events, cg_trunc = _load_chatgpt_events(db, cg_start, cg_end, by_uid)
     kling_events, kl_trunc = _load_kling_events(db, period, kling_tool_ids, by_uid)
-    merged = _merge_events(chatgpt_events, kling_events)
+    freepik_events, fp_trunc = _load_freepik_events(db, fp_start, fp_end, by_uid)
+    merged = _merge_events(chatgpt_events, kling_events, freepik_events)
 
     tools = _load_tools(db)
     tool_usage = _tool_usage(employees)
     dept_adoption = _dept_adoption(employees)
-    daily = _daily_trend(period, chatgpt_events, kling_events)
+    daily = _daily_trend(period, chatgpt_events, kling_events, freepik_events)
     top = sorted(employees, key=lambda emp: (emp.composite_score, emp.total_usage), reverse=True)[:5]
     kpis = _kpis(employees, tools)
-    warnings = _validate(employees, chatgpt_events, kling_events, period)
+    warnings = _validate(employees, chatgpt_events, kling_events, freepik_events, period)
 
     return ReportDataset(
         generated_at=datetime.now(),
@@ -364,6 +430,7 @@ def build_dataset(
         tools=tools,
         chatgpt_events=chatgpt_events,
         kling_events=kling_events,
+        freepik_events=freepik_events,
         merged_events=merged,
         tool_usage=tool_usage,
         dept_adoption=dept_adoption,
@@ -371,7 +438,7 @@ def build_dataset(
         top_employees=top,
         warnings=warnings,
         kpis=kpis,
-        raw_truncated=cg_trunc or kl_trunc,
+        raw_truncated=cg_trunc or kl_trunc or fp_trunc,
     )
 
 
@@ -475,6 +542,46 @@ def _apply_kling_aggregates(db, period: "Period", tool_ids: list[int], by_uid: d
             emp.kling_last = _as_date(last)
 
 
+def _apply_freepik_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
+    """Freepik generations from FreepikGeneration directly (not the generic
+    GenerationRecord projection, which collapses charged/estimated into one
+    ``credits_burned`` column - see providers/freepik/normalization.py). Only
+    owner-attributed rows count toward an employee, same as Kling/ChatGPT
+    ("unclaimed" rows have no employee to attribute to by design). Freepik is
+    a mixed-media tool (unlike Kling, which is video-only), so generations
+    are additionally split into images vs. videos via a conditional sum on
+    ``tool`` - see FREEPIK_VIDEO_TOOL."""
+    video_case = case((FreepikGeneration.tool == FREEPIK_VIDEO_TOOL, 1), else_=0)
+    rows = (
+        db.query(
+            FreepikGeneration.owner_user_id,
+            func.count(FreepikGeneration.id),
+            func.coalesce(func.sum(video_case), 0),
+            func.coalesce(func.sum(FreepikGeneration.credits_charged), 0.0),
+            func.coalesce(func.sum(FreepikGeneration.credits_estimated), 0.0),
+            func.max(FreepikGeneration.provider_created_at),
+        )
+        .filter(
+            FreepikGeneration.owner_user_id.isnot(None),
+            FreepikGeneration.provider_created_at >= s,
+            FreepikGeneration.provider_created_at < e,
+        )
+        .group_by(FreepikGeneration.owner_user_id)
+        .all()
+    )
+    for uid, cnt, videos, charged, estimated, last in rows:
+        emp = by_uid.get(uid)
+        if emp:
+            total = int(cnt or 0)
+            video_count = int(videos or 0)
+            emp.freepik_generations = total
+            emp.freepik_videos = video_count
+            emp.freepik_images = total - video_count
+            emp.freepik_credits_charged = float(charged or 0.0)
+            emp.freepik_credits_estimated = float(estimated or 0.0)
+            emp.freepik_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
+
+
 # --------------------------------------------------------------------------- #
 # Raw event rows (capped)
 # --------------------------------------------------------------------------- #
@@ -538,6 +645,7 @@ def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tup
             UE.user_id, UE.event_date, UE.prompt_text, UE.model_label,
             UE.duration_label, UE.resolution_label, UE.credits_burned,
             UE.generation_id, UE.external_event_id, UE.event_type, UE.status,
+            UE.linked_client_name,
         )
         .filter(
             UE.tool_id.in_(tool_ids),
@@ -553,7 +661,7 @@ def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tup
     out = []
     for (user_id, event_date, prompt_text, model_label, duration_label,
          resolution_label, credits_burned, generation_id, external_event_id,
-         event_type, status) in rows:
+         event_type, status, linked_client_name) in rows:
         emp = by_uid.get(user_id)
         credits = credits_burned
         if credits is not None and not (0 <= credits <= MAX_SANE_KLING_CREDITS):
@@ -575,12 +683,62 @@ def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tup
                 kling_id=generation_id or external_event_id or "—",
                 project=event_type or "—",
                 status=(status or "settled").title(),
+                client_name=linked_client_name or "",
             )
         )
     return out, truncated
 
 
-def _merge_events(cg: list[ChatGptEvent], kl: list[KlingEvent]) -> list[Event]:
+def _load_freepik_events(db, s, e, by_uid) -> tuple[list[FreepikEvent], bool]:
+    """One row per Freepik generation, dated by ``provider_created_at`` (the
+    actual Freepik render time) shifted to IST. Only owner-attributed rows are
+    included, same rationale as ``_apply_freepik_aggregates``."""
+    q = (
+        db.query(
+            FreepikGeneration.owner_user_id, FreepikGeneration.provider_created_at,
+            FreepikGeneration.prompt, FreepikGeneration.tool, FreepikGeneration.mode,
+            FreepikGeneration.resolution, FreepikGeneration.credits_charged,
+            FreepikGeneration.credits_estimated, FreepikGeneration.family_id,
+            FreepikGeneration.creation_id, FreepikGeneration.status,
+            FreepikGeneration.linked_client_name,
+        )
+        .filter(
+            FreepikGeneration.owner_user_id.isnot(None),
+            FreepikGeneration.provider_created_at >= s,
+            FreepikGeneration.provider_created_at < e,
+        )
+        .order_by(FreepikGeneration.provider_created_at.asc())
+        .limit(RAW_ROW_CAP + 1)
+    )
+    rows = q.all()
+    truncated = len(rows) > RAW_ROW_CAP
+    rows = rows[:RAW_ROW_CAP]
+    out = []
+    for (user_id, provider_created_at, prompt, tool, mode, resolution, credits_charged,
+         credits_estimated, family_id, creation_id, status, linked_client_name) in rows:
+        emp = by_uid.get(user_id)
+        out.append(
+            FreepikEvent(
+                when=_as_date(provider_created_at + LOCAL_TZ_OFFSET) if provider_created_at else None,
+                employee_id=emp.employee_id if emp else "—",
+                employee_name=emp.name if emp else "Unassigned",
+                department=emp.department if emp else "Unassigned",
+                prompt=_clip(prompt),
+                tool=tool or "—",
+                model=mode or "—",
+                resolution=resolution or "—",
+                credits_charged=float(credits_charged) if credits_charged is not None else None,
+                credits_estimated=float(credits_estimated) if credits_estimated is not None else None,
+                family_id=family_id or "—",
+                creation_id=creation_id or "—",
+                status=(status or "completed").title(),
+                client_name=linked_client_name or "",
+            )
+        )
+    return out, truncated
+
+
+def _merge_events(cg: list[ChatGptEvent], kl: list[KlingEvent], fp: list[FreepikEvent]) -> list[Event]:
     merged: list[Event] = []
     for c in cg:
         merged.append(
@@ -596,6 +754,22 @@ def _merge_events(cg: list[ChatGptEvent], kl: list[KlingEvent]) -> list[Event]:
                 when=k.when, tool="Kling", employee_id=k.employee_id, employee_name=k.employee_name,
                 department=k.department, prompt=k.prompt, model=k.model, credits=k.credits,
                 videos=k.videos, gen_time=k.gen_time, status=k.status, ref_id=k.kling_id or "—",
+                kind="Video",  # Kling only ever produces video clips
+                client_name=k.client_name,
+            )
+        )
+    for f in fp:
+        merged.append(
+            Event(
+                when=f.when, tool="Freepik", employee_id=f.employee_id, employee_name=f.employee_name,
+                department=f.department, prompt=f.prompt, model=f.model, credits=f.credits_charged,
+                # Freepik is mixed-media (unlike Kling, which is video-only) -
+                # only count toward "videos" when this specific row actually
+                # is one, and carry the Image/Video label through explicitly
+                # so the log doesn't imply every row is a video.
+                videos=1 if f.is_video else 0, kind=f.kind,
+                status=f.status, ref_id=f.creation_id or "—",
+                client_name=f.client_name,
             )
         )
     merged.sort(key=lambda ev: (ev.when or date.min, ev.tool))
@@ -639,11 +813,14 @@ def _tool_usage(employees: list[Employee]) -> list[ToolUsage]:
     n = len(employees) or 1
     cg_users = sum(1 for emp in employees if emp.chatgpt_sessions)
     kl_users = sum(1 for emp in employees if emp.kling_videos)
+    fp_users = sum(1 for emp in employees if emp.freepik_generations)
     cg_vol = sum(emp.chatgpt_sessions for emp in employees)
     kl_vol = sum(emp.kling_videos for emp in employees)
+    fp_vol = sum(emp.freepik_generations for emp in employees)
     return [
         ToolUsage("ChatGPT", cg_users, cg_vol, cg_users / n),
         ToolUsage("Kling", kl_users, kl_vol, kl_users / n),
+        ToolUsage("Freepik", fp_users, fp_vol, fp_users / n),
     ]
 
 
@@ -659,22 +836,31 @@ def _dept_adoption(employees: list[Employee]) -> list[DeptAdoption]:
     return out
 
 
-def _daily_trend(period: Period, cg: list[ChatGptEvent], kl: list[KlingEvent]) -> list[DailyPoint]:
+def _daily_trend(period: Period, cg: list[ChatGptEvent], kl: list[KlingEvent], fp: list[FreepikEvent]) -> list[DailyPoint]:
     days = [period.start + timedelta(days=i) for i in range(period.days)]
     cg_counts: dict[date, int] = {}
     kl_counts: dict[date, int] = {}
+    fp_counts: dict[date, int] = {}
     for c in cg:
         if c.when:
             cg_counts[c.when] = cg_counts.get(c.when, 0) + 1
     for k in kl:
         if k.when:
             kl_counts[k.when] = kl_counts.get(k.when, 0) + 1
-    return [DailyPoint(d, cg_counts.get(d, 0), kl_counts.get(d, 0)) for d in days]
+    for f in fp:
+        if f.when:
+            fp_counts[f.when] = fp_counts.get(f.when, 0) + 1
+    return [DailyPoint(d, cg_counts.get(d, 0), kl_counts.get(d, 0), fp_counts.get(d, 0)) for d in days]
 
 
 def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
     n = len(employees)
     using = sum(1 for emp in employees if emp.tools_used)
+    fp_generations = sum(emp.freepik_generations for emp in employees)
+    fp_images = sum(emp.freepik_images for emp in employees)
+    fp_videos = sum(emp.freepik_videos for emp in employees)
+    fp_charged = sum(emp.freepik_credits_charged for emp in employees)
+    fp_estimated = sum(emp.freepik_credits_estimated for emp in employees)
     return Kpis(
         total_employees=n,
         total_tools=len(tools),
@@ -682,15 +868,20 @@ def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
         employees_using_ai=using,
         adoption_pct=(using / n) if n else 0.0,
         total_sessions=sum(emp.chatgpt_sessions for emp in employees),
-        total_generations=sum(emp.kling_videos for emp in employees),
-        total_credits=sum(emp.kling_credits for emp in employees),
+        total_generations=sum(emp.kling_videos for emp in employees) + fp_generations,
+        total_credits=sum(emp.kling_credits for emp in employees) + fp_charged,
+        total_freepik_generations=fp_generations,
+        total_freepik_images=fp_images,
+        total_freepik_videos=fp_videos,
+        total_freepik_credits_charged=fp_charged,
+        total_freepik_credits_estimated=fp_estimated,
     )
 
 
 # --------------------------------------------------------------------------- #
 # Data-quality validation
 # --------------------------------------------------------------------------- #
-def _validate(employees, cg, kl, period: Period) -> list[Warning]:
+def _validate(employees, cg, kl, fp, period: Period) -> list[Warning]:
     warnings: list[Warning] = []
 
     missing_dept = sum(1 for emp in employees if emp.department in ("", "Unassigned"))
@@ -712,11 +903,27 @@ def _validate(employees, cg, kl, period: Period) -> list[Warning]:
     if neg_credits:
         warnings.append(Warning("Error", "Invalid credits", f"{neg_credits} employee(s) show negative credit totals."))
 
-    future = sum(1 for k in kl if k.when and k.when > period.end) + sum(1 for c in cg if c.when and c.when > period.end)
+    neg_freepik_credits = sum(
+        1 for emp in employees if emp.freepik_credits_charged < 0 or emp.freepik_credits_estimated < 0
+    )
+    if neg_freepik_credits:
+        warnings.append(Warning(
+            "Error", "Invalid Freepik credits",
+            f"{neg_freepik_credits} employee(s) show negative Freepik credit totals."))
+
+    future = (
+        sum(1 for k in kl if k.when and k.when > period.end)
+        + sum(1 for c in cg if c.when and c.when > period.end)
+        + sum(1 for f in fp if f.when and f.when > period.end)
+    )
     if future:
         warnings.append(Warning("Warning", "Future-dated events", f"{future} event(s) are dated after the report period end."))
 
-    undated = sum(1 for k in kl if not k.when) + sum(1 for c in cg if not c.when)
+    undated = (
+        sum(1 for k in kl if not k.when)
+        + sum(1 for c in cg if not c.when)
+        + sum(1 for f in fp if not f.when)
+    )
     if undated:
         warnings.append(Warning("Info", "Undated events", f"{undated} event(s) had no resolvable date and were placed at period start."))
 

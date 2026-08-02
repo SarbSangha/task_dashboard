@@ -91,6 +91,22 @@ def _render_user_sheets(wb: Workbook, ds: ReportDataset) -> None:
         user_log.render(ws, ds, emp, by_employee.get(emp.employee_id, []))
 
 
+def render_ai_workbook(ds) -> tuple[bytes, str, str]:
+    """
+    Serialize an already-assembled :class:`ReportDataset` to
+    ``(xlsx_bytes, mimetype, filename)``. Touches no database.
+
+    Split out from :func:`build_ai_workbook` so an HTTP caller can hand its
+    connection back after the read pass instead of holding it through the
+    whole openpyxl render - see reports_router.ai_workbook_xlsx.
+    """
+    wb = render_workbook(ds)
+    buf = io.BytesIO()
+    wb.save(buf)
+    filename = f"AI-Usage-Report_{ds.period.end:%Y-%m-%d}.xlsx"
+    return buf.getvalue(), XLSX_MIMETYPE, filename
+
+
 def build_ai_workbook(
     db: Session,
     *,
@@ -99,16 +115,13 @@ def build_ai_workbook(
     ref_date: Optional[date] = None,
 ) -> tuple[bytes, str, str]:
     """
-    Public entry point. Returns ``(xlsx_bytes, mimetype, filename)``.
+    Convenience entry point: read pass + render in one call. Returns
+    ``(xlsx_bytes, mimetype, filename)``.
 
-    A single call reads the DB, assembles the typed snapshot and serializes the
-    workbook to bytes ready for a streaming HTTP response. See
-    :func:`dataset.build_dataset` for how ``start`` / ``end`` / ``ref_date``
-    resolve the reporting window.
+    Fine for scripts and scheduled jobs that own their own session. Request
+    handlers should prefer :func:`dataset.build_dataset` followed by
+    :func:`render_ai_workbook`, so the connection is released before
+    rendering. See :func:`dataset.build_dataset` for how ``start`` / ``end`` /
+    ``ref_date`` resolve the reporting window.
     """
-    ds = build_dataset(db, start=start, end=end, ref_date=ref_date)
-    wb = render_workbook(ds)
-    buf = io.BytesIO()
-    wb.save(buf)
-    filename = f"AI-Usage-Report_{ds.period.end:%Y-%m-%d}.xlsx"
-    return buf.getvalue(), XLSX_MIMETYPE, filename
+    return render_ai_workbook(build_dataset(db, start=start, end=end, ref_date=ref_date))

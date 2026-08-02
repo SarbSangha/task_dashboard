@@ -3,7 +3,9 @@ const LOGIN_URL = 'https://www.epidemicsound.com/';
 const AUTH_URL = 'https://login.epidemicsound.com/';
 const BLOCKED_NOTICE_KEY = 'rmw_epidemic_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
-const SCRIPT_VERSION = 'debug-2026-07-21-epidemic-08-strict';
+const ENFORCE_LOOP_GUARD_KEY = 'rmw_epidemic_enforce_loop_guard';
+const MAX_ENFORCE_REDIRECTS = 2;
+const SCRIPT_VERSION = 'debug-2026-07-28-epidemic-12-early-mouse-activity';
 
 const STATE = {
   credential: null,
@@ -15,6 +17,7 @@ const STATE = {
   loginOpenAttempts: 0,
   scheduledTimer: null,
   keepAliveTimer: null,
+  mouseActivityTimer: null,
   observer: null,
   lastRunAt: 0,
   lastMutationHandledAt: 0,
@@ -33,6 +36,7 @@ const STATE = {
 
 const MIN_RUN_GAP_MS = 500;
 const KEEP_ALIVE_MS = 4000;
+const MOUSE_ACTIVITY_INTERVAL_MS = 800;
 const ACTION_THROTTLE_MS = 700;
 const PASSWORD_PROMPT_RESTORE_DELAY_MS = 8000;
 const COOKIE_DISMISS_THROTTLE_MS = 1500;
@@ -150,6 +154,28 @@ function sendRuntimeMessage(message) {
       resolve(response || { ok: false, error: 'No response received' });
     });
   });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+// A page load is often the very first thing that wakes the (MV3, non-persistent)
+// background service worker, so the first message can race its cold start and
+// come back empty/disconnected even though the request itself was fine. That is
+// especially costly here because the launch ticket is single-use and this tool
+// is direct-ticket-only (no pending-launch/continuation fallback), so losing it
+// to a transient wake-up race strands the tab with no way to re-authorize, which
+// cascades into the "not authorized" -> clear session -> redirect loop. Retry a
+// few times before treating the response as a real failure.
+async function sendRuntimeMessageWithRetry(message, attempts = 3, gapMs = 300) {
+  let lastResponse = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    lastResponse = await sendRuntimeMessage(message);
+    if (lastResponse?.ok) return lastResponse;
+    if (attempt < attempts) await delay(gapMs);
+  }
+  return lastResponse;
 }
 
 function readLaunchTicketFromUrl() {
@@ -421,7 +447,21 @@ function clickAtRenderedText(node, textValues = []) {
   if (!rect) return false;
   const clientX = rect.left + (rect.width / 2);
   const clientY = rect.top + (rect.height / 2);
-  const target = document.elementFromPoint(clientX, clientY) || node.parentElement;
+  const pointTarget = document.elementFromPoint(clientX, clientY);
+
+  // Overlays like the cookie-consent banner often keep `pointer-events: none`
+  // while they animate in. `elementFromPoint` honors that and falls through to
+  // whatever page content sits underneath (e.g. a track link), so a click
+  // fired mid-animation can navigate the page instead of dismissing the
+  // banner. Only trust the point-based hit when it actually resolves inside
+  // (or to) the text node we aimed at; otherwise use its DOM ancestor instead
+  // of clicking unrelated content.
+  const pointIsRelated = Boolean(
+    pointTarget
+    && node.parentElement
+    && (pointTarget === node.parentElement || pointTarget.contains(node.parentElement) || node.parentElement.contains(pointTarget))
+  );
+  const target = pointIsRelated ? pointTarget : (findClickableAncestor(node.parentElement) || node.parentElement);
   if (!target) return false;
 
   const action = findClickableAncestor(target) || target;
@@ -569,12 +609,16 @@ function clearPageStorage() {
   try {
     const blockedNotice = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY);
     const extensionTicket = window.sessionStorage.getItem(EXTENSION_TICKET_KEY);
+    const enforceLoopGuard = window.sessionStorage.getItem(ENFORCE_LOOP_GUARD_KEY);
     window.sessionStorage.clear();
     if (blockedNotice) {
       window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, blockedNotice);
     }
     if (extensionTicket) {
       window.sessionStorage.setItem(EXTENSION_TICKET_KEY, extensionTicket);
+    }
+    if (enforceLoopGuard) {
+      window.sessionStorage.setItem(ENFORCE_LOOP_GUARD_KEY, enforceLoopGuard);
     }
   } catch {}
 }
@@ -659,6 +703,37 @@ function dispatchKeyboardActivation(element) {
     } catch {}
   });
   return true;
+}
+
+// Epidemic Sound loads OneTrust/CookiePro (cookie consent) and Optimizely
+// (experiments, incl. redirect-style variations), both of which commonly key
+// behavior off real engagement signals. Our clicks never produce a mousemove,
+// so a page that reloads/re-prompts on perceived inactivity can loop forever
+// even while we're actively clicking things. Emit a harmless synthetic
+// mousemove/pointermove periodically so any such "is a user really here"
+// check keeps seeing activity, matching what waving the real cursor does.
+function simulateMouseActivity() {
+  try {
+    const x = Math.max(1, Math.round(Math.random() * (window.innerWidth - 1)));
+    const y = Math.max(1, Math.round(Math.random() * (window.innerHeight - 1)));
+    const options = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clientX: x,
+      clientY: y,
+      view: window,
+    };
+    if (typeof PointerEvent === 'function') {
+      window.dispatchEvent(new PointerEvent('pointermove', { ...options, pointerType: 'mouse', isPrimary: true }));
+    }
+    window.dispatchEvent(new MouseEvent('mousemove', options));
+    document.dispatchEvent(new MouseEvent('mousemove', options));
+    // Some engagement/idle checks key off scroll instead of (or in addition
+    // to) pointer movement. dispatchEvent alone doesn't move the viewport, so
+    // this is a no-op for the page's actual scroll position.
+    window.dispatchEvent(new Event('scroll', { bubbles: true, cancelable: true }));
+  } catch {}
 }
 
 function describeElement(element) {
@@ -1085,7 +1160,7 @@ function releasePasswordSavingSuppressed(delay = 0) {
 async function loadLaunchState() {
   const directTicket = captureLaunchTicketFromHash() || getStoredLaunchTicket();
   if (directTicket) {
-    const activation = await sendRuntimeMessage({
+    const activation = await sendRuntimeMessageWithRetry({
       type: 'TOOL_HUB_ACTIVATE_LAUNCH',
       toolSlug: TOOL_SLUG,
       hostname: window.location.hostname,
@@ -1105,7 +1180,7 @@ async function loadLaunchState() {
     clearStoredLaunchTicket();
   }
 
-  const response = await sendRuntimeMessage({
+  const response = await sendRuntimeMessageWithRetry({
     type: 'TOOL_HUB_GET_LAUNCH_STATE',
     toolSlug: TOOL_SLUG,
     hostname: window.location.hostname,
@@ -1132,11 +1207,28 @@ async function enforceDashboardOnlyAccess() {
   releasePasswordSavingSuppressed(0);
 
   if (!isLoginPage()) {
+    // Guard against reload storms: if this redirect-to-LOGIN_URL fires again
+    // right after landing on LOGIN_URL (e.g. isLoginPage() misjudging a page
+    // that is still hydrating, or a cookie-consent banner interfering with
+    // detection), don't keep clearing the session and redirecting forever.
+    const redirectCount = Number(window.sessionStorage.getItem(ENFORCE_LOOP_GUARD_KEY) || 0) + 1;
+    if (redirectCount > MAX_ENFORCE_REDIRECTS) {
+      setStatus('Blocked: could not detect the Epidemic Sound login page after repeated redirects');
+      STATE.settled = true;
+      return false;
+    }
+    try {
+      window.sessionStorage.setItem(ENFORCE_LOOP_GUARD_KEY, String(redirectCount));
+    } catch {}
     await clearToolSession();
     window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
     window.location.replace(LOGIN_URL);
     return false;
   }
+
+  try {
+    window.sessionStorage.removeItem(ENFORCE_LOOP_GUARD_KEY);
+  } catch {}
 
   if (!alreadyNotified) {
     window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
@@ -1490,6 +1582,10 @@ function stopAutomation(message, hideBadgeAfterMs = 2500) {
     window.clearInterval(STATE.keepAliveTimer);
     STATE.keepAliveTimer = null;
   }
+  if (STATE.mouseActivityTimer) {
+    window.clearInterval(STATE.mouseActivityTimer);
+    STATE.mouseActivityTimer = null;
+  }
   if (STATE.observer) {
     STATE.observer.disconnect();
     STATE.observer = null;
@@ -1810,6 +1906,15 @@ function start() {
 // Grab the launch ticket from the URL immediately so a later navigation cannot
 // drop it, but defer all DOM work (badge, clicks) until React has hydrated.
 captureLaunchTicketFromHash();
+
+// Start the activity heartbeat immediately at script load rather than waiting
+// for start()'s PAGE_SETTLE_AFTER_LOAD_MS delay. Every fresh navigation begins
+// this script from zero, so any gap here is a window where the page looks
+// completely idle to whatever (OneTrust/Optimizely) is watching for real
+// engagement — and a short gap was enough for it to reload again before we got
+// a chance to signal activity, which is why the reload count varied run to run.
+simulateMouseActivity();
+STATE.mouseActivityTimer = window.setInterval(simulateMouseActivity, MOUSE_ACTIVITY_INTERVAL_MS);
 
 function boot() {
   const begin = () => window.setTimeout(start, PAGE_SETTLE_AFTER_LOAD_MS);

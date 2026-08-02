@@ -29,6 +29,7 @@ from db_migrations import ensure_operational_schema
 from models_new import User, Task, TaskParticipant, TaskStatusHistory, ArchivedTask, ActivityLog
 import providers.chatgpt  # noqa: F401 (registers ChatGPT Conversation* models onto Base.metadata)
 from providers.chatgpt import router as chatgpt_router
+from providers.freepik import router as freepik_router
 # Import routers
 from routers import auth_router
 from routers.tasks import router as tasks_router
@@ -38,6 +39,7 @@ from routers import approvals
 from routers import upload
 from routers import activity_router
 from routers import admin_router
+from routers import clients_router
 from routers import groups_router
 from routers import direct_messages_router
 from routers import it_tools_router
@@ -196,6 +198,37 @@ async def _periodic_auth_store_cleanup(interval_seconds: int = 3600) -> None:
             _safe_print(f"Auth cleanup failed: {exc}")
 
 
+# Both periodic dispatchers below hand their work to a worker thread and guard
+# it with asyncio.wait_for(). On timeout wait_for() only abandons the *await* —
+# Python cannot cancel a thread, so the worker keeps running. That is why each
+# worker owns its session end-to-end instead of receiving one created out here:
+# a session closed on the event-loop side while the worker is still using it
+# gets silently re-opened by SQLAlchemy on the worker's next query, and that
+# replacement connection is never closed by anyone. Under NullPool (the hosted
+# Supabase pooler path, see database_config.py) that is one real Postgres
+# connection leaked per timeout, until the process is restarted.
+def _run_report_schedule_cycle() -> dict:
+    db = OperationalSessionLocal()
+    try:
+        return process_due_schedules(db)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _run_notification_outbox_cycle(limit: int) -> int:
+    db = OperationalSessionLocal()
+    try:
+        return dispatch_notification_outbox_batch(db, notification_dispatcher, limit=limit)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 async def _periodic_report_schedule_dispatch(interval_seconds: int = 300) -> None:
     """Fire due report schedules (daily/weekly/monthly email delivery).
 
@@ -204,43 +237,33 @@ async def _periodic_report_schedule_dispatch(interval_seconds: int = 300) -> Non
     """
     while True:
         await asyncio.sleep(max(60, interval_seconds))
-        db = OperationalSessionLocal()
         try:
             result = await asyncio.wait_for(
-                asyncio.to_thread(process_due_schedules, db),
+                asyncio.to_thread(_run_report_schedule_cycle),
                 timeout=max(30, _int_env("REPORT_SCHEDULE_TIMEOUT_SECONDS", 300)),
             )
             if result.get("processed"):
                 sent = sum(1 for r in result.get("results", []) if r.get("status") == "sent")
                 _safe_print(f"Report schedules processed={result['processed']} sent={sent}")
         except Exception as exc:
-            db.rollback()
             _safe_print(f"Report schedule dispatch failed: {exc}")
-        finally:
-            db.close()
 
 
 async def _periodic_notification_outbox_dispatch(interval_seconds: int = 30) -> None:
     while True:
         await asyncio.sleep(max(5, interval_seconds))
-        db = OperationalSessionLocal()
         try:
             dispatched = await asyncio.wait_for(
                 asyncio.to_thread(
-                    dispatch_notification_outbox_batch,
-                    db,
-                    notification_dispatcher,
-                    limit=_int_env("NOTIFICATION_OUTBOX_BATCH_SIZE", 100),
+                    _run_notification_outbox_cycle,
+                    _int_env("NOTIFICATION_OUTBOX_BATCH_SIZE", 100),
                 ),
                 timeout=max(5, _int_env("NOTIFICATION_OUTBOX_DISPATCH_TIMEOUT_SECONDS", 20)),
             )
             if dispatched:
                 _safe_print(f"Notification outbox dispatched={dispatched}")
         except Exception as exc:
-            db.rollback()
             _safe_print(f"Notification outbox dispatch failed: {exc}")
-        finally:
-            db.close()
 
 
 # ==================== LIFESPAN EVENT ====================
@@ -462,6 +485,7 @@ app.include_router(activity_router.router)
 
 # Admin Management
 app.include_router(admin_router.router)
+app.include_router(clients_router.router)
 
 # Groups & Messages
 app.include_router(groups_router.router)
@@ -479,6 +503,9 @@ app.include_router(generation_collections_router.router)
 
 # ChatGPT Capture & Conversation Intelligence (Phase 2A: raw capture only)
 app.include_router(chatgpt_router.router)
+
+# Freepik/Magnific Generation Capture System
+app.include_router(freepik_router.router)
 
 # Reports / Business Intelligence (AI Intelligence Command Center)
 app.include_router(reports_router.router)

@@ -42,11 +42,19 @@ const FreepikAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
   const summaryQ = useQuery({ queryKey: ['reports', 'freepik', 'summary', filters], queryFn: () => reportsAPI.freepikSummary(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
   const trendsQ = useQuery({ queryKey: ['reports', 'freepik', 'trends', filters], queryFn: () => reportsAPI.freepikTrends(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
   const usersQ = useQuery({ queryKey: ['reports', 'freepik', 'users', filters], queryFn: () => reportsAPI.freepikUsers({ ...filters, limit: 100 }), placeholderData: keepPreviousData, staleTime: 60_000 });
+  // Task/Client Mapping breakdowns - which task or admin-curated client each
+  // generation was linked to at generate-time (see the pre-generation gate's
+  // popup, content-freepik-task-modal.js). Independent of the department/
+  // creator split above.
+  const tasksQ = useQuery({ queryKey: ['reports', 'freepik', 'tasks', filters], queryFn: () => reportsAPI.freepikTasks({ ...filters, limit: 50 }), placeholderData: keepPreviousData, staleTime: 60_000 });
+  const clientsQ = useQuery({ queryKey: ['reports', 'freepik', 'clients', filters], queryFn: () => reportsAPI.freepikClients({ ...filters, limit: 50 }), placeholderData: keepPreviousData, staleTime: 60_000 });
 
   const k = summaryQ.data?.kpis || {};
   const mediaBreakdown = summaryQ.data?.mediaBreakdown || [];
   const trends = trendsQ.data || {};
   const users = usersQ.data?.users || [];
+  const tasksBreakdown = tasksQ.data?.tasks || [];
+  const clientsBreakdown = clientsQ.data?.clients || [];
 
   const topUser = users[0];
   const topDept = useMemo(() => {
@@ -64,6 +72,18 @@ const FreepikAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
     { key: 'successRate', label: 'Success', num: true, render: (r) => successPill(r.successRate) },
     { key: 'creditsCharged', label: 'Credits Charged', num: true, render: (r) => formatFull(r.creditsCharged) },
     { key: 'creditsEstimated', label: 'Credits Estimated', num: true, render: (r) => formatFull(r.creditsEstimated) },
+  ];
+
+  const taskColumns = [
+    { key: 'taskName', label: 'Task', render: (r) => <span className="rpt-pill muted">{r.taskName}</span> },
+    { key: 'generations', label: 'Generations', num: true, render: (r) => formatNumber(r.generations) },
+    { key: 'creditsCharged', label: 'Credits Charged', num: true, render: (r) => formatFull(r.creditsCharged) },
+  ];
+
+  const clientColumns = [
+    { key: 'clientName', label: 'Client', render: (r) => <span className="rpt-pill muted">{r.clientName}</span> },
+    { key: 'generations', label: 'Generations', num: true, render: (r) => formatNumber(r.generations) },
+    { key: 'creditsCharged', label: 'Credits Charged', num: true, render: (r) => formatFull(r.creditsCharged) },
   ];
 
   const dateLabel = filters?.start && filters?.end ? `${filters.start} → ${filters.end}` : 'selected range';
@@ -199,6 +219,24 @@ const FreepikAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
               initialSort="generations"
               onRowClick={(row) => onOpenUser?.(row.userId, row.name)}
             />
+          </div>
+
+          <div className="rpt-grid cols-2" style={{ marginTop: 20 }}>
+            <div>
+              <div className="rpt-card-head">
+                <h3 className="rpt-card-title" style={{ fontSize: 14 }}>By Task</h3>
+                <span className="rpt-card-hint">{tasksBreakdown.length} task(s)</span>
+              </div>
+              <DataTable columns={taskColumns} rows={tasksBreakdown} initialSort="generations" />
+            </div>
+
+            <div>
+              <div className="rpt-card-head">
+                <h3 className="rpt-card-title" style={{ fontSize: 14 }}>By Client</h3>
+                <span className="rpt-card-hint">{clientsBreakdown.length} client(s)</span>
+              </div>
+              <DataTable columns={clientColumns} rows={clientsBreakdown} initialSort="generations" />
+            </div>
           </div>
         </>
       )}

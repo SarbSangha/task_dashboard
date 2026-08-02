@@ -38,6 +38,16 @@ export const reportsAPI = {
     return res.data;
   },
 
+  klingTasks: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/kling/tasks', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  klingClients: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/kling/clients', withParams(params, requestConfig));
+    return res.data;
+  },
+
   klingAccounts: async (params = {}, requestConfig = {}) => {
     const res = await api.get('/api/reports/kling/accounts', withParams(params, requestConfig));
     return res.data;
@@ -65,6 +75,16 @@ export const reportsAPI = {
 
   freepikUsers: async (params = {}, requestConfig = {}) => {
     const res = await api.get('/api/reports/freepik/users', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  freepikTasks: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/freepik/tasks', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  freepikClients: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/freepik/clients', withParams(params, requestConfig));
     return res.data;
   },
 

@@ -44,7 +44,10 @@ from task_helpers import TaskHelpers
 from utils.cache import cache_response, invalidate_pattern
 from utils.datetime_utils import normalize_deadline_to_utc_naive, normalize_to_utc_naive, serialize_utc_datetime
 from utils.edge_cache import queue_edge_cache_purge
+from utils.generation_gate import resolve_generation_gate_tool
+from utils.task_gate import get_active_tasks_for_user
 from services.role_service import user_role_names
+from routers.it_tools_router import _resolve_usage_event_actor
 
 try:
     from pywebpush import webpush, WebPushException
@@ -422,23 +425,28 @@ def _push_failure_reason(exc: Exception) -> tuple[Optional[int], str]:
     return status_code, message[:500]
 
 
-def _send_single_web_push(subscription: WebPushSubscription, payload_json: str) -> tuple[bool, Optional[int], str]:
+def _send_single_web_push(endpoint: str, p256dh: str, auth: str, payload_json: str) -> tuple[bool, Optional[int], str]:
     if not web_push_enabled():
         return False, None, "web push is not configured"
 
     try:
         webpush(
             subscription_info={
-                "endpoint": subscription.endpoint,
+                "endpoint": endpoint,
                 "keys": {
-                    "p256dh": subscription.p256dh,
-                    "auth": subscription.auth,
+                    "p256dh": p256dh,
+                    "auth": auth,
                 },
             },
             data=payload_json,
             vapid_private_key=_web_push_private_key(),
             vapid_claims={"sub": _web_push_subject()},
             ttl=30,
+            # ttl above is the push service's message TTL, NOT a socket
+            # timeout. Without this, pywebpush's underlying requests.post has
+            # no timeout at all, so one unresponsive push endpoint pins this
+            # worker thread indefinitely.
+            timeout=_int_env("WEB_PUSH_HTTP_TIMEOUT_SECONDS", 10),
         )
         return True, None, ""
     except WebPushException as exc:
@@ -452,58 +460,84 @@ async def deliver_web_push_notifications(user_id: int, payload: dict) -> None:
     if not web_push_enabled():
         return
 
+    # Read targets / fan out / write results back, as three phases with NO
+    # database connection held across the network calls in the middle one.
+    # A single session spanning the whole fan-out (the previous shape) kept a
+    # Postgres connection checked out for as long as the slowest push endpoint
+    # took to answer - and pywebpush had no HTTP timeout, so "as long as" could
+    # mean forever. Under NullPool (hosted Supabase pooler, see
+    # database_config.py) each of those is a real connection nobody can reuse.
     db = OperationalSessionLocal()
     try:
-        subscriptions = (
-            db.query(WebPushSubscription)
+        targets = [
+            (row.id, row.endpoint, row.p256dh, row.auth)
+            for row in db.query(WebPushSubscription)
             .filter(
                 WebPushSubscription.user_id == user_id,
                 WebPushSubscription.is_active == True,
             )
             .all()
-        )
-        if not subscriptions:
-            return
+        ]
+    except Exception:
+        db.rollback()
+        return
+    finally:
+        db.close()
 
-        payload_json = _serialize_web_push_payload(payload)
+    if not targets:
+        return
+
+    payload_json = _serialize_web_push_payload(payload)
+    results = await asyncio.gather(
+        *[
+            asyncio.to_thread(
+                _send_single_web_push,
+                endpoint,
+                p256dh,
+                auth,
+                payload_json,
+            )
+            for _subscription_id, endpoint, p256dh, auth in targets
+        ],
+        return_exceptions=True,
+    )
+
+    outcomes = []
+    for (subscription_id, *_rest), result in zip(targets, results):
+        if isinstance(result, Exception):
+            outcomes.append((subscription_id, False, None, (str(result).strip() or "web push failed")[:500]))
+        else:
+            ok, status_code, reason = result
+            outcomes.append((subscription_id, ok, status_code, reason))
+
+    db = OperationalSessionLocal()
+    try:
         now = datetime.utcnow()
-        changed = False
-
-        results = await asyncio.gather(
-            *[
-                asyncio.to_thread(
-                    _send_single_web_push,
-                    subscription,
-                    payload_json,
-                )
-                for subscription in subscriptions
-            ],
-            return_exceptions=True,
-        )
-
-        for subscription, result in zip(subscriptions, results):
-            if isinstance(result, Exception):
-                ok, status_code, reason = False, None, (str(result).strip() or "web push failed")[:500]
-            else:
-                ok, status_code, reason = result
+        rows_by_id = {
+            row.id: row
+            for row in db.query(WebPushSubscription)
+            .filter(WebPushSubscription.id.in_([outcome[0] for outcome in outcomes]))
+            .all()
+        }
+        for subscription_id, ok, status_code, reason in outcomes:
+            subscription = rows_by_id.get(subscription_id)
+            if subscription is None:
+                # Unsubscribed between the read above and now; nothing to update.
+                continue
+            subscription.updated_at = now
             if ok:
                 subscription.last_success_at = now
                 subscription.last_failure_at = None
                 subscription.failure_reason = None
                 subscription.is_active = True
-                subscription.updated_at = now
-                changed = True
                 continue
 
             subscription.last_failure_at = now
             subscription.failure_reason = reason
-            subscription.updated_at = now
             if status_code in {404, 410}:
                 subscription.is_active = False
-            changed = True
 
-        if changed:
-            db.commit()
+        db.commit()
     except Exception:
         db.rollback()
     finally:
@@ -4647,6 +4681,57 @@ def get_outbox(
             include_forward_history=False,
             include_seen_by=False,
         ),
+    }
+
+
+def get_my_active_tasks_for_generation(
+    request: Request,
+    usage_ticket: Optional[str] = Query(None),
+    extension_ticket: Optional[str] = Query(None),
+    tool_slug: Optional[str] = Query(None),
+    db: Session = Depends(get_operational_db),
+):
+    """Populates the mandatory pre-generation "select a task" picker (see
+    browser-extension/tool-hub-autologin/content-freepik-task-modal.js and
+    content-kling-task-modal.js).
+
+    Called directly by the browser extension's background script from
+    freepik.com or kling.ai - a different origin than our dashboard, so there
+    is no dashboard session cookie to rely on. Identity is resolved from the
+    same launch ticket every other capture endpoint for that tool already
+    uses (_resolve_usage_event_actor raises 400/403/410 itself on a missing,
+    forged, or expired ticket - the picker's "Session expired" state).
+    """
+    tool = resolve_generation_gate_tool(db, tool_slug)
+    if not tool:
+        raise HTTPException(status_code=503, detail="Tool is not configured")
+
+    current_user = _resolve_usage_event_actor(
+        request=request,
+        db=db,
+        tool=tool,
+        usage_ticket=usage_ticket or "",
+        extension_ticket=extension_ticket or "",
+    )
+
+    tasks = get_active_tasks_for_user(db, current_user.id)
+    return {
+        "success": True,
+        "count": len(tasks),
+        "tasks": [
+            {
+                "id": task.id,
+                "title": task.title,
+                "status": task.status.value if task.status else None,
+                "priority": task.priority.value if task.priority else None,
+                "department": task.to_department,
+                # These are always the caller's own active-assignment list, so
+                # the "current assignee" the picker shows is always the user
+                # who is about to generate - not a separate lookup.
+                "assignee": current_user.name,
+            }
+            for task in tasks
+        ],
     }
 
 

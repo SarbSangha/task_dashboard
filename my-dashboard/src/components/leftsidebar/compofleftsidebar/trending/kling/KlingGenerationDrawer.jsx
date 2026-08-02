@@ -272,6 +272,14 @@ export default function KlingGenerationDrawer({ generation, onClose, onToggleFav
               <strong>{detail.projectName || 'Ungrouped'}</strong>
             </div>
             <div>
+              <span>Linked Task</span>
+              <strong>{detail.linkedTaskName || '-'}</strong>
+            </div>
+            <div>
+              <span>Linked Client</span>
+              <strong>{detail.linkedClientName || '-'}</strong>
+            </div>
+            <div>
               <span>Model</span>
               <strong>{detail.modelLabel || '-'}</strong>
             </div>

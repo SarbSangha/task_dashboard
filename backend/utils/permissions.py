@@ -29,6 +29,24 @@ def resolve_roles(user: Optional[User]) -> set[str]:
     if "faculty" in roles:
         roles.add("user")
 
+    # Any valid, authenticated user is at minimum a "user" - everything above
+    # only ever ADDS a more specific role (admin/faculty/hod/spoc) on top of
+    # that baseline; it was never meant to be the only way to earn it. A
+    # position value that doesn't contain any of the recognized substrings
+    # (e.g. "NORMAL", or any other free-text value HR might use) previously
+    # fell through with zero roles at all, so require_user
+    # (RoleChecker(["admin", "faculty", "user"])) - despite its own name
+    # meaning "any logged-in user" - rejected them with a flat 403. Confirmed
+    # in production: an employee with position="NORMAL" and no roles_json
+    # entries got 403 on every require_user-gated endpoint (ChatGPT
+    # capture's /events, /health, /media) while other endpoints using a
+    # different auth dependency (get_current_user_from_session,
+    # get_current_user_with_workplace_tools_access, or no role check at all)
+    # worked fine for that exact same session - proving this was an
+    # authorization gap, not a session/authentication problem.
+    if user:
+        roles.add("user")
+
     return roles
 
 

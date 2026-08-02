@@ -438,7 +438,7 @@ const GenerationTimeline = ({ userId, userName, provider, focusDate, onAddToCanv
         <h3 className="rpt-card-title">Generation timeline</h3>
         <span className="rpt-card-hint">
           {totals.days
-            ? `${totals.days} generating days · ${formatNumber(totals.generations)} generations · ${formatFull(totals.credits)} credits · click a date for that day`
+            ? `${totals.days} generating days · ${formatNumber(totals.generations)} generations · ${formatFull(totals.credits)} credits · ${formatFull(totals.cost)} cost · click a date for that day`
             : 'Days this person generated on'}
         </span>
         {onAddToCanvas && (
@@ -521,10 +521,20 @@ const GenerationTimeline = ({ userId, userName, provider, focusDate, onAddToCanv
 };
 
 // What this person actually did on one specific day.
+// Level 3 (Client) -> Level 4 (Tools) -> Level 5 (Generations), in that
+// order: undefined = nothing picked yet (only the Client list renders); 0 is
+// the "Unassigned" bucket (never a real client id - those are DB-autoincrement
+// and start at 1); otherwise a real GenerationClient id. Re-running the
+// /users/day query with clientId set is what scopes Tools + Generations to
+// just that client - the Client breakdown itself always reflects the whole
+// day, since it's the list you pick FROM.
 const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas }) => {
+  const [selectedClientId, setSelectedClientId] = useState(undefined);
+  const [selectedClientName, setSelectedClientName] = useState(null);
+
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['reports', 'user', 'day', userId, date, provider || 'all'],
-    queryFn: () => reportsAPI.userDay({ userId, date, provider }),
+    queryKey: ['reports', 'user', 'day', userId, date, provider || 'all', selectedClientId ?? 'none'],
+    queryFn: () => reportsAPI.userDay({ userId, date, provider, client_id: selectedClientId }),
     enabled: !!userId && !!date,
     staleTime: 60_000,
   });
@@ -532,6 +542,14 @@ const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas })
   const d = data || {};
   const t = d.totals || {};
   const act = d.activity || {};
+  const clients = d.clients || [];
+  const toolBreakdown = d.toolBreakdown || [];
+  const clientChosen = selectedClientId !== undefined;
+
+  const chooseClient = (clientId, clientName) => {
+    setSelectedClientId(clientId);
+    setSelectedClientName(clientName);
+  };
   const time = (iso) => (iso ? new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '—');
   const dayLabel = date ? new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' }) : '';
 
@@ -565,7 +583,50 @@ const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas })
             Login <b>{time(act.loginTime)}</b> · Logout <b>{time(act.logoutTime)}</b> · Active <b>{formatFull(act.activeMinutes || 0)}m</b> · Status <b>{act.status || '—'}</b>
           </p>
 
-          {/* Tool usage */}
+          {/* Client (level 3) - pick a client to scope Tools + Generations below */}
+          <div className="rpt-card-head">
+            <h3 className="rpt-card-title" style={{ fontSize: 13 }}>Client</h3>
+            <span className="rpt-card-hint">
+              {formatNumber(t.generations || 0)} generations · {formatFull(t.credits || 0)} credits · {formatFull(t.cost || 0)} cost · click a client
+            </span>
+          </div>
+          {clients.length ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+              {clients.map((c) => (
+                <span
+                  key={c.clientId}
+                  className={`rpt-pill${selectedClientId === c.clientId ? '' : ' muted'}`}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => chooseClient(c.clientId, c.clientName)}
+                  title="See this client's tool breakdown and generations"
+                >
+                  {c.clientName} · {formatNumber(c.generations)} gen · {formatFull(c.credits)} cr · {formatFull(c.cost)} cost
+                </span>
+              ))}
+            </div>
+          ) : <p className="rpt-kpi-prev">No client-linked generations that day.</p>}
+
+          {clientChosen && (
+            <>
+              {/* Tools (level 4) - generation/credit/cost per AI tool, scoped
+                  to the selected client above. */}
+              <div className="rpt-card-head">
+                <h3 className="rpt-card-title" style={{ fontSize: 13 }}>Tools{selectedClientName ? ` — ${selectedClientName}` : ''}</h3>
+              </div>
+              {toolBreakdown.length ? (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+                  {toolBreakdown.map((x) => (
+                    <span key={x.tool} className="rpt-pill muted">
+                      {x.tool} · {formatNumber(x.generations)} gen · {formatFull(x.credits)} cr · {formatFull(x.cost)} cost
+                    </span>
+                  ))}
+                </div>
+              ) : <p className="rpt-kpi-prev">No generations for this client that day.</p>}
+            </>
+          )}
+
+          {/* Tool usage (raw portal login/usage events, all tools - distinct
+              from the generation-based Tools breakdown above) */}
           <div className="rpt-card-head"><h3 className="rpt-card-title" style={{ fontSize: 13 }}>Tool usage</h3></div>
           {(d.toolUsage || []).length ? (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -606,49 +667,55 @@ const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas })
             </ul>
           ) : <p className="rpt-kpi-prev">No task activity that day.</p>}
 
-          {/* Generations */}
-          <div className="rpt-card-head">
-            <h3 className="rpt-card-title" style={{ fontSize: 13 }}>Generations</h3>
-            <span className="rpt-card-hint">
-              {d.generationsTruncated
-                ? `showing first ${formatNumber((d.generations || []).length)} of ${formatNumber(t.generations)}`
-                : `${formatNumber((d.generations || []).length)} captured`}
-            </span>
-          </div>
-          {(d.generations || []).length ? (
-            <div style={{ maxHeight: 260, overflowY: 'auto' }}>
-              <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-                <thead><tr style={{ textAlign: 'left', color: 'var(--color-text-muted)' }}>
-                  <th style={{ padding: '4px' }}>Time</th><th style={{ padding: '4px' }}>Model</th>
-                  <th style={{ padding: '4px', textAlign: 'right' }}>Credits</th><th style={{ padding: '4px' }}>Prompt</th>
-                  <th style={{ padding: '4px' }}>Output</th>
-                </tr></thead>
-                <tbody>
-                  {d.generations.map((g, i) => (
-                    <tr key={i} style={{ borderTop: '1px solid var(--color-border)' }}>
-                      <td style={{ padding: '4px', whiteSpace: 'nowrap' }}>{time(g.time)}</td>
-                      <td style={{ padding: '4px' }}>{g.model || '—'}</td>
-                      <td style={{ padding: '4px', textAlign: 'right' }}>{g.credits == null ? '—' : formatFull(g.credits)}</td>
-                      <td style={{ padding: '4px' }}>{(g.prompt || '—').slice(0, 90)}</td>
-                      <td style={{ padding: '4px', whiteSpace: 'nowrap' }}>
-                        {g.assetUrl ? (
-                          <a
-                            href={g.assetUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{ color: 'var(--color-primary)', fontWeight: 600, textDecoration: 'none' }}
-                            title="Open this generation in a new tab"
-                          >
-                            View
-                          </a>
-                        ) : '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : <p className="rpt-kpi-prev">No generations that day.</p>}
+          {/* Generations (level 5) - only shown once a client (level 3) has
+              been picked, same gating as Tools above; the query is already
+              scoped to selectedClientId so this list matches Tools' totals. */}
+          {clientChosen && (
+            <>
+              <div className="rpt-card-head">
+                <h3 className="rpt-card-title" style={{ fontSize: 13 }}>Generations</h3>
+                <span className="rpt-card-hint">
+                  {d.generationsTruncated
+                    ? `showing first ${formatNumber((d.generations || []).length)} of ${formatNumber(t.generations)}`
+                    : `${formatNumber((d.generations || []).length)} captured`}
+                </span>
+              </div>
+              {(d.generations || []).length ? (
+                <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+                  <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                    <thead><tr style={{ textAlign: 'left', color: 'var(--color-text-muted)' }}>
+                      <th style={{ padding: '4px' }}>Time</th><th style={{ padding: '4px' }}>Model</th>
+                      <th style={{ padding: '4px', textAlign: 'right' }}>Credits</th><th style={{ padding: '4px' }}>Prompt</th>
+                      <th style={{ padding: '4px' }}>Output</th>
+                    </tr></thead>
+                    <tbody>
+                      {d.generations.map((g, i) => (
+                        <tr key={i} style={{ borderTop: '1px solid var(--color-border)' }}>
+                          <td style={{ padding: '4px', whiteSpace: 'nowrap' }}>{time(g.time)}</td>
+                          <td style={{ padding: '4px' }}>{g.model || '—'}</td>
+                          <td style={{ padding: '4px', textAlign: 'right' }}>{g.credits == null ? '—' : formatFull(g.credits)}</td>
+                          <td style={{ padding: '4px' }}>{(g.prompt || '—').slice(0, 90)}</td>
+                          <td style={{ padding: '4px', whiteSpace: 'nowrap' }}>
+                            {g.assetUrl ? (
+                              <a
+                                href={g.assetUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ color: 'var(--color-primary)', fontWeight: 600, textDecoration: 'none' }}
+                                title="Open this generation in a new tab"
+                              >
+                                View
+                              </a>
+                            ) : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <p className="rpt-kpi-prev">No generations that day.</p>}
+            </>
+          )}
         </>
       )}
     </div>

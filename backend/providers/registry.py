@@ -48,6 +48,19 @@ PROVIDERS: dict[str, ProviderInfo] = {
         migrations_module="providers.chatgpt.migrations",
         notes="Phase 1 (data model & migrations) complete. Capture/router/recovery/analytics pending.",
     ),
+    "freepik": ProviderInfo(
+        slug="freepik",
+        display_name="Freepik / Magnific",
+        tool_slugs=frozenset({"freepik", "magnific"}),
+        status="in_development",
+        models_module="providers.freepik.models",
+        migrations_module="providers.freepik.migrations",
+        notes=(
+            "Ticket-based ownership attribution (Kling pattern, not ChatGPT's plain-session one) - "
+            "Freepik's own API never identifies the employee, only the shared account. Reconciliation "
+            "sync is extension-driven (no server-side Freepik credential exists) - see CAPTURE_CONTRACT.md."
+        ),
+    ),
 }
 
 

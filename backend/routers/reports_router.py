@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from database_config import get_operational_db
 from models_new import ActivityStatus, GenerationRecord, GenerationTag, ITPortalTool, ITPortalToolUsageEvent, ParticipantRole, Task, TaskParticipant, TaskStatus, TaskStatusHistory, ToolCreditRate, User, UserActivity
 from providers.chatgpt.models import ConversationPrompt, ConversationRecord, ConversationResponse
+from providers.freepik.models import FreepikGeneration
 from utils.permissions import require_admin
 
 router = APIRouter(prefix="/api/reports", tags=["Reports"])
@@ -34,6 +35,7 @@ SUCCESS_STATUSES = ("active", "completed")
 DEFAULT_WINDOW_DAYS = 30
 KLING_PROVIDER = "kling"
 CHATGPT_PROVIDER = "chatgpt"
+FREEPIK_PROVIDER = "freepik"
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +642,428 @@ def kling_users(
         })
 
     return {"success": True, "users": users}
+
+
+# ---------------------------------------------------------------------------
+# Freepik / Magnific Analytics
+# ---------------------------------------------------------------------------
+# Mirrors the Kling summary/trends/users trio above, on the same generic
+# GenerationRecord table (provider="freepik") - Freepik generations DO carry
+# real per-employee attribution (owner_user_id), unlike Kling's shared-login
+# account, so no separate "account intelligence" layer is needed here.
+#
+# One real difference: GenerationRecord.credits_burned collapses Freepik's two
+# distinct numbers (an actual *charged* deduction vs. a pre-generation
+# *estimated* cost - see FreepikGeneration.credits_charged/credits_estimated)
+# into one column. creditsEstimated below reads FreepikGeneration directly
+# rather than losing that distinction.
+def _freepik_estimated_credits(db: Session, start_dt, end_exclusive, department: Optional[str], user: Optional[int]) -> float:
+    """Estimated credits over EXACTLY the population the charged figure beside
+    it uses.
+
+    This used to stand alone on FreepikGeneration: it required a resolved
+    owner and windowed on provider_created_at, while the charged number
+    (_credits over _gen_query) required neither and windowed on
+    GenerationRecord.created_at. Unattributed generations are not an edge case
+    - the 15-minute ownership freshness gate leaves reconciliation imports
+    deliberately unowned - so they landed in charged but not estimated, and
+    the two KPIs sitting side by side in the UI diverged in a way that reads
+    as an overcharge. Driving both off the same _gen_query and reaching
+    FreepikGeneration only for the estimate column keeps one definition of
+    "which generations are in this window".
+    """
+    q = (
+        _gen_query(db, start_dt, end_exclusive, department, provider=FREEPIK_PROVIDER, user=user)
+        .join(FreepikGeneration, FreepikGeneration.generation_record_id == GenerationRecord.id)
+        .with_entities(func.coalesce(func.sum(FreepikGeneration.credits_estimated), 0.0))
+    )
+    return float(q.scalar() or 0)
+
+
+@router.get("/freepik/summary")
+def freepik_summary(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
+
+    def block(s, e):
+        base = _gen_query(db, s, e, department, provider=FREEPIK_PROVIDER, user=user)
+        total = _count(base)
+        success = _success_count(_gen_query(db, s, e, department, provider=FREEPIK_PROVIDER, user=user))
+        charged = _credits(_gen_query(db, s, e, department, provider=FREEPIK_PROVIDER, user=user))
+        estimated = _freepik_estimated_credits(db, s, e, department, user)
+        unique_users = int(
+            _gen_query(db, s, e, department, provider=FREEPIK_PROVIDER, user=user)
+            .with_entities(func.count(func.distinct(GenerationRecord.owner_user_id)))
+            .scalar()
+            or 0
+        )
+        return {"total": total, "success": success, "charged": charged, "estimated": estimated, "users": unique_users}
+
+    cur = block(start_dt, end_exclusive)
+    prv = block(prev_start, prev_end)
+
+    avg_cur = round(cur["total"] / cur["users"], 1) if cur["users"] else 0.0
+    avg_prv = round(prv["total"] / prv["users"], 1) if prv["users"] else 0.0
+    success_rate_cur = round((cur["success"] / cur["total"]) * 100.0, 1) if cur["total"] else 0.0
+    success_rate_prv = round((prv["success"] / prv["total"]) * 100.0, 1) if prv["total"] else 0.0
+
+    status_rows = (
+        _gen_query(db, start_dt, end_exclusive, department, provider=FREEPIK_PROVIDER, user=user)
+        .with_entities(GenerationRecord.capture_status, func.count(GenerationRecord.id))
+        .group_by(GenerationRecord.capture_status)
+        .all()
+    )
+    status_breakdown = [{"status": s or "unknown", "count": int(c)} for s, c in status_rows]
+
+    # Video vs image split - see providers/freepik/normalization.py's
+    # duration_label mapping (only video-generator creations set it).
+    media_rows = (
+        _gen_query(db, start_dt, end_exclusive, department, provider=FREEPIK_PROVIDER, user=user)
+        .with_entities(
+            case((and_(GenerationRecord.duration_label.isnot(None), GenerationRecord.duration_label != ""), "video"), else_="image").label("kind"),
+            func.count(GenerationRecord.id),
+        )
+        .group_by("kind")
+        .all()
+    )
+    media_breakdown = [{"kind": k, "count": int(c)} for k, c in media_rows]
+
+    return {
+        "success": True,
+        "period": {"start": str(start_dt.date()), "end": str((end_exclusive - timedelta(days=1)).date()), "days": days},
+        "kpis": {
+            "totalGenerations": _metric(cur["total"], prv["total"]),
+            "uniqueUsers": _metric(cur["users"], prv["users"]),
+            "avgGenerationsPerUser": _metric(avg_cur, avg_prv),
+            "successRate": {**_metric(success_rate_cur, success_rate_prv), "unit": "%"},
+            "creditsCharged": {**_metric(cur["charged"], prv["charged"]), "unit": "credits"},
+            "creditsEstimated": {**_metric(cur["estimated"], prv["estimated"]), "unit": "credits"},
+        },
+        "statusBreakdown": status_breakdown,
+        "mediaBreakdown": media_breakdown,
+    }
+
+
+@router.get("/freepik/trends")
+def freepik_trends(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    daily_rows = (
+        _gen_query(db, start_dt, end_exclusive, department, provider=FREEPIK_PROVIDER, user=user)
+        .with_entities(
+            func.date(GenerationRecord.created_at).label("day"),
+            func.count(GenerationRecord.id).label("count"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+        )
+        .group_by(func.date(GenerationRecord.created_at))
+        .order_by(func.date(GenerationRecord.created_at).asc())
+        .all()
+    )
+    daily = [{"date": str(d), "generations": int(c), "creditsCharged": float(cr)} for d, c, cr in daily_rows]
+
+    dept_rows = (
+        db.query(User.department, func.count(GenerationRecord.id))
+        .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
+        .filter(
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.provider == FREEPIK_PROVIDER,
+            GenerationRecord.created_at >= start_dt,
+            GenerationRecord.created_at < end_exclusive,
+            User.department.isnot(None),
+        )
+        .group_by(User.department)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .all()
+    )
+    by_department = [{"department": d or "Unassigned", "generations": int(c)} for d, c in dept_rows]
+
+    created_rows = (
+        _gen_query(db, start_dt, end_exclusive, department, provider=FREEPIK_PROVIDER, user=user)
+        .with_entities(GenerationRecord.created_at, GenerationRecord.capture_status)
+        .all()
+    )
+    hour_buckets = defaultdict(int)
+    success_total = 0
+    failure_total = 0
+    for created_at, status in created_rows:
+        if created_at is not None:
+            hour_buckets[_local_hour(created_at)] += 1
+        if status in SUCCESS_STATUSES:
+            success_total += 1
+        else:
+            failure_total += 1
+    by_hour = [{"hour": h, "generations": hour_buckets.get(h, 0)} for h in range(24)]
+
+    return {
+        "success": True,
+        "daily": daily,
+        "byDepartment": by_department,
+        "byHour": by_hour,
+        "successVsFailure": [
+            {"label": "Success", "count": success_total},
+            {"label": "Failure", "count": failure_total},
+        ],
+    }
+
+
+@router.get("/freepik/users")
+def freepik_users(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    rows = (
+        db.query(
+            User.id,
+            User.name,
+            User.avatar,
+            User.department,
+            func.count(GenerationRecord.id).label("generations"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+        )
+        .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
+        .filter(
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.provider == FREEPIK_PROVIDER,
+            GenerationRecord.created_at >= start_dt,
+            GenerationRecord.created_at < end_exclusive,
+        )
+    )
+    if department and department != "all":
+        rows = rows.filter(User.department == department)
+    if user:
+        rows = rows.filter(User.id == user)
+    rows = (
+        rows.group_by(User.id, User.name, User.avatar, User.department)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .limit(limit)
+        .all()
+    )
+
+    user_ids = [r[0] for r in rows]
+    success_map = {}
+    estimated_map = {}
+    if user_ids:
+        success_rows = (
+            db.query(GenerationRecord.owner_user_id, func.count(GenerationRecord.id))
+            .filter(
+                GenerationRecord.archived_at.is_(None),
+                GenerationRecord.provider == FREEPIK_PROVIDER,
+                GenerationRecord.created_at >= start_dt,
+                GenerationRecord.created_at < end_exclusive,
+                GenerationRecord.owner_user_id.in_(user_ids),
+                GenerationRecord.capture_status.in_(SUCCESS_STATUSES),
+            )
+            .group_by(GenerationRecord.owner_user_id)
+            .all()
+        )
+        success_map = {uid: int(c) for uid, c in success_rows}
+
+        # Windowed through GenerationRecord, not FreepikGeneration's own
+        # provider_created_at, so each row's estimated credits are attributed
+        # to the same user and the same day as its charged credits in the
+        # `rows` query above - see _freepik_estimated_credits' docstring.
+        estimated_rows = (
+            db.query(
+                GenerationRecord.owner_user_id,
+                func.coalesce(func.sum(FreepikGeneration.credits_estimated), 0.0),
+            )
+            .join(FreepikGeneration, FreepikGeneration.generation_record_id == GenerationRecord.id)
+            .filter(
+                GenerationRecord.archived_at.is_(None),
+                GenerationRecord.provider == FREEPIK_PROVIDER,
+                GenerationRecord.created_at >= start_dt,
+                GenerationRecord.created_at < end_exclusive,
+                GenerationRecord.owner_user_id.in_(user_ids),
+            )
+            .group_by(GenerationRecord.owner_user_id)
+            .all()
+        )
+        estimated_map = {uid: float(c) for uid, c in estimated_rows}
+
+    users = []
+    for rank, (uid, name, avatar, dept, generations, credits) in enumerate(rows, start=1):
+        generations = int(generations)
+        success = success_map.get(uid, 0)
+        users.append({
+            "rank": rank,
+            "userId": uid,
+            "name": name or "Unknown",
+            "avatar": avatar,
+            "department": dept or "Unassigned",
+            "generations": generations,
+            "successRate": round((success / generations) * 100.0, 1) if generations else 0.0,
+            "creditsCharged": float(credits),
+            "creditsEstimated": estimated_map.get(uid, 0.0),
+        })
+
+    return {"success": True, "users": users}
+
+
+@router.get("/freepik/tasks")
+def freepik_tasks_breakdown(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Task Mapping breakdown - how many Freepik generations were linked to
+    each task, and how many credits they burned. Rows with no linked task
+    collapse into "Unassigned", mirroring freepik_trends' department split."""
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    base = _gen_query(db, start_dt, end_exclusive, department, provider=FREEPIK_PROVIDER, user=user)
+    rows = (
+        base.with_entities(
+            GenerationRecord.linked_task_id,
+            func.coalesce(GenerationRecord.linked_task_name, "Unassigned").label("task_name"),
+            func.count(GenerationRecord.id).label("generations"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+        )
+        .group_by(GenerationRecord.linked_task_id, func.coalesce(GenerationRecord.linked_task_name, "Unassigned"))
+        .order_by(func.count(GenerationRecord.id).desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "success": True,
+        "tasks": [
+            {"taskId": task_id, "taskName": task_name, "generations": int(generations), "creditsCharged": float(credits)}
+            for task_id, task_name, generations, credits in rows
+        ],
+    }
+
+
+@router.get("/freepik/clients")
+def freepik_clients_breakdown(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Client Mapping breakdown - same idea as freepik_tasks_breakdown, for
+    the admin-curated Client list instead (see utils/client_gate.py)."""
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    base = _gen_query(db, start_dt, end_exclusive, department, provider=FREEPIK_PROVIDER, user=user)
+    rows = (
+        base.with_entities(
+            GenerationRecord.linked_client_id,
+            func.coalesce(GenerationRecord.linked_client_name, "Unassigned").label("client_name"),
+            func.count(GenerationRecord.id).label("generations"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+        )
+        .group_by(GenerationRecord.linked_client_id, func.coalesce(GenerationRecord.linked_client_name, "Unassigned"))
+        .order_by(func.count(GenerationRecord.id).desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "success": True,
+        "clients": [
+            {"clientId": client_id, "clientName": client_name, "generations": int(generations), "creditsCharged": float(credits)}
+            for client_id, client_name, generations, credits in rows
+        ],
+    }
+
+
+@router.get("/kling/tasks")
+def kling_tasks_breakdown(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Task Mapping breakdown - Kling's equivalent of freepik_tasks_breakdown,
+    now that Kling has its own pre-generation Task/Client gate (see
+    content-kling-task-modal.js). Rows with no linked task collapse into
+    "Unassigned"."""
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    base = _gen_query(db, start_dt, end_exclusive, department, provider=KLING_PROVIDER, user=user)
+    rows = (
+        base.with_entities(
+            GenerationRecord.linked_task_id,
+            func.coalesce(GenerationRecord.linked_task_name, "Unassigned").label("task_name"),
+            func.count(GenerationRecord.id).label("generations"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+        )
+        .group_by(GenerationRecord.linked_task_id, func.coalesce(GenerationRecord.linked_task_name, "Unassigned"))
+        .order_by(func.count(GenerationRecord.id).desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "success": True,
+        "tasks": [
+            {"taskId": task_id, "taskName": task_name, "generations": int(generations), "creditsCharged": float(credits)}
+            for task_id, task_name, generations, credits in rows
+        ],
+    }
+
+
+@router.get("/kling/clients")
+def kling_clients_breakdown(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Client Mapping breakdown - same idea as kling_tasks_breakdown, for the
+    admin-curated Client list instead (see utils/client_gate.py)."""
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    base = _gen_query(db, start_dt, end_exclusive, department, provider=KLING_PROVIDER, user=user)
+    rows = (
+        base.with_entities(
+            GenerationRecord.linked_client_id,
+            func.coalesce(GenerationRecord.linked_client_name, "Unassigned").label("client_name"),
+            func.count(GenerationRecord.id).label("generations"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+        )
+        .group_by(GenerationRecord.linked_client_id, func.coalesce(GenerationRecord.linked_client_name, "Unassigned"))
+        .order_by(func.count(GenerationRecord.id).desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "success": True,
+        "clients": [
+            {"clientId": client_id, "clientName": client_name, "generations": int(generations), "creditsCharged": float(credits)}
+            for client_id, client_name, generations, credits in rows
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2275,6 +2699,13 @@ def user_day(
     userId: int = Query(...),
     date: str = Query(...),
     provider: Optional[str] = Query(None),
+    # 0 means "Unassigned" (linked_client_id IS NULL) - never a real client id,
+    # since GenerationClient ids are DB-autoincrement and start at 1. Omitted
+    # entirely means "no client filter yet" (the initial call right after
+    # opening a date, used only to populate the `clients` breakdown below -
+    # the frontend doesn't render the Tools/Generations levels until the
+    # person has actually picked one).
+    client_id: Optional[int] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
@@ -2371,12 +2802,75 @@ def user_day(
     )
     if provider and provider != "all":
         gen_day_q = gen_day_q.filter(GenerationRecord.provider == provider)
+
+    rate_expr, currency, _default_rate = _credit_rate_context(db)
+
+    # Client Mapping breakdown (level 3, "Client") - always computed over the
+    # FULL day (never itself filtered by client_id, since this is the list a
+    # person picks a client FROM). Rows with no linked client collapse into
+    # "Unassigned" (clientId 0), same convention client_id above uses.
+    client_rows = (
+        _with_cost_join(gen_day_q)
+        .with_entities(
+            GenerationRecord.linked_client_id,
+            func.coalesce(GenerationRecord.linked_client_name, "Unassigned").label("client_name"),
+            func.count(GenerationRecord.id).label("generations"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+            _cost_sum_expr(rate_expr).label("cost"),
+        )
+        .group_by(GenerationRecord.linked_client_id, func.coalesce(GenerationRecord.linked_client_name, "Unassigned"))
+        .order_by(func.count(GenerationRecord.id).desc())
+        .all()
+    )
+    clients_breakdown = [{
+        "clientId": cid or 0,
+        "clientName": cname,
+        "generations": int(gens or 0),
+        "credits": round(float(credits or 0), 1),
+        "cost": round(float(cost or 0), 2),
+    } for cid, cname, gens, credits, cost in client_rows]
+
+    # Everything below (Tools breakdown + Generations list + totals) is scoped
+    # to the selected client once one is picked - levels 4 and 5 of the drill.
+    scoped_gen_q = gen_day_q
+    if client_id is not None:
+        scoped_gen_q = (
+            scoped_gen_q.filter(GenerationRecord.linked_client_id.is_(None))
+            if client_id == 0
+            else scoped_gen_q.filter(GenerationRecord.linked_client_id == client_id)
+        )
+
+    # Tools breakdown (level 4, "Tools") - which AI tool (provider) produced
+    # this client's generations that day, by generation/credit/cost - distinct
+    # from `toolUsage` above (raw portal login/usage events across every
+    # tool, not just AI generators; kept as-is for the Report Builder export,
+    # see reportTemplate.js's dayToolRows).
+    tool_breakdown_rows = (
+        _with_cost_join(scoped_gen_q)
+        .with_entities(
+            GenerationRecord.provider,
+            func.count(GenerationRecord.id).label("generations"),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+            _cost_sum_expr(rate_expr).label("cost"),
+        )
+        .group_by(GenerationRecord.provider)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .all()
+    )
+    tool_breakdown = [{
+        "tool": prov or "unknown",
+        "generations": int(gens or 0),
+        "credits": round(float(credits or 0), 1),
+        "cost": round(float(cost or 0), 2),
+    } for prov, gens, credits, cost in tool_breakdown_rows]
+
     gen_total, gen_credits = (
-        gen_day_q.with_entities(
+        scoped_gen_q.with_entities(
             func.count(GenerationRecord.id),
             func.coalesce(func.sum(GenerationRecord.credits_burned), 0),
         ).first() or (0, 0)
     )
+    gen_cost = _cost(scoped_gen_q, rate_expr)
     GEN_ROW_LIMIT = 200
     generations = [{
         "time": _ist_iso(g.created_at),
@@ -2388,17 +2882,20 @@ def user_day(
         "assetUrl": g.canonical_asset_url or None,
         "generationId": g.provider_generation_id or g.provider_task_id or None,
     } for g in (
-        gen_day_q.order_by(GenerationRecord.created_at.asc()).limit(GEN_ROW_LIMIT).all()
+        scoped_gen_q.order_by(GenerationRecord.created_at.asc()).limit(GEN_ROW_LIMIT).all()
     )]
 
     return {
         "success": True,
         "date": day.isoformat(),
+        "currency": currency,
         "user": {"userId": u.id, "name": u.name, "email": u.email, "department": u.department, "avatar": u.avatar},
         "activity": activity,
         "tasksCreated": tasks_created,
         "taskActions": task_actions,
         "toolUsage": tool_usage,
+        "clients": clients_breakdown,
+        "toolBreakdown": tool_breakdown,
         "generations": generations,
         # Rows are capped for payload size; the counts below are the true totals.
         "generationsTruncated": int(gen_total or 0) > len(generations),
@@ -2407,6 +2904,7 @@ def user_day(
             "taskActions": len(task_actions),
             "generations": int(gen_total or 0),
             "credits": round(float(gen_credits or 0), 1),
+            "cost": round(float(gen_cost or 0), 2),
             "toolEvents": sum(t["events"] for t in tool_usage),
         },
     }
@@ -4031,14 +4529,23 @@ def ai_workbook_xlsx(
 
     Fully server-rendered from live data — no template file, no manual editing.
     """
-    from utils.ai_report import build_ai_workbook
+    from utils.ai_report import render_ai_workbook
+    from utils.ai_report.dataset import build_dataset
 
-    data, mimetype, filename = build_ai_workbook(
+    # Split deliberately rather than calling build_ai_workbook(db, ...): that
+    # helper does the DB read pass AND the openpyxl render behind one call, so
+    # the connection stayed checked out for the whole serialization of a
+    # seven-sheet workbook. build_dataset returns plain dataclasses, so the
+    # session can go back before any rendering starts.
+    dataset = build_dataset(
         db,
         start=_parse_date(start),
         end=_parse_date(end),
         ref_date=_parse_date(ref),
     )
+    db.close()
+
+    data, mimetype, filename = render_ai_workbook(dataset)
     return Response(
         content=data,
         media_type=mimetype,

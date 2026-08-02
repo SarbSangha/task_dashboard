@@ -160,6 +160,8 @@ export default function GenerationDetailPanel({ generationId }) {
       </div>
 
       <div className="kling-drawer-section kling-drawer-metadata-grid">
+        <MetaField label="Linked Task" value={generation.linkedTaskName} />
+        <MetaField label="Linked Client" value={generation.linkedClientName} />
         <MetaField label="Tool" value={generation.tool} />
         <MetaField label="Mode" value={generation.mode} />
         <MetaField label="Service" value={generation.service} />

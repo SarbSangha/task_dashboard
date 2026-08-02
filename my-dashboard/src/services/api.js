@@ -633,6 +633,26 @@ export const authAPI = {
   },
 };
 
+// Admin-managed Client list (separate from Tasks) used by the Freepik
+// pre-generation gate's Client picker - managed from the "Manage Clients"
+// tab in the Admin Queue panel, see AdminClientsTab.jsx.
+export const clientsAPI = {
+  getClients: async () => {
+    const response = await api.get('/api/clients');
+    return response.data;
+  },
+
+  createClient: async (name) => {
+    const response = await api.post('/api/clients', { name });
+    return response.data;
+  },
+
+  updateClient: async (clientId, updates) => {
+    const response = await api.patch(`/api/clients/${clientId}`, updates);
+    return response.data;
+  },
+};
+
 export const activityAPI = {
   startSession: async () => {
     const response = await api.post('/api/activity/start-session', undefined, {
@@ -1854,6 +1874,16 @@ export const freepikCaptureAPI = {
 
   getEvent: async (eventId, requestConfig = {}) => {
     const response = await api.get(`/api/providers/freepik/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+
+  getLinkedTasks: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/freepik/generations/linked-tasks', requestConfig);
+    return response.data;
+  },
+
+  getLinkedClients: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/freepik/generations/linked-clients', requestConfig);
     return response.data;
   },
 };

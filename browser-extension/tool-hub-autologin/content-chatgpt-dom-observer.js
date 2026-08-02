@@ -42,6 +42,7 @@
   let sidebarRetryTimer = null;
   let sidebarItemCount = -1;
   let lastSeenTitle = document.title;
+  let lastSeenConversationId = currentConversationId();
   let lastCanvasSeen = false;
 
   function currentConversationId() {
@@ -62,11 +63,28 @@
     if (!titleEl) return;
     const observer = new MutationObserver(() => {
       const nextTitle = document.title;
-      if (nextTitle === lastSeenTitle) return;
-      const previousTitle = lastSeenTitle;
-      lastSeenTitle = nextTitle;
       const conversationId = currentConversationId();
+      if (nextTitle === lastSeenTitle) {
+        lastSeenConversationId = conversationId;
+        return;
+      }
+      const previousTitle = lastSeenTitle;
+      const previousConversationId = lastSeenConversationId;
+      lastSeenTitle = nextTitle;
+      lastSeenConversationId = conversationId;
       if (!conversationId) return; // landing page title churn, not a conversation
+      // Navigating from one conversation to another changes document.title
+      // to whichever conversation you just opened - that is NOT a rename of
+      // the conversation you navigated to, it just looks like one because
+      // lastSeenTitle was still holding the PREVIOUS conversation's title.
+      // Confirmed in production: opening a conversation untouched for 12
+      // days fired this exact "rename" to its own already-existing title,
+      // which made it look freshly active (lastSeenAt is MAX(event time)
+      // across all of a conversation's raw events) and re-surfaced it at
+      // the top of "most recent" despite nothing actually changing. Only a
+      // title change while STAYING on the same conversation is a genuine
+      // rename worth reporting.
+      if (conversationId !== previousConversationId) return;
       bus.emitSignal('CHATGPT_DOM_TITLE_CHANGED', {
         conversationId,
         previousTitle,

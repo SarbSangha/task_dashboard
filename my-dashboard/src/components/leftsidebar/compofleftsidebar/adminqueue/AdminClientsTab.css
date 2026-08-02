@@ -1,0 +1,202 @@
+/* ==========================================================================
+   Admin Clients Tab — manage the admin-curated Client list
+   ========================================================================== */
+
+.act-root { display: flex; flex-direction: column; gap: 10px; }
+
+/* ── Add form ─────────────────────────────────────────────────────────────── */
+
+.act-add-form {
+  display: flex;
+  gap: 8px;
+}
+
+.act-add-form input {
+  flex: 1;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.act-add-form input:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+.act-message {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-feedback-info-border);
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
+  font-size: 12px;
+}
+
+/* ── Table ────────────────────────────────────────────────────────────────── */
+
+.act-table-wrap {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 14px;
+  overflow: hidden;
+  overflow-x: auto;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
+  scrollbar-width: thin;
+}
+
+.act-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 420px;
+}
+
+.act-table thead tr {
+  background: var(--color-table-header);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.act-table th {
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.act-table th:first-child, .act-table td:first-child { padding-left: 16px; }
+.act-table th:last-child,  .act-table td:last-child  { padding-right: 16px; }
+
+.act-row {
+  background: var(--color-table-row);
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background-color var(--theme-transition-fast);
+}
+
+.act-row:nth-child(even) { background: var(--color-table-row-zebra); }
+.act-row:last-child      { border-bottom: none; }
+.act-row:hover           { background: var(--color-table-row-hover); }
+
+.act-table td { padding: 10px 12px; vertical-align: middle; }
+
+.act-name { font-size: 13px; font-weight: 700; color: var(--color-text); }
+
+.act-rename-input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+/* ── Status badges ────────────────────────────────────────────────────────── */
+
+.act-status {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.act-status--active {
+  background: var(--color-feedback-success-bg);
+  border-color: var(--color-feedback-success-border);
+  color: var(--color-feedback-success-text);
+}
+
+.act-status--inactive {
+  background: var(--color-surface-muted);
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-muted);
+}
+
+/* ── Action buttons ───────────────────────────────────────────────────────── */
+
+.act-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.act-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
+}
+
+.act-btn:hover { transform: translateY(-1px); }
+
+.act-btn--add {
+  background: var(--color-button-success-bg);
+  border-color: color-mix(in srgb, var(--color-success) 52%, transparent);
+  color: var(--color-button-success-text);
+  padding: 0 16px;
+}
+
+.act-btn--approve {
+  background: var(--color-button-success-bg);
+  border-color: color-mix(in srgb, var(--color-success) 52%, transparent);
+  color: var(--color-button-success-text);
+}
+
+.act-btn--reject {
+  background: var(--color-button-destructive-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-button-destructive-text);
+}
+
+.act-btn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+/* ── Empty state ──────────────────────────────────────────────────────────── */
+
+.act-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 60px 20px;
+  border: 1px dashed var(--color-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-surface-muted) 60%, transparent);
+}
+
+.act-empty-icon {
+  width: 48px;
+  height: 48px;
+  color: var(--color-text-muted);
+}
+
+.act-empty-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  text-align: center;
+}

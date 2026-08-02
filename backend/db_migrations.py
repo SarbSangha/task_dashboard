@@ -1,5 +1,6 @@
 from sqlalchemy import text
 from providers.chatgpt.migrations import ensure_chatgpt_postgres_schema, ensure_chatgpt_sqlite_schema
+from providers.freepik.migrations import ensure_freepik_postgres_schema, ensure_freepik_sqlite_schema
 
 DEFAULT_DEPARTMENT_DIRECTORY = (
     "CREATIVE",
@@ -312,6 +313,14 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "source", "VARCHAR(80)")
     _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "schema_version", "INTEGER")
     _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "confidence", "DOUBLE PRECISION")
+    # Task/Client Mapping (see utils/task_gate.py, utils/client_gate.py) -
+    # mirrors generation_records.linked_task_id/linked_client_id below.
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "linked_task_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "linked_task_name", "VARCHAR(255)")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_linked_task_id ON it_portal_tool_usage_events(linked_task_id)"))
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "linked_client_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "linked_client_name", "VARCHAR(255)")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_linked_client_id ON it_portal_tool_usage_events(linked_client_id)"))
     _pg_add_column_if_missing(conn, "group_chat_messages", "attachments_json", "JSON")
     _pg_add_column_if_missing(conn, "group_chat_messages", "mentions_json", "JSON")
     _pg_add_column_if_missing(conn, "group_chat_messages", "forward_metadata_json", "JSON")
@@ -577,6 +586,16 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "generation_records", "recovered_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "generation_records", "archived_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "generation_records", "is_favorite", "BOOLEAN NOT NULL DEFAULT FALSE")
+    # Task Mapping (see utils/task_gate.py) - which internal Task this
+    # generation was attributed to at generate-time.
+    _pg_add_column_if_missing(conn, "generation_records", "linked_task_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "generation_records", "linked_task_name", "VARCHAR(255)")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_linked_task_id ON generation_records(linked_task_id)"))
+    # Client Mapping (see utils/client_gate.py) - independent admin-curated
+    # client selection, alongside Task Mapping above.
+    _pg_add_column_if_missing(conn, "generation_records", "linked_client_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "generation_records", "linked_client_name", "VARCHAR(255)")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_linked_client_id ON generation_records(linked_client_id)"))
     if not _pg_constraint_exists(conn, "ck_generation_records_identity_present"):
         conn.execute(
             text(
@@ -793,6 +812,9 @@ def _ensure_postgres_schema(conn) -> None:
     # ---- ChatGPT Capture & Conversation Intelligence System (see providers/chatgpt/migrations.py) ----
     ensure_chatgpt_postgres_schema(conn)
 
+    # ---- Freepik/Magnific Generation Capture System (see providers/freepik/migrations.py) ----
+    ensure_freepik_postgres_schema(conn)
+
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_enabled ON tasks(workflow_enabled)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_status ON tasks(workflow_status)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_current_stage_order ON tasks(current_stage_order)"))
@@ -1007,6 +1029,23 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_is_active ON department_directory(is_active)"))
     _seed_departments(conn)
     _seed_default_tools(conn)
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS generation_clients (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(200) NOT NULL UNIQUE,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_by INTEGER REFERENCES users(id),
+                updated_by INTEGER REFERENCES users(id),
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_clients_name ON generation_clients(name)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_clients_is_active ON generation_clients(is_active)"))
     conn.execute(
         text(
             """
@@ -1257,6 +1296,26 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_department_directory_is_active ON department_directory(is_active)"))
         _seed_departments(conn)
         _seed_default_tools(conn)
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS generation_clients (
+                    id INTEGER PRIMARY KEY,
+                    name VARCHAR(200) NOT NULL UNIQUE,
+                    is_active BOOLEAN NOT NULL DEFAULT 1,
+                    created_by INTEGER,
+                    updated_by INTEGER,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    FOREIGN KEY(created_by) REFERENCES users (id),
+                    FOREIGN KEY(updated_by) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_clients_name ON generation_clients(name)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_clients_is_active ON generation_clients(is_active)"))
 
         if _table_exists(conn, "tasks"):
             task_cols = _table_columns(conn, "tasks")
@@ -1565,6 +1624,10 @@ def ensure_operational_schema(engine) -> None:
                     source VARCHAR(80),
                     schema_version INTEGER,
                     confidence FLOAT,
+                    linked_task_id INTEGER,
+                    linked_task_name VARCHAR(255),
+                    linked_client_id INTEGER,
+                    linked_client_name VARCHAR(255),
                     metadata_json JSON,
                     created_at DATETIME,
                     FOREIGN KEY(tool_id) REFERENCES it_portal_tools (id),
@@ -1590,6 +1653,10 @@ def ensure_operational_schema(engine) -> None:
                 "source": "VARCHAR(80)",
                 "schema_version": "INTEGER",
                 "confidence": "FLOAT",
+                "linked_task_id": "INTEGER",
+                "linked_task_name": "VARCHAR(255)",
+                "linked_client_id": "INTEGER",
+                "linked_client_name": "VARCHAR(255)",
             }
             for column, sql_type in usage_add_columns.items():
                 if column not in usage_cols:
@@ -1599,6 +1666,8 @@ def ensure_operational_schema(engine) -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_request_id ON it_portal_tool_usage_events(request_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_fingerprint ON it_portal_tool_usage_events(fingerprint)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_source ON it_portal_tool_usage_events(source)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_linked_task_id ON it_portal_tool_usage_events(linked_task_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tool_usage_events_linked_client_id ON it_portal_tool_usage_events(linked_client_id)"))
 
         conn.execute(
             text(
@@ -1752,8 +1821,26 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_project_created_at ON generation_records(project_id, created_at)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_ingestion_created_at ON generation_records(ingestion_source, created_at)"))
 
+        if _table_exists(conn, "generation_records"):
+            generation_record_cols = _table_columns(conn, "generation_records")
+            # Task Mapping (see utils/task_gate.py) - which internal Task this
+            # generation was attributed to at generate-time.
+            if "linked_task_id" not in generation_record_cols:
+                conn.execute(text("ALTER TABLE generation_records ADD COLUMN linked_task_id INTEGER"))
+            if "linked_task_name" not in generation_record_cols:
+                conn.execute(text("ALTER TABLE generation_records ADD COLUMN linked_task_name VARCHAR(255)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_linked_task_id ON generation_records(linked_task_id)"))
+            if "linked_client_id" not in generation_record_cols:
+                conn.execute(text("ALTER TABLE generation_records ADD COLUMN linked_client_id INTEGER"))
+            if "linked_client_name" not in generation_record_cols:
+                conn.execute(text("ALTER TABLE generation_records ADD COLUMN linked_client_name VARCHAR(255)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generation_records_linked_client_id ON generation_records(linked_client_id)"))
+
         # ---- ChatGPT Capture & Conversation Intelligence System (see providers/chatgpt/migrations.py) ----
         ensure_chatgpt_sqlite_schema(conn)
+
+        # ---- Freepik/Magnific Generation Capture System (see providers/freepik/migrations.py) ----
+        ensure_freepik_sqlite_schema(conn)
 
         conn.execute(
             text(

@@ -16,6 +16,7 @@ import WorkplacePolicyPanel from './WorkplacePolicyPanel';
 import AdminLoginTab from './AdminLoginTab';
 import AdminPendingTab from './AdminPendingTab';
 import AdminPasswordTab from './AdminPasswordTab';
+import AdminClientsTab from './AdminClientsTab';
 import UserDetailDrawer from './UserDetailDrawer';
 import './AdminRequestPanel.css';
 
@@ -26,6 +27,7 @@ const TABS = [
   { id: 'login',     label: 'Login Access' },
   { id: 'passwords', label: 'Password Requests' },
   { id: 'policies',  label: 'Workplace Policies' },
+  { id: 'clients',   label: 'Manage Clients' },
 ];
 
 const STAT_DEFS = [
@@ -325,6 +327,10 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
                   onViewInfo={setDrawerUser}
                   loading={loading}
                 />
+              )}
+
+              {activeTab === 'clients' && (
+                <AdminClientsTab search={search} />
               )}
             </div>
           </div>

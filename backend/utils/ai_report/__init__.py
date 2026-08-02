@@ -17,6 +17,6 @@ rendering. Adding a new AI provider (Claude, Gemini, ...) means registering one
 mapper in ``providers.py``; no existing sheet code changes.
 """
 
-from .workbook import build_ai_workbook, XLSX_MIMETYPE  # noqa: F401
+from .workbook import build_ai_workbook, render_ai_workbook, XLSX_MIMETYPE  # noqa: F401
 
-__all__ = ["build_ai_workbook", "XLSX_MIMETYPE"]
+__all__ = ["build_ai_workbook", "render_ai_workbook", "XLSX_MIMETYPE"]

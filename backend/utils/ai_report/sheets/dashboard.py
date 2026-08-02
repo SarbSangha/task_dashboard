@@ -44,6 +44,18 @@ def render(ws: Worksheet, ds: ReportDataset) -> None:
         C.Kpi("Total Generations", k.total_generations, T.FMT_INT),
         C.Kpi("Total Credits Burned", round(k.total_credits), T.FMT_INT),
     ], row=row, span=3)
+    # Freepik is mixed-media (unlike Kling, which is video-only), so its
+    # generation count is broken into images vs. videos rather than one
+    # combined number, and it reports both a *charged* (actual, deducted) and
+    # *estimated* (pre-generation projection) credit figure - see
+    # FreepikGeneration's credits_charged/credits_estimated columns. Surfaced
+    # as its own row so none of these four get buried in the generic totals.
+    row = C.kpi_cards(ws, [
+        C.Kpi("Freepik Images", k.total_freepik_images, T.FMT_INT),
+        C.Kpi("Freepik Videos", k.total_freepik_videos, T.FMT_INT),
+        C.Kpi("Freepik Credits Charged", round(k.total_freepik_credits_charged), T.FMT_INT),
+        C.Kpi("Freepik Credits Estimated", round(k.total_freepik_credits_estimated), T.FMT_INT),
+    ], row=row, span=3)
 
     row = C.callout(
         ws,
@@ -83,8 +95,8 @@ def _write_sources(ws: Worksheet, ds: ReportDataset) -> dict[str, int]:
 
     block("tool", ["Tool", "Employees"], [[t.tool, t.employees_using] for t in ds.tool_usage])
     block("dept", ["Department", "Adoption %"], [[d.department, round(d.pct, 3)] for d in ds.dept_adoption])
-    block("daily", ["Day", "ChatGPT", "Kling"],
-          [[d.day.strftime("%d-%b"), d.chatgpt, d.kling] for d in ds.daily])
+    block("daily", ["Day", "ChatGPT", "Kling", "Freepik"],
+          [[d.day.strftime("%d-%b"), d.chatgpt, d.kling, d.freepik] for d in ds.daily])
     block("top", ["Employee", "Composite"], [[e.name, e.composite_score] for e in ds.top_employees])
     block("dist", ["Category", "Employees"], _distribution(ds))
     return starts
@@ -112,13 +124,13 @@ def _build_charts(chart_ws: Worksheet, src_ws: Worksheet, ds: ReportDataset,
     _add_bar_series(dbar, src_ws, src["dept"], n_dept, color=T.GREEN, pct=True)
     chart_ws.add_chart(dbar, f"G{anchor_row}")
 
-    # 3. Daily Usage Trend (line, ChatGPT vs Kling)
+    # 3. Daily Usage Trend (line, ChatGPT vs Kling vs Freepik)
     n_day = len(ds.daily)
     line = LineChart()
     line.title = "Daily Usage Trend"
     line.style = 2
     line.height, line.width = 7.5, 15
-    data = Reference(src_ws, min_col=_SRC_COL + 1, max_col=_SRC_COL + 2,
+    data = Reference(src_ws, min_col=_SRC_COL + 1, max_col=_SRC_COL + 3,
                      min_row=src["daily"], max_row=src["daily"] + n_day)
     cats = Reference(src_ws, min_col=_SRC_COL, min_row=src["daily"] + 1, max_row=src["daily"] + n_day)
     line.add_data(data, titles_from_data=True)

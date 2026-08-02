@@ -1638,6 +1638,13 @@ function buildActiveGenerationFromSnapshot(snapshot, startedAt = Date.now()) {
     pipelineStages: {},
     firstTaskIdEndpoint: '',
     status: 'active',
+    // Set by startGeneratedAssetDetection() when this generation replaced a
+    // still-unresolved prior one (see its own comment) - gates the DOM
+    // "newest visible video" fallback in reportGeneratedAssetCandidates(),
+    // since that heuristic has no per-asset identity and cannot tell whether
+    // a freshly-appeared video belongs to THIS click or a still-rendering
+    // earlier one it silently displaced.
+    hadOverlappingPriorGeneration: false,
   };
 }
 
@@ -2181,6 +2188,24 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
   const captureSource = ownedAssets.some((asset) => /^mediasource/i.test(`${asset?.source || ''}`))
     ? 'mediasource'
     : (ownedAssets.some((asset) => /^asset_history/i.test(`${asset?.source || ''}`)) ? 'asset_history' : 'dom');
+  // 'dom' candidates carry no per-asset identity at all (see
+  // collectVisibleGeneratedMediaAssets - just url/type/size, no task id) -
+  // they are matched to the active generation purely by "newest visible
+  // video, and this is the only generation we're tracking." That's wrong the
+  // moment it isn't the only one: if this generation displaced a still-
+  // rendering earlier one (hadOverlappingPriorGeneration), the "newest
+  // visible video" the scan just found could just as easily be the earlier
+  // generation's late-arriving output. 'asset_history' and 'mediasource' are
+  // exempt - asset_history rows are matched by Kling's own real task id
+  // (see the network handler's matchedByTaskId), a genuine identity check,
+  // not a timing guess.
+  if (captureSource === 'dom' && USAGE_CTX.activeGeneration?.hadOverlappingPriorGeneration) {
+    debugUsageTelemetry('generated_assets_skipped_ambiguous_overlap', {
+      generateIntentId: USAGE_CTX.activeGeneration?.generateIntentId,
+      assetCount: ownedAssets.length,
+    });
+    return;
+  }
   const existingAssets = Array.isArray(snapshot.metadata?.mediaAssets) ? snapshot.metadata.mediaAssets : [];
   const hasExistingMediaSource = existingAssets.some(isMediaSourceCapturedAsset);
   if (captureSource === 'dom' && hasExistingMediaSource) {
@@ -2239,6 +2264,21 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
 
 function startGeneratedAssetDetection(snapshot) {
   if (!snapshot) return;
+  // Captured BEFORE stopGeneratedAssetDetection() below clears it - this is
+  // the only place that can still see whether the generation this click is
+  // about to displace had already found its output or not. A still-open
+  // scan window here means the previous generation's video may not have
+  // rendered yet; its tracking is about to be torn down regardless (single
+  // active-generation slot - see the module-level note this function's
+  // caller area), so any asset that appears late and gets matched only by
+  // the risky DOM "newest visible" heuristic must not be silently credited
+  // to THIS (the new, unrelated) generation.
+  const priorGeneration = USAGE_CTX.activeGeneration;
+  const hadOverlappingPriorGeneration = Boolean(
+    priorGeneration
+    && isActiveGenerationValid(priorGeneration)
+    && !(Number(priorGeneration.ownedOutputAssetCount || 0) > 0)
+  );
   stopGeneratedAssetDetection();
   const scanStartedAt = Date.now();
   const activeGeneration = buildActiveGenerationFromSnapshot(snapshot, scanStartedAt);
@@ -2248,6 +2288,13 @@ function startGeneratedAssetDetection(snapshot) {
       generateIntentId: `${snapshot?.metadata?.generateIntentId || snapshot?.externalEventId || ''}`.trim(),
     });
     return;
+  }
+  activeGeneration.hadOverlappingPriorGeneration = hadOverlappingPriorGeneration;
+  if (hadOverlappingPriorGeneration) {
+    debugUsageTelemetry('generation_overlap_detected', {
+      newIntentId: activeGeneration.generateIntentId,
+      displacedIntentId: priorGeneration?.generateIntentId,
+    });
   }
   USAGE_CTX.activeGeneration = activeGeneration;
   USAGE_CTX.generationPipelineMetrics.generations += 1;
@@ -3043,7 +3090,23 @@ function buildAssetHistoryDiscoverySnapshot(row = {}, payload = {}) {
 function reportAssetHistoryDiscoveryRow(row = {}, payload = {}) {
   const snapshot = buildAssetHistoryDiscoverySnapshot(row, payload);
   if (!snapshot) return 'invalid';
-  const dedupeKey = ['asset_discovery', snapshot.generationId, snapshot.metadata?.assetHistory?.createTime || ''].filter(Boolean).join('|');
+  // This row is genuinely self-contained (task id + prompt + video link, all
+  // straight from Kling's own asset-history response - no DOM guessing, no
+  // dependency on USAGE_CTX.activeGeneration) which is exactly what makes it
+  // trustworthy. But most tasks are first observed here WHILE STILL
+  // RENDERING (row.mediaAssets empty - the poll caught it before the video
+  // finished), and the dedupe key used to be identity+createTime alone -
+  // both polls of the SAME task share that key, so the *complete* row
+  // (arriving once the video is actually ready) was silently discarded as a
+  // "duplicate" of the empty one already claimed. That's the actual root
+  // cause of "most generations show no preview": the correct, complete data
+  // was being thrown away, not lost. Splitting the key by whether media is
+  // present lets the later, complete poll through - the backend's own
+  // task-id-first merge (generation_backfill.py's
+  // _find_generation_record_for_candidate) then coalesces both reports into
+  // the same GenerationRecord row rather than creating a duplicate.
+  const hasMedia = Array.isArray(snapshot.metadata?.mediaAssets) && snapshot.metadata.mediaAssets.length > 0;
+  const dedupeKey = ['asset_discovery', snapshot.generationId, snapshot.metadata?.assetHistory?.createTime || '', hasMedia ? 'with_media' : 'no_media'].filter(Boolean).join('|');
   if (dedupeKey && USAGE_CTX.networkEventKeys.has(dedupeKey)) return 'duplicate';
   if (dedupeKey) {
     USAGE_CTX.networkEventKeys.set(dedupeKey, Date.now());
@@ -3220,6 +3283,8 @@ async function reportKlingUsageNow(snapshot) {
     source: snapshot.source,
     schemaVersion: snapshot.schemaVersion,
     confidence: snapshot.confidence,
+    taskId: snapshot.linkedTaskId ?? null,
+    clientId: snapshot.linkedClientId ?? null,
     metadata: snapshot.metadata,
   });
 
@@ -4146,6 +4211,19 @@ function waitForGenerateUsageSettlement(snapshot) {
 
 function scheduleGenerateUsageReport(generateButton) {
   const snapshot = buildGenerateUsageSnapshot(generateButton);
+  // Task/Client Mapping: consumed here (one-shot) regardless of which branch
+  // below runs - runKlingTaskGate() guarantees this is only ever populated
+  // for a click that just passed (or re-passed, via the bypass) task/client
+  // selection, so every report - including the settled follow-up, which
+  // mutates this same snapshot object in place (see
+  // waitForGenerateUsageSettlement) - carries whatever was actually
+  // confirmed for THIS click.
+  const pendingSelection = klingPendingTaskSelection;
+  klingPendingTaskSelection = null;
+  snapshot.linkedTaskId = pendingSelection?.taskId ?? null;
+  snapshot.linkedTaskName = pendingSelection?.taskName ?? null;
+  snapshot.linkedClientId = pendingSelection?.clientId ?? null;
+  snapshot.linkedClientName = pendingSelection?.clientName ?? null;
   const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
   const expectedCredits = Number(snapshot.expectedCredits);
   const promptText = normalizePromptCaptureValue(snapshot.promptText);
@@ -4374,6 +4452,61 @@ function clearPendingUsageReport() {
   stopGeneratedAssetDetection();
 }
 
+// ---- Task Mapping: Generation Interceptor ----
+//
+// Every real Generate click must have an active task selected first (see
+// content-kling-task-modal.js) - same gate content-freepik.js runs before its
+// own Generate button, reusing content-freepik-task-modal.js's exact
+// interaction pattern: block the real interaction, show the picker, then
+// re-dispatch a synthetic one that this same handler recognizes as already
+// gated and lets straight through to Kling's own page handler.
+//
+// Unlike Freepik (which only needs to gate 'click'), handleGenerateInteraction
+// is registered on BOTH 'pointerdown' and 'click' (see startUsageTracking())
+// because scheduleGenerateUsageReport() fires from either - gating only
+// 'click' would still let a bare pointerdown report the generation with no
+// task/client attached before the modal ever opens. So both event types are
+// blocked on first sighting, and the replay re-dispatches a full
+// pointerdown/mousedown/mouseup/click sequence so Kling's own page (which
+// might react to any of them) behaves exactly as if the user had clicked
+// through normally.
+let klingTaskGateBypassTarget = null;
+let klingTaskGateModalOpen = false;
+let klingPendingTaskSelection = null; // {taskId, taskName, clientId, clientName} - consumed one-shot by scheduleGenerateUsageReport()
+
+function dispatchKlingSyntheticGenerateClick(target) {
+  if (!target) return;
+  try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch {}
+  try { target.focus({ preventScroll: true }); } catch {}
+  if (typeof PointerEvent === 'function') {
+    ['pointerdown', 'pointerup'].forEach((eventName) => {
+      try {
+        target.dispatchEvent(new PointerEvent(eventName, { bubbles: true, cancelable: true, pointerType: 'mouse', isPrimary: true, view: window }));
+      } catch {}
+    });
+  }
+  ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((eventName) => {
+    try {
+      target.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true, view: window }));
+    } catch {}
+  });
+  try { target.click(); } catch {}
+}
+
+async function runKlingTaskGate(target) {
+  if (klingTaskGateModalOpen) return; // double-click Generate while the modal is already open - no-op
+  klingTaskGateModalOpen = true;
+  try {
+    const selection = await openKlingTaskSelectionModal();
+    if (!selection) return; // cancelled/ESC/no active tasks - click stays blocked
+    klingPendingTaskSelection = selection;
+    klingTaskGateBypassTarget = target;
+    dispatchKlingSyntheticGenerateClick(target);
+  } finally {
+    klingTaskGateModalOpen = false;
+  }
+}
+
 function handleGenerateInteraction(event) {
   const now = Date.now();
   if (
@@ -4394,6 +4527,22 @@ function handleGenerateInteraction(event) {
     }
     return;
   }
+
+  if (klingTaskGateBypassTarget === generateButton) {
+    if (event.type === 'click') {
+      klingTaskGateBypassTarget = null; // one-shot: next Generate click gates again
+    }
+    // let the (re-dispatched) event reach Kling's own handler and fall
+    // through to the normal reporting logic below, now with
+    // klingPendingTaskSelection available.
+  } else {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    runKlingTaskGate(generateButton);
+    return;
+  }
+
   const label = readGenerateButtonLabel(generateButton);
   setStatus(`Generate detected: ${label || 'button found'}`, { hideAfterMs: 4000 });
   window.setTimeout(() => showCurrentCreditsDebug('after generate detect'), 250);

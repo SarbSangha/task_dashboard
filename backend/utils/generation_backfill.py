@@ -17,7 +17,6 @@ LOGGER = logging.getLogger(__name__)
 KLING_TOOL_SLUGS = {"kling", "kling-ai", "klingai"}
 INTERNAL_ID_PREFIX_RE = re.compile(r"^(?:kgen|net|dom|trade)_", flags=re.IGNORECASE)
 NUMERIC_TASK_ID_RE = re.compile(r"^\d{9,}$")
-OUTPUT_URL_HINT_RE = re.compile(r"(?:output|result|generated|avremux|\.mp4$|\.webm$|\.mov$)", flags=re.IGNORECASE)
 INTERNAL_ASSET_HINT_RE = re.compile(
     r"/(?:assets?|static|web-assets?|kling-web)/[^?#]*(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example)",
     flags=re.IGNORECASE,
@@ -42,6 +41,15 @@ class BackfillCandidate:
     metadata_json: dict
     confidence: str
     signals: list[str] = field(default_factory=list)
+    # Task/Client Mapping - copied straight from the usage event's own
+    # linked_task_id/linked_client_id columns (see utils/task_gate.py), not
+    # derived from metadata like the fields above - these are already
+    # server-validated at capture time (it_tools_router.py's
+    # report_extension_usage_event), nothing left to re-derive here.
+    linked_task_id: Optional[int] = None
+    linked_task_name: Optional[str] = None
+    linked_client_id: Optional[int] = None
+    linked_client_name: Optional[str] = None
 
 
 @dataclass
@@ -215,8 +223,20 @@ def _canonical_asset_url(metadata: dict) -> str:
             continue
         if INTERNAL_ASSET_HINT_RE.search(lowered):
             continue
-        if not OUTPUT_URL_HINT_RE.search(lowered):
-            continue
+        # No longer also requiring the URL text itself to contain a keyword/
+        # extension guess ("output"/"result"/".mp4" etc, formerly
+        # OUTPUT_URL_HINT_RE) on top of the role check above. assetRole is a
+        # reliable classification already
+        # (content-kling.js's inferCapturedAssetRole defaults to 'output'
+        # unless it positively matches input/reference keywords - see its own
+        # comment), so this was a redundant second gate - and an actively
+        # harmful one, since Kling's real CDN URLs are opaque/obfuscated
+        # (base64-ish path segments, generic `.origin?x-kcdn-pid=...` query
+        # suffixes) and routinely don't contain any of the hardcoded keyword
+        # substrings. That silently dropped a correctly-captured, correctly
+        # role-tagged output URL back to "no preview" even though the real
+        # link had already been captured - confirmed against a real captured
+        # row whose only mediaAssets entry was rejected here.
         candidates.append(url)
     return sorted(set(candidates))[0] if candidates else ""
 
@@ -327,6 +347,10 @@ def _build_candidate(event: ITPortalToolUsageEvent) -> Optional[BackfillCandidat
         metadata_json=candidate_metadata,
         confidence=confidence,
         signals=signals,
+        linked_task_id=event.linked_task_id,
+        linked_task_name=event.linked_task_name,
+        linked_client_id=event.linked_client_id,
+        linked_client_name=event.linked_client_name,
     )
 
 
@@ -510,6 +534,16 @@ def _apply_candidate_to_generation_record(
         record.owner_user_id = candidate.owner_user_id
         record.ownership_status = "resolved"
         record.ownership_source = "usage_event_user_id"
+    # Task/Client Mapping - sticky like ownership above: only ever set from a
+    # candidate that actually carries a validated selection, never cleared by
+    # a later re-sync (e.g. a credit-settlement update to the same usage
+    # event) that naturally has no selection of its own to offer.
+    if candidate.linked_task_id is not None:
+        record.linked_task_id = candidate.linked_task_id
+        record.linked_task_name = candidate.linked_task_name
+    if candidate.linked_client_id is not None:
+        record.linked_client_id = candidate.linked_client_id
+        record.linked_client_name = candidate.linked_client_name
     if not source_usage_event_id_conflict and candidate.usage_event_id:
         record.source_usage_event_id = candidate.usage_event_id
     # Anchor created_at to the EARLIEST known occurrence of this generation.
@@ -613,6 +647,10 @@ def sync_generation_record_from_usage_event(
         ownership_status="resolved" if record_owner_user_id else "unknown",
         ownership_source="usage_event_user_id" if record_owner_user_id else None,
         source_usage_event_id=candidate.usage_event_id,
+        linked_task_id=candidate.linked_task_id,
+        linked_task_name=candidate.linked_task_name,
+        linked_client_id=candidate.linked_client_id,
+        linked_client_name=candidate.linked_client_name,
         metadata_json=_merge_generation_record_metadata(
             {},
             candidate.metadata_json,

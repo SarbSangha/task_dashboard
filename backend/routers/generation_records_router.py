@@ -16,6 +16,15 @@ from utils.permissions import require_faculty, require_user
 
 
 router = APIRouter(prefix="/api/generations", tags=["Generations"])
+# GenerationRecord is a shared, cross-provider table - Freepik's normalization
+# pipeline projects its own generations into it too (see
+# providers/freepik/normalization.py's _project_into_generation_record), using
+# provider="freepik". Every endpoint in this router backs the Kling-specific
+# frontend (KlingTab.jsx and friends) exclusively, so every query here must be
+# scoped to provider=="kling" - otherwise Freepik generations silently show up
+# in Kling's search results, filters, user directory, analytics, and even
+# single-record actions like favorite/tag/claim.
+KLING_PROVIDER = "kling"
 DEFAULT_UNGROUPED_PAGE_SIZE = 24
 MAX_UNGROUPED_PAGE_SIZE = 100
 DEFAULT_SEARCH_PAGE_SIZE = 40
@@ -93,6 +102,7 @@ def list_ungrouped_generations(
     query = (
         db.query(GenerationRecord)
         .filter(
+            GenerationRecord.provider == KLING_PROVIDER,
             GenerationRecord.owner_user_id == current_user.id,
             GenerationRecord.project_id.is_(None),
             GenerationRecord.archived_at.is_(None),
@@ -122,7 +132,9 @@ def get_generation_filters(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
-    base_query = db.query(GenerationRecord).filter(GenerationRecord.archived_at.is_(None))
+    base_query = db.query(GenerationRecord).filter(
+        GenerationRecord.provider == KLING_PROVIDER, GenerationRecord.archived_at.is_(None)
+    )
     models = [
         row[0]
         for row in base_query.with_entities(GenerationRecord.model_label)
@@ -150,7 +162,7 @@ def get_generation_filters(
     owner_rows = (
         db.query(User.id, User.name)
         .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
-        .filter(GenerationRecord.archived_at.is_(None))
+        .filter(GenerationRecord.provider == KLING_PROVIDER, GenerationRecord.archived_at.is_(None))
         .distinct()
         .order_by(User.name.asc())
         .all()
@@ -198,6 +210,7 @@ def search_generations(
         db.query(GenerationRecord, User, GenerationProject)
         .outerjoin(User, GenerationRecord.owner_user_id == User.id)
         .outerjoin(GenerationProject, GenerationRecord.project_id == GenerationProject.id)
+        .filter(GenerationRecord.provider == KLING_PROVIDER)
     )
 
     if not include_archived:
@@ -280,6 +293,7 @@ def _top_model_by_user_id(db: Session, user_ids: list[int]) -> dict[int, str]:
             func.count(GenerationRecord.id).label("count"),
         )
         .filter(
+            GenerationRecord.provider == KLING_PROVIDER,
             GenerationRecord.owner_user_id.in_(user_ids),
             GenerationRecord.model_label.isnot(None),
             GenerationRecord.archived_at.is_(None),
@@ -316,7 +330,7 @@ def list_generation_users_directory(
             func.max(GenerationRecord.created_at).label("last_activity_at"),
         )
         .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
-        .filter(GenerationRecord.archived_at.is_(None))
+        .filter(GenerationRecord.provider == KLING_PROVIDER, GenerationRecord.archived_at.is_(None))
         .group_by(User.id)
     )
     if q:
@@ -380,7 +394,11 @@ def get_generation_user_profile(
             func.coalesce(func.sum(GenerationRecord.credits_burned), 0),
             func.max(GenerationRecord.created_at),
         )
-        .filter(GenerationRecord.owner_user_id == user_id, GenerationRecord.archived_at.is_(None))
+        .filter(
+            GenerationRecord.provider == KLING_PROVIDER,
+            GenerationRecord.owner_user_id == user_id,
+            GenerationRecord.archived_at.is_(None),
+        )
         .first()
     )
     total = int(total or 0)
@@ -389,7 +407,11 @@ def get_generation_user_profile(
     top_projects_rows = (
         db.query(GenerationProject.id, GenerationProject.name, func.count(GenerationRecord.id).label("count"))
         .join(GenerationRecord, GenerationRecord.project_id == GenerationProject.id)
-        .filter(GenerationRecord.owner_user_id == user_id, GenerationRecord.archived_at.is_(None))
+        .filter(
+            GenerationRecord.provider == KLING_PROVIDER,
+            GenerationRecord.owner_user_id == user_id,
+            GenerationRecord.archived_at.is_(None),
+        )
         .group_by(GenerationProject.id, GenerationProject.name)
         .order_by(func.count(GenerationRecord.id).desc())
         .limit(5)
@@ -400,7 +422,7 @@ def get_generation_user_profile(
     top_tags_rows = (
         db.query(GenerationTag.normalized_tag, func.count(GenerationTag.id).label("count"))
         .join(GenerationRecord, GenerationRecord.id == GenerationTag.generation_id)
-        .filter(GenerationRecord.owner_user_id == user_id)
+        .filter(GenerationRecord.provider == KLING_PROVIDER, GenerationRecord.owner_user_id == user_id)
         .group_by(GenerationTag.normalized_tag)
         .order_by(func.count(GenerationTag.id).desc())
         .limit(10)
@@ -442,7 +464,11 @@ def get_generation_analytics(
             func.date(GenerationRecord.created_at).label("day"),
             func.count(GenerationRecord.id).label("count"),
         )
-        .filter(GenerationRecord.created_at >= thirty_days_ago, GenerationRecord.archived_at.is_(None))
+        .filter(
+            GenerationRecord.provider == KLING_PROVIDER,
+            GenerationRecord.created_at >= thirty_days_ago,
+            GenerationRecord.archived_at.is_(None),
+        )
         .group_by(func.date(GenerationRecord.created_at))
         .order_by(func.date(GenerationRecord.created_at).asc())
         .all()
@@ -452,7 +478,11 @@ def get_generation_analytics(
     department_rows = (
         db.query(User.department, func.count(GenerationRecord.id).label("count"))
         .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
-        .filter(GenerationRecord.archived_at.is_(None), User.department.isnot(None))
+        .filter(
+            GenerationRecord.provider == KLING_PROVIDER,
+            GenerationRecord.archived_at.is_(None),
+            User.department.isnot(None),
+        )
         .group_by(User.department)
         .order_by(func.count(GenerationRecord.id).desc())
         .all()
@@ -462,7 +492,7 @@ def get_generation_analytics(
     top_users_rows = (
         db.query(User.id, User.name, User.avatar, func.count(GenerationRecord.id).label("count"))
         .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
-        .filter(GenerationRecord.archived_at.is_(None))
+        .filter(GenerationRecord.provider == KLING_PROVIDER, GenerationRecord.archived_at.is_(None))
         .group_by(User.id, User.name, User.avatar)
         .order_by(func.count(GenerationRecord.id).desc())
         .limit(10)
@@ -476,7 +506,7 @@ def get_generation_analytics(
     top_projects_rows = (
         db.query(GenerationProject.id, GenerationProject.name, func.count(GenerationRecord.id).label("count"))
         .join(GenerationRecord, GenerationRecord.project_id == GenerationProject.id)
-        .filter(GenerationRecord.archived_at.is_(None))
+        .filter(GenerationRecord.provider == KLING_PROVIDER, GenerationRecord.archived_at.is_(None))
         .group_by(GenerationProject.id, GenerationProject.name)
         .order_by(func.count(GenerationRecord.id).desc())
         .limit(10)
@@ -486,6 +516,8 @@ def get_generation_analytics(
 
     top_tags_rows = (
         db.query(GenerationTag.normalized_tag, func.count(GenerationTag.id).label("count"))
+        .join(GenerationRecord, GenerationRecord.id == GenerationTag.generation_id)
+        .filter(GenerationRecord.provider == KLING_PROVIDER)
         .group_by(GenerationTag.normalized_tag)
         .order_by(func.count(GenerationTag.id).desc())
         .limit(10)
@@ -495,13 +527,17 @@ def get_generation_analytics(
 
     credits_total = (
         db.query(func.coalesce(func.sum(GenerationRecord.credits_burned), 0))
-        .filter(GenerationRecord.archived_at.is_(None))
+        .filter(GenerationRecord.provider == KLING_PROVIDER, GenerationRecord.archived_at.is_(None))
         .scalar()
         or 0
     )
     credits_last_30 = (
         db.query(func.coalesce(func.sum(GenerationRecord.credits_burned), 0))
-        .filter(GenerationRecord.archived_at.is_(None), GenerationRecord.created_at >= thirty_days_ago)
+        .filter(
+            GenerationRecord.provider == KLING_PROVIDER,
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.created_at >= thirty_days_ago,
+        )
         .scalar()
         or 0
     )
@@ -530,7 +566,7 @@ def get_generation_detail(
         db.query(GenerationRecord, User, GenerationProject)
         .outerjoin(User, GenerationRecord.owner_user_id == User.id)
         .outerjoin(GenerationProject, GenerationRecord.project_id == GenerationProject.id)
-        .filter(GenerationRecord.id == generation_id)
+        .filter(GenerationRecord.id == generation_id, GenerationRecord.provider == KLING_PROVIDER)
         .first()
     )
     if not row:
@@ -546,7 +582,11 @@ def add_generation_favorite(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
-    generation = db.query(GenerationRecord).filter(GenerationRecord.id == generation_id).first()
+    generation = (
+        db.query(GenerationRecord)
+        .filter(GenerationRecord.id == generation_id, GenerationRecord.provider == KLING_PROVIDER)
+        .first()
+    )
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
     generation.is_favorite = True
@@ -569,7 +609,11 @@ def remove_generation_favorite(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
-    generation = db.query(GenerationRecord).filter(GenerationRecord.id == generation_id).first()
+    generation = (
+        db.query(GenerationRecord)
+        .filter(GenerationRecord.id == generation_id, GenerationRecord.provider == KLING_PROVIDER)
+        .first()
+    )
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
     generation.is_favorite = False
@@ -592,7 +636,11 @@ def list_generation_tags(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
-    generation = db.query(GenerationRecord).filter(GenerationRecord.id == generation_id).first()
+    generation = (
+        db.query(GenerationRecord)
+        .filter(GenerationRecord.id == generation_id, GenerationRecord.provider == KLING_PROVIDER)
+        .first()
+    )
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
     tags = (
@@ -611,7 +659,11 @@ def add_generation_tag(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
-    generation = db.query(GenerationRecord).filter(GenerationRecord.id == generation_id).first()
+    generation = (
+        db.query(GenerationRecord)
+        .filter(GenerationRecord.id == generation_id, GenerationRecord.provider == KLING_PROVIDER)
+        .first()
+    )
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
 
@@ -675,7 +727,11 @@ def claim_generation(
     owner (ownership_status="unknown"). Reconciliation no longer guesses an
     owner from the re-discovering usage event, so these sit unclaimed until
     the actual creator says "this one is mine"."""
-    generation = db.query(GenerationRecord).filter(GenerationRecord.id == generation_id).first()
+    generation = (
+        db.query(GenerationRecord)
+        .filter(GenerationRecord.id == generation_id, GenerationRecord.provider == KLING_PROVIDER)
+        .first()
+    )
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
 
@@ -714,7 +770,11 @@ def revoke_generation_claim(
     generation that isn't actually theirs. Only reverts claims made via the
     claim endpoint above (ownership_source="user_claimed") — leaves
     live-capture attributions (ownership_source="usage_event_user_id") alone."""
-    generation = db.query(GenerationRecord).filter(GenerationRecord.id == generation_id).first()
+    generation = (
+        db.query(GenerationRecord)
+        .filter(GenerationRecord.id == generation_id, GenerationRecord.provider == KLING_PROVIDER)
+        .first()
+    )
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
     if generation.ownership_source != "user_claimed":
@@ -749,7 +809,11 @@ def remove_generation_tag(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_user),
 ):
-    generation = db.query(GenerationRecord).filter(GenerationRecord.id == generation_id).first()
+    generation = (
+        db.query(GenerationRecord)
+        .filter(GenerationRecord.id == generation_id, GenerationRecord.provider == KLING_PROVIDER)
+        .first()
+    )
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
 

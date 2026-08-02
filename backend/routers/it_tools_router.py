@@ -34,9 +34,11 @@ from services.workplace_access_service import (
     get_workplace_tools_access_status,
     require_admin_with_workplace_tools_access,
 )
+from utils.client_gate import validate_client_for_generation
 from utils.credential_crypto import decrypt_secret, encrypt_secret
 from utils.generation_backfill import sync_generation_record_from_usage_event
 from utils.permissions import get_current_user, has_any_role
+from utils.task_gate import validate_task_for_generation
 
 
 router = APIRouter(prefix="/api/it-tools", tags=["IT Tools"])
@@ -181,6 +183,11 @@ class ExtensionUsageEventPayload(BaseModel):
     source: Optional[str] = Field(None, max_length=80)
     schema_version: Optional[int] = Field(None, ge=1)
     confidence: Optional[float] = Field(None, ge=0, le=1)
+    # Task/Client Mapping (see utils/task_gate.py, utils/client_gate.py) -
+    # revalidated server-side below, never trusted from the client at face
+    # value, mirroring providers/freepik/capture.py's identical gate.
+    task_id: Optional[int] = None
+    client_id: Optional[int] = None
     metadata: Optional[dict] = None
 
 
@@ -2687,6 +2694,26 @@ def report_extension_usage_event(
     )
     enforce_workplace_tools_access(current_user, db)
 
+    # Task/Client Mapping - re-validated here, never trusted from the client
+    # at face value, mirroring providers/freepik/capture.py's identical gate.
+    # None (not just falsy) means "this event carried no selection at all" -
+    # distinct from "carried one that failed validation" - so the sticky
+    # update logic below can tell "nothing to apply" apart from "apply this".
+    validated_task_id = None
+    validated_task_name = None
+    if payload.task_id is not None:
+        validated_task = validate_task_for_generation(db, payload.task_id, current_user.id)
+        if validated_task:
+            validated_task_id = validated_task.id
+            validated_task_name = validated_task.title
+    validated_client_id = None
+    validated_client_name = None
+    if payload.client_id is not None:
+        validated_client = validate_client_for_generation(db, payload.client_id)
+        if validated_client:
+            validated_client_id = validated_client.id
+            validated_client_name = validated_client.name
+
     credential = _resolve_usage_event_credential(
         db,
         tool_id=tool.id,
@@ -3018,6 +3045,17 @@ def report_extension_usage_event(
         usage_event.source = final_source
         usage_event.schema_version = schema_version or usage_event.schema_version
         usage_event.confidence = final_confidence
+        # Sticky, like ownership: only ever set from an event that actually
+        # carries a validated task/client (organic live-capture from the
+        # gate), never cleared by a later re-report/reconciliation pass that
+        # naturally has no selection of its own - mirrors
+        # providers/freepik/normalization.py's identical Task Mapping comment.
+        if validated_task_id is not None:
+            usage_event.linked_task_id = validated_task_id
+            usage_event.linked_task_name = validated_task_name
+        if validated_client_id is not None:
+            usage_event.linked_client_id = validated_client_id
+            usage_event.linked_client_name = validated_client_name
         if historical_occurred_at:
             # Dedupe (stable_dedupe_filters above) matches this row back to an
             # already-existing usage event, so we land here instead of the
@@ -3077,6 +3115,10 @@ def report_extension_usage_event(
             source=source,
             schema_version=schema_version,
             confidence=confidence,
+            linked_task_id=validated_task_id,
+            linked_task_name=validated_task_name,
+            linked_client_id=validated_client_id,
+            linked_client_name=validated_client_name,
             metadata_json=merged_metadata,
             **({"created_at": historical_occurred_at} if historical_occurred_at else {}),
         )
@@ -3141,6 +3183,16 @@ async def get_extension_otp_baseline(
     if not app_password:
         raise HTTPException(status_code=500, detail="Mailbox app password could not be decrypted")
 
+    # Everything this endpoint needs from the database has been read. Hand the
+    # connection back before the IMAP round-trip rather than holding it idle
+    # for the duration - under NullPool (the hosted pooler path, see
+    # database_config.py) a held connection is a real Postgres connection, and
+    # a handful of concurrent OTP fetches parked on Gmail can starve request
+    # traffic. Closing here is safe: the yield-dependency closes again on the
+    # way out, which is a no-op, and a Session is reusable after close() if
+    # anything below ever needs it.
+    db.close()
+
     try:
         latest_uid = await asyncio.to_thread(
             latest_otp_uid_from_gmail,
@@ -3197,6 +3249,14 @@ async def get_extension_otp(
         if canonical_tool_slug == "higgsfield"
         else OTP_MAX_WAIT_SEC
     )
+    # Release the connection for the length of the OTP poll - this one blocks
+    # for up to otp_poll_timeout_sec waiting on an email to arrive, which is
+    # the longest a request in this codebase ever holds a session. The audit
+    # write further down re-acquires transparently; SQLAlchemy begins a new
+    # transaction the next time the Session is touched.
+    tool_id = tool.id
+    db.close()
+
     try:
         otp = await asyncio.to_thread(
             fetch_otp_from_gmail,
@@ -3242,8 +3302,10 @@ async def get_extension_otp(
     _add_audit(
         db,
         actor_id=current_user.id,
+        # Captured before db.close() above - `tool` is detached by now, so read
+        # the plain int rather than touching the instance again.
+        tool_id=tool_id,
         action="extension_otp_fetched",
-        tool_id=tool.id,
         details={
             "hostname": _normalize_hostname(payload.hostname or payload.page_url),
             "mailbox": mailbox_entry["email_address"],

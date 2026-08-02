@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import cast, func, or_
+from sqlalchemy import and_, case, cast, func, or_
 from sqlalchemy.orm import Query, Session
 from sqlalchemy.types import Text
 
@@ -22,6 +22,7 @@ from providers.chatgpt.capture import get_ingest_stats_snapshot
 from providers.chatgpt.constants import (
     EVENT_TYPE_CONVERSATION_RENAMED,
     EVENT_TYPE_FILE_UPLOAD_DETECTED,
+    EVENT_TYPE_GENERATION_CAPTURED,
     EVENT_TYPE_MESSAGE_EDITED,
     EVENT_TYPE_PROMPT_CAPTURED,
     EVENT_TYPE_RESPONSE_COMPLETED,
@@ -30,6 +31,7 @@ from providers.chatgpt.constants import (
     HEALTH_STATUS_DEGRADED,
     HEALTH_STATUS_HEALTHY,
     HEALTH_STATUS_OFFLINE,
+    OWNERSHIP_STATUS_RESOLVED,
     PROVIDER,
 )
 from providers.chatgpt.health import compute_capture_health_status
@@ -55,6 +57,21 @@ _CHAT_MESSAGE_EVENT_TYPES = (
     EVENT_TYPE_RESPONSE_COMPLETED,
     EVENT_TYPE_FILE_UPLOAD_DETECTED,
 )
+
+# Same "real activity vs lifecycle" distinction as _CHAT_MESSAGE_EVENT_TYPES
+# above, reused for "how recently active is this conversation" (list sort +
+# displayed lastSeenAt/lastActiveAt), plus generation_captured (a genuine new-
+# content event that constant doesn't include, since it isn't itself a chat
+# turn to reconstruct). Lifecycle/observation events - conversation_opened,
+# conversation_renamed, conversation_archived/deleted - are deliberately
+# excluded: merely navigating to a long-dormant conversation fires a
+# conversation_opened (and, until a companion extension fix, a spurious
+# conversation_renamed - see content-chatgpt-dom-observer.js) for it, which
+# without this exclusion resurfaced it at the top of "most recent" despite no
+# real activity having happened. Confirmed against production data: a
+# conversation last messaged in on 2026-07-16 got a fresh conversation_opened
+# + conversation_renamed pair on 2026-07-28 purely from being reopened.
+_CONVERSATION_ACTIVITY_EVENT_TYPES = _CHAT_MESSAGE_EVENT_TYPES + (EVENT_TYPE_GENERATION_CAPTURED,)
 
 DEFAULT_EVENTS_LIMIT = 25
 MAX_EVENTS_LIMIT = 200
@@ -173,6 +190,44 @@ def list_conversations(db: Session, *, filters: EventFilters, limit: int, offset
         # conversation's real totals within the remaining filters.
         filters = replace(filters, q=None)
 
+    # "This user's conversations" must mean conversations they actually own
+    # (ConversationRecord.owner_user_id, resolved via the same
+    # isNewConversation freshness gate normalization.py's
+    # _get_or_create_conversation_record applies) - not "every conversation
+    # whose raw event log happens to contain something sent by this user's
+    # session". The latter pulled in any conversation someone merely opened
+    # or continued, regardless of who actually started it - confirmed in
+    # production: an employee opening a 2-week-old conversation that had
+    # already been correctly captured under a different owner caused it to
+    # also show up in the opener's own conversation list. Same shared-
+    # credential misattribution bug already fixed for Kling/Freepik, one
+    # layer up (the browse view, not the ownership field itself, which was
+    # already protected). _apply_event_filters' own user_id clause is left
+    # untouched - list_events (the raw Developer Console event inspector)
+    # legitimately wants "events this session sent", a different, valid
+    # question from "conversations this person owns".
+    owned_conversation_ids: Optional[set[str]] = None
+    if filters.user_id is not None:
+        owned_conversation_ids = {
+            row[0]
+            for row in db.query(ConversationRecord.provider_conversation_id)
+            .filter(
+                ConversationRecord.provider == PROVIDER,
+                ConversationRecord.owner_user_id == filters.user_id,
+                ConversationRecord.ownership_status == OWNERSHIP_STATUS_RESOLVED,
+                ConversationRecord.provider_conversation_id.isnot(None),
+            )
+            .all()
+        }
+        if not owned_conversation_ids:
+            return [], 0
+        # Ownership already answers the "which user" question above; the
+        # events query below stays unfiltered by user_id so it still pulls
+        # every message in an owned conversation (including any reply
+        # someone else's session added to it, which correctly stays part of
+        # that conversation's history once ownership has resolved).
+        filters = replace(filters, user_id=None)
+
     grouped_base = _apply_event_filters(db.query(ConversationCaptureEvent), filters).filter(
         ConversationCaptureEvent.provider_conversation_id.isnot(None)
     )
@@ -180,16 +235,30 @@ def list_conversations(db: Session, *, filters: EventFilters, limit: int, offset
         grouped_base = grouped_base.filter(
             ConversationCaptureEvent.provider_conversation_id.in_(matching_conversation_ids)
         )
+    if owned_conversation_ids is not None:
+        grouped_base = grouped_base.filter(
+            ConversationCaptureEvent.provider_conversation_id.in_(owned_conversation_ids)
+        )
+    # Falls back to the full event-set max only when a conversation has no
+    # activity-typed event at all yet (e.g. capture failed on everything but
+    # a lifecycle signal) - never surfaces NULL, just prefers real activity
+    # time over passive/observation time when both exist.
+    activity_created_at = case(
+        (ConversationCaptureEvent.event_type.in_(_CONVERSATION_ACTIVITY_EVENT_TYPES), ConversationCaptureEvent.created_at),
+        else_=None,
+    )
+    last_seen_at_expr = func.coalesce(func.max(activity_created_at), func.max(ConversationCaptureEvent.created_at))
+
     grouped = grouped_base.with_entities(
         ConversationCaptureEvent.provider_conversation_id.label("conversation_id"),
         func.count(ConversationCaptureEvent.id).label("event_count"),
         func.min(ConversationCaptureEvent.created_at).label("first_seen_at"),
-        func.max(ConversationCaptureEvent.created_at).label("last_seen_at"),
+        last_seen_at_expr.label("last_seen_at"),
     ).group_by(ConversationCaptureEvent.provider_conversation_id)
 
     total = grouped.count()
     page_rows = (
-        grouped.order_by(func.max(ConversationCaptureEvent.created_at).desc())
+        grouped.order_by(last_seen_at_expr.desc())
         .offset(offset)
         .limit(limit)
         .all()
@@ -344,17 +413,31 @@ def list_users(
     pagination, (2) fetch full detail only for the current page's user_ids
     to compute per-conversation health rollups and attachment counts -
     bounded by page size, not table size, regardless of how many users or
-    conversations exist overall."""
+    conversations exist overall.
+
+    Grouped by ConversationRecord.owner_user_id (resolved ownership), not
+    ConversationCaptureEvent.user_id (raw event sender) - same ownership
+    boundary as list_conversations. Without this join, a user who merely
+    opens/continues someone else's old conversation would show up here with
+    that conversation's full event history counted as their own."""
     grouped_base = (
         db.query(ConversationCaptureEvent)
-        .join(User, User.id == ConversationCaptureEvent.user_id)
+        .join(
+            ConversationRecord,
+            and_(
+                ConversationRecord.provider == PROVIDER,
+                ConversationRecord.provider_conversation_id == ConversationCaptureEvent.provider_conversation_id,
+                ConversationRecord.ownership_status == OWNERSHIP_STATUS_RESOLVED,
+            ),
+        )
+        .join(User, User.id == ConversationRecord.owner_user_id)
         .filter(ConversationCaptureEvent.provider == PROVIDER)
     )
     if q:
         matching_user_ids = _search_matching_user_ids(db, q)
         if not matching_user_ids:
             return [], 0
-        grouped_base = grouped_base.filter(ConversationCaptureEvent.user_id.in_(matching_user_ids))
+        grouped_base = grouped_base.filter(ConversationRecord.owner_user_id.in_(matching_user_ids))
     if department:
         grouped_base = grouped_base.filter(User.department == department)
 
@@ -365,7 +448,7 @@ def list_users(
         # so pagination/totals stay correct rather than approximate.
         health_scan_rows = (
             grouped_base.with_entities(
-                ConversationCaptureEvent.user_id,
+                ConversationRecord.owner_user_id,
                 ConversationCaptureEvent.provider_conversation_id,
                 ConversationCaptureEvent.event_type,
             )
@@ -389,15 +472,24 @@ def list_users(
         }
         if not matching_health_user_ids:
             return [], 0
-        grouped_base = grouped_base.filter(ConversationCaptureEvent.user_id.in_(matching_health_user_ids))
+        grouped_base = grouped_base.filter(ConversationRecord.owner_user_id.in_(matching_health_user_ids))
+
+    # Same activity-vs-lifecycle distinction as list_conversations' last_seen_at
+    # above - a user merely opening an old conversation shouldn't make them
+    # look freshly active.
+    user_activity_created_at = case(
+        (ConversationCaptureEvent.event_type.in_(_CONVERSATION_ACTIVITY_EVENT_TYPES), ConversationCaptureEvent.created_at),
+        else_=None,
+    )
+    user_last_seen_at_expr = func.coalesce(func.max(user_activity_created_at), func.max(ConversationCaptureEvent.created_at))
 
     grouped = grouped_base.with_entities(
-        ConversationCaptureEvent.user_id.label("user_id"),
+        ConversationRecord.owner_user_id.label("user_id"),
         func.count(func.distinct(ConversationCaptureEvent.provider_conversation_id)).label("conversation_count"),
         func.count(ConversationCaptureEvent.id).label("event_count"),
         func.min(ConversationCaptureEvent.created_at).label("first_seen_at"),
-        func.max(ConversationCaptureEvent.created_at).label("last_seen_at"),
-    ).group_by(ConversationCaptureEvent.user_id)
+        user_last_seen_at_expr.label("last_seen_at"),
+    ).group_by(ConversationRecord.owner_user_id)
 
     total = grouped.count()
 
@@ -409,7 +501,7 @@ def list_users(
     elif sort_key == "name":
         grouped = grouped.order_by(func.min(User.name).asc())
     else:
-        grouped = grouped.order_by(func.max(ConversationCaptureEvent.created_at).desc())
+        grouped = grouped.order_by(user_last_seen_at_expr.desc())
 
     page_rows = grouped.offset(offset).limit(limit).all()
     user_ids = [row.user_id for row in page_rows]
@@ -421,13 +513,22 @@ def list_users(
     if user_ids:
         detail_rows = (
             db.query(
-                ConversationCaptureEvent.user_id,
+                ConversationRecord.owner_user_id,
                 ConversationCaptureEvent.provider_conversation_id,
                 ConversationCaptureEvent.event_type,
             )
+            .select_from(ConversationCaptureEvent)
+            .join(
+                ConversationRecord,
+                and_(
+                    ConversationRecord.provider == PROVIDER,
+                    ConversationRecord.provider_conversation_id == ConversationCaptureEvent.provider_conversation_id,
+                    ConversationRecord.ownership_status == OWNERSHIP_STATUS_RESOLVED,
+                ),
+            )
             .filter(
                 ConversationCaptureEvent.provider == PROVIDER,
-                ConversationCaptureEvent.user_id.in_(user_ids),
+                ConversationRecord.owner_user_id.in_(user_ids),
                 ConversationCaptureEvent.provider_conversation_id.isnot(None),
             )
             .all()
@@ -453,10 +554,19 @@ def list_users(
     files_by_user: dict[int, int] = {}
     if user_ids:
         attachment_rows = (
-            db.query(ConversationCaptureAttachment.user_id, ConversationCaptureAttachment.mime_type)
+            db.query(ConversationRecord.owner_user_id, ConversationCaptureAttachment.mime_type)
+            .select_from(ConversationCaptureAttachment)
+            .join(
+                ConversationRecord,
+                and_(
+                    ConversationRecord.provider == PROVIDER,
+                    ConversationRecord.provider_conversation_id == ConversationCaptureAttachment.provider_conversation_id,
+                    ConversationRecord.ownership_status == OWNERSHIP_STATUS_RESOLVED,
+                ),
+            )
             .filter(
                 ConversationCaptureAttachment.provider == PROVIDER,
-                ConversationCaptureAttachment.user_id.in_(user_ids),
+                ConversationRecord.owner_user_id.in_(user_ids),
             )
             .all()
         )
@@ -497,37 +607,57 @@ def list_users(
 
 def get_user_detail(db: Session, user_id: int) -> Optional[dict]:
     """Single-user version of list_users' aggregate, for the profile/header
-    view - no pagination concerns, so this just does the full rollup directly."""
+    view - no pagination concerns, so this just does the full rollup directly.
+
+    Scoped to conversations this user actually owns (ConversationRecord.owner_user_id,
+    ownership_status == resolved) rather than every conversation_capture_event row
+    stamped with their user_id - the same ownership boundary list_conversations/
+    list_users use, so merely opening someone else's old conversation doesn't
+    inflate this profile's counts or lastActiveAt."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return None
 
-    event_rows = (
-        db.query(
-            ConversationCaptureEvent.provider_conversation_id,
-            ConversationCaptureEvent.event_type,
-            ConversationCaptureEvent.created_at,
+    owned_conversation_ids = {
+        row[0]
+        for row in db.query(ConversationRecord.provider_conversation_id)
+        .filter(
+            ConversationRecord.provider == PROVIDER,
+            ConversationRecord.owner_user_id == user_id,
+            ConversationRecord.ownership_status == OWNERSHIP_STATUS_RESOLVED,
+            ConversationRecord.provider_conversation_id.isnot(None),
         )
-        .filter(ConversationCaptureEvent.provider == PROVIDER, ConversationCaptureEvent.user_id == user_id)
         .all()
-    )
+    }
+
     conv_map: dict[str, dict[str, int]] = {}
     last_active_at = None
-    for conversation_id, event_type, created_at in event_rows:
-        if last_active_at is None or created_at >= last_active_at:
-            last_active_at = created_at
-        if not conversation_id:
-            continue
-        bucket = conv_map.setdefault(conversation_id, {"prompts": 0, "responses": 0})
-        if event_type == EVENT_TYPE_PROMPT_CAPTURED:
-            bucket["prompts"] += 1
-        elif event_type == EVENT_TYPE_RESPONSE_COMPLETED:
-            bucket["responses"] += 1
+    if owned_conversation_ids:
+        event_rows = (
+            db.query(
+                ConversationCaptureEvent.provider_conversation_id,
+                ConversationCaptureEvent.event_type,
+                ConversationCaptureEvent.created_at,
+            )
+            .filter(
+                ConversationCaptureEvent.provider == PROVIDER,
+                ConversationCaptureEvent.provider_conversation_id.in_(owned_conversation_ids),
+            )
+            .all()
+        )
+        for conversation_id, event_type, created_at in event_rows:
+            if last_active_at is None or created_at >= last_active_at:
+                last_active_at = created_at
+            bucket = conv_map.setdefault(conversation_id, {"prompts": 0, "responses": 0})
+            if event_type == EVENT_TYPE_PROMPT_CAPTURED:
+                bucket["prompts"] += 1
+            elif event_type == EVENT_TYPE_RESPONSE_COMPLETED:
+                bucket["responses"] += 1
 
     prompts_total = sum(c["prompts"] for c in conv_map.values())
     responses_total = sum(c["responses"] for c in conv_map.values())
     statuses = [_classify_conversation_health(c["prompts"], c["responses"]) for c in conv_map.values()]
-    images_count, files_count = _count_real_attachments(db, user_id=user_id)
+    images_count, files_count = _count_real_attachments(db, conversation_ids=owned_conversation_ids)
 
     return {
         "userId": user.id,
@@ -609,7 +739,11 @@ def _classify_overall_health(statuses: list[str]) -> str:
 
 
 def _count_real_attachments(
-    db: Session, *, conversation_id: Optional[str] = None, user_id: Optional[int] = None
+    db: Session,
+    *,
+    conversation_id: Optional[str] = None,
+    user_id: Optional[int] = None,
+    conversation_ids: Optional[set[str]] = None,
 ) -> tuple[int, int]:
     """Real, previewable files (see attachments.py/ConversationCaptureAttachment)
     - what the gallery actually renders. Deliberately NOT the same as counting
@@ -629,6 +763,10 @@ def _count_real_attachments(
     )
     if conversation_id is not None:
         query = query.filter(ConversationCaptureAttachment.provider_conversation_id == conversation_id)
+    if conversation_ids is not None:
+        if not conversation_ids:
+            return 0, 0
+        query = query.filter(ConversationCaptureAttachment.provider_conversation_id.in_(conversation_ids))
     if user_id is not None:
         query = query.filter(ConversationCaptureAttachment.user_id == user_id)
 
@@ -917,6 +1055,13 @@ def _list_conversation_messages_from_normalized(db: Session, record: Conversatio
             "citations": response.citations_json,
             "attachments": [],
             "sourceEventIds": [response.source_capture_event_id] if response.source_capture_event_id else [],
+            # The real ChatGPT-assigned message id (not the synthetic "id"
+            # above) - lets the frontend match a ConversationMediaAsset to
+            # the exact turn that generated it (asset.assistantMessageId ==
+            # this) instead of guessing by nearest timestamp, which merges
+            # two turns' images together when they land close in time (see
+            # mediaHelpers.buildGenerations).
+            "providerMessageId": response.provider_message_id,
         }))
 
     entries.sort(key=lambda item: item[0] or datetime.min)
@@ -999,6 +1144,10 @@ def list_conversation_messages(db: Session, conversation_id: str, *, limit: int 
                 "pending": True,
                 "attachments": [],
                 "sourceEventIds": [event.id],
+                # See providerMessageId comment in
+                # _list_conversation_messages_from_normalized - same purpose,
+                # raw-event reconstruction path.
+                "providerMessageId": event.provider_message_id,
             }
             messages.append(message)
             open_assistant_message = message
@@ -1013,6 +1162,7 @@ def list_conversation_messages(db: Session, conversation_id: str, *, limit: int 
                 open_assistant_message["citations"] = payload.get("citations")
                 open_assistant_message["timestamp"] = serialize_utc_datetime(event.created_at)
                 open_assistant_message["sourceEventIds"].append(event.id)
+                open_assistant_message["providerMessageId"] = event.provider_message_id or open_assistant_message.get("providerMessageId")
             else:
                 # response_completed with no matching response_started in this
                 # window - still surface the real captured answer.
@@ -1030,6 +1180,7 @@ def list_conversation_messages(db: Session, conversation_id: str, *, limit: int 
                     "citations": payload.get("citations"),
                     "attachments": [],
                     "sourceEventIds": [event.id],
+                    "providerMessageId": event.provider_message_id,
                 })
             open_assistant_message = None
         elif event.event_type == EVENT_TYPE_FILE_UPLOAD_DETECTED:

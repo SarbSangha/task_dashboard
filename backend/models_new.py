@@ -135,6 +135,24 @@ class DepartmentDirectory(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class GenerationClient(Base):
+    """Admin-curated, global list of clients a generation can be attributed
+    to - deliberately separate from GenerationProject (that model is
+    per-owner_user_id, a personal project folder, not a shared admin list)
+    and from Task (clients are picked independently, not derived from a
+    task). See utils/client_gate.py for the picker/validation logic that
+    consumes this."""
+    __tablename__ = "generation_clients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True, index=True)
+    is_active = Column(Boolean, default=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Task(Base):
     __tablename__ = "tasks"
     
@@ -734,6 +752,16 @@ class ITPortalToolUsageEvent(Base):
     schema_version = Column(Integer)
     confidence = Column(Float)
     metadata_json = Column(JSON)
+    # Task Mapping (see utils/task_gate.py) - which internal Task the user had
+    # selected in the pre-generate gate at the moment they clicked Generate,
+    # mirroring FreepikCaptureEvent's identical fields. linked_task_name is a
+    # denormalized snapshot so reporting/audits keep a readable label even if
+    # the task is later renamed or deleted (ON DELETE SET NULL on the FK).
+    linked_task_id = Column(Integer, ForeignKey("tasks.id", ondelete="SET NULL"), index=True)
+    linked_task_name = Column(String(255))
+    # Client Mapping - independent of Task Mapping above (see utils/client_gate.py).
+    linked_client_id = Column(Integer, ForeignKey("generation_clients.id", ondelete="SET NULL"), index=True)
+    linked_client_name = Column(String(255))
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     def to_dict(self):
@@ -760,6 +788,10 @@ class ITPortalToolUsageEvent(Base):
             "source": self.source,
             "schemaVersion": self.schema_version,
             "confidence": self.confidence,
+            "linkedTaskId": self.linked_task_id,
+            "linkedTaskName": self.linked_task_name,
+            "linkedClientId": self.linked_client_id,
+            "linkedClientName": self.linked_client_name,
             "metadata": self.metadata_json or {},
             "createdAt": serialize_utc_datetime(self.created_at),
         }
@@ -988,6 +1020,15 @@ class GenerationRecord(Base):
     recovery_audit_id = Column(Integer, ForeignKey("generation_recovery_audits.id", ondelete="SET NULL"), index=True)
     recovered_by_admin_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     recovered_at = Column(DateTime)
+    # Task Mapping: which internal Task (tasks.id) this generation was
+    # attributed to at generate-time (see utils/task_gate.py). linked_task_name
+    # is a denormalized snapshot so reporting/audits keep a readable label even
+    # if the task is later renamed or deleted (ON DELETE SET NULL on the FK).
+    linked_task_id = Column(Integer, ForeignKey("tasks.id", ondelete="SET NULL"), index=True)
+    linked_task_name = Column(String(255))
+    # Client Mapping - independent of Task Mapping above (see GenerationClient).
+    linked_client_id = Column(Integer, ForeignKey("generation_clients.id", ondelete="SET NULL"), index=True)
+    linked_client_name = Column(String(255))
     metadata_json = Column(JSON)
     is_favorite = Column(Boolean, nullable=False, default=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
@@ -1023,6 +1064,10 @@ class GenerationRecord(Base):
             "recoveryAuditId": self.recovery_audit_id,
             "recoveredByAdminId": self.recovered_by_admin_id,
             "recoveredAt": serialize_utc_datetime(self.recovered_at),
+            "linkedTaskId": self.linked_task_id,
+            "linkedTaskName": self.linked_task_name,
+            "linkedClientId": self.linked_client_id,
+            "linkedClientName": self.linked_client_name,
             "metadata": self.metadata_json or {},
             "isFavorite": bool(self.is_favorite),
             "createdAt": serialize_utc_datetime(self.created_at),

@@ -42,6 +42,10 @@ BAND_RULE = "BFBFBF"       # heavier separators
 # Provider row tints used in the merged Overview log.
 TINT_CHATGPT = "F2F6FC"    # very light blue
 TINT_KLING = "EBF1DE"      # very light olive/green
+TINT_FREEPIK = "FDEFF7"    # very light pink/magenta
+
+# Client Mapping band (Employee Summary's level 2, between Date and Tool).
+TINT_CLIENT = "FFF6E5"     # very light amber
 
 # Status / conditional-format tints (adoption + integration state).
 FILL_NOT_USED = "FCE4D6"

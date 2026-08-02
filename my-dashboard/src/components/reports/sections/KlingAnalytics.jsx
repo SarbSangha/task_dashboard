@@ -36,10 +36,18 @@ const KlingAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
   const summaryQ = useQuery({ queryKey: ['reports', 'kling', 'summary', filters], queryFn: () => reportsAPI.klingSummary(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
   const trendsQ = useQuery({ queryKey: ['reports', 'kling', 'trends', filters], queryFn: () => reportsAPI.klingTrends(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
   const usersQ = useQuery({ queryKey: ['reports', 'kling', 'users', filters], queryFn: () => reportsAPI.klingUsers({ ...filters, limit: 100 }), placeholderData: keepPreviousData, staleTime: 60_000 });
+  // Task/Client Mapping breakdowns - which task or admin-curated client each
+  // generation was linked to at generate-time (see the pre-generation gate's
+  // popup, content-kling-task-modal.js) - mirrors FreepikAnalytics.jsx's
+  // identical section, now that Kling has the same gate.
+  const tasksQ = useQuery({ queryKey: ['reports', 'kling', 'tasks', filters], queryFn: () => reportsAPI.klingTasks({ ...filters, limit: 50 }), placeholderData: keepPreviousData, staleTime: 60_000 });
+  const clientsQ = useQuery({ queryKey: ['reports', 'kling', 'clients', filters], queryFn: () => reportsAPI.klingClients({ ...filters, limit: 50 }), placeholderData: keepPreviousData, staleTime: 60_000 });
 
   const k = summaryQ.data?.kpis || {};
   const trends = trendsQ.data || {};
   const users = usersQ.data?.users || [];
+  const tasksBreakdown = tasksQ.data?.tasks || [];
+  const clientsBreakdown = clientsQ.data?.clients || [];
 
   const topUser = users[0];
   const topDept = useMemo(() => {
@@ -56,6 +64,18 @@ const KlingAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
     { key: 'videos', label: 'Videos', num: true, render: (r) => formatNumber(r.videos) },
     { key: 'successRate', label: 'Success', num: true, render: (r) => successPill(r.successRate) },
     { key: 'credits', label: 'Credits', num: true, render: (r) => formatFull(r.credits) },
+  ];
+
+  const taskColumns = [
+    { key: 'taskName', label: 'Task', render: (r) => <span className="rpt-pill muted">{r.taskName}</span> },
+    { key: 'generations', label: 'Videos', num: true, render: (r) => formatNumber(r.generations) },
+    { key: 'creditsCharged', label: 'Credits', num: true, render: (r) => formatFull(r.creditsCharged) },
+  ];
+
+  const clientColumns = [
+    { key: 'clientName', label: 'Client', render: (r) => <span className="rpt-pill muted">{r.clientName}</span> },
+    { key: 'generations', label: 'Videos', num: true, render: (r) => formatNumber(r.generations) },
+    { key: 'creditsCharged', label: 'Credits', num: true, render: (r) => formatFull(r.creditsCharged) },
   ];
 
   const dateLabel = filters?.start && filters?.end ? `${filters.start} → ${filters.end}` : 'selected range';
@@ -193,6 +213,24 @@ const KlingAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
               initialSort="videos"
               onRowClick={(row) => onOpenUser?.(row.userId, row.name)}
             />
+          </div>
+
+          <div className="rpt-grid cols-2" style={{ marginTop: 20 }}>
+            <div>
+              <div className="rpt-card-head">
+                <h3 className="rpt-card-title" style={{ fontSize: 14 }}>By Task</h3>
+                <span className="rpt-card-hint">{tasksBreakdown.length} task(s)</span>
+              </div>
+              <DataTable columns={taskColumns} rows={tasksBreakdown} initialSort="generations" />
+            </div>
+
+            <div>
+              <div className="rpt-card-head">
+                <h3 className="rpt-card-title" style={{ fontSize: 14 }}>By Client</h3>
+                <span className="rpt-card-hint">{clientsBreakdown.length} client(s)</span>
+              </div>
+              <DataTable columns={clientColumns} rows={clientsBreakdown} initialSort="generations" />
+            </div>
           </div>
         </>
       )}

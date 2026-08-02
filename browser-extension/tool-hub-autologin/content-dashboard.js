@@ -288,8 +288,54 @@ function queueSync() {
   }, 250);
 }
 
+// The extension's own background script has no way to know "who is using
+// the dashboard right now" other than whatever token this content script
+// last pushed to it - every capture upload authenticates with that cached
+// value (see background-chatgpt-capture.js). 'load'/'focus' alone miss a
+// same-tab account switch: a dashboard SPA logging one user out and another
+// in doesn't fire a fresh 'load' (no full navigation), and 'focus' never
+// fires at all if the tab already had focus the whole time.
+//
+// This poll deliberately resyncs UNCONDITIONALLY on every tick rather than
+// only when it detects the dashboard's own token changed. An earlier version
+// compared against the last value THIS tab pushed and skipped re-sending if
+// nothing looked different from here - which missed the exact failure mode
+// that actually happened in production: the background script's cached copy
+// got wiped by its own 401-handling logic (see background-chatgpt-capture.js
+// - since removed), while the dashboard's token was fine the whole time. From
+// this tab's point of view nothing had changed, so it never re-sent, and the
+// cache stayed empty for the rest of the session - every capture upload sent
+// no session header and failed forever, despite login/credential-reveal
+// working normally (those succeed via their own quick retry loop before this
+// tab even gets a chance to notice). Resyncing every tick regardless of
+// whether we think anything changed removes that blind spot entirely: the
+// extension's cache can never drift from the dashboard's actual token by
+// more than one poll interval, no matter why or where a mismatch appeared.
+// syncAuthContext() on the receiving end only rewrites the stored token
+// itself when the value actually changed (it does refresh a lightweight
+// "last confirmed at" timestamp every call), so this costs one cheap runtime
+// message every few seconds, not a real storage churn.
+const TOKEN_POLL_INTERVAL_MS = 3000;
+function pollForTokenChange() {
+  if (!isAllowedDashboardPage()) return;
+  syncSessionToken().catch(() => {});
+}
+
 window.addEventListener('load', queueSync);
 window.addEventListener('focus', queueSync);
+// Tab-switch coverage beyond window-focus (e.g. switching tabs within an
+// already-focused browser window, which never fires 'focus').
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') queueSync();
+});
+// Cross-tab coverage: a login/logout in a DIFFERENT tab updates this tab's
+// view of localStorage via the native 'storage' event (which, unlike the
+// poll above, fires immediately - the poll exists specifically because this
+// event never fires for changes made by the SAME tab/document).
+window.addEventListener('storage', (event) => {
+  if (event.key === SESSION_TOKEN_STORAGE_KEY) queueSync();
+});
+window.setInterval(pollForTokenChange, TOKEN_POLL_INTERVAL_MS);
 window.addEventListener(EXTENSION_LAUNCH_EVENT, (event) => {
   if (!isAllowedDashboardPage()) return;
   handleLaunchDetail(event.detail);

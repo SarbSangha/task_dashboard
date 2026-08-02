@@ -939,6 +939,7 @@ function removeBrowsingData(options, dataTypes) {
 }
 
 async function clearToolSession(toolSlug, options = {}) {
+  const startedAt = Date.now();
   const baseDomains = getToolSessionDomains(toolSlug, { includeGoogle: false });
   const domains = getToolSessionDomains(toolSlug, options);
   let removed = 0;
@@ -953,26 +954,35 @@ async function clearToolSession(toolSlug, options = {}) {
       storeIds = cookieStores.map((store) => store.id);
     }
   } catch {}
+  const storesResolvedAt = Date.now();
 
-  for (const storeId of storeIds) {
-    for (const domain of domains) {
+  // Look up every store x domain combination concurrently, then remove every
+  // found cookie concurrently, rather than awaiting each lookup/removal one at
+  // a time. With multiple cookie stores and several tool domains this loop can
+  // cover dozens of cookies; serializing each round trip to the cookies API
+  // added up to several real seconds of wait before the fresh-session redirect
+  // could fire, which showed up as the tool tab looking stuck/slow to load.
+  const cookieLists = await Promise.all(
+    storeIds.flatMap((storeId) => domains.map((domain) => {
       const query = storeId ? { domain, storeId } : { domain };
-      const cookies = await chrome.cookies.getAll(query).catch(() => []);
-      for (const cookie of cookies) {
-        const host = `${cookie.domain || ''}`.replace(/^\./, '');
-        if (!host) continue;
-        const url = `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path || '/'}`;
-        const result = await chrome.cookies.remove({
-          url,
-          name: cookie.name,
-          storeId: cookie.storeId,
-        }).catch(() => null);
-        if (result) {
-          removed += 1;
-        }
-      }
-    }
-  }
+      return chrome.cookies.getAll(query).catch(() => []);
+    }))
+  );
+
+  const removalResults = await Promise.all(
+    cookieLists.flat().map((cookie) => {
+      const host = `${cookie.domain || ''}`.replace(/^\./, '');
+      if (!host) return null;
+      const url = `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path || '/'}`;
+      return chrome.cookies.remove({
+        url,
+        name: cookie.name,
+        storeId: cookie.storeId,
+      }).catch(() => null);
+    })
+  );
+  removed = removalResults.filter(Boolean).length;
+  const cookiesClearedAt = Date.now();
 
   const siteDataCleared = await removeBrowsingData(
     { origins: domainsToOrigins(baseDomains) },
@@ -985,6 +995,18 @@ async function clearToolSession(toolSlug, options = {}) {
       webSQL: true,
     }
   );
+
+  const finishedAt = Date.now();
+  console.log('[RMW clearToolSession] timing', {
+    toolSlug,
+    cookiesRemoved: removed,
+    storeCount: storeIds.length,
+    domainCount: domains.length,
+    getCookieStoresMs: storesResolvedAt - startedAt,
+    cookieClearMs: cookiesClearedAt - storesResolvedAt,
+    browsingDataClearMs: finishedAt - cookiesClearedAt,
+    totalMs: finishedAt - startedAt,
+  });
 
   return { removed, siteDataCleared };
 }
@@ -1906,6 +1928,8 @@ function buildUsageEventPayload(message, activeLaunch) {
     source: message.source,
     schema_version: message.schemaVersion,
     confidence: message.confidence,
+    task_id: message.taskId ?? null,
+    client_id: message.clientId ?? null,
     metadata: message.metadata || {},
   };
 }
@@ -2177,6 +2201,100 @@ async function fetchTotp(message, senderTabId = 0, openerTabId = 0) {
       }
     }
     throw error;
+  }
+}
+
+// Kling equivalents of background-freepik-capture.js's
+// handleFreepikFetchMyActiveTasksMessage/handleFreepikFetchActiveClientsMessage -
+// same generic /api/tasks/my-active and /api/clients/active endpoints (see
+// utils/task_gate.py, utils/client_gate.py), just resolved against the
+// Kling launch ticket instead of Freepik's. Kept here rather than in a new
+// background-kling-capture.js since Kling's background-side footprint is
+// otherwise just reportUsageEvent below - not worth a whole new file yet.
+// content-kling.js's own TOOL_SLUG constant is 'kling-ai' - that's what
+// actually gets stamped into the stored launch map entry (setActiveLaunch),
+// and normalizeToolSlug() does NOT alias it to 'kling'. Every other
+// kling-flavored getActiveLaunch() call in this file already tries
+// 'kling-ai' before falling back to 'kling' (see e.g. line ~1846) - this
+// mirrors that instead of hardcoding the wrong slug.
+async function getActiveKlingLaunch(tabId) {
+  return (await getActiveLaunch(tabId, 'kling-ai')) || (await getActiveLaunch(tabId, 'kling'));
+}
+
+async function handleKlingFetchMyActiveTasksMessage(message, senderTabId = 0, openerTabId = 0) {
+  const tabId = message?.tabId || senderTabId || 0;
+  const directLaunch = await getActiveKlingLaunch(tabId);
+  const inheritedLaunch = directLaunch?.ticket ? null : await getActiveKlingLaunch(openerTabId);
+  const activeLaunch = directLaunch || inheritedLaunch;
+
+  if (!activeLaunch?.ticket && !activeLaunch?.usageTrackingTicket) {
+    return { ok: false, error: 'Launch Kling from the dashboard before task selection can run.', reason: 'session_expired' };
+  }
+
+  try {
+    const settings = await getSettings();
+    const params = new URLSearchParams();
+    if (activeLaunch.usageTrackingTicket) params.set('usage_ticket', activeLaunch.usageTrackingTicket);
+    if (activeLaunch.ticket) params.set('extension_ticket', activeLaunch.ticket);
+    // Tells the backend to validate the ticket against the Kling tool row
+    // instead of defaulting to Freepik (see tasks_router.py's
+    // _resolve_generation_gate_tool) - without this a perfectly valid Kling
+    // ticket fails validation because it was checked against the wrong tool.
+    params.set('tool_slug', 'kling-ai');
+
+    const headers = {};
+    if (settings.sessionToken) headers['X-Session-Id'] = settings.sessionToken;
+
+    const response = await fetch(`${settings.apiBase}/api/tasks/my-active?${params.toString()}`, {
+      method: 'GET',
+      credentials: 'include',
+      headers,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      const reason = response.status === 410 || response.status === 403 ? 'session_expired' : undefined;
+      return { ok: false, error: buildApiErrorMessage(data, response, 'Unable to load your tasks', settings), reason };
+    }
+    return { ok: true, tasks: Array.isArray(data.tasks) ? data.tasks : [] };
+  } catch (error) {
+    return { ok: false, error: error?.message || 'Unable to load your tasks' };
+  }
+}
+
+async function handleKlingFetchActiveClientsMessage(message, senderTabId = 0, openerTabId = 0) {
+  const tabId = message?.tabId || senderTabId || 0;
+  const directLaunch = await getActiveKlingLaunch(tabId);
+  const inheritedLaunch = directLaunch?.ticket ? null : await getActiveKlingLaunch(openerTabId);
+  const activeLaunch = directLaunch || inheritedLaunch;
+
+  if (!activeLaunch?.ticket && !activeLaunch?.usageTrackingTicket) {
+    return { ok: false, error: 'Launch Kling from the dashboard before client selection can run.', reason: 'session_expired' };
+  }
+
+  try {
+    const settings = await getSettings();
+    const params = new URLSearchParams();
+    if (activeLaunch.usageTrackingTicket) params.set('usage_ticket', activeLaunch.usageTrackingTicket);
+    if (activeLaunch.ticket) params.set('extension_ticket', activeLaunch.ticket);
+    // See the identical comment in handleKlingFetchMyActiveTasksMessage above.
+    params.set('tool_slug', 'kling-ai');
+
+    const headers = {};
+    if (settings.sessionToken) headers['X-Session-Id'] = settings.sessionToken;
+
+    const response = await fetch(`${settings.apiBase}/api/clients/active?${params.toString()}`, {
+      method: 'GET',
+      credentials: 'include',
+      headers,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      const reason = response.status === 410 || response.status === 403 ? 'session_expired' : undefined;
+      return { ok: false, error: buildApiErrorMessage(data, response, 'Unable to load clients', settings), reason };
+    }
+    return { ok: true, clients: Array.isArray(data.clients) ? data.clients : [] };
+  } catch (error) {
+    return { ok: false, error: error?.message || 'Unable to load clients' };
   }
 }
 
@@ -2465,6 +2583,48 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     return true;
   }
 
+  if (message?.type === 'FREEPIK_CAPTURE_EVENT') {
+    handleFreepikCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'FREEPIK_SYNC_PROGRESS') {
+    handleFreepikSyncProgressMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'FREEPIK_FETCH_MY_ACTIVE_TASKS') {
+    handleFreepikFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'FREEPIK_FETCH_ACTIVE_CLIENTS') {
+    handleFreepikFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'KLING_FETCH_MY_ACTIVE_TASKS') {
+    handleKlingFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'KLING_FETCH_ACTIVE_CLIENTS') {
+    handleKlingFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (!message || message.type !== 'TOOL_HUB_GET_CREDENTIAL') {
     return false;
   }
@@ -2488,6 +2648,9 @@ if (chrome?.runtime?.onStartup) {
     runSafeStartupTask(runChatGptCaptureFlush);
     runSafeStartupTask(() => maybeReportChatGptCaptureHealth(true));
     runSafeStartupTask(() => chrome.alarms.create(CHATGPT_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runFreepikCaptureFlush);
+    runSafeStartupTask(() => maybeReportFreepikCaptureHealth(true));
+    runSafeStartupTask(() => chrome.alarms.create(FREEPIK_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
   });
 }
 
@@ -2496,6 +2659,8 @@ if (chrome?.runtime?.onInstalled) {
     runSafeStartupTask(flushPendingUsageEvents);
     runSafeStartupTask(runChatGptCaptureFlush);
     runSafeStartupTask(() => chrome.alarms.create(CHATGPT_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runFreepikCaptureFlush);
+    runSafeStartupTask(() => chrome.alarms.create(FREEPIK_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
   });
 }
 
@@ -2509,6 +2674,16 @@ if (chrome?.alarms?.onAlarm) {
     }
     if (alarm?.name === CHATGPT_CAPTURE_HEALTH_ALARM) {
       runSafeStartupTask(() => maybeReportChatGptCaptureHealth(true));
+      // Belt-and-suspenders alongside armChatGptCaptureFlushBackstop()'s
+      // per-enqueue alarm: this periodic, always-reliable alarm also nudges
+      // the queue on every tick. A harmless no-op if it's already empty.
+      runSafeStartupTask(() => runChatGptCaptureFlush());
+    }
+    if (alarm?.name === FREEPIK_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runFreepikCaptureFlush);
+    }
+    if (alarm?.name === FREEPIK_CAPTURE_HEALTH_ALARM) {
+      runSafeStartupTask(() => maybeReportFreepikCaptureHealth(true));
     }
   });
 }

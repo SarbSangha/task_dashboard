@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "RMW Tool Hub Auto Login",
   "description": "Auto-fills approved company tool credentials from the RMW Tool Hub.",
-  "version": "0.1.23",
+  "version": "0.1.35",
   "incognito": "split",
   "icons": {
     "16": "icons/icon16.png",
@@ -172,11 +172,25 @@
       "matches": [
         "https://www.freepik.com/*",
         "https://freepik.com/*",
+        "https://*.freepik.com/*",
         "https://www.magnific.com/*",
         "https://magnific.com/*",
         "https://*.magnific.com/*"
       ],
-      "js": ["content-freepik.js"],
+      "js": ["content-freepik-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.freepik.com/*",
+        "https://freepik.com/*",
+        "https://*.freepik.com/*",
+        "https://www.magnific.com/*",
+        "https://magnific.com/*",
+        "https://*.magnific.com/*"
+      ],
+      "js": ["content-freepik-task-api.js", "content-freepik-task-modal.js", "content-freepik.js"],
       "run_at": "document_idle"
     },
     {
@@ -280,7 +294,7 @@
         "https://klingai.com/*",
         "https://*.klingai.com/*"
       ],
-      "js": ["content-kling.js"],
+      "js": ["content-kling-task-api.js", "content-kling-task-modal.js", "content-kling.js"],
       "run_at": "document_idle"
     },
     {

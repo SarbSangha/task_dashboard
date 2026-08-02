@@ -4,6 +4,7 @@ from routers import tasks_router as handlers
 
 
 router = APIRouter(tags=["Tracking"])
+router.add_api_route("/my-active", handlers.get_my_active_tasks_for_generation, methods=["GET"])
 router.add_api_route("/all", handlers.get_all_user_tasks, methods=["GET"])
 router.add_api_route("/{task_id}/actions/assign", handlers.assign_task_members, methods=["POST"])
 router.add_api_route("/{task_id}/actions/submit", handlers.submit_task, methods=["POST"])

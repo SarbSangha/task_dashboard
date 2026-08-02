@@ -39,6 +39,7 @@ from providers.chatgpt.constants import (
     INGESTION_SOURCE_CAPTURED,
     OUTPUT_TYPES,
     OWNERSHIP_STATUS_RESOLVED,
+    OWNERSHIP_STATUS_UNKNOWN,
     PROVIDER,
 )
 from providers.chatgpt.models import (
@@ -62,6 +63,26 @@ def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _is_attributable(event: ConversationCaptureEvent) -> bool:
+    """The ChatGPT equivalent of providers/freepik/normalization.py's
+    _is_fresh_enough_for_attribution - same bug class (a conversation_id our
+    backend has never captured before is just as likely to be an existing
+    conversation someone else already used, especially on a shared tool
+    credential, as it is to be genuinely new), different signal, because
+    ChatGPT capture events don't carry a trustworthy provider-side timestamp
+    the way Freepik's payload does.
+
+    isNewConversation is set by the extension (content-chatgpt.js) only when
+    ChatGPT itself had not yet assigned this conversation an id at the moment
+    the triggering prompt/response was captured - the one signal that
+    actually proves this conversation started with the current sender, in
+    this exact browser session, right now. A reply inside an existing
+    conversation - even one this backend has never seen before - never sets
+    it, regardless of who sent that reply."""
+    payload = event.payload_json or {}
+    return bool(payload.get("isNewConversation"))
+
+
 def _get_or_create_conversation_record(db: Session, event: ConversationCaptureEvent) -> ConversationRecord:
     record = (
         db.query(ConversationRecord)
@@ -72,15 +93,30 @@ def _get_or_create_conversation_record(db: Session, event: ConversationCaptureEv
         .first()
     )
     if record:
+        # Sticky ownership: an already-resolved (or already-unknown) record is
+        # never touched here - the one place ownership is ever assigned is
+        # the create branch below, on this conversation_id's very first
+        # capture event. See _is_attributable's docstring for why a later
+        # event can't be trusted to safely resolve an unknown owner anyway
+        # (isNewConversation is only ever true for the first message of a
+        # thread, never for a later one).
         return record
+
     record = ConversationRecord(
         provider=PROVIDER,
         provider_conversation_id=event.provider_conversation_id,
         ingestion_source=INGESTION_SOURCE_CAPTURED,
-        owner_user_id=event.user_id,
-        ownership_status=OWNERSHIP_STATUS_RESOLVED,
-        ownership_source="capture_event_user",
     )
+    if _is_attributable(event):
+        record.owner_user_id = event.user_id
+        record.ownership_status = OWNERSHIP_STATUS_RESOLVED
+        record.ownership_source = "capture_event_user"
+    else:
+        # Lands unclaimed by design, exactly like Freepik's stale/
+        # reconciliation branch - a pre-existing conversation surfacing for
+        # the first time should never be silently attributed to whoever's
+        # session happened to touch it first.
+        record.ownership_status = OWNERSHIP_STATUS_UNKNOWN
     db.add(record)
     db.flush()
     return record

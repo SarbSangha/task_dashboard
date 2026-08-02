@@ -3,7 +3,7 @@ const LOGIN_URL = 'https://suno.com/';
 const AUTH_URL = 'https://suno.com/';
 const BLOCKED_NOTICE_KEY = 'rmw_suno_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
-const SCRIPT_VERSION = 'debug-2026-07-21-suno-02-strict';
+const SCRIPT_VERSION = 'debug-2026-07-28-suno-03-timing';
 
 const STATE = {
   credential: null,
@@ -1050,16 +1050,24 @@ async function ensureFreshLaunchSession() {
     return true;
   }
 
+  const startedAt = Date.now();
   await clearToolSession({ preserveLaunch: true });
+  const clearedAt = Date.now();
   const preparedResponse = await sendRuntimeMessage({
     type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED',
     toolSlug: TOOL_SLUG,
   });
+  const preparedAt = Date.now();
   if (preparedResponse?.ok) {
     STATE.launchPrepared = true;
   }
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
   setStatus('Preparing fresh Suno session');
+  debugLog('ensureFreshLaunchSession timing', {
+    clearToolSessionMs: clearedAt - startedAt,
+    markPreparedMs: preparedAt - clearedAt,
+    totalMs: preparedAt - startedAt,
+  });
 
   window.location.replace(LOGIN_URL);
   return false;

@@ -1877,7 +1877,34 @@ try {
     } catch {}
   }
 
-  function sendCaptureEvent(event) {
+  // Matches background-chatgpt-capture.js's own queue item shape and storage
+  // key exactly (duplicated, not imported - this file and that one run in
+  // different script contexts with no shared module system between them,
+  // same reasoning as this codebase's other cross-context constant
+  // duplications, e.g. the feature-flags storage key). Used only as a last
+  // resort when chrome.runtime.sendMessage itself is unavailable (see
+  // sendCaptureEvent below) - background's own alarm-driven flush then picks
+  // this up exactly as if it had been enqueued normally, without needing
+  // this content script's chrome.runtime to still be working.
+  function persistCaptureEventDirectlyToQueue(event) {
+    try {
+      chrome.storage.local.get(['pendingChatGptCaptureEvents'], (stored) => {
+        if (chrome.runtime?.lastError) return; // truly nothing left to do
+        const queue = Array.isArray(stored?.pendingChatGptCaptureEvents) ? stored.pendingChatGptCaptureEvents : [];
+        queue.push({
+          key: event.client_event_id,
+          event,
+          enqueuedAt: Date.now(),
+          attempts: 0,
+          lastError: '',
+          nextAttemptAt: 0,
+        });
+        chrome.storage.local.set({ pendingChatGptCaptureEvents: queue });
+      });
+    } catch {}
+  }
+
+  function sendCaptureEvent(event, attempt = 1) {
     if (!event) return;
     try {
       if (CTX.credential?.id && !event.credential_id) event.credential_id = CTX.credential.id;
@@ -1896,9 +1923,44 @@ try {
         });
       }
       chrome.runtime.sendMessage({ type: 'CHATGPT_CAPTURE_EVENT', event, tabId: 0 }, () => {
-        void chrome.runtime.lastError; // background owns persistence/retry - nothing to do here
+        const lastError = chrome.runtime.lastError;
+        if (!lastError) return;
+        // Previously discarded here unconditionally (the comment read
+        // "background owns persistence/retry - nothing to do here") - true
+        // only if the message actually arrives. This was the exact,
+        // confirmed reason a fully-correct capture (this event reaching this
+        // exact line, proven by the capture trace log's checkpoints leading
+        // up to it) could still vanish with zero trace and nothing ever
+        // appearing in the background queue. Most common real cause:
+        // "Extension context invalidated" - this content script instance
+        // outlived a reload/update of the extension itself. Easy to hit
+        // during active development (reloading the unpacked extension while
+        // a chatgpt.com tab stays open), but also a real possibility on any
+        // normal Chrome auto-update.
+        console.warn('[RMW ChatGPT Capture] sendMessage failed, event may be lost', {
+          eventType: event.event_type,
+          clientEventId: event.client_event_id,
+          attempt,
+          reason: lastError.message,
+        });
+        if (attempt < 3) {
+          setTimeout(() => sendCaptureEvent(event, attempt + 1), 500 * attempt);
+          return;
+        }
+        // Out of retries. If the extension context itself is gone,
+        // chrome.runtime.sendMessage will never work again from this script
+        // instance no matter how many times we retry - falling back to a
+        // direct chrome.storage.local write (which can still succeed even
+        // when messaging can't) is the only way left to avoid losing this
+        // event outright.
+        persistCaptureEventDirectlyToQueue(event);
       });
-    } catch {}
+    } catch (error) {
+      // sendMessage can also throw synchronously (not just report via
+      // lastError) once the extension context is fully gone.
+      console.warn('[RMW ChatGPT Capture] sendMessage threw, falling back to direct storage write', error?.message || error);
+      persistCaptureEventDirectlyToQueue(event);
+    }
   }
 
   // ---- Authoritative assistant-content fetch (Slice A) --------------------
@@ -2210,6 +2272,11 @@ try {
         contentSource: authoritative ? 'authoritative_fetch' : 'stream_fallback',
         stopReason: payload.stopReason || undefined,
         completedAt: new Date().toISOString(),
+        // Same ownership signal as PROMPT_CAPTURED above - covers the case
+        // where prompt_captured for this turn was missed (e.g. capture was
+        // briefly disabled) but response_completed still lands as the first
+        // event the backend ever sees for this conversation_id.
+        isNewConversation: Boolean(payload.isNewConversation),
       },
     }));
   }
@@ -2259,8 +2326,33 @@ try {
             files: (payload.attachments || []).filter((attachment) => attachment.type === 'file'),
             sequenceIndex: bus.nextSequenceIndex(payload.conversationId),
             promptTimestamp: new Date().toISOString(),
+            // Ownership signal for the backend's attribution gate (see
+            // providers/chatgpt/normalization.py): true only when ChatGPT had
+            // not yet assigned this conversation an id at submit time, i.e.
+            // this is genuinely a brand-new thread the current sender just
+            // started - never true for a reply inside an existing
+            // conversation, even one our backend has never captured before.
+            isNewConversation: Boolean(payload.isNewConversation),
           },
         }));
+        // Releases any DOM-captured image file(s) waiting in
+        // content-chatgpt-attachment-capture.js's pending buffer, now that
+        // we know the authoritative conversation_id this send actually
+        // landed in - the same value the event above was just tagged with,
+        // not a separately-guessed one. Matched by filename since that's the
+        // only correlation key available between "file selected in the DOM"
+        // and "file named in the send request". If conversationId is still
+        // empty here (brand-new conversation, id not assigned yet), the
+        // fallback below (CHATGPT_CONVERSATION_CREATED) resolves it once the
+        // response reveals the id.
+        if (payload.conversationId) {
+          const imageNames = (payload.attachments || [])
+            .filter((attachment) => attachment.type === 'image' && attachment.name)
+            .map((attachment) => attachment.name);
+          if (imageNames.length) {
+            bus.resolvePendingChatGptAttachments?.(payload.conversationId, imageNames);
+          }
+        }
         break;
 
       case 'CHATGPT_RESPONSE_STARTED': {
@@ -2326,6 +2418,14 @@ try {
           conversationId: payload.conversationId,
           payload: { title: document.title, url: location.href, model: payload.model || undefined },
         }));
+        // Fallback release for content-chatgpt-attachment-capture.js's
+        // pending buffer: covers the rare case a prompt was submitted before
+        // ChatGPT had assigned the conversation an id (CHATGPT_PROMPT_SUBMITTED
+        // fired with an empty conversationId, so the filename-matched release
+        // above never ran). At most one brand-new conversation can be in
+        // flight per this signal, so any attachment still waiting is safe to
+        // resolve to it.
+        bus.resolveAllPendingChatGptAttachments?.(payload.conversationId);
         break;
 
       case 'CHATGPT_CONVERSATION_MUTATED':

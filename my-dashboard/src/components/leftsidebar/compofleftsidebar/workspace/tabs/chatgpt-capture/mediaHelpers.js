@@ -86,12 +86,20 @@ export const MEDIA_FILTERS = [
   { key: 'failed', label: 'Failed', predicate: (m) => m.status === 'failed' },
 ];
 
-// Pairs media to the assistant response with the NEAREST timestamp (the only
-// frontend-available signal - the message API exposes no provider_message_id/
-// correlation_id, and media ids are ChatGPT-provider ids that can't match the
-// synthetic message ids). Best-effort: unpairable media goes into an explicit
-// "Ungrouped" generation rather than being hidden. Generations are numbered
-// chronologically (oldest = #1) and returned newest-first for display.
+// Pairs media to the assistant response that actually generated it, primarily
+// by matching asset.assistantMessageId to the turn's real ChatGPT message id
+// (turn.providerMessageId - now returned by list_conversation_messages, see
+// backend providers/chatgpt/queries.py). Only falls back to nearest-timestamp
+// pairing when either side lacks an id (older captures from before
+// providerMessageId was exposed, or DOM-fallback-only assets that never got
+// an authoritative message id). The nearest-timestamp fallback is inherently
+// approximate - two turns whose responses land close together in time (e.g.
+// asking a quick follow-up before the previous one's images finish
+// generating) can have their media merged into the wrong turn - so ID
+// matching is preferred whenever it's available. Best-effort: unpairable
+// media goes into an explicit "Ungrouped" generation rather than being
+// hidden. Generations are numbered chronologically (oldest = #1) and
+// returned newest-first for display.
 export function buildGenerations(messages, mediaAssets) {
   const chat = (messages || [])
     .filter((m) => m.role === 'user' || m.role === 'assistant')
@@ -103,9 +111,10 @@ export function buildGenerations(messages, mediaAssets) {
   for (const m of chat) {
     if (m.role === 'user') {
       if (current) turns.push(current);
-      current = { promptText: m.text || '', promptTime: m.timestamp, responseText: '', responseTime: null, model: m.model };
+      current = { promptText: m.text || '', promptTime: m.timestamp, responseText: '', responseTime: null, model: m.model, providerMessageId: null };
     } else {
-      if (!current) current = { promptText: '', promptTime: m.timestamp, responseText: '', responseTime: null, model: m.model };
+      if (!current) current = { promptText: '', promptTime: m.timestamp, responseText: '', responseTime: null, model: m.model, providerMessageId: null };
+      current.providerMessageId = m.providerMessageId || current.providerMessageId;
       if (!current.responseTime) {
         current.responseText = m.text || '';
         current.responseTime = m.timestamp;
@@ -121,6 +130,9 @@ export function buildGenerations(messages, mediaAssets) {
     t.anchorMs = new Date(t.responseTime || t.promptTime || 0).getTime();
   });
 
+  const turnByProviderMessageId = new Map();
+  turns.forEach((t) => { if (t.providerMessageId) turnByProviderMessageId.set(t.providerMessageId, t); });
+
   const nearestTurn = (ms) => {
     let best = null;
     let bestDiff = Infinity;
@@ -134,7 +146,8 @@ export function buildGenerations(messages, mediaAssets) {
   const byTurn = new Map();
   const ungrouped = [];
   for (const asset of mediaAssets) {
-    const turn = turns.length ? nearestTurn(new Date(asset.createdAt || 0).getTime()) : null;
+    const turn = (asset.assistantMessageId && turnByProviderMessageId.get(asset.assistantMessageId))
+      || (turns.length ? nearestTurn(new Date(asset.createdAt || 0).getTime()) : null);
     if (turn) {
       if (!byTurn.has(turn.index)) byTurn.set(turn.index, []);
       byTurn.get(turn.index).push(asset);

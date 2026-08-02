@@ -64,6 +64,10 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
   // between RMW Data and the window controls" request. Ownership filter
   // stays local, rendered next to the All Generations/By Employee switcher.
   const [ownershipFilter, setOwnershipFilter] = useState('');
+  const [taskFilter, setTaskFilter] = useState('');
+  const [clientFilter, setClientFilter] = useState('');
+  const [linkedTasks, setLinkedTasks] = useState([]);
+  const [linkedClients, setLinkedClients] = useState([]);
   const [generationsTotal, setGenerationsTotal] = useState(0);
   // UserListSidebar (picking an employee) has no search/ownership concept of
   // its own - these filters only apply once GenerationsBrowser is showing.
@@ -100,6 +104,16 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
     const timer = window.setInterval(() => fetchMetrics({ silent: true }), METRICS_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [fetchMetrics, isAdmin]);
+
+  // Task/Client filter dropdown options - every task/client any Freepik
+  // generation has ever been linked to (see Task/Client Mapping), not just
+  // whatever's currently active - a filter needs the full history, unlike
+  // the generation gate's own picker.
+  useEffect(() => {
+    if (!isAdmin) return;
+    freepikCaptureAPI.getLinkedTasks().then((res) => setLinkedTasks(res.tasks || [])).catch(() => {});
+    freepikCaptureAPI.getLinkedClients().then((res) => setLinkedClients(res.clients || [])).catch(() => {});
+  }, [isAdmin]);
 
   const handleSelectUser = useCallback((userId, userName) => {
     setSelectedUserId(userId);
@@ -171,6 +185,34 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
               ))}
             </select>
           )}
+          {showGenerationsFilters && linkedTasks.length > 0 && (
+            <select
+              className="chatgpt-capture-select"
+              aria-label="Filter by linked task"
+              value={taskFilter}
+              onChange={(event) => setTaskFilter(event.target.value)}
+              style={{ width: 'auto' }}
+            >
+              <option value="">All tasks</option>
+              {linkedTasks.map((task) => (
+                <option key={task.id} value={task.id}>{task.name}</option>
+              ))}
+            </select>
+          )}
+          {showGenerationsFilters && linkedClients.length > 0 && (
+            <select
+              className="chatgpt-capture-select"
+              aria-label="Filter by linked client"
+              value={clientFilter}
+              onChange={(event) => setClientFilter(event.target.value)}
+              style={{ width: 'auto' }}
+            >
+              <option value="">All clients</option>
+              {linkedClients.map((client) => (
+                <option key={client.id} value={client.id}>{client.name}</option>
+              ))}
+            </select>
+          )}
           {showGenerationsFilters && (
             <span className="chatgpt-capture-panel-subhead">{generationsTotal} generation(s)</span>
           )}
@@ -205,6 +247,8 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
           onOpenGeneration={setOpenGenerationId}
           searchInput={searchInput}
           ownershipFilter={ownershipFilter}
+          taskFilter={taskFilter}
+          clientFilter={clientFilter}
           onTotalChange={setGenerationsTotal}
         />
       )}

@@ -37,6 +37,9 @@ PROVIDERS: tuple[ProviderMeta, ...] = (
     ProviderMeta("kling", "Kling", "Kuaishou", "AI Video Generation",
                  "Credits Used, Prompts, Videos Made, Generation Time, Person, Date, Model",
                  integrated=True),
+    ProviderMeta("freepik", "Freepik / Magnific", "Freepik", "AI Image Generation",
+                 "Credits Charged/Estimated, Prompts, Model/Service, Person, Date, Family/Batch",
+                 integrated=True),
     ProviderMeta("midjourney", "Midjourney", "Midjourney Inc.", "AI Image Generation", "Not yet captured"),
     ProviderMeta("runway", "Runway ML", "Runway", "AI Video Generation", "Not yet captured"),
     ProviderMeta("claude", "Claude", "Anthropic", "Text / Content Generation", "Not yet captured"),
@@ -68,6 +71,7 @@ _ALIASES = {
     "dalle": ("dalle2", "dalle3"),
     "copyai": ("copy",),
     "runway": ("runwayml",),
+    "freepik": ("magnific",),
 }
 _LOOKUP: dict[str, ProviderMeta] = {}
 for _p in PROVIDERS:

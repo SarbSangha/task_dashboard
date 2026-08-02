@@ -1538,3 +1538,680 @@ function start() {
 }
 
 start();
+
+// ============================================================================
+// Generation capture (Phase 2/5 of the Freepik Generation Capture System) -
+// see backend/providers/freepik/CAPTURE_CONTRACT.md. Two independent pieces,
+// both isolated-world:
+//
+// 1. A relay for content-freepik-network.js's (MAIN world) intercepted
+//    "my creations" / generation-submit responses - organic traffic only,
+//    never reconciliation, reported with is_reconciliation=false.
+// 2. A bounded reconciliation walker that learns the listing endpoint's URL
+//    shape from that same organic traffic (this codebase has never seen a
+//    confirmed request URL, only the response shape - see
+//    content-freepik-network.js's top comment) and pages forward through it
+//    a few pages at a time using the tab's own authenticated session
+//    (fetch() from an isolated-world content script carries the page's
+//    cookies for same-origin requests, so no separate credential is needed
+//    here - matches the "no server-side Freepik credential exists" design
+//    decision in the architecture plan).
+//
+// Deliberately independent of the autologin STATE machine above - neither
+// piece touches STATE or any of the DOM-automation helpers, so a bug here
+// cannot regress the login flow and vice versa.
+// ============================================================================
+
+const FREEPIK_SYNC_STORAGE_KEY = 'rmw_freepik_sync_state';
+const FREEPIK_RECONCILIATION_WALK_PAGES_PER_RUN = 3;
+const FREEPIK_RECONCILIATION_MIN_GAP_MS = 20 * 60 * 1000; // one walk per tab per ~20 min
+
+function chromeStorageGet(keys) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(keys, (result) => resolve(result || {}));
+    } catch {
+      resolve({});
+    }
+  });
+}
+
+function chromeStorageSet(items) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.set(items, () => resolve(true));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+async function getFreepikSyncState() {
+  const stored = await chromeStorageGet([FREEPIK_SYNC_STORAGE_KEY]);
+  return stored[FREEPIK_SYNC_STORAGE_KEY] || {};
+}
+
+async function patchFreepikSyncState(patch) {
+  const current = await getFreepikSyncState();
+  const next = { ...current, ...patch };
+  await chromeStorageSet({ [FREEPIK_SYNC_STORAGE_KEY]: next });
+  return next;
+}
+
+function buildFreepikListingUrlForPage(templateUrl, page) {
+  try {
+    const url = new URL(templateUrl, window.location.href);
+    url.searchParams.set('page', String(page));
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function reportFreepikGenerationRow(row, { isReconciliation }) {
+  const creation = (row && row.creation) || {};
+  const creationId = creation.id !== undefined && creation.id !== null ? String(creation.id) : '';
+  const identifier = creation.identifier ? String(creation.identifier) : '';
+  // MUST change whenever the row's actual content changes (e.g. a
+  // "processing" generation later becoming "completed" with a real image),
+  // or the server's (provider, credential, client_event_id) idempotency key
+  // treats the updated snapshot as an exact duplicate of the first one and
+  // never re-normalizes it - silently freezing the row at its earliest
+  // (often image-less) state forever. This was the real bug behind
+  // "captured generations stuck with no preview": client_event_id used to be
+  // a pure function of creation_id alone. row.updated_at (falling back to
+  // creation.updated_at, then status) changes any time Freepik's own record
+  // for this creation actually changes, while staying identical across a
+  // pure re-poll of unchanged data - so a genuine no-op repeat still
+  // correctly collapses server-side, but a real state transition doesn't.
+  const changeToken = row?.updated_at || creation?.updated_at || creation?.status || 'unknown';
+  const clientEventId = `freepik:${creationId || identifier || `rand:${Math.random().toString(36).slice(2)}`}:${changeToken}`;
+  try {
+    // sendRuntimeMessage() never rejects (see its own definition) - it
+    // always resolves, even on failure ({ok:false, error}) - so the actual
+    // result must be inspected explicitly here, or a failure (e.g. no
+    // resolvable ticket/session, backend rejection) is silently invisible.
+    const result = await sendRuntimeMessage({
+      type: 'FREEPIK_CAPTURE_EVENT',
+      event: {
+        event_type: 'generation_listing_row',
+        client_event_id: clientEventId,
+        creation_id: creationId || null,
+        family_id: creation.family ? String(creation.family) : null,
+        is_reconciliation: Boolean(isReconciliation),
+        payload: row,
+        capture_version: 1,
+        // Task/Client Mapping - only ever present for a live-capture row
+        // belonging to the currently-armed session (reconciliation rows
+        // never have one, since they aren't the result of a gated click at
+        // all).
+        linked_task_id: !isReconciliation && freepikActiveGeneration ? freepikActiveGeneration.taskId : null,
+        linked_client_id: !isReconciliation && freepikActiveGeneration ? freepikActiveGeneration.clientId : null,
+      },
+    });
+    if (result?.ok) {
+      console.debug('[RMW Freepik Capture] reported generation row', { creationId, isReconciliation, queued: result.queued });
+      // "Queued", not "Saved" - result.ok only confirms the local background
+      // queue accepted it; the actual server upload happens later via the
+      // batched flush (best-effort, see background-freepik-capture.js), with
+      // no feedback channel back to this specific content script call. Never
+      // claim a stronger confirmation than what's actually known - "Capture
+      // complete ✓" (shown on disarm) is the honest final state for this badge.
+      if (!isReconciliation) setFreepikCaptureStatus('Queued for upload…');
+    } else {
+      console.warn('[RMW Freepik Capture] failed to report generation row', { creationId, isReconciliation, error: result?.error });
+      if (!isReconciliation) setFreepikCaptureStatus(`Capture failed: ${result?.error || 'unknown error'}`, { autoHideMs: 8000 });
+    }
+  } catch (error) {
+    console.warn('[RMW Freepik Capture] unexpected error reporting generation row', { creationId, error: error?.message || error });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Live-capture state machine (architecture redesign - replaces the old
+// timestamp-freshness heuristic entirely).
+//
+// The old design asked "does this row look recent?" - a leaky proxy for
+// intent that a page reload, gallery scroll, pagination, or background
+// re-poll can all satisfy without the user having generated anything. The
+// right question is "did we just watch this specific user click Generate,
+// and is this row the result of THAT action?" - answered by observing intent
+// directly (a real DOM click) instead of inferring it from data shape.
+//
+// This mirrors content-kling.js's USAGE_CTX.activeGeneration pattern
+// (generateIntentId/startedAt/expiresAt, armed by generic button-text
+// click-detection, validated by isActiveGenerationValid-style expiry
+// checks) - already proven in production for Kling, ported here rather than
+// invented fresh. See the architecture plan for the full rationale.
+// ----------------------------------------------------------------------------
+
+const FREEPIK_ARM_MAX_DURATION_MS = 10 * 60 * 1000; // generous for slow "auto" renders
+const FREEPIK_ARM_QUIET_PERIOD_MS = 90 * 1000; // disarm 90s after the last qualifying row
+const FREEPIK_CLOCK_SKEW_SLACK_MS = 60 * 1000;
+const FREEPIK_LAST_LIVE_CAPTURED_AT_KEY = 'rmw_freepik_last_live_captured_at';
+
+// { generateIntentId, armedAt, expiresAt, capturedCreationIds: Map<string, {settled}> }
+// null when Idle - this IS the state machine; there is no separate "state" enum,
+// armed-ness is simply "this is non-null and not expired" (isFreepikGenerationArmed).
+let freepikActiveGeneration = null;
+let freepikArmQuietTimer = null;
+let freepikArmMaxTimer = null;
+// In-memory mirror of a persisted (chrome.storage.local) watermark - satisfies
+// the explicit "generation timestamp is newer than the last captured
+// generation" rule independently of arming, so even a wrongly-armed session
+// cannot re-capture something we've already captured and moved past.
+let freepikLastLiveCapturedAt = 0;
+
+chromeStorageGet([FREEPIK_LAST_LIVE_CAPTURED_AT_KEY]).then((stored) => {
+  freepikLastLiveCapturedAt = Number(stored[FREEPIK_LAST_LIVE_CAPTURED_AT_KEY] || 0);
+});
+
+function persistFreepikLastLiveCapturedAt(timestampMs) {
+  if (!(timestampMs > freepikLastLiveCapturedAt)) return;
+  freepikLastLiveCapturedAt = timestampMs;
+  chromeStorageSet({ [FREEPIK_LAST_LIVE_CAPTURED_AT_KEY]: timestampMs }).catch(() => {});
+}
+
+// ---- On-page live-capture status badge (separate from the autologin status
+// badge above - this one reflects generation-capture progress, not login) ----
+
+let freepikCaptureStatusHideTimer = null;
+
+function ensureFreepikCaptureStatusBadge() {
+  const existing = document.getElementById('rmw-freepik-capture-status');
+  if (existing) return existing;
+  const badge = document.createElement('div');
+  badge.id = 'rmw-freepik-capture-status';
+  Object.assign(badge.style, {
+    position: 'fixed',
+    top: '60px',
+    right: '12px',
+    zIndex: '2147483647',
+    maxWidth: '320px',
+    padding: '10px 12px',
+    borderRadius: '10px',
+    background: 'rgba(15, 23, 42, 0.92)',
+    color: '#f8fafc',
+    font: '12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    boxShadow: '0 8px 24px rgba(15, 23, 42, 0.28)',
+    pointerEvents: 'none',
+    whiteSpace: 'pre-wrap',
+    display: 'none',
+  });
+  (document.body || document.documentElement).appendChild(badge);
+  return badge;
+}
+
+function setFreepikCaptureStatus(message, { autoHideMs } = {}) {
+  const badge = ensureFreepikCaptureStatusBadge();
+  badge.textContent = `Freepik capture\n${message}`;
+  badge.style.display = 'block';
+  if (freepikCaptureStatusHideTimer) {
+    window.clearTimeout(freepikCaptureStatusHideTimer);
+    freepikCaptureStatusHideTimer = null;
+  }
+  if (autoHideMs) {
+    freepikCaptureStatusHideTimer = window.setTimeout(() => { badge.style.display = 'none'; }, autoHideMs);
+  }
+}
+
+function hideFreepikCaptureStatus() {
+  const badge = document.getElementById('rmw-freepik-capture-status');
+  if (badge) badge.style.display = 'none';
+}
+
+// ---- Arm/disarm ----
+
+function clearFreepikArmTimers() {
+  if (freepikArmQuietTimer) { window.clearTimeout(freepikArmQuietTimer); freepikArmQuietTimer = null; }
+  if (freepikArmMaxTimer) { window.clearTimeout(freepikArmMaxTimer); freepikArmMaxTimer = null; }
+}
+
+// Visible confirmation that the popup's answer actually reached this
+// generation - without this the task/client attachment is only provable by
+// checking the database, which isn't useful feedback for the person who just
+// picked one. Empty string when neither was selected, so the plain
+// "Waiting for generation…" / "Capture complete" text is left unchanged.
+function freepikGenerationLinkLabel(generation) {
+  if (!generation) return '';
+  const parts = [];
+  if (generation.taskName) parts.push(`Task: ${generation.taskName}`);
+  if (generation.clientName) parts.push(`Client: ${generation.clientName}`);
+  return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
+function disarmFreepikGeneration() {
+  clearFreepikArmTimers();
+  const hadCaptures = Boolean(freepikActiveGeneration && freepikActiveGeneration.capturedCreationIds.size > 0);
+  const linkLabel = freepikGenerationLinkLabel(freepikActiveGeneration);
+  freepikActiveGeneration = null;
+  if (hadCaptures) {
+    setFreepikCaptureStatus(`Capture complete ✓${linkLabel}`, { autoHideMs: 6000 });
+  } else {
+    hideFreepikCaptureStatus();
+  }
+}
+
+function scheduleFreepikArmQuietReset() {
+  if (freepikArmQuietTimer) window.clearTimeout(freepikArmQuietTimer);
+  freepikArmQuietTimer = window.setTimeout(disarmFreepikGeneration, FREEPIK_ARM_QUIET_PERIOD_MS);
+}
+
+function isFreepikGenerationArmed() {
+  return Boolean(freepikActiveGeneration) && Date.now() <= freepikActiveGeneration.expiresAt;
+}
+
+function armFreepikGeneration() {
+  const now = Date.now();
+  // Task/Client Mapping: consumed here (one-shot) regardless of which branch
+  // below runs - the gate in runFreepikTaskGate() guarantees this is only
+  // ever called for a click that just passed (or re-passed, via the bypass)
+  // task/client selection, so every arm - fresh or extended - reflects
+  // whatever was actually confirmed for THIS click, per the "every single
+  // click" rule.
+  const pendingSelection = freepikPendingTaskSelection;
+  freepikPendingTaskSelection = null;
+
+  if (isFreepikGenerationArmed()) {
+    // A second Generate click while still waiting on a prior one (e.g.
+    // queued a follow-up before the first finished rendering) extends the
+    // existing session rather than resetting capturedCreationIds, so
+    // in-flight tracking for the first batch isn't lost.
+    if (pendingSelection) {
+      freepikActiveGeneration.taskId = pendingSelection.taskId;
+      freepikActiveGeneration.taskName = pendingSelection.taskName;
+      freepikActiveGeneration.clientId = pendingSelection.clientId;
+      freepikActiveGeneration.clientName = pendingSelection.clientName;
+    }
+    scheduleFreepikArmQuietReset();
+    setFreepikCaptureStatus(`Waiting for generation…${freepikGenerationLinkLabel(freepikActiveGeneration)}`);
+    return;
+  }
+  clearFreepikArmTimers();
+  freepikActiveGeneration = {
+    generateIntentId: `fpgen_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    armedAt: now,
+    expiresAt: now + FREEPIK_ARM_MAX_DURATION_MS,
+    capturedCreationIds: new Map(),
+    taskId: pendingSelection?.taskId ?? null,
+    taskName: pendingSelection?.taskName ?? null,
+    clientId: pendingSelection?.clientId ?? null,
+    clientName: pendingSelection?.clientName ?? null,
+  };
+  freepikArmMaxTimer = window.setTimeout(disarmFreepikGeneration, FREEPIK_ARM_MAX_DURATION_MS);
+  scheduleFreepikArmQuietReset();
+  setFreepikCaptureStatus(`Waiting for generation…${freepikGenerationLinkLabel(freepikActiveGeneration)}`);
+  console.debug('[RMW Freepik Capture] armed', {
+    generateIntentId: freepikActiveGeneration.generateIntentId,
+    taskId: freepikActiveGeneration.taskId,
+    clientId: freepikActiveGeneration.clientId,
+  });
+}
+
+// ---- Generic "was this click a Generate action" detector - ports
+// content-kling.js's collectInteractionCandidateElements/findClickableAncestor/
+// buttonDescriptorText pattern. isVisible/isDisabled/isActionLikeElement/
+// ACTION_SELECTORS are this file's own, already used by the autologin flow
+// above - reused as-is, not duplicated.
+//
+// Deliberately does NOT reuse findClickableAncestor's own ancestor-walk here,
+// even though the two look similar: findClickableAncestor treats any
+// tabIndex>=0 element as "clickable" (every textarea/input qualifies by
+// default) and, if nothing better is found up the tree, falls back to
+// returning the raw clicked element itself. That's an acceptable trade-off
+// for the passive capture-arm heuristic below (a false positive just widens
+// a watch window), but this result also gates a real click - a false
+// positive here blocks a normal interaction. Concretely: clicking back into
+// the prompt textarea once it already contains the word "generate" (e.g.
+// "generate the video of...") would match, because findClickableAncestor's
+// fallback returns the textarea itself and freepikButtonDescriptorText used
+// to read element.value. So this walk only ever accepts a real
+// button/link/role=button ancestor - never a form field, never a fallback to
+// the raw clicked node - and its text reader no longer looks at .value.
+
+const FREEPIK_GATE_EXCLUDED_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION']);
+
+function findFreepikGenerateButtonAncestor(element) {
+  let current = element;
+  while (current && current !== document.body) {
+    if (
+      !FREEPIK_GATE_EXCLUDED_TAGS.has(current.tagName)
+      && current.matches?.(ACTION_SELECTORS)
+      && isVisible(current)
+      && !isDisabled(current)
+    ) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function collectFreepikInteractionCandidateElements(target) {
+  const path = typeof target?.composedPath === 'function' ? target.composedPath() : [];
+  const pathElements = path.filter((node) => node?.nodeType === Node.ELEMENT_NODE);
+  const fallback = [];
+  let current = target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+  let depth = 0;
+  while (current && current !== document.body && depth < 8) {
+    fallback.push(current);
+    current = current.parentElement;
+    depth += 1;
+  }
+  return collectUniqueElements([...pathElements, ...fallback]);
+}
+
+function freepikButtonDescriptorText(element) {
+  if (!element) return '';
+  const parts = [
+    element.innerText, element.textContent,
+    element.getAttribute?.('aria-label'), element.getAttribute?.('title'),
+    element.getAttribute?.('data-testid'),
+  ];
+  element.querySelectorAll?.('img[alt],[aria-label],[title]').forEach((node) => {
+    parts.push(node.getAttribute?.('alt'), node.getAttribute?.('aria-label'), node.getAttribute?.('title'));
+  });
+  return parts.filter(Boolean).join(' ').trim().toLowerCase();
+}
+
+function findFreepikGenerateActionTarget(target) {
+  const candidates = collectUniqueElements(
+    collectFreepikInteractionCandidateElements(target).map((element) => findFreepikGenerateButtonAncestor(element))
+  );
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const text = freepikButtonDescriptorText(candidate);
+    if (!text || text.length > 60) continue;
+    if (!/(^|\s)generate($|\s)/i.test(text)) continue;
+    return candidate;
+  }
+  return null;
+}
+
+// ---- Task Mapping: Generation Interceptor ----
+//
+// Every real Generate click must have an active task selected first (see
+// content-freepik-task-modal.js). blockPasswordToggleEvent() above proves
+// this exact technique - preventDefault/stopPropagation/stopImmediatePropagation
+// from a capturing-phase document listener - already reliably vetoes a real
+// page-native click on freepik.com, so it's reused here rather than inventing
+// new interception machinery.
+//
+// A click that passes the gate is re-dispatched (target.click()) so Freepik's
+// own handler still runs exactly as it did before this feature existed; the
+// one-shot bypass below is what lets that SECOND, synthetic click through
+// this same listener without looping back into the modal.
+let freepikTaskGateBypassTarget = null;
+let freepikTaskGateModalOpen = false;
+let freepikPendingTaskSelection = null; // {taskId, taskName, clientId, clientName} - consumed by armFreepikGeneration()
+
+async function runFreepikTaskGate(target) {
+  if (freepikTaskGateModalOpen) return; // double-click Generate while the modal is already open - no-op
+  freepikTaskGateModalOpen = true;
+  try {
+    const selection = await openFreepikTaskSelectionModal();
+    if (!selection) return; // cancelled/ESC/no active tasks - click stays blocked
+    freepikPendingTaskSelection = selection;
+    freepikTaskGateBypassTarget = target;
+    target.click();
+  } finally {
+    freepikTaskGateModalOpen = false;
+  }
+}
+
+document.addEventListener('click', (event) => {
+  try {
+    const target = findFreepikGenerateActionTarget(event.target);
+    if (!target) return;
+
+    if (freepikTaskGateBypassTarget === target) {
+      freepikTaskGateBypassTarget = null; // one-shot: next Generate click gates again
+      armFreepikGeneration();
+      return; // let the (re-dispatched) click reach Freepik's own handler
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    runFreepikTaskGate(target);
+  } catch {}
+}, true); // capturing phase - fires even if the page's own handler stops propagation
+
+// ---- Qualifying-row evaluation: the ONLY gate for the live-capture path ----
+
+function getFreepikRowTimestampMs(row) {
+  const raw = row?.updated_at || row?.created_at || row?.creation?.updated_at || row?.creation?.created_at;
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function isFreepikRowSettled(row) {
+  const creation = row?.creation || {};
+  const status = `${creation.status || ''}`.toLowerCase();
+  if (status === 'completed' || status === 'failed') return true;
+  // Defensive fallback if status is missing/unrecognized on some response
+  // shape we haven't seen yet: treat "has an actual asset URL" as settled.
+  return Boolean(
+    row?.thumbnail?.url || row?.download_url
+    || creation.preview || creation.large_preview || creation.raw || creation.url
+  );
+}
+
+// Tracks creation_ids that have already been captured live (via an armed
+// session) but were still rendering ("processing", no asset URL) at
+// capture time - deliberately INDEPENDENT of the arm/quiet-period timeout.
+//
+// Without this, a render that takes longer than FREEPIK_ARM_QUIET_PERIOD_MS
+// (90s) - entirely plausible, some models take tens of seconds - would
+// disarm before the completed version (with the real image) ever arrives.
+// The new design correctly refuses to look at ANYTHING while un-armed (that
+// is the actual fix for the mis-attribution bug), but "is this a brand-new
+// creation_id safe to treat as live" and "keep watching for the completion
+// of a row I already know is legitimately mine" are two different
+// questions - only the first one should be gated by arming. This map
+// answers the second, with its own much longer window.
+const freepikPendingSettlement = new Map(); // creationId -> { expiresAt }
+const FREEPIK_PENDING_SETTLEMENT_MAX_MS = 20 * 60 * 1000; // generous - some models render slowly
+
+function evaluateFreepikRowForLiveCapture(row, transport) {
+  const creationId = row?.creation?.id !== undefined && row.creation.id !== null ? String(row.creation.id) : '';
+  if (!creationId) return { qualifies: false, reason: 'no_creation_id' };
+
+  const rowTimestampMs = getFreepikRowTimestampMs(row);
+
+  // Case 1: we're already watching this exact creation_id for its
+  // completion - this does NOT require currently being armed, since
+  // rendering can legitimately outlast the arm/quiet-period window. Also
+  // transport-independent on purpose: once a creation_id is legitimately
+  // ours (learned from our own direct request below), its completion is
+  // expected to arrive over the shared websocket/eventsource push - that's
+  // just how Freepik delivers renders, not a new ownership claim.
+  const pending = freepikPendingSettlement.get(creationId);
+  if (pending) {
+    if (Date.now() > pending.expiresAt) {
+      freepikPendingSettlement.delete(creationId); // gave up waiting - falls through to normal (armed-only) rules below
+    } else {
+      return { qualifies: true, creationId, rowTimestampMs, isPendingCompletion: true };
+    }
+  }
+
+  // Case 2: a brand-new creation_id. Being armed is necessary but NOT
+  // sufficient - mirrors content-kling-network.js's approach of trusting an
+  // identifier pulled from the request/response pair over a bare time
+  // window: Freepik's shared team login means every open tab on the account
+  // receives every OTHER employee's completion push too (private-user/
+  // private-project Echo channel), so "a new id showed up while I was
+  // armed" is not proof *I* caused it - two people generating within the
+  // same few minutes on the same login is a realistic, observed case, not a
+  // hypothetical. A direct fetch/XHR response, in contrast, only ever
+  // reaches the tab that issued the request - see
+  // content-freepik-network.js's transport tagging - so only that transport
+  // may originate a brand-new claim. A push-only sighting of an unfamiliar
+  // creation_id is silently left for the reconciliation walker (unowned)
+  // rather than credited to whoever's tab happened to be armed.
+  if (transport === 'websocket' || transport === 'eventsource') {
+    return { qualifies: false, reason: 'new_id_via_push_channel_not_trusted' };
+  }
+
+  if (!isFreepikGenerationArmed()) return { qualifies: false, reason: 'not_armed' };
+
+  const alreadySettled = freepikActiveGeneration.capturedCreationIds.get(creationId)?.settled;
+  if (alreadySettled) return { qualifies: false, reason: 'already_settled_this_session' };
+
+  if (rowTimestampMs === null) return { qualifies: false, reason: 'no_timestamp' };
+  // Rule: must post-date the click that armed us (a result cannot precede
+  // its own cause) - mirrors content-kling.js's assetStartedAfterActiveGeneration.
+  if (rowTimestampMs < freepikActiveGeneration.armedAt - FREEPIK_CLOCK_SKEW_SLACK_MS) {
+    return { qualifies: false, reason: 'older_than_click' };
+  }
+  // Rule: must also be newer than the last thing we ever captured live -
+  // a monotonicity guard independent of arming (protects against a
+  // mis-armed session replaying something already captured and moved past).
+  if (freepikLastLiveCapturedAt && rowTimestampMs <= freepikLastLiveCapturedAt - FREEPIK_CLOCK_SKEW_SLACK_MS) {
+    return { qualifies: false, reason: 'not_newer_than_watermark' };
+  }
+  return { qualifies: true, creationId, rowTimestampMs };
+}
+
+function onFreepikNetworkMessage(event) {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (!data || data.source !== 'rmw-freepik-network-telemetry' || data.type !== 'FREEPIK_NETWORK_GENERATION') return;
+  const rows = data.payload && Array.isArray(data.payload.rows) ? data.payload.rows : [];
+  const sourceUrl = (data.payload && data.payload.sourceUrl) || '';
+  const transport = (data.payload && data.payload.transport) || 'http';
+
+  rows.forEach((row) => {
+    const evaluation = evaluateFreepikRowForLiveCapture(row, transport);
+    if (!evaluation.qualifies) {
+      // Not reported AT ALL by this path - an un-armed (or otherwise
+      // non-qualifying) observation is history, and history is exclusively
+      // the reconciliation walker's job below, never this organic path's.
+      // This is the actual architectural fix: the old design still sent (or
+      // at best silently dropped after evaluating) rows based on a
+      // timestamp guess; this design never even considers sending one
+      // unless a real click armed us for it.
+      console.debug('[RMW Freepik Capture] ignored non-qualifying row (not a live generation)', {
+        creationId: row?.creation?.id, reason: evaluation.reason,
+      });
+      return;
+    }
+
+    const settled = isFreepikRowSettled(row);
+
+    // A pending-completion match can legitimately arrive while disarmed
+    // (that's the entire point of freepikPendingSettlement) - only touch
+    // the active arm session's own bookkeeping if one actually exists.
+    if (freepikActiveGeneration && isFreepikGenerationArmed()) {
+      freepikActiveGeneration.capturedCreationIds.set(evaluation.creationId, { settled });
+      scheduleFreepikArmQuietReset(); // this counts as recent activity - extend the window
+    }
+
+    if (settled) {
+      freepikPendingSettlement.delete(evaluation.creationId);
+    } else {
+      // Not settled yet - keep watching for this specific creation_id's
+      // completion independently of arm/quiet-period state (see
+      // freepikPendingSettlement's docstring above evaluateFreepikRowForLiveCapture).
+      freepikPendingSettlement.set(evaluation.creationId, { expiresAt: Date.now() + FREEPIK_PENDING_SETTLEMENT_MAX_MS });
+    }
+
+    persistFreepikLastLiveCapturedAt(evaluation.rowTimestampMs);
+    setFreepikCaptureStatus(settled ? 'Capturing…' : 'Generation detected — rendering…');
+    console.debug('[RMW Freepik Capture] qualifying row - reporting as live', {
+      creationId: evaluation.creationId, settled, isPendingCompletion: Boolean(evaluation.isPendingCompletion),
+    });
+    reportFreepikGenerationRow(row, { isReconciliation: false });
+  });
+
+  // Still needed regardless of arming: this is how the reconciliation
+  // walker below learns the listing endpoint's URL shape without it ever
+  // being hardcoded (see content-freepik-network.js's top comment).
+  if (sourceUrl && /[?&]page=/i.test(sourceUrl)) {
+    patchFreepikSyncState({ listingUrlTemplate: sourceUrl, listingUrlObservedAt: Date.now() });
+  }
+}
+
+window.addEventListener('message', onFreepikNetworkMessage);
+
+async function runFreepikReconciliationWalk() {
+  const state = await getFreepikSyncState();
+  const now = Date.now();
+  if (state.lastWalkAt && now - state.lastWalkAt < FREEPIK_RECONCILIATION_MIN_GAP_MS) {
+    console.debug('[RMW Freepik Sync] walk skipped: ran too recently', { lastWalkAt: state.lastWalkAt });
+    return;
+  }
+  if (!state.listingUrlTemplate) {
+    // Nothing observed yet to learn the paginated endpoint's URL shape from -
+    // this walker stays a permanent no-op until at least one organic
+    // "my creations"-style response with a `page=` query param has been
+    // seen (see onFreepikNetworkMessage). If this line keeps showing up,
+    // that observation is the thing that's missing, not this walker.
+    console.debug('[RMW Freepik Sync] walk skipped: no listing URL learned yet - visit the Creations gallery once');
+    return;
+  }
+
+  console.debug('[RMW Freepik Sync] starting reconciliation walk', { fromPage: Number(state.lastSyncedPage || 0) + 1, template: state.listingUrlTemplate });
+  await patchFreepikSyncState({ lastWalkAt: now });
+
+  let page = Number(state.lastSyncedPage || 0) + 1;
+  let lastSeenCreationId = state.lastSeenCreationId || null;
+  let pagesWalked = 0;
+
+  for (; pagesWalked < FREEPIK_RECONCILIATION_WALK_PAGES_PER_RUN; pagesWalked++, page++) {
+    const pageUrl = buildFreepikListingUrlForPage(state.listingUrlTemplate, page);
+    if (!pageUrl) break;
+
+    let json = null;
+    try {
+      const response = await fetch(pageUrl, { credentials: 'include' });
+      if (!response.ok) {
+        console.warn('[RMW Freepik Sync] page fetch returned non-OK status, stopping walk', { pageUrl, status: response.status });
+        break;
+      }
+      json = await response.json();
+    } catch (error) {
+      console.warn('[RMW Freepik Sync] page fetch failed, stopping walk', { pageUrl, error: error?.message || error });
+      break;
+    }
+
+    const rows = json && Array.isArray(json.data) ? json.data : [];
+    if (!rows.length) {
+      console.debug('[RMW Freepik Sync] page returned no rows, stopping walk', { pageUrl });
+      break;
+    }
+
+    for (const row of rows) {
+      await reportFreepikGenerationRow(row, { isReconciliation: true });
+      const creation = row.creation || {};
+      if (creation.id !== undefined && creation.id !== null) lastSeenCreationId = String(creation.id);
+    }
+
+    const lastPage = Number((json.meta && json.meta.pagination && json.meta.pagination.last_page) || 0);
+    if (lastPage && page >= lastPage) {
+      page += 1;
+      pagesWalked += 1;
+      break;
+    }
+  }
+
+  console.debug('[RMW Freepik Sync] walk finished', { pagesWalked, lastSyncedPage: page - 1 });
+  if (pagesWalked > 0) {
+    await patchFreepikSyncState({ lastSyncedPage: page - 1, lastSeenCreationId });
+    sendRuntimeMessage({
+      type: 'FREEPIK_SYNC_PROGRESS',
+      lastSeenCreationId,
+      lastSyncedPage: page - 1,
+      isFullReconciliation: false,
+      status: 'idle',
+    }).catch(() => {});
+  }
+}
+
+// Delayed start: give the page a chance to make its own organic "my
+// creations" request first (that's how listingUrlTemplate gets learned) -
+// running immediately on every load would just no-op most of the time.
+window.setTimeout(() => {
+  runFreepikReconciliationWalk().catch(() => {});
+}, 15000);
