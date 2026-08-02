@@ -17,8 +17,22 @@ my-dashboard/.env.production.example
 *.zip
 
 backend/venv/
-backend/__pycache__/
 backend/uploads/
+
+# Python bytecode. These patterns are deliberately UNANCHORED (no leading
+# path): the old `backend/__pycache__/` only matched that one top-level
+# directory, so every nested cache - backend/providers/*/__pycache__,
+# backend/routers/__pycache__, backend/utils/**/__pycache__ - was still
+# offered up by git. 97 .pyc files had already been committed as a result,
+# and roughly three quarters of every `git status` was bytecode noise.
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test/coverage scratch
+.pytest_cache/
+.coverage
+htmlcov/
 
 my-dashboard/node_modules/
 my-dashboard/dist/
