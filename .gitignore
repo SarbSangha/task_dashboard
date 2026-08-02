@@ -36,3 +36,6 @@ htmlcov/
 
 my-dashboard/node_modules/
 my-dashboard/dist/
+
+# Claude Code local machine state (settings.local.json is per-developer)
+.claude/
