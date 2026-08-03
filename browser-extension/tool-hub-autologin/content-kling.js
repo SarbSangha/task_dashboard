@@ -52,9 +52,16 @@ const MAX_PROMPT_CANDIDATES = 3;
 const MAX_CAPTURED_MEDIA_ASSETS = 8;
 const MAX_MEDIASOURCE_CAPTURED_ASSETS = 8;
 const MAX_PENDING_MEDIASOURCE_PAYLOADS = 4;
-const PENDING_MEDIASOURCE_MAX_MS = 30000;
+const PENDING_MEDIASOURCE_MAX_MS = 120000;
 const GENERATED_ASSET_SCAN_MS = 4000;
-const GENERATED_ASSET_SCAN_MAX_MS = 150000;
+// Kling's own render+encode can genuinely take several minutes (observed:
+// asset_history still polling a task with empty mediaAssets past the old
+// 150s window, with the real MediaSource video arriving only after this
+// generation had already been evicted - the real output then had nothing
+// left to attach to). 10 minutes gives real generations enough headroom;
+// the size-20 cap on USAGE_CTX.activeGenerations already bounds worst-case
+// memory if a scan never resolves.
+const GENERATED_ASSET_SCAN_MAX_MS = 600000;
 const ACTIVE_GENERATION_MAX_MS = GENERATED_ASSET_SCAN_MAX_MS;
 const KLING_TIMESTAMP_FALLBACK_WINDOW_MS = 2000;
 const MAX_EXPECTED_LOCK_AUTO_BURN = 300;
@@ -207,14 +214,21 @@ const USAGE_CTX = {
   extensionTabId      : 0,
   broadcastChannel    : null,
   latestWalletBalance : null,
-  generatedAssetUrls  : new Set(),
   blobSourceUrls      : new Map(),
   mediaSourceAssets   : new Map(),
-  assetScanTimer      : null,
-  assetScanObserver   : null,
-  assetScanStartedAt  : 0,
-  assetScanSnapshot   : null,
   activeGenerationIds : new Map(),
+  // Multiple Kling generations can be in flight at once (e.g. a batch fired
+  // back-to-back from one input image) - each gets its own entry here, keyed
+  // by generateIntentId, with its own scan timer/observer/snapshot/dedupe-set
+  // (see buildActiveGenerationFromSnapshot). USAGE_CTX.activeGeneration below
+  // is NOT a second source of truth - it's a short-lived pointer to whichever
+  // one entry is currently being processed, set via withGeneration()
+  // immediately before code that needs to read/write "the" active generation
+  // runs, and restored right after. This lets ~20 existing helper functions
+  // that read USAGE_CTX.activeGeneration keep working completely unchanged
+  // while operating correctly on whichever generation is actually relevant to
+  // the event being processed right now.
+  activeGenerations   : new Map(),
   activeGeneration    : null,
   recentTradeHistoryRows: [],
   recentAssetHistoryRows: [],
@@ -1196,8 +1210,8 @@ function rememberBlobSourceUrl(blobUrl = '', sourceUrl = '') {
     const oldestKey = USAGE_CTX.blobSourceUrls.keys().next().value;
     if (oldestKey) USAGE_CTX.blobSourceUrls.delete(oldestKey);
   }
-  USAGE_CTX.generatedAssetUrls.delete(normalizedBlobUrl);
-  reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, [{
+  USAGE_CTX.activeGeneration?.generatedAssetUrls?.delete(normalizedBlobUrl);
+  reportGeneratedAssetCandidates(USAGE_CTX.activeGeneration?.scanSnapshot, [{
     assetType: inferCapturedAssetType(normalizedSourceUrl),
     assetRole: 'output',
     source: 'blob_source',
@@ -1272,7 +1286,7 @@ function storeMediaSourceVideoAsset(payload = {}) {
   releaseStoredMediaSourceAsset(sessionId);
   USAGE_CTX.mediaSourceAssets.set(sessionId, stored);
   pruneStoredMediaSourceAssets();
-  USAGE_CTX.generatedAssetUrls.delete(objectUrl);
+  USAGE_CTX.activeGeneration?.generatedAssetUrls?.delete(objectUrl);
 
   return {
     assetType: 'video',
@@ -1638,14 +1652,64 @@ function buildActiveGenerationFromSnapshot(snapshot, startedAt = Date.now()) {
     pipelineStages: {},
     firstTaskIdEndpoint: '',
     status: 'active',
-    // Set by startGeneratedAssetDetection() when this generation replaced a
-    // still-unresolved prior one (see its own comment) - gates the DOM
-    // "newest visible video" fallback in reportGeneratedAssetCandidates(),
-    // since that heuristic has no per-asset identity and cannot tell whether
-    // a freshly-appeared video belongs to THIS click or a still-rendering
-    // earlier one it silently displaced.
-    hadOverlappingPriorGeneration: false,
+    // Per-generation scan state (own timer/observer/snapshot/dedupe-set), set
+    // up by startGeneratedAssetDetection() and torn down by
+    // stopGeneratedAssetDetection() for THIS entry only - concurrent
+    // generations each get their own, so one click's scan can no longer
+    // clobber another's (see the USAGE_CTX.activeGenerations comment above).
+    scanTimer: null,
+    scanObserver: null,
+    scanSnapshot: null,
+    scanStartedAt: 0,
+    generatedAssetUrls: new Set(),
   };
+}
+
+// Binds USAGE_CTX.activeGeneration to `generation` for the duration of `fn`,
+// then restores whatever it was before. Lets the ~20 existing helper
+// functions below (isActiveGenerationValid, associateKlingTaskIdWithActiveGeneration,
+// attachActiveGenerationOwnership, etc.) keep reading/writing
+// USAGE_CTX.activeGeneration exactly as before while actually operating on
+// whichever specific generation an incoming event was resolved to - see
+// resolveGenerationForPayload().
+function withGeneration(generation, fn) {
+  const previous = USAGE_CTX.activeGeneration;
+  USAGE_CTX.activeGeneration = generation || null;
+  try {
+    return fn();
+  } finally {
+    USAGE_CTX.activeGeneration = previous;
+  }
+}
+
+// Finds which currently-tracked generation (if any) an incoming network
+// payload/row belongs to. Task-id identity wins outright since it's a real
+// Kling-assigned id, unique to one generation. Without a task id yet, only
+// fall back to timing when there's exactly one still-open (no owned output
+// yet) candidate - with 2+ open candidates that guess is genuinely ambiguous
+// (this is what used to silently mis-attribute one generation's input photo
+// to another), so return null rather than pick wrong.
+function resolveGenerationForPayload(payload, { requireTaskIdMatch = false } = {}) {
+  const candidates = [...USAGE_CTX.activeGenerations.values()].filter((g) => isActiveGenerationValid(g));
+  if (!candidates.length) return null;
+  const payloadTaskIds = collectKlingTaskIdsFromPayload(payload);
+  if (payloadTaskIds.length) {
+    const matches = candidates.filter((g) => getActiveGenerationTaskIds(g).some((id) => payloadTaskIds.includes(id)));
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      debugUsageTelemetry('generation_resolution_multiple_task_id_matches', {
+        payloadTaskIds,
+        matchedIntentIds: matches.map((g) => g.generateIntentId).slice(0, 8),
+      });
+      return matches.sort((a, b) => b.startedAt - a.startedAt)[0];
+    }
+  }
+  if (requireTaskIdMatch) return null;
+  const openCandidates = candidates.filter((g) => !g.ownedOutputDetectedAt);
+  if (openCandidates.length !== 1) return null;
+  const timestamp = Number(payload?.startedAt || payload?.capturedAt || 0);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
+  return timestamp >= Number(openCandidates[0].startedAt || 0) ? openCandidates[0] : null;
 }
 
 function isActiveGenerationValid(activeGeneration = USAGE_CTX.activeGeneration, now = Date.now()) {
@@ -1671,11 +1735,11 @@ function assetStartedAfterActiveGeneration(asset, activeGeneration = USAGE_CTX.a
   return startedAt >= Number(activeGeneration.startedAt || 0);
 }
 
-function mediaSourcePayloadMatchesActiveGeneration(payload = {}) {
-  if (!isActiveGenerationValid()) return false;
+function mediaSourcePayloadMatchesActiveGeneration(payload = {}, activeGeneration = USAGE_CTX.activeGeneration) {
+  if (!isActiveGenerationValid(activeGeneration)) return false;
   const startedAt = Number(payload?.startedAt || 0);
   if (!Number.isFinite(startedAt) || startedAt <= 0) return false;
-  return startedAt >= Number(USAGE_CTX.activeGeneration.startedAt || 0);
+  return startedAt >= Number(activeGeneration.startedAt || 0);
 }
 
 function normalizeKlingTaskId(value) {
@@ -1730,7 +1794,7 @@ function buildGenerationOwnershipMetadata(activeGeneration = USAGE_CTX.activeGen
   const taskIds = getActiveGenerationTaskIds(activeGeneration);
   return {
     internalGenerationId: activeGeneration.internalGenerationId || activeGeneration.generateIntentId,
-    backendEventId: Number(activeGeneration.eventId || USAGE_CTX.assetScanSnapshot?.eventId || 0) || null,
+    backendEventId: Number(activeGeneration.eventId || activeGeneration.scanSnapshot?.eventId || 0) || null,
     klingTaskId: activeGeneration.klingTaskId || taskIds[0] || '',
     taskId: activeGeneration.taskId || activeGeneration.klingTaskId || taskIds[0] || '',
     workId: activeGeneration.workId || '',
@@ -1750,7 +1814,7 @@ function attachActiveGenerationOwnership(snapshot, strategy = '') {
   if (!snapshot || !isActiveGenerationValid()) return snapshot;
   const activeEventId = Number(
     USAGE_CTX.activeGeneration?.eventId
-      || USAGE_CTX.assetScanSnapshot?.eventId
+      || USAGE_CTX.activeGeneration?.scanSnapshot?.eventId
       || 0
   ) || null;
   if (activeEventId && !snapshot.eventId) {
@@ -1786,7 +1850,7 @@ function eventIdForKnownKlingTaskId(taskId) {
   if (!normalizedId || !isKnownKlingTaskId(normalizedId)) return null;
   return Number(
     USAGE_CTX.activeGeneration?.eventId
-      || USAGE_CTX.assetScanSnapshot?.eventId
+      || USAGE_CTX.activeGeneration?.scanSnapshot?.eventId
       || 0
   ) || null;
 }
@@ -1824,7 +1888,7 @@ function associateKlingTaskIdWithActiveGeneration(payload = {}) {
   if (primaryId && !activeGeneration.taskId) {
     activeGeneration.taskId = primaryId;
   }
-  activeGeneration.eventId = Number(activeGeneration.eventId || USAGE_CTX.assetScanSnapshot?.eventId || 0) || null;
+  activeGeneration.eventId = Number(activeGeneration.eventId || activeGeneration.scanSnapshot?.eventId || 0) || null;
   activeGeneration.identifierChannel = `${payload.identifierChannel || payload.transport || payload.source || activeGeneration.identifierChannel || ''}`.slice(0, 120);
   activeGeneration.identifierSource = `${payload.identifierSource || activeGeneration.identifierSource || ''}`.slice(0, 120);
   activeGeneration.identifierKind = `${payload.identifierKind || activeGeneration.identifierKind || ''}`.slice(0, 80);
@@ -1832,8 +1896,8 @@ function associateKlingTaskIdWithActiveGeneration(payload = {}) {
     Number(activeGeneration.ownershipConfidence || 0),
     Number(payload.ownershipConfidence || (activeGeneration.klingTaskId ? 0.99 : 0.85))
   );
-  if (USAGE_CTX.assetScanSnapshot) {
-    attachActiveGenerationOwnership(USAGE_CTX.assetScanSnapshot, 'kling_task_id');
+  if (activeGeneration.scanSnapshot) {
+    attachActiveGenerationOwnership(activeGeneration.scanSnapshot, 'kling_task_id');
   }
   debugUsageTelemetry('kling_task_id_associated', {
     internalGenerationId: activeGeneration.internalGenerationId,
@@ -1863,7 +1927,7 @@ function linkAssetIdsWithActiveGeneration({ taskId = '', workId = '', creativeId
   }
   if (normalizedWorkId) activeGeneration.workId = normalizedWorkId;
   if (normalizedCreativeId) activeGeneration.creativeId = normalizedCreativeId;
-  attachActiveGenerationOwnership(USAGE_CTX.assetScanSnapshot, 'asset_id_linkage');
+  attachActiveGenerationOwnership(activeGeneration.scanSnapshot, 'asset_id_linkage');
   debugUsageTelemetry('asset_ids_linked', {
     internalGenerationId: activeGeneration.internalGenerationId,
     taskId: normalizedTaskId,
@@ -1875,8 +1939,8 @@ function linkAssetIdsWithActiveGeneration({ taskId = '', workId = '', creativeId
   return Boolean(normalizedTaskId || normalizedWorkId || normalizedCreativeId);
 }
 
-function payloadMatchesActiveGenerationTaskId(payload = {}) {
-  const activeIds = getActiveGenerationTaskIds();
+function payloadMatchesActiveGenerationTaskId(payload = {}, activeGeneration = USAGE_CTX.activeGeneration) {
+  const activeIds = getActiveGenerationTaskIds(activeGeneration);
   if (!activeIds.length) return null;
   const payloadIds = collectKlingTaskIdsFromPayload(payload);
   if (!payloadIds.length) return false;
@@ -1892,13 +1956,13 @@ function markActiveGenerationOwnedOutput(assetCount = 0, source = 'dom_new_outpu
     Number(activeGeneration.ownershipConfidence || 0),
     getActiveGenerationTaskIds(activeGeneration).length ? 0.99 : 0.9
   );
-  if (USAGE_CTX.assetScanSnapshot) {
-    attachActiveGenerationOwnership(USAGE_CTX.assetScanSnapshot, source);
+  if (activeGeneration.scanSnapshot) {
+    attachActiveGenerationOwnership(activeGeneration.scanSnapshot, source);
   }
 }
 
-function hasOwnedOutputForActiveGeneration() {
-  return Boolean(isActiveGenerationValid() && Number(USAGE_CTX.activeGeneration?.ownedOutputDetectedAt || 0) > 0);
+function hasOwnedOutputForActiveGeneration(activeGeneration = USAGE_CTX.activeGeneration) {
+  return Boolean(isActiveGenerationValid(activeGeneration) && Number(activeGeneration?.ownedOutputDetectedAt || 0) > 0);
 }
 
 function isGoogleOauthRecoveryUrl(value = '') {
@@ -2054,67 +2118,88 @@ function prunePendingMediaSourcePayloads(now = Date.now()) {
     .slice(-MAX_PENDING_MEDIASOURCE_PAYLOADS);
 }
 
-function processOwnedMediaSourcePayload(mediaSourcePayload = {}) {
-  const asset = storeMediaSourceVideoAsset(mediaSourcePayload);
-  if (!asset) return;
-  attachActiveGenerationOwnership(USAGE_CTX.assetScanSnapshot, 'owned_output_mediasource_enrichment');
-  setStatus(`MediaSource video captured (${Math.round((asset.size || 0) / 1024 / 1024)} MB)`, { hideAfterMs: 2500 });
-  uploadMediaSourceVideoAsset(asset)
-    .then((uploadedAsset) => {
-      const enrichedAsset = {
-        ...uploadedAsset,
-        internalGenerationId: USAGE_CTX.activeGeneration?.internalGenerationId || '',
-        klingTaskId: USAGE_CTX.activeGeneration?.klingTaskId || '',
-      };
-      reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, [enrichedAsset]);
-      debugUsageTelemetry('mediasource_video_uploaded', {
-        sessionId: uploadedAsset.mediaSourceSessionId,
-        size: uploadedAsset.size,
-        chunkCount: uploadedAsset.chunkCount,
-        url: `${uploadedAsset.permanentUrl || uploadedAsset.url || ''}`.slice(0, 1000),
-        startedAt: uploadedAsset.startedAt,
-        completedAt: uploadedAsset.completedAt,
-        ownership: buildGenerationOwnershipMetadata(USAGE_CTX.activeGeneration, 'owned_output_mediasource_enrichment'),
+function processOwnedMediaSourcePayload(mediaSourcePayload = {}, generation = USAGE_CTX.activeGeneration) {
+  withGeneration(generation, () => {
+    const asset = storeMediaSourceVideoAsset(mediaSourcePayload);
+    if (!asset) return;
+    attachActiveGenerationOwnership(generation?.scanSnapshot, 'owned_output_mediasource_enrichment');
+    setStatus(`MediaSource video captured (${Math.round((asset.size || 0) / 1024 / 1024)} MB)`, { hideAfterMs: 2500 });
+    uploadMediaSourceVideoAsset(asset)
+      .then((uploadedAsset) => {
+        withGeneration(generation, () => {
+          const enrichedAsset = {
+            ...uploadedAsset,
+            internalGenerationId: generation?.internalGenerationId || '',
+            klingTaskId: generation?.klingTaskId || '',
+          };
+          reportGeneratedAssetCandidates(generation?.scanSnapshot, [enrichedAsset]);
+          debugUsageTelemetry('mediasource_video_uploaded', {
+            sessionId: uploadedAsset.mediaSourceSessionId,
+            size: uploadedAsset.size,
+            chunkCount: uploadedAsset.chunkCount,
+            url: `${uploadedAsset.permanentUrl || uploadedAsset.url || ''}`.slice(0, 1000),
+            startedAt: uploadedAsset.startedAt,
+            completedAt: uploadedAsset.completedAt,
+            ownership: buildGenerationOwnershipMetadata(generation, 'owned_output_mediasource_enrichment'),
+          });
+          releaseStoredMediaSourceAsset(asset.mediaSourceSessionId);
+          setStatus('MediaSource video uploaded', { hideAfterMs: 2500 });
+        });
+      })
+      .catch((error) => {
+        releaseStoredMediaSourceAsset(asset.mediaSourceSessionId);
+        debugUsageTelemetry('mediasource_video_upload_failed', {
+          sessionId: asset.mediaSourceSessionId,
+          size: asset.size,
+          chunkCount: asset.chunkCount,
+          error: `${error?.message || error || ''}`.slice(0, 500),
+        });
+        console.warn('[RMW Kling] MediaSource video upload failed', error);
       });
-      releaseStoredMediaSourceAsset(asset.mediaSourceSessionId);
-      setStatus('MediaSource video uploaded', { hideAfterMs: 2500 });
-    })
-    .catch((error) => {
-      releaseStoredMediaSourceAsset(asset.mediaSourceSessionId);
-      debugUsageTelemetry('mediasource_video_upload_failed', {
-        sessionId: asset.mediaSourceSessionId,
-        size: asset.size,
-        chunkCount: asset.chunkCount,
-        error: `${error?.message || error || ''}`.slice(0, 500),
-      });
-      console.warn('[RMW Kling] MediaSource video upload failed', error);
-    });
+  });
 }
 
 function flushPendingMediaSourcePayloads() {
   prunePendingMediaSourcePayloads();
-  if (!hasOwnedOutputForActiveGeneration()) return;
   const pending = USAGE_CTX.pendingMediaSourcePayloads.splice(0, MAX_PENDING_MEDIASOURCE_PAYLOADS);
   for (const entry of pending) {
-    if (mediaSourcePayloadMatchesActiveGeneration(entry.payload)) {
-      processOwnedMediaSourcePayload(entry.payload);
+    const generation = resolveGenerationForPayload(entry.payload);
+    if (generation && hasOwnedOutputForActiveGeneration(generation) && mediaSourcePayloadMatchesActiveGeneration(entry.payload, generation)) {
+      processOwnedMediaSourcePayload(entry.payload, generation);
     }
   }
 }
 
 function queueOrProcessMediaSourcePayload(mediaSourcePayload = {}) {
-  if (!normalizePromptCaptureValue(USAGE_CTX.assetScanSnapshot?.promptText) || !mediaSourcePayloadMatchesActiveGeneration(mediaSourcePayload)) {
-    debugUsageTelemetry('mediasource_video_skipped_without_active_generation', {
+  // TEMP DIAGNOSTIC - remove once the "no preview" investigation is done.
+  console.log('[RMW Kling][DIAG] mediasource payload received', {
+    sessionId: mediaSourcePayload?.sessionId,
+    size: mediaSourcePayload?.size,
+    startedAt: mediaSourcePayload?.startedAt,
+  });
+  // A raw MediaSource payload carries only a startedAt timestamp, no task id -
+  // resolveGenerationForPayload() only resolves it here when exactly one
+  // still-open concurrent generation could plausibly own it; with 2+ open
+  // candidates (a batch fired close together) it comes back null and this
+  // gets queued for a later retry once task-id association narrows things
+  // down, instead of being guessed at or dropped.
+  const generation = resolveGenerationForPayload(mediaSourcePayload);
+  if (!generation || !normalizePromptCaptureValue(generation.scanSnapshot?.promptText)) {
+    debugUsageTelemetry('mediasource_video_queued_unresolved_generation', {
       sessionId: `${mediaSourcePayload?.sessionId || ''}`.slice(0, 120),
       size: Number(mediaSourcePayload?.size || 0) || null,
       sessionStartedAt: Number(mediaSourcePayload?.startedAt || 0) || null,
-      activeStartedAt: Number(USAGE_CTX.activeGeneration?.startedAt || 0) || null,
-      activeIntentId: `${USAGE_CTX.activeGeneration?.generateIntentId || ''}`.trim(),
+      concurrentGenerationCount: USAGE_CTX.activeGenerations.size,
     });
+    prunePendingMediaSourcePayloads();
+    USAGE_CTX.pendingMediaSourcePayloads.push({ payload: mediaSourcePayload, queuedAt: Date.now() });
+    while (USAGE_CTX.pendingMediaSourcePayloads.length > MAX_PENDING_MEDIASOURCE_PAYLOADS) {
+      USAGE_CTX.pendingMediaSourcePayloads.shift();
+    }
     return;
   }
-  if (hasOwnedOutputForActiveGeneration()) {
-    processOwnedMediaSourcePayload(mediaSourcePayload);
+  if (hasOwnedOutputForActiveGeneration(generation)) {
+    processOwnedMediaSourcePayload(mediaSourcePayload, generation);
     return;
   }
   // MediaSource delivers the MP4 bytes, but ownership is decided by task ID or
@@ -2132,39 +2217,43 @@ function queueOrProcessMediaSourcePayload(mediaSourcePayload = {}) {
     sessionId: `${mediaSourcePayload?.sessionId || ''}`.slice(0, 120),
     size: Number(mediaSourcePayload?.size || 0) || null,
     pendingCount: USAGE_CTX.pendingMediaSourcePayloads.length,
-    activeIntentId: `${USAGE_CTX.activeGeneration?.generateIntentId || ''}`.trim(),
+    activeIntentId: `${generation.generateIntentId || ''}`.trim(),
   });
 }
 
-function clearActiveGeneration(reason = '') {
-  if (USAGE_CTX.activeGeneration) {
-    debugUsageTelemetry('active_generation_cleared', {
-      reason,
-      generateIntentId: USAGE_CTX.activeGeneration.generateIntentId,
+function clearActiveGeneration(reason = '', generation = USAGE_CTX.activeGeneration) {
+  if (!generation) return;
+  debugUsageTelemetry('active_generation_cleared', {
+    reason,
+    generateIntentId: generation.generateIntentId,
+  });
+  USAGE_CTX.activeGenerations.delete(generation.generateIntentId);
+  if (USAGE_CTX.activeGeneration === generation) {
+    USAGE_CTX.activeGeneration = null;
+  }
+}
+
+function stopGeneratedAssetDetection(generation = USAGE_CTX.activeGeneration) {
+  if (!generation) return;
+  withGeneration(generation, () => {
+    reportPipelineDiagnosticsUpdate('asset_detection_stopped', {
+      assetDetectionStoppedReason: 'asset_detection_stopped',
+      assetDetectionStoppedAt: Date.now(),
     });
-  }
-  USAGE_CTX.activeGeneration = null;
-}
-
-function stopGeneratedAssetDetection() {
-  reportPipelineDiagnosticsUpdate('asset_detection_stopped', {
-    assetDetectionStoppedReason: 'asset_detection_stopped',
-    assetDetectionStoppedAt: Date.now(),
   });
-  if (USAGE_CTX.assetScanTimer) {
-    clearInterval(USAGE_CTX.assetScanTimer);
-    USAGE_CTX.assetScanTimer = null;
+  if (generation.scanTimer) {
+    clearInterval(generation.scanTimer);
+    generation.scanTimer = null;
   }
-  if (USAGE_CTX.assetScanObserver) {
+  if (generation.scanObserver) {
     try {
-      USAGE_CTX.assetScanObserver.disconnect();
+      generation.scanObserver.disconnect();
     } catch {}
-    USAGE_CTX.assetScanObserver = null;
+    generation.scanObserver = null;
   }
-  USAGE_CTX.assetScanSnapshot = null;
-  USAGE_CTX.assetScanStartedAt = 0;
-  USAGE_CTX.pendingMediaSourcePayloads = [];
-  clearActiveGeneration('asset_detection_stopped');
+  generation.scanSnapshot = null;
+  generation.scanStartedAt = 0;
+  clearActiveGeneration('asset_detection_stopped', generation);
 }
 
 function reportGeneratedAssetCandidates(snapshot, assets) {
@@ -2191,20 +2280,28 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
   // 'dom' candidates carry no per-asset identity at all (see
   // collectVisibleGeneratedMediaAssets - just url/type/size, no task id) -
   // they are matched to the active generation purely by "newest visible
-  // video, and this is the only generation we're tracking." That's wrong the
-  // moment it isn't the only one: if this generation displaced a still-
-  // rendering earlier one (hadOverlappingPriorGeneration), the "newest
-  // visible video" the scan just found could just as easily be the earlier
-  // generation's late-arriving output. 'asset_history' and 'mediasource' are
-  // exempt - asset_history rows are matched by Kling's own real task id
-  // (see the network handler's matchedByTaskId), a genuine identity check,
-  // not a timing guess.
-  if (captureSource === 'dom' && USAGE_CTX.activeGeneration?.hadOverlappingPriorGeneration) {
-    debugUsageTelemetry('generated_assets_skipped_ambiguous_overlap', {
-      generateIntentId: USAGE_CTX.activeGeneration?.generateIntentId,
-      assetCount: ownedAssets.length,
-    });
-    return;
+  // video." That's wrong whenever another concurrently-tracked generation is
+  // ALSO still open (no owned output yet) and this same asset would equally
+  // satisfy its own start-time check - the DOM scan has no way to tell which
+  // of the open siblings the newest visible asset actually belongs to, so
+  // don't guess. 'asset_history' and 'mediasource' are exempt - those rows
+  // are matched by Kling's own real task id (see the network handler's
+  // matchedByTaskId), a genuine identity check, not a timing guess.
+  if (captureSource === 'dom') {
+    const generation = USAGE_CTX.activeGeneration;
+    const ambiguousSiblingExists = [...USAGE_CTX.activeGenerations.values()].some((sibling) =>
+      sibling !== generation
+      && isActiveGenerationValid(sibling)
+      && !sibling.ownedOutputDetectedAt
+      && ownedAssets.some((asset) => assetStartedAfterActiveGeneration(asset, sibling)));
+    if (ambiguousSiblingExists) {
+      debugUsageTelemetry('generated_assets_skipped_ambiguous_concurrent_siblings', {
+        generateIntentId: generation?.generateIntentId,
+        assetCount: ownedAssets.length,
+        concurrentGenerationCount: USAGE_CTX.activeGenerations.size,
+      });
+      return;
+    }
   }
   const existingAssets = Array.isArray(snapshot.metadata?.mediaAssets) ? snapshot.metadata.mediaAssets : [];
   const hasExistingMediaSource = existingAssets.some(isMediaSourceCapturedAsset);
@@ -2264,22 +2361,14 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
 
 function startGeneratedAssetDetection(snapshot) {
   if (!snapshot) return;
-  // Captured BEFORE stopGeneratedAssetDetection() below clears it - this is
-  // the only place that can still see whether the generation this click is
-  // about to displace had already found its output or not. A still-open
-  // scan window here means the previous generation's video may not have
-  // rendered yet; its tracking is about to be torn down regardless (single
-  // active-generation slot - see the module-level note this function's
-  // caller area), so any asset that appears late and gets matched only by
-  // the risky DOM "newest visible" heuristic must not be silently credited
-  // to THIS (the new, unrelated) generation.
-  const priorGeneration = USAGE_CTX.activeGeneration;
-  const hadOverlappingPriorGeneration = Boolean(
-    priorGeneration
-    && isActiveGenerationValid(priorGeneration)
-    && !(Number(priorGeneration.ownedOutputAssetCount || 0) > 0)
-  );
-  stopGeneratedAssetDetection();
+  // Each concurrent generation gets its own entry (own scan timer/observer/
+  // snapshot/dedupe-set, all stored on the generation object itself) instead
+  // of displacing whatever was tracked before - see the USAGE_CTX.activeGenerations
+  // comment. Defensive cap only, in case scans never resolve and entries pile up.
+  if (USAGE_CTX.activeGenerations.size >= 20) {
+    const oldest = [...USAGE_CTX.activeGenerations.values()].sort((a, b) => a.startedAt - b.startedAt)[0];
+    if (oldest) stopGeneratedAssetDetection(oldest);
+  }
   const scanStartedAt = Date.now();
   const activeGeneration = buildActiveGenerationFromSnapshot(snapshot, scanStartedAt);
   if (!activeGeneration) {
@@ -2289,86 +2378,83 @@ function startGeneratedAssetDetection(snapshot) {
     });
     return;
   }
-  activeGeneration.hadOverlappingPriorGeneration = hadOverlappingPriorGeneration;
-  if (hadOverlappingPriorGeneration) {
-    debugUsageTelemetry('generation_overlap_detected', {
-      newIntentId: activeGeneration.generateIntentId,
-      displacedIntentId: priorGeneration?.generateIntentId,
+  USAGE_CTX.activeGenerations.set(activeGeneration.generateIntentId, activeGeneration);
+  withGeneration(activeGeneration, () => {
+    USAGE_CTX.generationPipelineMetrics.generations += 1;
+    markGenerationPipelineStage('promptCaptured', {
+      promptLength: activeGeneration.promptText.length,
+      source: snapshot.metadata?.promptCapture?.source || 'generate_click',
     });
-  }
-  USAGE_CTX.activeGeneration = activeGeneration;
-  USAGE_CTX.generationPipelineMetrics.generations += 1;
-  markGenerationPipelineStage('promptCaptured', {
-    promptLength: activeGeneration.promptText.length,
-    source: snapshot.metadata?.promptCapture?.source || 'generate_click',
+    const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
+    const outputFeedSnapshot = collectVisibleGeneratedMediaAssets(generationMode);
+    activeGeneration.generatedAssetUrls = new Set(
+      outputFeedSnapshot
+        .map((asset) => asset.url)
+        .filter(Boolean)
+    );
+    activeGeneration.outputFeedSnapshotCount = outputFeedSnapshot.length;
+    activeGeneration.scanStartedAt = scanStartedAt;
+    activeGeneration.scanSnapshot = snapshot;
+    snapshot.metadata = {
+      ...(snapshot.metadata || {}),
+      internalGenerationId: activeGeneration.internalGenerationId,
+      outputFeedSnapshotCount: outputFeedSnapshot.length,
+      ownershipStrategy: 'dom_new_output_fallback',
+      ownershipConfidence: 0.9,
+    };
+    const cachedAssetApplied = applyCachedAssetRowsForActiveGeneration('generation_started_cached_asset_rows');
+    if (cachedAssetApplied > 0) {
+      debugUsageTelemetry('cached_asset_rows_applied_on_generation_start', {
+        applied: cachedAssetApplied,
+        activeTaskIds: getActiveGenerationTaskIds(),
+      });
+      updateKlingCaptureBadge({
+        assetRowsMatched: Math.max(Number(USAGE_CTX.captureBadge?.assetRowsMatched || 0), cachedAssetApplied),
+        assetRowsWithOutput: Math.max(Number(USAGE_CTX.captureBadge?.assetRowsWithOutput || 0), cachedAssetApplied),
+        lastDbSource: 'cached_asset_recovery',
+      });
+    }
+
+    const scan = () => {
+      withGeneration(activeGeneration, () => {
+        const scanStartedAtNow = activeGeneration.scanStartedAt;
+        if (!scanStartedAtNow || Date.now() - scanStartedAtNow > GENERATED_ASSET_SCAN_MAX_MS || !isActiveGenerationValid(activeGeneration)) {
+          stopGeneratedAssetDetection(activeGeneration);
+          return;
+        }
+        const candidates = collectVisibleGeneratedMediaAssets(generationMode)
+          .filter((asset) => {
+            if (!asset.url || activeGeneration.generatedAssetUrls.has(asset.url)) return false;
+            activeGeneration.generatedAssetUrls.add(asset.url);
+            return true;
+          });
+        if (candidates.length) {
+          reportGeneratedAssetCandidates(activeGeneration.scanSnapshot, candidates);
+        }
+      });
+    };
+
+    activeGeneration.scanTimer = window.setInterval(scan, GENERATED_ASSET_SCAN_MS);
+    if (typeof MutationObserver === 'function') {
+      let observerScanTimer = null;
+      activeGeneration.scanObserver = new MutationObserver(() => {
+        if (observerScanTimer) window.clearTimeout(observerScanTimer);
+        observerScanTimer = window.setTimeout(scan, 250);
+      });
+      try {
+        activeGeneration.scanObserver.observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['src', 'srcset', 'style', 'poster', 'data-src', 'data-original', 'data-url'],
+        });
+      } catch {}
+    }
+    window.setTimeout(scan, 1500);
+    window.setTimeout(scan, 8000);
+    window.setTimeout(scan, 30000);
+    window.setTimeout(scan, 90000);
   });
-  const generationMode = `${snapshot.metadata?.generationMode || ''}`.trim().toLowerCase();
-  const outputFeedSnapshot = collectVisibleGeneratedMediaAssets(generationMode);
-  USAGE_CTX.generatedAssetUrls = new Set(
-    outputFeedSnapshot
-      .map((asset) => asset.url)
-      .filter(Boolean)
-  );
-  activeGeneration.outputFeedSnapshotCount = outputFeedSnapshot.length;
-  USAGE_CTX.assetScanStartedAt = scanStartedAt;
-  USAGE_CTX.assetScanSnapshot = snapshot;
-  snapshot.metadata = {
-    ...(snapshot.metadata || {}),
-    internalGenerationId: activeGeneration.internalGenerationId,
-    outputFeedSnapshotCount: outputFeedSnapshot.length,
-    ownershipStrategy: 'dom_new_output_fallback',
-    ownershipConfidence: 0.9,
-  };
-  const cachedAssetApplied = applyCachedAssetRowsForActiveGeneration('generation_started_cached_asset_rows');
-  if (cachedAssetApplied > 0) {
-    debugUsageTelemetry('cached_asset_rows_applied_on_generation_start', {
-      applied: cachedAssetApplied,
-      activeTaskIds: getActiveGenerationTaskIds(),
-    });
-    updateKlingCaptureBadge({
-      assetRowsMatched: Math.max(Number(USAGE_CTX.captureBadge?.assetRowsMatched || 0), cachedAssetApplied),
-      assetRowsWithOutput: Math.max(Number(USAGE_CTX.captureBadge?.assetRowsWithOutput || 0), cachedAssetApplied),
-      lastDbSource: 'cached_asset_recovery',
-    });
-  }
-
-  const scan = () => {
-    const scanStartedAt = USAGE_CTX.assetScanStartedAt;
-    if (!scanStartedAt || Date.now() - scanStartedAt > GENERATED_ASSET_SCAN_MAX_MS || !isActiveGenerationValid()) {
-      stopGeneratedAssetDetection();
-      return;
-    }
-    const candidates = collectVisibleGeneratedMediaAssets(generationMode)
-      .filter((asset) => {
-        if (!asset.url || USAGE_CTX.generatedAssetUrls.has(asset.url)) return false;
-        USAGE_CTX.generatedAssetUrls.add(asset.url);
-        return true;
-      });
-    if (candidates.length) {
-      reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, candidates);
-    }
-  };
-
-  USAGE_CTX.assetScanTimer = window.setInterval(scan, GENERATED_ASSET_SCAN_MS);
-  if (typeof MutationObserver === 'function') {
-    let observerScanTimer = null;
-    USAGE_CTX.assetScanObserver = new MutationObserver(() => {
-      if (observerScanTimer) window.clearTimeout(observerScanTimer);
-      observerScanTimer = window.setTimeout(scan, 250);
-    });
-    try {
-      USAGE_CTX.assetScanObserver.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['src', 'srcset', 'style', 'poster', 'data-src', 'data-original', 'data-url'],
-      });
-    } catch {}
-  }
-  window.setTimeout(scan, 1500);
-  window.setTimeout(scan, 8000);
-  window.setTimeout(scan, 30000);
-  window.setTimeout(scan, 90000);
 }
 
 function readVisibleCreditBalance() {
@@ -2625,7 +2711,7 @@ function buildPipelineDiagnostics(snapshot = {}, reason = '') {
     reason: `${reason || metadata.stage || snapshot.status || 'usage_report'}`.slice(0, 120),
     promptCaptured,
     promptLength: normalizePromptCaptureValue(snapshot.promptText || activeGeneration?.promptText).length || 0,
-    backendEventId: Number(snapshot.eventId || activeGeneration?.eventId || USAGE_CTX.assetScanSnapshot?.eventId || 0) || null,
+    backendEventId: Number(snapshot.eventId || activeGeneration?.eventId || activeGeneration?.scanSnapshot?.eventId || 0) || null,
     taskIdCaptured,
     taskIds: taskIds.slice(0, 8),
     primaryTaskId: taskIds[0] || '',
@@ -2701,7 +2787,7 @@ function normalizeKlingShowPriceCredits(value) {
 
 function reportAssetShowPriceCredit(row = {}, payload = {}) {
   const creditsBurned = normalizeKlingShowPriceCredits(row?.showPrice);
-  const baseSnapshot = USAGE_CTX.assetScanSnapshot;
+  const baseSnapshot = USAGE_CTX.activeGeneration?.scanSnapshot;
   const eventId = Number(baseSnapshot?.eventId || USAGE_CTX.activeGeneration?.eventId || 0) || null;
   if (!creditsBurned || !baseSnapshot || !eventId) return false;
   const taskId = normalizeKlingTaskId(row?.taskId);
@@ -2742,13 +2828,19 @@ function isKnownKlingTaskId(taskId) {
   const normalizedId = normalizeKlingTaskId(taskId);
   if (!normalizedId) return false;
   if (USAGE_CTX.activeGenerationIds.has(normalizedId)) return true;
-  return getActiveGenerationTaskIds().includes(normalizedId);
+  // Checked against every concurrently-tracked generation, not just whichever
+  // one happens to be bound right now - this is a "have we seen this id
+  // anywhere" existence check, not per-generation attribution.
+  for (const generation of USAGE_CTX.activeGenerations.values()) {
+    if (getActiveGenerationTaskIds(generation).includes(normalizedId)) return true;
+  }
+  return false;
 }
 
-function isCurrentGenerationKlingTaskId(taskId) {
+function isCurrentGenerationKlingTaskId(taskId, activeGeneration = USAGE_CTX.activeGeneration) {
   const normalizedId = normalizeKlingTaskId(taskId);
-  if (!normalizedId || !isActiveGenerationValid()) return false;
-  return getActiveGenerationTaskIds().includes(normalizedId);
+  if (!normalizedId || !isActiveGenerationValid(activeGeneration)) return false;
+  return getActiveGenerationTaskIds(activeGeneration).includes(normalizedId);
 }
 
 function normalizedPromptForMatch(value) {
@@ -2768,17 +2860,17 @@ function promptsMatchForFallback(left, right) {
   return short.length >= 40 && long.includes(short);
 }
 
-function timestampMatchesActiveGeneration(createTime) {
+function timestampMatchesActiveGeneration(createTime, activeGeneration = USAGE_CTX.activeGeneration) {
   const timestamp = Number(createTime || 0);
-  if (!Number.isFinite(timestamp) || timestamp <= 0 || !isActiveGenerationValid()) return false;
-  return Math.abs(timestamp - Number(USAGE_CTX.activeGeneration.startedAt || 0)) <= KLING_TIMESTAMP_FALLBACK_WINDOW_MS;
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || !isActiveGenerationValid(activeGeneration)) return false;
+  return Math.abs(timestamp - Number(activeGeneration.startedAt || 0)) <= KLING_TIMESTAMP_FALLBACK_WINDOW_MS;
 }
 
-function canFallbackMatchActiveGeneration({ prompt = '', createTime = null, requirePrompt = false } = {}) {
-  if (!isActiveGenerationValid()) return false;
-  if (getActiveGenerationTaskIds().length) return false;
-  const promptMatches = promptsMatchForFallback(prompt, USAGE_CTX.activeGeneration.promptText);
-  const timeMatches = timestampMatchesActiveGeneration(createTime);
+function canFallbackMatchActiveGeneration({ prompt = '', createTime = null, requirePrompt = false } = {}, activeGeneration = USAGE_CTX.activeGeneration) {
+  if (!isActiveGenerationValid(activeGeneration)) return false;
+  if (getActiveGenerationTaskIds(activeGeneration).length) return false;
+  const promptMatches = promptsMatchForFallback(prompt, activeGeneration.promptText);
+  const timeMatches = timestampMatchesActiveGeneration(createTime, activeGeneration);
   return requirePrompt ? (promptMatches && timeMatches) : timeMatches;
 }
 
@@ -2924,7 +3016,7 @@ function recentAssetRowsForActiveGeneration(limit = 80) {
 
 function applyCachedAssetRowsForActiveGeneration(reason = 'cached_asset_rows') {
   const matches = recentAssetRowsForActiveGeneration(20);
-  if (!matches.length || !USAGE_CTX.assetScanSnapshot) return 0;
+  if (!matches.length || !USAGE_CTX.activeGeneration?.scanSnapshot) return 0;
   markGenerationPipelineStage('assetRowDetected', {
     endpoint: `${matches[0]?.payload?.url || ''}`.slice(0, 1000),
     rowCount: matches.length,
@@ -2961,7 +3053,7 @@ function applyCachedAssetRowsForActiveGeneration(reason = 'cached_asset_rows') {
         mediaAssetCount: mediaAssets.length,
         source: 'cache',
       });
-      reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, mediaAssets);
+      reportGeneratedAssetCandidates(USAGE_CTX.activeGeneration?.scanSnapshot, mediaAssets);
       applied += 1;
     }
   }
@@ -3313,7 +3405,7 @@ async function reportKlingUsageNow(snapshot) {
 }
 
 function reportPipelineDiagnosticsUpdate(reason = '', metadataPatch = {}) {
-  const baseSnapshot = USAGE_CTX.assetScanSnapshot;
+  const baseSnapshot = USAGE_CTX.activeGeneration?.scanSnapshot;
   const eventId = Number(
     baseSnapshot?.eventId
       || USAGE_CTX.activeGeneration?.eventId
@@ -3450,7 +3542,7 @@ function buildNetworkUsageSnapshot(networkPayload) {
   const promptCapture = readPromptCaptureSnapshot();
   const activeIntentIsRecent = Date.now() - Number(USAGE_CTX.lastGenerateAt || 0) < 5 * 60 * 1000;
   const activeIntentPrompt = activeIntentIsRecent
-    ? normalizePromptCaptureValue(USAGE_CTX.assetScanSnapshot?.promptText)
+    ? normalizePromptCaptureValue(USAGE_CTX.activeGeneration?.scanSnapshot?.promptText)
     : '';
   const networkPromptText = normalizePromptCaptureValue(networkPayload?.promptText)
     || activeIntentPrompt;
@@ -3587,37 +3679,43 @@ function handleKlingNetworkUsageMessage(event) {
   }
   if (event?.data?.type === 'KLING_GENERATION_PIPELINE_SIGNAL') {
     const payload = event.data.payload || {};
-    if (!isActiveGenerationValid()) return;
-    const capturedAt = Number(payload.capturedAt || Date.now());
-    if (capturedAt < Number(USAGE_CTX.activeGeneration.startedAt || 0) - 2000) return;
-    if (payload.generationRequestDetected) {
-      markGenerationPipelineStage('generationRequestDetected', {
-        endpoint: `${payload.url || ''}`.slice(0, 1000),
-        method: `${payload.method || ''}`.slice(0, 16),
-        transport: `${payload.transport || payload.source || ''}`.slice(0, 80),
-      });
-    }
-    const discoveredIds = collectKlingTaskIdsFromPayload(payload);
-    if (payload.taskIdDetected && discoveredIds.length) {
-      const associated = associateKlingTaskIdWithActiveGeneration({
-        ...payload,
-        ownershipConfidence: 0.99,
-      });
-      if (associated) {
-        markGenerationPipelineStage('taskIdDetected', {
+    // Resolved against whichever concurrent generation this signal's task id
+    // (once known) or - before that - unique open timing matches, instead of
+    // assuming "the" one active generation (see resolveGenerationForPayload).
+    const generation = resolveGenerationForPayload(payload);
+    if (!generation) return;
+    withGeneration(generation, () => {
+      const capturedAt = Number(payload.capturedAt || Date.now());
+      if (capturedAt < Number(generation.startedAt || 0) - 2000) return;
+      if (payload.generationRequestDetected) {
+        markGenerationPipelineStage('generationRequestDetected', {
           endpoint: `${payload.url || ''}`.slice(0, 1000),
-          ids: discoveredIds.slice(0, 8),
-          identifierSource: `${payload.identifierSource || ''}`.slice(0, 120),
-          identifierKind: `${payload.identifierKind || ''}`.slice(0, 80),
-        });
-        updateKlingCaptureBadge({
-          lastTaskIds: getActiveGenerationTaskIds().slice(0, 8),
-          lastNetworkAt: capturedAt,
-          lastNetworkStatus: 'task_id_discovered',
-          lastNetworkUrl: `${payload.url || ''}`,
+          method: `${payload.method || ''}`.slice(0, 16),
+          transport: `${payload.transport || payload.source || ''}`.slice(0, 80),
         });
       }
-    }
+      const discoveredIds = collectKlingTaskIdsFromPayload(payload);
+      if (payload.taskIdDetected && discoveredIds.length) {
+        const associated = associateKlingTaskIdWithActiveGeneration({
+          ...payload,
+          ownershipConfidence: 0.99,
+        });
+        if (associated) {
+          markGenerationPipelineStage('taskIdDetected', {
+            endpoint: `${payload.url || ''}`.slice(0, 1000),
+            ids: discoveredIds.slice(0, 8),
+            identifierSource: `${payload.identifierSource || ''}`.slice(0, 120),
+            identifierKind: `${payload.identifierKind || ''}`.slice(0, 80),
+          });
+          updateKlingCaptureBadge({
+            lastTaskIds: getActiveGenerationTaskIds(generation).slice(0, 8),
+            lastNetworkAt: capturedAt,
+            lastNetworkStatus: 'task_id_discovered',
+            lastNetworkUrl: `${payload.url || ''}`,
+          });
+        }
+      }
+    });
     return;
   }
   if (event?.data?.type === 'KLING_GOOGLE_OAUTH_POPUP_BLOCKED') {
@@ -3629,10 +3727,13 @@ function handleKlingNetworkUsageMessage(event) {
     return;
   }
   if (event?.data?.type === 'KLING_BLOB_MEDIA_SOURCE') {
-    rememberBlobSourceUrl(event.data.payload?.blobUrl, event.data.payload?.sourceUrl);
+    const payload = event.data.payload || {};
+    withGeneration(resolveGenerationForPayload(payload), () => {
+      rememberBlobSourceUrl(payload?.blobUrl, payload?.sourceUrl);
+    });
     debugUsageTelemetry('blob_media_source_captured', {
-      sourceUrl: `${event.data.payload?.sourceUrl || ''}`.slice(0, 1000),
-      assetType: event.data.payload?.assetType || '',
+      sourceUrl: `${payload?.sourceUrl || ''}`.slice(0, 1000),
+      assetType: payload?.assetType || '',
     });
     return;
   }
@@ -3670,34 +3771,44 @@ function handleKlingNetworkUsageMessage(event) {
     for (const row of rows) {
       const tradeTaskId = normalizeKlingTaskId(row?.taskId);
       const matchedByTaskId = isKnownKlingTaskId(tradeTaskId);
-      const matchedByTimestamp = Boolean(tradeTaskId) && !matchedByTaskId && canFallbackMatchActiveGeneration({
-        createTime: row?.createTime,
-      });
+      // Timing fallback (no task id known yet) only resolves when exactly one
+      // concurrent generation without a task id could plausibly own this row -
+      // with 2+ such open candidates it's genuinely ambiguous, so skip rather
+      // than guess (same principle as resolveGenerationForPayload).
+      const timeMatchCandidates = (matchedByTaskId || !tradeTaskId)
+        ? []
+        : [...USAGE_CTX.activeGenerations.values()].filter((g) => canFallbackMatchActiveGeneration({ createTime: row?.createTime }, g));
+      const matchedByTimestamp = timeMatchCandidates.length === 1;
       if (!matchedByTaskId && !matchedByTimestamp) {
         tradeMetrics.tradeRowsSkippedUnknownTask += 1;
         continue;
       }
-      if (matchedByTimestamp) {
-        associateKlingTaskIdWithActiveGeneration({
-          klingTaskId: tradeTaskId,
-          generationId: tradeTaskId,
-          source: 'trade_history_time_reconciled',
-          identifierSource: 'trade_history_timestamp',
-          identifierKind: 'task_id',
-          ownershipConfidence: CREDIT_SOURCE_PROFILES.tradeTime.confidence,
-        });
-      }
-      tradeMetrics.tradeRowsMatched += 1;
-      const reportResult = reportTradeHistoryRow(row, payload, matchedByTimestamp ? 'timestamp' : 'task_id');
-      if (reportResult === 'invalid') {
-        tradeMetrics.tradeRowsInvalid += 1;
-        continue;
-      }
-      if (reportResult === 'duplicate') {
-        tradeMetrics.tradeRowsDuplicate += 1;
-        continue;
-      }
-      tradeMetrics.tradeRowsReconciled += 1;
+      const generation = matchedByTimestamp
+        ? timeMatchCandidates[0]
+        : ([...USAGE_CTX.activeGenerations.values()].find((g) => getActiveGenerationTaskIds(g).includes(tradeTaskId)) || null);
+      withGeneration(generation, () => {
+        if (matchedByTimestamp) {
+          associateKlingTaskIdWithActiveGeneration({
+            klingTaskId: tradeTaskId,
+            generationId: tradeTaskId,
+            source: 'trade_history_time_reconciled',
+            identifierSource: 'trade_history_timestamp',
+            identifierKind: 'task_id',
+            ownershipConfidence: CREDIT_SOURCE_PROFILES.tradeTime.confidence,
+          });
+        }
+        tradeMetrics.tradeRowsMatched += 1;
+        const reportResult = reportTradeHistoryRow(row, payload, matchedByTimestamp ? 'timestamp' : 'task_id');
+        if (reportResult === 'invalid') {
+          tradeMetrics.tradeRowsInvalid += 1;
+          return;
+        }
+        if (reportResult === 'duplicate') {
+          tradeMetrics.tradeRowsDuplicate += 1;
+          return;
+        }
+        tradeMetrics.tradeRowsReconciled += 1;
+      });
     }
     debugUsageTelemetry('trade_history_metrics', {
       ...tradeMetrics,
@@ -3737,13 +3848,31 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.data?.type === 'KLING_ASSET_HISTORY') {
     const payload = event.data.payload || {};
     const rows = Array.isArray(payload.rows) ? payload.rows.slice(0, 80) : [];
+    // TEMP DIAGNOSTIC - remove once the "no preview" investigation is done.
+    // Plain console.log (not gated by __RMW_DEBUG_USAGE) so it's visible
+    // without any console setup, dumping exactly what the network-hook parser
+    // (content-kling-network.js) extracted from this endpoint's response.
+    console.log('[RMW Kling][DIAG] asset_history payload', {
+      url: payload.url,
+      rowsSeen: rows.length,
+      parserDiagnostics: payload.parserDiagnostics,
+      rows: rows.map((row) => ({
+        taskId: row?.taskId,
+        workId: row?.workId,
+        createTime: row?.createTime,
+        prompt: `${row?.prompt || ''}`.slice(0, 60),
+        mediaAssetCount: Array.isArray(row?.mediaAssets) ? row.mediaAssets.length : 0,
+        mediaAssetUrls: Array.isArray(row?.mediaAssets) ? row.mediaAssets.map((a) => a?.url).slice(0, 5) : [],
+      })),
+    });
     rememberRecentAssetHistoryRows(rows, payload);
     const parserDiagnostics = payload.parserDiagnostics && typeof payload.parserDiagnostics === 'object'
       ? payload.parserDiagnostics
       : {};
     const assetTaskIdsSeen = [];
     const sampleRows = [];
-    const activeJoinIds = getActiveGenerationTaskIds().slice(0, 12);
+    const liveCandidates = () => [...USAGE_CTX.activeGenerations.values()].filter((g) => isActiveGenerationValid(g));
+    const activeJoinIds = liveCandidates().flatMap((g) => getActiveGenerationTaskIds(g)).slice(0, 12);
     const assetMetrics = {
       assetEndpointSeen: true,
       assetRowsSeen: rows.length,
@@ -3755,12 +3884,15 @@ function handleKlingNetworkUsageMessage(event) {
       assetRowsHistoricalDuplicate: 0,
       assetRowsHistoricalInvalid: 0,
     };
-    const hasActiveGenerationForAssetMatch = isActiveGenerationValid();
-    if (hasActiveGenerationForAssetMatch && rows.length) {
-      markGenerationPipelineStage('assetRowDetected', {
-        endpoint: `${payload.url || ''}`.slice(0, 1000),
-        rowCount: rows.length,
-      });
+    if (rows.length) {
+      for (const candidate of liveCandidates()) {
+        withGeneration(candidate, () => {
+          markGenerationPipelineStage('assetRowDetected', {
+            endpoint: `${payload.url || ''}`.slice(0, 1000),
+            rowCount: rows.length,
+          });
+        });
+      }
     }
     for (const row of rows) {
       const assetTaskId = normalizeKlingTaskId(row?.taskId);
@@ -3782,18 +3914,39 @@ function handleKlingNetworkUsageMessage(event) {
           promptSnippet ? `p:${promptSnippet}` : '',
         ].filter(Boolean).join(' '));
       }
-      const activeAssetIds = getActiveGenerationAssetIds();
-      const matchedByTaskId = hasActiveGenerationForAssetMatch && Boolean(assetTaskId && isCurrentGenerationKlingTaskId(assetTaskId));
-      const matchedByLinkedAssetId = hasActiveGenerationForAssetMatch && Boolean(
-        (assetWorkId && activeAssetIds.includes(assetWorkId))
-        || (assetCreativeId && activeAssetIds.includes(assetCreativeId))
-      );
-      const matchedByPromptTime = hasActiveGenerationForAssetMatch && !matchedByTaskId && canFallbackMatchActiveGeneration({
-        prompt: row?.prompt,
-        createTime: row?.createTime,
-        requirePrompt: true,
-      });
-      if (!matchedByTaskId && !matchedByLinkedAssetId && !matchedByPromptTime) {
+      // Resolve which concurrently-tracked generation (if any) this specific
+      // row belongs to. Task id / linked asset id are genuine identity,
+      // checked against every candidate; prompt+time is a timing guess and
+      // only trusted when it uniquely picks exactly one candidate (see
+      // resolveGenerationForPayload for the same principle).
+      const candidates = liveCandidates();
+      let generation = null;
+      let matchedByTaskId = false;
+      let matchedByLinkedAssetId = false;
+      let matchedByPromptTime = false;
+      if (assetTaskId) {
+        generation = candidates.find((g) => isCurrentGenerationKlingTaskId(assetTaskId, g)) || null;
+        if (generation) matchedByTaskId = true;
+      }
+      if (!generation && (assetWorkId || assetCreativeId)) {
+        generation = candidates.find((g) => {
+          const activeAssetIds = getActiveGenerationAssetIds(g);
+          return (assetWorkId && activeAssetIds.includes(assetWorkId)) || (assetCreativeId && activeAssetIds.includes(assetCreativeId));
+        }) || null;
+        if (generation) matchedByLinkedAssetId = true;
+      }
+      if (!generation) {
+        const promptTimeCandidates = candidates.filter((g) => canFallbackMatchActiveGeneration({
+          prompt: row?.prompt,
+          createTime: row?.createTime,
+          requirePrompt: true,
+        }, g));
+        if (promptTimeCandidates.length === 1) {
+          generation = promptTimeCandidates[0];
+          matchedByPromptTime = true;
+        }
+      }
+      if (!generation) {
         // Not tied to a generation from this browser session — this is
         // exactly the case of a pre-existing Kling generation the extension
         // never witnessed being created. Report it as a historical
@@ -3810,90 +3963,92 @@ function handleKlingNetworkUsageMessage(event) {
         assetMetrics.assetRowsSkippedUnknownGeneration += 1;
         continue;
       }
-      assetMetrics.assetRowsMatched += 1;
-      markGenerationPipelineStage('assetMatched', {
-        endpoint: `${payload.url || ''}`.slice(0, 1000),
-        taskId: assetTaskId || '',
-        workId: assetWorkId || '',
-        creativeId: assetCreativeId || '',
-        strategy: matchedByTaskId ? 'task_id' : (matchedByLinkedAssetId ? 'linked_asset_id' : 'prompt_time'),
-      });
-      linkAssetIdsWithActiveGeneration({
-        taskId: assetTaskId,
-        workId: assetWorkId,
-        creativeId: assetCreativeId,
-        source: 'asset_history_match',
-      });
-      if (assetTaskId && matchedByPromptTime) {
-        assetMetrics.assetRowsRecoveredTaskId += 1;
-        associateKlingTaskIdWithActiveGeneration({
-          klingTaskId: assetTaskId,
-          generationId: assetTaskId,
-          promptText: row?.prompt,
-          source: 'asset_history_prompt_time',
-          identifierSource: 'asset_history_prompt_time',
-          identifierKind: 'task_id',
-          ownershipConfidence: 0.72,
-        });
-        const recentTrade = findRecentTradeHistoryRowByTaskId(assetTaskId);
-        if (recentTrade) {
-          const reportResult = reportTradeHistoryRow(
-            recentTrade.row,
-            recentTrade.payload,
-            'asset_recovered_task_id'
-          );
-          debugUsageTelemetry('asset_recovered_task_id_trade_retry', {
-            taskId: assetTaskId,
-            reportResult,
-          });
-        }
-      }
-      if (!assetTaskId && assetWorkId && matchedByPromptTime) {
-        associateKlingTaskIdWithActiveGeneration({
-          klingTaskId: assetWorkId,
-          generationId: assetWorkId,
-          promptText: row?.prompt,
-          source: 'asset_history_prompt_time',
-          identifierSource: 'asset_history_work_prompt_time',
-          identifierKind: 'work_id',
-          ownershipConfidence: 0.68,
-        });
-      }
-      const mediaAssets = normalizeCapturedMediaAssets(row?.mediaAssets, 'asset_history');
-      if (mediaAssets.length) {
-        assetMetrics.assetRowsWithOutput += 1;
-        markGenerationPipelineStage('outputCaptured', {
+      withGeneration(generation, () => {
+        assetMetrics.assetRowsMatched += 1;
+        markGenerationPipelineStage('assetMatched', {
           endpoint: `${payload.url || ''}`.slice(0, 1000),
-          mediaAssetCount: mediaAssets.length,
-        });
-        reportGeneratedAssetCandidates(USAGE_CTX.assetScanSnapshot, mediaAssets);
-      }
-      reportAssetShowPriceCredit(row, payload);
-      reportPipelineDiagnosticsUpdate('asset_history_match', {
-        assetHistory: {
           taskId: assetTaskId || '',
           workId: assetWorkId || '',
           creativeId: assetCreativeId || '',
-          creativeMatchesWork: Boolean(assetCreativeId && assetCreativeId === assetWorkId),
-          promptMatched: matchedByPromptTime,
-          taskIdMatched: matchedByTaskId,
-          taskIdSource: matchedByTaskId
-            ? 'known_task_id'
-            : (assetTaskId && matchedByPromptTime ? 'asset_prompt_time_recovered' : ''),
-          matchWindowMs: matchedByPromptTime ? KLING_TIMESTAMP_FALLBACK_WINDOW_MS : null,
-          createTime: Number(row?.createTime || 0) || null,
-          showPrice: `${row?.showPrice || ''}`.slice(0, 80),
-          taskType: `${row?.taskType || ''}`.slice(0, 160),
-          mediaAssetCount: mediaAssets.length,
-          capturedAt: Number(payload.capturedAt || Date.now()),
-          networkUrl: `${payload.url || ''}`.slice(0, 1000),
-        },
+          strategy: matchedByTaskId ? 'task_id' : (matchedByLinkedAssetId ? 'linked_asset_id' : 'prompt_time'),
+        });
+        linkAssetIdsWithActiveGeneration({
+          taskId: assetTaskId,
+          workId: assetWorkId,
+          creativeId: assetCreativeId,
+          source: 'asset_history_match',
+        });
+        if (assetTaskId && matchedByPromptTime) {
+          assetMetrics.assetRowsRecoveredTaskId += 1;
+          associateKlingTaskIdWithActiveGeneration({
+            klingTaskId: assetTaskId,
+            generationId: assetTaskId,
+            promptText: row?.prompt,
+            source: 'asset_history_prompt_time',
+            identifierSource: 'asset_history_prompt_time',
+            identifierKind: 'task_id',
+            ownershipConfidence: 0.72,
+          });
+          const recentTrade = findRecentTradeHistoryRowByTaskId(assetTaskId);
+          if (recentTrade) {
+            const reportResult = reportTradeHistoryRow(
+              recentTrade.row,
+              recentTrade.payload,
+              'asset_recovered_task_id'
+            );
+            debugUsageTelemetry('asset_recovered_task_id_trade_retry', {
+              taskId: assetTaskId,
+              reportResult,
+            });
+          }
+        }
+        if (!assetTaskId && assetWorkId && matchedByPromptTime) {
+          associateKlingTaskIdWithActiveGeneration({
+            klingTaskId: assetWorkId,
+            generationId: assetWorkId,
+            promptText: row?.prompt,
+            source: 'asset_history_prompt_time',
+            identifierSource: 'asset_history_work_prompt_time',
+            identifierKind: 'work_id',
+            ownershipConfidence: 0.68,
+          });
+        }
+        const mediaAssets = normalizeCapturedMediaAssets(row?.mediaAssets, 'asset_history');
+        if (mediaAssets.length) {
+          assetMetrics.assetRowsWithOutput += 1;
+          markGenerationPipelineStage('outputCaptured', {
+            endpoint: `${payload.url || ''}`.slice(0, 1000),
+            mediaAssetCount: mediaAssets.length,
+          });
+          reportGeneratedAssetCandidates(generation.scanSnapshot, mediaAssets);
+        }
+        reportAssetShowPriceCredit(row, payload);
+        reportPipelineDiagnosticsUpdate('asset_history_match', {
+          assetHistory: {
+            taskId: assetTaskId || '',
+            workId: assetWorkId || '',
+            creativeId: assetCreativeId || '',
+            creativeMatchesWork: Boolean(assetCreativeId && assetCreativeId === assetWorkId),
+            promptMatched: matchedByPromptTime,
+            taskIdMatched: matchedByTaskId,
+            taskIdSource: matchedByTaskId
+              ? 'known_task_id'
+              : (assetTaskId && matchedByPromptTime ? 'asset_prompt_time_recovered' : ''),
+            matchWindowMs: matchedByPromptTime ? KLING_TIMESTAMP_FALLBACK_WINDOW_MS : null,
+            createTime: Number(row?.createTime || 0) || null,
+            showPrice: `${row?.showPrice || ''}`.slice(0, 80),
+            taskType: `${row?.taskType || ''}`.slice(0, 160),
+            mediaAssetCount: mediaAssets.length,
+            capturedAt: Number(payload.capturedAt || Date.now()),
+            networkUrl: `${payload.url || ''}`.slice(0, 1000),
+          },
+        });
       });
     }
     reportPipelineDiagnosticsUpdate('asset_history_metrics', {
       assetMetrics: {
         ...assetMetrics,
-        knownTaskIdCount: getActiveGenerationTaskIds().length + USAGE_CTX.activeGenerationIds.size,
+        knownTaskIdCount: liveCandidates().reduce((sum, g) => sum + getActiveGenerationTaskIds(g).length, 0) + USAGE_CTX.activeGenerationIds.size,
         source: payload.source || '',
         httpStatus: Number(payload.httpStatus || 0) || null,
         capturedAt: Number(payload.capturedAt || Date.now()),
@@ -3929,6 +4084,28 @@ function handleKlingNetworkUsageMessage(event) {
   if (event?.data?.type !== 'KLING_NETWORK_USAGE') return;
 
   const payload = event.data.payload || {};
+  // Resolved once up front (task id if present, else the single-open-candidate
+  // timing fallback) and bound for this entire handler body - every read/write
+  // below that touches "the active generation" now operates on the generation
+  // this specific network event actually belongs to, not whichever generation
+  // happened to be tracked last.
+  const generation = resolveGenerationForPayload(payload);
+  // TEMP DIAGNOSTIC - remove once the "no preview" investigation is done.
+  const mediaAssetCountDiag = Array.isArray(payload?.mediaAssets) ? payload.mediaAssets.length : 0;
+  if (mediaAssetCountDiag > 0 || payload?.isCompleted || payload?.status === 'settled') {
+    console.log('[RMW Kling][DIAG] network_usage payload', {
+      url: payload.url,
+      status: payload.status,
+      isCompleted: payload.isCompleted,
+      klingTaskId: payload.klingTaskId,
+      generationId: payload.generationId,
+      requestId: payload.requestId,
+      mediaAssetCount: mediaAssetCountDiag,
+      mediaAssetUrls: Array.isArray(payload?.mediaAssets) ? payload.mediaAssets.map((a) => a?.url).slice(0, 5) : [],
+      resolvedGenerationIntentId: generation?.generateIntentId || null,
+    });
+  }
+  withGeneration(generation, () => {
   const now = Date.now();
   const payloadTaskIds = collectKlingTaskIdsFromPayload(payload).slice(0, 8);
   const isAssetStatusNetworkEvent = Boolean(payload?.isAssetHistoryEndpoint);
@@ -4068,6 +4245,7 @@ function handleKlingNetworkUsageMessage(event) {
       }
       console.warn('[RMW Kling] Network usage report failed', error);
     });
+  });
 }
 
 function finalizeGenerateUsageSnapshot(snapshot, creditsAfter, settlementReason) {
@@ -4330,8 +4508,13 @@ function scheduleGenerateUsageReport(generateButton) {
       const eventId = Number(response?.event?.id || 0);
       if (eventId > 0) {
         snapshot.eventId = eventId;
-        if (isActiveGenerationValid() && snapshotMatchesActiveGeneration(snapshot)) {
-          USAGE_CTX.activeGeneration.eventId = eventId;
+        // Looked up by this click's own intentId rather than reading whatever
+        // USAGE_CTX.activeGeneration happens to point at right now - by the
+        // time this response resolves, other concurrent generations may have
+        // started and rebound it several times over.
+        const generation = USAGE_CTX.activeGenerations.get(intentId);
+        if (generation && isActiveGenerationValid(generation) && snapshotMatchesActiveGeneration(snapshot, generation)) {
+          generation.eventId = eventId;
         }
       }
       debugUsageTelemetry('generate_intent_saved', {
@@ -4449,7 +4632,9 @@ function clearPendingUsageReport() {
     clearTimeout(USAGE_CTX.pendingReportTimer);
     USAGE_CTX.pendingReportTimer = null;
   }
-  stopGeneratedAssetDetection();
+  for (const generation of [...USAGE_CTX.activeGenerations.values()]) {
+    stopGeneratedAssetDetection(generation);
+  }
 }
 
 // ---- Task Mapping: Generation Interceptor ----
@@ -4471,6 +4656,7 @@ function clearPendingUsageReport() {
 // might react to any of them) behaves exactly as if the user had clicked
 // through normally.
 let klingTaskGateBypassTarget = null;
+let klingTaskGateBypassReported = false; // one-shot guard: only the first replayed event (pointerdown OR click) runs the report tail below
 let klingTaskGateModalOpen = false;
 let klingPendingTaskSelection = null; // {taskId, taskName, clientId, clientName} - consumed one-shot by scheduleGenerateUsageReport()
 
@@ -4485,12 +4671,14 @@ function dispatchKlingSyntheticGenerateClick(target) {
       } catch {}
     });
   }
+  // NOTE: 'click' is included here, so Kling's real handler already receives
+  // one genuine click from this dispatch. Do NOT also call target.click()
+  // afterward - that fires a second real click and submits the generation twice.
   ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((eventName) => {
     try {
       target.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true, view: window }));
     } catch {}
   });
-  try { target.click(); } catch {}
 }
 
 async function runKlingTaskGate(target) {
@@ -4501,6 +4689,7 @@ async function runKlingTaskGate(target) {
     if (!selection) return; // cancelled/ESC/no active tasks - click stays blocked
     klingPendingTaskSelection = selection;
     klingTaskGateBypassTarget = target;
+    klingTaskGateBypassReported = false;
     dispatchKlingSyntheticGenerateClick(target);
   } finally {
     klingTaskGateModalOpen = false;
@@ -4532,9 +4721,14 @@ function handleGenerateInteraction(event) {
     if (event.type === 'click') {
       klingTaskGateBypassTarget = null; // one-shot: next Generate click gates again
     }
-    // let the (re-dispatched) event reach Kling's own handler and fall
-    // through to the normal reporting logic below, now with
-    // klingPendingTaskSelection available.
+    // let the (re-dispatched) event reach Kling's own handler. Both the
+    // replayed pointerdown and click land here, but only the first of the
+    // two should run the "generate detected" tail below - otherwise the
+    // status popup and usage report both fire twice for one real click.
+    if (klingTaskGateBypassReported) {
+      return;
+    }
+    klingTaskGateBypassReported = true;
   } else {
     event.preventDefault();
     event.stopPropagation();
