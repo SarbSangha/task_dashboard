@@ -43,6 +43,9 @@ BAND_RULE = "BFBFBF"       # heavier separators
 TINT_CHATGPT = "F2F6FC"    # very light blue
 TINT_KLING = "EBF1DE"      # very light olive/green
 TINT_FREEPIK = "FDEFF7"    # very light pink/magenta
+TINT_ENVATO = "E8F5E9"     # very light mint/green (distinct from Kling's olive)
+TINT_HEYGEN = "E3F2FD"     # very light sky-blue (distinct from ChatGPT's blue)
+TINT_HIGGSFIELD = "F3E5F5" # very light lavender/purple
 
 # Client Mapping band (Employee Summary's level 2, between Date and Tool).
 TINT_CLIENT = "FFF6E5"     # very light amber

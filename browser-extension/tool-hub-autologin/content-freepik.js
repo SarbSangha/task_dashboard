@@ -1962,18 +1962,38 @@ async function runFreepikTaskGate(target) {
 document.addEventListener('click', (event) => {
   try {
     const target = findFreepikGenerateActionTarget(event.target);
-    if (!target) return;
+    if (target) {
+      if (freepikTaskGateBypassTarget === target) {
+        freepikTaskGateBypassTarget = null; // one-shot: next Generate click gates again
+        armFreepikGeneration();
+        return; // let the (re-dispatched) click reach Freepik's own handler
+      }
 
-    if (freepikTaskGateBypassTarget === target) {
-      freepikTaskGateBypassTarget = null; // one-shot: next Generate click gates again
-      armFreepikGeneration();
-      return; // let the (re-dispatched) click reach Freepik's own handler
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      runFreepikTaskGate(target);
+      return;
     }
 
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-    runFreepikTaskGate(target);
+    // Download gate (added 2026-08-06) - checked only when this click wasn't
+    // already a Generate click, same "block the real click, open the
+    // picker, re-dispatch a synthetic bypass click" technique, own state so
+    // the two gates never interfere with each other. See this file's
+    // "Download capture" section further down for
+    // findFreepikDownloadActionTarget/runFreepikDownloadTaskGate.
+    const downloadTarget = findFreepikDownloadActionTarget(event.target);
+    if (downloadTarget) {
+      if (freepikDownloadTaskGateBypassTarget === downloadTarget) {
+        freepikDownloadTaskGateBypassTarget = null; // one-shot: next Download click gates again
+        return; // already reported (see runFreepikDownloadTaskGate) - let the re-dispatched click reach Freepik's own handler
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      runFreepikDownloadTaskGate(downloadTarget);
+    }
   } catch {}
 }, true); // capturing phase - fires even if the page's own handler stops propagation
 
@@ -2215,3 +2235,242 @@ async function runFreepikReconciliationWalk() {
 window.setTimeout(() => {
   runFreepikReconciliationWalk().catch(() => {});
 }, 15000);
+
+// ============================================================================
+// ---- Search + Download capture (added 2026-08-06) ----
+//
+// Sarbjeet's own ask: freepik.com/magnific.com users don't only generate new
+// AI content, they also SEARCH the stock library and DOWNLOAD existing
+// (not user-generated) assets - neither has a creation.id, so both route to
+// their own backend tables (FreepikSearchQuery/FreepikDownload, never
+// FreepikGeneration - see providers/freepik/normalization.py). Two explicit
+// design calls Sarbjeet made when asked directly (not guessed):
+//   - Download IS gated behind the same mandatory Task/Client picker
+//     Generate uses ("what he download for what project" is the whole point).
+//   - Search is free-form, never gated - only the eventual download needs
+//     project attribution, not the browsing/searching that led to it.
+//   - Both apply on freepik.com AND magnific.com (already one shared
+//     capture surface - see constants.py's TOOL_SLUGS comment - no manifest
+//     change needed, both hosts are already in this file's own matches[]).
+//
+// Built from a single UI screenshot (magnific.com's stock search results
+// page, a hover-card Download icon button on a result card) - not confirmed
+// DOM/network structure for either host. Every scraper below is best-effort
+// with graceful degradation to null, tighten once real interaction on both
+// hosts is observed, same posture every other provider's Phase 1 shipped
+// with in this codebase.
+// ============================================================================
+
+// ---- Shared: search term / host readers (used by both search capture and
+// download's own search_term correlation field) ----
+
+// Common stock-site query param names - magnific.com's own confirmed URL
+// (?term=...) is checked first; the others are unconfirmed guesses for
+// freepik.com's own search, which hasn't been captured yet. Works out of the
+// box if freepik.com happens to use one of these, otherwise this degrades to
+// null (no search captured there) rather than a wrong guess.
+const FREEPIK_SEARCH_PARAM_NAMES = ['term', 'query', 'q', 'search'];
+
+function readFreepikSearchTermFromUrl(href) {
+  try {
+    const url = new URL(href || window.location.href);
+    for (const name of FREEPIK_SEARCH_PARAM_NAMES) {
+      const value = url.searchParams.get(name);
+      if (value && value.trim()) return value.trim();
+    }
+  } catch {}
+  return null;
+}
+
+function currentFreepikSourceHost() {
+  return window.location.hostname.replace(/^www\./, '');
+}
+
+// ---- Download capture ----
+//
+// Reuses findFreepikGenerateButtonAncestor (misnamed but fully generic - it
+// only ever walks up to the nearest real button/link/role=button ancestor,
+// the "generate" part of its name refers to nothing inside the function
+// itself) rather than duplicating the identical ancestor-walk a second time.
+
+function findFreepikDownloadActionTarget(target) {
+  const candidates = collectUniqueElements(
+    collectFreepikInteractionCandidateElements(target).map((element) => findFreepikGenerateButtonAncestor(element))
+  );
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const text = freepikButtonDescriptorText(candidate);
+    if (!text || text.length > 60) continue;
+    if (!/(^|\s)download($|\s)/i.test(text)) continue;
+    return candidate;
+  }
+  return null;
+}
+
+// Best-effort scrape of whatever's visible near the clicked Download button
+// - unconfirmed DOM structure, see this section's own top comment. Read
+// BEFORE the click is re-dispatched (see runFreepikDownloadTaskGate), since
+// the click itself may navigate away or alter the DOM.
+function collectFreepikDownloadAssetInfo(button) {
+  const container = button.closest('[class*="card" i], article, figure') || button.parentElement || button;
+  const img = container?.querySelector?.('img[src]');
+  const rawTitle = img?.getAttribute('alt') || container?.getAttribute?.('aria-label') || container?.getAttribute?.('title') || null;
+  return {
+    assetTitle: rawTitle ? String(rawTitle).trim().slice(0, 2000) : null,
+    assetThumbnailUrl: img?.getAttribute('src') || null,
+    // No confirmed way to read the stock item's own permalink from just the
+    // card yet (no visible <a href> reliably pointing at it in the one
+    // screenshot this was built from) - left null rather than guess.
+    assetSourceUrl: null,
+  };
+}
+
+async function reportFreepikDownloadClick(assetInfo, selection) {
+  const clientEventId = `freepik:download:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const result = await sendRuntimeMessage({
+      type: 'FREEPIK_CAPTURE_EVENT',
+      event: {
+        event_type: 'download_click',
+        client_event_id: clientEventId,
+        payload: {
+          assetTitle: assetInfo.assetTitle,
+          assetThumbnailUrl: assetInfo.assetThumbnailUrl,
+          assetSourceUrl: assetInfo.assetSourceUrl,
+          searchTerm: readFreepikSearchTermFromUrl(window.location.href),
+          sourceHost: currentFreepikSourceHost(),
+          pageUrl: window.location.href,
+          downloadedAt: new Date().toISOString(),
+        },
+        capture_version: 1,
+        linked_task_id: selection?.taskId ?? null,
+        linked_client_id: selection?.clientId ?? null,
+      },
+    });
+    if (result?.ok) {
+      console.debug('[RMW Freepik Capture] reported download click', { assetTitle: assetInfo.assetTitle, queued: result.queued });
+    } else {
+      console.warn('[RMW Freepik Capture] failed to report download click', { error: result?.error });
+    }
+  } catch (error) {
+    console.warn('[RMW Freepik Capture] unexpected error reporting download click', { error: error?.message || error });
+  }
+}
+
+// ---- Task Mapping: Download Interceptor - mirrors runFreepikTaskGate
+// exactly (own bypass-target state so the two gates never interfere), except
+// the bypass branch reports the download directly instead of arming a
+// generation-tracking session - a download's outcome IS the click itself,
+// no async multi-second render to wait for the way a generation has. ----
+let freepikDownloadTaskGateBypassTarget = null;
+let freepikDownloadTaskGateModalOpen = false;
+
+async function runFreepikDownloadTaskGate(target) {
+  if (freepikDownloadTaskGateModalOpen) return; // double-click Download while the modal is already open - no-op
+  freepikDownloadTaskGateModalOpen = true;
+  try {
+    const selection = await openFreepikTaskSelectionModal();
+    if (!selection) return; // cancelled/ESC/no active tasks - click stays blocked
+    const assetInfo = collectFreepikDownloadAssetInfo(target);
+    freepikDownloadTaskGateBypassTarget = target;
+    reportFreepikDownloadClick(assetInfo, selection);
+    target.click();
+  } finally {
+    freepikDownloadTaskGateModalOpen = false;
+  }
+}
+
+// ---- Search-query capture ----
+//
+// Free-form, never gated (see this section's own top comment). URL-param
+// based rather than DOM-scraped - the one confirmed real capture
+// (magnific.com's own search results page) carries the term directly in the
+// URL, far more reliable than guessing a search-input selector across two
+// different sites.
+
+function readFreepikResultCountLabel() {
+  // Best-effort: the confirmed screenshot showed a plain text node shaped
+  // like "28.7k results" near the search box - no confirmed selector, so
+  // this scans short leaf text nodes for that exact shape instead of
+  // guessing a class name that could easily be wrong on either host.
+  const candidates = document.querySelectorAll('body *');
+  for (const el of candidates) {
+    if (el.childElementCount > 0) continue;
+    const text = (el.textContent || '').trim();
+    if (!text || text.length > 40) continue;
+    if (/^[\d,.]+[km]?\+?\s+results?$/i.test(text)) return text;
+  }
+  return null;
+}
+
+async function reportFreepikSearchQuery(searchTerm) {
+  const clientEventId = `freepik:search:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const result = await sendRuntimeMessage({
+      type: 'FREEPIK_CAPTURE_EVENT',
+      event: {
+        event_type: 'search_query',
+        client_event_id: clientEventId,
+        payload: {
+          searchTerm,
+          sourceHost: currentFreepikSourceHost(),
+          pageUrl: window.location.href,
+          resultCountLabel: readFreepikResultCountLabel(),
+          searchedAt: new Date().toISOString(),
+        },
+        capture_version: 1,
+      },
+    });
+    if (result?.ok) {
+      console.debug('[RMW Freepik Capture] reported search query', { searchTerm, queued: result.queued });
+    } else {
+      console.warn('[RMW Freepik Capture] failed to report search query', { searchTerm, error: result?.error });
+    }
+  } catch (error) {
+    console.warn('[RMW Freepik Capture] unexpected error reporting search query', { error: error?.message || error });
+  }
+}
+
+const FREEPIK_SEARCH_REPORT_DEBOUNCE_MS = 1500;
+let freepikLastReportedSearchTerm = null;
+let freepikSearchReportTimer = null;
+
+function checkFreepikSearchTermChanged() {
+  const term = readFreepikSearchTermFromUrl(window.location.href);
+  if (!term || term === freepikLastReportedSearchTerm) return;
+  if (freepikSearchReportTimer) window.clearTimeout(freepikSearchReportTimer);
+  freepikSearchReportTimer = window.setTimeout(() => {
+    freepikSearchReportTimer = null;
+    // Re-check immediately before firing - the debounce window means the
+    // URL (and result count label) could have already changed again by the
+    // time this fires, e.g. mid-typing in a live-search box.
+    const latestTerm = readFreepikSearchTermFromUrl(window.location.href);
+    if (!latestTerm || latestTerm === freepikLastReportedSearchTerm) return;
+    freepikLastReportedSearchTerm = latestTerm;
+    reportFreepikSearchQuery(latestTerm);
+  }, FREEPIK_SEARCH_REPORT_DEBOUNCE_MS);
+}
+
+// SPA URL-change detection via polling, not a history.pushState/replaceState
+// monkey-patch: this file runs in the ISOLATED world (see manifest.json),
+// which has its own separate `window`/`history` objects from the MAIN world
+// the page's own React/SPA router actually calls into - patching
+// history.pushState here would silently never fire, since it patches a
+// completely different function reference than the one the page calls (see
+// content-freepik-network.js's own MAIN-world placement for why THAT file
+// can patch window.fetch but this one structurally cannot patch history the
+// same way). A plain interval poll of window.location.href sidesteps the
+// cross-world problem entirely; popstate is kept alongside it purely as a
+// faster (not more reliable) path for actual back/forward navigation.
+const FREEPIK_URL_POLL_MS = 1000;
+let freepikLastSeenHref = window.location.href;
+
+function checkFreepikUrlChanged() {
+  if (window.location.href === freepikLastSeenHref) return;
+  freepikLastSeenHref = window.location.href;
+  checkFreepikSearchTermChanged();
+}
+
+window.addEventListener('popstate', checkFreepikUrlChanged);
+window.setInterval(checkFreepikUrlChanged, FREEPIK_URL_POLL_MS);
+checkFreepikSearchTermChanged(); // covers a page opened directly on a search URL, not navigated to from within the SPA

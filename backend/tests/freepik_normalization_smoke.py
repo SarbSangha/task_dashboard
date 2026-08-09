@@ -39,7 +39,7 @@ from models_new import (  # noqa: E402
     ITPortalTool,
     User,
 )
-from providers.freepik.models import FreepikCaptureEvent, FreepikGeneration  # noqa: E402
+from providers.freepik.models import FreepikCaptureEvent, FreepikDownload, FreepikGeneration, FreepikSearchQuery  # noqa: E402
 from providers.freepik.normalization import _parse_dt, backfill_all, normalize_capture_event  # noqa: E402
 from merge_duplicate_freepik_generation_records import run as run_freepik_record_merge  # noqa: E402
 
@@ -57,6 +57,8 @@ Base.metadata.create_all(
         GenerationProjectEvent.__table__,
         FreepikCaptureEvent.__table__,
         FreepikGeneration.__table__,
+        FreepikSearchQuery.__table__,
+        FreepikDownload.__table__,
     ],
 )
 
@@ -94,17 +96,19 @@ def _listing_row(*, creation_id=None, identifier=None, status, updated_at, credi
     return row
 
 
-def _capture(db, payload: dict) -> FreepikCaptureEvent:
+def _capture(db, payload: dict, *, event_type: str = "generation_listing_row", linked_task_id=None, linked_client_id=None) -> FreepikCaptureEvent:
     event = FreepikCaptureEvent(
         tool_id=TOOL_ID,
         user_id=USER_ID,
         provider="freepik",
-        event_type="generation_listing_row",
+        event_type=event_type,
         client_event_id=f"freepik:test:{datetime.utcnow().timestamp()}:{len(payload)}",
         payload_json=payload,
         capture_version=1,
         event_date=datetime.utcnow().date(),
         ownership_confidence="ticket",
+        linked_task_id=linked_task_id,
+        linked_client_id=linked_client_id,
     )
     db.add(event)
     db.flush()
@@ -185,6 +189,75 @@ def test_identifier_then_creation_id_reuses_one_record() -> None:
         _assert(record_count == 1, f"expected exactly one GenerationRecord, found {record_count}")
         db.rollback()
     print("ok  one generation maps to exactly one report record")
+
+
+def test_search_query_normalizes_into_its_own_table() -> None:
+    """Added 2026-08-06: a stock-library search (freepik.com or
+    magnific.com) must never touch FreepikGeneration - it has no
+    creation_id/identifier/reference at all, and _extract_fields' generic
+    pipeline would just skip it as "no identity field present". Routes to
+    FreepikSearchQuery instead, resolved live (no freshness gate needed -
+    see _normalize_search_query_event's own docstring), never gated behind
+    Task/Client (Sarbjeet's own call)."""
+    with SessionLocal() as db:
+        row = normalize_capture_event(db, _capture(db, {
+            "searchTerm": "image of indian boy",
+            "sourceHost": "magnific.com",
+            "pageUrl": "https://magnific.com/search?format=search&term=image+of+indian+boy",
+            "resultCountLabel": "28.7k results",
+            "searchedAt": "2026-08-06T10:00:00+00:00",
+        }, event_type="search_query"))
+        db.flush()
+
+        _assert(isinstance(row, FreepikSearchQuery), f"expected a FreepikSearchQuery row, got {type(row)!r}")
+        _assert(row.search_term == "image of indian boy", f"search_term not extracted: {row.search_term!r}")
+        _assert(row.source_host == "magnific.com", f"source_host not extracted: {row.source_host!r}")
+        _assert(row.result_count_label == "28.7k results", f"result_count_label not extracted: {row.result_count_label!r}")
+        _assert(row.owner_user_id == USER_ID, f"search should be attributed live: {row.owner_user_id!r}")
+        _assert(row.ownership_status == "resolved", f"expected resolved ownership, got {row.ownership_status!r}")
+        _assert(not hasattr(row, "linked_task_id"), "FreepikSearchQuery must never carry task attribution - no such column should even exist")
+
+        gen_count = db.query(FreepikGeneration).count()
+        _assert(gen_count == 0, f"a search must never create a FreepikGeneration row, found {gen_count}")
+        db.rollback()
+    print("ok  a search query normalizes into FreepikSearchQuery, never FreepikGeneration")
+
+
+def test_download_click_carries_task_client_attribution() -> None:
+    """Unlike search, a download click IS gated behind the Task/Client
+    picker - linked_task_id/linked_client_id must flow through from the
+    capture event onto FreepikDownload exactly like they do for a
+    generation_submitted event onto FreepikGeneration."""
+    with SessionLocal() as db:
+        row = normalize_capture_event(db, _capture(
+            db,
+            {
+                "assetTitle": "Indian boy using smartphone on the street",
+                "assetThumbnailUrl": "https://img.freepik.com/free-photo/example_thumb.jpg",
+                "assetSourceUrl": "https://www.magnific.com/photo/12345",
+                "searchTerm": "image of indian boy",
+                "sourceHost": "magnific.com",
+                "pageUrl": "https://magnific.com/search?format=search&term=image+of+indian+boy",
+                "downloadedAt": "2026-08-06T10:05:00+00:00",
+            },
+            event_type="download_click",
+            linked_task_id=42,
+            linked_client_id=7,
+        ))
+        db.flush()
+
+        _assert(isinstance(row, FreepikDownload), f"expected a FreepikDownload row, got {type(row)!r}")
+        _assert(row.asset_title == "Indian boy using smartphone on the street", f"asset_title not extracted: {row.asset_title!r}")
+        _assert(row.asset_thumbnail_url == "https://img.freepik.com/free-photo/example_thumb.jpg", f"asset_thumbnail_url not extracted: {row.asset_thumbnail_url!r}")
+        _assert(row.search_term == "image of indian boy", f"search_term not correlated: {row.search_term!r}")
+        _assert(row.linked_task_id == 42, f"linked_task_id not carried through: {row.linked_task_id!r}")
+        _assert(row.linked_client_id == 7, f"linked_client_id not carried through: {row.linked_client_id!r}")
+        _assert(row.owner_user_id == USER_ID, f"download should be attributed live: {row.owner_user_id!r}")
+
+        gen_count = db.query(FreepikGeneration).count()
+        _assert(gen_count == 0, f"a download must never create a FreepikGeneration row, found {gen_count}")
+        db.rollback()
+    print("ok  a download click carries its Task/Client attribution onto FreepikDownload")
 
 
 def test_parse_dt_converts_offsets_to_utc() -> None:
@@ -349,6 +422,8 @@ if __name__ == "__main__":
     test_capture_status_tracks_provider_status()
     test_stale_snapshot_does_not_erase_stored_columns()
     test_identifier_then_creation_id_reuses_one_record()
+    test_search_query_normalizes_into_its_own_table()
+    test_download_click_carries_task_client_attribution()
     test_parse_dt_converts_offsets_to_utc()
     test_backfill_repairs_a_pre_fix_row()
     test_duplicate_record_merge()

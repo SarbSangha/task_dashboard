@@ -1886,6 +1886,265 @@ export const freepikCaptureAPI = {
     const response = await api.get('/api/providers/freepik/generations/linked-clients', requestConfig);
     return response.data;
   },
+
+  // ---- Search + Download capture (added 2026-08-06) - see
+  // providers/freepik/models.py's FreepikSearchQuery/FreepikDownload
+  // docstrings for why these are separate endpoints from listGenerations
+  // above, not just a filter on it.
+  listSearchQueries: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/freepik/search-queries',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getSearchQuery: async (searchQueryId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/freepik/search-queries/${searchQueryId}`, requestConfig);
+    return response.data;
+  },
+
+  listDownloads: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/freepik/downloads',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getDownload: async (downloadId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/freepik/downloads/${downloadId}`, requestConfig);
+    return response.data;
+  },
+};
+
+// ==================== ENVATO CAPTURE CENTER API ====================
+// Mirrors freepikCaptureAPI's shape exactly, minus the search/download
+// methods - Envato's capture scope is generation-only (see
+// providers/envato/README-worthy design notes in constants.py/models.py).
+export const envatoCaptureAPI = {
+  listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/envato/generations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getGeneration: async (generationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/envato/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
+
+  getMetrics: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/envato/metrics', requestConfig);
+    return response.data;
+  },
+
+  getCreditsByOwner: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/envato/analytics/credits-by-owner',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  listUsers: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/envato/users',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getUser: async (userId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/envato/users/${userId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/envato/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/envato/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+
+  getLinkedTasks: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/envato/generations/linked-tasks', requestConfig);
+    return response.data;
+  },
+
+  getLinkedClients: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/envato/generations/linked-clients', requestConfig);
+    return response.data;
+  },
+
+  // ---- Downloads (Envato Elements stock-asset downloads) - see
+  // providers/envato/models.py's EnvatoDownload docstring for why this is a
+  // separate endpoint from listGenerations above, not just a filter on it.
+  listDownloads: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/envato/downloads',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getDownload: async (downloadId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/envato/downloads/${downloadId}`, requestConfig);
+    return response.data;
+  },
+};
+
+// ==================== HEYGEN CAPTURE CENTER API ====================
+export const heygenCaptureAPI = {
+  listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/heygen/generations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getGeneration: async (generationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/heygen/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
+
+  getMetrics: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/heygen/metrics', requestConfig);
+    return response.data;
+  },
+
+  getCreditsByOwner: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/heygen/analytics/credits-by-owner',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  listUsers: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/heygen/users',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getUser: async (userId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/heygen/users/${userId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/heygen/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/heygen/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+
+  getLinkedTasks: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/heygen/generations/linked-tasks', requestConfig);
+    return response.data;
+  },
+
+  getLinkedClients: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/heygen/generations/linked-clients', requestConfig);
+    return response.data;
+  },
+
+  getHealth: async (userId, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/heygen/health',
+      buildParamRequestConfig({ user_id: userId }, requestConfig)
+    );
+    return response.data;
+  },
+};
+
+export const higgsfieldCaptureAPI = {
+  listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/higgsfield/generations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getGeneration: async (generationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/higgsfield/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
+
+  getMetrics: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/higgsfield/metrics', requestConfig);
+    return response.data;
+  },
+
+  getCreditsByOwner: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/higgsfield/analytics/credits-by-owner',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  listUsers: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/higgsfield/users',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getUser: async (userId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/higgsfield/users/${userId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/higgsfield/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/higgsfield/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+
+  getLinkedTasks: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/higgsfield/generations/linked-tasks', requestConfig);
+    return response.data;
+  },
+
+  getLinkedClients: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/higgsfield/generations/linked-clients', requestConfig);
+    return response.data;
+  },
+
+  getHealth: async (userId, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/higgsfield/health',
+      buildParamRequestConfig({ user_id: userId }, requestConfig)
+    );
+    return response.data;
+  },
 };
 
 // ==================== IT PROFILE / TOOL VAULT API ====================

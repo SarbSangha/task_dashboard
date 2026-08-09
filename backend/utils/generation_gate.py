@@ -19,7 +19,10 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from models_new import ITPortalTool
+from providers.envato.constants import TOOL_SLUGS as ENVATO_GATE_TOOL_SLUGS
 from providers.freepik.constants import TOOL_SLUGS as FREEPIK_GATE_TOOL_SLUGS
+from providers.heygen.constants import TOOL_SLUGS as HEYGEN_GATE_TOOL_SLUGS
+from providers.higgsfield.constants import TOOL_SLUGS as HIGGSFIELD_GATE_TOOL_SLUGS
 from utils.generation_backfill import KLING_TOOL_SLUGS as KLING_GATE_TOOL_SLUGS
 
 
@@ -29,7 +32,16 @@ def resolve_generation_gate_tool(db: Session, tool_slug: Optional[str]) -> Optio
     caller - when tool_slug is omitted, so existing callers that don't send one
     keep working."""
     normalized = (tool_slug or "").strip().lower()
-    slugs = KLING_GATE_TOOL_SLUGS if normalized in KLING_GATE_TOOL_SLUGS else FREEPIK_GATE_TOOL_SLUGS
+    if normalized in KLING_GATE_TOOL_SLUGS:
+        slugs = KLING_GATE_TOOL_SLUGS
+    elif normalized in HEYGEN_GATE_TOOL_SLUGS:
+        slugs = HEYGEN_GATE_TOOL_SLUGS
+    elif normalized in HIGGSFIELD_GATE_TOOL_SLUGS:
+        slugs = HIGGSFIELD_GATE_TOOL_SLUGS
+    elif normalized in ENVATO_GATE_TOOL_SLUGS:
+        slugs = ENVATO_GATE_TOOL_SLUGS
+    else:
+        slugs = FREEPIK_GATE_TOOL_SLUGS
     return (
         db.query(ITPortalTool)
         .filter(ITPortalTool.slug.in_(tuple(slugs)))

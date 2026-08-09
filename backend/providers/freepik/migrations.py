@@ -241,6 +241,21 @@ def ensure_freepik_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "freepik_generations", "linked_client_id", "INTEGER")
     _pg_add_column_if_missing(conn, "freepik_generations", "linked_client_name", "VARCHAR(255)")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_generations_linked_client_id ON freepik_generations(linked_client_id)"))
+    # Asset mirroring (see providers/freepik/asset_mirror.py): Freepik/Pikaso's
+    # own CDN URLs are signed and time-limited - once the token expires the
+    # original asset 404s permanently. These columns hold our own R2 copy,
+    # fetched once while the source URL is still valid.
+    _pg_add_column_if_missing(conn, "freepik_generations", "mirrored_asset_url", "TEXT")
+    _pg_add_column_if_missing(conn, "freepik_generations", "mirrored_thumbnail_url", "TEXT")
+    # mirrored_asset_key/mirrored_thumbnail_key (added after discovering the
+    # R2 bucket is private - see models.py's comment): the durable R2 object
+    # key, from which to_dict() mints a fresh presigned URL on every read.
+    _pg_add_column_if_missing(conn, "freepik_generations", "mirrored_asset_key", "TEXT")
+    _pg_add_column_if_missing(conn, "freepik_generations", "mirrored_thumbnail_key", "TEXT")
+    _pg_add_column_if_missing(conn, "freepik_generations", "asset_mirror_status", "VARCHAR(20) NOT NULL DEFAULT 'pending'")
+    _pg_add_column_if_missing(conn, "freepik_generations", "asset_mirror_attempted_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "freepik_generations", "asset_mirror_error", "TEXT")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_generations_asset_mirror_status ON freepik_generations(asset_mirror_status)"))
 
     conn.execute(
         text(
@@ -299,6 +314,71 @@ def ensure_freepik_postgres_schema(conn) -> None:
             """
         )
     )
+
+    # ---- Search + Download capture (added 2026-08-06) ----
+    # See models.py's FreepikSearchQuery/FreepikDownload docstrings - stock
+    # library search and existing-asset download are structurally different
+    # from a generation, so they get their own tables rather than a
+    # creation.id-shaped column added onto freepik_generations.
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS freepik_search_queries (
+                id SERIAL PRIMARY KEY,
+                provider VARCHAR(40) NOT NULL DEFAULT 'freepik',
+                source_capture_event_id INTEGER REFERENCES freepik_capture_events(id) ON DELETE SET NULL,
+                tool_id INTEGER REFERENCES it_portal_tools(id),
+                credential_id INTEGER REFERENCES it_portal_tool_credentials(id),
+                owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                ownership_status VARCHAR(40) NOT NULL DEFAULT 'unknown',
+                search_term TEXT,
+                source_host VARCHAR(80),
+                page_url TEXT,
+                result_count_label VARCHAR(40),
+                filters_json JSON,
+                searched_at TIMESTAMP,
+                metadata_json JSON,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_search_queries_owner_created_at ON freepik_search_queries(owner_user_id, created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_search_queries_credential_created_at ON freepik_search_queries(credential_id, created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_search_queries_term ON freepik_search_queries(search_term)"))
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS freepik_downloads (
+                id SERIAL PRIMARY KEY,
+                provider VARCHAR(40) NOT NULL DEFAULT 'freepik',
+                source_capture_event_id INTEGER REFERENCES freepik_capture_events(id) ON DELETE SET NULL,
+                tool_id INTEGER REFERENCES it_portal_tools(id),
+                credential_id INTEGER REFERENCES it_portal_tool_credentials(id),
+                owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                ownership_status VARCHAR(40) NOT NULL DEFAULT 'unknown',
+                linked_task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+                linked_task_name VARCHAR(255),
+                linked_client_id INTEGER REFERENCES generation_clients(id) ON DELETE SET NULL,
+                linked_client_name VARCHAR(255),
+                asset_title TEXT,
+                asset_thumbnail_url TEXT,
+                asset_source_url TEXT,
+                search_term TEXT,
+                source_host VARCHAR(80),
+                page_url TEXT,
+                downloaded_at TIMESTAMP,
+                metadata_json JSON,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_downloads_owner_created_at ON freepik_downloads(owner_user_id, created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_downloads_credential_created_at ON freepik_downloads(credential_id, created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_downloads_linked_task_id ON freepik_downloads(linked_task_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_downloads_linked_client_id ON freepik_downloads(linked_client_id)"))
 
 
 def ensure_freepik_sqlite_schema(conn) -> None:
@@ -504,6 +584,14 @@ def ensure_freepik_sqlite_schema(conn) -> None:
     _sqlite_add_column_if_missing(conn, "freepik_generations", "linked_client_id", "INTEGER")
     _sqlite_add_column_if_missing(conn, "freepik_generations", "linked_client_name", "VARCHAR(255)")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_generations_linked_client_id ON freepik_generations(linked_client_id)"))
+    _sqlite_add_column_if_missing(conn, "freepik_generations", "mirrored_asset_url", "TEXT")
+    _sqlite_add_column_if_missing(conn, "freepik_generations", "mirrored_thumbnail_url", "TEXT")
+    _sqlite_add_column_if_missing(conn, "freepik_generations", "mirrored_asset_key", "TEXT")
+    _sqlite_add_column_if_missing(conn, "freepik_generations", "mirrored_thumbnail_key", "TEXT")
+    _sqlite_add_column_if_missing(conn, "freepik_generations", "asset_mirror_status", "VARCHAR(20) NOT NULL DEFAULT 'pending'")
+    _sqlite_add_column_if_missing(conn, "freepik_generations", "asset_mirror_attempted_at", "DATETIME")
+    _sqlite_add_column_if_missing(conn, "freepik_generations", "asset_mirror_error", "TEXT")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_generations_asset_mirror_status ON freepik_generations(asset_mirror_status)"))
 
     conn.execute(
         text(
@@ -567,3 +655,75 @@ def ensure_freepik_sqlite_schema(conn) -> None:
             """
         )
     )
+
+    # ---- Search + Download capture (added 2026-08-06) - see the Postgres
+    # branch's identical comment above. ----
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS freepik_search_queries (
+                id INTEGER PRIMARY KEY,
+                provider VARCHAR(40) NOT NULL DEFAULT 'freepik',
+                source_capture_event_id INTEGER,
+                tool_id INTEGER,
+                credential_id INTEGER,
+                owner_user_id INTEGER,
+                ownership_status VARCHAR(40) NOT NULL DEFAULT 'unknown',
+                search_term TEXT,
+                source_host VARCHAR(80),
+                page_url TEXT,
+                result_count_label VARCHAR(40),
+                filters_json JSON,
+                searched_at DATETIME,
+                metadata_json JSON,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(source_capture_event_id) REFERENCES freepik_capture_events (id) ON DELETE SET NULL,
+                FOREIGN KEY(tool_id) REFERENCES it_portal_tools (id),
+                FOREIGN KEY(credential_id) REFERENCES it_portal_tool_credentials (id),
+                FOREIGN KEY(owner_user_id) REFERENCES users (id) ON DELETE SET NULL
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_search_queries_owner_created_at ON freepik_search_queries(owner_user_id, created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_search_queries_credential_created_at ON freepik_search_queries(credential_id, created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_search_queries_term ON freepik_search_queries(search_term)"))
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS freepik_downloads (
+                id INTEGER PRIMARY KEY,
+                provider VARCHAR(40) NOT NULL DEFAULT 'freepik',
+                source_capture_event_id INTEGER,
+                tool_id INTEGER,
+                credential_id INTEGER,
+                owner_user_id INTEGER,
+                ownership_status VARCHAR(40) NOT NULL DEFAULT 'unknown',
+                linked_task_id INTEGER,
+                linked_task_name VARCHAR(255),
+                linked_client_id INTEGER,
+                linked_client_name VARCHAR(255),
+                asset_title TEXT,
+                asset_thumbnail_url TEXT,
+                asset_source_url TEXT,
+                search_term TEXT,
+                source_host VARCHAR(80),
+                page_url TEXT,
+                downloaded_at DATETIME,
+                metadata_json JSON,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(source_capture_event_id) REFERENCES freepik_capture_events (id) ON DELETE SET NULL,
+                FOREIGN KEY(tool_id) REFERENCES it_portal_tools (id),
+                FOREIGN KEY(credential_id) REFERENCES it_portal_tool_credentials (id),
+                FOREIGN KEY(owner_user_id) REFERENCES users (id) ON DELETE SET NULL,
+                FOREIGN KEY(linked_task_id) REFERENCES tasks (id) ON DELETE SET NULL,
+                FOREIGN KEY(linked_client_id) REFERENCES generation_clients (id) ON DELETE SET NULL
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_downloads_owner_created_at ON freepik_downloads(owner_user_id, created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_downloads_credential_created_at ON freepik_downloads(credential_id, created_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_downloads_linked_task_id ON freepik_downloads(linked_task_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_freepik_downloads_linked_client_id ON freepik_downloads(linked_client_id)"))

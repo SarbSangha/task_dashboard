@@ -39,6 +39,7 @@
     "https://*.enhancor.ai/*",
     "https://envato.com/*",
     "https://www.envato.com/*",
+    "https://app.envato.com/*",
     "https://elements.envato.com/*",
     "https://market.envato.com/*",
     "https://freepik.com/*",
@@ -170,6 +171,28 @@
     },
     {
       "matches": [
+        "https://app.envato.com/*"
+      ],
+      "js": ["content-envato-turbo-stream.js", "content-envato-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://app.envato.com/*"
+      ],
+      "js": ["content-envato-turbo-stream.js", "content-envato-task-api.js", "content-envato-task-modal.js", "content-envato-capture.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://elements.envato.com/*"
+      ],
+      "js": ["content-envato-task-api.js", "content-envato-task-modal.js", "content-envato-elements-capture.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://www.freepik.com/*",
         "https://freepik.com/*",
         "https://*.freepik.com/*",
@@ -214,7 +237,16 @@
         "https://higgsfield.ai/*",
         "https://*.higgsfield.ai/*"
       ],
-      "js": ["content-higgsfield.js"],
+      "js": ["content-higgsfield-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://higgsfield.ai/*",
+        "https://*.higgsfield.ai/*"
+      ],
+      "js": ["content-higgsfield-task-api.js", "content-higgsfield-task-modal.js", "content-higgsfield.js"],
       "run_at": "document_idle"
     },
     {
@@ -222,7 +254,16 @@
         "https://heygen.com/*",
         "https://*.heygen.com/*"
       ],
-      "js": ["content-heygen.js"],
+      "js": ["content-heygen-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://heygen.com/*",
+        "https://*.heygen.com/*"
+      ],
+      "js": ["content-heygen-task-api.js", "content-heygen-task-modal.js", "content-heygen.js"],
       "run_at": "document_idle"
     },
     {

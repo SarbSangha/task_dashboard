@@ -208,7 +208,8 @@ def _provider_generation_id(event: ITPortalToolUsageEvent, metadata: dict) -> st
 
 def _canonical_asset_url(metadata: dict) -> str:
     media_assets = metadata.get("mediaAssets") if isinstance(metadata.get("mediaAssets"), list) else []
-    candidates: list[str] = []
+    video_candidates: list[str] = []
+    other_candidates: list[str] = []
     for item in media_assets:
         if not isinstance(item, dict):
             continue
@@ -237,7 +238,19 @@ def _canonical_asset_url(metadata: dict) -> str:
         # role-tagged output URL back to "no preview" even though the real
         # link had already been captured - confirmed against a real captured
         # row whose only mediaAssets entry was rejected here.
-        candidates.append(url)
+        asset_type = _normalize_text(item.get("assetType")).lower()
+        if asset_type == "video":
+            video_candidates.append(url)
+        else:
+            other_candidates.append(url)
+    # Prefer a genuinely video-typed asset over a cover/thumbnail image or an
+    # ambiguously-typed one. A plain alphabetical sort across ALL candidates
+    # would otherwise pick whichever URL string happens to sort first - for
+    # Kling specifically, cover-image URLs live on s15-kling.klingai.com and
+    # real output videos on v15-kling.klingai.com, and 's' < 'v', so the old
+    # sort-everything-together approach would silently prefer the thumbnail
+    # over the actual video even when both were correctly captured.
+    candidates = video_candidates or other_candidates
     return sorted(set(candidates))[0] if candidates else ""
 
 

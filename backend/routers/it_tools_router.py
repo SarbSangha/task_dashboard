@@ -3364,6 +3364,19 @@ async def get_extension_auth_link(
     attempts = max(1, AUTH_LINK_MAX_WAIT_SEC // OTP_POLL_INTERVAL_SEC)
     auth_link = None
     last_fetch_error = None
+    # Release the connection for the length of the auth-link poll, same as the
+    # OTP endpoints above. This loop is the longest hold in the router:
+    # AUTH_LINK_MAX_WAIT_SEC // OTP_POLL_INTERVAL_SEC attempts, each an IMAP
+    # round-trip plus an OTP_POLL_INTERVAL_SEC sleep, so a single call can park
+    # a session for the better part of a minute while doing no SQL at all.
+    # Under NullPool (the hosted pooler path, see database_config.py) that is a
+    # real Postgres connection per in-flight launch, and the extension fires
+    # this for every employee starting a tool - enough concurrent launches and
+    # request traffic starves behind them until the process is restarted.
+    # The audit write below re-acquires transparently; SQLAlchemy begins a new
+    # transaction the next time the Session is touched.
+    tool_id = tool.id
+    db.close()
     for attempt_index in range(attempts):
         try:
             auth_link = await asyncio.to_thread(
@@ -3408,7 +3421,9 @@ async def get_extension_auth_link(
         db,
         actor_id=current_user.id,
         action="extension_auth_link_fetched",
-        tool_id=tool.id,
+        # Captured before db.close() above - `tool` is detached by now, so read
+        # the plain int rather than touching the instance again.
+        tool_id=tool_id,
         details={
             "hostname": _normalize_hostname(payload.hostname or payload.page_url),
             "mailbox": mailbox_entry["email_address"],

@@ -29,6 +29,9 @@ from sqlalchemy.orm import Session
 from models_new import ITPortalTool, ITPortalToolUsageEvent, User
 from providers.chatgpt.models import ConversationPrompt, ConversationRecord, ConversationResponse
 from providers.freepik.models import FreepikGeneration
+from providers.envato.models import EnvatoGeneration
+from providers.heygen.models import HeygenGeneration
+from providers.higgsfield.models import HiggsfieldGeneration
 
 from .providers import PROVIDERS, provider_meta
 
@@ -39,6 +42,9 @@ CYCLE_DAYS = 15                 # the "15-day cycle" from the reference report
 RAW_ROW_CAP = 20_000            # max rows rendered into each raw-log sheet
 CHATGPT = "chatgpt"
 FREEPIK = "freepik"
+ENVATO = "envato"
+HEYGEN = "heygen"
+HIGGSFIELD = "higgsfield"
 # The only Freepik tool that produces a video (confirmed against real
 # captured payloads) - everything else produces a still image.
 FREEPIK_VIDEO_TOOL = "video-generator"
@@ -94,6 +100,15 @@ class Employee:
     freepik_credits_charged: float = 0.0
     freepik_credits_estimated: float = 0.0
     freepik_last: Optional[date] = None
+    envato_generations: int = 0
+    envato_credits: float = 0.0
+    envato_last: Optional[date] = None
+    heygen_videos: int = 0
+    heygen_credits: float = 0.0
+    heygen_last: Optional[date] = None
+    higgsfield_generations: int = 0
+    higgsfield_credits: float = 0.0
+    higgsfield_last: Optional[date] = None
 
     @property
     def tools_used(self) -> int:
@@ -101,15 +116,24 @@ class Employee:
             (1 if self.chatgpt_sessions else 0)
             + (1 if self.kling_videos else 0)
             + (1 if self.freepik_generations else 0)
+            + (1 if self.envato_generations else 0)
+            + (1 if self.heygen_videos else 0)
+            + (1 if self.higgsfield_generations else 0)
         )
 
     @property
     def total_usage(self) -> int:
-        return self.chatgpt_sessions + self.kling_videos + self.freepik_generations
+        return (
+            self.chatgpt_sessions + self.kling_videos + self.freepik_generations
+            + self.envato_generations + self.heygen_videos + self.higgsfield_generations
+        )
 
     @property
     def composite_score(self) -> int:
-        return self.chatgpt_sessions + self.kling_videos + self.freepik_generations
+        return (
+            self.chatgpt_sessions + self.kling_videos + self.freepik_generations
+            + self.envato_generations + self.heygen_videos + self.higgsfield_generations
+        )
 
     @property
     def adoption_status(self) -> str:
@@ -247,6 +271,74 @@ class FreepikEvent:
 
 
 @dataclass
+class EnvatoEvent:
+    when: date
+    employee_id: str
+    employee_name: str
+    department: str
+    prompt: str
+    item_type: str               # "genai-image" | "genai-video" | ... (see providers/envato/constants.py)
+    aspect_ratio: str
+    style: str
+    # Best-effort only - Envato exposes no numeric per-item credit ledger (see
+    # EnvatoGeneration's own docstring). This is the "+N" badge scraped off
+    # the Generate button at click time, not a confirmed charge.
+    credits: Optional[float]
+    item_uuid: str
+    status: str
+    client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+
+    @property
+    def kind(self) -> str:
+        # Mirrors FreepikEvent.kind's human label; falls back to the raw
+        # item_type for the 5 item types never observed in a real payload.
+        return {
+            "genai-image": "Image",
+            "genai-video": "Video",
+            "genai-vector": "Vector",
+            "genai-voice": "Voice",
+            "genai-music": "Music",
+            "genai-sound": "Sound",
+        }.get(self.item_type, self.item_type or "—")
+
+
+@dataclass
+class HeygenEvent:
+    when: date
+    employee_id: str
+    employee_name: str
+    department: str
+    prompt: str                  # script_text
+    avatar_name: str
+    voice_name: str
+    resolution: str
+    credits: Optional[float]     # credits_used
+    ref_id: str                  # video_id/render_id/job_id/workflow_id, whichever is present
+    status: str
+    client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+
+
+@dataclass
+class HiggsfieldEvent:
+    when: date
+    employee_id: str
+    employee_name: str
+    department: str
+    prompt: str                  # prompt_text
+    kind_raw: str                 # create_video | edit_video | motion_control
+    output_type: str              # "video" | "image" (confirmed - Higgsfield is NOT video-only, unlike HeyGen)
+    preset_name: str
+    credits: Optional[float]     # credits_used
+    ref_id: str                  # generation_id/job_id/request_id, whichever is present
+    status: str
+    client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+
+    @property
+    def kind(self) -> str:
+        return "Video" if self.output_type == "video" else "Image" if self.output_type == "image" else (self.output_type or "—")
+
+
+@dataclass
 class ToolUsage:
     tool: str
     employees_using: int
@@ -271,10 +363,13 @@ class DailyPoint:
     chatgpt: int
     kling: int
     freepik: int = 0
+    envato: int = 0
+    heygen: int = 0
+    higgsfield: int = 0
 
     @property
     def total(self) -> int:
-        return self.chatgpt + self.kling + self.freepik
+        return self.chatgpt + self.kling + self.freepik + self.envato + self.heygen + self.higgsfield
 
 
 @dataclass
@@ -299,6 +394,12 @@ class Kpis:
     total_freepik_videos: int = 0
     total_freepik_credits_charged: float = 0.0
     total_freepik_credits_estimated: float = 0.0
+    total_envato_generations: int = 0
+    total_envato_credits: float = 0.0
+    total_heygen_videos: int = 0
+    total_heygen_credits: float = 0.0
+    total_higgsfield_generations: int = 0
+    total_higgsfield_credits: float = 0.0
 
 
 @dataclass
@@ -310,6 +411,9 @@ class ReportDataset:
     chatgpt_events: list[ChatGptEvent]
     kling_events: list[KlingEvent]
     freepik_events: list[FreepikEvent]
+    envato_events: list[EnvatoEvent]
+    heygen_events: list[HeygenEvent]
+    higgsfield_events: list[HiggsfieldEvent]
     merged_events: list[Event]
     tool_usage: list[ToolUsage]
     dept_adoption: list[DeptAdoption]
@@ -402,6 +506,14 @@ def build_dataset(
     # Freepik's provider_created_at is UTC-stored too (same shift as ChatGPT).
     fp_start = period.start_dt - LOCAL_TZ_OFFSET
     fp_end = period.end_exclusive - LOCAL_TZ_OFFSET
+    # Envato's provider_created_at is UTC-stored too (same shift as ChatGPT).
+    ev_start = period.start_dt - LOCAL_TZ_OFFSET
+    ev_end = period.end_exclusive - LOCAL_TZ_OFFSET
+    # HeyGen's / Higgsfield's provider_created_at are UTC-stored too (same shift).
+    hg_start = period.start_dt - LOCAL_TZ_OFFSET
+    hg_end = period.end_exclusive - LOCAL_TZ_OFFSET
+    hf_start = period.start_dt - LOCAL_TZ_OFFSET
+    hf_end = period.end_exclusive - LOCAL_TZ_OFFSET
 
     employees = _load_employees(db)
     by_uid = {emp.user_id: emp for emp in employees}
@@ -409,19 +521,32 @@ def build_dataset(
     _apply_chatgpt_aggregates(db, cg_start, cg_end, by_uid)
     _apply_kling_aggregates(db, period, kling_tool_ids, by_uid)
     _apply_freepik_aggregates(db, fp_start, fp_end, by_uid)
+    _apply_envato_aggregates(db, ev_start, ev_end, by_uid)
+    _apply_heygen_aggregates(db, hg_start, hg_end, by_uid)
+    _apply_higgsfield_aggregates(db, hf_start, hf_end, by_uid)
 
     chatgpt_events, cg_trunc = _load_chatgpt_events(db, cg_start, cg_end, by_uid)
     kling_events, kl_trunc = _load_kling_events(db, period, kling_tool_ids, by_uid)
     freepik_events, fp_trunc = _load_freepik_events(db, fp_start, fp_end, by_uid)
-    merged = _merge_events(chatgpt_events, kling_events, freepik_events)
+    envato_events, ev_trunc = _load_envato_events(db, ev_start, ev_end, by_uid)
+    heygen_events, hg_trunc = _load_heygen_events(db, hg_start, hg_end, by_uid)
+    higgsfield_events, hf_trunc = _load_higgsfield_events(db, hf_start, hf_end, by_uid)
+    merged = _merge_events(
+        chatgpt_events, kling_events, freepik_events, envato_events, heygen_events, higgsfield_events
+    )
 
     tools = _load_tools(db)
     tool_usage = _tool_usage(employees)
     dept_adoption = _dept_adoption(employees)
-    daily = _daily_trend(period, chatgpt_events, kling_events, freepik_events)
+    daily = _daily_trend(
+        period, chatgpt_events, kling_events, freepik_events, envato_events, heygen_events, higgsfield_events
+    )
     top = sorted(employees, key=lambda emp: (emp.composite_score, emp.total_usage), reverse=True)[:5]
     kpis = _kpis(employees, tools)
-    warnings = _validate(employees, chatgpt_events, kling_events, freepik_events, period)
+    warnings = _validate(
+        employees, chatgpt_events, kling_events, freepik_events, envato_events,
+        heygen_events, higgsfield_events, period,
+    )
 
     return ReportDataset(
         generated_at=datetime.now(),
@@ -431,6 +556,9 @@ def build_dataset(
         chatgpt_events=chatgpt_events,
         kling_events=kling_events,
         freepik_events=freepik_events,
+        envato_events=envato_events,
+        heygen_events=heygen_events,
+        higgsfield_events=higgsfield_events,
         merged_events=merged,
         tool_usage=tool_usage,
         dept_adoption=dept_adoption,
@@ -438,7 +566,7 @@ def build_dataset(
         top_employees=top,
         warnings=warnings,
         kpis=kpis,
-        raw_truncated=cg_trunc or kl_trunc or fp_trunc,
+        raw_truncated=cg_trunc or kl_trunc or fp_trunc or ev_trunc or hg_trunc or hf_trunc,
     )
 
 
@@ -580,6 +708,93 @@ def _apply_freepik_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
             emp.freepik_credits_charged = float(charged or 0.0)
             emp.freepik_credits_estimated = float(estimated or 0.0)
             emp.freepik_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
+
+
+def _apply_envato_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
+    """Envato generations from EnvatoGeneration directly. Only owner-attributed
+    rows count toward an employee, same rationale as Kling/Freepik/ChatGPT.
+    Credits are the best-effort ``credits_badge`` scrape (see EnvatoGeneration's
+    own docstring - Envato exposes no numeric per-item credit ledger)."""
+    rows = (
+        db.query(
+            EnvatoGeneration.owner_user_id,
+            func.count(EnvatoGeneration.id),
+            func.coalesce(func.sum(EnvatoGeneration.credits_badge), 0.0),
+            func.max(EnvatoGeneration.provider_created_at),
+        )
+        .filter(
+            EnvatoGeneration.owner_user_id.isnot(None),
+            EnvatoGeneration.provider_created_at >= s,
+            EnvatoGeneration.provider_created_at < e,
+        )
+        .group_by(EnvatoGeneration.owner_user_id)
+        .all()
+    )
+    for uid, cnt, credits, last in rows:
+        emp = by_uid.get(uid)
+        if emp:
+            emp.envato_generations = int(cnt or 0)
+            emp.envato_credits = float(credits or 0.0)
+            emp.envato_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
+
+
+def _apply_heygen_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
+    """HeyGen generations from HeygenGeneration directly. Only owner-attributed
+    rows count toward an employee, same rationale as every other provider here.
+    HeyGen is a video-only tool (avatar videos), same posture as Kling.
+    ``credits_used`` is captured directly (not a badge scrape) - see
+    HeygenGeneration's own docstring."""
+    rows = (
+        db.query(
+            HeygenGeneration.owner_user_id,
+            func.count(HeygenGeneration.id),
+            func.coalesce(func.sum(HeygenGeneration.credits_used), 0.0),
+            func.max(HeygenGeneration.provider_created_at),
+        )
+        .filter(
+            HeygenGeneration.owner_user_id.isnot(None),
+            HeygenGeneration.provider_created_at >= s,
+            HeygenGeneration.provider_created_at < e,
+        )
+        .group_by(HeygenGeneration.owner_user_id)
+        .all()
+    )
+    for uid, cnt, credits, last in rows:
+        emp = by_uid.get(uid)
+        if emp:
+            emp.heygen_videos = int(cnt or 0)
+            emp.heygen_credits = float(credits or 0.0)
+            emp.heygen_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
+
+
+def _apply_higgsfield_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
+    """Higgsfield generations from HiggsfieldGeneration directly. Only
+    owner-attributed rows count toward an employee, same rationale as every
+    other provider here. Higgsfield is mixed-media (confirmed - some job sets
+    produce video, others image, see HiggsfieldGeneration.output_type), but
+    (like Envato) is not split into images/videos at the aggregate level -
+    just a total generation count + best-effort credits_used."""
+    rows = (
+        db.query(
+            HiggsfieldGeneration.owner_user_id,
+            func.count(HiggsfieldGeneration.id),
+            func.coalesce(func.sum(HiggsfieldGeneration.credits_used), 0.0),
+            func.max(HiggsfieldGeneration.provider_created_at),
+        )
+        .filter(
+            HiggsfieldGeneration.owner_user_id.isnot(None),
+            HiggsfieldGeneration.provider_created_at >= s,
+            HiggsfieldGeneration.provider_created_at < e,
+        )
+        .group_by(HiggsfieldGeneration.owner_user_id)
+        .all()
+    )
+    for uid, cnt, credits, last in rows:
+        emp = by_uid.get(uid)
+        if emp:
+            emp.higgsfield_generations = int(cnt or 0)
+            emp.higgsfield_credits = float(credits or 0.0)
+            emp.higgsfield_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
 
 
 # --------------------------------------------------------------------------- #
@@ -738,7 +953,153 @@ def _load_freepik_events(db, s, e, by_uid) -> tuple[list[FreepikEvent], bool]:
     return out, truncated
 
 
-def _merge_events(cg: list[ChatGptEvent], kl: list[KlingEvent], fp: list[FreepikEvent]) -> list[Event]:
+def _load_envato_events(db, s, e, by_uid) -> tuple[list[EnvatoEvent], bool]:
+    """One row per Envato generation, dated by ``provider_created_at`` (the
+    actual Envato render time) shifted to IST. Only owner-attributed rows are
+    included, same rationale as ``_apply_envato_aggregates``."""
+    q = (
+        db.query(
+            EnvatoGeneration.owner_user_id, EnvatoGeneration.provider_created_at,
+            EnvatoGeneration.prompt, EnvatoGeneration.item_type, EnvatoGeneration.aspect_ratio,
+            EnvatoGeneration.style, EnvatoGeneration.credits_badge, EnvatoGeneration.item_uuid,
+            EnvatoGeneration.review_status, EnvatoGeneration.linked_client_name,
+        )
+        .filter(
+            EnvatoGeneration.owner_user_id.isnot(None),
+            EnvatoGeneration.provider_created_at >= s,
+            EnvatoGeneration.provider_created_at < e,
+        )
+        .order_by(EnvatoGeneration.provider_created_at.asc())
+        .limit(RAW_ROW_CAP + 1)
+    )
+    rows = q.all()
+    truncated = len(rows) > RAW_ROW_CAP
+    rows = rows[:RAW_ROW_CAP]
+    out = []
+    for (user_id, provider_created_at, prompt, item_type, aspect_ratio, style, credits_badge,
+         item_uuid, review_status, linked_client_name) in rows:
+        emp = by_uid.get(user_id)
+        out.append(
+            EnvatoEvent(
+                when=_as_date(provider_created_at + LOCAL_TZ_OFFSET) if provider_created_at else None,
+                employee_id=emp.employee_id if emp else "—",
+                employee_name=emp.name if emp else "Unassigned",
+                department=emp.department if emp else "Unassigned",
+                prompt=_clip(prompt),
+                item_type=item_type or "—",
+                aspect_ratio=aspect_ratio or "—",
+                style=style or "—",
+                credits=float(credits_badge) if credits_badge is not None else None,
+                item_uuid=item_uuid or "—",
+                status=(review_status or "completed").title(),
+                client_name=linked_client_name or "",
+            )
+        )
+    return out, truncated
+
+
+def _load_heygen_events(db, s, e, by_uid) -> tuple[list[HeygenEvent], bool]:
+    """One row per HeyGen generation, dated by ``provider_created_at`` shifted
+    to IST. Only owner-attributed rows are included, same rationale as
+    ``_apply_heygen_aggregates``. HeyGen's identity is spread across several
+    candidate columns (see HeygenGeneration's own docstring - its exact field
+    naming was never directly observed) - ``ref_id`` picks the first
+    non-null one client-side rather than assuming any single column."""
+    q = (
+        db.query(
+            HeygenGeneration.owner_user_id, HeygenGeneration.provider_created_at,
+            HeygenGeneration.script_text, HeygenGeneration.avatar_name, HeygenGeneration.voice_name,
+            HeygenGeneration.resolution, HeygenGeneration.credits_used,
+            HeygenGeneration.video_id, HeygenGeneration.render_id, HeygenGeneration.job_id,
+            HeygenGeneration.workflow_id, HeygenGeneration.external_event_id,
+            HeygenGeneration.status, HeygenGeneration.linked_client_name,
+        )
+        .filter(
+            HeygenGeneration.owner_user_id.isnot(None),
+            HeygenGeneration.provider_created_at >= s,
+            HeygenGeneration.provider_created_at < e,
+        )
+        .order_by(HeygenGeneration.provider_created_at.asc())
+        .limit(RAW_ROW_CAP + 1)
+    )
+    rows = q.all()
+    truncated = len(rows) > RAW_ROW_CAP
+    rows = rows[:RAW_ROW_CAP]
+    out = []
+    for (user_id, provider_created_at, script_text, avatar_name, voice_name, resolution, credits_used,
+         video_id, render_id, job_id, workflow_id, external_event_id, status, linked_client_name) in rows:
+        emp = by_uid.get(user_id)
+        out.append(
+            HeygenEvent(
+                when=_as_date(provider_created_at + LOCAL_TZ_OFFSET) if provider_created_at else None,
+                employee_id=emp.employee_id if emp else "—",
+                employee_name=emp.name if emp else "Unassigned",
+                department=emp.department if emp else "Unassigned",
+                prompt=_clip(script_text),
+                avatar_name=avatar_name or "—",
+                voice_name=voice_name or "—",
+                resolution=resolution or "—",
+                credits=float(credits_used) if credits_used is not None else None,
+                ref_id=video_id or render_id or job_id or workflow_id or external_event_id or "—",
+                status=(status or "completed").title(),
+                client_name=linked_client_name or "",
+            )
+        )
+    return out, truncated
+
+
+def _load_higgsfield_events(db, s, e, by_uid) -> tuple[list[HiggsfieldEvent], bool]:
+    """One row per Higgsfield generation, dated by ``provider_created_at``
+    shifted to IST. Only owner-attributed rows are included, same rationale
+    as ``_apply_higgsfield_aggregates``. Identity handled the same
+    first-non-null way as HeyGen's - see ``_load_heygen_events``."""
+    q = (
+        db.query(
+            HiggsfieldGeneration.owner_user_id, HiggsfieldGeneration.provider_created_at,
+            HiggsfieldGeneration.prompt_text, HiggsfieldGeneration.kind, HiggsfieldGeneration.output_type,
+            HiggsfieldGeneration.preset_name, HiggsfieldGeneration.credits_used,
+            HiggsfieldGeneration.generation_id, HiggsfieldGeneration.job_id, HiggsfieldGeneration.request_id,
+            HiggsfieldGeneration.external_event_id, HiggsfieldGeneration.status,
+            HiggsfieldGeneration.linked_client_name,
+        )
+        .filter(
+            HiggsfieldGeneration.owner_user_id.isnot(None),
+            HiggsfieldGeneration.provider_created_at >= s,
+            HiggsfieldGeneration.provider_created_at < e,
+        )
+        .order_by(HiggsfieldGeneration.provider_created_at.asc())
+        .limit(RAW_ROW_CAP + 1)
+    )
+    rows = q.all()
+    truncated = len(rows) > RAW_ROW_CAP
+    rows = rows[:RAW_ROW_CAP]
+    out = []
+    for (user_id, provider_created_at, prompt_text, kind, output_type, preset_name, credits_used,
+         generation_id, job_id, request_id, external_event_id, status, linked_client_name) in rows:
+        emp = by_uid.get(user_id)
+        out.append(
+            HiggsfieldEvent(
+                when=_as_date(provider_created_at + LOCAL_TZ_OFFSET) if provider_created_at else None,
+                employee_id=emp.employee_id if emp else "—",
+                employee_name=emp.name if emp else "Unassigned",
+                department=emp.department if emp else "Unassigned",
+                prompt=_clip(prompt_text),
+                kind_raw=kind or "—",
+                output_type=output_type or "",
+                preset_name=preset_name or "—",
+                credits=float(credits_used) if credits_used is not None else None,
+                ref_id=generation_id or job_id or request_id or external_event_id or "—",
+                status=(status or "completed").title(),
+                client_name=linked_client_name or "",
+            )
+        )
+    return out, truncated
+
+
+def _merge_events(
+    cg: list[ChatGptEvent], kl: list[KlingEvent], fp: list[FreepikEvent], ev: list[EnvatoEvent],
+    hg: list[HeygenEvent], hf: list[HiggsfieldEvent],
+) -> list[Event]:
     merged: list[Event] = []
     for c in cg:
         merged.append(
@@ -770,6 +1131,38 @@ def _merge_events(cg: list[ChatGptEvent], kl: list[KlingEvent], fp: list[Freepik
                 videos=1 if f.is_video else 0, kind=f.kind,
                 status=f.status, ref_id=f.creation_id or "—",
                 client_name=f.client_name,
+            )
+        )
+    for a in ev:
+        merged.append(
+            Event(
+                when=a.when, tool="Envato", employee_id=a.employee_id, employee_name=a.employee_name,
+                department=a.department, prompt=a.prompt, credits=a.credits,
+                videos=1 if a.item_type == "genai-video" else 0, kind=a.kind,
+                status=a.status, ref_id=a.item_uuid or "—",
+                client_name=a.client_name,
+            )
+        )
+    for h in hg:
+        merged.append(
+            Event(
+                when=h.when, tool="HeyGen", employee_id=h.employee_id, employee_name=h.employee_name,
+                department=h.department, prompt=h.prompt, model=h.avatar_name, credits=h.credits,
+                videos=1, kind="Video",  # HeyGen only ever produces avatar videos
+                status=h.status, ref_id=h.ref_id or "—",
+                client_name=h.client_name,
+            )
+        )
+    for s in hf:
+        merged.append(
+            Event(
+                when=s.when, tool="Higgsfield", employee_id=s.employee_id, employee_name=s.employee_name,
+                department=s.department, prompt=s.prompt, model=s.preset_name, credits=s.credits,
+                # Higgsfield is mixed-media (confirmed - some job sets produce
+                # video, others image, see HiggsfieldGeneration.output_type)
+                videos=1 if s.output_type == "video" else 0, kind=s.kind,
+                status=s.status, ref_id=s.ref_id or "—",
+                client_name=s.client_name,
             )
         )
     merged.sort(key=lambda ev: (ev.when or date.min, ev.tool))
@@ -814,13 +1207,22 @@ def _tool_usage(employees: list[Employee]) -> list[ToolUsage]:
     cg_users = sum(1 for emp in employees if emp.chatgpt_sessions)
     kl_users = sum(1 for emp in employees if emp.kling_videos)
     fp_users = sum(1 for emp in employees if emp.freepik_generations)
+    ev_users = sum(1 for emp in employees if emp.envato_generations)
+    hg_users = sum(1 for emp in employees if emp.heygen_videos)
+    hf_users = sum(1 for emp in employees if emp.higgsfield_generations)
     cg_vol = sum(emp.chatgpt_sessions for emp in employees)
     kl_vol = sum(emp.kling_videos for emp in employees)
     fp_vol = sum(emp.freepik_generations for emp in employees)
+    ev_vol = sum(emp.envato_generations for emp in employees)
+    hg_vol = sum(emp.heygen_videos for emp in employees)
+    hf_vol = sum(emp.higgsfield_generations for emp in employees)
     return [
         ToolUsage("ChatGPT", cg_users, cg_vol, cg_users / n),
         ToolUsage("Kling", kl_users, kl_vol, kl_users / n),
         ToolUsage("Freepik", fp_users, fp_vol, fp_users / n),
+        ToolUsage("Envato", ev_users, ev_vol, ev_users / n),
+        ToolUsage("HeyGen", hg_users, hg_vol, hg_users / n),
+        ToolUsage("Higgsfield", hf_users, hf_vol, hf_users / n),
     ]
 
 
@@ -836,11 +1238,22 @@ def _dept_adoption(employees: list[Employee]) -> list[DeptAdoption]:
     return out
 
 
-def _daily_trend(period: Period, cg: list[ChatGptEvent], kl: list[KlingEvent], fp: list[FreepikEvent]) -> list[DailyPoint]:
+def _daily_trend(
+    period: Period,
+    cg: list[ChatGptEvent],
+    kl: list[KlingEvent],
+    fp: list[FreepikEvent],
+    ev: list[EnvatoEvent],
+    hg: list[HeygenEvent],
+    hf: list[HiggsfieldEvent],
+) -> list[DailyPoint]:
     days = [period.start + timedelta(days=i) for i in range(period.days)]
     cg_counts: dict[date, int] = {}
     kl_counts: dict[date, int] = {}
     fp_counts: dict[date, int] = {}
+    ev_counts: dict[date, int] = {}
+    hg_counts: dict[date, int] = {}
+    hf_counts: dict[date, int] = {}
     for c in cg:
         if c.when:
             cg_counts[c.when] = cg_counts.get(c.when, 0) + 1
@@ -850,7 +1263,22 @@ def _daily_trend(period: Period, cg: list[ChatGptEvent], kl: list[KlingEvent], f
     for f in fp:
         if f.when:
             fp_counts[f.when] = fp_counts.get(f.when, 0) + 1
-    return [DailyPoint(d, cg_counts.get(d, 0), kl_counts.get(d, 0), fp_counts.get(d, 0)) for d in days]
+    for a in ev:
+        if a.when:
+            ev_counts[a.when] = ev_counts.get(a.when, 0) + 1
+    for h in hg:
+        if h.when:
+            hg_counts[h.when] = hg_counts.get(h.when, 0) + 1
+    for s in hf:
+        if s.when:
+            hf_counts[s.when] = hf_counts.get(s.when, 0) + 1
+    return [
+        DailyPoint(
+            d, cg_counts.get(d, 0), kl_counts.get(d, 0), fp_counts.get(d, 0),
+            ev_counts.get(d, 0), hg_counts.get(d, 0), hf_counts.get(d, 0),
+        )
+        for d in days
+    ]
 
 
 def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
@@ -861,6 +1289,12 @@ def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
     fp_videos = sum(emp.freepik_videos for emp in employees)
     fp_charged = sum(emp.freepik_credits_charged for emp in employees)
     fp_estimated = sum(emp.freepik_credits_estimated for emp in employees)
+    ev_generations = sum(emp.envato_generations for emp in employees)
+    ev_credits = sum(emp.envato_credits for emp in employees)
+    hg_videos = sum(emp.heygen_videos for emp in employees)
+    hg_credits = sum(emp.heygen_credits for emp in employees)
+    hf_generations = sum(emp.higgsfield_generations for emp in employees)
+    hf_credits = sum(emp.higgsfield_credits for emp in employees)
     return Kpis(
         total_employees=n,
         total_tools=len(tools),
@@ -868,20 +1302,30 @@ def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
         employees_using_ai=using,
         adoption_pct=(using / n) if n else 0.0,
         total_sessions=sum(emp.chatgpt_sessions for emp in employees),
-        total_generations=sum(emp.kling_videos for emp in employees) + fp_generations,
-        total_credits=sum(emp.kling_credits for emp in employees) + fp_charged,
+        total_generations=(
+            sum(emp.kling_videos for emp in employees) + fp_generations + ev_generations + hg_videos + hf_generations
+        ),
+        total_credits=(
+            sum(emp.kling_credits for emp in employees) + fp_charged + ev_credits + hg_credits + hf_credits
+        ),
         total_freepik_generations=fp_generations,
         total_freepik_images=fp_images,
         total_freepik_videos=fp_videos,
         total_freepik_credits_charged=fp_charged,
         total_freepik_credits_estimated=fp_estimated,
+        total_envato_generations=ev_generations,
+        total_envato_credits=ev_credits,
+        total_heygen_videos=hg_videos,
+        total_heygen_credits=hg_credits,
+        total_higgsfield_generations=hf_generations,
+        total_higgsfield_credits=hf_credits,
     )
 
 
 # --------------------------------------------------------------------------- #
 # Data-quality validation
 # --------------------------------------------------------------------------- #
-def _validate(employees, cg, kl, fp, period: Period) -> list[Warning]:
+def _validate(employees, cg, kl, fp, ev, hg, hf, period: Period) -> list[Warning]:
     warnings: list[Warning] = []
 
     missing_dept = sum(1 for emp in employees if emp.department in ("", "Unassigned"))
@@ -911,10 +1355,31 @@ def _validate(employees, cg, kl, fp, period: Period) -> list[Warning]:
             "Error", "Invalid Freepik credits",
             f"{neg_freepik_credits} employee(s) show negative Freepik credit totals."))
 
+    neg_envato_credits = sum(1 for emp in employees if emp.envato_credits < 0)
+    if neg_envato_credits:
+        warnings.append(Warning(
+            "Error", "Invalid Envato credits",
+            f"{neg_envato_credits} employee(s) show negative Envato credit totals."))
+
+    neg_heygen_credits = sum(1 for emp in employees if emp.heygen_credits < 0)
+    if neg_heygen_credits:
+        warnings.append(Warning(
+            "Error", "Invalid HeyGen credits",
+            f"{neg_heygen_credits} employee(s) show negative HeyGen credit totals."))
+
+    neg_higgsfield_credits = sum(1 for emp in employees if emp.higgsfield_credits < 0)
+    if neg_higgsfield_credits:
+        warnings.append(Warning(
+            "Error", "Invalid Higgsfield credits",
+            f"{neg_higgsfield_credits} employee(s) show negative Higgsfield credit totals."))
+
     future = (
         sum(1 for k in kl if k.when and k.when > period.end)
         + sum(1 for c in cg if c.when and c.when > period.end)
         + sum(1 for f in fp if f.when and f.when > period.end)
+        + sum(1 for a in ev if a.when and a.when > period.end)
+        + sum(1 for h in hg if h.when and h.when > period.end)
+        + sum(1 for s in hf if s.when and s.when > period.end)
     )
     if future:
         warnings.append(Warning("Warning", "Future-dated events", f"{future} event(s) are dated after the report period end."))
@@ -923,6 +1388,9 @@ def _validate(employees, cg, kl, fp, period: Period) -> list[Warning]:
         sum(1 for k in kl if not k.when)
         + sum(1 for c in cg if not c.when)
         + sum(1 for f in fp if not f.when)
+        + sum(1 for a in ev if not a.when)
+        + sum(1 for h in hg if not h.when)
+        + sum(1 for s in hf if not s.when)
     )
     if undated:
         warnings.append(Warning("Info", "Undated events", f"{undated} event(s) had no resolvable date and were placed at period start."))

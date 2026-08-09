@@ -29,7 +29,12 @@ from db_migrations import ensure_operational_schema
 from models_new import User, Task, TaskParticipant, TaskStatusHistory, ArchivedTask, ActivityLog
 import providers.chatgpt  # noqa: F401 (registers ChatGPT Conversation* models onto Base.metadata)
 from providers.chatgpt import router as chatgpt_router
+from providers.envato import router as envato_router
 from providers.freepik import router as freepik_router
+from providers.freepik.asset_mirror import mirror_pending_generations as mirror_pending_freepik_generations
+from providers.heygen import router as heygen_router
+from providers.heygen.asset_mirror import mirror_pending_generations as mirror_pending_heygen_generations
+from providers.higgsfield import router as higgsfield_router
 # Import routers
 from routers import auth_router
 from routers.tasks import router as tasks_router
@@ -229,6 +234,28 @@ def _run_notification_outbox_cycle(limit: int) -> int:
         db.close()
 
 
+def _run_freepik_asset_mirror_cycle(limit: int) -> dict:
+    db = OperationalSessionLocal()
+    try:
+        return mirror_pending_freepik_generations(db, limit=limit)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _run_heygen_asset_mirror_cycle(limit: int) -> dict:
+    db = OperationalSessionLocal()
+    try:
+        return mirror_pending_heygen_generations(db, limit=limit)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 async def _periodic_report_schedule_dispatch(interval_seconds: int = 300) -> None:
     """Fire due report schedules (daily/weekly/monthly email delivery).
 
@@ -264,6 +291,58 @@ async def _periodic_notification_outbox_dispatch(interval_seconds: int = 30) -> 
                 _safe_print(f"Notification outbox dispatched={dispatched}")
         except Exception as exc:
             _safe_print(f"Notification outbox dispatch failed: {exc}")
+
+
+async def _periodic_freepik_asset_mirror_dispatch(interval_seconds: int = 300) -> None:
+    """Mirrors Freepik/Pikaso's signed CDN assets into our own R2 storage
+    before their exp= token expires and the original goes dead - see
+    providers/freepik/asset_mirror.py's module docstring. A no-op (fast
+    return) when R2 isn't configured, so this loop is always safe to start.
+    """
+    while True:
+        await asyncio.sleep(max(60, interval_seconds))
+        try:
+            stats = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _run_freepik_asset_mirror_cycle,
+                    _int_env("FREEPIK_ASSET_MIRROR_BATCH_SIZE", 25),
+                ),
+                timeout=max(30, _int_env("FREEPIK_ASSET_MIRROR_TIMEOUT_SECONDS", 180)),
+            )
+            if stats.get("scanned"):
+                _safe_print(
+                    "Freepik asset mirror scanned="
+                    f"{stats['scanned']} mirrored={stats['mirrored']} "
+                    f"skipped={stats['skipped']} failed={stats['failed']}"
+                )
+        except Exception as exc:
+            _safe_print(f"Freepik asset mirror dispatch failed: {exc}")
+
+
+async def _periodic_heygen_asset_mirror_dispatch(interval_seconds: int = 300) -> None:
+    """Mirrors HeyGen's signed CDN assets into our own R2 storage before their
+    Expires=/Signature= token expires and the original goes dead - see
+    providers/heygen/asset_mirror.py's module docstring. A no-op (fast
+    return) when R2 isn't configured, so this loop is always safe to start.
+    """
+    while True:
+        await asyncio.sleep(max(60, interval_seconds))
+        try:
+            stats = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _run_heygen_asset_mirror_cycle,
+                    _int_env("HEYGEN_ASSET_MIRROR_BATCH_SIZE", 25),
+                ),
+                timeout=max(30, _int_env("HEYGEN_ASSET_MIRROR_TIMEOUT_SECONDS", 180)),
+            )
+            if stats.get("scanned"):
+                _safe_print(
+                    "HeyGen asset mirror scanned="
+                    f"{stats['scanned']} mirrored={stats['mirrored']} "
+                    f"skipped={stats['skipped']} failed={stats['failed']}"
+                )
+        except Exception as exc:
+            _safe_print(f"HeyGen asset mirror dispatch failed: {exc}")
 
 
 # ==================== LIFESPAN EVENT ====================
@@ -361,16 +440,28 @@ async def lifespan(app: FastAPI):
         _periodic_report_schedule_dispatch(_int_env("REPORT_SCHEDULE_INTERVAL_SECONDS", 300)),
         name="report-schedule-dispatch",
     )
+    freepik_asset_mirror_task = asyncio.create_task(
+        _periodic_freepik_asset_mirror_dispatch(_int_env("FREEPIK_ASSET_MIRROR_INTERVAL_SECONDS", 300)),
+        name="freepik-asset-mirror-dispatch",
+    )
+    heygen_asset_mirror_task = asyncio.create_task(
+        _periodic_heygen_asset_mirror_dispatch(_int_env("HEYGEN_ASSET_MIRROR_INTERVAL_SECONDS", 300)),
+        name="heygen-asset-mirror-dispatch",
+    )
     _safe_print(f"Frontend: {_display_frontend_url()}\n")
-    
+
     try:
         yield
     finally:
         auth_cleanup_task.cancel()
         notification_outbox_task.cancel()
         report_schedule_task.cancel()
+        freepik_asset_mirror_task.cancel()
+        heygen_asset_mirror_task.cancel()
         await asyncio.gather(
-            auth_cleanup_task, notification_outbox_task, report_schedule_task, return_exceptions=True
+            auth_cleanup_task, notification_outbox_task, report_schedule_task,
+            freepik_asset_mirror_task, heygen_asset_mirror_task,
+            return_exceptions=True,
         )
         await notification_dispatcher.stop()
     
@@ -506,6 +597,15 @@ app.include_router(chatgpt_router.router)
 
 # Freepik/Magnific Generation Capture System
 app.include_router(freepik_router.router)
+
+# HeyGen Generation Capture System
+app.include_router(heygen_router.router)
+
+# Higgsfield Generation Capture System
+app.include_router(higgsfield_router.router)
+
+# Envato Generation Capture System
+app.include_router(envato_router.router)
 
 # Reports / Business Intelligence (AI Intelligence Command Center)
 app.include_router(reports_router.router)

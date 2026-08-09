@@ -4,6 +4,8 @@ import { freepikCaptureAPI } from '../../../../../../services/api';
 import MetricsOverview from './MetricsOverview';
 import UserListSidebar from './UserListSidebar';
 import GenerationsBrowser from './GenerationsBrowser';
+import SearchHistoryBrowser from './SearchHistoryBrowser';
+import DownloadsBrowser from './DownloadsBrowser';
 import FreepikGenerationDrawer from './FreepikGenerationDrawer';
 import DeveloperToolsDrawer from './DeveloperToolsDrawer';
 import { normalizeApiError } from './freepikCaptureUtils';
@@ -42,11 +44,16 @@ const OWNERSHIP_OPTIONS = [
  * presentation trending/kling's KlingTab.jsx uses for Kling generations -
  * with a slide-in drawer for detail instead of a permanent side column.
  *
- * Two browse modes: "All Generations" (default - includes unclaimed rows,
+ * Four browse modes: "All Generations" (default - includes unclaimed rows,
  * important since not every Freepik generation has a resolvable owner, see
- * CAPTURE_CONTRACT.md's ownership decision table) and "By Employee" (pick an
+ * CAPTURE_CONTRACT.md's ownership decision table), "By Employee" (pick an
  * employee first, then see just their generations - mirrors ChatGPT's
- * Users -> Conversations drill-in).
+ * Users -> Conversations drill-in), and two added 2026-08-06: "Search
+ * History" and "Downloads" (see providers/freepik/models.py's
+ * FreepikSearchQuery/FreepikDownload docstrings - neither a stock-library
+ * search nor an existing-asset download has a creation.id, so both are
+ * separate tables/endpoints from generations, surfaced here as sibling
+ * views via the same mode switcher rather than a filter on the existing one).
  */
 export default function FreepikExplorerBody({ searchInput = '' }) {
   const { isAdmin } = usePermissions();
@@ -54,7 +61,7 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState('');
 
-  const [sidebarMode, setSidebarMode] = useState('all'); // 'all' | 'byEmployee'
+  const [sidebarMode, setSidebarMode] = useState('all'); // 'all' | 'byEmployee' | 'searchHistory' | 'downloads'
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [selectedUserName, setSelectedUserName] = useState(null);
   const [openGenerationId, setOpenGenerationId] = useState(null);
@@ -62,16 +69,26 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
   // `searchInput` comes from TrendingsPanel's own header (the "RMW Data"
   // title row) rather than being owned here - see the "search bar should sit
   // between RMW Data and the window controls" request. Ownership filter
-  // stays local, rendered next to the All Generations/By Employee switcher.
+  // stays local, rendered next to the mode switcher.
   const [ownershipFilter, setOwnershipFilter] = useState('');
   const [taskFilter, setTaskFilter] = useState('');
   const [clientFilter, setClientFilter] = useState('');
   const [linkedTasks, setLinkedTasks] = useState([]);
   const [linkedClients, setLinkedClients] = useState([]);
   const [generationsTotal, setGenerationsTotal] = useState(0);
+  const [searchHistoryTotal, setSearchHistoryTotal] = useState(0);
+  const [downloadsTotal, setDownloadsTotal] = useState(0);
   // UserListSidebar (picking an employee) has no search/ownership concept of
-  // its own - these filters only apply once GenerationsBrowser is showing.
-  const showGenerationsFilters = !(sidebarMode === 'byEmployee' && !selectedUserId);
+  // its own - the ownership filter only ever applies to GenerationsBrowser
+  // (ownership_status is meaningless for Downloads, which is always
+  // 'resolved' by design - see FreepikDownload's own docstring - and doesn't
+  // exist at all for Search History). Task/client filters also apply to
+  // DownloadsBrowser (gated like a generation - see this component's own top
+  // comment); Search History has neither (search is deliberately
+  // ungated/free-form).
+  const isGenerationsView = sidebarMode === 'all' || (sidebarMode === 'byEmployee' && Boolean(selectedUserId));
+  const showOwnershipFilter = isGenerationsView;
+  const showTaskClientFilters = isGenerationsView || sidebarMode === 'downloads';
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [toast, setToast] = useState(null);
@@ -171,8 +188,26 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
             >
               By Employee
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={sidebarMode === 'searchHistory'}
+              className={`ai-explorer-provider-pill${sidebarMode === 'searchHistory' ? ' active' : ''}`}
+              onClick={() => handleSwitchMode('searchHistory')}
+            >
+              Search History
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={sidebarMode === 'downloads'}
+              className={`ai-explorer-provider-pill${sidebarMode === 'downloads' ? ' active' : ''}`}
+              onClick={() => handleSwitchMode('downloads')}
+            >
+              Downloads
+            </button>
           </div>
-          {showGenerationsFilters && (
+          {showOwnershipFilter && (
             <select
               className="chatgpt-capture-select"
               aria-label="Filter by ownership"
@@ -185,7 +220,7 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
               ))}
             </select>
           )}
-          {showGenerationsFilters && linkedTasks.length > 0 && (
+          {showTaskClientFilters && linkedTasks.length > 0 && (
             <select
               className="chatgpt-capture-select"
               aria-label="Filter by linked task"
@@ -199,7 +234,7 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
               ))}
             </select>
           )}
-          {showGenerationsFilters && linkedClients.length > 0 && (
+          {showTaskClientFilters && linkedClients.length > 0 && (
             <select
               className="chatgpt-capture-select"
               aria-label="Filter by linked client"
@@ -213,8 +248,14 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
               ))}
             </select>
           )}
-          {showGenerationsFilters && (
+          {isGenerationsView && (
             <span className="chatgpt-capture-panel-subhead">{generationsTotal} generation(s)</span>
+          )}
+          {sidebarMode === 'searchHistory' && (
+            <span className="chatgpt-capture-panel-subhead">{searchHistoryTotal} search(es)</span>
+          )}
+          {sidebarMode === 'downloads' && (
+            <span className="chatgpt-capture-panel-subhead">{downloadsTotal} download(s)</span>
           )}
         </div>
         <button
@@ -237,7 +278,16 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
 
       <MetricsOverview metrics={metrics} loading={metricsLoading} error={metricsError} />
 
-      {sidebarMode === 'byEmployee' && !selectedUserId ? (
+      {sidebarMode === 'searchHistory' ? (
+        <SearchHistoryBrowser searchInput={searchInput} onTotalChange={setSearchHistoryTotal} />
+      ) : sidebarMode === 'downloads' ? (
+        <DownloadsBrowser
+          searchInput={searchInput}
+          taskFilter={taskFilter}
+          clientFilter={clientFilter}
+          onTotalChange={setDownloadsTotal}
+        />
+      ) : sidebarMode === 'byEmployee' && !selectedUserId ? (
         <UserListSidebar selectedUserId={selectedUserId} onSelectUser={handleSelectUser} />
       ) : (
         <GenerationsBrowser

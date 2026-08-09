@@ -36,14 +36,17 @@ from .. import components as C
 from .. import theme as T
 from ..dataset import Employee, Event, ReportDataset
 
-LAST_COL = 18
-_ADOPTION_COL = 16  # column P
+LAST_COL = 27
+_ADOPTION_COL = 25  # column Y
 
 # Guard rail: a single employee with a runaway period cannot explode the sheet.
 # The full record always remains on the raw ChatGPT / Kling log sheets.
 MAX_DETAIL_ROWS_PER_EMPLOYEE = 1500
 
-_TOOL_TINT = {"ChatGPT": T.TINT_CHATGPT, "Kling": T.TINT_KLING, "Freepik": T.TINT_FREEPIK}
+_TOOL_TINT = {
+    "ChatGPT": T.TINT_CHATGPT, "Kling": T.TINT_KLING, "Freepik": T.TINT_FREEPIK,
+    "Envato": T.TINT_ENVATO, "HeyGen": T.TINT_HEYGEN, "Higgsfield": T.TINT_HIGGSFIELD,
+}
 
 # Employee columns. Widths are a deliberate compromise: columns B/C also carry
 # the prompt/response text of the nested log rows, so they are wider than a
@@ -62,6 +65,15 @@ _EMP_COLS = [
     C.Col("Freepik Credits Charged", 17, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.freepik_credits_charged),
     C.Col("Freepik Credits Estimated", 18, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.freepik_credits_estimated),
     C.Col("Freepik Last Used", 24, "center", fmt=T.FMT_DATE, get=lambda e: e.freepik_last),
+    C.Col("Envato Generations", 15, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.envato_generations),
+    C.Col("Envato Credits (Best-Effort)", 20, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.envato_credits),
+    C.Col("Envato Last Used", 24, "center", fmt=T.FMT_DATE, get=lambda e: e.envato_last),
+    C.Col("HeyGen Videos Made", 15, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.heygen_videos),
+    C.Col("HeyGen Credits Used", 16, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.heygen_credits),
+    C.Col("HeyGen Last Used", 24, "center", fmt=T.FMT_DATE, get=lambda e: e.heygen_last),
+    C.Col("Higgsfield Generations", 17, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.higgsfield_generations),
+    C.Col("Higgsfield Credits Used", 18, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.higgsfield_credits),
+    C.Col("Higgsfield Last Used", 24, "center", fmt=T.FMT_DATE, get=lambda e: e.higgsfield_last),
     C.Col("Total AI Usage", 13, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.total_usage),
     C.Col("Tools Used", 11, "right", fmt=T.FMT_INT_DASH, get=lambda e: e.tools_used),
     C.Col("Adoption Status", 20, "center", get=lambda e: e.adoption_status),
@@ -93,6 +105,12 @@ _COL_KLING_CREDITS = 7   # G — "Kling Credits Used"
 _COL_FREEPIK_IMAGES = 9    # I — "Freepik Images"
 _COL_FREEPIK_VIDEOS = 10   # J — "Freepik Videos"
 _COL_FREEPIK_CREDITS = 11  # K — "Freepik Credits Charged"
+_COL_ENVATO_COUNT = 14     # N — "Envato Generations"
+_COL_ENVATO_CREDITS = 15   # O — "Envato Credits (Best-Effort)"
+_COL_HEYGEN_COUNT = 17       # Q — "HeyGen Videos Made"
+_COL_HEYGEN_CREDITS = 18     # R — "HeyGen Credits Used"
+_COL_HIGGSFIELD_COUNT = 20   # T — "Higgsfield Generations"
+_COL_HIGGSFIELD_CREDITS = 21 # U — "Higgsfield Credits Used"
 
 
 def render(ws: Worksheet, ds: ReportDataset) -> None:
@@ -260,6 +278,24 @@ def _count_cells(label, by_tool: dict, label_fmt=T.FMT_DATE) -> list:
         freepik_credits = sum((ev.credits or 0) for ev in freepik_events)
         if freepik_credits:
             cells.append((_COL_FREEPIK_CREDITS, round(freepik_credits), T.FMT_INT, "right"))
+    envato = len(by_tool.get("Envato", ()))
+    if envato:
+        cells.append((_COL_ENVATO_COUNT, envato, T.FMT_INT, "right"))
+        envato_credits = sum((ev.credits or 0) for ev in by_tool["Envato"])
+        if envato_credits:
+            cells.append((_COL_ENVATO_CREDITS, round(envato_credits), T.FMT_INT, "right"))
+    heygen = len(by_tool.get("HeyGen", ()))
+    if heygen:
+        cells.append((_COL_HEYGEN_COUNT, heygen, T.FMT_INT, "right"))
+        heygen_credits = sum((ev.credits or 0) for ev in by_tool["HeyGen"])
+        if heygen_credits:
+            cells.append((_COL_HEYGEN_CREDITS, round(heygen_credits), T.FMT_INT, "right"))
+    higgsfield = len(by_tool.get("Higgsfield", ()))
+    if higgsfield:
+        cells.append((_COL_HIGGSFIELD_COUNT, higgsfield, T.FMT_INT, "right"))
+        higgsfield_credits = sum((ev.credits or 0) for ev in by_tool["Higgsfield"])
+        if higgsfield_credits:
+            cells.append((_COL_HIGGSFIELD_CREDITS, round(higgsfield_credits), T.FMT_INT, "right"))
     return cells
 
 

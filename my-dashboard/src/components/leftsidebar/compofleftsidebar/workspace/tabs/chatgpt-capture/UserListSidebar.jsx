@@ -69,6 +69,14 @@ function UserCard({ ariaAttributes, index, style, users, selectedUserId, onSelec
           {user.email && <span className="chatgpt-capture-user-card-email">{user.email}</span>}
           <div className="chatgpt-capture-user-card-meta">
             {user.department && <span className="chatgpt-capture-chip">{user.department}</span>}
+            {user.hasUnresolvedConversations && (
+              <span
+                className="chatgpt-capture-badge tone-warning"
+                title="Some of this person's conversations couldn't be confirmed as theirs (e.g. captured mid-thread rather than at creation) - counts include a best-effort attribution, not a fully verified one."
+              >
+                Unconfirmed
+              </span>
+            )}
             <span>{formatCount(user.conversationsCount)} convos</span>
             <span>{formatCount(user.messagesCount)} msgs</span>
             {user.imagesCount > 0 && <span>🖼️ {user.imagesCount}</span>}

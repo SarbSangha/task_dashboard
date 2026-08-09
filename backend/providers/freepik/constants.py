@@ -41,11 +41,25 @@ CAPTURE_SCHEMA_VERSION = 1
 # FreepikCaptureEvent.event_type values.
 EVENT_TYPE_GENERATION_SUBMITTED = "generation_submitted"
 EVENT_TYPE_GENERATION_LISTING_ROW = "generation_listing_row"
+# Added 2026-08-06: freepik.com/magnific.com aren't just AI-generation tools -
+# users also SEARCH the stock library and DOWNLOAD existing (non-generated)
+# stock assets, neither of which produces a `creation.id` FreepikGeneration
+# can key on. These route to their OWN tables (FreepikSearchQuery/
+# FreepikDownload in models.py), never into FreepikGeneration - see
+# normalization.py's dispatch at the top of normalize_capture_event. Unlike
+# EVENT_TYPE_GENERATION_LISTING_ROW (Freepik's own JSON response shape,
+# unconfirmed/shape-sniffed), the payload for these two is a DOM-scraped
+# envelope WE define entirely in content-freepik.js, so normalization
+# dispatches on this trusted event_type directly rather than sniffing shape.
+EVENT_TYPE_SEARCH_QUERY = "search_query"
+EVENT_TYPE_DOWNLOAD_CLICK = "download_click"
 
 ALL_EVENT_TYPES = frozenset(
     {
         EVENT_TYPE_GENERATION_SUBMITTED,
         EVENT_TYPE_GENERATION_LISTING_ROW,
+        EVENT_TYPE_SEARCH_QUERY,
+        EVENT_TYPE_DOWNLOAD_CLICK,
     }
 )
 

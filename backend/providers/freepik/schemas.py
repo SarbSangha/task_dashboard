@@ -162,6 +162,31 @@ class EventDetailOut(BaseModel):
     data: dict[str, Any]
 
 
+# Structurally identical to GenerationListOut/EventListOut - kept as their
+# own named classes (this codebase's own convention, see EventListOut vs
+# GenerationListOut above) rather than reused directly, one pair per entity.
+class SearchQueryListOut(BaseModel):
+    success: bool = True
+    data: list[dict[str, Any]]
+    pagination: PaginationOut
+
+
+class SearchQueryDetailOut(BaseModel):
+    success: bool = True
+    data: dict[str, Any]
+
+
+class DownloadListOut(BaseModel):
+    success: bool = True
+    data: list[dict[str, Any]]
+    pagination: PaginationOut
+
+
+class DownloadDetailOut(BaseModel):
+    success: bool = True
+    data: dict[str, Any]
+
+
 class UserListOut(BaseModel):
     success: bool = True
     data: list[dict[str, Any]]

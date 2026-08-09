@@ -56,6 +56,19 @@ def render(ws: Worksheet, ds: ReportDataset) -> None:
         C.Kpi("Freepik Credits Charged", round(k.total_freepik_credits_charged), T.FMT_INT),
         C.Kpi("Freepik Credits Estimated", round(k.total_freepik_credits_estimated), T.FMT_INT),
     ], row=row, span=3)
+    # Envato exposes no numeric per-item credit ledger (unlike Freepik) - its
+    # generation count and credits are surfaced together, not split into a
+    # charged/estimated pair - see EnvatoGeneration's own docstring.
+    row = C.kpi_cards(ws, [
+        C.Kpi("Envato Generations", k.total_envato_generations, T.FMT_INT),
+        C.Kpi("Envato Credits (Best-Effort)", round(k.total_envato_credits), T.FMT_INT),
+        C.Kpi("HeyGen Videos", k.total_heygen_videos, T.FMT_INT),
+        C.Kpi("HeyGen Credits Used", round(k.total_heygen_credits), T.FMT_INT),
+    ], row=row, span=3)
+    row = C.kpi_cards(ws, [
+        C.Kpi("Higgsfield Generations", k.total_higgsfield_generations, T.FMT_INT),
+        C.Kpi("Higgsfield Credits Used", round(k.total_higgsfield_credits), T.FMT_INT),
+    ], row=row, span=6)
 
     row = C.callout(
         ws,
@@ -95,8 +108,9 @@ def _write_sources(ws: Worksheet, ds: ReportDataset) -> dict[str, int]:
 
     block("tool", ["Tool", "Employees"], [[t.tool, t.employees_using] for t in ds.tool_usage])
     block("dept", ["Department", "Adoption %"], [[d.department, round(d.pct, 3)] for d in ds.dept_adoption])
-    block("daily", ["Day", "ChatGPT", "Kling", "Freepik"],
-          [[d.day.strftime("%d-%b"), d.chatgpt, d.kling, d.freepik] for d in ds.daily])
+    block("daily", ["Day", "ChatGPT", "Kling", "Freepik", "Envato", "HeyGen", "Higgsfield"],
+          [[d.day.strftime("%d-%b"), d.chatgpt, d.kling, d.freepik, d.envato, d.heygen, d.higgsfield]
+           for d in ds.daily])
     block("top", ["Employee", "Composite"], [[e.name, e.composite_score] for e in ds.top_employees])
     block("dist", ["Category", "Employees"], _distribution(ds))
     return starts
@@ -124,13 +138,13 @@ def _build_charts(chart_ws: Worksheet, src_ws: Worksheet, ds: ReportDataset,
     _add_bar_series(dbar, src_ws, src["dept"], n_dept, color=T.GREEN, pct=True)
     chart_ws.add_chart(dbar, f"G{anchor_row}")
 
-    # 3. Daily Usage Trend (line, ChatGPT vs Kling vs Freepik)
+    # 3. Daily Usage Trend (line, ChatGPT vs Kling vs Freepik vs Envato vs HeyGen vs Higgsfield)
     n_day = len(ds.daily)
     line = LineChart()
     line.title = "Daily Usage Trend"
     line.style = 2
     line.height, line.width = 7.5, 15
-    data = Reference(src_ws, min_col=_SRC_COL + 1, max_col=_SRC_COL + 3,
+    data = Reference(src_ws, min_col=_SRC_COL + 1, max_col=_SRC_COL + 6,
                      min_row=src["daily"], max_row=src["daily"] + n_day)
     cats = Reference(src_ws, min_col=_SRC_COL, min_row=src["daily"] + 1, max_row=src["daily"] + n_day)
     line.add_data(data, titles_from_data=True)

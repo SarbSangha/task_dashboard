@@ -61,6 +61,65 @@ PROVIDERS: dict[str, ProviderInfo] = {
             "sync is extension-driven (no server-side Freepik credential exists) - see CAPTURE_CONTRACT.md."
         ),
     ),
+    "heygen": ProviderInfo(
+        slug="heygen",
+        display_name="HeyGen",
+        tool_slugs=frozenset({"heygen"}),
+        status="in_development",
+        models_module="providers.heygen.models",
+        migrations_module="providers.heygen.migrations",
+        notes=(
+            "Ticket-based ownership attribution, same pattern as Freepik. Built from a single UI "
+            "screenshot rather than observed HeyGen API traffic, so the network interceptor is "
+            "shape-based (not endpoint-specific) and normalization.py's payload envelope is one this "
+            "codebase defines itself (content-heygen.js), not HeyGen's own response shape. Expect a "
+            "short follow-up fix pass once real capture data lands, same as Freepik needed. No "
+            "confirmed history/listing endpoint yet, so reconciliation sync (sync.py) is scaffolded "
+            "but not extension-driven in this pass. Capture Center dashboard/Reports/AI-report "
+            "integration are a deferred follow-up, not part of the initial rollout."
+        ),
+    ),
+    "higgsfield": ProviderInfo(
+        slug="higgsfield",
+        display_name="Higgsfield",
+        tool_slugs=frozenset({"higgsfield"}),
+        status="in_development",
+        models_module="providers.higgsfield.models",
+        migrations_module="providers.higgsfield.migrations",
+        notes=(
+            "Ticket-based ownership attribution, same pattern as Freepik/HeyGen. Built from a single "
+            "UI screenshot (Create Video tab: preset picker, Multi-shot toggle, Prompt textarea, "
+            "Generate button with inline credit cost) rather than observed Higgsfield API traffic, so "
+            "the network interceptor is shape-based (not endpoint-specific) and normalization.py's "
+            "payload envelope is one this codebase defines itself (content-higgsfield.js), not "
+            "Higgsfield's own response shape. Expect a short follow-up fix pass once real capture data "
+            "lands, same as Freepik/HeyGen needed. No confirmed history/listing endpoint yet, so "
+            "reconciliation sync (sync.py) is scaffolded but not extension-driven in this pass. Asset "
+            "mirroring, Capture Center dashboard, and Reports/AI-report integration are a deferred "
+            "follow-up, not part of the initial rollout."
+        ),
+    ),
+    "envato": ProviderInfo(
+        slug="envato",
+        display_name="Envato",
+        tool_slugs=frozenset({"envato"}),
+        status="in_development",
+        models_module="providers.envato.models",
+        migrations_module="providers.envato.migrations",
+        notes=(
+            "Ticket-based ownership attribution, same pattern as Freepik/HeyGen/Higgsfield. Envato "
+            "(app.envato.com) is a React Router 7 app - its `.data` route-loader responses use React "
+            "Router's compact array-reference 'turbo-stream' wire format, not plain JSON; the extension "
+            "decodes this client-side (content-envato-turbo-stream.js) before ever posting a payload. "
+            "Built from a real captured HAR of the generation-history.data listing endpoint (confirmed "
+            "field shapes for the genai-image item type only - the other five item types are inferred "
+            "from filter-chip i18n labels, not yet observed). No numeric per-item credit ledger exists "
+            "in Envato's API (unlike Freepik) - credits are DOM-scraped best-effort (Generate button's "
+            "'+N' badge, sidebar quota-remaining delta). The live Generate submission request was never "
+            "captured, so capture is reconciliation-first (walks generation-history.data) with "
+            "click-time arming for live attribution, not true request/response interception."
+        ),
+    ),
 }
 
 

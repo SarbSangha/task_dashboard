@@ -17,7 +17,7 @@ export default function FreepikGenerationGrid({ generations, loading, loadingMor
 
   return (
     <div>
-      <div className="kling-virtual-grid-wrap" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+      <div className="kling-virtual-grid-wrap kling-plain-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
         {generations.map((generation) => (
           <FreepikGenerationCard key={generation.id} generation={generation} onOpen={onOpenGeneration} />
         ))}

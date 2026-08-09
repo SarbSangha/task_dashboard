@@ -25,19 +25,23 @@ from providers.freepik.capture import (
 from providers.freepik.constants import INGEST_COMMIT_CHUNK_SIZE
 from providers.freepik.health import capture_health_to_dict, get_capture_health_for_user, record_health_ping
 from providers.freepik.normalization import normalize_capture_events_batch
-from providers.freepik.queries import GenerationFilters
+from providers.freepik.queries import DownloadFilters, GenerationFilters, SearchQueryFilters
 from providers.freepik.schemas import (
     CaptureEventResult,
     CaptureEventsRequest,
     CaptureEventsResponse,
     CaptureHealthOut,
     CaptureHealthPingIn,
+    DownloadDetailOut,
+    DownloadListOut,
     EventDetailOut,
     EventListOut,
     GenerationDetailOut,
     GenerationListOut,
     MetricsOut,
     PaginationOut,
+    SearchQueryDetailOut,
+    SearchQueryListOut,
     SyncCursorIn,
     SyncCursorOut,
     UserDetailOut,
@@ -360,6 +364,93 @@ def get_generation_detail(
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
     return GenerationDetailOut(data=generation.to_dict())
+
+
+# ---- Search + Download capture read surface (added 2026-08-06) - see
+# providers/freepik/models.py's FreepikSearchQuery/FreepikDownload
+# docstrings for why these are separate endpoints/tables from /generations
+# rather than a filter on it. ----
+
+@router.get("/search-queries", response_model=SearchQueryListOut)
+def list_search_queries(
+    owner_user_id: Optional[int] = None,
+    source_host: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    q: Optional[str] = None,
+    limit: int = Query(default=freepik_queries.DEFAULT_LIMIT, ge=1, le=freepik_queries.MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    filters = SearchQueryFilters(
+        owner_user_id=owner_user_id,
+        source_host=source_host,
+        date_from=date_from,
+        date_to=date_to,
+        q=q,
+    )
+    items, total = freepik_queries.list_search_queries(db, filters=filters, limit=limit, offset=offset)
+    data = freepik_queries.attach_owner_summaries(db, [item.to_dict() for item in items])
+    return SearchQueryListOut(
+        data=data,
+        pagination=PaginationOut(limit=limit, offset=offset, total=total),
+    )
+
+
+@router.get("/search-queries/{search_query_id}", response_model=SearchQueryDetailOut)
+def get_search_query_detail(
+    search_query_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    row = freepik_queries.get_search_query(db, search_query_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Search query not found")
+    return SearchQueryDetailOut(data=row.to_dict())
+
+
+@router.get("/downloads", response_model=DownloadListOut)
+def list_downloads(
+    owner_user_id: Optional[int] = None,
+    source_host: Optional[str] = None,
+    linked_task_id: Optional[int] = None,
+    linked_client_id: Optional[int] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    q: Optional[str] = None,
+    limit: int = Query(default=freepik_queries.DEFAULT_LIMIT, ge=1, le=freepik_queries.MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    filters = DownloadFilters(
+        owner_user_id=owner_user_id,
+        source_host=source_host,
+        linked_task_id=linked_task_id,
+        linked_client_id=linked_client_id,
+        date_from=date_from,
+        date_to=date_to,
+        q=q,
+    )
+    items, total = freepik_queries.list_downloads(db, filters=filters, limit=limit, offset=offset)
+    data = freepik_queries.attach_owner_summaries(db, [item.to_dict() for item in items])
+    return DownloadListOut(
+        data=data,
+        pagination=PaginationOut(limit=limit, offset=offset, total=total),
+    )
+
+
+@router.get("/downloads/{download_id}", response_model=DownloadDetailOut)
+def get_download_detail(
+    download_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    row = freepik_queries.get_download(db, download_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Download not found")
+    return DownloadDetailOut(data=row.to_dict())
 
 
 @router.get("/metrics", response_model=MetricsOut)

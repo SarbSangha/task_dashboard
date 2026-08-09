@@ -17,15 +17,15 @@ _PURPOSE = (
 )
 
 _DESCRIPTION = (
-    "It consolidates ChatGPT and Kling activity (with fifteen further tools on "
-    "the roadmap) into one auditable source for leadership, AI governance, HR "
-    "and operations: who is using AI, how much, on which tools, and where the "
-    "adoption gaps are."
+    "It consolidates ChatGPT, Kling, Freepik, Envato, HeyGen and Higgsfield "
+    "activity (with further tools on the roadmap) into one auditable source for "
+    "leadership, AI governance, HR and operations: who is using AI, how much, "
+    "on which tools, and where the adoption gaps are."
 )
 
 _LEGEND = [
     ("Adoption Status", "Not Used = 0 tools · Using 1 Tool · Using Multiple Tools = 2+ tools in the period."),
-    ("Composite Score", "ChatGPT sessions + Kling videos for the employee this period."),
+    ("Composite Score", "ChatGPT sessions + Kling/Freepik/Envato/HeyGen/Higgsfield generations for the employee this period."),
     ("Employee drill-down", "On Employee Summary, click a highlighted employee name to open their date-wise ChatGPT + Kling activity log."),
     ("ChatGPT Session", "One captured prompt (counted from the conversation prompt counter)."),
     ("Kling Generation", "One Kling usage event — the actual generation performed on the tool."),
@@ -72,11 +72,13 @@ def render(ws: Worksheet, ds: ReportDataset) -> None:
         ("Report period", ds.period.label),
         ("Last generated", ds.generated_at.strftime("%d-%b-%Y %H:%M")),
         ("Version", ds.version),
-        ("Data source", "AI Dashboard capture database (ChatGPT + Kling pipelines)"),
+        ("Data source", "AI Dashboard capture database "
+                        "(ChatGPT + Kling + Freepik + Envato + HeyGen + Higgsfield pipelines)"),
         ("Employees covered", f"{ds.kpis.total_employees:,}"),
         ("Tools subscribed / integrated", f"{ds.kpis.total_tools} / {ds.kpis.tools_integrated}"),
         ("Events this period", f"{ds.kpis.total_sessions + ds.kpis.total_generations:,} "
-                              f"({ds.kpis.total_sessions:,} ChatGPT · {ds.kpis.total_generations:,} Kling)"),
+                              f"({ds.kpis.total_sessions:,} ChatGPT · {ds.kpis.total_generations:,} generations "
+                              f"across Kling/Freepik/Envato/HeyGen/Higgsfield)"),
     ]
     for label, value in meta:
         row = C.label_value(ws, label, value, row=row, value_col=2, value_last_col=LAST_COL)

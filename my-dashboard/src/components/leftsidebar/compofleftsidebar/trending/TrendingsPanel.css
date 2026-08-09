@@ -413,6 +413,33 @@
   padding: 0;
 }
 
+.trendings-content--heygen {
+  /* Same non-virtualized-grid reasoning as .trendings-content--freepik above -
+     HeyGen's grid is plain CSS too and needs to scroll at this outer level. */
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 0;
+}
+
+.trendings-content--higgsfield {
+  /* Same non-virtualized-grid reasoning as .trendings-content--freepik above -
+     Higgsfield's grid is plain CSS too and needs to scroll at this outer level. */
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 0;
+}
+
+.trendings-content--envato {
+  /* Same non-virtualized-grid reasoning as .trendings-content--freepik above -
+     Envato's grid is plain CSS too and needs to scroll at this outer level. */
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 0;
+}
+
 .trendings-directory-window {
   flex: 1 1 auto;
   min-height: 0;

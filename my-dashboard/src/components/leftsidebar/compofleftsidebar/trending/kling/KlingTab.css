@@ -237,6 +237,22 @@
   transform: translateY(-2px) scale(1.008);
 }
 
+/* .kling-card's own height: calc(100% - 16px) above is tuned for Kling's
+   react-window virtualization, where the card sits inside a .kling-virtual-
+   cell that react-window gives an explicit fixed pixel height - the 16px
+   accounts for that cell's own bottom padding. HeyGen/Freepik's capture
+   grids (HeygenGenerationGrid.jsx/FreepikGenerationGrid.jsx) reuse this same
+   card CSS in a plain, non-virtualized CSS grid instead, where .kling-card
+   IS the grid item directly with no such fixed-height wrapper - cards whose
+   content is naturally taller (e.g. an extra linked-task/client tag row)
+   don't stretch to match their row's shorter siblings, so a row of cards
+   with different content lengths ends up with visibly uneven bottoms. Auto
+   height here lets the grid's default stretch alignment equalize every
+   card in a row to its tallest sibling instead. */
+.kling-plain-grid > .kling-card {
+  height: auto;
+}
+
 .kling-card.menu-open {
   border-color: var(--color-border-strong);
 }

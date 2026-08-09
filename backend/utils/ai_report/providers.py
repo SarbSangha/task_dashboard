@@ -1,10 +1,11 @@
 """
 Provider registry -- the extensibility seam of the workbook.
 
-Every AI tool the report can describe is declared here once. Today ChatGPT and
-Kling are *integrated* (live data flows in); the remaining fifteen are declared
-as *pending* so they already appear correctly in Tool Master and are ready to
-light up the moment their capture pipeline lands.
+Every AI tool the report can describe is declared here once. Today ChatGPT,
+Kling, Freepik, Envato, HeyGen and Higgsfield are *integrated* (live data
+flows in); the rest are declared as *pending* so they already appear
+correctly in Tool Master and are ready to light up the moment their capture
+pipeline lands.
 
 Adding a new integrated provider is a two-step, no-touch-elsewhere change:
   1. Add / flip its entry here (``integrated=True`` + captured fields).
@@ -40,6 +41,15 @@ PROVIDERS: tuple[ProviderMeta, ...] = (
     ProviderMeta("freepik", "Freepik / Magnific", "Freepik", "AI Image Generation",
                  "Credits Charged/Estimated, Prompts, Model/Service, Person, Date, Family/Batch",
                  integrated=True),
+    ProviderMeta("envato", "Envato", "Envato", "AI Image/Video/Audio Generation",
+                 "Prompts, Item Type, Credit Badge (best-effort), Person, Date, Task/Client",
+                 integrated=True),
+    ProviderMeta("heygen", "HeyGen", "HeyGen", "AI Avatar / Video",
+                 "Credits Used, Scripts, Avatar/Voice, Videos Made, Person, Date, Task/Client",
+                 integrated=True),
+    ProviderMeta("higgsfield", "Higgsfield", "Higgsfield", "AI Image/Video Generation",
+                 "Credits Used, Prompts, Preset, Generations Made, Person, Date, Task/Client",
+                 integrated=True),
     ProviderMeta("midjourney", "Midjourney", "Midjourney Inc.", "AI Image Generation", "Not yet captured"),
     ProviderMeta("runway", "Runway ML", "Runway", "AI Video Generation", "Not yet captured"),
     ProviderMeta("claude", "Claude", "Anthropic", "Text / Content Generation", "Not yet captured"),
@@ -51,7 +61,6 @@ PROVIDERS: tuple[ProviderMeta, ...] = (
     ProviderMeta("pika", "Pika", "Pika Labs", "AI Video Generation", "Not yet captured"),
     ProviderMeta("leonardo", "Leonardo AI", "Leonardo.Ai", "AI Image Generation", "Not yet captured"),
     ProviderMeta("synthesia", "Synthesia", "Synthesia", "AI Avatar / Video", "Not yet captured"),
-    ProviderMeta("heygen", "HeyGen", "HeyGen", "AI Avatar / Video", "Not yet captured"),
     ProviderMeta("descript", "Descript", "Descript", "AI Video/Audio Editing", "Not yet captured"),
     ProviderMeta("perplexity", "Perplexity", "Perplexity AI", "AI Search / Research", "Not yet captured"),
     ProviderMeta("jasper", "Jasper", "Jasper AI", "Text / Copywriting", "Not yet captured"),

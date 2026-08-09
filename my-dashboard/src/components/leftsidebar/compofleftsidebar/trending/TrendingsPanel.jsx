@@ -10,6 +10,9 @@ import { usePermissions } from '../../../../hooks/usePermissions';
 import { buildFileDownloadUrl, buildFileOpenUrl, buildFileThumbnailUrl } from '../../../../utils/fileLinks';
 import KlingTab from './kling/KlingTab';
 import FreepikExplorerBody from '../workspace/tabs/freepik-capture/FreepikExplorerBody';
+import HeygenExplorerBody from '../workspace/tabs/heygen-capture/HeygenExplorerBody';
+import HiggsfieldExplorerBody from '../workspace/tabs/higgsfield-capture/HiggsfieldExplorerBody';
+import EnvatoExplorerBody from '../workspace/tabs/envato-capture/EnvatoExplorerBody';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
@@ -598,12 +601,26 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   // button itself from appearing for people who'd only see its access-denied
   // message anyway.
   const canViewFreepikGenerations = isAdmin;
+  // HeyGen's Capture Center follows the identical isAdmin-only gate as
+  // Freepik's - same backend shape (admin-gated GET endpoints only), same
+  // reasoning for not adding a dedicated PERMISSION_MATRIX key.
+  const canViewHeyGenGenerations = isAdmin;
+  // Higgsfield's Capture Center follows the identical isAdmin-only gate as
+  // Freepik's/HeyGen's - same backend shape, same reasoning for not adding a
+  // dedicated PERMISSION_MATRIX key.
+  const canViewHiggsfieldGenerations = isAdmin;
+  // Envato's Capture Center follows the identical isAdmin-only gate as every
+  // other provider tab here.
+  const canViewEnvatoGenerations = isAdmin;
   // Lifted up here (rather than owned inside FreepikExplorerBody/KlingTab) so
   // the search input can live in the panel's own header row, in the same
   // slot the Data tab's "Search across all formats..." box uses, per the
   // "search bar should sit between RMW Data and the window controls" request.
   const [freepikSearchInput, setFreepikSearchInput] = useState('');
   const [klingSearchInput, setKlingSearchInput] = useState('');
+  const [heygenSearchInput, setHeygenSearchInput] = useState('');
+  const [higgsfieldSearchInput, setHiggsfieldSearchInput] = useState('');
+  const [envatoSearchInput, setEnvatoSearchInput] = useState('');
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -808,6 +825,9 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const isDirectoryTab = activeView === 'directory';
   const isKlingTab = activeView === 'kling';
   const isFreepikTab = activeView === 'freepik';
+  const isHeyGenTab = activeView === 'heygen';
+  const isHiggsfieldTab = activeView === 'higgsfield';
+  const isEnvatoTab = activeView === 'envato';
   const isDataTab = activeView === 'data';
   const activeDirectoryCriteria = useMemo(
     () => directoryStructure.filter((criterionKey) => criterionKey !== 'none'),
@@ -1209,7 +1229,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       >
         <div className="trendings-header">
           <h2>RMW Data</h2>
-          {!isMinimized && !isKlingTab && !isFreepikTab && (
+          {!isMinimized && !isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && (
             <div className="trendings-header-search">
               <input
                 className="trendings-search"
@@ -1227,6 +1247,39 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                 aria-label="Search Freepik generations by prompt or creation id"
                 value={freepikSearchInput}
                 onChange={(e) => setFreepikSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isHeyGenTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search scripts..."
+                aria-label="Search HeyGen generations by script or video id"
+                value={heygenSearchInput}
+                onChange={(e) => setHeygenSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isHiggsfieldTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search prompts..."
+                aria-label="Search Higgsfield generations by prompt or generation id"
+                value={higgsfieldSearchInput}
+                onChange={(e) => setHiggsfieldSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isEnvatoTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search prompts..."
+                aria-label="Search Envato generations by prompt or item id"
+                value={envatoSearchInput}
+                onChange={(e) => setEnvatoSearchInput(e.target.value)}
               />
             </div>
           )}
@@ -1294,15 +1347,48 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                     Freepik
                   </button>
                 )}
+                {canViewHeyGenGenerations && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isHeyGenTab}
+                    className={`trendings-view-tab ${isHeyGenTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('heygen')}
+                  >
+                    HeyGen
+                  </button>
+                )}
+                {canViewHiggsfieldGenerations && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isHiggsfieldTab}
+                    className={`trendings-view-tab ${isHiggsfieldTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('higgsfield')}
+                  >
+                    Higgsfield
+                  </button>
+                )}
+                {canViewEnvatoGenerations && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isEnvatoTab}
+                    className={`trendings-view-tab ${isEnvatoTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('envato')}
+                  >
+                    Envato
+                  </button>
+                )}
               </div>
-              {!isKlingTab && !isFreepikTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && (
                 <div className="trendings-toolbar-status">
                   {isDirectoryTab
                     ? 'Browse folders first, then load only the files for the selected path.'
                     : `Fast databank mode is active.${lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}`}
                 </div>
               )}
-              {!isKlingTab && !isFreepikTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && (
                 <div className="trendings-select-filters">
                   <label className="trendings-filter-select-wrap">
                     <span className="trendings-filter-select-label">Format</span>
@@ -1334,7 +1420,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                   </label>
                 </div>
               )}
-              {!isKlingTab && !isFreepikTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && (
                 <div className="trendings-sort-group">
                   <button
                     className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
@@ -1360,12 +1446,21 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                     ? 'trendings-content--kling'
                     : isFreepikTab
                       ? 'trendings-content--freepik'
-                      : 'trendings-content--data'
+                      : isHeyGenTab
+                        ? 'trendings-content--heygen'
+                        : isHiggsfieldTab
+                          ? 'trendings-content--higgsfield'
+                          : isEnvatoTab
+                            ? 'trendings-content--envato'
+                            : 'trendings-content--data'
               }`}
             >
-              {!isKlingTab && !isFreepikTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
               {isKlingTab && <KlingTab isActive={isKlingTab} searchInput={klingSearchInput} />}
               {isFreepikTab && <FreepikExplorerBody searchInput={freepikSearchInput} />}
+              {isHeyGenTab && <HeygenExplorerBody searchInput={heygenSearchInput} />}
+              {isHiggsfieldTab && <HiggsfieldExplorerBody searchInput={higgsfieldSearchInput} />}
+              {isEnvatoTab && <EnvatoExplorerBody searchInput={envatoSearchInput} />}
               {isDirectoryTab && (
                 <div className="trendings-directory-window">
                   <div className="trendings-directory-header">

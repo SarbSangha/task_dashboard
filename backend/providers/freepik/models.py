@@ -39,6 +39,25 @@ from datetime import datetime
 
 from database_config import Base
 from utils.datetime_utils import serialize_utc_datetime
+from utils import r2_storage
+
+
+def _presigned_mirror_url(key, *, client=None):
+    """Mints a fresh short-lived R2 URL for a mirrored-asset key at
+    serialization time (see FreepikGeneration.mirrored_asset_key's own
+    comment for why this can't just be a stored column value - the bucket is
+    private). Swallows any failure (R2 not configured, a transient signing
+    error) rather than let one broken asset take down an entire API
+    response - the field just comes back null, same as never having been
+    mirrored yet."""
+    if not key:
+        return None
+    try:
+        if not r2_storage.is_configured():
+            return None
+        return r2_storage.generate_presigned_url(key, client=client)
+    except Exception:
+        return None
 
 
 class FreepikCaptureEvent(Base):
@@ -292,10 +311,36 @@ class FreepikGeneration(Base):
     metadata_json = Column(JSON)
     source_metadata_json = Column(JSON)
 
+    # ---- Asset mirroring (see providers/freepik/asset_mirror.py) ----
+    # Freepik/Pikaso's own CDN URLs (preview_url/raw_url/download_url/etc
+    # above) are signed with a short-lived expiry token - once it lapses the
+    # original 404s permanently, even for a generation that captured fine.
+    # These hold the R2 object KEY of our own permanent copy (NOT a URL -
+    # the bucket is private, so to_dict() below mints a fresh short-lived
+    # presigned URL from the key on every read rather than storing one that
+    # would itself go stale); the raw_url/download_url/etc columns above are
+    # left untouched as the historical record of what Freepik originally
+    # returned. mirrored_asset_url/mirrored_thumbnail_url (Text, unindexed)
+    # were the original 2026-08-05 columns, before discovering the bucket is
+    # private and a static "public" URL doesn't actually load - kept only so
+    # any already-written value isn't silently dropped by the migration;
+    # to_dict() no longer reads them.
+    mirrored_asset_url = Column(Text)
+    mirrored_thumbnail_url = Column(Text)
+    mirrored_asset_key = Column(Text)
+    mirrored_thumbnail_key = Column(Text)
+    asset_mirror_status = Column(String(20), nullable=False, default="pending", index=True)  # pending | mirrored | failed | skipped
+    asset_mirror_attempted_at = Column(DateTime)
+    asset_mirror_error = Column(Text)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
 
     def to_dict(self):
+        # One R2 client shared by both presign calls below (asset + thumbnail)
+        # instead of building a fresh one for each - client construction is
+        # local/no network I/O, but no reason to pay it twice per row.
+        r2_client = r2_storage.build_client() if (self.mirrored_asset_key or self.mirrored_thumbnail_key) and r2_storage.is_configured() else None
         return {
             "id": self.id,
             "provider": self.provider,
@@ -387,8 +432,166 @@ class FreepikGeneration(Base):
             "folderName": self.folder_name,
             "metadata": self.metadata_json or {},
             "sourceMetadata": self.source_metadata_json or {},
+            "mirroredAssetUrl": _presigned_mirror_url(self.mirrored_asset_key, client=r2_client),
+            "mirroredThumbnailUrl": _presigned_mirror_url(self.mirrored_thumbnail_key, client=r2_client),
+            "assetMirrorStatus": self.asset_mirror_status,
+            "assetMirrorAttemptedAt": serialize_utc_datetime(self.asset_mirror_attempted_at),
+            "assetMirrorError": self.asset_mirror_error,
             "createdAt": serialize_utc_datetime(self.created_at),
             "updatedAt": serialize_utc_datetime(self.updated_at),
+        }
+
+
+class FreepikSearchQuery(Base):
+    """One row per stock-library search on freepik.com or magnific.com -
+    added 2026-08-06 alongside FreepikDownload below, since neither a search
+    nor a download of an EXISTING (not user-generated) stock asset has a
+    `creation.id` FreepikGeneration can key on - these are a structurally
+    different action, not a thinner version of a generation.
+
+    Deliberately NOT gated behind the Task/Client picker the way Generate/
+    Download clicks are (Sarbjeet's own call: search is free-form browsing,
+    only the eventual download of something found needs project
+    attribution) - linked_task_id/linked_client_id are always null here.
+    owner_user_id is still capture-time-only ownership (same posture as
+    FreepikGeneration - see its own docstring), best-effort since a search
+    can happen outside any active launch ticket.
+
+    Built from a single UI screenshot (magnific.com's stock search results
+    page, `?term=...` in the URL), not confirmed DOM/network structure for
+    either host - every field below is best-effort DOM/URL scraping in
+    content-freepik.js, tighten once real interaction across both hosts is
+    observed, same posture every other provider's Phase 1 shipped with."""
+    __tablename__ = "freepik_search_queries"
+    __table_args__ = (
+        Index("ix_freepik_search_queries_owner_created_at", "owner_user_id", "created_at"),
+        Index("ix_freepik_search_queries_credential_created_at", "credential_id", "created_at"),
+        Index("ix_freepik_search_queries_term", "search_term"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String(40), nullable=False, default="freepik", index=True)
+    source_capture_event_id = Column(Integer, ForeignKey("freepik_capture_events.id", ondelete="SET NULL"))
+    tool_id = Column(Integer, ForeignKey("it_portal_tools.id"), index=True)
+    credential_id = Column(Integer, ForeignKey("it_portal_tool_credentials.id"), index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    ownership_status = Column(String(40), nullable=False, default="unknown", index=True)
+
+    search_term = Column(Text)
+    # "freepik.com" | "magnific.com" - which surface the search happened on,
+    # since both share this one capture pipeline (see constants.py's
+    # TOOL_SLUGS comment).
+    source_host = Column(String(80), index=True)
+    page_url = Column(Text)
+    result_count_label = Column(String(40))  # raw as displayed, e.g. "28.7k results" - not parsed to an int, Freepik's own abbreviation format is unconfirmed
+    filters_json = Column(JSON)  # whatever filter chips were visible (License/AI-generated/Orientation/...) - best-effort, unconfirmed shape
+
+    searched_at = Column(DateTime)
+    metadata_json = Column(JSON)  # catch-all raw payload, nothing discarded - same posture as FreepikGeneration's own metadata_json
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "provider": self.provider,
+            "sourceCaptureEventId": self.source_capture_event_id,
+            "toolId": self.tool_id,
+            "credentialId": self.credential_id,
+            "ownerUserId": self.owner_user_id,
+            "ownershipStatus": self.ownership_status,
+            "searchTerm": self.search_term,
+            "sourceHost": self.source_host,
+            "pageUrl": self.page_url,
+            "resultCountLabel": self.result_count_label,
+            "filters": self.filters_json or {},
+            "searchedAt": serialize_utc_datetime(self.searched_at),
+            "metadata": self.metadata_json or {},
+            "createdAt": serialize_utc_datetime(self.created_at),
+        }
+
+
+class FreepikDownload(Base):
+    """One row per download of an EXISTING (not user-generated) stock asset
+    on freepik.com or magnific.com - see FreepikSearchQuery's own docstring
+    for why this is a separate table from FreepikGeneration. Unlike search,
+    a download click IS gated behind the same mandatory Task/Client picker
+    Generate uses (Sarbjeet's own call - "what he download for what
+    project" is the whole point of capturing this at all), so
+    linked_task_id/linked_client_id are populated the same way
+    FreepikCaptureEvent's own columns are for a generation_submitted event.
+
+    Built from a single UI screenshot (a hover-card Download icon button on
+    a magnific.com stock search result), not confirmed DOM structure -
+    asset_title/asset_thumbnail_url/asset_source_url are best-effort scrapes
+    of whatever's visible near the clicked button, tighten once real click
+    behavior on both hosts is observed."""
+    __tablename__ = "freepik_downloads"
+    __table_args__ = (
+        Index("ix_freepik_downloads_owner_created_at", "owner_user_id", "created_at"),
+        Index("ix_freepik_downloads_credential_created_at", "credential_id", "created_at"),
+        # No explicit single-column Index() for linked_task_id/linked_client_id
+        # here - column-level index=True below already creates one apiece.
+        # An explicit duplicate entry made Base.metadata.create_all fail with
+        # "index already exists" (self-caught immediately via the smoke
+        # test) - same lesson this codebase already learned once for a
+        # different provider's table.
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String(40), nullable=False, default="freepik", index=True)
+    source_capture_event_id = Column(Integer, ForeignKey("freepik_capture_events.id", ondelete="SET NULL"))
+    tool_id = Column(Integer, ForeignKey("it_portal_tools.id"), index=True)
+    credential_id = Column(Integer, ForeignKey("it_portal_tool_credentials.id"), index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    ownership_status = Column(String(40), nullable=False, default="unknown", index=True)
+
+    # Task/Client Mapping - carried in from FreepikCaptureEvent.linked_task_id/
+    # name at capture time, same as FreepikGeneration's own columns of the
+    # same name (see capture.py's re-validation of both before trusting them).
+    linked_task_id = Column(Integer, ForeignKey("tasks.id", ondelete="SET NULL"), index=True)
+    linked_task_name = Column(String(255))
+    linked_client_id = Column(Integer, ForeignKey("generation_clients.id", ondelete="SET NULL"), index=True)
+    linked_client_name = Column(String(255))
+
+    asset_title = Column(Text)
+    asset_thumbnail_url = Column(Text)
+    asset_source_url = Column(Text)
+    # The search term active on the page at the moment of download, if any -
+    # best-effort correlation (same page/tab, read from the URL at click
+    # time), not a guaranteed causal link to which search actually surfaced
+    # this specific asset.
+    search_term = Column(Text)
+    source_host = Column(String(80), index=True)
+    page_url = Column(Text)
+
+    downloaded_at = Column(DateTime)
+    metadata_json = Column(JSON)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "provider": self.provider,
+            "sourceCaptureEventId": self.source_capture_event_id,
+            "toolId": self.tool_id,
+            "credentialId": self.credential_id,
+            "ownerUserId": self.owner_user_id,
+            "ownershipStatus": self.ownership_status,
+            "linkedTaskId": self.linked_task_id,
+            "linkedTaskName": self.linked_task_name,
+            "linkedClientId": self.linked_client_id,
+            "linkedClientName": self.linked_client_name,
+            "assetTitle": self.asset_title,
+            "assetThumbnailUrl": self.asset_thumbnail_url,
+            "assetSourceUrl": self.asset_source_url,
+            "searchTerm": self.search_term,
+            "sourceHost": self.source_host,
+            "pageUrl": self.page_url,
+            "downloadedAt": serialize_utc_datetime(self.downloaded_at),
+            "metadata": self.metadata_json or {},
+            "createdAt": serialize_utc_datetime(self.created_at),
         }
 
 

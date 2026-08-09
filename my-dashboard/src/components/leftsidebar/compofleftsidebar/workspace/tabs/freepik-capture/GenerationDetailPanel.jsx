@@ -72,12 +72,20 @@ export default function GenerationDetailPanel({ generationId }) {
 
   const ownershipMeta = getOwnershipStatusMeta(generation.ownershipStatus);
   const statusMeta = getGenerationStatusMeta(generation.status);
+  // mirroredAssetUrl/mirroredThumbnailUrl are our own permanent R2 copies
+  // (see providers/freepik/asset_mirror.py) - preferred once they exist,
+  // since Freepik's own preview/download/raw URLs are signed with a
+  // short-lived token and eventually 404 even for a perfectly valid
+  // generation (the "Akamai error page instead of the image" report this
+  // was built to fix). Falls back to Freepik's original URLs for anything
+  // not mirrored yet.
+  const primaryAssetUrl = generation.mirroredAssetUrl || generation.downloadUrl;
   // downloadUrl/rawUrl point at the actual .mp4 for video-generator creations
   // (see freepikCaptureUtils.isVideoAssetUrl) - only ever fed to a <video>
   // tag, never <img>, or a video creation renders a broken image icon.
-  const videoUrl = [generation.downloadUrl, generation.rawUrl].find(isVideoAssetUrl) || null;
-  const heroImage = generation.thumbnailUrl || generation.previewUrl || generation.largePreviewUrl
-    || (videoUrl ? null : generation.downloadUrl);
+  const videoUrl = [generation.mirroredAssetUrl, generation.downloadUrl, generation.rawUrl].find(isVideoAssetUrl) || null;
+  const heroImage = generation.mirroredThumbnailUrl || generation.thumbnailUrl || generation.previewUrl || generation.largePreviewUrl
+    || (videoUrl ? null : primaryAssetUrl);
   const dimensions = generation.width && generation.height ? `${generation.width} × ${generation.height}` : null;
   const outputDimensions = generation.outputWidth && generation.outputHeight
     ? `${generation.outputWidth} × ${generation.outputHeight}`
@@ -112,8 +120,8 @@ export default function GenerationDetailPanel({ generationId }) {
       </div>
 
       <div className="kling-drawer-actions">
-        {generation.downloadUrl && (
-          <a href={generation.downloadUrl} target="_blank" rel="noreferrer" className="kling-drawer-action-btn">
+        {primaryAssetUrl && (
+          <a href={primaryAssetUrl} target="_blank" rel="noreferrer" className="kling-drawer-action-btn">
             Open Original
           </a>
         )}
@@ -122,8 +130,8 @@ export default function GenerationDetailPanel({ generationId }) {
             Open on Magnific
           </a>
         )}
-        {generation.downloadUrl && (
-          <a href={generation.downloadUrl} download className="kling-drawer-action-btn">
+        {primaryAssetUrl && (
+          <a href={primaryAssetUrl} download className="kling-drawer-action-btn">
             Download
           </a>
         )}
@@ -180,6 +188,15 @@ export default function GenerationDetailPanel({ generationId }) {
         <MetaField label="Ownership" value={ownershipMeta.label} />
         <MetaField label="Attribution Source" value={generation.ownershipSource} />
         <MetaField label="Status" value={statusMeta.label} />
+        <MetaField
+          label="Asset Backup"
+          value={
+            generation.assetMirrorStatus === 'mirrored' ? 'Saved to permanent storage'
+              : generation.assetMirrorStatus === 'failed' ? `Backup failed${generation.assetMirrorError ? ` — ${generation.assetMirrorError}` : ''}`
+              : generation.assetMirrorStatus === 'skipped' ? 'No source asset to back up'
+              : 'Pending — will back up automatically'
+          }
+        />
         <MetaField label="Generated" value={formatAbsoluteTime(generation.providerCreatedAt)} />
         <MetaField label="Captured" value={formatAbsoluteTime(generation.createdAt)} />
         <MetaField label="Creation ID" value={generation.creationId} />

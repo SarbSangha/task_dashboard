@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import { useNearViewport } from '../../../../../../hooks/useNearViewport';
 import { formatRelativeTime, getOwnershipStatusMeta, isVideoAssetUrl, truncate } from './freepikCaptureUtils';
@@ -14,14 +14,26 @@ import { formatRelativeTime, getOwnershipStatusMeta, isVideoAssetUrl, truncate }
 // assigns, e.g. "9:16", "auto").
 const FreepikCardPreview = React.memo(function FreepikCardPreview({ generation }) {
   const [previewRef, isNearViewport] = useNearViewport();
-  const [failed, setFailed] = useState(false);
-  const imageUrl = generation.thumbnailUrl || generation.previewUrl || generation.largePreviewUrl;
+  // mirroredThumbnailUrl is our own permanent R2 copy (see
+  // providers/freepik/asset_mirror.py) - preferred once it exists. Freepik's
+  // own thumbnailUrl/previewUrl/largePreviewUrl are signed with
+  // INDEPENDENTLY expiring tokens (confirmed 2026-08-05 - one variant's
+  // token can be dead while another's still has days left), so on a load
+  // failure this advances to the next candidate instead of giving up and
+  // showing "No preview" when a perfectly working URL was one field over.
+  const candidates = useMemo(
+    () => [generation.mirroredThumbnailUrl, generation.thumbnailUrl, generation.previewUrl, generation.largePreviewUrl].filter(Boolean),
+    [generation.mirroredThumbnailUrl, generation.thumbnailUrl, generation.previewUrl, generation.largePreviewUrl]
+  );
+  const [candidateIndex, setCandidateIndex] = useState(0);
 
   useEffect(() => {
-    setFailed(false);
-  }, [imageUrl]);
+    setCandidateIndex(0);
+  }, [candidates]);
 
-  if (!imageUrl || failed) {
+  const imageUrl = candidates[candidateIndex];
+
+  if (!imageUrl) {
     return <div ref={previewRef} className="kling-card-fallback">No preview</div>;
   }
 
@@ -35,7 +47,7 @@ const FreepikCardPreview = React.memo(function FreepikCardPreview({ generation }
           loading="lazy"
           decoding="async"
           fetchPriority="low"
-          onError={() => setFailed(true)}
+          onError={() => setCandidateIndex((index) => index + 1)}
         />
       ) : (
         <div className="kling-card-fallback">Image Preview</div>

@@ -53,7 +53,7 @@ const TOOL_SESSION_DOMAINS = {
   canva: ['canva.com', 'www.canva.com'],
   claude: ['claude.ai', 'www.claude.ai'],
   enhancor: ['enhancor.ai', 'www.enhancor.ai', 'app.enhancor.ai'],
-  envato: ['envato.com', 'elements.envato.com', 'market.envato.com'],
+  envato: ['envato.com', 'www.envato.com', 'app.envato.com', 'elements.envato.com', 'market.envato.com'],
   freepik: ['freepik.com', 'www.freepik.com', 'magnific.com', 'www.magnific.com'],
   flow: ['labs.google'],
   genspark: ['genspark.ai', 'www.genspark.ai', 'login.genspark.ai'],
@@ -557,9 +557,39 @@ async function getActiveLaunchMap() {
   const now = Date.now();
   let changed = false;
 
+  // `ticket` (the short-lived, 20min extension_autofill ticket) and
+  // `usageTrackingTicket` (24h) expire independently - see
+  // handleKlingFetchMyActiveTasksMessage/handleKlingFetchActiveClientsMessage
+  // above, which already explicitly accept usageTrackingTicket alone as
+  // sufficient, and get_my_active_tasks_for_generation (tasks_router.py)
+  // which already resolves the actor from usage_ticket alone server-side.
+  // The bug this fixes (reported 2026-08-05): this function used to delete
+  // the WHOLE record - both tickets - the moment the record's single
+  // `expiresAt` (always the shorter 20min ticket's expiry, see
+  // setActiveLaunch) passed, silently discarding the still-valid 24h
+  // usageTrackingTicket right along with it. That's why Kling's task/client
+  // picker started failing with "Launch Kling from the dashboard..." only
+  // ~20 minutes after launch, well before the 24h ticket it actually needs
+  // for that specific check had expired. Each ticket is now cleared on its
+  // own expiry, and the whole record is only dropped once neither survives.
   Object.keys(launchMap).forEach((key) => {
     const item = launchMap[key];
-    if (!item || Number(item.expiresAt || 0) <= now) {
+    if (!item) {
+      delete launchMap[key];
+      changed = true;
+      return;
+    }
+    if (item.ticket && Number(item.expiresAt || 0) <= now) {
+      item.ticket = '';
+      item.expiresAt = 0;
+      changed = true;
+    }
+    if (item.usageTrackingTicket && Number(item.usageTrackingTicketExpiresAt || 0) <= now) {
+      item.usageTrackingTicket = '';
+      item.usageTrackingTicketExpiresAt = 0;
+      changed = true;
+    }
+    if (!item.ticket && !item.usageTrackingTicket) {
       delete launchMap[key];
       changed = true;
     }
@@ -2611,6 +2641,90 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     return true;
   }
 
+  if (message?.type === 'HEYGEN_CAPTURE_EVENT') {
+    handleHeygenCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'HEYGEN_SYNC_PROGRESS') {
+    handleHeygenSyncProgressMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'HEYGEN_FETCH_MY_ACTIVE_TASKS') {
+    handleHeygenFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'HEYGEN_FETCH_ACTIVE_CLIENTS') {
+    handleHeygenFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'HIGGSFIELD_CAPTURE_EVENT') {
+    handleHiggsfieldCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'HIGGSFIELD_SYNC_PROGRESS') {
+    handleHiggsfieldSyncProgressMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'HIGGSFIELD_FETCH_MY_ACTIVE_TASKS') {
+    handleHiggsfieldFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'HIGGSFIELD_FETCH_ACTIVE_CLIENTS') {
+    handleHiggsfieldFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'ENVATO_CAPTURE_EVENT') {
+    handleEnvatoCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'ENVATO_SYNC_PROGRESS') {
+    handleEnvatoSyncProgressMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'ENVATO_FETCH_MY_ACTIVE_TASKS') {
+    handleEnvatoFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'ENVATO_FETCH_ACTIVE_CLIENTS') {
+    handleEnvatoFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'KLING_FETCH_MY_ACTIVE_TASKS') {
     handleKlingFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse(result))
@@ -2651,6 +2765,12 @@ if (chrome?.runtime?.onStartup) {
     runSafeStartupTask(runFreepikCaptureFlush);
     runSafeStartupTask(() => maybeReportFreepikCaptureHealth(true));
     runSafeStartupTask(() => chrome.alarms.create(FREEPIK_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runHiggsfieldCaptureFlush);
+    runSafeStartupTask(() => maybeReportHiggsfieldCaptureHealth(true));
+    runSafeStartupTask(() => chrome.alarms.create(HIGGSFIELD_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runEnvatoCaptureFlush);
+    runSafeStartupTask(() => maybeReportEnvatoCaptureHealth(true));
+    runSafeStartupTask(() => chrome.alarms.create(ENVATO_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
   });
 }
 
@@ -2661,6 +2781,10 @@ if (chrome?.runtime?.onInstalled) {
     runSafeStartupTask(() => chrome.alarms.create(CHATGPT_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
     runSafeStartupTask(runFreepikCaptureFlush);
     runSafeStartupTask(() => chrome.alarms.create(FREEPIK_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runHiggsfieldCaptureFlush);
+    runSafeStartupTask(() => chrome.alarms.create(HIGGSFIELD_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runEnvatoCaptureFlush);
+    runSafeStartupTask(() => chrome.alarms.create(ENVATO_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
   });
 }
 
@@ -2684,6 +2808,18 @@ if (chrome?.alarms?.onAlarm) {
     }
     if (alarm?.name === FREEPIK_CAPTURE_HEALTH_ALARM) {
       runSafeStartupTask(() => maybeReportFreepikCaptureHealth(true));
+    }
+    if (alarm?.name === HIGGSFIELD_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runHiggsfieldCaptureFlush);
+    }
+    if (alarm?.name === HIGGSFIELD_CAPTURE_HEALTH_ALARM) {
+      runSafeStartupTask(() => maybeReportHiggsfieldCaptureHealth(true));
+    }
+    if (alarm?.name === ENVATO_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runEnvatoCaptureFlush);
+    }
+    if (alarm?.name === ENVATO_CAPTURE_HEALTH_ALARM) {
+      runSafeStartupTask(() => maybeReportEnvatoCaptureHealth(true));
     }
   });
 }

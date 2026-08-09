@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from models_new import User
 from providers.freepik.capture import get_ingest_stats_snapshot
 from providers.freepik.constants import OWNERSHIP_STATUS_RESOLVED, PROVIDER
-from providers.freepik.models import FreepikCaptureEvent, FreepikGeneration
+from providers.freepik.models import FreepikCaptureEvent, FreepikDownload, FreepikGeneration, FreepikSearchQuery
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
@@ -72,7 +72,17 @@ def _apply_generation_filters(query, filters: GenerationFilters):
 def list_generations(db: Session, *, filters: GenerationFilters, limit: int = DEFAULT_LIMIT, offset: int = 0):
     query = _apply_generation_filters(db.query(FreepikGeneration), filters)
     total = query.count()
-    items = query.order_by(FreepikGeneration.created_at.desc()).offset(offset).limit(limit).all()
+    # Sort by the generation's real-world date (provider_created_at), not our
+    # own row's insert time (created_at) - they diverge badly for
+    # reconciliation-imported rows, which can all get inserted in the same
+    # bulk-backfill run (same created_at, give or take milliseconds)
+    # regardless of how old the actual Freepik creation is. created_at is
+    # only a fallback for the brief window before a submitted-click row has
+    # any provider timestamp yet. Same fix as providers/heygen/queries.py's
+    # list_generations (2026-08-05) - see that file's comment for the full
+    # reasoning.
+    sort_key = func.coalesce(FreepikGeneration.provider_created_at, FreepikGeneration.created_at)
+    items = query.order_by(sort_key.desc()).offset(offset).limit(limit).all()
     return items, total
 
 
@@ -80,6 +90,105 @@ def get_generation(db: Session, generation_id: int) -> Optional[FreepikGeneratio
     return (
         db.query(FreepikGeneration)
         .filter(FreepikGeneration.provider == PROVIDER, FreepikGeneration.id == generation_id)
+        .first()
+    )
+
+
+@dataclass
+class SearchQueryFilters:
+    """FreepikSearchQuery has no linked_task_id/linked_client_id (search is
+    deliberately ungated - see models.py's own docstring), so this is a
+    smaller filter set than GenerationFilters/DownloadFilters."""
+    owner_user_id: Optional[int] = None
+    source_host: Optional[str] = None
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+    q: Optional[str] = None
+
+
+def _apply_search_query_filters(query, filters: SearchQueryFilters):
+    query = query.filter(FreepikSearchQuery.provider == PROVIDER)
+    if filters.owner_user_id is not None:
+        query = query.filter(FreepikSearchQuery.owner_user_id == filters.owner_user_id)
+    if filters.source_host:
+        query = query.filter(FreepikSearchQuery.source_host == filters.source_host)
+    if filters.date_from:
+        query = query.filter(func.date(FreepikSearchQuery.created_at) >= filters.date_from)
+    if filters.date_to:
+        query = query.filter(func.date(FreepikSearchQuery.created_at) <= filters.date_to)
+    if filters.q:
+        query = query.filter(FreepikSearchQuery.search_term.ilike(f"%{filters.q}%"))
+    return query
+
+
+def list_search_queries(db: Session, *, filters: SearchQueryFilters, limit: int = DEFAULT_LIMIT, offset: int = 0):
+    query = _apply_search_query_filters(db.query(FreepikSearchQuery), filters)
+    total = query.count()
+    # searched_at (when the extension itself observed the search, best-effort
+    # DOM/URL-scraped - see models.py) falls back to created_at (server
+    # receive time) for the same "not every row has the richer timestamp yet"
+    # reason list_generations' own sort_key does.
+    sort_key = func.coalesce(FreepikSearchQuery.searched_at, FreepikSearchQuery.created_at)
+    items = query.order_by(sort_key.desc()).offset(offset).limit(limit).all()
+    return items, total
+
+
+def get_search_query(db: Session, search_query_id: int) -> Optional[FreepikSearchQuery]:
+    return (
+        db.query(FreepikSearchQuery)
+        .filter(FreepikSearchQuery.provider == PROVIDER, FreepikSearchQuery.id == search_query_id)
+        .first()
+    )
+
+
+@dataclass
+class DownloadFilters:
+    owner_user_id: Optional[int] = None
+    source_host: Optional[str] = None
+    linked_task_id: Optional[int] = None
+    linked_client_id: Optional[int] = None
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+    q: Optional[str] = None
+
+
+def _apply_download_filters(query, filters: DownloadFilters):
+    query = query.filter(FreepikDownload.provider == PROVIDER)
+    if filters.owner_user_id is not None:
+        query = query.filter(FreepikDownload.owner_user_id == filters.owner_user_id)
+    if filters.source_host:
+        query = query.filter(FreepikDownload.source_host == filters.source_host)
+    if filters.linked_task_id is not None:
+        query = query.filter(FreepikDownload.linked_task_id == filters.linked_task_id)
+    if filters.linked_client_id is not None:
+        query = query.filter(FreepikDownload.linked_client_id == filters.linked_client_id)
+    if filters.date_from:
+        query = query.filter(func.date(FreepikDownload.created_at) >= filters.date_from)
+    if filters.date_to:
+        query = query.filter(func.date(FreepikDownload.created_at) <= filters.date_to)
+    if filters.q:
+        like = f"%{filters.q}%"
+        query = query.filter(
+            (FreepikDownload.asset_title.ilike(like))
+            | (FreepikDownload.search_term.ilike(like))
+            | (FreepikDownload.linked_task_name.ilike(like))
+            | (FreepikDownload.linked_client_name.ilike(like))
+        )
+    return query
+
+
+def list_downloads(db: Session, *, filters: DownloadFilters, limit: int = DEFAULT_LIMIT, offset: int = 0):
+    query = _apply_download_filters(db.query(FreepikDownload), filters)
+    total = query.count()
+    sort_key = func.coalesce(FreepikDownload.downloaded_at, FreepikDownload.created_at)
+    items = query.order_by(sort_key.desc()).offset(offset).limit(limit).all()
+    return items, total
+
+
+def get_download(db: Session, download_id: int) -> Optional[FreepikDownload]:
+    return (
+        db.query(FreepikDownload)
+        .filter(FreepikDownload.provider == PROVIDER, FreepikDownload.id == download_id)
         .first()
     )
 
@@ -190,12 +299,16 @@ def get_metrics(db: Session) -> dict:
         .scalar()
         or 0.0
     )
+    total_search_queries = db.query(func.count(FreepikSearchQuery.id)).filter(FreepikSearchQuery.provider == PROVIDER).scalar() or 0
+    total_downloads = db.query(func.count(FreepikDownload.id)).filter(FreepikDownload.provider == PROVIDER).scalar() or 0
     return {
         "ingest": get_ingest_stats_snapshot(),
         "totalGenerations": int(total_generations),
         "resolvedOwnershipCount": int(resolved_count),
         "unknownOwnershipCount": int(total_generations - resolved_count),
         "creditsChargedTotal": float(credits_total),
+        "totalSearchQueries": int(total_search_queries),
+        "totalDownloads": int(total_downloads),
     }
 
 
