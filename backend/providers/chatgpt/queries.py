@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import and_, case, cast, func, or_
+from sqlalchemy import and_, case, cast, distinct, func, or_
 from sqlalchemy.orm import Query, Session
 from sqlalchemy.types import Text
 
@@ -206,22 +206,63 @@ def list_conversations(db: Session, *, filters: EventFilters, limit: int, offset
     # untouched - list_events (the raw Developer Console event inspector)
     # legitimately wants "events this session sent", a different, valid
     # question from "conversations this person owns".
+    # ...but requiring resolved ownership and NOTHING else made this the exact
+    # mirror-image of the bug list_users had before 2026-08-05 (see its
+    # docstring): a conversation captured mid-thread never gets a resolved
+    # ConversationRecord, so it was dropped here entirely. list_users was
+    # fixed to fall back to the capturing session (attributed_user_id) and
+    # therefore *counts* those conversations, while this function still
+    # returned only resolved ones - so the two disagreed. A user whose
+    # conversations were all captured mid-thread showed a real conversation
+    # count in the list and then an empty "No conversations captured yet" on
+    # drill-down. Confirmed against live data: 54 of 119 captured
+    # conversations had no ConversationRecord at all, and the "Unconfirmed"
+    # badge the list already renders is driven by exactly the rows this
+    # dropped.
+    #
+    # The attribution rule below is the set-based twin of list_users'
+    # coalesce, so the count and the drill-down are now the same question:
+    #   resolved  -> the conversation belongs to its owner, and to nobody else
+    #                (this is what keeps the shared-credential misattribution
+    #                fix above intact - opening someone else's resolved thread
+    #                still does not put it in your list)
+    #   unresolved-> best-effort: it belongs to whoever's session captured it
+    unconfirmed_conversation_ids: set[str] = set()
     owned_conversation_ids: Optional[set[str]] = None
     if filters.user_id is not None:
-        owned_conversation_ids = {
-            row[0]
-            for row in db.query(ConversationRecord.provider_conversation_id)
+        resolved_owner_by_conversation = {
+            conversation_id: owner_user_id
+            for conversation_id, owner_user_id in db.query(
+                ConversationRecord.provider_conversation_id,
+                ConversationRecord.owner_user_id,
+            )
             .filter(
                 ConversationRecord.provider == PROVIDER,
-                ConversationRecord.owner_user_id == filters.user_id,
                 ConversationRecord.ownership_status == OWNERSHIP_STATUS_RESOLVED,
                 ConversationRecord.provider_conversation_id.isnot(None),
             )
             .all()
         }
+        captured_conversation_ids = {
+            row[0]
+            for row in db.query(distinct(ConversationCaptureEvent.provider_conversation_id))
+            .filter(
+                ConversationCaptureEvent.provider == PROVIDER,
+                ConversationCaptureEvent.user_id == filters.user_id,
+                ConversationCaptureEvent.provider_conversation_id.isnot(None),
+            )
+            .all()
+        }
+        # Anything this user's session captured that nobody owns outright.
+        unconfirmed_conversation_ids = captured_conversation_ids - set(resolved_owner_by_conversation)
+        owned_conversation_ids = {
+            conversation_id
+            for conversation_id, owner_user_id in resolved_owner_by_conversation.items()
+            if owner_user_id == filters.user_id
+        } | unconfirmed_conversation_ids
         if not owned_conversation_ids:
             return [], 0
-        # Ownership already answers the "which user" question above; the
+        # Attribution already answers the "which user" question above; the
         # events query below stays unfiltered by user_id so it still pulls
         # every message in an owned conversation (including any reply
         # someone else's session added to it, which correctly stays part of
@@ -375,6 +416,11 @@ def list_conversations(db: Session, *, filters: EventFilters, limit: int, offset
                 "firstPromptPreview": detail.get("first_prompt_preview"),
                 "lastResponsePreview": detail.get("last_response_preview"),
                 "captureHealth": _classify_conversation_health(detail.get("prompts", 0), detail.get("responses", 0)),
+                # True only on the per-user drill-down, for rows included by
+                # the best-effort branch above - the same thing the user
+                # list's "Unconfirmed" badge warns about, now attributable to
+                # the individual conversation instead of only the person.
+                "isUnconfirmedOwnership": row.conversation_id in unconfirmed_conversation_ids,
                 "firstSeenAt": serialize_utc_datetime(row.first_seen_at),
                 "lastSeenAt": serialize_utc_datetime(row.last_seen_at),
             }

@@ -44,6 +44,14 @@ export default function ConversationCard({
   // same approach as the conversation detail header's own action menu.
   const detailItems = [
     { type: 'info', icon: STATUS_ICON[health.tone] || '⚪', label: health.label },
+    // Per-conversation twin of the user list's "Unconfirmed" badge: this row
+    // is attributed to the person by best effort (their session captured it)
+    // rather than by confirmed ownership, because it was captured mid-thread.
+    conversation.isUnconfirmedOwnership && {
+      type: 'info',
+      icon: '⚠',
+      label: 'Unconfirmed owner',
+    },
     { type: 'separator' },
     { type: 'info', icon: '💬', label: `${formatCount(messages)} messages` },
     { type: 'info', icon: '🖼', label: `${formatCount(conversation.imagesCount || 0)} images` },
