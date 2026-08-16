@@ -2,8 +2,8 @@
 //
 // Renders inside a Shadow DOM root for CSS isolation from Envato's own page
 // styles - mirrors content-freepik-task-modal.js exactly (see its own header
-// comment for the full reasoning behind the Shadow DOM choice and the "at
-// least one of Task/Client" validation rule).
+// comment for the full reasoning behind the Shadow DOM choice and the
+// "Client required, Task optional" validation rule).
 //
 // Exposes exactly one function, openEnvatoTaskSelectionModal(), returning a
 // Promise that resolves to { taskId, taskName, clientId, clientName } (either
@@ -366,7 +366,7 @@ function mountEnvatoTaskModal(resolve) {
   dialog.innerHTML = `
     <div class="rmw-header">
       <p class="rmw-title" id="rmw-task-modal-title">Select Task</p>
-      <p class="rmw-subtitle">Every generation must be linked to an active task or client.</p>
+      <p class="rmw-subtitle">Every generation must be linked to a client. Selecting a task is optional.</p>
     </div>
     <div class="rmw-body"></div>
     <div class="rmw-validation" role="alert"></div>
@@ -402,7 +402,7 @@ function mountEnvatoTaskModal(resolve) {
   }
 
   function updateContinueState() {
-    const enabled = Boolean(taskSection.getSelected() || clientSection.getSelected());
+    const enabled = Boolean(clientSection.getSelected());
     continueBtn.disabled = !enabled;
     if (enabled) showValidation('');
   }
@@ -410,8 +410,8 @@ function mountEnvatoTaskModal(resolve) {
   function confirmAndClose() {
     const task = taskSection.getSelected();
     const client = clientSection.getSelected();
-    if (!task && !client) {
-      showValidation('Please select a task or a client before generating.');
+    if (!client) {
+      showValidation('Please select a client before generating.');
       return;
     }
     close({

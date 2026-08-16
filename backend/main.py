@@ -29,8 +29,12 @@ from db_migrations import ensure_operational_schema
 from models_new import User, Task, TaskParticipant, TaskStatusHistory, ArchivedTask, ActivityLog
 import providers.chatgpt  # noqa: F401 (registers ChatGPT Conversation* models onto Base.metadata)
 from providers.chatgpt import router as chatgpt_router
+from providers.elevenlabs import router as elevenlabs_router
+from providers.elevenlabs.asset_mirror import mirror_pending_generations as mirror_pending_elevenlabs_generations
 from providers.envato import router as envato_router
+from providers.flow import router as flow_router
 from providers.freepik import router as freepik_router
+from providers.flow.asset_mirror import mirror_pending_generations as mirror_pending_flow_generations
 from providers.freepik.asset_mirror import mirror_pending_generations as mirror_pending_freepik_generations
 from providers.heygen import router as heygen_router
 from providers.heygen.asset_mirror import mirror_pending_generations as mirror_pending_heygen_generations
@@ -245,10 +249,32 @@ def _run_freepik_asset_mirror_cycle(limit: int) -> dict:
         db.close()
 
 
+def _run_flow_asset_mirror_cycle(limit: int) -> dict:
+    db = OperationalSessionLocal()
+    try:
+        return mirror_pending_flow_generations(db, limit=limit)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def _run_heygen_asset_mirror_cycle(limit: int) -> dict:
     db = OperationalSessionLocal()
     try:
         return mirror_pending_heygen_generations(db, limit=limit)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _run_elevenlabs_asset_mirror_cycle(limit: int) -> dict:
+    db = OperationalSessionLocal()
+    try:
+        return mirror_pending_elevenlabs_generations(db, limit=limit)
     except Exception:
         db.rollback()
         raise
@@ -319,6 +345,32 @@ async def _periodic_freepik_asset_mirror_dispatch(interval_seconds: int = 300) -
             _safe_print(f"Freepik asset mirror dispatch failed: {exc}")
 
 
+async def _periodic_flow_asset_mirror_dispatch(interval_seconds: int = 300) -> None:
+    """Mirrors Flow's signed CDN assets into our own R2 storage before their
+    Expires=/Signature= token expires and the original goes dead - see
+    providers/flow/asset_mirror.py's module docstring. A no-op (fast return)
+    when R2 isn't configured, so this loop is always safe to start.
+    """
+    while True:
+        await asyncio.sleep(max(60, interval_seconds))
+        try:
+            stats = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _run_flow_asset_mirror_cycle,
+                    _int_env("FLOW_ASSET_MIRROR_BATCH_SIZE", 25),
+                ),
+                timeout=max(30, _int_env("FLOW_ASSET_MIRROR_TIMEOUT_SECONDS", 180)),
+            )
+            if stats.get("scanned"):
+                _safe_print(
+                    "Flow asset mirror scanned="
+                    f"{stats['scanned']} mirrored={stats['mirrored']} "
+                    f"skipped={stats['skipped']} failed={stats['failed']}"
+                )
+        except Exception as exc:
+            _safe_print(f"Flow asset mirror dispatch failed: {exc}")
+
+
 async def _periodic_heygen_asset_mirror_dispatch(interval_seconds: int = 300) -> None:
     """Mirrors HeyGen's signed CDN assets into our own R2 storage before their
     Expires=/Signature= token expires and the original goes dead - see
@@ -343,6 +395,33 @@ async def _periodic_heygen_asset_mirror_dispatch(interval_seconds: int = 300) ->
                 )
         except Exception as exc:
             _safe_print(f"HeyGen asset mirror dispatch failed: {exc}")
+
+
+async def _periodic_elevenlabs_asset_mirror_dispatch(interval_seconds: int = 300) -> None:
+    """Mirrors ElevenLabs' own audio asset URLs into our own R2 storage - see
+    providers/elevenlabs/asset_mirror.py's module docstring (including the
+    open question of whether a candidate URL is ever actually present on a
+    real row yet). A no-op (fast return) when R2 isn't configured, so this
+    loop is always safe to start.
+    """
+    while True:
+        await asyncio.sleep(max(60, interval_seconds))
+        try:
+            stats = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _run_elevenlabs_asset_mirror_cycle,
+                    _int_env("ELEVENLABS_ASSET_MIRROR_BATCH_SIZE", 25),
+                ),
+                timeout=max(30, _int_env("ELEVENLABS_ASSET_MIRROR_TIMEOUT_SECONDS", 180)),
+            )
+            if stats.get("scanned"):
+                _safe_print(
+                    "ElevenLabs asset mirror scanned="
+                    f"{stats['scanned']} mirrored={stats['mirrored']} "
+                    f"skipped={stats['skipped']} failed={stats['failed']}"
+                )
+        except Exception as exc:
+            _safe_print(f"ElevenLabs asset mirror dispatch failed: {exc}")
 
 
 # ==================== LIFESPAN EVENT ====================
@@ -444,10 +523,31 @@ async def lifespan(app: FastAPI):
         _periodic_freepik_asset_mirror_dispatch(_int_env("FREEPIK_ASSET_MIRROR_INTERVAL_SECONDS", 300)),
         name="freepik-asset-mirror-dispatch",
     )
+    flow_asset_mirror_task = asyncio.create_task(
+        _periodic_flow_asset_mirror_dispatch(_int_env("FLOW_ASSET_MIRROR_INTERVAL_SECONDS", 300)),
+        name="flow-asset-mirror-dispatch",
+    )
     heygen_asset_mirror_task = asyncio.create_task(
         _periodic_heygen_asset_mirror_dispatch(_int_env("HEYGEN_ASSET_MIRROR_INTERVAL_SECONDS", 300)),
         name="heygen-asset-mirror-dispatch",
     )
+    # ElevenLabs' periodic asset-mirror sweep is intentionally NOT started
+    # (unlike Freepik's/HeyGen's above). Confirmed 2026-08-13 (see
+    # providers/elevenlabs/CAPTURE_CONTRACT.md's "Audio asset delivery"
+    # section): ElevenLabs' history row never carries a downloadable audio
+    # URL, and the real audio endpoint requires the browser's own session -
+    # this backend has no way to ever fetch it, so mirror_pending_generations()
+    # would always find zero candidates for every row, permanently marking it
+    # asset_mirror_status="skipped". Running that on a timer isn't harmless
+    # here the way it is for Freepik/HeyGen (nothing-to-mirror-yet vs.
+    # nothing-to-mirror-ever look identical) - it actively races ahead of and
+    # mislabels rows that DO have real audio waiting on the extension's
+    # POST /capture/audio push path (browser-side, only fires once someone
+    # actually plays/downloads the clip in ElevenLabs' own UI), making a
+    # genuinely-pending row look permanently unavailable. The endpoint/module
+    # are left in place (harmless if ever manually invoked, e.g. from a
+    # future admin action or once a real signed-URL path is discovered) -
+    # just not wired to run automatically.
     _safe_print(f"Frontend: {_display_frontend_url()}\n")
 
     try:
@@ -458,9 +558,10 @@ async def lifespan(app: FastAPI):
         report_schedule_task.cancel()
         freepik_asset_mirror_task.cancel()
         heygen_asset_mirror_task.cancel()
+        flow_asset_mirror_task.cancel()
         await asyncio.gather(
             auth_cleanup_task, notification_outbox_task, report_schedule_task,
-            freepik_asset_mirror_task, heygen_asset_mirror_task,
+            freepik_asset_mirror_task, heygen_asset_mirror_task, flow_asset_mirror_task,
             return_exceptions=True,
         )
         await notification_dispatcher.stop()
@@ -606,6 +707,12 @@ app.include_router(higgsfield_router.router)
 
 # Envato Generation Capture System
 app.include_router(envato_router.router)
+
+# Flow (labs.google/fx/tools/flow) Generation Capture System
+app.include_router(flow_router.router)
+
+# ElevenLabs Generation Capture System
+app.include_router(elevenlabs_router.router)
 
 # Reports / Business Intelligence (AI Intelligence Command Center)
 app.include_router(reports_router.router)

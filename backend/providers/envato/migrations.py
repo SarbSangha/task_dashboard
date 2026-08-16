@@ -284,6 +284,13 @@ def ensure_envato_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "envato_downloads", "item_type", "VARCHAR(40)")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_envato_downloads_item_uuid ON envato_downloads(item_uuid)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_envato_downloads_item_type ON envato_downloads(item_type)"))
+    # Asset mirroring (added 2026-08-14 - see models.py's EnvatoDownload
+    # mirrored_asset_key comment): browser-pushed real audio/video bytes for
+    # a download, same shape as ElevenlabsGeneration's identical columns.
+    _pg_add_column_if_missing(conn, "envato_downloads", "mirrored_asset_key", "TEXT")
+    _pg_add_column_if_missing(conn, "envato_downloads", "asset_mirror_status", "VARCHAR(20) NOT NULL DEFAULT 'pending'")
+    _pg_add_column_if_missing(conn, "envato_downloads", "asset_mirror_attempted_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "envato_downloads", "asset_mirror_error", "TEXT")
 
 
 def ensure_envato_sqlite_schema(conn) -> None:
@@ -549,3 +556,9 @@ def ensure_envato_sqlite_schema(conn) -> None:
     _sqlite_add_column_if_missing(conn, "envato_downloads", "item_type", "VARCHAR(40)")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_envato_downloads_item_uuid ON envato_downloads(item_uuid)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_envato_downloads_item_type ON envato_downloads(item_type)"))
+    # Asset mirroring (added 2026-08-14) - see the Postgres branch's
+    # identical comment above.
+    _sqlite_add_column_if_missing(conn, "envato_downloads", "mirrored_asset_key", "TEXT")
+    _sqlite_add_column_if_missing(conn, "envato_downloads", "asset_mirror_status", "VARCHAR(20) NOT NULL DEFAULT 'pending'")
+    _sqlite_add_column_if_missing(conn, "envato_downloads", "asset_mirror_attempted_at", "DATETIME")
+    _sqlite_add_column_if_missing(conn, "envato_downloads", "asset_mirror_error", "TEXT")

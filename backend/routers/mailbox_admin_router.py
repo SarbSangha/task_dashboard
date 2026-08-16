@@ -17,6 +17,11 @@ from utils.permissions import require_admin
 
 router = APIRouter(prefix="/api/it-tools", tags=["Mailbox Admin"])
 
+# Upper bound on the connectivity probe in _test_mailbox_entry. Short on
+# purpose: this is an interactive "does this mailbox work?" button, so a slow
+# answer is a failed answer.
+MAILBOX_TEST_TIMEOUT_SECONDS = 15
+
 
 class MailboxConfigPayload(BaseModel):
     mailbox_id: Optional[str] = None
@@ -389,7 +394,11 @@ def test_mailbox_connection(
     entries = _get_mailbox_entries(mailbox)
     if not entries:
         raise HTTPException(status_code=404, detail="No mailbox configured for this tool")
-    return _test_mailbox_entry(entries[0])
+    entry = entries[0]
+    # Everything needed has been read - hand the connection back before the
+    # IMAP round-trip. See _test_mailbox_entry for why this matters.
+    db.close()
+    return _test_mailbox_entry(entry)
 
 
 @router.post("/{tool_id}/mailboxes/{mailbox_id}/test", response_model=MailboxConnectionTestResponse)
@@ -407,16 +416,27 @@ def test_mailbox_entry_connection(
     entry = next((item for item in _get_mailbox_entries(mailbox) if item["id"] == mailbox_id), None)
     if not entry:
         raise HTTPException(status_code=404, detail="Mailbox entry not found")
+    db.close()  # same reasoning as test_mailbox_connection above
     return _test_mailbox_entry(entry)
 
 
 def _test_mailbox_entry(entry: dict) -> MailboxConnectionTestResponse:
+    """Callers must release their database session before calling this - it
+    blocks on a full IMAP connect/login/select/logout against Gmail, and a
+    session held across that is a real Postgres connection parked on a remote
+    network round-trip (see database_config.py's NullPool note).
+
+    The timeout below is not optional: without it, imaplib inherits the global
+    default socket timeout (normally none), so a Gmail that accepts the TCP
+    connection and then never answers hangs this call - and the request thread
+    behind it - indefinitely.
+    """
     app_password = decrypt_secret(entry.get("app_password_encrypted"))
     if not app_password:
         return MailboxConnectionTestResponse(success=False, message="Stored app password could not be decrypted")
 
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=MAILBOX_TEST_TIMEOUT_SECONDS)
         mail.login(entry["email_address"], app_password)
         mail.select("INBOX")
         mail.logout()

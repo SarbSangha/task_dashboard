@@ -2002,6 +2002,73 @@ export const envatoCaptureAPI = {
   },
 };
 
+// ==================== FLOW CAPTURE CENTER API ====================
+// Leaner than envatoCaptureAPI - Flow's backend only exposes
+// capture/events, generations, generations/{id}, events, events/{id} (no
+// metrics/users/downloads/analytics/linked-tasks routes yet - see
+// providers/flow/README.md's "what this pass deliberately does not
+// include").
+export const flowCaptureAPI = {
+  listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/flow/generations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getGeneration: async (generationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/flow/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/flow/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/flow/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+};
+
+// ==================== ELEVENLABS CAPTURE CENTER API ====================
+// Same shape as flowCaptureAPI above - ElevenLabs' backend only exposes
+// capture/events, generations, generations/{id}, events, events/{id} (no
+// metrics/users/downloads/analytics routes - see
+// providers/elevenlabs/router.py's own docstring).
+export const elevenlabsCaptureAPI = {
+  listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/elevenlabs/generations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getGeneration: async (generationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/elevenlabs/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/elevenlabs/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/elevenlabs/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+};
+
 // ==================== HEYGEN CAPTURE CENTER API ====================
 export const heygenCaptureAPI = {
   listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {

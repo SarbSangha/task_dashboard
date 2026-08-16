@@ -157,6 +157,41 @@ class UserDetailOut(BaseModel):
 
 
 # ---- Downloads (Envato Elements stock-asset downloads) ----
+class CaptureDownloadMediaIn(BaseModel):
+    """One captured audio/video asset, base64-encoded, pushed directly by
+    the extension after it observes Envato Elements' own authenticated
+    media response in the browser - mirrors providers/elevenlabs/schemas.py's
+    CaptureAudioIn exactly (same reasoning: Envato's real download/stream
+    response requires the browser's own session, so this backend can never
+    pull it independently - see providers/envato/models.py's EnvatoDownload.
+    mirrored_asset_key comment).
+
+    There is no per-item identity to key on the way ElevenLabs keys on
+    history_item_id (EnvatoDownload has no stable item_uuid for anything
+    captured on elements.envato.com) - client_event_id (the SAME id the
+    original download_click EnvatoCaptureEvent was reported under) is the
+    correlation key instead: the backend looks up that event, then the
+    EnvatoDownload row whose source_capture_event_id points at it."""
+
+    client_event_id: str = Field(..., min_length=1, max_length=160)
+    content_type: Optional[str] = Field(default=None, max_length=100)
+    media_base64: str = Field(..., min_length=1)
+    # True only for a confirmed Download click (an <a download> with a
+    # matching blob:/data: href, or a deterministic id-carrying network
+    # response) - never set for a Play/preview-only observation. Currently
+    # unused server-side (unlike ElevenLabs' is_download, there is no
+    # separate "was this downloaded" flag to set here - a captured
+    # EnvatoDownload row only ever exists because a download was already
+    # gated/reported) but carried through for parity and future use.
+    is_download: bool = False
+
+
+class CaptureDownloadMediaResult(BaseModel):
+    success: bool
+    # "mirrored" | "already_mirrored" | "download_not_found" | "not_configured" | "invalid_media"
+    status: str
+
+
 class DownloadListOut(BaseModel):
     success: bool = True
     data: list[dict[str, Any]]

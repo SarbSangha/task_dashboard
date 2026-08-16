@@ -150,9 +150,9 @@ def mirror_pending_generations(db: Session, *, limit: int = 25) -> dict:
     actually succeeding before a link dies un-mirrored. Rows already marked
     "failed" or "skipped" are terminal and not retried automatically here -
     a dead signed URL will never start working again on its own, so an
-    infinite auto-retry would just hammer it forever. Resetting a row's
-    asset_mirror_status back to "pending" (e.g. via an admin action, not
-    built yet) is what re-queues it."""
+    infinite auto-retry would just hammer it forever. requeue_failed_mirrors
+    below is what puts such a row back into this sweep, once its URLs have
+    actually been re-captured."""
     stats = {"scanned": 0, "mirrored": 0, "skipped": 0, "failed": 0, "r2_not_configured": False}
     if not r2_storage.is_configured():
         stats["r2_not_configured"] = True
@@ -181,4 +181,62 @@ def mirror_pending_generations(db: Session, *, limit: int = 25) -> dict:
                 continue
             stats[outcome] += 1
 
+    return stats
+
+
+def requeue_failed_mirrors(db: Session, *, limit: int = 200, force: bool = False) -> dict:
+    """Puts terminal ("failed"/"skipped") rows back into the sweep above.
+
+    Without this, a row whose HeyGen URL expired before the sweep first
+    reached it stays preview-less forever: the Capture Center card exhausts
+    every candidate URL and renders "No preview", and nothing ever tries
+    again. That is not a hypothetical - HeyGen serves thumbnails from
+    short-lived `.../avatar_tmp/...` links, and rows have already failed here
+    with a 403 for exactly that reason.
+
+    Retrying blindly would just hammer a dead link, which is why the original
+    sweep made these states terminal. The condition that makes a retry
+    worthwhile is that the row has been RE-CAPTURED since the failed attempt:
+    normalization refreshes video_url/thumbnail_url every time a new listing
+    row arrives for the same video, so `updated_at > asset_mirror_attempted_at`
+    means the URLs on the row now are not the ones that failed. Rows that
+    haven't changed are left alone unless `force` is set (an operator
+    explicitly deciding to spend the requests anyway).
+
+    Only flips status back to "pending" - the actual fetch/upload stays with
+    mirror_pending_generations, so there is one code path that mirrors, and
+    this stays cheap enough to call from a request handler."""
+    stats = {"scanned": 0, "requeued": 0, "unchanged_since_failure": 0, "no_candidate_url": 0}
+
+    rows = (
+        db.query(HeygenGeneration)
+        .filter(
+            HeygenGeneration.provider == PROVIDER,
+            HeygenGeneration.asset_mirror_status.in_(("failed", "skipped")),
+        )
+        .order_by(HeygenGeneration.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    for generation in rows:
+        stats["scanned"] += 1
+        # Nothing to fetch means "skipped" was the honest answer and still is;
+        # re-queueing would only make the sweep re-derive that same verdict.
+        if not (_asset_url_candidates(generation) or _thumbnail_url_candidates(generation)):
+            stats["no_candidate_url"] += 1
+            continue
+        if not force:
+            attempted_at = generation.asset_mirror_attempted_at
+            updated_at = generation.updated_at
+            if attempted_at and updated_at and updated_at <= attempted_at:
+                stats["unchanged_since_failure"] += 1
+                continue
+        generation.asset_mirror_status = "pending"
+        generation.asset_mirror_error = None
+        db.add(generation)
+        stats["requeued"] += 1
+
+    if stats["requeued"]:
+        db.commit()
     return stats

@@ -1,5 +1,5 @@
 try {
-  importScripts('background-chatgpt-capture.js', 'background-freepik-capture.js', 'background-heygen-capture.js', 'background-higgsfield-capture.js', 'background-envato-capture.js', 'background-main.js');
+  importScripts('background-chatgpt-capture.js', 'background-freepik-capture.js', 'background-heygen-capture.js', 'background-higgsfield-capture.js', 'background-envato-capture.js', 'background-flow-capture.js', 'background-elevenlabs-capture.js', 'background-main.js');
 } catch (error) {
   try {
     console.error('RMW Tool Hub background failed to load:', error);

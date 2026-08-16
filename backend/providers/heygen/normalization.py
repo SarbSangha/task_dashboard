@@ -148,24 +148,43 @@ def _prompt_hash(prompt: Optional[str]) -> Optional[str]:
     return hashlib.sha256(prompt.encode("utf-8", errors="ignore")).hexdigest()
 
 
-def _is_fresh_enough_for_attribution(provider_created_at: Optional[datetime], captured_at: Optional[datetime]) -> bool:
+def _is_fresh_enough_for_attribution(
+    provider_created_at: Optional[datetime],
+    captured_at: Optional[datetime],
+    *,
+    is_reconciliation: bool,
+) -> bool:
     """Hard server-side ownership safety net - identical reasoning to
-    providers/freepik/normalization.py's version. No provider timestamp at
-    all is treated as "not fresh" (fail closed - never attribute on missing
-    information); this matters more for HeyGen than Freepik since a
-    DOM-scraped snapshot may genuinely have no provider timestamp at all, in
-    which case captured_at (server receive time) is used as a proxy - a
-    freshly-clicked Generate/Render Scene button is, by construction, always
-    "now"."""
+    providers/freepik/normalization.py's version.
+
+    The missing-timestamp case is split by pipeline, because the two pipelines
+    mean opposite things by "no provider timestamp":
+
+      - A LIVE (non-reconciliation) DOM-scraped submit-time snapshot
+        legitimately has none yet - HeyGen hasn't assigned one at click time -
+        and a freshly-clicked Generate/Render Scene button is by construction
+        "now", so the capture event's own receive time stands in for it.
+        Failing closed here would leave every HeyGen generation permanently
+        unattributed until a network snapshot happened to arrive with a real
+        provider_created_at.
+
+      - A RECONCILIATION event with no timestamp carries no evidence of age at
+        all, so it fails closed (Freepik's blanket rule). This is not
+        hypothetical: content-heygen.js's credit_ledger_row payload is
+        `{videoId, credits:{used}}` and nothing else - no timestamp exists in
+        that shape by construction. Before this split, every such row was
+        "fresh" by default, so the proactive movio_bill.list lookup fired by
+        whoever merely had HeyGen open re-attributed month-old videos to them
+        seconds after the listing row had correctly left them unclaimed
+        (confirmed 2026-08-16: 74 of 107 stored generations, some created
+        2026-07-16, all reassigned to a single user on 2026-08-05).
+
+    Callers must pass the generation's EFFECTIVE timestamp - the incoming
+    payload's, or the one already stored on the row - so a thin follow-up
+    event is judged on the age we already know, not on its own silence."""
     reference_time = captured_at or datetime.utcnow()
     if not provider_created_at:
-        # DOM-scraped submit-time snapshots legitimately have no provider
-        # timestamp yet (HeyGen hasn't assigned one at click time) - treat the
-        # capture event's own received time as the generation's origin rather
-        # than failing closed on every submit-time event, which would leave
-        # every HeyGen generation permanently unattributed until a network
-        # snapshot happens to arrive with a real provider_created_at.
-        return True
+        return not is_reconciliation
     age_seconds = (reference_time - provider_created_at).total_seconds()
     return -60 <= age_seconds <= OWNERSHIP_FRESHNESS_WINDOW_SECONDS
 
@@ -435,7 +454,18 @@ def normalize_capture_event(db: Session, event: HeygenCaptureEvent) -> Optional[
         generation.generation_method = "history_scan" if is_reconciliation else "network_intercept"
         generation.generation_source = GENERATION_SOURCE_RECONCILIATION if is_reconciliation else GENERATION_SOURCE_LIVE_CAPTURE
 
-    is_attributable = _is_fresh_enough_for_attribution(fields["provider_created_at"], event.created_at)
+    # The row's EFFECTIVE origin timestamp, not just this payload's: the merge
+    # loop above has already applied any incoming provider_created_at, so this
+    # reads "what this event said, else what we already knew". A thin
+    # credit_ledger_row (no timestamp at all, by construction) is therefore
+    # judged against the real created_ts the listing row stored earlier for the
+    # same video, instead of looking ageless and sailing through the gate.
+    effective_provider_created_at = fields["provider_created_at"] or generation.provider_created_at
+    is_attributable = _is_fresh_enough_for_attribution(
+        effective_provider_created_at,
+        event.created_at,
+        is_reconciliation=is_reconciliation,
+    )
 
     if is_reconciliation:
         if is_new:

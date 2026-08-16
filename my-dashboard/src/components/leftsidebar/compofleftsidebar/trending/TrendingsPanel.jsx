@@ -13,6 +13,8 @@ import FreepikExplorerBody from '../workspace/tabs/freepik-capture/FreepikExplor
 import HeygenExplorerBody from '../workspace/tabs/heygen-capture/HeygenExplorerBody';
 import HiggsfieldExplorerBody from '../workspace/tabs/higgsfield-capture/HiggsfieldExplorerBody';
 import EnvatoExplorerBody from '../workspace/tabs/envato-capture/EnvatoExplorerBody';
+import FlowExplorerBody from '../workspace/tabs/flow-capture/FlowExplorerBody';
+import ElevenLabsExplorerBody from '../workspace/tabs/elevenlabs-capture/ElevenLabsExplorerBody';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
@@ -612,6 +614,12 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   // Envato's Capture Center follows the identical isAdmin-only gate as every
   // other provider tab here.
   const canViewEnvatoGenerations = isAdmin;
+  // Flow's Capture Center follows the identical isAdmin-only gate as every
+  // other provider tab here.
+  const canViewFlowGenerations = isAdmin;
+  // ElevenLabs' Capture Center follows the identical isAdmin-only gate as
+  // every other provider tab here.
+  const canViewElevenLabsGenerations = isAdmin;
   // Lifted up here (rather than owned inside FreepikExplorerBody/KlingTab) so
   // the search input can live in the panel's own header row, in the same
   // slot the Data tab's "Search across all formats..." box uses, per the
@@ -621,6 +629,8 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [heygenSearchInput, setHeygenSearchInput] = useState('');
   const [higgsfieldSearchInput, setHiggsfieldSearchInput] = useState('');
   const [envatoSearchInput, setEnvatoSearchInput] = useState('');
+  const [flowSearchInput, setFlowSearchInput] = useState('');
+  const [elevenlabsSearchInput, setElevenlabsSearchInput] = useState('');
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -828,6 +838,8 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const isHeyGenTab = activeView === 'heygen';
   const isHiggsfieldTab = activeView === 'higgsfield';
   const isEnvatoTab = activeView === 'envato';
+  const isFlowTab = activeView === 'flow';
+  const isElevenLabsTab = activeView === 'elevenlabs';
   const isDataTab = activeView === 'data';
   const activeDirectoryCriteria = useMemo(
     () => directoryStructure.filter((criterionKey) => criterionKey !== 'none'),
@@ -1229,7 +1241,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       >
         <div className="trendings-header">
           <h2>RMW Data</h2>
-          {!isMinimized && !isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && (
+          {!isMinimized && !isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && (
             <div className="trendings-header-search">
               <input
                 className="trendings-search"
@@ -1280,6 +1292,28 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                 aria-label="Search Envato generations by prompt or item id"
                 value={envatoSearchInput}
                 onChange={(e) => setEnvatoSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isFlowTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search prompts..."
+                aria-label="Search Flow generations by prompt"
+                value={flowSearchInput}
+                onChange={(e) => setFlowSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isElevenLabsTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search prompts..."
+                aria-label="Search ElevenLabs generations by prompt"
+                value={elevenlabsSearchInput}
+                onChange={(e) => setElevenlabsSearchInput(e.target.value)}
               />
             </div>
           )}
@@ -1380,15 +1414,37 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                     Envato
                   </button>
                 )}
+                {canViewFlowGenerations && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isFlowTab}
+                    className={`trendings-view-tab ${isFlowTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('flow')}
+                  >
+                    Flow
+                  </button>
+                )}
+                {canViewElevenLabsGenerations && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isElevenLabsTab}
+                    className={`trendings-view-tab ${isElevenLabsTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('elevenlabs')}
+                  >
+                    ElevenLabs
+                  </button>
+                )}
               </div>
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && (
                 <div className="trendings-toolbar-status">
                   {isDirectoryTab
                     ? 'Browse folders first, then load only the files for the selected path.'
                     : `Fast databank mode is active.${lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}`}
                 </div>
               )}
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && (
                 <div className="trendings-select-filters">
                   <label className="trendings-filter-select-wrap">
                     <span className="trendings-filter-select-label">Format</span>
@@ -1420,7 +1476,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                   </label>
                 </div>
               )}
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && (
                 <div className="trendings-sort-group">
                   <button
                     className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
@@ -1452,15 +1508,21 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                           ? 'trendings-content--higgsfield'
                           : isEnvatoTab
                             ? 'trendings-content--envato'
-                            : 'trendings-content--data'
+                            : isFlowTab
+                              ? 'trendings-content--flow'
+                              : isElevenLabsTab
+                                ? 'trendings-content--elevenlabs'
+                                : 'trendings-content--data'
               }`}
             >
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
               {isKlingTab && <KlingTab isActive={isKlingTab} searchInput={klingSearchInput} />}
               {isFreepikTab && <FreepikExplorerBody searchInput={freepikSearchInput} />}
               {isHeyGenTab && <HeygenExplorerBody searchInput={heygenSearchInput} />}
               {isHiggsfieldTab && <HiggsfieldExplorerBody searchInput={higgsfieldSearchInput} />}
               {isEnvatoTab && <EnvatoExplorerBody searchInput={envatoSearchInput} />}
+              {isFlowTab && <FlowExplorerBody searchInput={flowSearchInput} />}
+              {isElevenLabsTab && <ElevenLabsExplorerBody searchInput={elevenlabsSearchInput} />}
               {isDirectoryTab && (
                 <div className="trendings-directory-window">
                   <div className="trendings-directory-header">

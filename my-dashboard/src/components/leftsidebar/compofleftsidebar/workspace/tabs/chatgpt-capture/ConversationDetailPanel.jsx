@@ -254,6 +254,7 @@ export default function ConversationDetailPanel({ conversationId, onClose, empty
                 totalEvents={conversationMessages?.totalEvents}
                 eventsById={eventsById}
                 storedAttachments={conversationAttachments}
+                media={galleryMedia}
                 ownerName={conversationDetail?.ownerName}
                 conversationModel={conversationDetail?.model}
                 onOpenWorkspace={galleryMedia.length > 0 ? handleViewMedia : undefined}

@@ -76,24 +76,57 @@ def capture_events(
     results = []
     newly_created_events = []
     for item in payload.events:
-        outcome = ingest_capture_event(
-            db,
-            tool=tool,
-            credential_id=credential_id,
-            user=current_user,
-            event_type=item.event_type,
-            client_event_id=item.client_event_id,
-            conversation_id=item.conversation_id,
-            message_id=item.message_id,
-            payload=item.payload,
-            capture_version=item.capture_version,
-            extension_version=item.extension_version,
-            browser=item.browser,
-            tab_id=item.tab_id,
-            session_id=item.session_id,
-            extension_session_id=item.extension_session_id,
-            event_date=item.event_date,
-        )
+        # ingest_capture_event() only catches IntegrityError (a benign
+        # concurrent-duplicate race) - anything else (e.g. Postgres rejecting
+        # a stray NUL byte inside captured prompt/response text, which JSONB
+        # cannot store) used to propagate straight out of this loop, 500-ing
+        # the ENTIRE batch of up to 200 events over one bad one. The
+        # extension can't tell partial success from total failure on a 500,
+        # so it retried the whole batch forever - and since the queue drains
+        # FIFO, that one poison event permanently blocked every event queued
+        # behind it. Confirmed in production: a queue stuck at 740 events,
+        # retry_count in the tens of thousands, and most installs reporting
+        # "offline" even though only one event in their queue was ever
+        # actually bad. Isolating each event, like normalization already is
+        # below, turns that into "one event rejected, the other 199 still
+        # succeed" - the same lossless-except-genuinely-broken-payloads
+        # posture this module's docstring already promises.
+        try:
+            outcome = ingest_capture_event(
+                db,
+                tool=tool,
+                credential_id=credential_id,
+                user=current_user,
+                event_type=item.event_type,
+                client_event_id=item.client_event_id,
+                conversation_id=item.conversation_id,
+                message_id=item.message_id,
+                payload=item.payload,
+                capture_version=item.capture_version,
+                extension_version=item.extension_version,
+                browser=item.browser,
+                tab_id=item.tab_id,
+                session_id=item.session_id,
+                extension_session_id=item.extension_session_id,
+                event_date=item.event_date,
+            )
+        except Exception:
+            logger.exception(
+                "chatgpt capture event ingest failed unexpectedly, rejecting this event only client_event_id=%s event_type=%s",
+                item.client_event_id,
+                item.event_type,
+            )
+            db.rollback()
+            results.append(
+                CaptureEventResult(
+                    client_event_id=item.client_event_id,
+                    status="rejected",
+                    id=None,
+                    reason="internal error while storing this event - see server logs",
+                )
+            )
+            continue
+
         if outcome.status == "created" and outcome.event is not None:
             # Duplicates are skipped: they were already normalized on their
             # first "created" pass.
@@ -177,6 +210,14 @@ def capture_attachment(
 ):
     """Best-effort binary upload (image/file), separate from the lossless
     /capture/events batch - see providers/chatgpt/attachments.py."""
+    # store_attachment uploads to R2 before it touches the database, but the
+    # session is already connected by the time we get here - require_user
+    # resolves the session user through this same (FastAPI-cached) Session, so
+    # a transaction is open and its connection is checked out. Holding that
+    # across the upload parks a real Postgres connection on remote network I/O
+    # under NullPool (see database_config.py). Closing here releases it; the
+    # INSERT inside store_attachment re-acquires transparently.
+    db.close()
     try:
         record = store_attachment(
             db,

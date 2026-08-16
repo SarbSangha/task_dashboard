@@ -120,6 +120,47 @@ PROVIDERS: dict[str, ProviderInfo] = {
             "click-time arming for live attribution, not true request/response interception."
         ),
     ),
+    "flow": ProviderInfo(
+        slug="flow",
+        display_name="Google Flow",
+        tool_slugs=frozenset({"flow"}),
+        status="in_development",
+        models_module="providers.flow.models",
+        migrations_module=None,
+        notes=(
+            "Ticket-based ownership attribution, same pattern as Freepik/HeyGen/Higgsfield/Envato. "
+            "Built from real captured network traffic (not a single screenshot, unlike HeyGen/"
+            "Higgsfield) - confirmed one flowWorkflows/{uuid} PATCH response shape for image "
+            "generation, on a separate API host (aisandbox-pa.googleapis.com) from the labs.google "
+            "page itself. Video generation's shape is unconfirmed. No migrations_module: a brand-new "
+            "table gets its full current schema from Base.metadata.create_all() alone, no additive-DDL "
+            "file needed the way Freepik's (evolved-in-production) schema requires. No reconciliation "
+            "sync, search/download event types, health-ping endpoint, asset mirroring, or Capture "
+            "Center dashboard UI in this pass - see providers/flow/CAPTURE_CONTRACT.md's known-gaps "
+            "section."
+        ),
+    ),
+    "elevenlabs": ProviderInfo(
+        slug="elevenlabs",
+        display_name="ElevenLabs",
+        tool_slugs=frozenset({"elevenlabs"}),
+        status="in_development",
+        models_module="providers.elevenlabs.models",
+        migrations_module=None,
+        notes=(
+            "Ticket-based ownership attribution, same pattern as Flow/Freepik/HeyGen/Higgsfield/Envato. "
+            "Built from a single DevTools screenshot of one request "
+            "(GET /v1/history?page_size=20&source=TTS&sort_direction=desc) - unlike Flow, even the "
+            "confirmed traffic has no observed response body, so normalization.py's field extraction is "
+            "multi-candidate-key defensive rather than shaped to one confirmed payload. No confirmed "
+            "generate-submission endpoint, no confirmed source enum beyond TTS (Music/Sound-Effects/"
+            "Dubbing/Voice-Changer unconfirmed), and unconfirmed whether the audio asset is embedded in "
+            "the history row or needs a second authenticated fetch (asset_mirror.py may not be able to "
+            "mirror anything real until that's resolved - see CAPTURE_CONTRACT.md's known-gaps section). "
+            "No migrations_module: a brand-new table gets its full current schema from "
+            "Base.metadata.create_all() alone."
+        ),
+    ),
 }
 
 

@@ -136,6 +136,18 @@ HEALTH_STATUS_HEALTHY = "healthy"
 HEALTH_STATUS_DEGRADED = "degraded"
 HEALTH_STATUS_BACKLOGGED = "backlogged"
 HEALTH_STATUS_OFFLINE = "offline"
+# Conversation-level only (never produced by health.py's install-level
+# rollup): the conversation exists in the event log but not one prompt or
+# response was ever captured for it - it is made up purely of lifecycle
+# events like conversation_opened/conversation_renamed, i.e. somebody opened
+# or browsed a chat without sending anything while capture was running.
+# Previously these classified as "healthy", which put a green Healthy chip on
+# a panel reading "No messages captured" - the single most confusing state in
+# the Capture Center, and a real reported complaint (2026-08-09: "most of the
+# captured showing this"). It is deliberately NOT "degraded": degraded means
+# prompts were sent and the responses went missing, which is a capture
+# failure worth chasing. Nothing captured because nothing was said is not.
+HEALTH_STATUS_NO_MESSAGES = "no_messages"
 
 # A ping older than this is treated as OFFLINE even if offline_since wasn't
 # explicitly set - an extension that stopped pinging entirely (crashed,

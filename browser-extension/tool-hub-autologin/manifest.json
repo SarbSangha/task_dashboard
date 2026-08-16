@@ -188,6 +188,14 @@
       "matches": [
         "https://elements.envato.com/*"
       ],
+      "js": ["content-envato-elements-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://elements.envato.com/*"
+      ],
       "js": ["content-envato-task-api.js", "content-envato-task-modal.js", "content-envato-elements-capture.js"],
       "run_at": "document_idle"
     },
@@ -271,7 +279,16 @@
         "https://elevenlabs.io/*",
         "https://*.elevenlabs.io/*"
       ],
-      "js": ["content-elevenlabs.js"],
+      "js": ["content-elevenlabs-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://elevenlabs.io/*",
+        "https://*.elevenlabs.io/*"
+      ],
+      "js": ["content-elevenlabs-task-api.js", "content-elevenlabs-task-modal.js", "content-elevenlabs-capture.js", "content-elevenlabs.js"],
       "run_at": "document_start"
     },
     {
@@ -340,10 +357,18 @@
     },
     {
       "matches": [
+        "https://labs.google/*"
+      ],
+      "js": ["content-flow-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
         "https://labs.google/*",
         "https://one.google.com/*"
       ],
-      "js": ["content-flow.js"],
+      "js": ["content-flow-task-api.js", "content-flow-task-modal.js", "content-flow.js"],
       "run_at": "document_start"
     },
     {

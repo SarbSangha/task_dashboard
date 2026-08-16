@@ -295,6 +295,76 @@ def test_reconciliation_listing_row_never_gets_live_ownership() -> None:
     print("ok  a reconciliation listing row never receives live-capture ownership")
 
 
+def test_thin_credit_ledger_row_cannot_reattribute_an_old_generation() -> None:
+    """Regression for the misattribution confirmed 2026-08-16: the test above
+    proves an OLD listing row lands unclaimed, but the very next event for
+    that same video used to hand it to whoever was browsing.
+
+    content-heygen.js queues a proactive movio_bill.list lookup for every
+    settled listing row it sees, and that credit_ledger_row payload is
+    `{videoId, credits:{used}}` - no timestamp exists in that shape at all. The
+    freshness gate used to read only the INCOMING payload's
+    provider_created_at and treat "no timestamp" as fresh, so seconds after the
+    listing row correctly left a month-old video unclaimed, the ledger
+    follow-up resolved it to the current tab's user. In production this
+    reassigned 74 of 107 stored generations - some created a month earlier - to
+    one user.
+
+    Both halves of the fix are covered here: reconciliation events fail closed
+    on a missing timestamp, AND the gate falls back to the timestamp already
+    stored on the row rather than judging a thin event on its own silence."""
+    with SessionLocal() as db:
+        listing_event = _capture(db, {
+            "video_id": "old-video-then-billed",
+            "status": "completed",
+            "created_ts": 1700000000,  # far outside the freshness window
+            "updated_ts": 1700000100,
+        })
+        listing_event.ownership_confidence = "reconciliation"
+        db.flush()
+        gen = normalize_capture_event(db, listing_event)
+        db.flush()
+        _assert(gen.ownership_status != "resolved", "precondition: the old listing row must land unclaimed")
+
+        ledger_event = _capture(db, {"videoId": "old-video-then-billed", "credits": {"used": 4}})
+        ledger_event.ownership_confidence = "reconciliation"
+        db.flush()
+        gen = normalize_capture_event(db, ledger_event)
+        db.flush()
+
+        _assert(
+            gen.ownership_status != "resolved",
+            f"a thin credit-ledger row must not attribute a month-old video, got {gen.ownership_status!r}",
+        )
+        _assert(gen.owner_user_id is None, f"owner must stay unset, got {gen.owner_user_id!r}")
+        # The credits themselves must still land - failing the ownership gate
+        # may never cost us the data the event was captured for.
+        _assert(gen.credits_used == 4, f"credits_used must still merge, got {gen.credits_used!r}")
+    print("ok  a thin credit-ledger row cannot re-attribute an old generation")
+
+
+def test_live_submit_snapshot_without_timestamp_still_attributes() -> None:
+    """The other side of the same gate: a LIVE, ticket-armed generate_click
+    DOM snapshot genuinely has no provider timestamp yet (HeyGen hasn't
+    assigned one at click time). Failing closed on it - the blanket rule
+    Freepik uses - would leave every HeyGen generation permanently unclaimed,
+    so only reconciliation events fail closed on a missing timestamp."""
+    with SessionLocal() as db:
+        event = _capture(db, {
+            "externalEventId": "live-intent-no-timestamp",
+            "scriptText": "hello from a freshly clicked generate button",
+            "status": "processing",
+        })
+        event.ownership_confidence = "ticket"
+        db.flush()
+        gen = normalize_capture_event(db, event)
+        db.flush()
+        _assert(gen.ownership_status == "resolved", f"a live armed click must still attribute, got {gen.ownership_status!r}")
+        _assert(gen.owner_user_id == event.user_id, f"expected owner {event.user_id}, got {gen.owner_user_id}")
+        db.rollback()
+    print("ok  a live submit snapshot with no provider timestamp still attributes")
+
+
 def test_thin_credit_ledger_event_merges_without_erasing_metadata() -> None:
     """Regression for the credit-consumption gap reported 2026-08-04: HeyGen's
     credit ledger (movio_bill.list) is a completely separate endpoint from the
@@ -531,6 +601,8 @@ if __name__ == "__main__":
     test_external_event_id_then_workflow_id_reuses_one_record_and_keeps_script()
     test_real_listing_endpoint_shape_extracts_correctly()
     test_reconciliation_listing_row_never_gets_live_ownership()
+    test_thin_credit_ledger_row_cannot_reattribute_an_old_generation()
+    test_live_submit_snapshot_without_timestamp_still_attributes()
     test_thin_credit_ledger_event_merges_without_erasing_metadata()
     test_bare_id_queue_status_maps_to_video_id_not_workflow_id()
     test_cross_column_identity_without_shared_correlation_key_merges()

@@ -11,8 +11,8 @@
 // fetchMyActiveFreepikTasks) and Client (fetchActiveFreepikClients, an
 // admin-curated global list, unrelated to the Task system) - each its own
 // section with its own loading/error/empty state, since one can fail or be
-// empty while the other succeeds. Continue only requires AT LEAST ONE of the
-// two to be selected, not both.
+// empty while the other succeeds. Continue requires Client to be selected;
+// Task selection is optional.
 //
 // Exposes exactly one function, openFreepikTaskSelectionModal(), returning a
 // Promise that resolves to { taskId, taskName, clientId, clientName } (either
@@ -376,7 +376,7 @@ function mountFreepikTaskModal(resolve) {
   dialog.innerHTML = `
     <div class="rmw-header">
       <p class="rmw-title" id="rmw-task-modal-title">Select Task</p>
-      <p class="rmw-subtitle">Every generation must be linked to an active task or client.</p>
+      <p class="rmw-subtitle">Every generation must be linked to a client. Selecting a task is optional.</p>
     </div>
     <div class="rmw-body"></div>
     <div class="rmw-validation" role="alert"></div>
@@ -412,7 +412,7 @@ function mountFreepikTaskModal(resolve) {
   }
 
   function updateContinueState() {
-    const enabled = Boolean(taskSection.getSelected() || clientSection.getSelected());
+    const enabled = Boolean(clientSection.getSelected());
     continueBtn.disabled = !enabled;
     if (enabled) showValidation('');
   }
@@ -420,8 +420,8 @@ function mountFreepikTaskModal(resolve) {
   function confirmAndClose() {
     const task = taskSection.getSelected();
     const client = clientSection.getSelected();
-    if (!task && !client) {
-      showValidation('Please select a task or a client before generating.');
+    if (!client) {
+      showValidation('Please select a client before generating.');
       return;
     }
     close({
@@ -504,6 +504,27 @@ function mountFreepikTaskModal(resolve) {
   continueBtn.addEventListener('click', confirmAndClose);
   overlay.addEventListener('mousedown', (event) => {
     if (event.target === overlay) close(null);
+  });
+
+  // Reported bug: picking a client would silently drop the user back one
+  // step - from the asset detail/lightbox view to the search results page
+  // underneath it, with this modal still open on top. This dialog renders
+  // in a Shadow DOM appended straight onto document.body, structurally
+  // separate from Magnific's own lightbox markup - a click event still
+  // bubbles out through the shadow boundary to document (retargeted to
+  // `host`, an element the lightbox's own DOM subtree does not contain).
+  // Magnific/Freepik's lightbox almost certainly closes itself on exactly
+  // that pattern - a document-level "did this click land outside the
+  // lightbox" listener, the same kind of dismiss-on-outside-interaction
+  // behavior already confirmed to close the Download format dropdown
+  // earlier (see content-freepik.js's own multi-event gate comments) - so
+  // every click inside this modal, not just ones on the empty backdrop,
+  // was leaking through and telling the page to close its lightbox. This
+  // modal is a full-screen overlay covering the whole page while open, so
+  // the underlying page has no legitimate reason to see any of these
+  // events at all.
+  ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach((type) => {
+    overlay.addEventListener(type, (event) => event.stopPropagation());
   });
 
   document.addEventListener('keydown', onKeyDown, true);

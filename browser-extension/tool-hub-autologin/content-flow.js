@@ -1896,6 +1896,468 @@ function onMutation() {
   }
 }
 
+// ============================================================================
+// Task Mapping: Generation Capture System
+//
+// Everything below is independent of the autologin state machine above (P.*
+// phases) - it self-registers its own listeners and works whenever the user
+// is on the Flow tool page, logged in or not (the gate itself is harmless to
+// register early; it only ever matches an actual "Generate" click). Mirrors
+// content-freepik.js's Task Mapping section (arm/disarm state machine,
+// click-gate, network-message bridge) - see that file for the full design
+// history this ports rather than reinvents. Two simplifications versus
+// Freepik's final version, both because nothing has been observed on Flow
+// to justify the extra complexity:
+//   - No dropdown/split-button handling (findFreepikActionTarget's
+//     "nearest-vs-climbed-past-ancestor" text matching, isFreepikMenuTriggerOnly,
+//     the menu-item-arming fallback) - Flow's confirmed Generate button is a
+//     plain button with the literal text "Generate", not a split button with
+//     an adjacent format-picker dropdown the way Freepik's Download button
+//     is. If Flow turns out to have an equivalent (e.g. a model/aspect-ratio
+//     picker attached to Generate), port that machinery from
+//     content-freepik.js at that point rather than building for a case with
+//     nothing to test it against.
+//   - No websocket/eventsource transport handling - content-flow-network.js
+//     only ever posts transport:'http' (see its own top comment for why).
+// ============================================================================
+
+function chromeStorageGet(keys) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(keys, (result) => resolve(result || {}));
+    } catch {
+      resolve({});
+    }
+  });
+}
+
+function chromeStorageSet(items) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.set(items, () => resolve(true));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+// ---- On-page live-capture status badge (separate from the autologin status
+// badge above - this one reflects generation-capture progress, not login) ----
+
+let flowCaptureStatusHideTimer = null;
+
+function ensureFlowCaptureStatusBadge() {
+  const existing = document.getElementById('rmw-flow-capture-status');
+  if (existing) return existing;
+  const badge = document.createElement('div');
+  badge.id = 'rmw-flow-capture-status';
+  Object.assign(badge.style, {
+    position: 'fixed',
+    top: '60px',
+    right: '12px',
+    zIndex: '2147483647',
+    maxWidth: '320px',
+    padding: '10px 12px',
+    borderRadius: '10px',
+    background: 'rgba(15, 23, 42, 0.92)',
+    color: '#f8fafc',
+    font: '12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    boxShadow: '0 8px 24px rgba(15, 23, 42, 0.28)',
+    pointerEvents: 'none',
+    whiteSpace: 'pre-wrap',
+    display: 'none',
+  });
+  (document.body || document.documentElement).appendChild(badge);
+  return badge;
+}
+
+function setFlowCaptureStatus(message, { autoHideMs } = {}) {
+  const badge = ensureFlowCaptureStatusBadge();
+  badge.textContent = `Flow capture\n${message}`;
+  badge.style.display = 'block';
+  if (flowCaptureStatusHideTimer) {
+    window.clearTimeout(flowCaptureStatusHideTimer);
+    flowCaptureStatusHideTimer = null;
+  }
+  if (autoHideMs) {
+    flowCaptureStatusHideTimer = window.setTimeout(() => { badge.style.display = 'none'; }, autoHideMs);
+  }
+}
+
+function hideFlowCaptureStatus() {
+  const badge = document.getElementById('rmw-flow-capture-status');
+  if (badge) badge.style.display = 'none';
+}
+
+// ---- Arm/disarm ----
+
+const FLOW_ARM_MAX_DURATION_MS = 10 * 60 * 1000; // generous for slow renders
+const FLOW_ARM_QUIET_PERIOD_MS = 90 * 1000; // disarm 90s after the last qualifying row
+const FLOW_CLOCK_SKEW_SLACK_MS = 60 * 1000;
+const FLOW_LAST_LIVE_CAPTURED_AT_KEY = 'rmw_flow_last_live_captured_at';
+
+// { generateIntentId, armedAt, expiresAt, capturedCreationIds: Map<string, {settled}> }
+// null when idle - this IS the state machine, same as freepikActiveGeneration.
+let flowActiveGeneration = null;
+let flowArmQuietTimer = null;
+let flowArmMaxTimer = null;
+let flowLastLiveCapturedAt = 0;
+
+chromeStorageGet([FLOW_LAST_LIVE_CAPTURED_AT_KEY]).then((stored) => {
+  flowLastLiveCapturedAt = Number(stored[FLOW_LAST_LIVE_CAPTURED_AT_KEY] || 0);
+});
+
+function persistFlowLastLiveCapturedAt(timestampMs) {
+  if (!(timestampMs > flowLastLiveCapturedAt)) return;
+  flowLastLiveCapturedAt = timestampMs;
+  chromeStorageSet({ [FLOW_LAST_LIVE_CAPTURED_AT_KEY]: timestampMs }).catch(() => {});
+}
+
+function clearFlowArmTimers() {
+  if (flowArmQuietTimer) { window.clearTimeout(flowArmQuietTimer); flowArmQuietTimer = null; }
+  if (flowArmMaxTimer) { window.clearTimeout(flowArmMaxTimer); flowArmMaxTimer = null; }
+}
+
+function flowGenerationLinkLabel(generation) {
+  if (!generation) return '';
+  const parts = [];
+  if (generation.taskName) parts.push(`Task: ${generation.taskName}`);
+  if (generation.clientName) parts.push(`Client: ${generation.clientName}`);
+  return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
+function disarmFlowGeneration() {
+  clearFlowArmTimers();
+  const hadCaptures = Boolean(flowActiveGeneration && flowActiveGeneration.capturedCreationIds.size > 0);
+  const linkLabel = flowGenerationLinkLabel(flowActiveGeneration);
+  flowActiveGeneration = null;
+  if (hadCaptures) {
+    setFlowCaptureStatus(`Capture complete ✓${linkLabel}`, { autoHideMs: 6000 });
+  } else {
+    hideFlowCaptureStatus();
+  }
+}
+
+function scheduleFlowArmQuietReset() {
+  if (flowArmQuietTimer) window.clearTimeout(flowArmQuietTimer);
+  flowArmQuietTimer = window.setTimeout(disarmFlowGeneration, FLOW_ARM_QUIET_PERIOD_MS);
+}
+
+function isFlowGenerationArmed() {
+  return Boolean(flowActiveGeneration) && Date.now() <= flowActiveGeneration.expiresAt;
+}
+
+function armFlowGeneration() {
+  const now = Date.now();
+  // Consumed here (one-shot) regardless of which branch below runs -
+  // handleFlowGenerateGateRequest() only calls this once the task/client
+  // picker has actually resolved with a selection.
+  const pendingSelection = flowPendingTaskSelection;
+  flowPendingTaskSelection = null;
+
+  if (isFlowGenerationArmed()) {
+    // A second Generate click while still waiting on a prior one extends
+    // the existing session rather than resetting capturedCreationIds, so
+    // in-flight tracking for the first batch isn't lost.
+    if (pendingSelection) {
+      flowActiveGeneration.taskId = pendingSelection.taskId;
+      flowActiveGeneration.taskName = pendingSelection.taskName;
+      flowActiveGeneration.clientId = pendingSelection.clientId;
+      flowActiveGeneration.clientName = pendingSelection.clientName;
+    }
+    scheduleFlowArmQuietReset();
+    setFlowCaptureStatus(`Waiting for generation…${flowGenerationLinkLabel(flowActiveGeneration)}`);
+    return;
+  }
+  clearFlowArmTimers();
+  flowActiveGeneration = {
+    generateIntentId: `flowgen_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    armedAt: now,
+    expiresAt: now + FLOW_ARM_MAX_DURATION_MS,
+    capturedCreationIds: new Map(),
+    taskId: pendingSelection?.taskId ?? null,
+    taskName: pendingSelection?.taskName ?? null,
+    clientId: pendingSelection?.clientId ?? null,
+    clientName: pendingSelection?.clientName ?? null,
+  };
+  flowArmMaxTimer = window.setTimeout(disarmFlowGeneration, FLOW_ARM_MAX_DURATION_MS);
+  scheduleFlowArmQuietReset();
+  setFlowCaptureStatus(`Waiting for generation…${flowGenerationLinkLabel(flowActiveGeneration)}`);
+  console.debug('[RMW Flow Capture] armed', {
+    generateIntentId: flowActiveGeneration.generateIntentId,
+    taskId: flowActiveGeneration.taskId,
+    clientId: flowActiveGeneration.clientId,
+  });
+}
+
+// ---- Generate gate: holds the real network request, not the DOM gesture ----
+// Flow's generate endpoint is gated behind Google's reCAPTCHA Enterprise -
+// confirmed live, every real flowMedia:batchGenerateImages request carries a
+// fresh recaptchaContext.token, which can only be minted from a genuinely
+// browser-trusted gesture. That ruled out two earlier designs: (1) block the
+// real click/keydown, show the picker, re-dispatch a synthetic gesture - the
+// synthetic redispatch can never produce a valid token, so Flow just hangs
+// forever; (2) let the real gesture through untouched and show the picker
+// concurrently - generation always fires regardless of Cancel, since nothing
+// ever actually stopped it.
+//
+// The fix lives one layer down: content-flow-network.js (MAIN world) now
+// intercepts the ACTUAL fetch/XHR call to flowMedia:batchGenerateImages and
+// holds it - never calling the real fetch/send - until this (ISOLATED world)
+// side posts back a decision. The DOM click/keydown that triggered it was
+// never touched, so its recaptcha token was already legitimately minted by
+// Flow's own code before fetch() was ever called; holding the outgoing HTTP
+// call for the few seconds it takes to pick a task/client doesn't invalidate
+// that token (enterprise recaptcha tokens are valid for ~2 minutes, not tied
+// to network dispatch timing). This also drops the need for the old
+// button-text/icon-ligature matching entirely - the gate now triggers on the
+// one thing that unambiguously means "a generation is about to happen": the
+// network request itself, regardless of what UI path produced it.
+let flowPendingTaskSelection = null; // {taskId, taskName, clientId, clientName} - consumed by armFlowGeneration()
+
+function postFlowGenerateGateDecision(gateId, allow) {
+  try {
+    window.postMessage({
+      source: 'rmw-flow-network-telemetry-gate',
+      type: 'FLOW_GENERATE_GATE_DECISION',
+      payload: { gateId, allow },
+    }, location.origin);
+  } catch {}
+}
+
+async function handleFlowGenerateGateRequest(gateId) {
+  if (!gateId) return;
+  const selection = await openFlowTaskSelectionModal();
+  if (!selection) {
+    postFlowGenerateGateDecision(gateId, false); // Cancel - the real request is dropped, never sent
+    return;
+  }
+  // Armed BEFORE the decision is sent, so the held request (released right
+  // after) can never resolve before flowActiveGeneration exists - strictly
+  // better ordering than either of the earlier designs managed.
+  flowPendingTaskSelection = selection;
+  armFlowGeneration();
+  postFlowGenerateGateDecision(gateId, true);
+}
+
+// ---- Live-capture row evaluation + network-message bridge ----
+
+function getFlowRowTimestampMs(row) {
+  const raw = row?.metadata?.updateTime || row?.metadata?.createTime;
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function isFlowRowSettled(row) {
+  // No status field confirmed in any captured flowWorkflows payload (see
+  // providers/flow/CAPTURE_CONTRACT.md's known gaps) - "has a
+  // primaryMediaId" is the best available settled/still-processing signal.
+  // Every confirmed image capture already carries one; a hypothetical
+  // earlier snapshot without one (plausible for a slower video render) is
+  // the only case this treats as still-processing.
+  return Boolean(row?.metadata?.primaryMediaId);
+}
+
+// Tracks creation_ids already captured live but still possibly settling -
+// independent of the arm/quiet-period timeout, same reasoning as
+// content-freepik.js's freepikPendingSettlement (a render that takes longer
+// than FLOW_ARM_QUIET_PERIOD_MS must not disarm before a later, more-settled
+// snapshot of the same workflow arrives).
+const flowPendingSettlement = new Map(); // creationId -> { expiresAt }
+const FLOW_PENDING_SETTLEMENT_MAX_MS = 20 * 60 * 1000;
+
+function evaluateFlowRowForLiveCapture(row, transport) {
+  const creationId = row?.name ? String(row.name) : '';
+  if (!creationId) return { qualifies: false, reason: 'no_creation_id' };
+
+  const rowTimestampMs = getFlowRowTimestampMs(row);
+
+  const pending = flowPendingSettlement.get(creationId);
+  if (pending) {
+    if (Date.now() > pending.expiresAt) {
+      flowPendingSettlement.delete(creationId); // gave up waiting - falls through to normal (armed-only) rules below
+    } else {
+      return { qualifies: true, creationId, rowTimestampMs, isPendingCompletion: true };
+    }
+  }
+
+  // No confirmed push transport for Flow - content-flow-network.js only
+  // ever posts transport:'http'. This branch is dead in practice today but
+  // kept for symmetry/safety in case one is added later, mirroring
+  // content-freepik.js's identical rule: a shared-account push reaching
+  // every open tab would not be proof THIS tab caused it.
+  if (transport === 'websocket' || transport === 'eventsource') {
+    return { qualifies: false, reason: 'new_id_via_push_channel_not_trusted' };
+  }
+
+  if (!isFlowGenerationArmed()) return { qualifies: false, reason: 'not_armed' };
+
+  const alreadySettled = flowActiveGeneration.capturedCreationIds.get(creationId)?.settled;
+  if (alreadySettled) return { qualifies: false, reason: 'already_settled_this_session' };
+
+  if (rowTimestampMs === null) return { qualifies: false, reason: 'no_timestamp' };
+  // Must post-date the click that armed us (a result cannot precede its own cause).
+  if (rowTimestampMs < flowActiveGeneration.armedAt - FLOW_CLOCK_SKEW_SLACK_MS) {
+    return { qualifies: false, reason: 'older_than_click' };
+  }
+  // Must also be newer than the last thing ever captured live - a
+  // monotonicity guard independent of arming.
+  if (flowLastLiveCapturedAt && rowTimestampMs <= flowLastLiveCapturedAt - FLOW_CLOCK_SKEW_SLACK_MS) {
+    return { qualifies: false, reason: 'not_newer_than_watermark' };
+  }
+  return { qualifies: true, creationId, rowTimestampMs };
+}
+
+async function reportFlowGenerationRow(row, { isReconciliation }) {
+  const creationId = row?.name ? String(row.name) : '';
+  // MUST change whenever the row's actual content changes (e.g. primaryMediaId
+  // getting attached/updated), or the server's (provider, credential,
+  // client_event_id) idempotency key treats an updated snapshot as an exact
+  // duplicate of an earlier one and never re-normalizes it - see
+  // content-freepik.js's reportFreepikGenerationRow for the real incident
+  // this same change-token pattern exists to prevent.
+  const changeToken = row?.metadata?.updateTime || row?.metadata?.createTime || 'unknown';
+  const clientEventId = `flow:${creationId || `rand:${Math.random().toString(36).slice(2)}`}:${changeToken}`;
+  try {
+    const result = await msg({
+      type: 'FLOW_CAPTURE_EVENT',
+      event: {
+        event_type: 'generation_workflow_row',
+        client_event_id: clientEventId,
+        creation_id: creationId || null,
+        family_id: row?.metadata?.batchId ? String(row.metadata.batchId) : null,
+        is_reconciliation: Boolean(isReconciliation),
+        payload: row,
+        capture_version: 1,
+        // Task/Client Mapping - only ever present for a live-capture row
+        // belonging to the currently-armed session.
+        linked_task_id: !isReconciliation && flowActiveGeneration ? flowActiveGeneration.taskId : null,
+        linked_client_id: !isReconciliation && flowActiveGeneration ? flowActiveGeneration.clientId : null,
+      },
+    });
+    if (result?.ok) {
+      console.debug('[RMW Flow Capture] reported generation row', { creationId, isReconciliation, queued: result.queued });
+      // "Queued", not "Saved" - result.ok only confirms the local background
+      // queue accepted it; the actual server upload happens later via the
+      // batched flush (best-effort, see background-flow-capture.js).
+      if (!isReconciliation) setFlowCaptureStatus('Queued for upload…');
+    } else {
+      console.warn('[RMW Flow Capture] failed to report generation row', { creationId, isReconciliation, error: result?.error });
+      if (!isReconciliation) setFlowCaptureStatus(`Capture failed: ${result?.error || 'unknown error'}`, { autoHideMs: 8000 });
+    }
+  } catch (error) {
+    console.warn('[RMW Flow Capture] unexpected error reporting generation row', { creationId, error: error?.message || error });
+  }
+}
+
+// Pure enrichment of an EXISTING FlowGeneration row (by primary_media_id) -
+// never creates a row, never touches ownership/attribution, so unlike
+// reportFlowGenerationRow this is NOT gated by isFlowGenerationArmed() at
+// all. Resolving a media URL only ever happens for an image the account can
+// already see (whether just-generated or historical) - it's safe (and even
+// beneficial - fills in thumbnails for older rows too) to report
+// unconditionally.
+async function reportFlowMediaUrl(mediaId, resolvedUrl) {
+  if (!mediaId || !resolvedUrl) return;
+  // The signed CDN URL carries a real Expires timestamp - folding it into
+  // client_event_id (rather than a stable flow:media:<mediaId> key) means a
+  // later re-resolution with a FRESH signature still gets captured instead
+  // of being silently deduped away as an exact repeat of an already-expired
+  // one. Same "the idempotency key must change on real state transitions"
+  // rule as reportFlowGenerationRow's changeToken.
+  let expiresToken = 'unknown';
+  try {
+    expiresToken = new URL(resolvedUrl).searchParams.get('Expires') || 'unknown';
+  } catch {}
+  const clientEventId = `flow:media:${mediaId}:${expiresToken}`;
+  try {
+    const result = await msg({
+      type: 'FLOW_CAPTURE_EVENT',
+      event: {
+        event_type: 'media_url_resolved',
+        client_event_id: clientEventId,
+        creation_id: null,
+        family_id: null,
+        is_reconciliation: false,
+        payload: { mediaId, url: resolvedUrl },
+        capture_version: 1,
+        linked_task_id: null,
+        linked_client_id: null,
+      },
+    });
+    if (result?.ok) {
+      console.debug('[RMW Flow Capture] reported resolved media URL', { mediaId, queued: result.queued });
+    } else {
+      console.warn('[RMW Flow Capture] failed to report resolved media URL', { mediaId, error: result?.error });
+    }
+  } catch (error) {
+    console.warn('[RMW Flow Capture] unexpected error reporting resolved media URL', { mediaId, error: error?.message || error });
+  }
+}
+
+function onFlowNetworkGenerationMessage(payload) {
+  const rows = payload && Array.isArray(payload.rows) ? payload.rows : [];
+  const transport = (payload && payload.transport) || 'http';
+
+  rows.forEach((row) => {
+    const evaluation = evaluateFlowRowForLiveCapture(row, transport);
+    if (!evaluation.qualifies) {
+      // Not reported AT ALL by this path - matches content-freepik.js's
+      // same rule: an un-armed (or otherwise non-qualifying) observation is
+      // simply never sent, not sent-then-dropped.
+      console.debug('[RMW Flow Capture] ignored non-qualifying row (not a live generation)', {
+        creationId: row?.name, reason: evaluation.reason,
+      });
+      return;
+    }
+
+    const settled = isFlowRowSettled(row);
+
+    if (flowActiveGeneration && isFlowGenerationArmed()) {
+      flowActiveGeneration.capturedCreationIds.set(evaluation.creationId, { settled });
+      scheduleFlowArmQuietReset(); // this counts as recent activity - extend the window
+    }
+
+    if (settled) {
+      flowPendingSettlement.delete(evaluation.creationId);
+    } else {
+      flowPendingSettlement.set(evaluation.creationId, { expiresAt: Date.now() + FLOW_PENDING_SETTLEMENT_MAX_MS });
+    }
+
+    persistFlowLastLiveCapturedAt(evaluation.rowTimestampMs);
+    setFlowCaptureStatus(settled ? 'Capturing…' : 'Generation detected — rendering…');
+    console.debug('[RMW Flow Capture] qualifying row - reporting as live', {
+      creationId: evaluation.creationId, settled, isPendingCompletion: Boolean(evaluation.isPendingCompletion),
+    });
+    reportFlowGenerationRow(row, { isReconciliation: false });
+  });
+}
+
+function onFlowNetworkMessage(event) {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (!data || data.source !== 'rmw-flow-network-telemetry') return;
+
+  if (data.type === 'FLOW_NETWORK_GENERATION') {
+    onFlowNetworkGenerationMessage(data.payload);
+    return;
+  }
+
+  if (data.type === 'FLOW_NETWORK_MEDIA_URL') {
+    const mediaId = data.payload?.mediaId ? String(data.payload.mediaId) : '';
+    const resolvedUrl = data.payload?.url ? String(data.payload.url) : '';
+    reportFlowMediaUrl(mediaId, resolvedUrl);
+    return;
+  }
+
+  if (data.type === 'FLOW_GENERATE_GATE_REQUEST') {
+    handleFlowGenerateGateRequest(data.payload?.gateId ? String(data.payload.gateId) : '');
+  }
+}
+
+window.addEventListener('message', onFlowNetworkMessage);
+
 function start() {
   globalThis.cleanupFlowSessionOnFinish = cleanupFlowSessionOnFinish;
   CTX.ticket = captureTicket();

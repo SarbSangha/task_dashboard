@@ -22,9 +22,10 @@ from .sheets import (  # noqa: F401 — disabled sheets stay imported for easy r
     chatgpt_log,     # kept for re-enabling; not currently rendered
     dashboard,
     employee_summary,
+    generations_log,
     kling_log,       # kept for re-enabling; not currently rendered
     overview,        # kept for re-enabling; not currently rendered
-    read_me,
+    read_me,         # kept for re-enabling; not currently rendered
     tool_master,     # kept for re-enabling; not currently rendered
     user_log,        # kept for re-enabling; drill-down is now inline
 )
@@ -33,16 +34,17 @@ XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.she
 
 # (sheet title, renderer module, tab colour). Order == tab order.
 #
-# NOTE: "Overview (Summary + Raw Data)" and "Tool Master" are intentionally NOT
-# generated right now (business decision). Their renderer modules are kept fully
-# intact and still imported, so re-enabling them is a one-line uncomment below --
-# no code was deleted.
+# NOTE: "Read Me", "Overview (Summary + Raw Data)" and "Tool Master" are
+# intentionally NOT generated right now (business decision). Their renderer
+# modules are kept fully intact and still imported, so re-enabling any of
+# them is a one-line uncomment below -- no code was deleted.
 _SHEETS = [
-    ("Read Me", read_me, T.NAVY),
+    # ("Read Me", read_me, T.NAVY),                           # disabled — see note above
     ("Dashboard", dashboard, T.NAVY),
     # ("Overview (Summary + Raw Data)", overview, T.GREEN),   # disabled — see note above
     # ("Tool Master", tool_master, T.NAVY),                   # disabled — see note above
     ("Employee Summary", employee_summary, T.GREEN),
+    ("Generations Log", generations_log, T.NAVY_TABLE),
     # ("ChatGPT Usage Log", chatgpt_log, T.NAVY_TABLE),       # disabled — see note above
     # ("Kling Usage Log", kling_log, T.NAVY_TABLE),           # disabled — see note above
 ]

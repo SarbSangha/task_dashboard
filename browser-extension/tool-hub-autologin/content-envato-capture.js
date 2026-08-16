@@ -100,6 +100,122 @@ function chromeStorageSet(items) {
   });
 }
 
+// ---- Launch-ticket self-activation (own copy, mirrors content-envato.js's
+// loadLaunchState/captureLaunchTicketFromHash) ----
+//
+// Reported bug: opening the Task/Client picker on app.envato.com sometimes
+// shows "Launch Envato from the dashboard before task selection can run."
+// even right after a real dashboard launch. Root cause: this file's own
+// header comment documents that app.envato.com was assumed to always
+// inherit its launch state from a tab where content-envato.js (the ONLY
+// script that ever calls TOOL_HUB_ACTIVATE_LAUNCH - see manifest.json,
+// content-envato.js is registered on envato.com/elements.envato.com/
+// market.envato.com, never on app.envato.com) already ran - either because
+// it's the very same tab (tabId survives in-page navigation, so
+// getActiveLaunch(tabId,...) still finds the record) or via the opener-tab
+// fallback background-main.js's getAuthorizedLaunchForTabs() already
+// provides. Both paths break if the dashboard's own "Launch Envato" link
+// points straight at app.envato.com (no other tab/host ever consumes the
+// ticket at all), or if Envato's own UI opens app.envato.com in a new tab
+// with no preserved `opener` (e.g. a rel="noopener" link) - Freepik never
+// has this gap because content-freepik.js (the script that DOES call
+// TOOL_HUB_ACTIVATE_LAUNCH) is registered on every one of its hosts,
+// including magnific.com, so it always activates its own launch state
+// locally rather than depending on tab/opener inheritance. This gives
+// app.envato.com that same self-sufficiency, without pulling in any of
+// content-envato.js's DOM/login-form logic (there is no login form here).
+const ENVATO_CAPTURE_EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
+
+function envatoCaptureReadTicketFromUrl() {
+  try {
+    const searchParams = new URLSearchParams(window.location.search || '');
+    const queryTicket = `${searchParams.get('rmw_extension_ticket') || ''}`.trim();
+    if (queryTicket) return queryTicket;
+
+    const hash = `${window.location.hash || ''}`.replace(/^#/, '');
+    return `${new URLSearchParams(hash).get('rmw_extension_ticket') || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function envatoCaptureGetStoredTicket() {
+  try {
+    return `${window.sessionStorage.getItem(ENVATO_CAPTURE_EXTENSION_TICKET_KEY) || ''}`.trim();
+  } catch {
+    return '';
+  }
+}
+
+function envatoCaptureStoreTicket(ticket) {
+  try {
+    if (ticket) window.sessionStorage.setItem(ENVATO_CAPTURE_EXTENSION_TICKET_KEY, ticket);
+    else window.sessionStorage.removeItem(ENVATO_CAPTURE_EXTENSION_TICKET_KEY);
+  } catch {}
+}
+
+function envatoCaptureRemoveTicketFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('rmw_extension_ticket');
+    url.searchParams.delete('rmw_usage_ticket');
+    url.searchParams.delete('rmw_tool_slug');
+
+    const hashParams = new URLSearchParams((url.hash || '').replace(/^#/, ''));
+    hashParams.delete('rmw_extension_ticket');
+    hashParams.delete('rmw_usage_ticket');
+    hashParams.delete('rmw_tool_slug');
+    url.hash = hashParams.toString();
+    window.history.replaceState(null, '', url.toString());
+  } catch {}
+}
+
+// Fire-and-forget: does not gate/delay anything else in this file. If this
+// tab already inherited a valid launch via tabId/opener, TOOL_HUB_GET_LAUNCH_
+// STATE below is a harmless no-op confirmation; if not, this is what actually
+// establishes it before the user ever reaches the Generate click-gate.
+async function envatoCaptureActivateLaunchTicketIfPresent() {
+  const urlTicket = envatoCaptureReadTicketFromUrl();
+  if (urlTicket) envatoCaptureStoreTicket(urlTicket);
+  const ticket = urlTicket || envatoCaptureGetStoredTicket();
+
+  if (ticket) {
+    try {
+      const activation = await envatoSendRuntimeMessage({
+        type: 'TOOL_HUB_ACTIVATE_LAUNCH',
+        toolSlug: 'envato',
+        hostname: window.location.hostname,
+        pageUrl: window.location.href,
+        extensionTicket: ticket,
+      });
+      if (activation?.ok && activation.authorized) {
+        envatoCaptureStoreTicket('');
+        envatoCaptureRemoveTicketFromUrl();
+        return;
+      }
+    } catch {}
+    envatoCaptureStoreTicket('');
+  }
+
+  // No ticket in this tab's URL/sessionStorage - most commonly the normal
+  // case (this tab already inherited state via tabId or opener), but also
+  // covers the case where TOOL_HUB_ACTIVATE_LAUNCH above failed for a
+  // benign reason (e.g. the ticket was already consumed by an earlier
+  // navigation in this same tab). Either way, checking here is what lets
+  // getAuthorizedLaunchForTabs' opener-tab fallback actually get exercised
+  // this early, instead of only ever being discovered later inside
+  // handleEnvatoFetchMyActiveTasksMessage/handleEnvatoFetchActiveClientsMessage
+  // at click time.
+  await envatoSendRuntimeMessage({
+    type: 'TOOL_HUB_GET_LAUNCH_STATE',
+    toolSlug: 'envato',
+    hostname: window.location.hostname,
+    pageUrl: window.location.href,
+  }).catch(() => {});
+}
+
+envatoCaptureActivateLaunchTicketIfPresent();
+
 // ---- On-page live-capture status badge ----
 
 let envatoCaptureStatusHideTimer = null;
@@ -583,12 +699,60 @@ function scheduleEnvatoDownloadReport(assetInfo, selection) {
   envatoPendingDownloadReport = pending;
 }
 
+// element.click() only ever fires a "click" event, never the
+// pointerdown/mousedown a real user interaction produces first. This
+// matters here specifically for the video download-history case documented
+// above (item-action-download's first click opens a resolution/format
+// menu, a second click on e.g. "1080P..." fires the actual request) - if
+// that menu is built the same pointerdown-opens way content-freepik.js's
+// identical dispatchRealisticClick comment found on magnific.com, a plain
+// bypass .click() would clear the gate and then silently fail to open the
+// menu at all. Own local copy per this file's stated convention (no helper
+// sharing with content-freepik.js).
+function dispatchRealisticClick(target) {
+  if (!target) return;
+  const rect = typeof target.getBoundingClientRect === 'function' ? target.getBoundingClientRect() : null;
+  const point = rect
+    ? { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }
+    : { clientX: 0, clientY: 0 };
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: 1, isPrimary: true, ...point };
+  let dispatchedAny = false;
+  ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((type) => {
+    try {
+      const EventCtor = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+      target.dispatchEvent(new EventCtor(type, base));
+      dispatchedAny = true;
+    } catch {
+      // Construction failed for this event type - the rest of the sequence
+      // still fires, and the plain target.click() fallback below covers a
+      // total failure.
+    }
+  });
+  if (!dispatchedAny) {
+    try { target.click(); } catch {}
+  }
+}
+
 // ---- Task/Client Mapping gate for Download - own bypass-target state so
 // it never interferes with the Generate gate below, same "independent
 // gates in one listener" structure content-freepik.js uses. ----
 
 let envatoDownloadTaskGateBypassTarget = null;
 let envatoDownloadTaskGateModalOpen = false;
+
+// Grace window after a Download gate clears - mirrors content-freepik.js's
+// identical fix for the identical bug (confirmed live there against
+// magnific.com): a real download flow is often multi-click (a "Download"
+// button plus a separate size/format/license dropdown), and a follow-up
+// click picking an option from that dropdown can independently match
+// findEnvatoDownloadActionTarget/findEnvatoDownloadDataCyTarget too - the
+// one-shot bypass above only recognizes the exact element first clicked, so
+// that second click re-opened this same modal, making it impossible to ever
+// finish picking an option. Once cleared for one download interaction, any
+// further matching click within this window is treated as the same
+// interaction and passed through unasked.
+const ENVATO_DOWNLOAD_GATE_GRACE_MS = 20000;
+let envatoDownloadGateClearedUntil = 0;
 
 async function runEnvatoDownloadTaskGate(target) {
   if (envatoDownloadTaskGateModalOpen) return; // double-click Download while the modal is already open - no-op
@@ -598,8 +762,12 @@ async function runEnvatoDownloadTaskGate(target) {
     if (!selection) return; // cancelled/ESC/no active tasks - click stays blocked
     const assetInfo = collectEnvatoDownloadAssetInfo(target);
     envatoDownloadTaskGateBypassTarget = target;
+    envatoDownloadGateClearedUntil = Date.now() + ENVATO_DOWNLOAD_GATE_GRACE_MS;
     scheduleEnvatoDownloadReport(assetInfo, selection);
-    target.click();
+    // Not target.click() - see dispatchRealisticClick's own comment above:
+    // the video-format-menu case needs the full pointerdown/mousedown
+    // sequence, not just a bare click event.
+    dispatchRealisticClick(target);
   } finally {
     envatoDownloadTaskGateModalOpen = false;
   }
@@ -648,6 +816,13 @@ document.addEventListener('click', (event) => {
       if (envatoDownloadTaskGateBypassTarget === downloadTarget) {
         envatoDownloadTaskGateBypassTarget = null; // one-shot: next Download click gates again
         return; // already scheduled for report (see runEnvatoDownloadTaskGate) - let the re-dispatched click reach Envato's own handler
+      }
+
+      if (Date.now() < envatoDownloadGateClearedUntil) {
+        // Already cleared the gate for this download interaction - very
+        // likely the follow-up click picking a format/license option from a
+        // menu the first click opened. See ENVATO_DOWNLOAD_GATE_GRACE_MS above.
+        return;
       }
 
       event.preventDefault();

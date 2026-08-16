@@ -18,6 +18,7 @@ Run: python tests/heygen_asset_mirror_smoke.py
 """
 import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -268,6 +269,82 @@ def test_already_resolved_rows_are_never_rescanned() -> None:
     print("ok  a resolved (failed/mirrored/skipped) row is never rescanned by a later sweep")
 
 
+def test_requeue_revives_a_failed_row_only_after_it_is_recaptured() -> None:
+    """The "No preview" card reported 2026-08-16: HeyGen serves thumbnails from
+    short-lived .../avatar_tmp/... links, so a row whose link expired before
+    the sweep reached it fails, becomes terminal (see the test above), and the
+    card falls through every candidate URL to "No preview" forever.
+
+    requeue_failed_mirrors is the missing admin action. It must NOT blanket-
+    retry: a row that hasn't changed since it failed still has the same dead
+    URL, and re-fetching it just burns requests. The signal that a retry is
+    worth it is that normalization has re-captured the row (refreshing
+    video_url/thumbnail_url) since the failed attempt."""
+    _install_fakes()
+    _FakeHttpClient.responses = {
+        "https://files2.heygen.ai/expired.mp4": _FakeResponse(content=b"", content_type="text/html", status_error=True),
+        "https://files2.heygen.ai/refreshed.mp4": _FakeResponse(content=b"video-bytes", content_type="video/mp4"),
+    }
+
+    with SessionLocal() as db:
+        # Earlier tests in this file commit their rows and leave them behind;
+        # requeue_failed_mirrors sweeps the whole table, so this one has to
+        # start from a clean slate to assert on exact counts.
+        db.query(HeygenGeneration).delete()
+        generation = HeygenGeneration(provider="heygen", video_id="video-requeue", video_url="https://files2.heygen.ai/expired.mp4")
+        db.add(generation)
+        db.commit()
+        generation_id = generation.id
+
+        _assert(asset_mirror.mirror_pending_generations(db, limit=10)["failed"] == 1, "precondition: the first attempt must fail")
+
+        # Not re-captured yet -> left alone, so the dead URL isn't re-fetched.
+        stats = asset_mirror.requeue_failed_mirrors(db)
+        _assert(stats["requeued"] == 0, f"an unchanged failed row must not be re-queued: {stats}")
+        _assert(stats["unchanged_since_failure"] == 1, f"expected the row to be counted as unchanged: {stats}")
+
+        # ...but an operator can force it anyway.
+        _assert(asset_mirror.requeue_failed_mirrors(db, force=True)["requeued"] == 1, "force must re-queue regardless")
+
+        # Simulate a fresh listing capture: new URL, updated_at moves past the
+        # failed attempt - exactly what normalization does on re-capture.
+        refreshed = db.query(HeygenGeneration).filter(HeygenGeneration.id == generation_id).one()
+        refreshed.asset_mirror_status = "failed"
+        refreshed.video_url = "https://files2.heygen.ai/refreshed.mp4"
+        refreshed.updated_at = refreshed.asset_mirror_attempted_at + timedelta(minutes=5)
+        db.commit()
+
+        stats = asset_mirror.requeue_failed_mirrors(db)
+        _assert(stats["requeued"] == 1, f"a re-captured row must be re-queued: {stats}")
+
+        after = asset_mirror.mirror_pending_generations(db, limit=10)
+        _assert(after["mirrored"] == 1, f"the re-queued row must mirror on the next sweep: {after}")
+
+        healed = db.query(HeygenGeneration).filter(HeygenGeneration.id == generation_id).one()
+        _assert(healed.mirrored_asset_key is not None, "the healed row must now have a permanent R2 copy")
+        _assert(healed.asset_mirror_error is None, f"the stale error must be cleared, got {healed.asset_mirror_error!r}")
+        db.rollback()
+    print("ok  a failed mirror is re-queued once re-captured, and heals on the next sweep")
+
+
+def test_requeue_leaves_rows_with_no_source_url_alone() -> None:
+    """A "skipped" row has no URL to fetch at all - re-queueing it would only
+    make the sweep re-derive that same verdict every interval."""
+    _install_fakes()
+    _FakeHttpClient.responses = {}
+
+    with SessionLocal() as db:
+        db.query(HeygenGeneration).delete()  # same isolation reason as the test above
+        db.add(HeygenGeneration(provider="heygen", video_id="video-nourl", asset_mirror_status="skipped"))
+        db.commit()
+
+        stats = asset_mirror.requeue_failed_mirrors(db, force=True)
+        _assert(stats["requeued"] == 0, f"a row with no candidate URL must not be re-queued: {stats}")
+        _assert(stats["no_candidate_url"] == 1, f"expected it counted as no_candidate_url: {stats}")
+        db.rollback()
+    print("ok  a row with no source URL is never re-queued, even with force")
+
+
 def test_r2_not_configured_leaves_rows_untouched() -> None:
     _install_fakes(configured=False)
     _FakeHttpClient.responses = {}
@@ -317,6 +394,8 @@ if __name__ == "__main__":
     test_expired_source_url_is_recorded_as_failed_not_raised()
     test_row_with_no_source_url_is_skipped()
     test_already_resolved_rows_are_never_rescanned()
+    test_requeue_revives_a_failed_row_only_after_it_is_recaptured()
+    test_requeue_leaves_rows_with_no_source_url_alone()
     test_r2_not_configured_leaves_rows_untouched()
     test_to_dict_never_raises_when_presigning_fails()
     print("\nall heygen asset mirror smoke checks passed")

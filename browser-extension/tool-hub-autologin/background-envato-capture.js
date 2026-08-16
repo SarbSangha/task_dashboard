@@ -373,6 +373,50 @@ async function handleEnvatoCaptureEventMessage(message, senderTabId = 0, openerT
   return { ok: true, queued: true };
 }
 
+// Real audio/video bytes for a stock-asset download, pushed by
+// content-envato-elements-capture.js - mirrors
+// handleElevenlabsCaptureAudioMessage exactly (see that function's own
+// comment for why this is deliberately NOT routed through the durable
+// outbox queue above: large payload, no ticket/ownership resolution needed
+// - the backend looks the row up by client_event_id alone - and a miss is
+// self-healing since the same media re-fires every time the item is
+// downloaded again).
+async function handleEnvatoCaptureDownloadMediaMessage(message) {
+  const clientEventId = `${message?.clientEventId || ''}`.trim();
+  const audioBase64 = message?.audioBase64;
+  if (!clientEventId || !audioBase64) {
+    return { ok: false, error: 'Invalid download media payload' };
+  }
+
+  try {
+    const settings = await getSettings();
+    const headers = { 'Content-Type': 'application/json' };
+    if (settings.sessionToken) headers['X-Session-Id'] = settings.sessionToken;
+
+    const response = await fetch(`${settings.apiBase}/api/providers/envato/capture/download-media`, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body: JSON.stringify({
+        client_event_id: clientEventId,
+        content_type: message.contentType || 'application/octet-stream',
+        media_base64: audioBase64,
+        is_download: Boolean(message.isDownload),
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, error: buildApiErrorMessage(data, response, 'Envato download media push failed', settings) };
+    }
+    if (data.success) {
+      return { ok: true, status: data.status };
+    }
+    return { ok: false, status: data.status, error: data.status || 'Envato download media push not applied' };
+  } catch (error) {
+    return { ok: false, error: error?.message || 'Envato download media push failed' };
+  }
+}
+
 async function handleEnvatoSyncProgressMessage(message, senderTabId = 0, openerTabId = 0) {
   const directLaunch = await getActiveLaunch(senderTabId, 'envato');
   const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, 'envato');

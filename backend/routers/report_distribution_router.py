@@ -350,7 +350,17 @@ def send_test_email(body: TestEmailIn, db: Session = Depends(get_operational_db)
         "<p style='color:#2b3646;font-size:14px'>If you are reading this, scheduled report "
         "delivery is configured correctly.</p></div>"
     )
-    ok, detail = send_report_email([body.to], "RMWeye — test email", html, db=db)
+    # Load the SMTP config, then hand the connection back before the send:
+    # send_report_email opens an SMTP connection and waits on a remote mail
+    # server (up to 30s per its own timeout), and a session held across that is
+    # a real Postgres connection parked on network I/O. Passing config=
+    # explicitly is what lets the session go - the db= form would look it up
+    # inside the call, after the point where we want to be disconnected.
+    # The audit write below re-acquires transparently.
+    smtp_config = load_config(db)
+    db.close()
+
+    ok, detail = send_report_email([body.to], "RMWeye — test email", html, config=smtp_config)
     _audit(db, "email_test" if ok else "email_test_failed", user_id=current_user.id, detail=detail[:400])
     db.commit()
     return {"success": ok, "detail": detail, "email": email_status(db)}

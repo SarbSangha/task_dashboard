@@ -9,6 +9,7 @@ import {
   getItemTypeMeta,
   getOwnershipStatusMeta,
   isAudioItemType,
+  isVideoItemType,
   normalizeApiError,
 } from './envatoCaptureUtils';
 // Renders with Kling's drawer classes - mirrors
@@ -69,8 +70,9 @@ export default function GenerationDetailPanel({ generationId }) {
   const ownershipMeta = getOwnershipStatusMeta(generation.ownershipStatus);
   const typeMeta = getItemTypeMeta(generation.itemType);
   const isAudio = isAudioItemType(generation.itemType);
+  const isVideo = isVideoItemType(generation.itemType);
   const primaryAssetUrl = generation.canvasUrl || generation.fallbackUrl;
-  const heroImage = !isAudio ? (generation.canvasUrl || generation.fallbackUrl || generation.thumbnailUrl) : null;
+  const heroImage = !isAudio && !isVideo ? (generation.canvasUrl || generation.fallbackUrl || generation.thumbnailUrl) : null;
   const ownerLabel = owner
     ? `${owner.name}${owner.employeeId ? ` (${owner.employeeId})` : ''}`
     : generation.ownerUserId
@@ -85,8 +87,20 @@ export default function GenerationDetailPanel({ generationId }) {
   return (
     <>
       <div className="kling-drawer-preview">
-        {isAudio ? (
-          <div className="kling-drawer-preview-empty">{typeMeta.icon} {typeMeta.label} — no visual preview</div>
+        {isVideo && primaryAssetUrl ? (
+          <video
+            src={primaryAssetUrl}
+            poster={generation.thumbnailUrl || undefined}
+            className="kling-drawer-preview-media"
+            controls
+            preload="metadata"
+          />
+        ) : isAudio && primaryAssetUrl ? (
+          <audio src={primaryAssetUrl} className="kling-drawer-preview-media" controls preload="metadata" />
+        ) : isAudio ? (
+          <div className="kling-drawer-preview-empty">{typeMeta.icon} {typeMeta.label} — no audio URL captured</div>
+        ) : isVideo ? (
+          <div className="kling-drawer-preview-empty">{typeMeta.icon} {typeMeta.label} — no video URL captured</div>
         ) : heroImage ? (
           <img src={heroImage} alt={generation.prompt || generation.title || 'Envato generation'} className="kling-drawer-preview-media" />
         ) : (

@@ -1914,18 +1914,133 @@ function freepikButtonDescriptorText(element) {
   return parts.filter(Boolean).join(' ').trim().toLowerCase();
 }
 
-function findFreepikGenerateActionTarget(target) {
-  const candidates = collectUniqueElements(
-    collectFreepikInteractionCandidateElements(target).map((element) => findFreepikGenerateButtonAncestor(element))
-  );
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const text = freepikButtonDescriptorText(candidate);
+// Same idea as freepikButtonDescriptorText but deliberately narrower: only
+// this element's OWN explicitly-authored aria-label/title/data-testid, never
+// innerText/textContent. Used for a button ancestor reached by climbing PAST
+// the nearest button actually wrapping the click (see findFreepikActionTarget)
+// - textContent aggregates every descendant's text, so a bigger wrapper
+// climbed past a small icon-only toggle can "inherit" a sibling button's own
+// label even though the click never touched that sibling.
+function freepikOwnAccessibleName(element) {
+  if (!element) return '';
+  const parts = [
+    element.getAttribute?.('aria-label'),
+    element.getAttribute?.('title'),
+    element.getAttribute?.('data-testid'),
+  ];
+  return parts.filter(Boolean).join(' ').trim().toLowerCase();
+}
+
+// A trigger that only opens a menu/listbox (Radix DropdownMenu, Select,
+// etc.) - identified the standard accessible way, aria-haspopup and/or
+// aria-expanded - never performs the download/generate itself; it just
+// reveals more choices. Confirmed live from freepik.com's own markup:
+// <button aria-label="Download by file types" aria-haspopup="menu"
+// aria-expanded="false" ...>. Gating this button directly (tried earlier)
+// meant the "Select Task" modal popped up the instant the dropdown was
+// opened, before the user had even picked a size/format - not what "every
+// generation must be linked to a task" is asking for. What actually needs
+// to be linked to a task is whichever concrete item the user picks FROM
+// that menu (see findFreepikMenuItemAncestor / the armed-menu handling in
+// runFreepikActionGate below) - so a matched trigger only arms a
+// short-lived watch for that follow-up pick; it is never gated itself.
+function isFreepikMenuTriggerOnly(element) {
+  if (!element) return false;
+  const haspopup = `${element.getAttribute?.('aria-haspopup') || ''}`.trim().toLowerCase();
+  if (['menu', 'listbox', 'true', 'dialog', 'grid', 'tree'].includes(haspopup)) return true;
+  return element.hasAttribute?.('aria-expanded') || false;
+}
+
+// Generous window: opening the dropdown just arms a watch, it doesn't gate
+// anything by itself, so there's no harm in leaving it armed long enough
+// for someone to actually read the size/format list before picking one.
+const FREEPIK_MENU_WATCH_MS = 20000;
+// Keeps the trigger element itself, not just a timestamp - see
+// reopenFreepikMenuAndClickMatch below, which needs it to reopen the menu
+// after the task/client modal closes (the originally-picked item can no
+// longer be trusted to still be there by then - see that function's own
+// comment for why).
+const freepikMenuWatch = {
+  download: { until: 0, trigger: null },
+  generate: { until: 0, trigger: null },
+};
+
+function armFreepikMenuWatch(gateType, trigger) {
+  freepikMenuWatch[gateType] = { until: Date.now() + FREEPIK_MENU_WATCH_MS, trigger };
+}
+
+function isFreepikMenuWatchArmed(gateType) {
+  return Date.now() < (freepikMenuWatch[gateType]?.until || 0);
+}
+
+function getFreepikMenuWatchTrigger(gateType) {
+  return freepikMenuWatch[gateType]?.trigger || null;
+}
+
+function clearFreepikMenuWatch(gateType) {
+  freepikMenuWatch[gateType] = { until: 0, trigger: null };
+}
+
+// Radix (and most other menu libraries) mark each pickable entry inside an
+// opened menu/listbox with one of these roles - reused here to recognize
+// "the user just picked a size/format from an armed Download/Generate
+// dropdown" without needing to know that specific menu's DOM structure or
+// item text (a plain "PNG"/"4K" label carries neither "download" nor
+// "generate", so the keyword matcher above could never catch it directly).
+const FREEPIK_MENU_ITEM_ROLES = new Set(['menuitem', 'menuitemradio', 'menuitemcheckbox', 'option']);
+
+function findFreepikMenuItemAncestor(target) {
+  let current = target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+  let depth = 0;
+  while (current && current !== document.body && depth < 8) {
+    if (FREEPIK_MENU_ITEM_ROLES.has(current.getAttribute?.('role'))) return current;
+    current = current.parentElement;
+    depth += 1;
+  }
+  return null;
+}
+
+// Shared matcher for both the Generate and Download gates. Confirmed live
+// (real outerHTML pasted from freepik.com's asset detail panel) that the
+// Download button's format-dropdown chevron is a plain icon-only button
+// with no text of its own, sitting as a sibling of the actual "Download"
+// button inside a shared, non-button wrapper <div class="flex">. Under an
+// earlier version of this algorithm, a click on that chevron would fail to
+// match on the chevron itself, then climb PAST it looking for a bigger
+// button-like ancestor - and since climbing walks UP the tree (never
+// sideways into siblings), it would never legitimately land back on the
+// sibling Download button, but a bigger enclosing element further out that
+// happened to also match ACTION_SELECTORS could still read "Download" out
+// of its own *aggregated* textContent (which includes the sibling's text),
+// wrongly gating a click that never touched the real Download button. Fix:
+// only the single nearest button actually wrapping the click may match on
+// its full text; any bigger ancestor reached by climbing past it may only
+// match on its own explicitly-authored aria-label/title/data-testid, never
+// on inherited descendant text.
+function findFreepikActionTarget(target, keywordPattern, gateType) {
+  const rawTarget = target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+  const nearestButton = findFreepikGenerateButtonAncestor(rawTarget);
+  const seen = new Set();
+  for (const startElement of collectFreepikInteractionCandidateElements(target)) {
+    const candidate = findFreepikGenerateButtonAncestor(startElement);
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    const text = candidate === nearestButton
+      ? freepikButtonDescriptorText(candidate)
+      : freepikOwnAccessibleName(candidate);
     if (!text || text.length > 60) continue;
-    if (!/(^|\s)generate($|\s)/i.test(text)) continue;
+    if (!keywordPattern.test(text)) continue;
+    if (isFreepikMenuTriggerOnly(candidate)) {
+      armFreepikMenuWatch(gateType, candidate);
+      return null; // opening the menu is never itself the gated action
+    }
     return candidate;
   }
   return null;
+}
+
+function findFreepikGenerateActionTarget(target) {
+  return findFreepikActionTarget(target, /(^|\s)generate($|\s)/i, 'generate');
 }
 
 // ---- Task Mapping: Generation Interceptor ----
@@ -1945,34 +2060,81 @@ let freepikTaskGateBypassTarget = null;
 let freepikTaskGateModalOpen = false;
 let freepikPendingTaskSelection = null; // {taskId, taskName, clientId, clientName} - consumed by armFreepikGeneration()
 
-async function runFreepikTaskGate(target) {
+async function runFreepikTaskGate(target, { reopenTrigger } = {}) {
   if (freepikTaskGateModalOpen) return; // double-click Generate while the modal is already open - no-op
   freepikTaskGateModalOpen = true;
   try {
+    // Read before the modal opens - see runFreepikDownloadTaskGate's own
+    // comment on why a menu item's text has to be captured this early.
+    const pickedItemText = reopenTrigger ? freepikMenuItemDescriptorText(target) : null;
     const selection = await openFreepikTaskSelectionModal();
     if (!selection) return; // cancelled/ESC/no active tasks - click stays blocked
     freepikPendingTaskSelection = selection;
     freepikTaskGateBypassTarget = target;
-    target.click();
+    if (reopenTrigger) {
+      // See reopenFreepikMenuAndClick - the same "menu closes when our
+      // modal steals focus" issue diagnosed for the Download dropdown
+      // applies to any Edit-with-AI-style submenu pick too.
+      await reopenFreepikMenuAndClick(reopenTrigger, target, pickedItemText);
+    } else {
+      target.click();
+    }
   } finally {
     freepikTaskGateModalOpen = false;
   }
 }
 
-document.addEventListener('click', (event) => {
+// Bound to the full pointerdown -> mousedown -> pointerup -> mouseup -> click
+// gesture, not just 'click'. A menu-trigger click (the format-dropdown
+// chevron, aria-haspopup="menu") is never gated directly (see
+// isFreepikMenuTriggerOnly) - Radix opens that menu on pointerdown, and
+// gating the trigger itself either flashed the menu open then yanked it
+// away the instant our modal stole focus, or (if blocked early enough)
+// popped the task picker before the user had even chosen a size. Desired
+// flow instead: click dropdown -> list opens untouched -> click a
+// size/format -> THEN the task/client picker appears -> selecting
+// completes the (real) download. findFreepikActionTarget arms a
+// short-lived per-gate-type watch when it sees a matching trigger; this
+// handler falls back to that watch (see findFreepikMenuItemAncestor) only
+// when the click isn't already a direct Generate/Download match, so a
+// picked menu item - which never carries "generate"/"download" in its own
+// text - still gets treated as the real gated action while the dropdown
+// itself stays free to open normally.
+function runFreepikActionGate(event) {
   try {
-    const target = findFreepikGenerateActionTarget(event.target);
+    let target = findFreepikGenerateActionTarget(event.target);
+    let downloadTarget = target ? null : findFreepikDownloadActionTarget(event.target);
+    let generateMenuPick = false;
+    let downloadMenuPick = false;
+
+    if (!target && !downloadTarget) {
+      const menuItem = findFreepikMenuItemAncestor(event.target);
+      if (menuItem) {
+        if (isFreepikMenuWatchArmed('download')) { downloadTarget = menuItem; downloadMenuPick = true; }
+        else if (isFreepikMenuWatchArmed('generate')) { target = menuItem; generateMenuPick = true; }
+      }
+    }
+
     if (target) {
       if (freepikTaskGateBypassTarget === target) {
-        freepikTaskGateBypassTarget = null; // one-shot: next Generate click gates again
-        armFreepikGeneration();
-        return; // let the (re-dispatched) click reach Freepik's own handler
+        if (event.type === 'click') {
+          freepikTaskGateBypassTarget = null; // one-shot: next Generate click gates again
+          armFreepikGeneration();
+        }
+        return; // let the (re-dispatched) gesture reach Freepik's own handler
       }
 
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      runFreepikTaskGate(target);
+      // Read before clearFreepikMenuWatch wipes it - see
+      // reopenFreepikMenuAndClick for why the trigger is kept around.
+      const reopenTrigger = generateMenuPick ? getFreepikMenuWatchTrigger('generate') : null;
+      if (event.type === 'click') clearFreepikMenuWatch('generate'); // this gesture used up the armed watch, if any
+      // Recomputed per event type, but runFreepikTaskGate's own
+      // freepikTaskGateModalOpen guard makes every call after the first
+      // one in this same gesture a harmless no-op.
+      runFreepikTaskGate(target, { reopenTrigger });
       return;
     }
 
@@ -1982,20 +2144,34 @@ document.addEventListener('click', (event) => {
     // the two gates never interfere with each other. See this file's
     // "Download capture" section further down for
     // findFreepikDownloadActionTarget/runFreepikDownloadTaskGate.
-    const downloadTarget = findFreepikDownloadActionTarget(event.target);
     if (downloadTarget) {
       if (freepikDownloadTaskGateBypassTarget === downloadTarget) {
-        freepikDownloadTaskGateBypassTarget = null; // one-shot: next Download click gates again
-        return; // already reported (see runFreepikDownloadTaskGate) - let the re-dispatched click reach Freepik's own handler
+        if (event.type === 'click') {
+          freepikDownloadTaskGateBypassTarget = null; // one-shot: next Download click gates again
+        }
+        return; // already reported (see runFreepikDownloadTaskGate) - let the re-dispatched gesture reach Freepik's own handler
+      }
+
+      if (Date.now() < freepikDownloadGateClearedUntil) {
+        // Already cleared the gate for this download interaction - this is
+        // very likely the follow-up click picking a size/format from a menu
+        // the first click opened. See FREEPIK_DOWNLOAD_GATE_GRACE_MS above.
+        return;
       }
 
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      runFreepikDownloadTaskGate(downloadTarget);
+      const reopenTrigger = downloadMenuPick ? getFreepikMenuWatchTrigger('download') : null;
+      if (event.type === 'click') clearFreepikMenuWatch('download'); // this gesture used up the armed watch, if any
+      runFreepikDownloadTaskGate(downloadTarget, { reopenTrigger });
     }
   } catch {}
-}, true); // capturing phase - fires even if the page's own handler stops propagation
+}
+
+['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((eventName) => {
+  document.addEventListener(eventName, runFreepikActionGate, true); // capturing phase - fires even if the page's own handler stops propagation
+});
 
 // ---- Qualifying-row evaluation: the ONLY gate for the live-capture path ----
 
@@ -2288,36 +2464,49 @@ function currentFreepikSourceHost() {
 
 // ---- Download capture ----
 //
-// Reuses findFreepikGenerateButtonAncestor (misnamed but fully generic - it
-// only ever walks up to the nearest real button/link/role=button ancestor,
-// the "generate" part of its name refers to nothing inside the function
-// itself) rather than duplicating the identical ancestor-walk a second time.
+// Reuses findFreepikActionTarget (shared with the Generate gate above -
+// same nearest-vs-climbed-past distinction applies here) rather than
+// duplicating the identical ancestor-walk a second time.
 
 function findFreepikDownloadActionTarget(target) {
-  const candidates = collectUniqueElements(
-    collectFreepikInteractionCandidateElements(target).map((element) => findFreepikGenerateButtonAncestor(element))
-  );
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const text = freepikButtonDescriptorText(candidate);
-    if (!text || text.length > 60) continue;
-    if (!/(^|\s)download($|\s)/i.test(text)) continue;
-    return candidate;
-  }
-  return null;
+  return findFreepikActionTarget(target, /(^|\s)download($|\s)/i, 'download');
 }
 
-// Best-effort scrape of whatever's visible near the clicked Download button
-// - unconfirmed DOM structure, see this section's own top comment. Read
-// BEFORE the click is re-dispatched (see runFreepikDownloadTaskGate), since
-// the click itself may navigate away or alter the DOM.
+// Best-effort scrape of the downloaded asset's title/preview. Originally
+// only looked near the clicked button (closest card/article), which broke
+// on an asset detail page (reported: captured card showed "No preview" /
+// "No title captured") - the Download button there sits in a sidebar with
+// no card/article/figure ancestor at all, and now that a size/format PICK
+// gates this too (see findFreepikMenuItemAncestor above), "button" can be a
+// menu item rendered in a Radix portal near document.body, nowhere close
+// to the actual asset in the DOM. og:image/og:title are page-level SEO
+// metadata every asset detail page sets regardless of where the click
+// happened, so they're checked first and are far more reliable here; the
+// old DOM-proximity heuristic is kept as a fallback for pages that don't
+// set them. Read BEFORE the click is re-dispatched (see
+// runFreepikDownloadTaskGate), since the click itself may navigate away or
+// alter the DOM.
 function collectFreepikDownloadAssetInfo(button) {
+  const ogImage = document.querySelector('meta[property="og:image"]')?.content
+    || document.querySelector('meta[name="twitter:image"]')?.content
+    || null;
+  const ogTitle = document.querySelector('meta[property="og:title"]')?.content
+    || document.querySelector('meta[name="twitter:title"]')?.content
+    || null;
+  const pageTitle = document.title ? document.title.split(/[|\-–]/)[0].trim() : null;
+
   const container = button.closest('[class*="card" i], article, figure') || button.parentElement || button;
   const img = container?.querySelector?.('img[src]');
-  const rawTitle = img?.getAttribute('alt') || container?.getAttribute?.('aria-label') || container?.getAttribute?.('title') || null;
+  const rawTitle = ogTitle
+    || img?.getAttribute('alt')
+    || container?.getAttribute?.('aria-label')
+    || container?.getAttribute?.('title')
+    || pageTitle
+    || null;
+
   return {
     assetTitle: rawTitle ? String(rawTitle).trim().slice(0, 2000) : null,
-    assetThumbnailUrl: img?.getAttribute('src') || null,
+    assetThumbnailUrl: ogImage || img?.getAttribute('src') || null,
     // No confirmed way to read the stock item's own permalink from just the
     // card yet (no visible <a href> reliably pointing at it in the one
     // screenshot this was built from) - left null rather than guess.
@@ -2357,6 +2546,95 @@ async function reportFreepikDownloadClick(assetInfo, selection) {
   }
 }
 
+// element.click() only ever fires a "click" event - it does NOT fire
+// pointerdown/mousedown first, unlike a real user interaction. Confirmed
+// live as the reason the download bypass silently did nothing: the
+// magnific.com file-type dropdown is a Radix UI menu trigger
+// (aria-haspopup="menu", id="radix-:...:") and Radix's menu/popover
+// triggers commonly open on pointerdown, not click, for snappier response -
+// so target.click() cleared our own gate but never actually opened the menu
+// the user needed to pick a format from. Dispatching the full
+// pointerdown -> mousedown -> pointerup -> mouseup -> click sequence (all
+// bubbling, so React's root-delegated listeners see them) reproduces what a
+// real click does, not just its final event.
+function dispatchRealisticClick(target) {
+  if (!target) return;
+  const rect = typeof target.getBoundingClientRect === 'function' ? target.getBoundingClientRect() : null;
+  const point = rect
+    ? { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }
+    : { clientX: 0, clientY: 0 };
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: 1, isPrimary: true, ...point };
+  let dispatchedAny = false;
+  ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((type) => {
+    try {
+      const EventCtor = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+      target.dispatchEvent(new EventCtor(type, base));
+      dispatchedAny = true;
+    } catch {
+      // Construction failed for this event type (e.g. no PointerEvent in
+      // this browser) - the other event types in the sequence still fire,
+      // and the plain target.click() fallback below covers a total failure.
+    }
+  });
+  if (!dispatchedAny) {
+    try { target.click(); } catch {}
+  }
+}
+
+function freepikMenuItemDescriptorText(element) {
+  if (!element) return '';
+  const parts = [element.innerText, element.textContent, element.getAttribute?.('aria-label')];
+  return parts.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+const FREEPIK_MENU_REOPEN_TIMEOUT_MS = 3000;
+const FREEPIK_MENU_REOPEN_POLL_MS = 100;
+
+function findFreepikVisibleMenuItemByText(itemText) {
+  if (!itemText) return null;
+  const candidates = Array.from(document.querySelectorAll(
+    '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]'
+  )).filter(isVisible);
+  return candidates.find((el) => freepikMenuItemDescriptorText(el) === itemText)
+    || candidates.find((el) => freepikMenuItemDescriptorText(el).includes(itemText))
+    || null;
+}
+
+function waitForFreepikMenuItemMatch(itemText, timeoutMs = FREEPIK_MENU_REOPEN_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const attempt = () => {
+      const match = findFreepikVisibleMenuItemByText(itemText);
+      if (match || Date.now() >= deadline) {
+        resolve(match);
+        return;
+      }
+      window.setTimeout(attempt, FREEPIK_MENU_REOPEN_POLL_MS);
+    };
+    attempt();
+  });
+}
+
+// Reported live: after picking a size/format and completing the task/client
+// picker, "some time no download occur". Root cause: redispatching a click
+// straight onto the ORIGINAL menu item is a coin flip once the modal has
+// closed. Opening our modal grabs focus, and the same dismiss-on
+// -outside-interaction behavior already diagnosed for this dropdown
+// earlier (it's what was making the menu flicker shut before the trigger
+// itself was un-gated) means the menu - and the item inside it - is very
+// likely gone from the DOM by the time the user finishes picking a task,
+// a multi-second human interaction. The trigger button, unlike the menu it
+// opens, is never removed when its menu closes, so the reliable path is:
+// reopen THROUGH the trigger, then find a freshly-rendered item with the
+// same visible text and click that instead. The original (possibly
+// detached) item is kept only as a last-resort fallback if no match shows
+// up in time - still better than doing nothing.
+async function reopenFreepikMenuAndClick(trigger, originalItem, itemText) {
+  dispatchRealisticClick(trigger);
+  const match = await waitForFreepikMenuItemMatch(itemText);
+  dispatchRealisticClick(match || originalItem);
+}
+
 // ---- Task Mapping: Download Interceptor - mirrors runFreepikTaskGate
 // exactly (own bypass-target state so the two gates never interfere), except
 // the bypass branch reports the download directly instead of arming a
@@ -2365,16 +2643,42 @@ async function reportFreepikDownloadClick(assetInfo, selection) {
 let freepikDownloadTaskGateBypassTarget = null;
 let freepikDownloadTaskGateModalOpen = false;
 
-async function runFreepikDownloadTaskGate(target) {
+// Grace window after a Download gate clears. Confirmed against a real
+// magnific.com download flow: the visible "Download" button sits next to a
+// separate size/format dropdown, and picking an option from that dropdown is
+// its own click, on its own element - findFreepikDownloadActionTarget can
+// legitimately match it too (a "Download options" toggle or a "Download 4K"
+// style menu entry both contain the word "download"). The one-shot bypass
+// above only ever recognizes the exact single element that was first
+// clicked, so that second click re-opened this same modal, making it
+// impossible to ever actually pick a size/format - the gate never let the
+// user get past step one of their own download. Once cleared for one
+// download interaction, any further "download"-shaped click within this
+// window is treated as the same interaction and passed through unasked.
+const FREEPIK_DOWNLOAD_GATE_GRACE_MS = 20000;
+let freepikDownloadGateClearedUntil = 0;
+
+async function runFreepikDownloadTaskGate(target, { reopenTrigger } = {}) {
   if (freepikDownloadTaskGateModalOpen) return; // double-click Download while the modal is already open - no-op
   freepikDownloadTaskGateModalOpen = true;
   try {
+    // Read before the modal opens - a menu item's text needs to survive
+    // the menu closing underneath our modal (see reopenFreepikMenuAndClick).
+    const pickedItemText = reopenTrigger ? freepikMenuItemDescriptorText(target) : null;
     const selection = await openFreepikTaskSelectionModal();
     if (!selection) return; // cancelled/ESC/no active tasks - click stays blocked
     const assetInfo = collectFreepikDownloadAssetInfo(target);
     freepikDownloadTaskGateBypassTarget = target;
+    freepikDownloadGateClearedUntil = Date.now() + FREEPIK_DOWNLOAD_GATE_GRACE_MS;
     reportFreepikDownloadClick(assetInfo, selection);
-    target.click();
+    if (reopenTrigger) {
+      await reopenFreepikMenuAndClick(reopenTrigger, target, pickedItemText);
+    } else {
+      // Not target.click() - see dispatchRealisticClick's own comment: this
+      // target can be a Radix menu trigger that opens on pointerdown, which
+      // .click() alone never fires.
+      dispatchRealisticClick(target);
+    }
   } finally {
     freepikDownloadTaskGateModalOpen = false;
   }

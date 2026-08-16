@@ -1,6 +1,8 @@
 from sqlalchemy import text
 from providers.chatgpt.migrations import ensure_chatgpt_postgres_schema, ensure_chatgpt_sqlite_schema
+from providers.elevenlabs.migrations import ensure_elevenlabs_postgres_schema, ensure_elevenlabs_sqlite_schema
 from providers.envato.migrations import ensure_envato_postgres_schema, ensure_envato_sqlite_schema
+from providers.flow.migrations import ensure_flow_postgres_schema, ensure_flow_sqlite_schema
 from providers.freepik.migrations import ensure_freepik_postgres_schema, ensure_freepik_sqlite_schema
 from providers.heygen.migrations import ensure_heygen_postgres_schema, ensure_heygen_sqlite_schema
 from providers.higgsfield.migrations import ensure_higgsfield_postgres_schema, ensure_higgsfield_sqlite_schema
@@ -826,6 +828,12 @@ def _ensure_postgres_schema(conn) -> None:
 
     # ---- Envato Generation Capture System (see providers/envato/migrations.py) ----
     ensure_envato_postgres_schema(conn)
+
+    # ---- ElevenLabs Generation Capture System (see providers/elevenlabs/migrations.py) ----
+    ensure_elevenlabs_postgres_schema(conn)
+
+    # ---- Flow Generation Capture System (see providers/flow/migrations.py) ----
+    ensure_flow_postgres_schema(conn)
 
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_enabled ON tasks(workflow_enabled)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_status ON tasks(workflow_status)"))
@@ -1862,6 +1870,12 @@ def ensure_operational_schema(engine) -> None:
 
         # ---- Envato Generation Capture System (see providers/envato/migrations.py) ----
         ensure_envato_sqlite_schema(conn)
+
+        # ---- ElevenLabs Generation Capture System (see providers/elevenlabs/migrations.py) ----
+        ensure_elevenlabs_sqlite_schema(conn)
+
+        # ---- Flow Generation Capture System (see providers/flow/migrations.py) ----
+        ensure_flow_sqlite_schema(conn)
 
         conn.execute(
             text(

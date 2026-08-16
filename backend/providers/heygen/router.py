@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from database_config import get_operational_db
 from models_new import User
 from providers.heygen import queries as heygen_queries
+from providers.heygen.asset_mirror import requeue_failed_mirrors
 from providers.heygen.capture import (
     ingest_capture_event,
     resolve_heygen_actor,
@@ -340,6 +341,29 @@ def get_generation_detail(
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
     return GenerationDetailOut(data=generation.to_dict())
+
+
+@router.post("/generations/requeue-failed-mirrors", response_model=MetricsOut)
+def requeue_failed_asset_mirrors(
+    force: bool = Query(
+        False,
+        description=(
+            "Re-queue even rows that have not been re-captured since their failed attempt. "
+            "Off by default so a still-dead URL is not re-fetched for nothing."
+        ),
+    ),
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Admin re-queue for generations stuck at asset_mirror_status
+    "failed"/"skipped" - the action providers/heygen/asset_mirror.py's sweep
+    has always assumed exists. Flips them back to "pending"; the next periodic
+    sweep (main.py's _periodic_heygen_asset_mirror_dispatch) does the actual
+    fetch, so this returns immediately rather than blocking on network I/O."""
+    stats = requeue_failed_mirrors(db, limit=limit, force=force)
+    logger.info("heygen requeue_failed_mirrors by user_id=%s force=%s stats=%s", current_user.id, force, stats)
+    return MetricsOut(data=stats)
 
 
 @router.get("/metrics", response_model=MetricsOut)

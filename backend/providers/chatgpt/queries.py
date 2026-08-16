@@ -30,6 +30,7 @@ from providers.chatgpt.constants import (
     HEALTH_STATUS_BACKLOGGED,
     HEALTH_STATUS_DEGRADED,
     HEALTH_STATUS_HEALTHY,
+    HEALTH_STATUS_NO_MESSAGES,
     HEALTH_STATUS_OFFLINE,
     OWNERSHIP_STATUS_RESOLVED,
     PROVIDER,
@@ -78,7 +79,20 @@ MAX_EVENTS_LIMIT = 200
 DEFAULT_CONVERSATIONS_LIMIT = 20
 MAX_CONVERSATIONS_LIMIT = 100
 
-_HEALTH_STATUS_PRIORITY = (HEALTH_STATUS_OFFLINE, HEALTH_STATUS_BACKLOGGED, HEALTH_STATUS_DEGRADED, HEALTH_STATUS_HEALTHY)
+# NO_MESSAGES sits LAST on purpose. This tuple is scanned in order by
+# _classify_overall_health to roll a person's conversations up into one chip,
+# so anything ahead of it wins: a user with one real conversation and nine
+# merely-opened ones still reads "healthy" rather than being dragged down by
+# empties. Only a user whose conversations are ALL content-less rolls up to
+# "no messages" - which is exactly the signal an admin wants, because it means
+# that person's extension has never captured a single message.
+_HEALTH_STATUS_PRIORITY = (
+    HEALTH_STATUS_OFFLINE,
+    HEALTH_STATUS_BACKLOGGED,
+    HEALTH_STATUS_DEGRADED,
+    HEALTH_STATUS_HEALTHY,
+    HEALTH_STATUS_NO_MESSAGES,
+)
 
 
 @dataclass
@@ -803,10 +817,18 @@ def _classify_conversation_health(prompts: int, responses: int) -> str:
     health (health.py answers "is the extension's queue healthy right now",
     not "did this specific conversation capture cleanly") - "degraded" means
     exactly the gap this feature exists to surface: prompts were sent but no
-    response was ever captured for them."""
+    response was ever captured for them.
+
+    A conversation with neither is a third, distinct case (see
+    HEALTH_STATUS_NO_MESSAGES): it exists only because somebody opened or
+    renamed a chat, so there is genuinely nothing to show. Reporting that as
+    "healthy" is what produced a green Healthy chip above an empty
+    "No messages captured" panel."""
+    if prompts == 0 and responses == 0:
+        return HEALTH_STATUS_NO_MESSAGES
     if prompts > 0 and responses == 0:
-        return "degraded"
-    return "healthy"
+        return HEALTH_STATUS_DEGRADED
+    return HEALTH_STATUS_HEALTHY
 
 
 def _count_by_event_type(db: Session, event_type: str) -> int:

@@ -2,8 +2,8 @@
 Provider registry -- the extensibility seam of the workbook.
 
 Every AI tool the report can describe is declared here once. Today ChatGPT,
-Kling, Freepik, Envato, HeyGen and Higgsfield are *integrated* (live data
-flows in); the rest are declared as *pending* so they already appear
+Kling, Freepik, Envato, HeyGen, Higgsfield and ElevenLabs are *integrated*
+(live data flows in); the rest are declared as *pending* so they already appear
 correctly in Tool Master and are ready to light up the moment their capture
 pipeline lands.
 
@@ -56,7 +56,9 @@ PROVIDERS: tuple[ProviderMeta, ...] = (
     ProviderMeta("gemini", "Gemini", "Google", "Text / Content Generation", "Not yet captured"),
     ProviderMeta("dalle", "DALL-E", "OpenAI", "AI Image Generation", "Not yet captured"),
     ProviderMeta("firefly", "Adobe Firefly", "Adobe", "AI Image / Design", "Not yet captured"),
-    ProviderMeta("elevenlabs", "ElevenLabs", "ElevenLabs", "AI Voice Generation", "Not yet captured"),
+    ProviderMeta("elevenlabs", "ElevenLabs", "ElevenLabs", "AI Voice Generation",
+                 "Prompt/Text Input, Voice, Source Type, Person, Date, Task/Client",
+                 integrated=True),
     ProviderMeta("suno", "Suno", "Suno", "AI Music Generation", "Not yet captured"),
     ProviderMeta("pika", "Pika", "Pika Labs", "AI Video Generation", "Not yet captured"),
     ProviderMeta("leonardo", "Leonardo AI", "Leonardo.Ai", "AI Image Generation", "Not yet captured"),

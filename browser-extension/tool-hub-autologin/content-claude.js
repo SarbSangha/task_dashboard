@@ -520,6 +520,25 @@ function markActionTaken() {
   STATE.lastActionAt = Date.now();
 }
 
+// Reported bug: signing in successfully would immediately log the user
+// back out, storage wiped, right after the whole verification process
+// completed. Root cause: revokeActiveLaunch() used to fire the instant
+// looksLikeAuthenticatedWorkspace() first matched - but Claude's own
+// auth-callback flow can land on more than one URL before settling
+// (e.g. a transitional "verifying..." shell that shares enough layout
+// with the real app - a textarea, a "New chat" link - to false-match
+// authenticated-workspace detection before the final client-side redirect
+// actually lands). Revoking right then deleted the launch one hop too
+// early: the NEXT page load (the real final one) found no launch left,
+// was treated as an unauthorized manual visit by enforceDashboardOnlyAccess,
+// and wiped everything. Claude has no continuation-launch fallback by
+// design (see DIRECT_TICKET_ONLY_TOOLS in background-main.js), so there
+// was nothing to catch that. Delaying the revoke lets a later hop's own
+// success detection - which only ever runs while the launch is still
+// valid - see the same still-live launch instead of finding it already
+// gone.
+const REVOKE_LAUNCH_GRACE_MS = 8000;
+
 function stopAutomation(message, { hideBadgeAfterMs = 3000, revokeLaunch = false } = {}) {
   STATE.settled = true;
   if (STATE.scheduledTimer) {
@@ -537,7 +556,7 @@ function stopAutomation(message, { hideBadgeAfterMs = 3000, revokeLaunch = false
 
   setStatus(message);
   if (revokeLaunch) {
-    void revokeActiveLaunch();
+    window.setTimeout(() => { void revokeActiveLaunch(); }, REVOKE_LAUNCH_GRACE_MS);
   }
 
   if (hideBadgeAfterMs > 0) {
@@ -636,21 +655,39 @@ function requestAuthLink() {
 
 function attemptFill() {
   if (STATE.settled) return;
+
+  // Checked before ANY launch-authorization gating below - see the block
+  // that follows for why. Doesn't depend on launchChecked/launchAuthorized
+  // at all (it only inspects the page's own DOM), so it's safe to run
+  // immediately, before loadLaunchState()'s async round-trip even resolves.
+  if (looksLikeAuthenticatedWorkspace()) {
+    stopAutomation('Signed in successfully', { revokeLaunch: true });
+    return;
+  }
+
   if (!STATE.launchChecked) {
     setStatus('Checking dashboard launch');
     return;
   }
+  // Reported bug: refreshing the page after a successful sign-in logged the
+  // user straight back out. Root cause: stopAutomation's own revokeLaunch
+  // cleanup (see REVOKE_LAUNCH_GRACE_MS above) deletes this tab's launch
+  // record a few seconds after sign-in succeeds, by design - the
+  // extension's job is done at that point. With the launch-authorization
+  // check running first (as it used to), ANY later page load - a plain
+  // refresh, not a stray auth-callback hop - found no launch record left,
+  // was treated identically to a genuine unauthorized manual visit, and
+  // enforceDashboardOnlyAccess() wiped storage and bounced back to
+  // /login - even though the real Claude session (server-side, cookie-based)
+  // was still perfectly valid the whole time. Checking
+  // looksLikeAuthenticatedWorkspace() first, above, means an already
+  // signed-in tab never reaches this gate at all on a refresh.
   if (!STATE.launchAuthorized) {
     scheduleAsyncStep(enforceDashboardOnlyAccess);
     return;
   }
   if (STATE.launchExpiresAt && !STATE.launchPrepared) {
     scheduleAsyncStep(ensureFreshLaunchSession);
-    return;
-  }
-
-  if (looksLikeAuthenticatedWorkspace()) {
-    stopAutomation('Signed in successfully', { revokeLaunch: true });
     return;
   }
 

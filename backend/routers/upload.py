@@ -12,6 +12,7 @@ from typing import List, Optional
 from urllib.parse import unquote, urlparse
 
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -65,6 +66,13 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return value or default
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int((_env(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def _is_r2_configured() -> bool:
     endpoint = _env("R2_ENDPOINT")
     access_key = _env("R2_ACCESS_KEY")
@@ -74,6 +82,27 @@ def _is_r2_configured() -> bool:
     return all(values)
 
 
+def _r2_client_config():
+    """Bounds how long a single R2 call can block.
+
+    botocore's defaults are 60s connect + 60s read with legacy retries (5
+    attempts), so one stalled put_object can occupy its caller for minutes.
+    That matters beyond slow uploads: several capture endpoints used to hold a
+    database session across this call, which turned a slow R2 into parked
+    Postgres connections. The session holds are fixed at the call sites, but an
+    unbounded storage call is worth capping regardless - a request thread is
+    also a finite resource.
+
+    read_timeout is per socket read, not for the whole transfer, so a large
+    multipart upload is not penalised by a value this size.
+    """
+    return BotoConfig(
+        connect_timeout=_int_env("R2_CONNECT_TIMEOUT_SECONDS", 10),
+        read_timeout=_int_env("R2_READ_TIMEOUT_SECONDS", 60),
+        retries={"max_attempts": _int_env("R2_MAX_ATTEMPTS", 3), "mode": "standard"},
+    )
+
+
 def _build_r2_client():
     return boto3.client(
         "s3",
@@ -81,6 +110,7 @@ def _build_r2_client():
         aws_access_key_id=_env("R2_ACCESS_KEY"),
         aws_secret_access_key=_env("R2_SECRET_KEY"),
         region_name=_env("R2_REGION", "auto"),
+        config=_r2_client_config(),
     )
 
 

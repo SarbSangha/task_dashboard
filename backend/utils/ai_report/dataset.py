@@ -32,6 +32,7 @@ from providers.freepik.models import FreepikGeneration
 from providers.envato.models import EnvatoGeneration
 from providers.heygen.models import HeygenGeneration
 from providers.higgsfield.models import HiggsfieldGeneration
+from providers.elevenlabs.models import ElevenlabsGeneration
 
 from .providers import PROVIDERS, provider_meta
 
@@ -45,6 +46,7 @@ FREEPIK = "freepik"
 ENVATO = "envato"
 HEYGEN = "heygen"
 HIGGSFIELD = "higgsfield"
+ELEVENLABS = "elevenlabs"
 # The only Freepik tool that produces a video (confirmed against real
 # captured payloads) - everything else produces a still image.
 FREEPIK_VIDEO_TOOL = "video-generator"
@@ -109,6 +111,10 @@ class Employee:
     higgsfield_generations: int = 0
     higgsfield_credits: float = 0.0
     higgsfield_last: Optional[date] = None
+    # No credits/numeric field - none confirmed yet for ElevenLabs (see
+    # providers/elevenlabs/CAPTURE_CONTRACT.md's known gaps), don't invent one.
+    elevenlabs_generations: int = 0
+    elevenlabs_last: Optional[date] = None
 
     @property
     def tools_used(self) -> int:
@@ -119,6 +125,7 @@ class Employee:
             + (1 if self.envato_generations else 0)
             + (1 if self.heygen_videos else 0)
             + (1 if self.higgsfield_generations else 0)
+            + (1 if self.elevenlabs_generations else 0)
         )
 
     @property
@@ -126,6 +133,7 @@ class Employee:
         return (
             self.chatgpt_sessions + self.kling_videos + self.freepik_generations
             + self.envato_generations + self.heygen_videos + self.higgsfield_generations
+            + self.elevenlabs_generations
         )
 
     @property
@@ -133,6 +141,7 @@ class Employee:
         return (
             self.chatgpt_sessions + self.kling_videos + self.freepik_generations
             + self.envato_generations + self.heygen_videos + self.higgsfield_generations
+            + self.elevenlabs_generations
         )
 
     @property
@@ -201,11 +210,15 @@ class Event:
     # Kling is video-only and ChatGPT is text, so both leave this blank).
     kind: str = ""
     # Client Mapping (the admin-curated Client list, see GenerationClient /
-    # utils/client_gate.py) - populated for Freepik and Kling, the two
-    # providers with a pre-generation Task/Client picker. Blank for ChatGPT
-    # (grouped under the sheet's "No Client" bucket), same convention `kind`
-    # already uses for provider-specific fields.
+    # utils/client_gate.py) - populated for every generation-gated provider
+    # (Kling/Freepik/Envato/HeyGen/Higgsfield, each with a pre-generation
+    # Task/Client picker). Blank for ChatGPT (grouped under the sheet's "No
+    # Client" bucket), same convention `kind` already uses for
+    # provider-specific fields.
     client_name: str = ""
+    # Task Mapping - independent of Client Mapping above, same
+    # populated-for-every-gated-provider / blank-for-ChatGPT convention.
+    task_name: str = ""
 
 
 @dataclass
@@ -239,6 +252,7 @@ class KlingEvent:
     project: str
     status: str
     client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+    task_name: str = ""          # "" when not linked to a task (see Event.task_name)
 
 
 @dataclass
@@ -257,6 +271,7 @@ class FreepikEvent:
     creation_id: str
     status: str
     client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+    task_name: str = ""          # "" when not linked to a task (see Event.task_name)
 
     @property
     def is_video(self) -> bool:
@@ -287,6 +302,7 @@ class EnvatoEvent:
     item_uuid: str
     status: str
     client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+    task_name: str = ""          # "" when not linked to a task (see Event.task_name)
 
     @property
     def kind(self) -> str:
@@ -316,6 +332,7 @@ class HeygenEvent:
     ref_id: str                  # video_id/render_id/job_id/workflow_id, whichever is present
     status: str
     client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+    task_name: str = ""          # "" when not linked to a task (see Event.task_name)
 
 
 @dataclass
@@ -332,10 +349,27 @@ class HiggsfieldEvent:
     ref_id: str                  # generation_id/job_id/request_id, whichever is present
     status: str
     client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+    task_name: str = ""          # "" when not linked to a task (see Event.task_name)
 
     @property
     def kind(self) -> str:
         return "Video" if self.output_type == "video" else "Image" if self.output_type == "image" else (self.output_type or "—")
+
+
+@dataclass
+class ElevenlabsEvent:
+    when: date
+    employee_id: str
+    employee_name: str
+    department: str
+    prompt: str                  # the text fed to TTS/Music/SFX, when present
+    source: str                  # ElevenLabs' own "source" string (e.g. "TTS") - plays the role
+                                  # HeyGen's output_type plays; see providers/elevenlabs/CAPTURE_CONTRACT.md
+    voice_name: str
+    ref_id: str                  # provider_creation_id (best-guess identity - see normalization.py)
+    status: str
+    client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+    task_name: str = ""          # "" when not linked to a task (see Event.task_name)
 
 
 @dataclass
@@ -366,10 +400,14 @@ class DailyPoint:
     envato: int = 0
     heygen: int = 0
     higgsfield: int = 0
+    elevenlabs: int = 0
 
     @property
     def total(self) -> int:
-        return self.chatgpt + self.kling + self.freepik + self.envato + self.heygen + self.higgsfield
+        return (
+            self.chatgpt + self.kling + self.freepik + self.envato + self.heygen
+            + self.higgsfield + self.elevenlabs
+        )
 
 
 @dataclass
@@ -400,6 +438,9 @@ class Kpis:
     total_heygen_credits: float = 0.0
     total_higgsfield_generations: int = 0
     total_higgsfield_credits: float = 0.0
+    # No credits field - none confirmed yet for ElevenLabs (see
+    # providers/elevenlabs/CAPTURE_CONTRACT.md's known gaps).
+    total_elevenlabs_generations: int = 0
 
 
 @dataclass
@@ -414,6 +455,7 @@ class ReportDataset:
     envato_events: list[EnvatoEvent]
     heygen_events: list[HeygenEvent]
     higgsfield_events: list[HiggsfieldEvent]
+    elevenlabs_events: list[ElevenlabsEvent]
     merged_events: list[Event]
     tool_usage: list[ToolUsage]
     dept_adoption: list[DeptAdoption]
@@ -514,6 +556,9 @@ def build_dataset(
     hg_end = period.end_exclusive - LOCAL_TZ_OFFSET
     hf_start = period.start_dt - LOCAL_TZ_OFFSET
     hf_end = period.end_exclusive - LOCAL_TZ_OFFSET
+    # ElevenLabs' provider_created_at is UTC-stored too (same shift as ChatGPT).
+    el_start = period.start_dt - LOCAL_TZ_OFFSET
+    el_end = period.end_exclusive - LOCAL_TZ_OFFSET
 
     employees = _load_employees(db)
     by_uid = {emp.user_id: emp for emp in employees}
@@ -524,6 +569,7 @@ def build_dataset(
     _apply_envato_aggregates(db, ev_start, ev_end, by_uid)
     _apply_heygen_aggregates(db, hg_start, hg_end, by_uid)
     _apply_higgsfield_aggregates(db, hf_start, hf_end, by_uid)
+    _apply_elevenlabs_aggregates(db, el_start, el_end, by_uid)
 
     chatgpt_events, cg_trunc = _load_chatgpt_events(db, cg_start, cg_end, by_uid)
     kling_events, kl_trunc = _load_kling_events(db, period, kling_tool_ids, by_uid)
@@ -531,21 +577,24 @@ def build_dataset(
     envato_events, ev_trunc = _load_envato_events(db, ev_start, ev_end, by_uid)
     heygen_events, hg_trunc = _load_heygen_events(db, hg_start, hg_end, by_uid)
     higgsfield_events, hf_trunc = _load_higgsfield_events(db, hf_start, hf_end, by_uid)
+    elevenlabs_events, el_trunc = _load_elevenlabs_events(db, el_start, el_end, by_uid)
     merged = _merge_events(
-        chatgpt_events, kling_events, freepik_events, envato_events, heygen_events, higgsfield_events
+        chatgpt_events, kling_events, freepik_events, envato_events, heygen_events, higgsfield_events,
+        elevenlabs_events,
     )
 
     tools = _load_tools(db)
     tool_usage = _tool_usage(employees)
     dept_adoption = _dept_adoption(employees)
     daily = _daily_trend(
-        period, chatgpt_events, kling_events, freepik_events, envato_events, heygen_events, higgsfield_events
+        period, chatgpt_events, kling_events, freepik_events, envato_events, heygen_events, higgsfield_events,
+        elevenlabs_events,
     )
     top = sorted(employees, key=lambda emp: (emp.composite_score, emp.total_usage), reverse=True)[:5]
     kpis = _kpis(employees, tools)
     warnings = _validate(
         employees, chatgpt_events, kling_events, freepik_events, envato_events,
-        heygen_events, higgsfield_events, period,
+        heygen_events, higgsfield_events, elevenlabs_events, period,
     )
 
     return ReportDataset(
@@ -559,6 +608,7 @@ def build_dataset(
         envato_events=envato_events,
         heygen_events=heygen_events,
         higgsfield_events=higgsfield_events,
+        elevenlabs_events=elevenlabs_events,
         merged_events=merged,
         tool_usage=tool_usage,
         dept_adoption=dept_adoption,
@@ -566,7 +616,7 @@ def build_dataset(
         top_employees=top,
         warnings=warnings,
         kpis=kpis,
-        raw_truncated=cg_trunc or kl_trunc or fp_trunc or ev_trunc or hg_trunc or hf_trunc,
+        raw_truncated=cg_trunc or kl_trunc or fp_trunc or ev_trunc or hg_trunc or hf_trunc or el_trunc,
     )
 
 
@@ -797,6 +847,34 @@ def _apply_higgsfield_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
             emp.higgsfield_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
 
 
+def _apply_elevenlabs_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
+    """ElevenLabs generations from ElevenlabsGeneration directly. Only
+    owner-attributed rows count toward an employee, same rationale as every
+    other provider here. No credits/numeric field is confirmed for
+    ElevenLabs yet (see providers/elevenlabs/CAPTURE_CONTRACT.md's known
+    gaps) - unlike HeyGen/Higgsfield, this aggregate is a plain count +
+    last-used date, nothing more."""
+    rows = (
+        db.query(
+            ElevenlabsGeneration.owner_user_id,
+            func.count(ElevenlabsGeneration.id),
+            func.max(ElevenlabsGeneration.provider_created_at),
+        )
+        .filter(
+            ElevenlabsGeneration.owner_user_id.isnot(None),
+            ElevenlabsGeneration.provider_created_at >= s,
+            ElevenlabsGeneration.provider_created_at < e,
+        )
+        .group_by(ElevenlabsGeneration.owner_user_id)
+        .all()
+    )
+    for uid, cnt, last in rows:
+        emp = by_uid.get(uid)
+        if emp:
+            emp.elevenlabs_generations = int(cnt or 0)
+            emp.elevenlabs_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
+
+
 # --------------------------------------------------------------------------- #
 # Raw event rows (capped)
 # --------------------------------------------------------------------------- #
@@ -860,7 +938,7 @@ def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tup
             UE.user_id, UE.event_date, UE.prompt_text, UE.model_label,
             UE.duration_label, UE.resolution_label, UE.credits_burned,
             UE.generation_id, UE.external_event_id, UE.event_type, UE.status,
-            UE.linked_client_name,
+            UE.linked_client_name, UE.linked_task_name,
         )
         .filter(
             UE.tool_id.in_(tool_ids),
@@ -876,7 +954,7 @@ def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tup
     out = []
     for (user_id, event_date, prompt_text, model_label, duration_label,
          resolution_label, credits_burned, generation_id, external_event_id,
-         event_type, status, linked_client_name) in rows:
+         event_type, status, linked_client_name, linked_task_name) in rows:
         emp = by_uid.get(user_id)
         credits = credits_burned
         if credits is not None and not (0 <= credits <= MAX_SANE_KLING_CREDITS):
@@ -899,6 +977,7 @@ def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tup
                 project=event_type or "—",
                 status=(status or "settled").title(),
                 client_name=linked_client_name or "",
+                task_name=linked_task_name or "",
             )
         )
     return out, truncated
@@ -915,7 +994,7 @@ def _load_freepik_events(db, s, e, by_uid) -> tuple[list[FreepikEvent], bool]:
             FreepikGeneration.resolution, FreepikGeneration.credits_charged,
             FreepikGeneration.credits_estimated, FreepikGeneration.family_id,
             FreepikGeneration.creation_id, FreepikGeneration.status,
-            FreepikGeneration.linked_client_name,
+            FreepikGeneration.linked_client_name, FreepikGeneration.linked_task_name,
         )
         .filter(
             FreepikGeneration.owner_user_id.isnot(None),
@@ -930,7 +1009,7 @@ def _load_freepik_events(db, s, e, by_uid) -> tuple[list[FreepikEvent], bool]:
     rows = rows[:RAW_ROW_CAP]
     out = []
     for (user_id, provider_created_at, prompt, tool, mode, resolution, credits_charged,
-         credits_estimated, family_id, creation_id, status, linked_client_name) in rows:
+         credits_estimated, family_id, creation_id, status, linked_client_name, linked_task_name) in rows:
         emp = by_uid.get(user_id)
         out.append(
             FreepikEvent(
@@ -948,6 +1027,7 @@ def _load_freepik_events(db, s, e, by_uid) -> tuple[list[FreepikEvent], bool]:
                 creation_id=creation_id or "—",
                 status=(status or "completed").title(),
                 client_name=linked_client_name or "",
+                task_name=linked_task_name or "",
             )
         )
     return out, truncated
@@ -963,6 +1043,7 @@ def _load_envato_events(db, s, e, by_uid) -> tuple[list[EnvatoEvent], bool]:
             EnvatoGeneration.prompt, EnvatoGeneration.item_type, EnvatoGeneration.aspect_ratio,
             EnvatoGeneration.style, EnvatoGeneration.credits_badge, EnvatoGeneration.item_uuid,
             EnvatoGeneration.review_status, EnvatoGeneration.linked_client_name,
+            EnvatoGeneration.linked_task_name,
         )
         .filter(
             EnvatoGeneration.owner_user_id.isnot(None),
@@ -977,7 +1058,7 @@ def _load_envato_events(db, s, e, by_uid) -> tuple[list[EnvatoEvent], bool]:
     rows = rows[:RAW_ROW_CAP]
     out = []
     for (user_id, provider_created_at, prompt, item_type, aspect_ratio, style, credits_badge,
-         item_uuid, review_status, linked_client_name) in rows:
+         item_uuid, review_status, linked_client_name, linked_task_name) in rows:
         emp = by_uid.get(user_id)
         out.append(
             EnvatoEvent(
@@ -993,6 +1074,7 @@ def _load_envato_events(db, s, e, by_uid) -> tuple[list[EnvatoEvent], bool]:
                 item_uuid=item_uuid or "—",
                 status=(review_status or "completed").title(),
                 client_name=linked_client_name or "",
+                task_name=linked_task_name or "",
             )
         )
     return out, truncated
@@ -1013,6 +1095,7 @@ def _load_heygen_events(db, s, e, by_uid) -> tuple[list[HeygenEvent], bool]:
             HeygenGeneration.video_id, HeygenGeneration.render_id, HeygenGeneration.job_id,
             HeygenGeneration.workflow_id, HeygenGeneration.external_event_id,
             HeygenGeneration.status, HeygenGeneration.linked_client_name,
+            HeygenGeneration.linked_task_name,
         )
         .filter(
             HeygenGeneration.owner_user_id.isnot(None),
@@ -1027,7 +1110,8 @@ def _load_heygen_events(db, s, e, by_uid) -> tuple[list[HeygenEvent], bool]:
     rows = rows[:RAW_ROW_CAP]
     out = []
     for (user_id, provider_created_at, script_text, avatar_name, voice_name, resolution, credits_used,
-         video_id, render_id, job_id, workflow_id, external_event_id, status, linked_client_name) in rows:
+         video_id, render_id, job_id, workflow_id, external_event_id, status, linked_client_name,
+         linked_task_name) in rows:
         emp = by_uid.get(user_id)
         out.append(
             HeygenEvent(
@@ -1043,6 +1127,7 @@ def _load_heygen_events(db, s, e, by_uid) -> tuple[list[HeygenEvent], bool]:
                 ref_id=video_id or render_id or job_id or workflow_id or external_event_id or "—",
                 status=(status or "completed").title(),
                 client_name=linked_client_name or "",
+                task_name=linked_task_name or "",
             )
         )
     return out, truncated
@@ -1060,7 +1145,7 @@ def _load_higgsfield_events(db, s, e, by_uid) -> tuple[list[HiggsfieldEvent], bo
             HiggsfieldGeneration.preset_name, HiggsfieldGeneration.credits_used,
             HiggsfieldGeneration.generation_id, HiggsfieldGeneration.job_id, HiggsfieldGeneration.request_id,
             HiggsfieldGeneration.external_event_id, HiggsfieldGeneration.status,
-            HiggsfieldGeneration.linked_client_name,
+            HiggsfieldGeneration.linked_client_name, HiggsfieldGeneration.linked_task_name,
         )
         .filter(
             HiggsfieldGeneration.owner_user_id.isnot(None),
@@ -1075,7 +1160,8 @@ def _load_higgsfield_events(db, s, e, by_uid) -> tuple[list[HiggsfieldEvent], bo
     rows = rows[:RAW_ROW_CAP]
     out = []
     for (user_id, provider_created_at, prompt_text, kind, output_type, preset_name, credits_used,
-         generation_id, job_id, request_id, external_event_id, status, linked_client_name) in rows:
+         generation_id, job_id, request_id, external_event_id, status, linked_client_name,
+         linked_task_name) in rows:
         emp = by_uid.get(user_id)
         out.append(
             HiggsfieldEvent(
@@ -1091,6 +1177,55 @@ def _load_higgsfield_events(db, s, e, by_uid) -> tuple[list[HiggsfieldEvent], bo
                 ref_id=generation_id or job_id or request_id or external_event_id or "—",
                 status=(status or "completed").title(),
                 client_name=linked_client_name or "",
+                task_name=linked_task_name or "",
+            )
+        )
+    return out, truncated
+
+
+def _load_elevenlabs_events(db, s, e, by_uid) -> tuple[list[ElevenlabsEvent], bool]:
+    """One row per ElevenLabs generation, dated by ``provider_created_at``
+    shifted to IST. Only owner-attributed rows are included, same rationale
+    as ``_apply_elevenlabs_aggregates``. Identity is a single best-guess
+    column (``provider_creation_id`` - see normalization.py's
+    _extract_fields), unlike HeyGen/Higgsfield's several-candidate-column
+    approach, because ElevenlabsGeneration only ever stores the one already-
+    resolved identity value, not several raw candidates."""
+    q = (
+        db.query(
+            ElevenlabsGeneration.owner_user_id, ElevenlabsGeneration.provider_created_at,
+            ElevenlabsGeneration.prompt, ElevenlabsGeneration.source, ElevenlabsGeneration.voice_name,
+            ElevenlabsGeneration.provider_creation_id, ElevenlabsGeneration.status,
+            ElevenlabsGeneration.linked_client_name, ElevenlabsGeneration.linked_task_name,
+        )
+        .filter(
+            ElevenlabsGeneration.owner_user_id.isnot(None),
+            ElevenlabsGeneration.provider_created_at >= s,
+            ElevenlabsGeneration.provider_created_at < e,
+        )
+        .order_by(ElevenlabsGeneration.provider_created_at.asc())
+        .limit(RAW_ROW_CAP + 1)
+    )
+    rows = q.all()
+    truncated = len(rows) > RAW_ROW_CAP
+    rows = rows[:RAW_ROW_CAP]
+    out = []
+    for (user_id, provider_created_at, prompt, source, voice_name, provider_creation_id, status,
+         linked_client_name, linked_task_name) in rows:
+        emp = by_uid.get(user_id)
+        out.append(
+            ElevenlabsEvent(
+                when=_as_date(provider_created_at + LOCAL_TZ_OFFSET) if provider_created_at else None,
+                employee_id=emp.employee_id if emp else "—",
+                employee_name=emp.name if emp else "Unassigned",
+                department=emp.department if emp else "Unassigned",
+                prompt=_clip(prompt),
+                source=source or "—",
+                voice_name=voice_name or "—",
+                ref_id=provider_creation_id or "—",
+                status=(status or "completed").title(),
+                client_name=linked_client_name or "",
+                task_name=linked_task_name or "",
             )
         )
     return out, truncated
@@ -1098,7 +1233,7 @@ def _load_higgsfield_events(db, s, e, by_uid) -> tuple[list[HiggsfieldEvent], bo
 
 def _merge_events(
     cg: list[ChatGptEvent], kl: list[KlingEvent], fp: list[FreepikEvent], ev: list[EnvatoEvent],
-    hg: list[HeygenEvent], hf: list[HiggsfieldEvent],
+    hg: list[HeygenEvent], hf: list[HiggsfieldEvent], el: list[ElevenlabsEvent],
 ) -> list[Event]:
     merged: list[Event] = []
     for c in cg:
@@ -1116,7 +1251,7 @@ def _merge_events(
                 department=k.department, prompt=k.prompt, model=k.model, credits=k.credits,
                 videos=k.videos, gen_time=k.gen_time, status=k.status, ref_id=k.kling_id or "—",
                 kind="Video",  # Kling only ever produces video clips
-                client_name=k.client_name,
+                client_name=k.client_name, task_name=k.task_name,
             )
         )
     for f in fp:
@@ -1130,7 +1265,7 @@ def _merge_events(
                 # so the log doesn't imply every row is a video.
                 videos=1 if f.is_video else 0, kind=f.kind,
                 status=f.status, ref_id=f.creation_id or "—",
-                client_name=f.client_name,
+                client_name=f.client_name, task_name=f.task_name,
             )
         )
     for a in ev:
@@ -1140,7 +1275,7 @@ def _merge_events(
                 department=a.department, prompt=a.prompt, credits=a.credits,
                 videos=1 if a.item_type == "genai-video" else 0, kind=a.kind,
                 status=a.status, ref_id=a.item_uuid or "—",
-                client_name=a.client_name,
+                client_name=a.client_name, task_name=a.task_name,
             )
         )
     for h in hg:
@@ -1150,7 +1285,7 @@ def _merge_events(
                 department=h.department, prompt=h.prompt, model=h.avatar_name, credits=h.credits,
                 videos=1, kind="Video",  # HeyGen only ever produces avatar videos
                 status=h.status, ref_id=h.ref_id or "—",
-                client_name=h.client_name,
+                client_name=h.client_name, task_name=h.task_name,
             )
         )
     for s in hf:
@@ -1162,7 +1297,20 @@ def _merge_events(
                 # video, others image, see HiggsfieldGeneration.output_type)
                 videos=1 if s.output_type == "video" else 0, kind=s.kind,
                 status=s.status, ref_id=s.ref_id or "—",
-                client_name=s.client_name,
+                client_name=s.client_name, task_name=s.task_name,
+            )
+        )
+    for l in el:
+        merged.append(
+            Event(
+                when=l.when, tool="ElevenLabs", employee_id=l.employee_id, employee_name=l.employee_name,
+                department=l.department, prompt=l.prompt, model=l.voice_name,
+                # No credits/videos-produced concept confirmed yet - see
+                # providers/elevenlabs/CAPTURE_CONTRACT.md's known gaps.
+                # `kind` carries the raw `source` value (e.g. "TTS") the same
+                # way Envato's item_type-derived kind labels media type.
+                kind=l.source, status=l.status, ref_id=l.ref_id or "—",
+                client_name=l.client_name, task_name=l.task_name,
             )
         )
     merged.sort(key=lambda ev: (ev.when or date.min, ev.tool))
@@ -1210,12 +1358,14 @@ def _tool_usage(employees: list[Employee]) -> list[ToolUsage]:
     ev_users = sum(1 for emp in employees if emp.envato_generations)
     hg_users = sum(1 for emp in employees if emp.heygen_videos)
     hf_users = sum(1 for emp in employees if emp.higgsfield_generations)
+    el_users = sum(1 for emp in employees if emp.elevenlabs_generations)
     cg_vol = sum(emp.chatgpt_sessions for emp in employees)
     kl_vol = sum(emp.kling_videos for emp in employees)
     fp_vol = sum(emp.freepik_generations for emp in employees)
     ev_vol = sum(emp.envato_generations for emp in employees)
     hg_vol = sum(emp.heygen_videos for emp in employees)
     hf_vol = sum(emp.higgsfield_generations for emp in employees)
+    el_vol = sum(emp.elevenlabs_generations for emp in employees)
     return [
         ToolUsage("ChatGPT", cg_users, cg_vol, cg_users / n),
         ToolUsage("Kling", kl_users, kl_vol, kl_users / n),
@@ -1223,6 +1373,7 @@ def _tool_usage(employees: list[Employee]) -> list[ToolUsage]:
         ToolUsage("Envato", ev_users, ev_vol, ev_users / n),
         ToolUsage("HeyGen", hg_users, hg_vol, hg_users / n),
         ToolUsage("Higgsfield", hf_users, hf_vol, hf_users / n),
+        ToolUsage("ElevenLabs", el_users, el_vol, el_users / n),
     ]
 
 
@@ -1246,6 +1397,7 @@ def _daily_trend(
     ev: list[EnvatoEvent],
     hg: list[HeygenEvent],
     hf: list[HiggsfieldEvent],
+    el: list[ElevenlabsEvent],
 ) -> list[DailyPoint]:
     days = [period.start + timedelta(days=i) for i in range(period.days)]
     cg_counts: dict[date, int] = {}
@@ -1254,6 +1406,7 @@ def _daily_trend(
     ev_counts: dict[date, int] = {}
     hg_counts: dict[date, int] = {}
     hf_counts: dict[date, int] = {}
+    el_counts: dict[date, int] = {}
     for c in cg:
         if c.when:
             cg_counts[c.when] = cg_counts.get(c.when, 0) + 1
@@ -1272,10 +1425,14 @@ def _daily_trend(
     for s in hf:
         if s.when:
             hf_counts[s.when] = hf_counts.get(s.when, 0) + 1
+    for l in el:
+        if l.when:
+            el_counts[l.when] = el_counts.get(l.when, 0) + 1
     return [
         DailyPoint(
             d, cg_counts.get(d, 0), kl_counts.get(d, 0), fp_counts.get(d, 0),
             ev_counts.get(d, 0), hg_counts.get(d, 0), hf_counts.get(d, 0),
+            el_counts.get(d, 0),
         )
         for d in days
     ]
@@ -1295,6 +1452,7 @@ def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
     hg_credits = sum(emp.heygen_credits for emp in employees)
     hf_generations = sum(emp.higgsfield_generations for emp in employees)
     hf_credits = sum(emp.higgsfield_credits for emp in employees)
+    el_generations = sum(emp.elevenlabs_generations for emp in employees)
     return Kpis(
         total_employees=n,
         total_tools=len(tools),
@@ -1303,7 +1461,8 @@ def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
         adoption_pct=(using / n) if n else 0.0,
         total_sessions=sum(emp.chatgpt_sessions for emp in employees),
         total_generations=(
-            sum(emp.kling_videos for emp in employees) + fp_generations + ev_generations + hg_videos + hf_generations
+            sum(emp.kling_videos for emp in employees) + fp_generations + ev_generations + hg_videos
+            + hf_generations + el_generations
         ),
         total_credits=(
             sum(emp.kling_credits for emp in employees) + fp_charged + ev_credits + hg_credits + hf_credits
@@ -1319,13 +1478,14 @@ def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
         total_heygen_credits=hg_credits,
         total_higgsfield_generations=hf_generations,
         total_higgsfield_credits=hf_credits,
+        total_elevenlabs_generations=el_generations,
     )
 
 
 # --------------------------------------------------------------------------- #
 # Data-quality validation
 # --------------------------------------------------------------------------- #
-def _validate(employees, cg, kl, fp, ev, hg, hf, period: Period) -> list[Warning]:
+def _validate(employees, cg, kl, fp, ev, hg, hf, el, period: Period) -> list[Warning]:
     warnings: list[Warning] = []
 
     missing_dept = sum(1 for emp in employees if emp.department in ("", "Unassigned"))
@@ -1373,6 +1533,10 @@ def _validate(employees, cg, kl, fp, ev, hg, hf, period: Period) -> list[Warning
             "Error", "Invalid Higgsfield credits",
             f"{neg_higgsfield_credits} employee(s) show negative Higgsfield credit totals."))
 
+    # No credits/numeric field is confirmed for ElevenLabs yet (see
+    # providers/elevenlabs/CAPTURE_CONTRACT.md's known gaps) - nothing to
+    # negative-value-validate here, unlike every credit-bearing provider above.
+
     future = (
         sum(1 for k in kl if k.when and k.when > period.end)
         + sum(1 for c in cg if c.when and c.when > period.end)
@@ -1380,6 +1544,7 @@ def _validate(employees, cg, kl, fp, ev, hg, hf, period: Period) -> list[Warning
         + sum(1 for a in ev if a.when and a.when > period.end)
         + sum(1 for h in hg if h.when and h.when > period.end)
         + sum(1 for s in hf if s.when and s.when > period.end)
+        + sum(1 for l in el if l.when and l.when > period.end)
     )
     if future:
         warnings.append(Warning("Warning", "Future-dated events", f"{future} event(s) are dated after the report period end."))
@@ -1391,6 +1556,7 @@ def _validate(employees, cg, kl, fp, ev, hg, hf, period: Period) -> list[Warning
         + sum(1 for a in ev if not a.when)
         + sum(1 for h in hg if not h.when)
         + sum(1 for s in hf if not s.when)
+        + sum(1 for l in el if not l.when)
     )
     if undated:
         warnings.append(Warning("Info", "Undated events", f"{undated} event(s) had no resolvable date and were placed at period start."))

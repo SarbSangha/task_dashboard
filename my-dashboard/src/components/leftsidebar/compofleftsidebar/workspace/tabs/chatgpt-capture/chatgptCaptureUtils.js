@@ -27,6 +27,10 @@ export const HEALTH_STATUS_META = {
   degraded: { label: 'Degraded', tone: 'warning' },
   backlogged: { label: 'Backlogged', tone: 'warning' },
   offline: { label: 'Offline', tone: 'error' },
+  // Not a failure - the chat was only opened/renamed while capture was
+  // running, so there is nothing to show. 'muted' keeps it visually distinct
+  // from the warning tones, which are for capture problems worth chasing.
+  no_messages: { label: 'No messages', tone: 'muted' },
 };
 
 export function getHealthStatusMeta(status) {
@@ -67,9 +71,30 @@ function buildEntityMarkerRegex() {
   return new RegExp(start + '.*?' + end, 'gs');
 }
 
+// A start marker with no matching end marker before the text runs out.
+// Confirmed live: a captured response can end with a raw, un-parsed
+// tool-content reference like `<marker>image_group<marker>{"layout":
+// "carousel","aspect_ratio":"16:9","query":[...` and nothing readable after
+// it - the same private-use-area delimiter scheme as the paired citation
+// case above, just for a different content-reference kind (an inline image
+// carousel, not a citation), and apparently cut off before its closing
+// marker ever arrived. The paired regex above requires both delimiters to
+// match, so it silently leaves an unclosed span untouched. Stripping from
+// the dangling start marker to the end of the string is safe specifically
+// because there is nothing genuine after it to lose in this case - unlike
+// the paired case, this is a last-resort cleanup, not the primary rule.
+function buildUnclosedEntityMarkerRegex() {
+  const start = String.fromCharCode(ENTITY_MARKER_START_CODE);
+  return new RegExp(start + '.*$', 's');
+}
+
 export function sanitizeResponseText(text) {
   if (!text) return text;
-  return text.replace(buildEntityMarkerRegex(), '').replace(/ {2,}/g, ' ').trim();
+  return text
+    .replace(buildEntityMarkerRegex(), '')
+    .replace(buildUnclosedEntityMarkerRegex(), '')
+    .replace(/ {2,}/g, ' ')
+    .trim();
 }
 
 export function formatMs(value) {

@@ -37,6 +37,26 @@ from datetime import datetime
 
 from database_config import Base
 from utils.datetime_utils import serialize_utc_datetime
+from utils import r2_storage
+
+
+def _presigned_mirror_url(key, *, client=None):
+    """Mints a fresh short-lived R2 URL for a mirrored-asset key at
+    serialization time - identical reasoning/implementation to
+    providers/freepik/models.py's function of the same name (see its
+    docstring: the bucket is private, so a permanently-stored URL would go
+    stale). Swallows any failure (R2 not configured, a transient signing
+    error) rather than let one broken asset take down an entire API
+    response - the field just comes back null, same as never having been
+    mirrored yet."""
+    if not key:
+        return None
+    try:
+        if not r2_storage.is_configured():
+            return None
+        return r2_storage.generate_presigned_url(key, client=client)
+    except Exception:
+        return None
 
 
 class EnvatoCaptureEvent(Base):
@@ -369,12 +389,34 @@ class EnvatoDownload(Base):
     source_host = Column(String(80), index=True)
     page_url = Column(Text)
 
+    # ---- Asset mirroring (see providers/envato/asset_mirror_capture.py /
+    # background-envato-capture.js's push path) ----
+    # Unlike Freepik/Flow's asset_mirror.py (backend pulls a known URL
+    # server-side), Envato's real download/stream response requires the
+    # browser's own authenticated session (and likely deducts against the
+    # team's license/download quota), so this backend can never
+    # independently re-fetch it - same reasoning as
+    # ElevenlabsGeneration.mirrored_asset_key: only the browser, which
+    # already legitimately received the bytes when Play/Download was
+    # clicked, can push them here. mirrored_asset_key holds the R2 object
+    # KEY (never a URL - the bucket is private, see utils/r2_storage.py);
+    # to_dict() mints a fresh short-lived presigned URL from it on every read.
+    mirrored_asset_key = Column(Text)
+    asset_mirror_status = Column(String(20), nullable=False, default="pending")  # pending | mirrored | failed | skipped
+    asset_mirror_attempted_at = Column(DateTime)
+    asset_mirror_error = Column(Text)
+
     downloaded_at = Column(DateTime)
     metadata_json = Column(JSON)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     def to_dict(self):
+        r2_client = (
+            r2_storage.build_client()
+            if self.mirrored_asset_key and r2_storage.is_configured()
+            else None
+        )
         return {
             "id": self.id,
             "provider": self.provider,
@@ -395,6 +437,10 @@ class EnvatoDownload(Base):
             "searchTerm": self.search_term,
             "sourceHost": self.source_host,
             "pageUrl": self.page_url,
+            "mirroredAssetUrl": _presigned_mirror_url(self.mirrored_asset_key, client=r2_client),
+            "assetMirrorStatus": self.asset_mirror_status,
+            "assetMirrorAttemptedAt": serialize_utc_datetime(self.asset_mirror_attempted_at),
+            "assetMirrorError": self.asset_mirror_error,
             "downloadedAt": serialize_utc_datetime(self.downloaded_at),
             "metadata": self.metadata_json or {},
             "createdAt": serialize_utc_datetime(self.created_at),

@@ -4,9 +4,12 @@ API surface for the Envato provider. Mirrors providers/freepik/router.py's
 structure and endpoint set, minus the search/download endpoints Envato
 doesn't have.
 """
+import base64
 import logging
-from datetime import date
+from datetime import date, datetime
+from mimetypes import guess_extension
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -22,9 +25,12 @@ from providers.envato.capture import (
 )
 from providers.envato.constants import INGEST_COMMIT_CHUNK_SIZE
 from providers.envato.health import capture_health_to_dict, get_capture_health_for_user, record_health_ping
+from providers.envato.models import EnvatoCaptureEvent, EnvatoDownload
 from providers.envato.normalization import normalize_capture_events_batch
 from providers.envato.queries import DownloadFilters, GenerationFilters
 from providers.envato.schemas import (
+    CaptureDownloadMediaIn,
+    CaptureDownloadMediaResult,
     CaptureEventResult,
     CaptureEventsRequest,
     CaptureEventsResponse,
@@ -44,6 +50,7 @@ from providers.envato.schemas import (
     UserListOut,
 )
 from providers.envato.sync import get_or_create_cursor, report_sync_progress
+from utils import r2_storage
 from utils.permissions import require_admin
 
 router = APIRouter(prefix="/api/providers/envato", tags=["envato"])
@@ -166,6 +173,91 @@ def capture_events(
             db.rollback()
 
     return CaptureEventsResponse(success=True, results=results)
+
+
+MAX_DOWNLOAD_MEDIA_BYTES = 100 * 1024 * 1024  # generous for a single stock video/music download clip
+
+
+@router.post("/capture/download-media", response_model=CaptureDownloadMediaResult)
+def capture_download_media(
+    payload: CaptureDownloadMediaIn,
+    db: Session = Depends(get_operational_db),
+):
+    """Mirrors ElevenLabs' capture_audio (providers/elevenlabs/router.py) -
+    see CaptureDownloadMediaIn's own docstring for why client_event_id, not
+    a per-item id, is the correlation key here. Not queued/retried the
+    durable-outbox way capture_events is: the extension itself already
+    retries a few times on download_not_found (same as ElevenLabs' audio
+    push), and a miss here is self-healing - the exact same media gets
+    re-observed and re-pushed if the same item is downloaded again."""
+    event = (
+        db.query(EnvatoCaptureEvent)
+        .filter(EnvatoCaptureEvent.client_event_id == payload.client_event_id)
+        .order_by(EnvatoCaptureEvent.id.desc())
+        .first()
+    )
+    if not event:
+        # The download_click event itself hasn't landed/committed yet (the
+        # extension's own capture queue can flush after this push fires) -
+        # not an error, the extension retries shortly.
+        return CaptureDownloadMediaResult(success=False, status="download_not_found")
+
+    download = (
+        db.query(EnvatoDownload)
+        .filter(EnvatoDownload.source_capture_event_id == event.id)
+        .first()
+    )
+    if not download:
+        # The event landed but normalization hasn't produced the
+        # EnvatoDownload row yet - same retry-shortly posture.
+        return CaptureDownloadMediaResult(success=False, status="download_not_found")
+
+    if download.asset_mirror_status == "mirrored" and download.mirrored_asset_key:
+        return CaptureDownloadMediaResult(success=True, status="already_mirrored")
+
+    if not r2_storage.is_configured():
+        return CaptureDownloadMediaResult(success=False, status="not_configured")
+
+    try:
+        media_bytes = base64.b64decode(payload.media_base64, validate=True)
+    except Exception:
+        return CaptureDownloadMediaResult(success=False, status="invalid_media")
+
+    if not media_bytes or len(media_bytes) > MAX_DOWNLOAD_MEDIA_BYTES:
+        return CaptureDownloadMediaResult(success=False, status="invalid_media")
+
+    content_type = payload.content_type or "application/octet-stream"
+    extension = guess_extension(content_type.split(";")[0].strip()) or ".bin"
+    download_id = download.id
+    key = f"envato-mirror/{download_id}/{uuid4().hex[:8]}-asset{extension}"
+
+    # Release the connection for the upload. Everything above only READ from
+    # the database, so the session has an open transaction and no pending
+    # writes - holding it across a put_object of up to
+    # MAX_DOWNLOAD_MEDIA_BYTES leaves a connection idle-in-transaction for the
+    # length of a remote upload. Under NullPool (the hosted pooler path, see
+    # database_config.py) that is a real Postgres connection, and the extension
+    # fires this once per download.
+    #
+    # `download` is detached by the close, so the write below re-queries by id
+    # rather than mutating the stale instance - assigning to a detached object
+    # would look like it worked and silently persist nothing.
+    db.close()
+    r2_storage.put_object(key, media_bytes, content_type=content_type)
+
+    download = db.query(EnvatoDownload).filter(EnvatoDownload.id == download_id).first()
+    if not download:
+        # Deleted while the upload was in flight - the object is in R2 but has
+        # no row to hang off. Nothing to report as mirrored.
+        return CaptureDownloadMediaResult(success=False, status="download_not_found")
+
+    download.mirrored_asset_key = key
+    download.asset_mirror_status = "mirrored"
+    download.asset_mirror_attempted_at = datetime.utcnow()
+    download.asset_mirror_error = None
+    db.commit()
+
+    return CaptureDownloadMediaResult(success=True, status="mirrored")
 
 
 @router.post("/capture/health", response_model=CaptureHealthOut)

@@ -11,8 +11,8 @@
 // fetchMyActiveKlingTasks) and Client (fetchActiveKlingClients, an
 // admin-curated global list, unrelated to the Task system) - each its own
 // section with its own loading/error/empty state, since one can fail or be
-// empty while the other succeeds. Continue only requires AT LEAST ONE of the
-// two to be selected, not both.
+// empty while the other succeeds. Continue requires Client to be selected;
+// Task selection is optional.
 //
 // Exposes exactly one function, openKlingTaskSelectionModal(), returning a
 // Promise that resolves to { taskId, taskName, clientId, clientName } (either
@@ -376,7 +376,7 @@ function mountKlingTaskModal(resolve) {
   dialog.innerHTML = `
     <div class="rmw-header">
       <p class="rmw-title" id="rmw-task-modal-title">Select Task</p>
-      <p class="rmw-subtitle">Every generation must be linked to an active task or client.</p>
+      <p class="rmw-subtitle">Every generation must be linked to a client. Selecting a task is optional.</p>
     </div>
     <div class="rmw-body"></div>
     <div class="rmw-validation" role="alert"></div>
@@ -412,7 +412,7 @@ function mountKlingTaskModal(resolve) {
   }
 
   function updateContinueState() {
-    const enabled = Boolean(taskSection.getSelected() || clientSection.getSelected());
+    const enabled = Boolean(clientSection.getSelected());
     continueBtn.disabled = !enabled;
     if (enabled) showValidation('');
   }
@@ -420,8 +420,8 @@ function mountKlingTaskModal(resolve) {
   function confirmAndClose() {
     const task = taskSection.getSelected();
     const client = clientSection.getSelected();
-    if (!task && !client) {
-      showValidation('Please select a task or a client before generating.');
+    if (!client) {
+      showValidation('Please select a client before generating.');
       return;
     }
     close({

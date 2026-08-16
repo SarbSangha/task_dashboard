@@ -19,7 +19,9 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from models_new import ITPortalTool
+from providers.elevenlabs.constants import TOOL_SLUGS as ELEVENLABS_GATE_TOOL_SLUGS
 from providers.envato.constants import TOOL_SLUGS as ENVATO_GATE_TOOL_SLUGS
+from providers.flow.constants import TOOL_SLUGS as FLOW_GATE_TOOL_SLUGS
 from providers.freepik.constants import TOOL_SLUGS as FREEPIK_GATE_TOOL_SLUGS
 from providers.heygen.constants import TOOL_SLUGS as HEYGEN_GATE_TOOL_SLUGS
 from providers.higgsfield.constants import TOOL_SLUGS as HIGGSFIELD_GATE_TOOL_SLUGS
@@ -40,6 +42,10 @@ def resolve_generation_gate_tool(db: Session, tool_slug: Optional[str]) -> Optio
         slugs = HIGGSFIELD_GATE_TOOL_SLUGS
     elif normalized in ENVATO_GATE_TOOL_SLUGS:
         slugs = ENVATO_GATE_TOOL_SLUGS
+    elif normalized in FLOW_GATE_TOOL_SLUGS:
+        slugs = FLOW_GATE_TOOL_SLUGS
+    elif normalized in ELEVENLABS_GATE_TOOL_SLUGS:
+        slugs = ELEVENLABS_GATE_TOOL_SLUGS
     else:
         slugs = FREEPIK_GATE_TOOL_SLUGS
     return (

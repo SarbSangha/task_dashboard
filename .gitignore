@@ -16,7 +16,15 @@ my-dashboard/.env.production.example
 *.sql
 *.zip
 
-backend/venv/
+# Virtualenvs. Deliberately UNANCHORED and wildcarded, for the same reason the
+# __pycache__ rule below is: the old `backend/venv/` matched that exact path
+# and nothing else, so renaming a venv aside (e.g. venv_broken_old, kept while
+# rebuilding the interpreter) instantly offered 6,325 site-packages files up as
+# untracked changes and buried the ~70 real ones.
+venv/
+venv*/
+.venv/
+env/
 backend/uploads/
 
 # Python bytecode. These patterns are deliberately UNANCHORED (no leading

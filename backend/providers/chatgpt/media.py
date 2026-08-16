@@ -253,6 +253,20 @@ def store_media_asset(
     if media_type not in MEDIA_TYPES:
         raise MediaCaptureError(f"Unknown media_type: {media_type!r}")
 
+    # Decode (and reject) the inline payload BEFORE any database work: it is
+    # pure CPU, and both failure modes here are outright rejections of the
+    # request, so doing it first keeps a bad payload from half-writing a row.
+    # The R2 configuration check moves up for the same reason - it used to
+    # surface from inside _upload_bytes_to_r2, which now runs after the row is
+    # already committed.
+    inline_bytes: Optional[bytes] = None
+    resolved_mime_type: Optional[str] = None
+    if data_url:
+        if not _is_r2_configured():
+            raise MediaCaptureError("File storage is not configured on the server", status_code=503)
+        inline_bytes, detected_mime_type = decode_data_url(data_url)
+        resolved_mime_type = _normalized_content_type(mime_type or detected_mime_type)
+
     asset = _find_existing_by_asset_id(db, provider_asset_id)
     if asset is None and provider_asset_id:
         asset = _find_existing_unenriched_by_position(db, provider_conversation_id, message_id, display_order)
@@ -288,20 +302,56 @@ def store_media_asset(
     asset.display_order = display_order if display_order is not None else asset.display_order
     asset.metadata_json = metadata or asset.metadata_json
 
-    if data_url:
-        raw_bytes, detected_mime_type = decode_data_url(data_url)
-        resolved_mime_type = _normalized_content_type(mime_type or detected_mime_type)
-        _storage_path, file_url = _upload_bytes_to_r2(raw_bytes, file_name=file_name or media_type, mime_type=resolved_mime_type)
-        asset.url = file_url
-        asset.mime_type = resolved_mime_type
-        asset.status = MEDIA_STATUS_STORED
-    elif asset.status != MEDIA_STATUS_STORED and _host_is_server_fetchable(source_url) and _is_r2_configured():
-        # The browser couldn't read this asset's bytes (images.openai.com is
-        # cross-origin to chatgpt.com -> CORS blocks fetch(), even though the
-        # <img> renders) so the extension only sent us the source_url. The
-        # server has no CORS restriction, so fetch it here and upload to R2.
-        # Best-effort: any failure falls through to the PENDING path below,
-        # never raises - a missing image must never fail the whole capture.
+    # The browser often can't read a generated image's bytes (images.openai.com
+    # is cross-origin to chatgpt.com -> CORS blocks fetch(), even though the
+    # <img> renders), so the extension sends only source_url and the server
+    # fetches it instead. Both that fetch and the R2 upload are remote network
+    # calls; see the release note below for why they must not straddle an open
+    # session.
+    needs_remote_fetch = (
+        inline_bytes is None
+        and asset.status != MEDIA_STATUS_STORED
+        and _host_is_server_fetchable(source_url)
+        and _is_r2_configured()
+    )
+
+    if inline_bytes is None and not needs_remote_fetch and asset.status != MEDIA_STATUS_STORED:
+        # No bytes this call and none obtainable (e.g. a metadata-only
+        # response_image reference). Never downgrade a row that's already
+        # STORED. Otherwise: PENDING if we at least have a source URL to retry
+        # from later, FAILED if we have nothing at all - either way the event
+        # is recorded, not dropped.
+        asset.mime_type = mime_type or asset.mime_type
+        asset.status = MEDIA_STATUS_PENDING if source_url else MEDIA_STATUS_FAILED
+
+    if is_new:
+        db.add(asset)
+    db.commit()
+
+    if inline_bytes is None and not needs_remote_fetch:
+        db.refresh(asset)
+        return asset
+
+    asset_id = asset.id
+
+    # ---- release the connection, then do the network work ----
+    # Everything above is committed, so nothing is lost by disconnecting here.
+    # What follows is a remote fetch (up to REMOTE_FETCH_TIMEOUT_SECONDS) plus
+    # an R2 upload of up to MAX_MEDIA_BYTES, and this endpoint is called once
+    # per media asset in a conversation - holding the session across that many
+    # concurrent uploads is what exhausts the connection limit. Under NullPool
+    # (the hosted pooler path, see database_config.py) each held session is a
+    # real Postgres connection.
+    #
+    # Storing the row before the bytes is this module's existing contract, not
+    # a new compromise: an asset is recorded first and enriched after, so the
+    # capture survives a slow or failing fetch (see ENRICHMENT_STATUS_* in
+    # constants.py). `asset` is detached by the close, which is why the write
+    # below re-queries by id instead of mutating the stale instance.
+    db.close()
+
+    raw_bytes = inline_bytes
+    if raw_bytes is None:
         fetched = None
         try:
             fetched = fetch_remote_media_bytes(source_url)
@@ -310,29 +360,31 @@ def store_media_asset(
         if fetched is not None:
             raw_bytes, fetched_content_type = fetched
             resolved_mime_type = _normalized_content_type(mime_type or fetched_content_type)
-            try:
-                _storage_path, file_url = _upload_bytes_to_r2(raw_bytes, file_name=file_name or media_type, mime_type=resolved_mime_type)
-                asset.url = file_url
-                asset.mime_type = resolved_mime_type
-                asset.status = MEDIA_STATUS_STORED
-            except Exception:
-                asset.mime_type = mime_type or asset.mime_type
-                asset.status = MEDIA_STATUS_PENDING
-        else:
-            asset.mime_type = mime_type or asset.mime_type
-            asset.status = MEDIA_STATUS_PENDING
-    elif asset.status != MEDIA_STATUS_STORED:
-        # No bytes this call (e.g. a metadata-only response_image reference,
-        # or a resolve/upload failure the caller already handled). Never
-        # downgrade a row that's already STORED. Otherwise: PENDING if we at
-        # least have a source URL to work with (or retry) later, FAILED if
-        # we have nothing at all - either way the event is recorded, not
-        # dropped.
-        asset.mime_type = mime_type or asset.mime_type
-        asset.status = MEDIA_STATUS_PENDING if source_url else MEDIA_STATUS_FAILED
 
-    if is_new:
-        db.add(asset)
+    file_url = None
+    if raw_bytes is not None:
+        try:
+            _storage_path, file_url = _upload_bytes_to_r2(
+                raw_bytes, file_name=file_name or media_type, mime_type=resolved_mime_type
+            )
+        except Exception:
+            # Best-effort by design - a missing image must never fail the whole
+            # capture; the row simply stays PENDING and can be retried.
+            file_url = None
+
+    # ---- re-acquire and record the outcome ----
+    asset = db.query(ConversationMediaAsset).filter(ConversationMediaAsset.id == asset_id).first()
+    if asset is None:
+        raise MediaCaptureError("Media asset was removed while its bytes were uploading", status_code=409)
+
+    if file_url:
+        asset.url = file_url
+        asset.mime_type = resolved_mime_type
+        asset.status = MEDIA_STATUS_STORED
+    elif asset.status != MEDIA_STATUS_STORED:
+        asset.mime_type = mime_type or asset.mime_type
+        asset.status = MEDIA_STATUS_PENDING
+
     db.commit()
     db.refresh(asset)
     return asset

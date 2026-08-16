@@ -22,6 +22,25 @@ const DASHBOARD_HOST_SUFFIXES = [
 const FLOW_HOME_URL = 'https://labs.google/fx';
 const FLOW_DIRECT_ROUTE_URL = 'https://labs.google/fx/tools/flow';
 const CREDENTIAL_CONTINUATION_LIMIT = 6;
+// Reported bug: a DIRECT_TICKET_ONLY_TOOLS user (Claude) would finish their
+// email verification and get bounced straight back to the login page,
+// storage wiped, as if signing in had cleared their own cookies. Root cause:
+// markAuthTransition() (called right before content-claude.js navigates to
+// the fetched magic-link URL) already recorded authTransitionAt, but nothing
+// ever consulted it - getActiveLaunchMap()'s pruning below only looked at
+// the ticket's own 20min expiresAt. Waiting for/fetching the actual
+// verification email can itself eat deep into that 20min budget on a slow
+// mail delivery, so the ticket could expire moments into (or during) the
+// final redirect back to the authenticated workspace. These tools have no
+// continuation-launch fallback by design (that's the whole point of
+// "direct ticket only"), so the very next launch-state check right after
+// verification found nothing, was treated as an unauthorized manual visit,
+// and enforceDashboardOnlyAccess() wiped everything. This grants a fresh,
+// generous grace window from the moment of that final hand-off - separate
+// from and not a general extension of the original ticket clock - so the
+// last leg of a real in-flight verification survives even if the earlier
+// email wait nearly used up the ticket's normal lifetime.
+const AUTH_TRANSITION_GRACE_MS = 10 * 60 * 1000;
 // Strict dashboard-only: these tools only auto-fill when opened with a direct
 // per-tab launch ticket from the dashboard. Pending-launch activation, opener
 // inheritance and recent-launch reuse are all refused, so a manual/direct visit
@@ -843,7 +862,22 @@ async function consumeReturnUrl(tabId, toolSlug = '') {
 
 async function markAuthTransition(tabId, toolSlug = '') {
   if (!tabId) return false;
-  const launchMap = await getActiveLaunchMap();
+  // Reads chrome.storage directly rather than going through
+  // getActiveLaunchMap() - that helper prunes any ticket already past its
+  // expiresAt (and, for a DIRECT_TICKET_ONLY_TOOLS record with no
+  // usageTrackingTicket, like Claude's, deletes the whole entry once the
+  // ticket's gone) as a side effect of being READ. Waiting for/fetching the
+  // real verification email (the step immediately before this call - see
+  // requestAuthLink() in content-claude.js) can itself eat deep into the
+  // ticket's 20min budget on a slow mail delivery, so by the time this
+  // fires the ticket can already look expired. Going through the pruning
+  // helper here would wipe (or fully delete) the record in that exact
+  // moment, before authTransitionAt is even set - silently defeating the
+  // whole point of this call. Reading raw storage instead means a
+  // technically-expired-but-not-yet-pruned record can still be found and
+  // revived.
+  const stored = await chrome.storage.local.get([ACTIVE_TAB_LAUNCHES_STORAGE_KEY]);
+  const launchMap = { ...(stored[ACTIVE_TAB_LAUNCHES_STORAGE_KEY] || {}) };
   const key = `${tabId}`;
   const current = launchMap[key];
   if (!current) return false;
@@ -851,7 +885,16 @@ async function markAuthTransition(tabId, toolSlug = '') {
     return false;
   }
 
-  current.authTransitionAt = Date.now();
+  const now = Date.now();
+  current.authTransitionAt = now;
+  // The actual fix: push the ticket's own clock out by a fresh grace
+  // window from THIS moment - the final leg (Claude's own server-side
+  // verification + redirect back to the authenticated workspace) is
+  // normally a few seconds, decoupled here from whatever the original
+  // ticket clock was doing during the earlier, more variable email wait.
+  if (current.ticket) {
+    current.expiresAt = Math.max(Number(current.expiresAt || 0), now + AUTH_TRANSITION_GRACE_MS);
+  }
   launchMap[key] = current;
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
   return true;
@@ -2641,6 +2684,55 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     return true;
   }
 
+  if (message?.type === 'FLOW_CAPTURE_EVENT') {
+    handleFlowCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'FLOW_FETCH_MY_ACTIVE_TASKS') {
+    handleFlowFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'FLOW_FETCH_ACTIVE_CLIENTS') {
+    handleFlowFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'ELEVENLABS_CAPTURE_EVENT') {
+    handleElevenlabsCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'ELEVENLABS_FETCH_MY_ACTIVE_TASKS') {
+    handleElevenlabsFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'ELEVENLABS_FETCH_ACTIVE_CLIENTS') {
+    handleElevenlabsFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'ELEVENLABS_CAPTURE_AUDIO') {
+    handleElevenlabsCaptureAudioMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'HEYGEN_CAPTURE_EVENT') {
     handleHeygenCaptureEventMessage(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse(result))
@@ -2699,6 +2791,13 @@ function handleRuntimeMessage(message, sender, sendResponse) {
 
   if (message?.type === 'ENVATO_CAPTURE_EVENT') {
     handleEnvatoCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'ENVATO_CAPTURE_DOWNLOAD_MEDIA') {
+    handleEnvatoCaptureDownloadMediaMessage(message)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

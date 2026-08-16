@@ -7,6 +7,7 @@ export default function ConversationChatView({
   messages,
   eventsById,
   storedAttachments,
+  media,
   ownerName,
   conversationModel,
   onOpenWorkspace,
@@ -63,7 +64,20 @@ export default function ConversationChatView({
         <div className="chatgpt-capture-empty-state compact">
           <span className="chatgpt-capture-empty-icon" aria-hidden="true">💬</span>
           <strong>No messages captured</strong>
-          <p>Conversation data will appear here once prompts and responses are captured.</p>
+          {totalEvents > 0 ? (
+            // The conversation has events, just no prompt/response ones - it
+            // was opened or renamed while capture was running and nothing was
+            // ever sent in it. Saying "data will appear once captured" here
+            // reads like a pending failure and is what made this state look
+            // broken; nothing is missing.
+            <p>
+              Only activity like opening or renaming was recorded for this chat
+              ({totalEvents} {totalEvents === 1 ? 'event' : 'events'}) — no prompt
+              or response was sent in it while capture was running.
+            </p>
+          ) : (
+            <p>Conversation data will appear here once prompts and responses are captured.</p>
+          )}
         </div>
       ) : (
         <div className="cgpt-chat-column">
@@ -77,6 +91,7 @@ export default function ConversationChatView({
                   ownerName={ownerName}
                   eventsById={eventsById}
                   storedAttachments={storedAttachments}
+                  media={media}
                   conversationModel={conversationModel}
                   onOpenWorkspace={onOpenWorkspace}
                 />

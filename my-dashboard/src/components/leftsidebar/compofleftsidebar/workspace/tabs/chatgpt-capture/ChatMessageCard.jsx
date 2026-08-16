@@ -4,7 +4,7 @@ import ConversationContentParts from './ConversationContentParts';
 import EventDetailPanel from './EventDetailPanel';
 import MessageHeader from './MessageHeader';
 import MarkdownRenderer from './MarkdownRenderer';
-import { matchStoredAttachments, sanitizeResponseText, toGalleryAttachment } from './chatgptCaptureUtils';
+import { matchStoredAttachments, sanitizeResponseText, toGalleryAttachment, toGalleryMediaAsset } from './chatgptCaptureUtils';
 
 function AttachmentSection({ label, icon, attachments }) {
   if (!attachments.length) return null;
@@ -16,7 +16,7 @@ function AttachmentSection({ label, icon, attachments }) {
   );
 }
 
-export default function ChatMessageCard({ message, eventsById, storedAttachments, conversationModel, onOpenWorkspace }) {
+export default function ChatMessageCard({ message, eventsById, storedAttachments, media, conversationModel, onOpenWorkspace }) {
   const [expanded, setExpanded] = useState(false);
   const isAssistant = message.role === 'assistant';
   const sourceEvents = (message.sourceEventIds || []).map((id) => eventsById.get(id)).filter(Boolean);
@@ -42,10 +42,39 @@ export default function ChatMessageCard({ message, eventsById, storedAttachments
     return map;
   }, [hasContentParts, storedAttachments]);
 
+  // The assistant's TEXT response can fail to capture (e.g. an image-edit
+  // turn ChatGPT authors via a "tool" role the SSE parser doesn't recognize
+  // as the visible answer - see content-chatgpt-network.js's
+  // isVisibleResponseMessage) even when the generated IMAGE for that same
+  // turn was independently captured via the DOM media-scan path
+  // (content-chatgpt-media-capture.js -> ConversationMediaAsset). Those two
+  // capture paths write to different tables and previously never got
+  // reunited here - the image only ever showed up in the separate
+  // Generation Workspace panel above the transcript, while the message
+  // bubble itself showed a bare "Response was not captured", even though a
+  // real result existed. Matching by providerMessageId (the actual ChatGPT
+  // message id, not this app's synthetic row id) is the same correlation
+  // mediaHelpers.buildGenerations already uses for the Generation Workspace
+  // cards, applied here per-message instead of per-conversation.
+  const matchedMedia = useMemo(
+    () => (
+      isAssistant && message.providerMessageId
+        ? (media || []).filter((item) => item.assistantMessageId === message.providerMessageId && item.url)
+        : []
+    ),
+    [isAssistant, media, message.providerMessageId]
+  );
+  const hasMatchedMedia = matchedMedia.length > 0;
+
   const displayText = isAssistant ? sanitizeResponseText(message.text) : message.text;
-  const notCaptured = !message.pending && !hasContentParts && !displayText;
+  const notCaptured = !message.pending && !hasContentParts && !displayText && !hasMatchedMedia;
+  const textMissingButHasMedia = !message.pending && !hasContentParts && !displayText && hasMatchedMedia;
   const status = isAssistant
-    ? (notCaptured ? { tone: 'error', label: 'Not captured' } : { tone: 'success', label: 'Completed' })
+    ? (notCaptured
+      ? { tone: 'error', label: 'Not captured' }
+      : textMissingButHasMedia
+        ? { tone: 'warning', label: 'Image only' }
+        : { tone: 'success', label: 'Completed' })
     : null;
   const showWorkspaceLink = isAssistant && onOpenWorkspace && (matchedImages.length > 0 || contentPartsHaveImage);
 
@@ -63,6 +92,13 @@ export default function ChatMessageCard({ message, eventsById, storedAttachments
             ) : (
               <p className="chatgpt-capture-plain-text">{displayText}</p>
             )
+          ) : hasMatchedMedia ? (
+            <>
+              <span className="chatgpt-capture-chat-pending tone-warning">
+                Response text was not captured — showing the generated image only.
+              </span>
+              <ChatAttachmentGallery attachments={matchedMedia.map(toGalleryMediaAsset)} />
+            </>
           ) : (
             <span className="chatgpt-capture-chat-pending tone-warning">
               {isAssistant ? 'Response was not captured.' : '(empty)'}

@@ -440,6 +440,14 @@
   padding: 0;
 }
 
+.trendings-content--flow {
+  /* Same non-virtualized-grid reasoning as .trendings-content--envato above. */
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 0;
+}
+
 .trendings-directory-window {
   flex: 1 1 auto;
   min-height: 0;

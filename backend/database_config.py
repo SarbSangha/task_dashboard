@@ -2,7 +2,7 @@
 import os
 import re
 from urllib.parse import urlparse, urlunparse
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import NullPool
@@ -185,7 +185,54 @@ def _create_engine(url: str):
         kwargs["poolclass"] = NullPool
     else:
         kwargs.update(_pool_settings(normalized))
-    return create_engine(normalized, **kwargs)
+    engine = create_engine(normalized, **kwargs)
+    _install_session_timeouts(engine)
+    return engine
+
+
+# Server-side backstop for connections parked mid-transaction. The application
+# rule is that no request handler holds a session across network I/O (see the
+# db.close() calls in routers/it_tools_router.py, providers/chatgpt/media.py and
+# friends), but that rule is enforced only by review - one handler that forgets
+# it leaves a connection "idle in transaction" for as long as its upload or
+# mailbox round-trip takes, and Postgres will never reclaim it on its own. Under
+# NullPool (the hosted pooler path above) each of those is a real client
+# connection against the pooler's limit, so enough of them starve login and
+# every other request until the process is restarted - the shape of the outage
+# this backstop exists to bound.
+#
+# Applied per connection via a SET rather than a libpq `options` startup
+# parameter on purpose: poolers in transaction mode do not reliably accept
+# `options` in the startup packet, and a rejected startup parameter fails EVERY
+# connection rather than degrading. Any failure here is therefore swallowed -
+# the timeout is a safety net, never a precondition for connecting.
+#
+# Defaults are deliberately generous: this is meant to catch a leak, not to
+# police slow-but-legitimate work (the asset-mirror sweeps hold a transaction
+# open across a paced fetch loop by design). Set either to 0 to disable.
+DB_IDLE_IN_TRANSACTION_TIMEOUT_MS = _int_env("DB_IDLE_IN_TRANSACTION_TIMEOUT_MS", 300_000)  # 5 min
+DB_STATEMENT_TIMEOUT_MS = _int_env("DB_STATEMENT_TIMEOUT_MS", 0)  # off by default
+
+
+def _install_session_timeouts(engine) -> None:
+    settings = []
+    if DB_IDLE_IN_TRANSACTION_TIMEOUT_MS > 0:
+        settings.append(("idle_in_transaction_session_timeout", DB_IDLE_IN_TRANSACTION_TIMEOUT_MS))
+    if DB_STATEMENT_TIMEOUT_MS > 0:
+        settings.append(("statement_timeout", DB_STATEMENT_TIMEOUT_MS))
+    if not settings:
+        return
+
+    @event.listens_for(engine, "connect")
+    def _set_session_timeouts(dbapi_connection, _connection_record):  # noqa: ANN001
+        try:
+            with dbapi_connection.cursor() as cursor:
+                for name, milliseconds in settings:
+                    # Identifiers are module constants, values are ints from
+                    # _int_env - no user input reaches this string.
+                    cursor.execute(f"SET {name} = {int(milliseconds)}")
+        except Exception:  # noqa: BLE001 - a pooler that refuses SET must not break connecting
+            pass
 
 
 # ==================== OPERATIONAL DATABASE ====================

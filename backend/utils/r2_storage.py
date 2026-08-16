@@ -33,6 +33,7 @@ import os
 from typing import Optional
 
 import boto3
+from botocore.config import Config as BotoConfig
 
 DEFAULT_PRESIGNED_URL_TTL_SECONDS = 600  # matches routers/upload.py's own file-serving presigned URLs
 
@@ -45,17 +46,36 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return value or default
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int((_env(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _r2_client_config():
+    return BotoConfig(
+        connect_timeout=_int_env("R2_CONNECT_TIMEOUT_SECONDS", 10),
+        read_timeout=_int_env("R2_READ_TIMEOUT_SECONDS", 60),
+        retries={"max_attempts": _int_env("R2_MAX_ATTEMPTS", 3), "mode": "standard"},
+    )
+
+
 def is_configured() -> bool:
     return all([_env("R2_ENDPOINT"), _env("R2_ACCESS_KEY"), _env("R2_SECRET_KEY"), _env("R2_BUCKET")])
 
 
 def build_client():
+    # Timeout/retry bounds are shared with routers/upload.py's client - see
+    # _r2_client_config there for why botocore's defaults (60s+60s, 5 legacy
+    # retry attempts) are too loose to leave in place.
     return boto3.client(
         "s3",
         endpoint_url=_env("R2_ENDPOINT"),
         aws_access_key_id=_env("R2_ACCESS_KEY"),
         aws_secret_access_key=_env("R2_SECRET_KEY"),
         region_name=_env("R2_REGION", "auto"),
+        config=_r2_client_config(),
     )
 
 

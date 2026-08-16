@@ -43,6 +43,7 @@ from models_new import Base, ITPortalTool, User  # noqa: E402
 from providers.chatgpt.constants import (  # noqa: E402
     EVENT_TYPE_PROMPT_CAPTURED,
     EVENT_TYPE_RESPONSE_COMPLETED,
+    HEALTH_STATUS_NO_MESSAGES,
     OWNERSHIP_STATUS_RESOLVED,
     OWNERSHIP_STATUS_UNKNOWN,
 )
@@ -293,6 +294,84 @@ def test_drilldown_never_shows_someone_elses_resolved_conversation() -> None:
     print("ok  drill-down still hides someone else's resolved conversation from a mere viewer")
 
 
+def test_a_conversation_with_no_messages_is_not_reported_healthy() -> None:
+    """Reported 2026-08-09: a green "Healthy" chip sat above a panel reading
+    "No messages captured". 35% of captured conversations were lifecycle-only
+    (someone opened or renamed a chat without sending anything), and
+    _classify_conversation_health treated 0 prompts / 0 responses as healthy
+    because it only ever tested for the prompts-without-responses gap."""
+    _assert(
+        chatgpt_queries._classify_conversation_health(0, 0) == HEALTH_STATUS_NO_MESSAGES,
+        "a conversation with no prompts and no responses must not be 'healthy'",
+    )
+    _assert(
+        chatgpt_queries._classify_conversation_health(1, 0) == "degraded",
+        "prompts with no responses is still the degraded capture gap",
+    )
+    _assert(
+        chatgpt_queries._classify_conversation_health(1, 1) == "healthy",
+        "a conversation with both prompts and responses is healthy",
+    )
+    _assert(
+        chatgpt_queries._classify_conversation_health(0, 2) == "healthy",
+        "responses without a captured prompt is not the degraded gap",
+    )
+    print("ok  a lifecycle-only conversation reports 'no messages', not 'healthy'")
+
+
+def test_lifecycle_only_conversation_surfaces_as_no_messages_end_to_end() -> None:
+    """The whole path: an opened-but-never-messaged chat still appears (it is
+    real captured activity) but is labelled honestly rather than green."""
+    with SessionLocal() as db:
+        user_id, tool_id = _seed_actor("lifecycle@example.com", "Lifecycle Lata")
+
+        db.add(ConversationRecord(
+            provider="chatgpt", provider_conversation_id="conv-opened-only",
+            ownership_status=OWNERSHIP_STATUS_UNKNOWN,
+        ))
+        db.add(_event(user_id=user_id, tool_id=tool_id, conversation_id="conv-opened-only", event_type="conversation_opened", client_event_id="L1"))
+        db.add(_event(user_id=user_id, tool_id=tool_id, conversation_id="conv-opened-only", event_type="conversation_renamed", client_event_id="L2"))
+        db.flush()
+
+        items, total = _drilldown(db, user_id)
+        _assert(total == 1, f"an opened-only conversation should still be listed, got {total}")
+        _assert(items[0]["promptsCount"] == 0 and items[0]["responsesCount"] == 0, f"expected no messages: {items[0]}")
+        _assert(
+            items[0]["captureHealth"] == HEALTH_STATUS_NO_MESSAGES,
+            f"expected '{HEALTH_STATUS_NO_MESSAGES}', got {items[0]['captureHealth']!r}",
+        )
+
+        # A user whose conversations are ALL empty rolls up to the same signal.
+        listed = chatgpt_queries.list_users(db, limit=50, offset=0)[0][0]
+        _assert(
+            listed["captureHealth"] == HEALTH_STATUS_NO_MESSAGES,
+            f"an all-empty user should roll up to no_messages, got {listed['captureHealth']!r}",
+        )
+        db.rollback()
+    print("ok  an opened-only conversation is listed but labelled 'no messages', and rolls up")
+
+
+def test_one_real_conversation_keeps_a_user_healthy() -> None:
+    """The rollup must not be dragged down by empties - otherwise every active
+    user would read 'no messages' the moment they browsed an old chat."""
+    with SessionLocal() as db:
+        user_id, tool_id = _seed_actor("mixedhealth@example.com", "Mixed Health Mira")
+
+        db.add(_event(user_id=user_id, tool_id=tool_id, conversation_id="conv-real", event_type=EVENT_TYPE_PROMPT_CAPTURED, client_event_id="H1"))
+        db.add(_event(user_id=user_id, tool_id=tool_id, conversation_id="conv-real", event_type=EVENT_TYPE_RESPONSE_COMPLETED, client_event_id="H2"))
+        db.add(_event(user_id=user_id, tool_id=tool_id, conversation_id="conv-browsed", event_type="conversation_opened", client_event_id="H3"))
+        db.flush()
+
+        listed = chatgpt_queries.list_users(db, limit=50, offset=0)[0][0]
+        _assert(
+            listed["captureHealth"] == "healthy",
+            f"one real conversation must keep the user healthy, got {listed['captureHealth']!r}",
+        )
+        _assert(listed["conversationsCount"] == 2, f"both conversations still count: {listed}")
+        db.rollback()
+    print("ok  a user with one real conversation stays healthy despite browsed empties")
+
+
 if __name__ == "__main__":
     test_user_with_only_unresolved_conversations_still_appears()
     test_user_with_only_resolved_conversations_is_not_flagged()
@@ -301,4 +380,7 @@ if __name__ == "__main__":
     test_drilldown_is_not_empty_for_an_unresolved_only_user()
     test_drilldown_count_matches_list_for_a_mixed_user()
     test_drilldown_never_shows_someone_elses_resolved_conversation()
+    test_a_conversation_with_no_messages_is_not_reported_healthy()
+    test_lifecycle_only_conversation_surfaces_as_no_messages_end_to_end()
+    test_one_real_conversation_keeps_a_user_healthy()
     print("\nall chatgpt user-list ownership smoke checks passed")
