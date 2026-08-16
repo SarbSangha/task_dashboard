@@ -19,6 +19,13 @@ jobs:
           debug: true
           command_timeout: 30m
           script: |
+            # Abort on the first failure instead of running every step
+            # regardless. Without this the script previously continued past a
+            # failed `npm run build` all the way to `pm2 reload` and printed
+            # "Deploy complete" - which is how a broken build reached
+            # production looking like a success.
+            set -euo pipefail
+
             cd /var/www/task_dashboard
 
             echo "Pull latest code"
@@ -35,8 +42,33 @@ jobs:
             cd ../my-dashboard
             npm ci
             echo "Frontend dependencies installed"
-            npm run build
-            echo "Frontend build finished"
+
+            # Build into a STAGING directory, never straight into the live one.
+            # `vite build` empties its output directory before it writes
+            # anything, so building directly into dist/ meant any failure -
+            # most often the OOM kill this size of droplet is prone to - left
+            # production with an empty dist/. nginx's SPA fallback
+            # (try_files $uri /index.html) returns 500, not 404, when the
+            # fallback file itself is missing, so an interrupted build took the
+            # whole dashboard down with a bare nginx error page.
+            #
+            # Give the build real headroom too: the default Node heap is what
+            # the OOM kill runs into as the bundle grows.
+            export NODE_OPTIONS="--max-old-space-size=${NODE_BUILD_HEAP_MB:-2048}"
+            rm -rf dist.new
+            npm run build -- --outDir dist.new --emptyOutDir
+
+            # Refuse to publish an output that isn't actually serveable. This
+            # is the check that makes the staging directory worth having.
+            test -s dist.new/index.html || { echo "BUILD PRODUCED NO index.html - keeping the current site"; exit 1; }
+            test -d dist.new/assets     || { echo "BUILD PRODUCED NO assets/ - keeping the current site"; exit 1; }
+            echo "Frontend build finished and verified"
+
+            # Swap atomically-ish, keeping the previous build for rollback.
+            rm -rf dist.prev
+            if [ -d dist ]; then mv dist dist.prev; fi
+            mv dist.new dist
+            echo "Frontend published (previous build kept at my-dashboard/dist.prev)"
 
             echo "Restart server"
             cd ..

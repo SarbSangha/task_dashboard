@@ -19,7 +19,7 @@ back everyone else's progress in the same batch.
 """
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from mimetypes import guess_extension
 from typing import Optional
 from urllib.parse import urlparse
@@ -42,6 +42,11 @@ MIRROR_KEY_PREFIX = "heygen-mirror"
 # but aren't. Paced defensively here too even though HeyGen's own backlog is
 # far smaller today.
 REQUEST_PACING_SECONDS = 0.4
+
+# How much later than a failed attempt updated_at must be before the row counts
+# as genuinely re-captured - see requeue_failed_mirrors for why a bare `>`
+# comparison is not enough.
+REQUEUE_MIN_CHANGE_GAP = timedelta(seconds=60)
 
 
 def _asset_url_candidates(generation: HeygenGeneration) -> list[str]:
@@ -198,10 +203,19 @@ def requeue_failed_mirrors(db: Session, *, limit: int = 200, force: bool = False
     sweep made these states terminal. The condition that makes a retry
     worthwhile is that the row has been RE-CAPTURED since the failed attempt:
     normalization refreshes video_url/thumbnail_url every time a new listing
-    row arrives for the same video, so `updated_at > asset_mirror_attempted_at`
-    means the URLs on the row now are not the ones that failed. Rows that
-    haven't changed are left alone unless `force` is set (an operator
-    explicitly deciding to spend the requests anyway).
+    row arrives for the same video, so an updated_at meaningfully later than
+    asset_mirror_attempted_at means the URLs on the row now are not the ones
+    that failed. Rows that haven't changed are left alone unless `force` is set
+    (an operator explicitly deciding to spend the requests anyway).
+
+    The comparison needs REQUEUE_MIN_CHANGE_GAP rather than a plain `>`: the
+    single commit that records a failed attempt writes asset_mirror_attempted_at
+    and bumps updated_at, so updated_at is always a few microseconds later than
+    attempted_at even when nothing has been re-captured. A bare `>` therefore
+    called every failed row "re-captured" and re-queued the whole set - exactly
+    the hammering this guard exists to prevent. A real re-capture arrives on a
+    later listing response, minutes or hours afterwards, so any gap this small
+    is self-evidently the bookkeeping write and not new data.
 
     Only flips status back to "pending" - the actual fetch/upload stays with
     mirror_pending_generations, so there is one code path that mirrors, and
@@ -229,7 +243,12 @@ def requeue_failed_mirrors(db: Session, *, limit: int = 200, force: bool = False
         if not force:
             attempted_at = generation.asset_mirror_attempted_at
             updated_at = generation.updated_at
-            if attempted_at and updated_at and updated_at <= attempted_at:
+            unchanged = (
+                attempted_at is None
+                or updated_at is None
+                or (updated_at - attempted_at) < REQUEUE_MIN_CHANGE_GAP
+            )
+            if unchanged:
                 stats["unchanged_since_failure"] += 1
                 continue
         generation.asset_mirror_status = "pending"

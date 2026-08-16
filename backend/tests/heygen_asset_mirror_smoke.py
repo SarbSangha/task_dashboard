@@ -299,6 +299,14 @@ def test_requeue_revives_a_failed_row_only_after_it_is_recaptured() -> None:
         _assert(asset_mirror.mirror_pending_generations(db, limit=10)["failed"] == 1, "precondition: the first attempt must fail")
 
         # Not re-captured yet -> left alone, so the dead URL isn't re-fetched.
+        #
+        # This is the case a bare `updated_at > asset_mirror_attempted_at`
+        # check got wrong: recording the failure writes both fields in one
+        # commit, so updated_at lands microseconds after attempted_at and the
+        # row looks re-captured when nothing happened. Asserted straight after
+        # the failed attempt, with no clock manipulation, precisely so that
+        # regression reappears here rather than in production as a retry storm
+        # against dead URLs.
         stats = asset_mirror.requeue_failed_mirrors(db)
         _assert(stats["requeued"] == 0, f"an unchanged failed row must not be re-queued: {stats}")
         _assert(stats["unchanged_since_failure"] == 1, f"expected the row to be counted as unchanged: {stats}")
