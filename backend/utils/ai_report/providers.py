@@ -2,8 +2,9 @@
 Provider registry -- the extensibility seam of the workbook.
 
 Every AI tool the report can describe is declared here once. Today ChatGPT,
-Kling, Freepik, Envato, HeyGen, Higgsfield and ElevenLabs are *integrated*
-(live data flows in); the rest are declared as *pending* so they already appear
+Kling, Freepik, Envato, HeyGen, Higgsfield, ElevenLabs and Flow are
+*integrated* (live data flows in); the rest are declared as *pending* so they
+already appear
 correctly in Tool Master and are ready to light up the moment their capture
 pipeline lands.
 
@@ -50,6 +51,12 @@ PROVIDERS: tuple[ProviderMeta, ...] = (
     ProviderMeta("higgsfield", "Higgsfield", "Higgsfield", "AI Image/Video Generation",
                  "Credits Used, Prompts, Preset, Generations Made, Person, Date, Task/Client",
                  integrated=True),
+    # Google's own name for the product is "Flow" (labs.google/fx/tools/flow);
+    # the portal + extension both key it on the bare "flow" slug, and the
+    # dashboard UI labels it "Flow" - keep all three agreeing.
+    ProviderMeta("flow", "Flow", "Google", "AI Image/Video Generation",
+                 "Prompts, Project/Batch, Person, Date, Task/Client",
+                 integrated=True),
     ProviderMeta("midjourney", "Midjourney", "Midjourney Inc.", "AI Image Generation", "Not yet captured"),
     ProviderMeta("runway", "Runway ML", "Runway", "AI Video Generation", "Not yet captured"),
     ProviderMeta("claude", "Claude", "Anthropic", "Text / Content Generation", "Not yet captured"),
@@ -83,6 +90,9 @@ _ALIASES = {
     "copyai": ("copy",),
     "runway": ("runwayml",),
     "freepik": ("magnific",),
+    # providers/flow/constants.py's PROVIDER_DISPLAY is "Google Flow", so a
+    # portal row named that must still resolve to this entry.
+    "flow": ("googleflow", "googlelabsflow"),
 }
 _LOOKUP: dict[str, ProviderMeta] = {}
 for _p in PROVIDERS:

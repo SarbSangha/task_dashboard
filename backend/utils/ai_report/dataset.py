@@ -33,6 +33,7 @@ from providers.envato.models import EnvatoGeneration
 from providers.heygen.models import HeygenGeneration
 from providers.higgsfield.models import HiggsfieldGeneration
 from providers.elevenlabs.models import ElevenlabsGeneration
+from providers.flow.models import FlowGeneration
 
 from .providers import PROVIDERS, provider_meta
 
@@ -47,6 +48,7 @@ ENVATO = "envato"
 HEYGEN = "heygen"
 HIGGSFIELD = "higgsfield"
 ELEVENLABS = "elevenlabs"
+FLOW = "flow"
 # The only Freepik tool that produces a video (confirmed against real
 # captured payloads) - everything else produces a still image.
 FREEPIK_VIDEO_TOOL = "video-generator"
@@ -115,6 +117,11 @@ class Employee:
     # providers/elevenlabs/CAPTURE_CONTRACT.md's known gaps), don't invent one.
     elevenlabs_generations: int = 0
     elevenlabs_last: Optional[date] = None
+    # No credits/numeric field either - Flow's flowWorkflows response carries
+    # no credit ledger at all (see providers/flow/CAPTURE_CONTRACT.md), same
+    # posture as ElevenLabs above.
+    flow_generations: int = 0
+    flow_last: Optional[date] = None
 
     @property
     def tools_used(self) -> int:
@@ -126,6 +133,7 @@ class Employee:
             + (1 if self.heygen_videos else 0)
             + (1 if self.higgsfield_generations else 0)
             + (1 if self.elevenlabs_generations else 0)
+            + (1 if self.flow_generations else 0)
         )
 
     @property
@@ -133,7 +141,7 @@ class Employee:
         return (
             self.chatgpt_sessions + self.kling_videos + self.freepik_generations
             + self.envato_generations + self.heygen_videos + self.higgsfield_generations
-            + self.elevenlabs_generations
+            + self.elevenlabs_generations + self.flow_generations
         )
 
     @property
@@ -141,7 +149,7 @@ class Employee:
         return (
             self.chatgpt_sessions + self.kling_videos + self.freepik_generations
             + self.envato_generations + self.heygen_videos + self.higgsfield_generations
-            + self.elevenlabs_generations
+            + self.elevenlabs_generations + self.flow_generations
         )
 
     @property
@@ -373,6 +381,21 @@ class ElevenlabsEvent:
 
 
 @dataclass
+class FlowEvent:
+    when: date
+    employee_id: str
+    employee_name: str
+    department: str
+    prompt: str                  # metadata.displayName - Flow's own prompt field
+    project_id: str
+    batch_id: str                # siblings of one Generate click share this
+    ref_id: str                  # provider_creation_id (flowWorkflows.name - the only confirmed identifier)
+    status: str
+    client_name: str = ""        # "" when not linked to a client (see Event.client_name)
+    task_name: str = ""          # "" when not linked to a task (see Event.task_name)
+
+
+@dataclass
 class ToolUsage:
     tool: str
     employees_using: int
@@ -401,12 +424,13 @@ class DailyPoint:
     heygen: int = 0
     higgsfield: int = 0
     elevenlabs: int = 0
+    flow: int = 0
 
     @property
     def total(self) -> int:
         return (
             self.chatgpt + self.kling + self.freepik + self.envato + self.heygen
-            + self.higgsfield + self.elevenlabs
+            + self.higgsfield + self.elevenlabs + self.flow
         )
 
 
@@ -441,6 +465,8 @@ class Kpis:
     # No credits field - none confirmed yet for ElevenLabs (see
     # providers/elevenlabs/CAPTURE_CONTRACT.md's known gaps).
     total_elevenlabs_generations: int = 0
+    # Same for Flow (see providers/flow/CAPTURE_CONTRACT.md) - count only.
+    total_flow_generations: int = 0
 
 
 @dataclass
@@ -456,6 +482,7 @@ class ReportDataset:
     heygen_events: list[HeygenEvent]
     higgsfield_events: list[HiggsfieldEvent]
     elevenlabs_events: list[ElevenlabsEvent]
+    flow_events: list[FlowEvent]
     merged_events: list[Event]
     tool_usage: list[ToolUsage]
     dept_adoption: list[DeptAdoption]
@@ -559,6 +586,9 @@ def build_dataset(
     # ElevenLabs' provider_created_at is UTC-stored too (same shift as ChatGPT).
     el_start = period.start_dt - LOCAL_TZ_OFFSET
     el_end = period.end_exclusive - LOCAL_TZ_OFFSET
+    # Flow's provider_created_at is UTC-stored too (same shift as ChatGPT).
+    fl_start = period.start_dt - LOCAL_TZ_OFFSET
+    fl_end = period.end_exclusive - LOCAL_TZ_OFFSET
 
     employees = _load_employees(db)
     by_uid = {emp.user_id: emp for emp in employees}
@@ -570,6 +600,7 @@ def build_dataset(
     _apply_heygen_aggregates(db, hg_start, hg_end, by_uid)
     _apply_higgsfield_aggregates(db, hf_start, hf_end, by_uid)
     _apply_elevenlabs_aggregates(db, el_start, el_end, by_uid)
+    _apply_flow_aggregates(db, fl_start, fl_end, by_uid)
 
     chatgpt_events, cg_trunc = _load_chatgpt_events(db, cg_start, cg_end, by_uid)
     kling_events, kl_trunc = _load_kling_events(db, period, kling_tool_ids, by_uid)
@@ -578,9 +609,10 @@ def build_dataset(
     heygen_events, hg_trunc = _load_heygen_events(db, hg_start, hg_end, by_uid)
     higgsfield_events, hf_trunc = _load_higgsfield_events(db, hf_start, hf_end, by_uid)
     elevenlabs_events, el_trunc = _load_elevenlabs_events(db, el_start, el_end, by_uid)
+    flow_events, fl_trunc = _load_flow_events(db, fl_start, fl_end, by_uid)
     merged = _merge_events(
         chatgpt_events, kling_events, freepik_events, envato_events, heygen_events, higgsfield_events,
-        elevenlabs_events,
+        elevenlabs_events, flow_events,
     )
 
     tools = _load_tools(db)
@@ -588,13 +620,13 @@ def build_dataset(
     dept_adoption = _dept_adoption(employees)
     daily = _daily_trend(
         period, chatgpt_events, kling_events, freepik_events, envato_events, heygen_events, higgsfield_events,
-        elevenlabs_events,
+        elevenlabs_events, flow_events,
     )
     top = sorted(employees, key=lambda emp: (emp.composite_score, emp.total_usage), reverse=True)[:5]
     kpis = _kpis(employees, tools)
     warnings = _validate(
         employees, chatgpt_events, kling_events, freepik_events, envato_events,
-        heygen_events, higgsfield_events, elevenlabs_events, period,
+        heygen_events, higgsfield_events, elevenlabs_events, flow_events, period,
     )
 
     return ReportDataset(
@@ -609,6 +641,7 @@ def build_dataset(
         heygen_events=heygen_events,
         higgsfield_events=higgsfield_events,
         elevenlabs_events=elevenlabs_events,
+        flow_events=flow_events,
         merged_events=merged,
         tool_usage=tool_usage,
         dept_adoption=dept_adoption,
@@ -616,7 +649,9 @@ def build_dataset(
         top_employees=top,
         warnings=warnings,
         kpis=kpis,
-        raw_truncated=cg_trunc or kl_trunc or fp_trunc or ev_trunc or hg_trunc or hf_trunc or el_trunc,
+        raw_truncated=(
+            cg_trunc or kl_trunc or fp_trunc or ev_trunc or hg_trunc or hf_trunc or el_trunc or fl_trunc
+        ),
     )
 
 
@@ -873,6 +908,35 @@ def _apply_elevenlabs_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
         if emp:
             emp.elevenlabs_generations = int(cnt or 0)
             emp.elevenlabs_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
+
+
+def _apply_flow_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
+    """Flow generations from FlowGeneration directly. Only owner-attributed
+    rows count toward an employee, same rationale as every other provider
+    here (Flow's flowWorkflows response is scoped to the shared Google
+    account, never to an employee - attribution comes from the launch ticket
+    at capture time, see FlowGeneration's own docstring). Flow's captured
+    payload carries no credit ledger at all, so - like ElevenLabs - this is a
+    plain count + last-used date, nothing more."""
+    rows = (
+        db.query(
+            FlowGeneration.owner_user_id,
+            func.count(FlowGeneration.id),
+            func.max(FlowGeneration.provider_created_at),
+        )
+        .filter(
+            FlowGeneration.owner_user_id.isnot(None),
+            FlowGeneration.provider_created_at >= s,
+            FlowGeneration.provider_created_at < e,
+        )
+        .group_by(FlowGeneration.owner_user_id)
+        .all()
+    )
+    for uid, cnt, last in rows:
+        emp = by_uid.get(uid)
+        if emp:
+            emp.flow_generations = int(cnt or 0)
+            emp.flow_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
 
 
 # --------------------------------------------------------------------------- #
@@ -1231,9 +1295,60 @@ def _load_elevenlabs_events(db, s, e, by_uid) -> tuple[list[ElevenlabsEvent], bo
     return out, truncated
 
 
+def _load_flow_events(db, s, e, by_uid) -> tuple[list[FlowEvent], bool]:
+    """One row per Flow generation, dated by ``provider_created_at`` shifted
+    to IST. Only owner-attributed rows are included, same rationale as
+    ``_apply_flow_aggregates``. Identity is a single column
+    (``provider_creation_id``, i.e. ``flowWorkflows.name``) rather than
+    HeyGen/Higgsfield's several-candidate chain - it is the only identifier
+    Flow's API has ever been observed to surface (see FlowGeneration's own
+    docstring)."""
+    q = (
+        db.query(
+            FlowGeneration.owner_user_id, FlowGeneration.provider_created_at,
+            FlowGeneration.prompt, FlowGeneration.project_id, FlowGeneration.batch_id,
+            FlowGeneration.provider_creation_id, FlowGeneration.status,
+            FlowGeneration.linked_client_name, FlowGeneration.linked_task_name,
+        )
+        .filter(
+            FlowGeneration.owner_user_id.isnot(None),
+            FlowGeneration.provider_created_at >= s,
+            FlowGeneration.provider_created_at < e,
+        )
+        .order_by(FlowGeneration.provider_created_at.asc())
+        .limit(RAW_ROW_CAP + 1)
+    )
+    rows = q.all()
+    truncated = len(rows) > RAW_ROW_CAP
+    rows = rows[:RAW_ROW_CAP]
+    out = []
+    for (user_id, provider_created_at, prompt, project_id, batch_id, provider_creation_id, status,
+         linked_client_name, linked_task_name) in rows:
+        emp = by_uid.get(user_id)
+        out.append(
+            FlowEvent(
+                when=_as_date(provider_created_at + LOCAL_TZ_OFFSET) if provider_created_at else None,
+                employee_id=emp.employee_id if emp else "—",
+                employee_name=emp.name if emp else "Unassigned",
+                department=emp.department if emp else "Unassigned",
+                prompt=_clip(prompt),
+                project_id=project_id or "—",
+                batch_id=batch_id or "—",
+                ref_id=provider_creation_id or "—",
+                # Flow's own payload carries no status field yet (see
+                # providers/flow/constants.py) - default to the same
+                # "completed" every other provider falls back to.
+                status=(status or "completed").title(),
+                client_name=linked_client_name or "",
+                task_name=linked_task_name or "",
+            )
+        )
+    return out, truncated
+
+
 def _merge_events(
     cg: list[ChatGptEvent], kl: list[KlingEvent], fp: list[FreepikEvent], ev: list[EnvatoEvent],
-    hg: list[HeygenEvent], hf: list[HiggsfieldEvent], el: list[ElevenlabsEvent],
+    hg: list[HeygenEvent], hf: list[HiggsfieldEvent], el: list[ElevenlabsEvent], fl: list[FlowEvent],
 ) -> list[Event]:
     merged: list[Event] = []
     for c in cg:
@@ -1313,6 +1428,19 @@ def _merge_events(
                 client_name=l.client_name, task_name=l.task_name,
             )
         )
+    for w in fl:
+        merged.append(
+            Event(
+                when=w.when, tool="Flow", employee_id=w.employee_id, employee_name=w.employee_name,
+                department=w.department, prompt=w.prompt,
+                # No credits concept (see providers/flow/CAPTURE_CONTRACT.md),
+                # and `kind` stays blank: Flow generates both stills and clips
+                # but its captured payload carries no media-type field, so
+                # labelling every row "Image" or "Video" would be a guess.
+                status=w.status, ref_id=w.ref_id or "—",
+                client_name=w.client_name, task_name=w.task_name,
+            )
+        )
     merged.sort(key=lambda ev: (ev.when or date.min, ev.tool))
     return merged
 
@@ -1359,6 +1487,7 @@ def _tool_usage(employees: list[Employee]) -> list[ToolUsage]:
     hg_users = sum(1 for emp in employees if emp.heygen_videos)
     hf_users = sum(1 for emp in employees if emp.higgsfield_generations)
     el_users = sum(1 for emp in employees if emp.elevenlabs_generations)
+    fl_users = sum(1 for emp in employees if emp.flow_generations)
     cg_vol = sum(emp.chatgpt_sessions for emp in employees)
     kl_vol = sum(emp.kling_videos for emp in employees)
     fp_vol = sum(emp.freepik_generations for emp in employees)
@@ -1366,6 +1495,7 @@ def _tool_usage(employees: list[Employee]) -> list[ToolUsage]:
     hg_vol = sum(emp.heygen_videos for emp in employees)
     hf_vol = sum(emp.higgsfield_generations for emp in employees)
     el_vol = sum(emp.elevenlabs_generations for emp in employees)
+    fl_vol = sum(emp.flow_generations for emp in employees)
     return [
         ToolUsage("ChatGPT", cg_users, cg_vol, cg_users / n),
         ToolUsage("Kling", kl_users, kl_vol, kl_users / n),
@@ -1374,6 +1504,7 @@ def _tool_usage(employees: list[Employee]) -> list[ToolUsage]:
         ToolUsage("HeyGen", hg_users, hg_vol, hg_users / n),
         ToolUsage("Higgsfield", hf_users, hf_vol, hf_users / n),
         ToolUsage("ElevenLabs", el_users, el_vol, el_users / n),
+        ToolUsage("Flow", fl_users, fl_vol, fl_users / n),
     ]
 
 
@@ -1398,6 +1529,7 @@ def _daily_trend(
     hg: list[HeygenEvent],
     hf: list[HiggsfieldEvent],
     el: list[ElevenlabsEvent],
+    fl: list[FlowEvent],
 ) -> list[DailyPoint]:
     days = [period.start + timedelta(days=i) for i in range(period.days)]
     cg_counts: dict[date, int] = {}
@@ -1407,6 +1539,7 @@ def _daily_trend(
     hg_counts: dict[date, int] = {}
     hf_counts: dict[date, int] = {}
     el_counts: dict[date, int] = {}
+    fl_counts: dict[date, int] = {}
     for c in cg:
         if c.when:
             cg_counts[c.when] = cg_counts.get(c.when, 0) + 1
@@ -1428,11 +1561,14 @@ def _daily_trend(
     for l in el:
         if l.when:
             el_counts[l.when] = el_counts.get(l.when, 0) + 1
+    for w in fl:
+        if w.when:
+            fl_counts[w.when] = fl_counts.get(w.when, 0) + 1
     return [
         DailyPoint(
             d, cg_counts.get(d, 0), kl_counts.get(d, 0), fp_counts.get(d, 0),
             ev_counts.get(d, 0), hg_counts.get(d, 0), hf_counts.get(d, 0),
-            el_counts.get(d, 0),
+            el_counts.get(d, 0), fl_counts.get(d, 0),
         )
         for d in days
     ]
@@ -1453,6 +1589,7 @@ def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
     hf_generations = sum(emp.higgsfield_generations for emp in employees)
     hf_credits = sum(emp.higgsfield_credits for emp in employees)
     el_generations = sum(emp.elevenlabs_generations for emp in employees)
+    fl_generations = sum(emp.flow_generations for emp in employees)
     return Kpis(
         total_employees=n,
         total_tools=len(tools),
@@ -1462,7 +1599,7 @@ def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
         total_sessions=sum(emp.chatgpt_sessions for emp in employees),
         total_generations=(
             sum(emp.kling_videos for emp in employees) + fp_generations + ev_generations + hg_videos
-            + hf_generations + el_generations
+            + hf_generations + el_generations + fl_generations
         ),
         total_credits=(
             sum(emp.kling_credits for emp in employees) + fp_charged + ev_credits + hg_credits + hf_credits
@@ -1479,13 +1616,14 @@ def _kpis(employees: list[Employee], tools: list[ToolInfo]) -> Kpis:
         total_higgsfield_generations=hf_generations,
         total_higgsfield_credits=hf_credits,
         total_elevenlabs_generations=el_generations,
+        total_flow_generations=fl_generations,
     )
 
 
 # --------------------------------------------------------------------------- #
 # Data-quality validation
 # --------------------------------------------------------------------------- #
-def _validate(employees, cg, kl, fp, ev, hg, hf, el, period: Period) -> list[Warning]:
+def _validate(employees, cg, kl, fp, ev, hg, hf, el, fl, period: Period) -> list[Warning]:
     warnings: list[Warning] = []
 
     missing_dept = sum(1 for emp in employees if emp.department in ("", "Unassigned"))
@@ -1533,9 +1671,9 @@ def _validate(employees, cg, kl, fp, ev, hg, hf, el, period: Period) -> list[War
             "Error", "Invalid Higgsfield credits",
             f"{neg_higgsfield_credits} employee(s) show negative Higgsfield credit totals."))
 
-    # No credits/numeric field is confirmed for ElevenLabs yet (see
-    # providers/elevenlabs/CAPTURE_CONTRACT.md's known gaps) - nothing to
-    # negative-value-validate here, unlike every credit-bearing provider above.
+    # No credits/numeric field is confirmed for ElevenLabs or Flow yet (see
+    # each provider's CAPTURE_CONTRACT.md known gaps) - nothing to
+    # negative-value-validate there, unlike every credit-bearing provider above.
 
     future = (
         sum(1 for k in kl if k.when and k.when > period.end)
@@ -1545,6 +1683,7 @@ def _validate(employees, cg, kl, fp, ev, hg, hf, el, period: Period) -> list[War
         + sum(1 for h in hg if h.when and h.when > period.end)
         + sum(1 for s in hf if s.when and s.when > period.end)
         + sum(1 for l in el if l.when and l.when > period.end)
+        + sum(1 for w in fl if w.when and w.when > period.end)
     )
     if future:
         warnings.append(Warning("Warning", "Future-dated events", f"{future} event(s) are dated after the report period end."))
@@ -1557,6 +1696,7 @@ def _validate(employees, cg, kl, fp, ev, hg, hf, el, period: Period) -> list[War
         + sum(1 for h in hg if not h.when)
         + sum(1 for s in hf if not s.when)
         + sum(1 for l in el if not l.when)
+        + sum(1 for w in fl if not w.when)
     )
     if undated:
         warnings.append(Warning("Info", "Undated events", f"{undated} event(s) had no resolvable date and were placed at period start."))
