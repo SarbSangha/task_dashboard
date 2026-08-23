@@ -56,6 +56,13 @@ export function categorizeEvent(event) {
   const type = event.eventType || '';
   const payload = event.payload || {};
   if (payload.error || payload.stopReason === 'error') return 'errors';
+  // A response_completed emitted by content-chatgpt-network.js's
+  // "no_response_started" fallback (the stream parser never recognized any
+  // frame as the visible answer this turn) - a real capture failure, not a
+  // normal successful stream completion, even though its eventType alone
+  // looks identical to a healthy one. Surfacing it under Errors means
+  // reading contentSource/stopReason isn't required to notice it.
+  if (payload.stopReason === 'no_response_started') return 'errors';
   if (type.startsWith('conversation_')) return 'network';
   if (['prompt_captured', 'response_started', 'response_completed', 'message_edited'].includes(type)) return 'sse';
   if (['generation_captured', 'file_upload_detected', 'file_download_detected'].includes(type)) return 'media';
@@ -70,6 +77,28 @@ export function deriveErrors(events = [], media = []) {
   events.filter((e) => (e.payload || {}).error || (e.payload || {}).stopReason === 'error').forEach((e) => {
     out.push({ tone: 'error', label: `Error in ${e.eventType}`, timestamp: e.createdAt, detail: `${(e.payload || {}).error || 'stopReason: error'}` });
   });
+  // Distinct from the hard-error case above: the turn DID produce a
+  // response_completed event (so it won't also show up as an "unanswered
+  // prompt" below), but content-chatgpt.js's text-selection pipeline
+  // couldn't find a fully trustworthy source for it - contentSource is
+  // 'no_content_captured' (stream, authoritative fetch, AND DOM capture all
+  // came up empty) or 'dom_fallback' (only the rendered-page last resort
+  // worked, not the higher-fidelity authoritative fetch or stream
+  // reconstruction). Worth flagging either way so a captured-but-hollow or
+  // captured-but-lower-confidence response doesn't read as fully healthy.
+  events
+    .filter((e) => e.eventType === 'response_completed' && ['no_content_captured', 'dom_fallback'].includes((e.payload || {}).contentSource))
+    .forEach((e) => {
+      const source = (e.payload || {}).contentSource;
+      out.push({
+        tone: source === 'no_content_captured' ? 'error' : 'warning',
+        label: source === 'no_content_captured' ? 'Response captured with no content' : 'Response captured via DOM fallback',
+        timestamp: e.createdAt,
+        detail: source === 'no_content_captured'
+          ? 'Stream parsing, authoritative fetch, and DOM capture all failed for this turn.'
+          : 'Text recovered from the rendered page only - stream parsing and authoritative fetch both failed.',
+      });
+    });
   const prompts = events.filter((e) => e.eventType === 'prompt_captured').length;
   const responses = events.filter((e) => e.eventType === 'response_completed').length;
   if (prompts > responses) {

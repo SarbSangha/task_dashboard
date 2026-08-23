@@ -20,7 +20,7 @@ from routers.it_tools_router import _resolve_usage_event_actor
 from services.workplace_access_service import enforce_workplace_tools_access
 from utils.client_gate import get_active_clients
 from utils.generation_gate import resolve_generation_gate_tool
-from utils.permissions import require_admin
+from utils.permissions import require_admin, require_user
 
 router = APIRouter(prefix="/api/clients", tags=["Clients"])
 
@@ -84,6 +84,19 @@ def list_active_clients_for_generation(
         "count": len(clients),
         "clients": [{"id": client.id, "name": client.name} for client in clients],
     }
+
+
+@router.get("/for-tasks")
+def list_active_clients_for_tasks(
+    current_user: User = Depends(require_user),
+    db: Session = Depends(get_operational_db),
+):
+    """Populates the Customer Name dropdown on the dashboard's Create Task
+    form. Session-authenticated (any logged-in user, not just admins) -
+    distinct from /active (browser-extension, ticket-authenticated) and from
+    the admin-only GET "" below (full list, including inactive clients)."""
+    clients = get_active_clients(db)
+    return {"success": True, "clients": [{"id": client.id, "name": client.name} for client in clients]}
 
 
 @router.get("")

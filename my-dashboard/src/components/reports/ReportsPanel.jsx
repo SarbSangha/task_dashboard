@@ -36,9 +36,11 @@ import TaskContributorsDrill from './sections/TaskContributorsDrill';
 import PromptDrill from './sections/PromptDrill';
 import ChatGptUsersDrill from './sections/ChatGptUsersDrill';
 import ComingSoon from './sections/ComingSoon';
+import UsageIntelligence from './sections/UsageIntelligence';
 import './ReportsPanel.css';
 
 const SECTION_LABELS = {
+  'usage-intelligence': 'Usage Intelligence',
   executive: 'Executive Overview',
   adoption: 'AI Adoption',
   kling: 'Kling Analytics',
@@ -78,7 +80,7 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const minimizedWindowStyle = useMinimizedWindowStack('reports-panel', isOpen && isMinimized);
 
-  const [section, setSection] = useState('executive');
+  const [section, setSection] = useState('usage-intelligence');
   const [drill, setDrill] = useState(null); // { userId, userName }
   const [treeOpen, setTreeOpen] = useState(false);
   const [canvasQueue, setCanvasQueue] = useState([]);
@@ -261,6 +263,14 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       );
     }
     if (section === 'executive') return <ExecutiveDashboard filters={queryFilters} onDrill={(view) => setDrill({ view })} onAddToCanvas={addToCanvas} />;
+    if (section === 'usage-intelligence') {
+      return (
+        <UsageIntelligence
+          filters={queryFilters}
+          onOpenUser={(userId, userName, mode) => openUser(userId, userName, mode || 'output')}
+        />
+      );
+    }
     if (section === 'kling') {
       return (
         <KlingAnalytics

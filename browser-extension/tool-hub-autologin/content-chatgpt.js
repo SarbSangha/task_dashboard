@@ -1978,17 +1978,40 @@ try {
   // faithful when it succeeds.
 
   function assetPointerToFileId(assetPointer) {
-    return `${assetPointer || ''}`.replace(/^file-service:\/\//, '').trim();
+    // Real captured asset_pointer values use "sediment://" (confirmed live,
+    // 2026-08) - "file-service://" was the originally assumed scheme but has
+    // never actually been observed in production payloads. Stripping only
+    // the wrong prefix left the sediment:// scheme baked into fileId, which
+    // silently broke every /backend-api/files/{fileId}/download call below
+    // (404, treated as non-fatal "leave part as pointer-only") - every
+    // generated/edited image capture failed without any visible error.
+    // Strip whichever scheme is actually present rather than hardcoding one.
+    return `${assetPointer || ''}`.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').trim();
   }
 
   async function resolveAndUploadImagePart(part, conversationId) {
     const fileId = assetPointerToFileId(part.assetPointer);
     if (!fileId) return part;
     try {
+      // Unverified whether this two-step endpoint (ask for a download_url,
+      // then fetch it) is still live - the conversation-fetch endpoint this
+      // codebase originally assumed (singular "conversation", mapping-tree
+      // shape) turned out to be stale in exactly this way (see
+      // fetchAuthoritativeAssistantContent above, fixed 2026-08 after live
+      // traffic showed the real client uses a different endpoint/shape
+      // entirely). Traced explicitly so the next live capture confirms
+      // whether this one has the same problem, rather than failing silently
+      // like it did before.
       const downloadRes = await fetch(`${location.origin}/backend-api/files/${fileId}/download`, { credentials: 'include' });
+      recordCaptureTrace('image_download_lookup_response', {
+        fileId, conversationId, status: downloadRes.status, ok: downloadRes.ok,
+      }, 'isolated_world');
       if (!downloadRes.ok) return part; // leave the part as-is (assetPointer only) - not fatal to the rest of the message
       const downloadJson = await downloadRes.json();
       const downloadUrl = downloadJson?.download_url;
+      recordCaptureTrace('image_download_url_resolved', {
+        fileId, conversationId, hasDownloadUrl: Boolean(downloadUrl),
+      }, 'isolated_world');
       if (!downloadUrl) return part;
       const blob = await (await fetch(downloadUrl)).blob();
       const dataUrl = await bus.readFileAsDataUrl(blob);
@@ -2006,10 +2029,12 @@ try {
           data_url: dataUrl,
         },
       }, () => { void chrome.runtime.lastError; });
+      recordCaptureTrace('image_download_uploaded', { fileId, conversationId, sizeBytes: blob.size }, 'isolated_world');
       return { ...part, uploaded: true };
-    } catch {
+    } catch (error) {
       // Per-image failure never aborts the rest of the message - the other
       // content parts (text, other images) are still worth keeping.
+      recordCaptureTrace('image_download_threw', { fileId, conversationId, error: `${error?.message || error}` }, 'isolated_world');
       return part;
     }
   }
@@ -2039,40 +2064,106 @@ try {
     });
   }
 
-  async function fetchAuthoritativeAssistantContent(conversationId, messageId, attempt = 1) {
-    recordCaptureTrace('authoritative_fetch_attempt', { conversationId, messageId, attempt }, 'isolated_world');
+  // Finds the target message plus its "replies to" id across both response
+  // shapes ChatGPT's backend has been observed to return for a conversation
+  // fetch:
+  //  - flat ("/backend-api/conversations/{id}?...", confirmed live 2026-08):
+  //    { messages: [{ id, author, content, metadata: { turn_exchange_id } }], page_info }
+  //    No parent pointer here - instead, every message belonging to the same
+  //    prompt/response exchange shares an identical metadata.turn_exchange_id
+  //    (confirmed: a user prompt and its tool-authored image response carry
+  //    the same turn_exchange_id). The parent is found by searching this same
+  //    already-fetched array for the user message sharing that value.
+  //  - tree ("/backend-api/conversation/{id}", the shape this code originally
+  //    assumed - kept as a fallback in case some account/version still serves
+  //    it): { mapping: { [nodeId]: { message, parent, children } } }, where
+  //    mapping[id].parent is the id directly.
+  function locateMessageInConversationPayload(data, messageId) {
+    if (Array.isArray(data?.messages)) {
+      const messages = data.messages;
+      const message = messages.find((m) => m?.id === messageId);
+      if (!message) return { message: null, parentMessageId: undefined, shape: 'flat', found: false };
+      const turnExchangeId = message?.metadata?.turn_exchange_id;
+      const parentMessage = turnExchangeId
+        ? messages.find((m) => m?.id !== messageId && m?.metadata?.turn_exchange_id === turnExchangeId && (m?.author?.role === 'user'))
+        : null;
+      return { message, parentMessageId: parentMessage?.id || undefined, shape: 'flat', found: true };
+    }
+    if (data?.mapping) {
+      const node = data.mapping[messageId];
+      return { message: node?.message || null, parentMessageId: node?.parent || undefined, shape: 'tree', found: Boolean(node) };
+    }
+    return { message: null, parentMessageId: undefined, shape: 'unknown', found: false };
+  }
+
+  async function fetchAuthoritativeAssistantContent(conversationId, messageId, authorizationHeader, attempt = 1) {
+    recordCaptureTrace('authoritative_fetch_attempt', { conversationId, messageId, attempt, hasAuthHeader: Boolean(authorizationHeader) }, 'isolated_world');
     if (!conversationId || !messageId) {
       recordCaptureTrace('authoritative_fetch_missing_ids', { conversationId, messageId }, 'isolated_world');
       return null;
     }
     try {
-      const url = `${location.origin}/backend-api/conversation/${conversationId}`;
+      // Plural "conversations" + these two query params is the endpoint the
+      // live ChatGPT web client actually calls (confirmed via its own
+      // request headers, 2026-08) - the originally assumed singular
+      // "conversation" endpoint 404s unconditionally, which silently broke
+      // contentParts/parentMessageId (and therefore image capture and
+      // prompt/response pairing) for every single turn, not just a
+      // new-conversation race. num_turns=10 matches what the live client
+      // requests and is always enough here since this fetch only ever runs
+      // moments after the target turn completes.
+      //
+      // credentials:'include' (cookies) alone is NOT sufficient for this
+      // endpoint - confirmed live: a fixed-URL fetch here still got a
+      // straight 401, while the same GET captured from DevTools succeeded
+      // with an explicit Authorization: Bearer <token> header the page's own
+      // script attaches. That token lives in the page's JS realm, which this
+      // isolated-world script can't reach directly - authorizationHeader is
+      // relayed from content-chatgpt-network.js (MAIN world), which observed
+      // the same header on the conversation-send request that produced this
+      // very response.
+      const url = `${location.origin}/backend-api/conversations/${conversationId}?include_has_versions=true&num_turns=10`;
       const res = await fetch(url, {
         credentials: 'include',
-        headers: { accept: 'application/json' },
+        headers: {
+          accept: 'application/json',
+          ...(authorizationHeader ? { authorization: authorizationHeader } : {}),
+        },
       });
-      recordCaptureTrace('authoritative_fetch_response', { conversationId, messageId, status: res.status, ok: res.ok, url }, 'isolated_world');
-      if (!res.ok) return null;
+      recordCaptureTrace('authoritative_fetch_response', { conversationId, messageId, status: res.status, ok: res.ok, url, sentAuthHeader: Boolean(authorizationHeader) }, 'isolated_world');
+      if (!res.ok) {
+        // Eventual-consistency race: a brand-new conversation's very first
+        // turn can 404 here because ChatGPT's backend hasn't finished
+        // indexing the conversation record itself yet (confirmed live - a
+        // "New chat" first-message capture, <2s after conversation
+        // create_time, 404d on this URL).
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          return fetchAuthoritativeAssistantContent(conversationId, messageId, authorizationHeader, attempt + 1);
+        }
+        return null;
+      }
       const data = await res.json();
-      const mappingKeys = data?.mapping ? Object.keys(data.mapping) : null;
-      const message = data?.mapping?.[messageId]?.message;
+      const located = locateMessageInConversationPayload(data, messageId);
+      const message = located.message;
       recordCaptureTrace('authoritative_fetch_mapping_lookup', {
         conversationId,
         messageId,
         messageFound: Boolean(message),
-        mappingKeyCount: mappingKeys ? mappingKeys.length : null,
+        shape: located.shape,
+        parentMessageId: located.parentMessageId || null,
         // Only useful if the lookup failed - shows whether messageId is
-        // simply absent, or present under a different case/format, without
-        // dumping the entire (potentially large) mapping object.
-        messageIdPresentInMapping: mappingKeys ? mappingKeys.includes(messageId) : null,
-        sampleMappingKeys: !message && mappingKeys ? mappingKeys.slice(-5) : null,
+        // simply absent, without dumping the entire (potentially large)
+        // response body.
+        messageCount: Array.isArray(data?.messages) ? data.messages.length : null,
+        mappingKeyCount: data?.mapping ? Object.keys(data.mapping).length : null,
       }, 'isolated_world');
       if (!message) {
         // Possible eventual-consistency race right after the stream ends -
         // retry once, short backoff, before giving up to the fallback.
         if (attempt < 2) {
           await new Promise((resolve) => setTimeout(resolve, 400));
-          return fetchAuthoritativeAssistantContent(conversationId, messageId, attempt + 1);
+          return fetchAuthoritativeAssistantContent(conversationId, messageId, authorizationHeader, attempt + 1);
         }
         return null;
       }
@@ -2099,6 +2190,14 @@ try {
         hasMarkdown: bus.looksLikeMarkdown(text),
         hasTables: bus.looksLikeTable(text),
         codeBlocks: bus.extractCodeBlocks(text),
+        // The id of the prompt message this response replies to - resolved
+        // above via locateMessageInConversationPayload (turn_exchange_id
+        // join for the flat shape, mapping[id].parent for the tree shape).
+        // This is the one signal that reliably ties a response back to the
+        // exact prompt that produced it, even when async image generation
+        // means an unrelated later prompt has since been sent in the same
+        // conversation (see normalization.py _find_matching_prompt).
+        parentMessageId: located.parentMessageId,
       };
     } catch (error) {
       recordCaptureTrace('authoritative_fetch_threw', { conversationId, messageId, error: `${error?.message || error}` }, 'isolated_world');
@@ -2204,7 +2303,7 @@ try {
     // Gather all three independent representations before deciding anything
     // - per the validation-pipeline requirement, none of them silently wins
     // without the other two being captured and compared first.
-    const authoritative = await fetchAuthoritativeAssistantContent(payload.conversationId, payload.messageId);
+    const authoritative = await fetchAuthoritativeAssistantContent(payload.conversationId, payload.messageId, payload.authorizationHeader);
     const streamText = payload.text || '';
     // Small settle delay - the DOM read races the same eventual-consistency
     // window the authoritative-fetch retry already accounts for (React
@@ -2225,6 +2324,42 @@ try {
       streamVsAuthoritative: authoritative ? compareTexts('stream', streamText, 'authoritative', authoritativeText) : null,
       domVsAuthoritative: (domText && authoritative) ? compareTexts('dom', domText, 'authoritative', authoritativeText) : null,
     };
+
+    // Selection logic: authoritative fetch wins when available; otherwise
+    // stream text, if the network layer actually assembled any (empty for
+    // the content-chatgpt-network.js "no_response_started" fallback signal,
+    // whose messageId is null so authoritative fetch can't even attempt a
+    // lookup); otherwise the rendered-DOM capture gathered above as a last
+    // resort - it recovers the last visible assistant turn even with no
+    // messageId (captureRenderedDomText's last-assistant-turn-fallback
+    // strategy), so this is the difference between that fallback event
+    // carrying real text versus an empty stub. Previously the DOM capture
+    // was evidence-gathering only and never reached this decision at all.
+    // Computed BEFORE the trace calls below (unlike before) so
+    // state_transition's usedSource always matches what was actually picked,
+    // instead of a hardcoded authoritative/stream_fallback guess that went
+    // stale the moment dom_fallback/no_content_captured were introduced.
+    //
+    // domTrustworthy guards the DOM fallback: last-assistant-turn-fallback
+    // grabs whichever [data-message-author-role="assistant"] element is LAST
+    // on the page right now, with no id/conversation check of its own. By the
+    // time this whole async function resolves (authoritative attempt + 300ms
+    // settle delay), the user could have navigated to a different
+    // conversation, which would otherwise attribute that unrelated chat's
+    // text to this turn's conversationId. Only trust it when the page is
+    // still confirmed to be on the conversation this turn belongs to (skipped
+    // rather than trusted-by-default when conversationId itself is unknown -
+    // the one case this can't cover is two turns racing inside the SAME
+    // conversation within this settle window, which has no messageId to
+    // disambiguate against in the no-message-id fallback case by definition).
+    const usableStreamText = streamText.trim() ? streamText : '';
+    const domTrustworthy = Boolean(payload.conversationId)
+      && currentConversationIdFromLocation() === payload.conversationId;
+    const useDomFallback = !authoritative && !usableStreamText && domTrustworthy && Boolean(domText.trim());
+    const finalText = authoritative ? authoritative.text : (usableStreamText || (useDomFallback ? domText : streamText));
+    const contentSource = authoritative
+      ? 'authoritative_fetch'
+      : (usableStreamText ? 'stream_fallback' : (useDomFallback ? 'dom_fallback' : 'no_content_captured'));
 
     // The consistency-validator record: hashes first (cheap, unambiguous
     // "are these identical" check), then the positional diff only matters
@@ -2251,25 +2386,31 @@ try {
       correlationId: payload.correlationId,
       previousState: 'FETCH_AUTHORITATIVE',
       newState: 'COMPLETE',
-      detail: { usedSource: authoritative ? 'authoritative_fetch' : 'stream_fallback' },
+      detail: { usedSource: contentSource },
     }, 'isolated_world');
 
-    // Selection logic is UNCHANGED from before this validation pass -
-    // authoritative fetch wins when available, stream text is the fallback.
-    // The DOM capture and full 3-way comparison above are evidence-gathering
-    // only at this stage, not yet wired into this decision.
+    // Rendered DOM text (innerText) never contains markdown source syntax -
+    // code fences, #/** characters etc. are stripped by rendering - so the
+    // markdown/table/code-block heuristics below (built for markdown SOURCE
+    // text) would silently misclassify a dom_fallback capture that actually
+    // had a code block or table. Report these as explicitly unknown (false/
+    // empty) for that path instead of a confidently wrong answer.
     sendCaptureEvent(bus.buildEvent(bus.EVENT_TYPE.RESPONSE_COMPLETED, {
       conversationId: payload.conversationId,
       messageId: payload.messageId,
       payload: {
-        text: authoritative ? authoritative.text : streamText,
-        textLength: (authoritative ? authoritative.text : streamText).length,
-        codeBlocks: authoritative ? authoritative.codeBlocks : (payload.codeBlocks || []),
-        hasMarkdown: authoritative ? authoritative.hasMarkdown : Boolean(payload.hasMarkdown),
-        hasTables: authoritative ? authoritative.hasTables : Boolean(payload.hasTables),
+        text: finalText,
+        textLength: finalText.length,
+        codeBlocks: authoritative ? authoritative.codeBlocks : (useDomFallback ? [] : (payload.codeBlocks || [])),
+        hasMarkdown: authoritative ? authoritative.hasMarkdown : (useDomFallback ? false : Boolean(payload.hasMarkdown)),
+        hasTables: authoritative ? authoritative.hasTables : (useDomFallback ? false : Boolean(payload.hasTables)),
         contentParts: authoritative ? authoritative.contentParts : undefined,
         citations: authoritative ? authoritative.citations : undefined,
-        contentSource: authoritative ? 'authoritative_fetch' : 'stream_fallback',
+        contentSource,
+        // Only known when the authoritative fetch succeeded - absent for
+        // stream/DOM fallback, which is fine: backend matching falls back to
+        // its prior "most recent prompt" heuristic when this is missing.
+        parentMessageId: authoritative ? authoritative.parentMessageId : undefined,
         stopReason: payload.stopReason || undefined,
         completedAt: new Date().toISOString(),
         // Same ownership signal as PROMPT_CAPTURED above - covers the case
@@ -2333,6 +2474,11 @@ try {
             // started - never true for a reply inside an existing
             // conversation, even one our backend has never captured before.
             isNewConversation: Boolean(payload.isNewConversation),
+            // ChatGPT's own thread pointer for this prompt (what message it
+            // replies to) - additive/optional, computed in
+            // content-chatgpt-network.js's extractPromptFromRequestJson but
+            // previously never forwarded past this handler.
+            parentMessageId: payload.parentMessageId || undefined,
           },
         }));
         // Releases any DOM-captured image file(s) waiting in
@@ -2370,9 +2516,17 @@ try {
         // generation are still caught, not just ones present at
         // end_turn. Wrapped in try/catch so it can never affect the line
         // above; does not touch any existing variable/state in this case.
-        try {
-          window.RMWChatGptMediaCapture?.observeGeneratedMediaForResponse?.(payload);
-        } catch {}
+        // Skipped for the content-chatgpt-network.js "no_response_started"
+        // fallback (messageId: null, correlationId still present): with no
+        // messageId, observeGeneratedMediaForResponse's findAssistantContainer
+        // retry loop can never find its target, so all it does is burn a
+        // pointless 60s page-wide Resource Timing observer + ~2.5s of DOM
+        // polling on every one of these degraded turns.
+        if (payload.messageId) {
+          try {
+            window.RMWChatGptMediaCapture?.observeGeneratedMediaForResponse?.(payload);
+          } catch {}
+        }
         break;
       }
 

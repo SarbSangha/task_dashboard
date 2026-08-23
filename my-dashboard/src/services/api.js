@@ -642,6 +642,11 @@ export const clientsAPI = {
     return response.data;
   },
 
+  getClientsForTasks: async () => {
+    const response = await api.get('/api/clients/for-tasks');
+    return response.data;
+  },
+
   createClient: async (name) => {
     const response = await api.post('/api/clients', { name });
     return response.data;
@@ -2065,6 +2070,126 @@ export const elevenlabsCaptureAPI = {
 
   getEvent: async (eventId, requestConfig = {}) => {
     const response = await api.get(`/api/providers/elevenlabs/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+};
+
+// ==================== SUNO CAPTURE CENTER API ====================
+// Same shape as elevenlabsCaptureAPI above - Suno's backend only exposes
+// capture/events, generations, generations/{id}, events, events/{id} (no
+// metrics/users/downloads/analytics routes, same as ElevenLabs).
+export const sunoCaptureAPI = {
+  listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/suno/generations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getGeneration: async (generationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/suno/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/suno/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/suno/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+};
+
+// ==================== EPIDEMIC SOUND CAPTURE CENTER API ====================
+// Leaner still than elevenlabsCaptureAPI/sunoCaptureAPI above - Epidemic
+// Sound (epidemicsound.com) is a stock music/sound-effects licensing
+// library at its core, not a general AI generator (see
+// providers/epidemicsound/constants.py's own docstring) - downloads +
+// events. listDownloads/getDownload hit /downloads (not /generations),
+// same shape as envatoCaptureAPI's own Downloads methods. Adaptations
+// (below) are the one real prompt-based AI regeneration feature this
+// provider has, hitting their own /adaptations route.
+export const epidemicCaptureAPI = {
+  listDownloads: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/epidemicsound/downloads',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getDownload: async (downloadId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/epidemicsound/downloads/${downloadId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/epidemicsound/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/epidemicsound/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+
+  // Adaptations are Epidemic Sound's real prompt-based AI regeneration
+  // feature (a track a user already has, re-styled from a text prompt) -
+  // NOT a download, so it gets its own /adaptations route rather than
+  // reusing /downloads. listAdaptations/getAdaptation mirror
+  // listDownloads/getDownload's own shape exactly (query-param/pagination
+  // for list, plain id lookup for detail).
+  listAdaptations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/epidemicsound/adaptations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getAdaptation: async (adaptationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/epidemicsound/adaptations/${adaptationId}`, requestConfig);
+    return response.data;
+  },
+};
+
+// ==================== SPLICE CAPTURE CENTER API ====================
+// Same lean shape as epidemicCaptureAPI above minus the Adaptations methods -
+// Splice (splice.com) is a sample/loop library, not an AI generator, so
+// there is no generation/adaptation surface at all, only downloads + events.
+export const spliceCaptureAPI = {
+  listDownloads: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/splice/downloads',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getDownload: async (downloadId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/splice/downloads/${downloadId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/splice/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/splice/events/${eventId}`, requestConfig);
     return response.data;
   },
 };

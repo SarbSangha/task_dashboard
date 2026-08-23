@@ -11,6 +11,7 @@ require an external baseline (productivity lift, ROI) are returned as null with
 fabricating a value.
 """
 
+import io
 import json
 import math
 from collections import Counter, defaultdict
@@ -1064,6 +1065,113 @@ def kling_clients_breakdown(
             for client_id, client_name, generations, credits in rows
         ],
     }
+
+
+@router.get("/kling/export.xlsx")
+def kling_export_xlsx(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """
+    One-sheet Kling submission report: Employee Name, Department, Kling
+    Videos, Kling Credits Used, and the client(s) they worked on (heaviest
+    use first) — the same shape as the report the team has been assembling
+    by hand, generated straight from live GenerationRecord data instead.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    user_rows_q = (
+        db.query(
+            User.id, User.name, User.department,
+            func.count(GenerationRecord.id),
+            func.coalesce(func.sum(GenerationRecord.credits_burned), 0),
+        )
+        .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
+        .filter(
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.provider == KLING_PROVIDER,
+            GenerationRecord.created_at >= start_dt,
+            GenerationRecord.created_at < end_exclusive,
+        )
+    )
+    if department and department != "all":
+        user_rows_q = user_rows_q.filter(User.department == department)
+    user_rows = (
+        user_rows_q.group_by(User.id, User.name, User.department)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .all()
+    )
+
+    # Per-user client mix (Client Mapping — see utils/client_gate.py), so
+    # "Client Heavy Use" lists the client(s) each employee worked on, heaviest
+    # generation count first, mirroring kling_clients_breakdown's ordering.
+    user_ids = [r[0] for r in user_rows]
+    client_counts: dict[int, Counter] = defaultdict(Counter)
+    if user_ids:
+        client_rows = (
+            db.query(
+                GenerationRecord.owner_user_id,
+                func.coalesce(GenerationRecord.linked_client_name, ""),
+                func.count(GenerationRecord.id),
+            )
+            .filter(
+                GenerationRecord.archived_at.is_(None),
+                GenerationRecord.provider == KLING_PROVIDER,
+                GenerationRecord.created_at >= start_dt,
+                GenerationRecord.created_at < end_exclusive,
+                GenerationRecord.owner_user_id.in_(user_ids),
+            )
+            .group_by(GenerationRecord.owner_user_id, GenerationRecord.linked_client_name)
+            .all()
+        )
+        for uid, client_name, count in client_rows:
+            client_name = (client_name or "").strip()
+            if client_name:
+                client_counts[uid][client_name] += int(count)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Kling Report"
+
+    headers = ["Employee Name", "Department", "Kling Videos", "Kling Credits Used", "Client Heavy Use"]
+    ws.append(headers)
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for uid, name, dept, videos, credits in user_rows:
+        clients_sorted = [client for client, _n in client_counts.get(uid, Counter()).most_common()]
+        ws.append([
+            name or f"User #{uid}",
+            dept or "Unassigned",
+            int(videos),
+            round(float(credits)),
+            ", ".join(clients_sorted),
+        ])
+
+    for idx, width in enumerate((24, 22, 14, 18, 42), start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = width
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{ws.max_row}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    filename = f"Kling-Report_{(end_exclusive - timedelta(days=1)).date()}.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------------------------------------------------------------------------

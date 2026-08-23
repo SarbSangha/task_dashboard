@@ -1879,6 +1879,40 @@ function heygenButtonDescriptorText(element) {
   return parts.filter(Boolean).join(' ').trim().toLowerCase();
 }
 
+// Diagnostic only - never changes what qualifies as an action click. Live
+// data (2026-08-20) showed this regex/click-gate almost never firing for
+// avatar_type="photar" (Photo Avatar) generations specifically: only ~4.5%
+// of captured HeyGen events over a real sample were live click/network
+// events, the rest all reconciliation (passive listing/credit-ledger scans),
+// and nearly every recent generation was avatar_type="photar" - consistent
+// with that surface's real submit button using label text this regex
+// (built against the standard multi-scene Avatar Video Creator's "Generate"/
+// "Render Scene" buttons) doesn't recognize. Rather than guess a new label
+// blind - this codebase has already paid for that mistake more than once
+// (Suno's event_type mismatch, HeyGen's own "workflow_id" identity
+// mismapping, ChatGPT's SSE format) - log the descriptor text of any
+// clicked, button-shaped, plausibly-submit-ish element that this regex
+// rejects, so the next real Photo Avatar submission confirms the actual
+// label instead of another guess.
+const HEYGEN_UNRECOGNIZED_ACTION_HINT_RE = /(creat|generat|submit|animat|continue|next|render|save|publish)/i;
+let heygenLastUnrecognizedActionLoggedAt = 0;
+
+function maybeLogUnrecognizedHeygenActionClick(candidates) {
+  const now = Date.now();
+  if (now - heygenLastUnrecognizedActionLoggedAt < 2000) return; // throttle - one page can have many buttons
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const text = heygenButtonDescriptorText(candidate);
+    if (!text || text.length > 60) continue;
+    if (!HEYGEN_UNRECOGNIZED_ACTION_HINT_RE.test(text)) continue;
+    heygenLastUnrecognizedActionLoggedAt = now;
+    console.debug('[RMW HeyGen Capture] clicked a submit-shaped button not recognized by HEYGEN_ACTION_TEXT_RE', {
+      text, href: location.href, tag: candidate.tagName, testId: candidate.getAttribute?.('data-testid') || null,
+    });
+    return;
+  }
+}
+
 // Returns { target, kind } where kind is 'scene_render' for a "Render Scene"
 // (or bare "Render") button, 'generate' otherwise - the top-level "Generate"
 // button in the reference screenshot renders the whole (potentially
@@ -1895,6 +1929,7 @@ function findHeygenActionTarget(target) {
     const kind = /render/i.test(text) ? 'scene_render' : 'generate';
     return { target: candidate, kind };
   }
+  maybeLogUnrecognizedHeygenActionClick(candidates);
   return null;
 }
 

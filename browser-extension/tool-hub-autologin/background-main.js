@@ -1357,6 +1357,38 @@ function formatApiErrorDetail(detail, fallback = 'Request failed') {
   return `${detail || fallback}`;
 }
 
+function backgroundDelay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// The credential endpoint is called synchronously from the content script,
+// which itself has a limited retry budget waiting on this one response (see
+// content-epidemicsound.js's requestCredential). A single transient blip here
+// - a cold backend, a dropped connection, a momentary 502/503/429 - used to
+// burn one of those content-script attempts for nothing. Retry transient
+// failures here so the content script only ever sees a real, final outcome.
+// Auth/validation failures (4xx other than 429) are not transient and are
+// returned immediately without retrying.
+const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
+
+async function fetchWithRetry(url, options, { attempts = 3, baseDelayMs = 400 } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      if (response.ok || !RETRYABLE_HTTP_STATUSES.has(response.status) || attempt === attempts) {
+        return response;
+      }
+      lastError = new Error(`Transient HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) throw error;
+    }
+    await backgroundDelay(baseDelayMs * Math.pow(2, attempt - 1));
+  }
+  throw lastError || new Error('Request failed');
+}
+
 async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   const settings = await getSettings();
   const tabId = message.tabId || senderTabId || 0;
@@ -1415,7 +1447,7 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
     headers['X-Session-Id'] = settings.sessionToken;
   }
 
-  const response = await fetch(`${settings.apiBase}/api/it-tools/extension/credential`, {
+  const response = await fetchWithRetry(`${settings.apiBase}/api/it-tools/extension/credential`, {
     method: 'POST',
     credentials: 'include',
     headers,
@@ -1426,7 +1458,7 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
       extension_ticket: extensionTicket || null,
       otp_not_before_epoch_ms: Number.isFinite(Number(message.otpNotBeforeMs)) ? Number(message.otpNotBeforeMs) : undefined,
     }),
-  });
+  }, { attempts: 3, baseDelayMs: 400 });
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.success) {
@@ -2733,6 +2765,34 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     return true;
   }
 
+  if (message?.type === 'SUNO_CAPTURE_EVENT') {
+    handleSunoCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'SUNO_FETCH_MY_ACTIVE_TASKS') {
+    handleSunoFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'SUNO_FETCH_ACTIVE_CLIENTS') {
+    handleSunoFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'SUNO_CAPTURE_AUDIO') {
+    handleSunoCaptureAudioMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'HEYGEN_CAPTURE_EVENT') {
     handleHeygenCaptureEventMessage(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse(result))
@@ -2824,6 +2884,69 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     return true;
   }
 
+  if (message?.type === 'EPIDEMIC_CAPTURE_EVENT') {
+    handleEpidemicCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'EPIDEMIC_CAPTURE_DOWNLOAD_MEDIA') {
+    handleEpidemicCaptureDownloadMediaMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'EPIDEMIC_CAPTURE_ADAPTATION_MEDIA') {
+    handleEpidemicCaptureAdaptationMediaMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'EPIDEMIC_FETCH_MY_ACTIVE_TASKS') {
+    handleEpidemicFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'EPIDEMIC_FETCH_ACTIVE_CLIENTS') {
+    handleEpidemicFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'SPLICE_CAPTURE_EVENT') {
+    handleSpliceCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'SPLICE_CAPTURE_DOWNLOAD_MEDIA') {
+    handleSpliceCaptureDownloadMediaMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'SPLICE_FETCH_MY_ACTIVE_TASKS') {
+    handleSpliceFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'SPLICE_FETCH_ACTIVE_CLIENTS') {
+    handleSpliceFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'KLING_FETCH_MY_ACTIVE_TASKS') {
     handleKlingFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse(result))
@@ -2867,9 +2990,21 @@ if (chrome?.runtime?.onStartup) {
     runSafeStartupTask(runHiggsfieldCaptureFlush);
     runSafeStartupTask(() => maybeReportHiggsfieldCaptureHealth(true));
     runSafeStartupTask(() => chrome.alarms.create(HIGGSFIELD_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    // ElevenLabs/Suno have no health-check alarm (neither implements
+    // maybeReportXCaptureHealth) - only a retry-flush kick on startup, same
+    // as every other provider gets, to drain anything left over from before
+    // the service worker last terminated.
+    runSafeStartupTask(runElevenlabsCaptureFlush);
+    runSafeStartupTask(runSunoCaptureFlush);
     runSafeStartupTask(runEnvatoCaptureFlush);
     runSafeStartupTask(() => maybeReportEnvatoCaptureHealth(true));
     runSafeStartupTask(() => chrome.alarms.create(ENVATO_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runEpidemicCaptureFlush);
+    runSafeStartupTask(() => maybeReportEpidemicCaptureHealth(true));
+    runSafeStartupTask(() => chrome.alarms.create(EPIDEMIC_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runSpliceCaptureFlush);
+    runSafeStartupTask(() => maybeReportSpliceCaptureHealth(true));
+    runSafeStartupTask(() => chrome.alarms.create(SPLICE_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
   });
 }
 
@@ -2882,8 +3017,14 @@ if (chrome?.runtime?.onInstalled) {
     runSafeStartupTask(() => chrome.alarms.create(FREEPIK_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
     runSafeStartupTask(runHiggsfieldCaptureFlush);
     runSafeStartupTask(() => chrome.alarms.create(HIGGSFIELD_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runElevenlabsCaptureFlush);
+    runSafeStartupTask(runSunoCaptureFlush);
     runSafeStartupTask(runEnvatoCaptureFlush);
     runSafeStartupTask(() => chrome.alarms.create(ENVATO_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runEpidemicCaptureFlush);
+    runSafeStartupTask(() => chrome.alarms.create(EPIDEMIC_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runSpliceCaptureFlush);
+    runSafeStartupTask(() => chrome.alarms.create(SPLICE_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
   });
 }
 
@@ -2914,11 +3055,29 @@ if (chrome?.alarms?.onAlarm) {
     if (alarm?.name === HIGGSFIELD_CAPTURE_HEALTH_ALARM) {
       runSafeStartupTask(() => maybeReportHiggsfieldCaptureHealth(true));
     }
+    if (alarm?.name === ELEVENLABS_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runElevenlabsCaptureFlush);
+    }
+    if (alarm?.name === SUNO_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runSunoCaptureFlush);
+    }
     if (alarm?.name === ENVATO_CAPTURE_RETRY_ALARM) {
       runSafeStartupTask(runEnvatoCaptureFlush);
     }
     if (alarm?.name === ENVATO_CAPTURE_HEALTH_ALARM) {
       runSafeStartupTask(() => maybeReportEnvatoCaptureHealth(true));
+    }
+    if (alarm?.name === EPIDEMIC_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runEpidemicCaptureFlush);
+    }
+    if (alarm?.name === EPIDEMIC_CAPTURE_HEALTH_ALARM) {
+      runSafeStartupTask(() => maybeReportEpidemicCaptureHealth(true));
+    }
+    if (alarm?.name === SPLICE_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runSpliceCaptureFlush);
+    }
+    if (alarm?.name === SPLICE_CAPTURE_HEALTH_ALARM) {
+      runSafeStartupTask(() => maybeReportSpliceCaptureHealth(true));
     }
   });
 }

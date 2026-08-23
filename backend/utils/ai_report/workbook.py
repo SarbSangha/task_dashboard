@@ -24,6 +24,7 @@ from .sheets import (  # noqa: F401 — disabled sheets stay imported for easy r
     employee_summary,
     generations_log,
     kling_log,       # kept for re-enabling; not currently rendered
+    kling_report,
     overview,        # kept for re-enabling; not currently rendered
     read_me,         # kept for re-enabling; not currently rendered
     tool_master,     # kept for re-enabling; not currently rendered
@@ -45,6 +46,7 @@ _SHEETS = [
     # ("Tool Master", tool_master, T.NAVY),                   # disabled — see note above
     ("Employee Summary", employee_summary, T.GREEN),
     ("Generations Log", generations_log, T.NAVY_TABLE),
+    ("Kling Report", kling_report, T.NAVY_TABLE),
     # ("ChatGPT Usage Log", chatgpt_log, T.NAVY_TABLE),       # disabled — see note above
     # ("Kling Usage Log", kling_log, T.NAVY_TABLE),           # disabled — see note above
 ]

@@ -15,6 +15,9 @@ import HiggsfieldExplorerBody from '../workspace/tabs/higgsfield-capture/Higgsfi
 import EnvatoExplorerBody from '../workspace/tabs/envato-capture/EnvatoExplorerBody';
 import FlowExplorerBody from '../workspace/tabs/flow-capture/FlowExplorerBody';
 import ElevenLabsExplorerBody from '../workspace/tabs/elevenlabs-capture/ElevenLabsExplorerBody';
+import SunoExplorerBody from '../workspace/tabs/suno-capture/SunoExplorerBody';
+import EpidemicExplorerBody from '../workspace/tabs/epidemicsound-capture/EpidemicExplorerBody';
+import SpliceExplorerBody from '../workspace/tabs/splice-capture/SpliceExplorerBody';
 import './TrendingsPanel.css';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
@@ -620,6 +623,15 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   // ElevenLabs' Capture Center follows the identical isAdmin-only gate as
   // every other provider tab here.
   const canViewElevenLabsGenerations = isAdmin;
+  // Suno's Capture Center follows the identical isAdmin-only gate as every
+  // other provider tab here.
+  const canViewSunoGenerations = isAdmin;
+  // Epidemic Sound's Capture Center follows the identical isAdmin-only gate
+  // as every other provider tab here.
+  const canViewEpidemicDownloads = isAdmin;
+  // Splice's Capture Center follows the identical isAdmin-only gate as every
+  // other provider tab here.
+  const canViewSpliceDownloads = isAdmin;
   // Lifted up here (rather than owned inside FreepikExplorerBody/KlingTab) so
   // the search input can live in the panel's own header row, in the same
   // slot the Data tab's "Search across all formats..." box uses, per the
@@ -631,6 +643,9 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [envatoSearchInput, setEnvatoSearchInput] = useState('');
   const [flowSearchInput, setFlowSearchInput] = useState('');
   const [elevenlabsSearchInput, setElevenlabsSearchInput] = useState('');
+  const [sunoSearchInput, setSunoSearchInput] = useState('');
+  const [epidemicSearchInput, setEpidemicSearchInput] = useState('');
+  const [spliceSearchInput, setSpliceSearchInput] = useState('');
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -840,6 +855,9 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const isEnvatoTab = activeView === 'envato';
   const isFlowTab = activeView === 'flow';
   const isElevenLabsTab = activeView === 'elevenlabs';
+  const isSunoTab = activeView === 'suno';
+  const isEpidemicTab = activeView === 'epidemicsound';
+  const isSpliceTab = activeView === 'splice';
   const isDataTab = activeView === 'data';
   const activeDirectoryCriteria = useMemo(
     () => directoryStructure.filter((criterionKey) => criterionKey !== 'none'),
@@ -1241,7 +1259,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       >
         <div className="trendings-header">
           <h2>RMW Data</h2>
-          {!isMinimized && !isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && (
+          {!isMinimized && !isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && (
             <div className="trendings-header-search">
               <input
                 className="trendings-search"
@@ -1314,6 +1332,39 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                 aria-label="Search ElevenLabs generations by prompt"
                 value={elevenlabsSearchInput}
                 onChange={(e) => setElevenlabsSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isSunoTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search prompts..."
+                aria-label="Search Suno generations by prompt"
+                value={sunoSearchInput}
+                onChange={(e) => setSunoSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isEpidemicTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search titles..."
+                aria-label="Search Epidemic Sound downloads by title"
+                value={epidemicSearchInput}
+                onChange={(e) => setEpidemicSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isSpliceTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search titles..."
+                aria-label="Search Splice downloads by title"
+                value={spliceSearchInput}
+                onChange={(e) => setSpliceSearchInput(e.target.value)}
               />
             </div>
           )}
@@ -1436,15 +1487,48 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                     ElevenLabs
                   </button>
                 )}
+                {canViewSunoGenerations && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isSunoTab}
+                    className={`trendings-view-tab ${isSunoTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('suno')}
+                  >
+                    Suno
+                  </button>
+                )}
+                {canViewEpidemicDownloads && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isEpidemicTab}
+                    className={`trendings-view-tab ${isEpidemicTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('epidemicsound')}
+                  >
+                    Epidemic Sound
+                  </button>
+                )}
+                {canViewSpliceDownloads && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isSpliceTab}
+                    className={`trendings-view-tab ${isSpliceTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('splice')}
+                  >
+                    Splice
+                  </button>
+                )}
               </div>
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && (
                 <div className="trendings-toolbar-status">
                   {isDirectoryTab
                     ? 'Browse folders first, then load only the files for the selected path.'
                     : `Fast databank mode is active.${lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}`}
                 </div>
               )}
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && (
                 <div className="trendings-select-filters">
                   <label className="trendings-filter-select-wrap">
                     <span className="trendings-filter-select-label">Format</span>
@@ -1476,7 +1560,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                   </label>
                 </div>
               )}
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && (
                 <div className="trendings-sort-group">
                   <button
                     className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
@@ -1512,10 +1596,16 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                               ? 'trendings-content--flow'
                               : isElevenLabsTab
                                 ? 'trendings-content--elevenlabs'
-                                : 'trendings-content--data'
+                                : isSunoTab
+                                  ? 'trendings-content--suno'
+                                  : isEpidemicTab
+                                    ? 'trendings-content--epidemicsound'
+                                    : isSpliceTab
+                                      ? 'trendings-content--splice'
+                                      : 'trendings-content--data'
               }`}
             >
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
               {isKlingTab && <KlingTab isActive={isKlingTab} searchInput={klingSearchInput} />}
               {isFreepikTab && <FreepikExplorerBody searchInput={freepikSearchInput} />}
               {isHeyGenTab && <HeygenExplorerBody searchInput={heygenSearchInput} />}
@@ -1523,6 +1613,9 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
               {isEnvatoTab && <EnvatoExplorerBody searchInput={envatoSearchInput} />}
               {isFlowTab && <FlowExplorerBody searchInput={flowSearchInput} />}
               {isElevenLabsTab && <ElevenLabsExplorerBody searchInput={elevenlabsSearchInput} />}
+              {isSunoTab && <SunoExplorerBody searchInput={sunoSearchInput} />}
+              {isEpidemicTab && <EpidemicExplorerBody searchInput={epidemicSearchInput} />}
+              {isSpliceTab && <SpliceExplorerBody searchInput={spliceSearchInput} />}
               {isDirectoryTab && (
                 <div className="trendings-directory-window">
                   <div className="trendings-directory-header">

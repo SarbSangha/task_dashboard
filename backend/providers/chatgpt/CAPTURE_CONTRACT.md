@@ -100,9 +100,15 @@ list) or `"explicit_delete_action"` (observed the delete confirmation itself).
   "files": [{ "name": "string", "mimeType": "optional string", "sizeBytes": 0 }],
   "codeBlocks": [{ "language": "optional string", "code": "string" }],
   "sequenceIndex": 0,
-  "promptTimestamp": "ISO 8601 string"
+  "promptTimestamp": "ISO 8601 string",
+  "parentMessageId": "optional string"
 }
 ```
+`text` may be empty when the prompt is attachment-only (an image with no
+caption) - this event still fires as long as `text` or `attachments` is
+non-empty; only fully empty submissions (which ChatGPT itself never allows)
+produce nothing. `parentMessageId` is ChatGPT's own thread pointer - the id
+of the message this prompt was submitted as a reply to.
 
 ### `message_edited`
 ```json
@@ -133,10 +139,25 @@ produced this event:
   them). `text` is a derived join of the markdown parts, kept for
   search/back-compat/preview only - don't use it for faithful rendering.
 - `"stream_fallback"` - the authoritative fetch failed or returned an
-  unrecognized shape; only `text`/`codeBlocks`/`hasMarkdown`/`hasTables` are
-  populated, exactly as before this field existed. `contentParts`/`citations`
-  are absent. This path exists so capture never regresses to losing an event
+  unrecognized shape, but the streamed SSE reconstruction produced real
+  text; only `text`/`codeBlocks`/`hasMarkdown`/`hasTables` are populated,
+  exactly as before this field existed. `contentParts`/`citations` are
+  absent. This path exists so capture never regresses to losing an event
   entirely if the authoritative endpoint's shape has drifted.
+- `"dom_fallback"` - authoritative fetch AND stream reconstruction both came
+  back empty, so `text` was read directly off the rendered page instead
+  (`captureRenderedDomText` in `content-chatgpt.js`) - the lowest-confidence
+  source: no messageId to target a specific turn with, just "whichever
+  `[data-message-author-role="assistant"]` element is last on the page right
+  now". `codeBlocks`/`hasMarkdown`/`hasTables` are always `false`/`[]` here
+  (rendered text has no markdown source syntax left to detect them from),
+  never trust those three fields when `contentSource` is `dom_fallback`.
+- `"no_content_captured"` - all three sources (authoritative fetch, stream,
+  DOM) came back empty. `text` is `""`. Distinct from the event simply never
+  arriving: this fires when `content-chatgpt-network.js`'s stream parser
+  never recognized any frame as the visible answer this turn (`stopReason:
+  "no_response_started"`) - a real capture failure for that turn, not a
+  successful completion with nothing to say.
 
 ```json
 {
@@ -145,7 +166,7 @@ produced this event:
   "codeBlocks": [{ "language": "optional string", "code": "string" }],
   "hasMarkdown": true,
   "hasTables": false,
-  "contentSource": "authoritative_fetch | stream_fallback",
+  "contentSource": "authoritative_fetch | stream_fallback | dom_fallback | no_content_captured",
   "contentParts": [
     { "type": "markdown", "order": 0, "text": "string" },
     { "type": "image", "order": 1, "assetPointer": "file-service://file-id", "width": 0, "height": 0, "sizeBytes": 0, "uploaded": true },
@@ -154,16 +175,37 @@ produced this event:
   "citations": [{}],
   "reasoningMetadata": {},
   "completedAt": "ISO 8601 string",
-  "stopReason": "optional string"
+  "stopReason": "optional string",
+  "parentMessageId": "optional string"
 }
 ```
 
-`contentParts`/`citations`/`contentSource` are optional, additive fields -
-per this file's own versioning rule, adding an optional field does not
-require a `capture_version` bump. `images`/`files`/`artifacts` (documented in
-earlier versions of this file) were never actually populated by any shipped
-extension version and are superseded by `contentParts`; they're removed here
-rather than kept as permanently-unpopulated dead fields.
+`contentParts`/`citations`/`contentSource`/`parentMessageId` are optional,
+additive fields - per this file's own versioning rule, adding an optional
+field does not require a `capture_version` bump. `images`/`files`/`artifacts`
+(documented in earlier versions of this file) were never actually populated
+by any shipped extension version and are superseded by `contentParts`;
+they're removed here rather than kept as permanently-unpopulated dead
+fields.
+
+`parentMessageId` is ChatGPT's own thread pointer for *this response* - the
+id of the prompt message it replies to, so only present when `contentSource`
+is `authoritative_fetch`. Resolved client-side (content-chatgpt.js
+`locateMessageInConversationPayload`) from whichever shape the authoritative
+conversation-fetch (`GET /backend-api/conversations/{id}?include_has_versions=true&num_turns=10`)
+returns: the live, confirmed shape is flat (`{ messages: [...], page_info }`),
+where every message belonging to the same exchange shares an identical
+`metadata.turn_exchange_id` - the parent is the `id` of the `messages` array
+entry with matching `turn_exchange_id` and `author.role === "user"`. An older
+tree shape (`{ mapping: { [id]: { message, parent, children } } }`) is
+supported as a fallback in case some account/version still serves it, using
+`mapping[id].parent` directly. The backend's prompt/response
+pairing (`normalization.py:_find_matching_prompt`) matches this against the
+replied-to prompt's own message id when present, falling back to "most
+recently created prompt in this conversation" only when it's absent -
+without it, an async response (image generation regularly takes 30-90s)
+that resolves after a later, unrelated prompt was sent gets paired to the
+wrong prompt.
 
 Each `contentParts` entry's `type` is one of:
 - `"markdown"` - a text segment, in ChatGPT's own markdown (headings, bold,

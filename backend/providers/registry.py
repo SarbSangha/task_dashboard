@@ -161,6 +161,82 @@ PROVIDERS: dict[str, ProviderInfo] = {
             "Base.metadata.create_all() alone."
         ),
     ),
+    "suno": ProviderInfo(
+        slug="suno",
+        display_name="Suno",
+        tool_slugs=frozenset({"suno"}),
+        status="in_development",
+        models_module="providers.suno.models",
+        migrations_module=None,
+        notes=(
+            "Ticket-based ownership attribution, same pattern as Flow/Freepik/HeyGen/Higgsfield/Envato/"
+            "ElevenLabs. Built from a live DevTools capture of a real response "
+            "(POST /api/feed/v3, studio-api-prod.suno.com) - unlike ElevenLabs, the response body IS "
+            "confirmed, so normalization.py's field extraction reads single confirmed keys rather than "
+            "guessing at candidate lists. Suno only makes music - no source/voice_id/voice_name columns, "
+            "unlike ElevenLabs' TTS/Music split. No confirmed generate-submission endpoint, no confirmed "
+            "credits formula (SunoGeneration.credits_used stays permanently null), and the request BODY "
+            "for /api/feed/v3 was never captured (response only) - see CAPTURE_CONTRACT.md's known-gaps "
+            "section. Readiness is gated on action_config.actions[].disabled for the download_song action, "
+            "not on status (only 'streaming' observed) or audio_url/media_urls presence (populated even "
+            "mid-generation). No migrations_module: a brand-new table gets its full current schema from "
+            "Base.metadata.create_all() alone. No asset_mirror.py / periodic mirror dispatch in this pass."
+        ),
+    ),
+    "epidemic-sound": ProviderInfo(
+        slug="epidemic-sound",
+        display_name="Epidemic Sound",
+        tool_slugs=frozenset({"epidemic-sound"}),
+        status="in_development",
+        models_module="providers.epidemicsound.models",
+        migrations_module=None,
+        notes=(
+            "NOT a generation-shaped provider - Epidemic Sound (epidemicsound.com) is a stock "
+            "music/sound-effects licensing library, no Generate action, no prompt, no generation "
+            "identity. Mirrors Envato Elements' own download-capture pattern (EnvatoDownload / "
+            "_normalize_download_click_event), not Envato's/Freepik's/Suno's generation-capture "
+            "pattern - only a download_click event type exists, no /generations route. Built from a "
+            "real live DevTools capture of a real request/response pair (2026-08-18): "
+            "GET /download/?...&downloadId=...&sound_id=...&is_sfx=...&qualityType=...&stemType=... -> "
+            "{assetUrl, remainingDownloads}. downloadId (per-click) is a reference field, never a dedup "
+            "key - every download inserts a new EpidemicDownload row, same as EnvatoDownload. "
+            "asset_title is parsed from assetUrl's response-content-disposition filename param "
+            "(defensive, falls back to null on any failure) - see CAPTURE_CONTRACT.md. No credits "
+            "column at all (remainingDownloads has no confirmed per-download cost formula). "
+            "Python package directory is 'epidemicsound' (no hyphen) even though PROVIDER/tool_slugs "
+            "are the hyphenated 'epidemic-sound' - the real seeded it_portal_tools.slug. No "
+            "migrations_module: a brand-new table gets its full current schema from "
+            "Base.metadata.create_all() alone. No reconciliation sync (no confirmed history/listing "
+            "endpoint), no asset_mirror.py periodic dispatch (browser-push model only, same as "
+            "Envato's own downloads)."
+        ),
+    ),
+    "splice": ProviderInfo(
+        slug="splice",
+        display_name="Splice",
+        tool_slugs=frozenset({"splice"}),
+        status="in_development",
+        models_module="providers.splice.models",
+        migrations_module=None,
+        notes=(
+            "NOT a generation-shaped provider - Splice (splice.com) is a sample/loop licensing "
+            "library, no Generate action, no prompt, no generation identity. Mirrors Epidemic Sound's "
+            "own download-capture pattern (EpidemicDownload / _normalize_download_click_event), not a "
+            "generation-capture pattern - only a download_click event type exists. Built from a real "
+            "live capture of a real request/response pair (2026-08-19): "
+            "POST https://surfaces-graphql.splice.com/graphql -> data.asset.files[] (preview_mp3, "
+            "waveform, source entries), followed by a direct GET of the 'source' file's signed URL "
+            "(119-second expiry, the shortest of any provider built this session). No explicit sample "
+            "id/uuid exists in the response - sample_hash is parsed out of the source URL's path "
+            "instead (reference field only, never a dedup key - every download inserts a new "
+            "SpliceDownload row). No credits/quota field exists anywhere (no remainingDownloads "
+            "equivalent). No migrations_module: a brand-new table gets its full current schema from "
+            "Base.metadata.create_all() alone. No reconciliation sync (no confirmed history/listing "
+            "endpoint), no asset_mirror.py periodic dispatch (browser-push model only, same as "
+            "Epidemic Sound's own downloads). Bulk/pack downloads and non-wav download variants are "
+            "out of scope - see CAPTURE_CONTRACT.md."
+        ),
+    ),
 }
 
 

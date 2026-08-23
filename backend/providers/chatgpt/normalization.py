@@ -207,11 +207,30 @@ def _handle_message_edited(db: Session, record: ConversationRecord, event: Conve
 
 
 def _find_matching_prompt(db: Session, record: ConversationRecord, event: ConversationCaptureEvent) -> Optional[ConversationPrompt]:
-    """Most recently created prompt for this conversation - mirrors the
-    turn-pairing heuristic queries.py:list_conversation_messages already
-    applies at read time (a response answers whatever prompt most recently
-    preceded it, since conversations are turn-based and capture events are
-    chronological)."""
+    """Pair a response to the prompt that actually triggered it.
+
+    Prefers an exact match via ChatGPT's own thread pointer: response_completed's
+    payload.parentMessageId (populated from the authoritative conversation-fetch's
+    mapping[messageId].parent - see content-chatgpt.js fetchAuthoritativeAssistantContent)
+    is the id of the prompt message this response replies to, and
+    ConversationPrompt.provider_message_id is exactly that prompt's own id. This is
+    unambiguous even when turns overlap.
+
+    Falls back to "most recently created prompt for this conversation" - mirrors the
+    turn-pairing heuristic queries.py:list_conversation_messages already applies at
+    read time - only when parentMessageId is unavailable (stream/DOM fallback
+    captures, or events predating this field). That fallback assumes turns never
+    overlap, which is false for async tool-backed responses (e.g. image generation
+    taking 30-90s): a prompt sent while an earlier response is still pending would
+    otherwise steal the pairing.
+    """
+    payload = event.payload_json or {}
+    parent_message_id = payload.get("parentMessageId")
+    if parent_message_id:
+        exact = _find_prompt_by_message_id(db, record, parent_message_id)
+        if exact:
+            return exact
+
     return (
         db.query(ConversationPrompt)
         .filter(ConversationPrompt.conversation_id == record.id)

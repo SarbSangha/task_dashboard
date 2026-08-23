@@ -83,21 +83,44 @@ def _guess_extension(url: str, content_type: Optional[str]) -> str:
     return ".bin"
 
 
+def _describe_fetch_error(source_url: str, exc: Exception) -> str:
+    """Host-and-status-first description that survives the [:500] truncation
+    in _mirror_generation below even when the signed URL's own query string
+    is huge (a HeyGen signature alone regularly runs several hundred
+    characters). Plain str(exc) - e.g. httpx's own "Client error '403
+    Forbidden' for url '<the whole signed URL>'" - usually spends its entire
+    truncated budget on that query string before reaching the one thing that
+    would actually explain a 403 on a URL whose own Expires= param is still
+    comfortably in the future: the response BODY (a CloudFront/S3 fetch
+    rejection typically returns a short XML/JSON body naming the real reason,
+    e.g. "SignatureDoesNotMatch" vs "Request has expired" vs a WAF block
+    page) - captured here instead of being pushed out of the truncation
+    window by the URL."""
+    host = urlparse(source_url).netloc
+    if isinstance(exc, httpx.HTTPStatusError):
+        body_snippet = (exc.response.text or "").strip()[:300]
+        suffix = f": {body_snippet}" if body_snippet else ""
+        return f"HTTP {exc.response.status_code} from {host}{suffix}"
+    return f"{type(exc).__name__} fetching {host}: {exc}"
+
+
 def _mirror_one_asset(http_client: httpx.Client, r2_client, *, source_urls: list[str], key_prefix: str) -> str:
     """Tries each candidate URL in order until one fetches successfully -
     see _asset_url_candidates' docstring for why a single dead candidate
     must not abort the whole asset. Raises the last candidate's error only
-    once every candidate has failed. Returns the R2 object KEY, not a URL -
+    once every candidate has failed (as a RuntimeError carrying
+    _describe_fetch_error's message, not the raw exception - see that
+    function's docstring for why). Returns the R2 object KEY, not a URL -
     the bucket is private (see r2_storage.py's module docstring), so nothing
     should ever store a "permanent" link to it; a fresh presigned URL is
     minted from this key at serialization time instead."""
-    last_exc: Optional[Exception] = None
+    last_message: Optional[str] = None
     for source_url in source_urls:
         try:
             response = http_client.get(source_url, timeout=FETCH_TIMEOUT_SECONDS)
             response.raise_for_status()
         except Exception as exc:  # noqa: BLE001 - try the next candidate, only the last failure is ever raised
-            last_exc = exc
+            last_message = _describe_fetch_error(source_url, exc)
             continue
         finally:
             time.sleep(REQUEST_PACING_SECONDS)
@@ -105,7 +128,7 @@ def _mirror_one_asset(http_client: httpx.Client, r2_client, *, source_urls: list
         key = f"{key_prefix}{_guess_extension(source_url, content_type)}"
         r2_storage.put_object(key, response.content, content_type=content_type, client=r2_client)
         return key
-    raise last_exc
+    raise RuntimeError(last_message or "no candidate URL succeeded")
 
 
 def _mirror_generation(db: Session, generation: HeygenGeneration, *, http_client: httpx.Client, r2_client) -> str:

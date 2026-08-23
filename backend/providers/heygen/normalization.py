@@ -450,7 +450,23 @@ def normalize_capture_event(db: Session, event: HeygenCaptureEvent) -> Optional[
     if event.linked_client_id is not None:
         generation.linked_client_id = event.linked_client_id
         generation.linked_client_name = event.linked_client_name
-    if not is_stale_snapshot:
+    if is_new:
+        # Sticky, same rule as ingestion_source a few lines below (and
+        # ownership_source/linked_task/linked_client above): reflects the
+        # generation's TRUE origin - the FIRST event ever seen for it - not
+        # whichever event happened to be processed most recently. Previously
+        # unconditional on every non-stale update, so a live-captured
+        # generation (generate_click/scene_render_click/network_snapshot)
+        # that a user later browsed past in HeyGen's own project listing
+        # (a generation_listing_row event - completely normal usage, not an
+        # edge case) had its generation_source/generation_method silently
+        # overwritten from "live_capture"/"network_intercept" to
+        # "reconciliation"/"history_scan". Confirmed live: 4 rows with
+        # ingestion_source="captured" (correctly sticky, set once at
+        # creation) were showing generation_source="reconciliation" -
+        # objectively wrong given ingestion_source's own definition of what
+        # "captured" means, and the two fields disagreeing on the same
+        # question is exactly the tell.
         generation.generation_method = "history_scan" if is_reconciliation else "network_intercept"
         generation.generation_source = GENERATION_SOURCE_RECONCILIATION if is_reconciliation else GENERATION_SOURCE_LIVE_CAPTURE
 

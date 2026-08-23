@@ -66,6 +66,136 @@ GET https://api.elevenlabs.io/v1/history?page_size=20&source=TTS&sort_direction=
 Nobody has yet captured a generate-submission request/response at all, for
 any surface.
 
+## Confirmed network shape: Music (2026-08-17)
+
+A live Music generation, captured end-to-end from the user's own session via
+DevTools (Network tab, real response body - not just a request shape like
+TTS's list call above), confirmed Music is **not** a new `source` value on
+the same `/v1/history` endpoint (as gap #3 below had speculated) - it's a
+structurally different endpoint and envelope:
+
+```
+GET https://api.us.elevenlabs.io/v1/music/chats?page=0&per_page=20&sort_by=created_at_utc&sort_order=desc
+```
+```json
+{ "chats": [ {
+  "id": "j2A7GA4Gdye2vr76rkck",
+  "user_id": "user_5801m071zg81eypsanp4r5c1a4kn",
+  "created_at_utc": "2026-08-17T05:57:38.640000Z",
+  "updated_at_utc": "2026-08-17T05:57:44.558000Z",
+  "title": "Jahaz Fadd Ke",
+  "current_song_id": "iPZjn5C0kfqSu7CHkx6d",
+  "song": {
+    "id": "iPZjn5C0kfqSu7CHkx6d",
+    "workspace_id": "443ab28f5a274b19bd5034160611b94c",
+    "created_at_utc": "2026-08-17T05:57:38.640000Z",
+    "updated_at_utc": "2026-08-17T05:57:44.552000Z",
+    "finished_at_utc": "2026-08-17T05:57:44.552000Z",
+    "generation_settings": { "model_id": "music_v2", "prompt": "jatt rah gya mod da nakke...", "song_length_ms": 10000 },
+    "metadata": { "title": "Jahaz Fadd Ke", "genres": ["folk", "metal", "world"], "languages": ["pa"] },
+    "download_url": "https://storage.googleapis.com/xi-backend/database/workspace/.../generated_task.mp4?X-Goog-Algorithm=...",
+    "status": "completed",
+    "product_type_source": "Music",
+    "download_count": 0, "play_count": 0, "like_count": 0, "bpm": 110
+  }
+} ] }
+```
+
+Differences from the TTS shape above, all handled by
+`normalization.py`'s `_flatten_music_chat` + expanded candidate-key lists:
+
+- **Nested, not flat.** The real generation/asset unit is `song`, one level
+  down; `chat` is a grouping/prompt-thread wrapper around it (a chat can have
+  multiple song versions - `song_count`, `current_song_id`). Flattened
+  song-over-chat (song's `id` wins as `provider_creation_id`) before the rest
+  of `_extract_fields` runs.
+- **Envelope key `chats`, not `history`.**
+- **Timestamps are `created_at_utc`/`updated_at_utc`/`finished_at_utc` ISO
+  strings**, not `date_unix`.
+- **No `source` field at all** - `song.product_type_source: "Music"` is the
+  analogous field, added as a candidate.
+- **The asset URL IS embedded in the row**, unlike TTS (see "Audio asset
+  delivery" below, confirmed absent there) - `song.download_url`, a public
+  GCS v4-signed URL (`X-Goog-Expires=86400`, ~24h) requiring **no
+  ElevenLabs auth at all** to fetch, unlike TTS's audio which needs the
+  Bearer-token-authenticated `/v1/history/download` call.
+- **`status: "completed"`** is a second observed value for the
+  status-like field TTS only ever showed as `"created"` (gap #4 below) -
+  still not enough to build a settlement/state-machine gate on, but
+  confirms the field is real and does vary.
+
+Host/auth are unchanged from TTS: same `api.us.elevenlabs.io` regional host
+(already the default in `elevenlabsApiUrl()`), same relayed
+`Authorization: Bearer <JWT>` mechanism.
+
+**Generate-button click gate: confirmed real DOM (2026-08-17), text-based
+detector alone insufficient.** The Music composer's submit control turned
+out to be a fully icon-only round button (a bare up-arrow SVG glyph) with no
+`aria-label`/`title`/`data-testid` at all - its only per-render attribute is
+a React `useId()` (`data-agent-id="button-_r_66u_"`), not stable across
+sessions, so no text-phrase list could ever match it (confirmed via
+DevTools Inspect after the popup silently failed to appear on a real click).
+`content-elevenlabs-capture.js`'s `looksLikeElevenlabsIconSubmitButton`
+handles this: it matches an icon-only `<button>` (no text of its own) whose
+immediate sibling or parent carries a `data-agent-tooltip` mentioning
+"credit" - the real "Costs N credits. You have N credits left." cost-preview
+copy ElevenLabs' own UI renders next to it, a stable content signal rather
+than a guessed class/id.
+
+**Chat-before-song duplicate: confirmed real, fixed.** A live test surfaced
+two `ElevenlabsGeneration` rows per Music generation, one real (prompt +
+eventually audio) and one permanently empty ("No prompt captured", no
+audio). Root cause: the chat record is observable on the wire *before* its
+`song` is filled in (still generating) - a chat-only snapshot (identity =
+chat `id`, no `song`) and the later completed snapshot of the *same* chat
+(identity = `song.id`, via `_flatten_music_chat`) have different identities,
+so the backend has no way to know they're the same generation and stores
+two rows. Fixed client-side: both `looksLikeElevenlabsHistoryRow`
+(`content-elevenlabs-network.js`) and `looksLikeElevenlabsHistoryRowLocal`
+(`content-elevenlabs-capture.js`) now refuse to report a chat row
+(identified by its own `current_song_id` key) whose `song` isn't yet a
+populated object - nothing worth capturing exists on it anyway (no prompt,
+no asset URL). A side effect of the same test: the real, song-bearing row
+had no audio either, because it had been picked up by the reconciliation
+walker (`walkElevenlabsMusicReconciliation`), which called
+`reportElevenlabsHistoryRow` directly and never invoked
+`proactivelyFetchElevenlabsMusicAudio` - only the live-capture path
+(`processElevenlabsIncomingRow`) did. Fixed by calling the proactive fetch
+from the walker's row loop too.
+
+**Still-generating Music row permanently starved its own audio, fixed.** A
+live test showed a real, single, correctly-flattened generation stuck at
+`asset_mirror_status="pending"` indefinitely. Root cause:
+`evaluateElevenlabsRowForLiveCapture`'s once-per-identity-per-arm gate
+(`capturedHistoryItemIds`) marks an identity captured on its FIRST sighting
+and rejects every later one for the rest of the arm window - correct for
+TTS (whose audio is ready the instant the row exists at all), but for Music
+the first sighting is very often still mid-generation (song present, but
+`download_url` not resolved yet), and the gate then permanently blocks the
+later, complete sighting from ever reaching
+`proactivelyFetchElevenlabsMusicAudio` - not just live capture, but also
+the accelerated post-arm polls (`triggerElevenlabsHistoryPoll`), which route
+through the same gate. Only the ~20-minute reconciliation walker bypassed it
+(it calls `reportElevenlabsHistoryRow` directly), so audio only ever arrived
+by accident, up to 20 minutes late. Fixed: `capturedHistoryItemIds` now
+stores `{hasAudioUrl}` instead of a bare `true`, and a Music row is granted
+exactly one more pass through the gate if its previous capture had no
+resolved asset URL and this one does - every other case (TTS, or a Music
+row that already had its URL) keeps the original once-only behavior
+unchanged.
+
+**Download-click signal: not yet confirmed for Music.** Unlike TTS (whose
+Download button's `POST /v1/history/download` request body was captured
+directly - see "Audio asset delivery" below), Music's Download button's
+exact DOM/network shape hasn't been captured. Since `song.download_url` is
+already a plain `https://` URL (not `blob:`), `content-elevenlabs-network.js`'s
+`maybeReportAnchorDownloadClick` gained a third branch for a plain-https
+`<a download>` href, fetching it directly (no auth needed) and reporting
+`isDownload:true` - best-effort, matching the existing generic "click on a
+download-labeled element" diagnostic logger already in that file. Update
+this section once a real Download click has been observed confirming (or
+correcting) that DOM shape.
+
 ## Audio asset delivery (confirmed 2026-08-13, corrected same day)
 
 **First pass guessed wrong and was corrected against real DevTools traffic -
@@ -282,23 +412,26 @@ this path every time Download or a (recent-enough) Play happens again.
 | `capture_version` | Bump `CAPTURE_SCHEMA_VERSION` in constants.py when `payload`'s shape changes in a way normalization.py must branch on |
 | `extension_ticket` / `usage_ticket` | Same ticket fields every other `DIRECT_TICKET_ONLY_TOOLS` provider sends; resolved via the exact same `_resolve_usage_event_actor` |
 
-## Field mapping: `history` row (best guess) -> `ElevenlabsGeneration`
+## Field mapping: `history`/`music/chats` row -> `ElevenlabsGeneration`
 
 `normalization.py`'s `_extract_fields()` is the authoritative implementation;
 this table is the human-readable index into it. Every row lists the
 candidate keys tried, in priority order - the first one present on a given
-payload wins.
+payload wins. For a Music row, `_flatten_music_chat` runs first and merges
+`song`'s keys over the chat wrapper's, so the candidates below apply to the
+flattened result either way.
 
 | Logical field | Candidate JSON keys (priority order) | Column |
 |---|---|---|
-| Identity | `history_item_id`, `id`, `generation_id` | `provider_creation_id` |
-| Created timestamp | `date_unix` (unix seconds), `created_at_unix`, `created_at`, `date` | `provider_created_at` |
-| Updated timestamp | same candidates as created; falls back to the created timestamp if no separate field exists | `provider_updated_at` |
-| Source/surface | `source`, `source_type` | `source` |
-| Prompt/text input | `text`, `prompt`, `text_input` | `prompt` (+ `prompt_length`/`prompt_hash`) |
-| Voice id | `voice_id` | `voice_id` |
-| Voice name | `voice_name` | `voice_name` |
-| Asset URL | `audio_url`, `url`, `download_url`, or a nested `media`/`audio` object's own `url` - **confirmed absent on a real TTS row** (see "Audio asset delivery" above); kept as a fallback candidate list only in case a future surface's row shape differs | `media_url` |
+| Identity | `history_item_id`, `id` (TTS `history_item_id` or Music `song.id`), `generation_id` | `provider_creation_id` |
+| Created timestamp | `date_unix` (unix seconds), `created_at_unix`, `created_at`, `date`, `created_at_utc` (Music) | `provider_created_at` |
+| Updated timestamp | same candidates as created, plus `updated_at_utc`, `finished_at_utc` (Music); falls back to the created timestamp if no separate field exists | `provider_updated_at` |
+| Source/surface | `source`, `source_type`, `product_type_source` (Music) | `source` |
+| Prompt/text input | `text`, `prompt`, `text_input`; falls back to `song.generation_settings.prompt` (Music) | `prompt` (+ `prompt_length`/`prompt_hash`) |
+| Voice id | `voice_id` (TTS only - Music has no voice concept) | `voice_id` |
+| Voice name | `voice_name` (TTS only) | `voice_name` |
+| Credits used | TTS: `character_count_change_to - character_count_change_from`; Music (no such fields at all): `song.generation_settings.song_length_ms / 1000 * MUSIC_CREDITS_PER_SECOND` (15/sec, confirmed 2026-08-17 from three independent real data points - 10s→150, and two separate 3s samples requested together→45 each) | `credits_used` |
+| Asset URL | `audio_url`, `url`, `download_url` (`song.download_url` for Music - **confirmed present**, a public unauthenticated signed URL, unlike TTS where this is confirmed absent, see "Audio asset delivery" above), or a nested `media`/`audio` object's own `url` | `media_url` |
 
 Anything not in this table is not lost - `metadata_json` holds the full raw
 payload verbatim, so a future column can be backfilled from existing rows
@@ -306,11 +439,13 @@ without re-capturing.
 
 ## Known gaps
 
-1. **`history` response body shape confirmed for `TTS` only.** Music, Sound
-   Effects, Dubbing, Voice Changer, and Speech-to-Text rows have never been
-   observed - they may share this exact shape or differ. `normalization.py`'s
-   defensive multi-candidate extraction is kept as-is (not narrowed to the
-   now-confirmed TTS keys) specifically to absorb that remaining uncertainty.
+1. **Response body shape confirmed for `TTS` (`/v1/history`) and `Music`
+   (`/v1/music/chats`) only.** Sound Effects, Dubbing, Voice Changer, and
+   Speech-to-Text rows have never been observed - they may reuse one of
+   these two shapes/endpoints or differ entirely.
+   `normalization.py`'s defensive multi-candidate extraction is kept as-is
+   (not narrowed to only the now-confirmed TTS+Music keys) specifically to
+   absorb that remaining uncertainty.
 2. **No confirmed generate-submission endpoint at all**, for any surface
    (TTS/Music/SFX/Dubbing/Voice-Changer). Nothing in this backend module
    depends on one existing (capture is reconciliation/history-walk-first, the
@@ -318,13 +453,14 @@ without re-capturing.
    entry), but it means there is currently no way to correlate a capture
    event back to "the moment the Generate button was clicked" beyond
    whatever the extension's click-arm window provides.
-3. **`source` enum values beyond `"TTS"` are unconfirmed.** Music, Sound
-   Effects, Dubbing, and Voice Changer very likely surface through this same
-   `history` endpoint with different `source` values, but none has been
-   observed. `constants.KNOWN_SOURCE_VALUES` is a diagnostic-only allow-list
-   (`{"TTS"}`) - an unrecognized `source` value is still captured and
-   normalized normally, just logged (`logger.debug`) so a future pass can
-   extend the allow-list once real traffic confirms the real values.
+3. **`source` enum values beyond `"TTS"`/`"Music"` are unconfirmed.** Sound
+   Effects, Dubbing, and Voice Changer very likely surface through the
+   `/v1/history` endpoint with different `source` values (or, per the Music
+   precedent above, an entirely separate endpoint) - none has been observed.
+   `constants.KNOWN_SOURCE_VALUES` is a diagnostic-only allow-list
+   (`{"TTS", "Music"}`) - an unrecognized `source` value is still captured
+   and normalized normally, just logged (`logger.debug`) so a future pass
+   can extend the allow-list once real traffic confirms the real values.
 4. **Completion/status field: partially confirmed.** The real captured row
    carries `"state": "created"` - a genuine status-like field exists, just
    with only one observed value so far. Not wired as a settlement gate yet
@@ -351,7 +487,14 @@ without re-capturing.
    the dispatch was disabled. The module/endpoint are left in place
    (harmless if ever manually invoked) in case a real signed-URL path is
    discovered later; do not re-enable the periodic task without first
-   confirming that's changed.
+   confirming that's changed. **Music is the signed-URL path this gap
+   anticipated** (`song.download_url`) - handled without touching
+   `asset_mirror.py` or its disabled periodic task, by having the extension
+   proactively `GET` that URL itself the moment a Music row is captured
+   (same call site as `proactivelyFetchElevenlabsAudio`, no auth needed
+   since it's a public signed URL) - avoids the exact race this gap
+   describes, since the fetch happens browser-side, synchronously with
+   capture, same as TTS's Layer 0.
 6. **Every row stays `asset_mirror_status="pending"` until actually
    played/downloaded once.** With the periodic sweep disabled, there is no
    longer any path that marks a row `"skipped"` automatically - a genuine

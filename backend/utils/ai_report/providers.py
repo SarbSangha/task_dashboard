@@ -66,7 +66,21 @@ PROVIDERS: tuple[ProviderMeta, ...] = (
     ProviderMeta("elevenlabs", "ElevenLabs", "ElevenLabs", "AI Voice Generation",
                  "Prompt/Text Input, Voice, Source Type, Person, Date, Task/Client",
                  integrated=True),
-    ProviderMeta("suno", "Suno", "Suno", "AI Music Generation", "Not yet captured"),
+    ProviderMeta("suno", "Suno", "Suno", "AI Music Generation",
+                 "Prompt/Song Description, Model, Person, Date, Task/Client",
+                 integrated=True),
+    # Not a generator - a stock music/sound-effects licensing library. Only
+    # download events are captured (no prompts/models), same shape as
+    # Envato Elements' own stock-asset downloads.
+    ProviderMeta("epidemic-sound", "Epidemic Sound", "Epidemic Sound", "Stock Music / Sound Effects",
+                 "Track/Sound Title, Sound ID, SFX Flag, Quality, Person, Date, Task/Client",
+                 integrated=True),
+    # Not a generator - a sample/loop licensing library. Only download events
+    # are captured (no prompts/models), same shape as Epidemic Sound's own
+    # stock-asset downloads.
+    ProviderMeta("splice", "Splice", "Splice", "Sample Library",
+                 "Sample Title, Sample Hash, Person, Date, Task/Client",
+                 integrated=True),
     ProviderMeta("pika", "Pika", "Pika Labs", "AI Video Generation", "Not yet captured"),
     ProviderMeta("leonardo", "Leonardo AI", "Leonardo.Ai", "AI Image Generation", "Not yet captured"),
     ProviderMeta("synthesia", "Synthesia", "Synthesia", "AI Avatar / Video", "Not yet captured"),

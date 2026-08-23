@@ -161,7 +161,22 @@ function hideElevenlabsCaptureStatus() {
 // identity/shape logic - not shared cross-file, matches this codebase's own
 // "each capture file is self-contained" convention). ----
 
-function getElevenlabsRowIdentity(row) {
+// Music's /v1/music/chats rows nest the real generation/asset unit one level
+// down in `song` (id, product_type_source, timestamps) - the chat wrapper's
+// own `id` is just the grouping/prompt-thread id, not the generation. Song-
+// level fields win when present so this file's identity/source/timestamp
+// resolution agrees with the backend's own flatten rule
+// (normalization.py's _flatten_music_chat) - same provider_creation_id
+// either side computes independently.
+function elevenlabsEffectiveRow(row) {
+  if (row && typeof row === 'object' && row.song && typeof row.song === 'object') {
+    return { ...row, ...row.song };
+  }
+  return row;
+}
+
+function getElevenlabsRowIdentity(rawRow) {
+  const row = elevenlabsEffectiveRow(rawRow);
   if (!row || typeof row !== 'object') return '';
   if (row.history_item_id !== undefined && row.history_item_id !== null && row.history_item_id !== '') return String(row.history_item_id);
   if (row.id !== undefined && row.id !== null && row.id !== '') return String(row.id);
@@ -169,18 +184,21 @@ function getElevenlabsRowIdentity(row) {
   return '';
 }
 
-function getElevenlabsRowSource(row) {
+function getElevenlabsRowSource(rawRow) {
+  const row = elevenlabsEffectiveRow(rawRow);
   if (!row || typeof row !== 'object') return '';
   if (row.source !== undefined && row.source !== null && row.source !== '') return String(row.source);
   if (row.source_type !== undefined && row.source_type !== null && row.source_type !== '') return String(row.source_type);
+  if (row.product_type_source !== undefined && row.product_type_source !== null && row.product_type_source !== '') return String(row.product_type_source);
   return '';
 }
 
 // Returns {field, raw} for whichever timestamp-like field is present, or
 // null if none is - tries in this order since the real shape is unconfirmed.
-function getElevenlabsRowRawTimestamp(row) {
+function getElevenlabsRowRawTimestamp(rawRow) {
+  const row = elevenlabsEffectiveRow(rawRow);
   if (!row || typeof row !== 'object') return null;
-  const fields = ['date_unix', 'created_at_unix', 'date', 'created_at'];
+  const fields = ['date_unix', 'created_at_unix', 'date', 'created_at', 'created_at_utc'];
   for (const field of fields) {
     if (row[field] !== undefined && row[field] !== null && row[field] !== '') {
       return { field, raw: row[field] };
@@ -210,7 +228,13 @@ function parseElevenlabsTimestampMs(field, raw) {
 
 function looksLikeElevenlabsHistoryRowLocal(candidate) {
   if (!candidate || typeof candidate !== 'object') return false;
-  return Boolean(getElevenlabsRowIdentity(candidate)) && Boolean(getElevenlabsRowRawTimestamp(candidate));
+  if (!getElevenlabsRowIdentity(candidate) || !getElevenlabsRowRawTimestamp(candidate)) return false;
+  // Mirrors content-elevenlabs-network.js's identical gate - see that file's
+  // comment for why a Music chat with no `song` yet must never be reported.
+  if (candidate.current_song_id !== undefined && !(candidate.song && typeof candidate.song === 'object')) {
+    return false;
+  }
+  return true;
 }
 
 function extractElevenlabsHistoryRowsFromJson(json) {
@@ -219,6 +243,7 @@ function extractElevenlabsHistoryRowsFromJson(json) {
   if (looksLikeElevenlabsHistoryRowLocal(json)) return [json];
   if (Array.isArray(json.history)) return json.history.filter(looksLikeElevenlabsHistoryRowLocal);
   if (Array.isArray(json.items)) return json.items.filter(looksLikeElevenlabsHistoryRowLocal);
+  if (Array.isArray(json.chats)) return json.chats.filter(looksLikeElevenlabsHistoryRowLocal); // Music, confirmed 2026-08-17
   return [];
 }
 
@@ -420,6 +445,29 @@ function collectElevenlabsInteractionCandidateElements(target) {
   return elevenlabsCollectUniqueElements([...pathElements, ...fallback]);
 }
 
+// Confirmed real shape (2026-08-17, Music composer's submit control): a
+// fully icon-only round button (bare up-arrow SVG glyph) with NO
+// aria-label/title/data-testid of its own at all - its only per-render
+// attribute (`data-agent-id="button-_r_66u_"`) is a React useId(), not
+// stable across sessions/reloads, so it can never be a selector. The text-
+// phrase detector above can therefore never match it, no matter how many
+// phrases are added. Its one reliable neighbor is a "Costs N credits" cost-
+// preview pill sitting right next to it in the same flex row, carrying that
+// real copy in a `data-agent-tooltip` attribute - checked on the immediate
+// previous sibling and one level up (covers the confirmed real layout:
+// button and cost-pill as direct siblings under a shared flex container).
+function looksLikeElevenlabsIconSubmitButton(candidate) {
+  if (!candidate || candidate.tagName !== 'BUTTON') return false;
+  if (elevenlabsButtonDescriptorText(candidate)) return false; // has real text - the phrase detector above already covers it
+  if (!candidate.querySelector?.('svg')) return false;
+  const neighbors = [candidate.previousElementSibling, candidate.parentElement].filter(Boolean);
+  return neighbors.some((el) => {
+    const own = el.getAttribute?.('data-agent-tooltip') || '';
+    const nested = el.querySelector?.('[data-agent-tooltip]')?.getAttribute?.('data-agent-tooltip') || '';
+    return /\bcredit/i.test(`${own} ${nested}`);
+  });
+}
+
 function looksLikeElevenlabsGenerateButton(candidate) {
   if (!candidate) return false;
   const text = elevenlabsButtonDescriptorText(candidate);
@@ -428,7 +476,8 @@ function looksLikeElevenlabsGenerateButton(candidate) {
   }
   const testId = `${candidate.getAttribute?.('data-testid') || ''}`.toLowerCase();
   const ariaLabel = `${candidate.getAttribute?.('aria-label') || ''}`.toLowerCase();
-  return testId.includes('generate') || ariaLabel.includes('generate');
+  if (testId.includes('generate') || ariaLabel.includes('generate')) return true;
+  return looksLikeElevenlabsIconSubmitButton(candidate);
 }
 
 function findElevenlabsGenerateActionTarget(target) {
@@ -485,11 +534,32 @@ document.addEventListener('click', (event) => {
 
 // ---- Row qualification + reporting ----
 
+// A Music row's asset URL (song.download_url) often isn't resolved yet on
+// its first sighting (generation still in progress - see
+// CAPTURE_CONTRACT.md's "Confirmed network shape: Music") - unlike TTS,
+// whose audio is essentially ready the instant the row exists at all.
+function elevenlabsRowHasResolvedMusicAsset(row) {
+  const effective = elevenlabsEffectiveRow(row);
+  return Boolean(effective && typeof effective === 'object' && effective.download_url);
+}
+
 function evaluateElevenlabsRowForLiveCapture(row) {
   const identityValue = getElevenlabsRowIdentity(row);
   if (!identityValue) return { qualifies: false, reason: 'no_identity' };
   if (!isElevenlabsGenerationArmed()) return { qualifies: false, reason: 'not_armed' };
-  if (elevenlabsActiveGeneration.capturedHistoryItemIds.has(identityValue)) {
+
+  const isMusicRow = Boolean(row && typeof row === 'object' && row.song && typeof row.song === 'object');
+  const hasResolvedAsset = isMusicRow ? elevenlabsRowHasResolvedMusicAsset(row) : undefined;
+  const previousCapture = elevenlabsActiveGeneration.capturedHistoryItemIds.get(identityValue);
+  // Once-per-identity-per-arm for everything EXCEPT a Music row whose
+  // first-ever capture happened before its asset URL existed - that one
+  // gets exactly one more pass once the URL resolves, so
+  // proactivelyFetchElevenlabsMusicAudio actually gets to run against a
+  // fetchable row instead of being permanently starved by this same gate
+  // (confirmed real 2026-08-17: a generation stuck at asset_mirror_status
+  // "pending" indefinitely, first capture pre-dated the asset URL).
+  const isNewlyResolvedMusicAsset = Boolean(previousCapture && isMusicRow && !previousCapture.hasAudioUrl && hasResolvedAsset);
+  if (previousCapture && !isNewlyResolvedMusicAsset) {
     return { qualifies: false, reason: 'already_captured_this_session' };
   }
 
@@ -499,22 +569,29 @@ function evaluateElevenlabsRowForLiveCapture(row) {
     // (see this file's header), so don't over-filter: allow it while armed,
     // but note that timestamp-based qualification was skipped.
     console.debug('[RMW ElevenLabs Capture] row has no recognizable timestamp field - allowing while armed, timestamp qualification skipped', { identityValue });
-    return { qualifies: true, identityValue, timestampMs: null };
+    return { qualifies: true, identityValue, timestampMs: null, hasAudioUrl: hasResolvedAsset };
   }
 
   const timestampMs = parseElevenlabsTimestampMs(tsInfo.field, tsInfo.raw);
   if (timestampMs === null) {
     console.debug('[RMW ElevenLabs Capture] timestamp field present but unparsable - allowing while armed, timestamp qualification skipped', { identityValue, field: tsInfo.field, raw: tsInfo.raw });
-    return { qualifies: true, identityValue, timestampMs: null };
+    return { qualifies: true, identityValue, timestampMs: null, hasAudioUrl: hasResolvedAsset };
   }
 
-  if (timestampMs < elevenlabsActiveGeneration.armedAt - ELEVENLABS_CLOCK_SKEW_SLACK_MS) {
-    return { qualifies: false, reason: 'older_than_arm' };
+  // The freshness checks below reject a STALE row from before this
+  // generation started - skipped for a newly-resolved Music asset, since
+  // its timestamp never changes between the incomplete and resolved
+  // snapshots (only song.download_url does), so it would otherwise get
+  // wrongly rejected as "not newer than watermark".
+  if (!isNewlyResolvedMusicAsset) {
+    if (timestampMs < elevenlabsActiveGeneration.armedAt - ELEVENLABS_CLOCK_SKEW_SLACK_MS) {
+      return { qualifies: false, reason: 'older_than_arm' };
+    }
+    if (elevenlabsLastLiveCapturedAt && timestampMs <= elevenlabsLastLiveCapturedAt - ELEVENLABS_CLOCK_SKEW_SLACK_MS) {
+      return { qualifies: false, reason: 'not_newer_than_watermark' };
+    }
   }
-  if (elevenlabsLastLiveCapturedAt && timestampMs <= elevenlabsLastLiveCapturedAt - ELEVENLABS_CLOCK_SKEW_SLACK_MS) {
-    return { qualifies: false, reason: 'not_newer_than_watermark' };
-  }
-  return { qualifies: true, identityValue, timestampMs };
+  return { qualifies: true, identityValue, timestampMs, hasAudioUrl: hasResolvedAsset };
 }
 
 // No completion/status gating in this pass - every qualifying row snapshot
@@ -567,7 +644,7 @@ function processElevenlabsIncomingRow(row) {
     });
     return;
   }
-  elevenlabsActiveGeneration.capturedHistoryItemIds.set(evaluation.identityValue, true);
+  elevenlabsActiveGeneration.capturedHistoryItemIds.set(evaluation.identityValue, { hasAudioUrl: Boolean(evaluation.hasAudioUrl) });
   scheduleElevenlabsArmQuietReset(); // this counts as recent activity - extend the window
   if (evaluation.timestampMs) persistElevenlabsLastLiveCapturedAt(evaluation.timestampMs);
   setElevenlabsCaptureStatus('Capturing…');
@@ -579,7 +656,16 @@ function processElevenlabsIncomingRow(row) {
   // above). Fire-and-forget: reportElevenlabsAudioCapture's own dedupe means
   // this can safely run alongside the correlation fallback below without
   // double-uploading if both happen to succeed for the same row.
-  proactivelyFetchElevenlabsAudio(evaluation.identityValue);
+  // Music rows (structurally identified by a nested `song` object - see
+  // elevenlabsEffectiveRow above) carry their own asset URL and use a
+  // separate proactive fetch that needs the row itself, not just the id -
+  // see proactivelyFetchElevenlabsMusicAudio's own comment for why this is
+  // simpler than TTS's endpoint-based fetch below.
+  if (row && typeof row === 'object' && row.song && typeof row.song === 'object') {
+    proactivelyFetchElevenlabsMusicAudio(row);
+  } else {
+    proactivelyFetchElevenlabsAudio(evaluation.identityValue);
+  }
 
   // Audio correlation (see the "Audio correlation" section below for the
   // full why) - a fresh Generate produces its audio synchronously, then the
@@ -824,6 +910,35 @@ async function proactivelyFetchElevenlabsAudio(historyItemId) {
   }
 }
 
+// Music's own row already carries its asset URL (song.download_url - a
+// public GCS v4-signed URL, confirmed 2026-08-17, ~24h expiry) - unlike TTS,
+// no separate authenticated endpoint call is needed at all, just a plain
+// GET on that URL. Same "deterministic, no dependency on Play/Download ever
+// happening" posture as proactivelyFetchElevenlabsAudio above, simpler here
+// since the URL is already in hand rather than needing a lookup-by-id call.
+async function proactivelyFetchElevenlabsMusicAudio(row) {
+  const effective = elevenlabsEffectiveRow(row);
+  const historyItemId = getElevenlabsRowIdentity(row);
+  const downloadUrl = effective && typeof effective === 'object' ? effective.download_url : null;
+  if (!historyItemId || !downloadUrl) return;
+  try {
+    // No Authorization header, no credentials - a signed URL is the auth.
+    const response = await fetch(downloadUrl);
+    if (!response.ok) {
+      console.debug('[RMW ElevenLabs Capture] Music proactive audio fetch failed', { historyItemId, status: response.status });
+      return;
+    }
+    const contentType = response.headers.get('content-type') || 'audio/mp4';
+    const buffer = await response.arrayBuffer();
+    if (!buffer || !buffer.byteLength) return;
+    const audioBase64 = elevenlabsArrayBufferToBase64(buffer);
+    console.debug('[RMW ElevenLabs Capture] proactively fetched Music audio', { historyItemId, contentType, bytes: buffer.byteLength });
+    reportElevenlabsAudioCapture({ historyItemId, contentType, audioBase64 });
+  } catch (error) {
+    console.debug('[RMW ElevenLabs Capture] Music proactive audio fetch error', { historyItemId, error: error?.message || error });
+  }
+}
+
 // Pushes an observed audio response's actual bytes to the backend, keyed by
 // historyItemId - see content-elevenlabs-network.js's "AUDIO DELIVERY"
 // comment for why this exists (the history row carries no downloadable URL
@@ -1045,6 +1160,84 @@ async function walkElevenlabsReconciliationForSource(source, sourceState) {
   return { cursor: afterId, lastSeenId };
 }
 
+// ----------------------------------------------------------------------------
+// Music reconciliation walker — /v1/music/chats, confirmed shape 2026-08-17
+// (see CAPTURE_CONTRACT.md's "Confirmed network shape: Music"). Kept as a
+// parallel walker rather than folding into walkElevenlabsReconciliationFor
+// Source above: pagination is page-number based (page/per_page), not
+// cursor-based (start_after_history_item_id), and the envelope/row shape
+// differ (chats[], row nested in .song - see elevenlabsEffectiveRow).
+// ----------------------------------------------------------------------------
+
+const ELEVENLABS_MUSIC_SOURCE_KEY = 'Music'; // storage key alongside ELEVENLABS_KNOWN_SOURCES entries in perSource - opaque per-source state, shape doesn't need to match TTS's {cursor,lastSeenId}
+const ELEVENLABS_MUSIC_PAGE_SIZE = 20;
+const ELEVENLABS_MUSIC_MAX_PAGES = 5; // same unbounded-loop guard rationale as ELEVENLABS_RECONCILIATION_MAX_PAGES_PER_SOURCE
+
+async function fetchElevenlabsMusicChatsPage(page) {
+  try {
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('per_page', String(ELEVENLABS_MUSIC_PAGE_SIZE));
+    params.set('sort_by', 'created_at_utc');
+    params.set('sort_order', 'desc');
+    // credentials deliberately OMITTED - same wildcard-CORS reasoning as
+    // fetchElevenlabsHistoryPage above.
+    const response = await fetch(elevenlabsApiUrl(`/v1/music/chats?${params.toString()}`), {
+      headers: elevenlabsApiHeaders(),
+    });
+    if (!response.ok) return null;
+    return await response.json().catch(() => null);
+  } catch {
+    return null;
+  }
+}
+
+// Page-number pagination, unlike /v1/history's cursor above - stops once a
+// row matching the previous walk's lastSeenId is reached (nothing new since
+// last time) or a page comes back short of a full page (last page) - no
+// confirmed has_more/total field to depend on instead.
+async function walkElevenlabsMusicReconciliation(sourceState) {
+  const lastSeenId = sourceState?.lastSeenId || null;
+  let newestSeenThisWalk = null;
+
+  for (let page = 0; page < ELEVENLABS_MUSIC_MAX_PAGES; page++) {
+    const json = await fetchElevenlabsMusicChatsPage(page);
+    if (!json) {
+      console.warn('[RMW ElevenLabs Sync] Music page fetch/decode failed, stopping walk', { page: page + 1 });
+      break;
+    }
+
+    const rows = extractElevenlabsHistoryRowsFromJson(json);
+    if (!rows.length) {
+      console.debug('[RMW ElevenLabs Sync] Music page returned no recognizable rows, stopping walk', { page: page + 1 });
+      break;
+    }
+
+    let reachedKnownRow = false;
+    for (const row of rows) {
+      const id = getElevenlabsRowIdentity(row);
+      if (id && lastSeenId && id === lastSeenId) { reachedKnownRow = true; break; }
+      await reportElevenlabsHistoryRow(row, { isReconciliation: true });
+      // Unlike TTS's reconciliation walk above (no embedded asset URL, so
+      // audio genuinely can only come from a later Play/Download), a Music
+      // row IS its own asset URL - fetched here too, not just from
+      // processElevenlabsIncomingRow's live-capture path, so a generation
+      // this walker (rather than live capture) happens to find first still
+      // gets its audio, not just its metadata.
+      if (row && typeof row === 'object' && row.song && typeof row.song === 'object') {
+        proactivelyFetchElevenlabsMusicAudio(row);
+      }
+      if (page === 0 && !newestSeenThisWalk && id) newestSeenThisWalk = id;
+    }
+    if (reachedKnownRow) break;
+
+    const chats = Array.isArray(json.chats) ? json.chats : [];
+    if (chats.length < ELEVENLABS_MUSIC_PAGE_SIZE) break; // short page - last one
+  }
+
+  return { lastSeenId: newestSeenThisWalk || lastSeenId };
+}
+
 async function walkElevenlabsReconciliation() {
   const state = await getElevenlabsSyncState();
   const now = Date.now();
@@ -1053,7 +1246,7 @@ async function walkElevenlabsReconciliation() {
     return;
   }
 
-  console.debug('[RMW ElevenLabs Sync] starting reconciliation walk', { sources: ELEVENLABS_KNOWN_SOURCES });
+  console.debug('[RMW ElevenLabs Sync] starting reconciliation walk', { sources: [...ELEVENLABS_KNOWN_SOURCES, ELEVENLABS_MUSIC_SOURCE_KEY] });
   await patchElevenlabsSyncState({ lastWalkAt: now });
 
   const perSource = state.perSource || {};
@@ -1064,6 +1257,11 @@ async function walkElevenlabsReconciliation() {
     } catch (error) {
       console.warn('[RMW ElevenLabs Sync] walk failed for source, skipping', { source, error: error?.message || error });
     }
+  }
+  try {
+    nextPerSource[ELEVENLABS_MUSIC_SOURCE_KEY] = await walkElevenlabsMusicReconciliation(perSource[ELEVENLABS_MUSIC_SOURCE_KEY]);
+  } catch (error) {
+    console.warn('[RMW ElevenLabs Sync] Music walk failed, skipping', { error: error?.message || error });
   }
 
   await patchElevenlabsSyncState({ perSource: nextPerSource });
@@ -1087,6 +1285,15 @@ async function triggerElevenlabsHistoryPoll() {
     } catch (error) {
       console.warn('[RMW ElevenLabs Capture] accelerated post-arm poll failed', { source, error: error?.message || error });
     }
+  }
+  try {
+    const json = await fetchElevenlabsMusicChatsPage(0);
+    if (json) {
+      const rows = extractElevenlabsHistoryRowsFromJson(json);
+      rows.forEach((row) => processElevenlabsIncomingRow(row));
+    }
+  } catch (error) {
+    console.warn('[RMW ElevenLabs Capture] accelerated Music post-arm poll failed', { error: error?.message || error });
   }
 }
 

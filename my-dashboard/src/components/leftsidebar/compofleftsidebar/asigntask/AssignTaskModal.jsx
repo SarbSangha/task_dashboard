@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import './AssignTaskModal.css';
 import AttachmentBox from './Attachments';
 import TaskForm from './LinkArea';
-import { taskAPI, draftAPI, authAPI, fileAPI } from '../../../../services/api';
+import { taskAPI, draftAPI, authAPI, fileAPI, clientsAPI } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useAuth } from '../../../../context/AuthContext';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
@@ -234,6 +234,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
   const [taskIdSuggestions, setTaskIdSuggestions] = useState([]);
   const [projectIdSuggestions, setProjectIdSuggestions] = useState([]);
   const [projectNameSuggestions, setProjectNameSuggestions] = useState([]);
+  const [clientOptions, setClientOptions] = useState([]);
   const [knownProjects, setKnownProjects] = useState({});
   const [currentUserDepartment, setCurrentUserDepartment] = useState('');
   const [isReferenceRefreshing, setIsReferenceRefreshing] = useState(false);
@@ -339,6 +340,21 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       void loadBootstrapData();
     }
   }, [cacheKeys, editingTask, isOpen]);
+
+  // Populates the Customer Name dropdown from Admin Queue > Manage Clients.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    clientsAPI.getClientsForTasks()
+      .then((response) => {
+        if (cancelled) return;
+        setClientOptions(Array.isArray(response?.clients) ? response.clients : []);
+      })
+      .catch((error) => {
+        console.warn('Unable to load client list:', error);
+      });
+    return () => { cancelled = true; };
+  }, [isOpen]);
 
   const fetchIdSuggestions = async () => {
     const response = await taskAPI.getTaskReferenceSuggestions();
@@ -1407,12 +1423,18 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
             </div>
             <div className="assign-field">
               <label>Customer Name</label>
-              <input
-                type="text"
-                placeholder="Customer / Client"
+              <select
                 value={formData.customerName}
                 onChange={(e) => handleChange('customerName', e.target.value)}
-              />
+              >
+                <option value="">Select client…</option>
+                {formData.customerName && !clientOptions.some((client) => client.name === formData.customerName) && (
+                  <option value={formData.customerName}>{formData.customerName}</option>
+                )}
+                {clientOptions.map((client) => (
+                  <option key={client.id} value={client.name}>{client.name}</option>
+                ))}
+              </select>
             </div>
             <div className="assign-field">
               <label>Task Name <span className="required">*</span></label>

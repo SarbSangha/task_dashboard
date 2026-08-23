@@ -1263,18 +1263,33 @@ async function ensureFreshLaunchSession() {
   return false;
 }
 
-function requestCredential() {
+const CREDENTIAL_MAX_ATTEMPTS = 8;
+
+// Backs off the gap between retries as attempts climb (2s, 3s, 4.5s, ...)
+// instead of hammering the background worker at a fixed interval.
+function credentialRetryGapMs(attempt) {
+  return Math.min(2000 * Math.pow(1.5, Math.max(0, attempt - 1)), 12000);
+}
+
+async function requestCredential() {
   const now = Date.now();
   if (STATE.requested) return;
-  if (STATE.requestAttempts >= 4) return;
-  if (now - STATE.lastRequestAt < 2000) return;
+  if (STATE.requestAttempts >= CREDENTIAL_MAX_ATTEMPTS) return;
+  if (now - STATE.lastRequestAt < credentialRetryGapMs(STATE.requestAttempts)) return;
 
   STATE.requested = true;
   STATE.lastRequestAt = now;
   STATE.requestAttempts += 1;
-  setStatus(`Fetching credential (attempt ${STATE.requestAttempts})`);
+  const attemptNumber = STATE.requestAttempts;
+  setStatus(`Fetching credential (attempt ${attemptNumber}/${CREDENTIAL_MAX_ATTEMPTS})`);
 
-  chrome.runtime.sendMessage(
+  // Raw sendMessage previously treated any chrome.runtime.lastError (most
+  // commonly the MV3 service worker still waking up from a cold start racing
+  // this very message) as a fatal, unrecoverable error and permanently
+  // stopped the automation. Route through the same retry wrapper already
+  // used for TOOL_HUB_ACTIVATE_LAUNCH/TOOL_HUB_GET_LAUNCH_STATE above so a
+  // transient connection failure here gets retried instead of ending the run.
+  const response = await sendRuntimeMessageWithRetry(
     {
       type: 'TOOL_HUB_GET_CREDENTIAL',
       toolSlug: TOOL_SLUG,
@@ -1282,53 +1297,63 @@ function requestCredential() {
       pageUrl: window.location.href,
       extensionTicket: getStoredLaunchTicket(),
     },
-    (response) => {
-      STATE.requested = false;
-
-      if (chrome.runtime.lastError) {
-        setStatus(`Extension error: ${chrome.runtime.lastError.message}`);
-        STATE.settled = true;
-        return;
-      }
-
-      if (!response?.ok) {
-        if ((response?.error || '').toLowerCase().includes('launch this tool from the dashboard first')) {
-          clearStoredLaunchTicket();
-        }
-        setStatus(response?.error || 'Credential unavailable');
-        return;
-      }
-
-      clearStoredLaunchTicket();
-      STATE.credential = response.data?.credential || null;
-      STATE.settled = false;
-      setStatus(STATE.credential ? `Credential loaded, chooser queued\n${stateSnapshotText()}` : 'Credential missing');
-      exposeDebugState();
-      debugLog('CREDENTIAL RECEIVED', {
-        credentialLoaded: Boolean(STATE.credential),
-        hasLoginIdentifier: Boolean(STATE.credential?.loginIdentifier),
-        hasPassword: Boolean(STATE.credential?.password),
-        launchChecked: STATE.launchChecked,
-        launchAuthorized: STATE.launchAuthorized,
-        launchPrepared: STATE.launchPrepared,
-        settled: STATE.settled,
-      });
-      debugLog('FORCING RUN');
-      window.setTimeout(() => {
-        debugLog('DIRECT provider choice AFTER CREDENTIAL');
-        try {
-          if (!attemptProviderChoice('credential-loaded')) {
-            debugLog('DIRECT attemptFill AFTER CREDENTIAL');
-            attemptFill();
-          }
-        } catch (error) {
-          setStatus(`Epidemic Sound direct run error: ${error?.message || 'Unknown error'}`);
-          releasePasswordSavingSuppressed(0);
-        }
-      }, 0);
-      forceScheduleAttempt(150);
-    }
+    3,
+    300
   );
+
+  STATE.requested = false;
+
+  if (!response?.ok) {
+    const errorText = `${response?.error || ''}`.toLowerCase();
+    const isTerminal = errorText.includes('launch this tool from the dashboard first');
+    if (isTerminal) {
+      clearStoredLaunchTicket();
+      // Not a transient failure - retrying won't help, so stop burning
+      // attempts and surface the real, final status immediately.
+      STATE.requestAttempts = CREDENTIAL_MAX_ATTEMPTS;
+      setStatus(response?.error || 'Credential unavailable');
+      return;
+    }
+
+    setStatus(
+      attemptNumber >= CREDENTIAL_MAX_ATTEMPTS
+        ? `${response?.error || 'Credential unavailable'} (gave up after ${CREDENTIAL_MAX_ATTEMPTS} attempts)`
+        : `${response?.error || 'Credential fetch failed'}, retrying...`
+    );
+    if (attemptNumber < CREDENTIAL_MAX_ATTEMPTS) {
+      forceScheduleAttempt(credentialRetryGapMs(attemptNumber));
+    }
+    return;
+  }
+
+  clearStoredLaunchTicket();
+  STATE.credential = response.data?.credential || null;
+  STATE.settled = false;
+  setStatus(STATE.credential ? `Credential loaded, chooser queued\n${stateSnapshotText()}` : 'Credential missing');
+  exposeDebugState();
+  debugLog('CREDENTIAL RECEIVED', {
+    credentialLoaded: Boolean(STATE.credential),
+    hasLoginIdentifier: Boolean(STATE.credential?.loginIdentifier),
+    hasPassword: Boolean(STATE.credential?.password),
+    launchChecked: STATE.launchChecked,
+    launchAuthorized: STATE.launchAuthorized,
+    launchPrepared: STATE.launchPrepared,
+    settled: STATE.settled,
+  });
+  debugLog('FORCING RUN');
+  window.setTimeout(() => {
+    debugLog('DIRECT provider choice AFTER CREDENTIAL');
+    try {
+      if (!attemptProviderChoice('credential-loaded')) {
+        debugLog('DIRECT attemptFill AFTER CREDENTIAL');
+        attemptFill();
+      }
+    } catch (error) {
+      setStatus(`Epidemic Sound direct run error: ${error?.message || 'Unknown error'}`);
+      releasePasswordSavingSuppressed(0);
+    }
+  }, 0);
+  forceScheduleAttempt(150);
 }
 
 function canActNow() {

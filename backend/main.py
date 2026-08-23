@@ -60,6 +60,7 @@ from routers import generation_collections_router
 from routers import reports_router
 from routers import credit_rates_router
 from routers import report_distribution_router
+from routers import usage_intelligence_router
 from utils import cache as cache_utils
 
 # Import auth utilities for system status
@@ -718,6 +719,7 @@ app.include_router(elevenlabs_router.router)
 app.include_router(reports_router.router)
 app.include_router(credit_rates_router.router)
 app.include_router(report_distribution_router.router)
+app.include_router(usage_intelligence_router.router)
 
 
 # ==================== ROOT ENDPOINTS ====================

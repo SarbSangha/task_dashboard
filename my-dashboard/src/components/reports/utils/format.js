@@ -29,6 +29,16 @@ export const presetRange = (preset) => {
     start.setDate(end.getDate() - 29);
   } else if (preset === '90d') {
     start.setDate(end.getDate() - 89);
+  } else if (preset === 'month') {
+    start.setDate(1);
+  } else if (preset === 'prev_month') {
+    const firstThis = new Date(end.getFullYear(), end.getMonth(), 1);
+    const lastPrev = new Date(firstThis.getTime() - 86400000);
+    start.setTime(new Date(lastPrev.getFullYear(), lastPrev.getMonth(), 1).getTime());
+    end.setTime(lastPrev.getTime());
+  } else if (preset === 'quarter') {
+    const q = Math.floor(end.getMonth() / 3) * 3;
+    start.setMonth(q, 1);
   }
   return { start: toISODate(start), end: toISODate(end) };
 };

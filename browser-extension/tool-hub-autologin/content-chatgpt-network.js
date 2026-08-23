@@ -148,6 +148,36 @@
     } catch {}
   }
 
+  // Cookie-only auth (credentials: 'include') is NOT enough for every
+  // /backend-api/ endpoint - confirmed live: content-chatgpt.js's own
+  // authoritative-fetch call to /backend-api/conversations/{id} got a
+  // straight 401 despite valid cookies, while the exact same GET (captured
+  // manually from DevTools) succeeded with an explicit `authorization: Bearer
+  // <token>` header the page's own React app attaches. That token isn't
+  // reachable from the isolated world (separate JS realm from the page), but
+  // this file already runs in the MAIN world and already intercepts every
+  // outgoing /backend-api/ call - so it can observe the same header the page
+  // itself sends and hand it across via postSignal. Cached (not re-read per
+  // call) since the conversation-send request is the one call per turn
+  // guaranteed to carry a currently-valid token (it's the request that just
+  // succeeded, producing the very response we're about to fetch).
+  let lastKnownAuthorizationHeader = null;
+  function extractAuthorizationHeader(input, init) {
+    try {
+      const headers = init?.headers ?? (input && typeof input === 'object' ? input.headers : null);
+      if (!headers) return null;
+      if (typeof headers.get === 'function') return headers.get('authorization') || headers.get('Authorization') || null;
+      if (Array.isArray(headers)) {
+        const found = headers.find(([key]) => `${key}`.toLowerCase() === 'authorization');
+        return found ? found[1] : null;
+      }
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === 'authorization') return headers[key];
+      }
+    } catch {}
+    return null;
+  }
+
   async function requestBodyFromFetchArgs(input, init) {
     if (init && Object.prototype.hasOwnProperty.call(init, 'body')) {
       return limitText(init.body, MAX_BODY_LENGTH);
@@ -247,7 +277,13 @@
           newText: prompt.text,
         });
       }
-    } else if (prompt.text) {
+    } else if (prompt.text || prompt.attachments.length > 0) {
+      // prompt.text alone used to gate this: an image-only message (no
+      // caption) has empty text but a real attachment, and was silently
+      // dropped - a LOSSLESS-contract violation (CAPTURE_CONTRACT.md), not
+      // just a missing preview. hasUserMessage is already implied here
+      // (extractPromptFromRequestJson only returns a non-null lastUserMessage
+      // when one exists).
       postSignal('CHATGPT_PROMPT_SUBMITTED', {
         conversationId: prompt.conversationId,
         parentMessageId: prompt.parentMessageId,
@@ -929,6 +965,7 @@
             messageId: assistantMessageId,
             model: assistantModel,
             correlationId,
+            authorizationHeader: lastKnownAuthorizationHeader,
           });
         }
       }
@@ -985,6 +1022,56 @@
         }
         trace('finalize_exited_no_response_started', { correlationId });
         printProtocolSummary('no_response_started');
+        // This used to just `return` here - sending NO event at all for the
+        // turn. Confirmed as the dominant cause of the Users dashboard's
+        // Prompts/Responses gap (prompts are captured independently of this
+        // parser; responses depended entirely on startedFired, which only
+        // flips true when handleFrame() recognizes ChatGPT's undocumented,
+        // frequently-changing wire format). Emit a degraded completion
+        // instead of nothing: no known assistantMessageId, so the isolated
+        // world's authoritative-fetch step (content-chatgpt.js) can't target
+        // a specific message and lastAssembledText is likely empty here too
+        // - but its rendered-DOM fallback (captureRenderedDomText) reads the
+        // LAST visible assistant turn regardless of messageId, so the turn's
+        // real text is still recovered downstream instead of the whole event
+        // vanishing. RESPONSE_STARTED is emitted first purely so
+        // content-chatgpt.js's markTurnStarted/consumeTurn turn-tracking
+        // (which the normal path relies on to guard against double-finalize)
+        // accepts the completion below instead of discarding it as an
+        // unopened turn.
+        //
+        // conversationId normalized to null when unresolved (still possible
+        // here: unlike the recognized-shape path, this fallback can't rely on
+        // a classified frame ever having supplied one) rather than left as
+        // '' - matches the falsy check the CONVERSATION_CREATED guard below
+        // already uses, instead of sending an event with an empty-string
+        // conversation id that reads as "resolved to nothing" downstream.
+        const resolvedConversationId = conversationId || null;
+        postSignal('CHATGPT_RESPONSE_STARTED', {
+          conversationId: resolvedConversationId,
+          messageId: null,
+          model: assistantModel,
+          correlationId,
+        });
+        trace('finalize_no_response_started_fallback_emitted', { correlationId, conversationId: resolvedConversationId, textLength: lastAssembledText.length });
+        postSignal('CHATGPT_RESPONSE_COMPLETED', {
+          conversationId: resolvedConversationId,
+          messageId: null,
+          model: assistantModel,
+          text: lastAssembledText,
+          codeBlocks: extractCodeBlocks(lastAssembledText),
+          hasMarkdown: looksLikeMarkdown(lastAssembledText),
+          hasTables: looksLikeTable(lastAssembledText),
+          stopReason: 'no_response_started',
+          correlationId,
+          isNewConversation: !requestPrompt?.conversationId && Boolean(conversationId),
+        });
+        if (!requestPrompt?.conversationId && conversationId) {
+          postSignal('CHATGPT_CONVERSATION_CREATED', {
+            conversationId,
+            model: assistantModel,
+          });
+        }
         return;
       }
       if (debugEnabled) {
@@ -1009,6 +1096,7 @@
         stopReason,
         correlationId,
         isNewConversation: !requestPrompt?.conversationId && Boolean(conversationId),
+        authorizationHeader: lastKnownAuthorizationHeader,
       });
       if (!requestPrompt?.conversationId && conversationId) {
         postSignal('CHATGPT_CONVERSATION_CREATED', {
@@ -1181,15 +1269,34 @@
 
   let lastNavConversationId = extractCurrentConversationIdFromUrl();
 
+  // Debounced (not immediate) - confirmed live: starting a new chat makes
+  // ChatGPT's own router write an optimistic, locally-generated placeholder
+  // id into the address bar (observed shape: /c/WEB:<uuid>) via pushState,
+  // then replace it with the real server-assigned conversation id a moment
+  // later once the send completes. Firing a conversation_opened event on
+  // every pushState/replaceState/popstate (as this used to) faithfully
+  // recorded that placeholder as its own permanent, empty ConversationRecord
+  // - real URL, real id, just never revisited because the browser moved on
+  // to the real id within well under a second. Waiting for the URL to hold
+  // still for NAV_CHANGE_DEBOUNCE_MS means only the id that's actually still
+  // there afterward gets reported; a superseded intermediate id never does,
+  // since its scheduled post is cancelled by the next change before it fires.
+  const NAV_CHANGE_DEBOUNCE_MS = 600;
+  let navChangeDebounceTimer = null;
+
   function reportNavIfChanged() {
     const conversationId = extractCurrentConversationIdFromUrl();
     if (conversationId === lastNavConversationId) return;
     lastNavConversationId = conversationId;
-    postSignal('CHATGPT_NAV_CHANGED', {
-      url: location.href,
-      conversationId,
-      isNewConversation: !conversationId,
-    });
+    if (navChangeDebounceTimer) clearTimeout(navChangeDebounceTimer);
+    navChangeDebounceTimer = setTimeout(() => {
+      navChangeDebounceTimer = null;
+      postSignal('CHATGPT_NAV_CHANGED', {
+        url: location.href,
+        conversationId,
+        isNewConversation: !conversationId,
+      });
+    }, NAV_CHANGE_DEBOUNCE_MS);
   }
 
   ['pushState', 'replaceState'].forEach((methodName) => {
@@ -1234,6 +1341,8 @@
         }
 
         if (CONVERSATION_SEND_URL_RE.test(url) && method === 'POST') {
+          const authHeader = extractAuthorizationHeader(input, init);
+          if (authHeader) lastKnownAuthorizationHeader = authHeader;
           const requestText = await requestBodyFromFetchArgs(input, init);
           const requestJson = parseJson(requestText);
           const prompt = handleConversationSendRequest(url, requestJson);

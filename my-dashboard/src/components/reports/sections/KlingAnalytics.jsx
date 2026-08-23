@@ -1,10 +1,10 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
-import { reportsAPI } from '../../../services/reports';
+import { reportsAPI, downloadBlobResponse } from '../../../services/reports';
 import { useChartTheme } from '../hooks/useChartTheme';
 import SectionHeader from '../primitives/SectionHeader';
 import KpiCard from '../primitives/KpiCard';
@@ -32,6 +32,26 @@ const successPill = (rate) => {
 
 const KlingAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
   const theme = useChartTheme();
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState('');
+
+  const handleExportReport = async () => {
+    if (exportBusy) return;
+    setExportBusy(true);
+    setExportError('');
+    try {
+      const res = await reportsAPI.klingExport(filters);
+      downloadBlobResponse(res, 'Kling-Report.xlsx');
+    } catch (err) {
+      setExportError(
+        err?.response?.status === 403
+          ? 'Admin access is required to download this report.'
+          : 'Could not generate the Kling report. Please try again.'
+      );
+    } finally {
+      setExportBusy(false);
+    }
+  };
 
   const summaryQ = useQuery({ queryKey: ['reports', 'kling', 'summary', filters], queryFn: () => reportsAPI.klingSummary(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
   const trendsQ = useQuery({ queryKey: ['reports', 'kling', 'trends', filters], queryFn: () => reportsAPI.klingTrends(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
@@ -93,6 +113,12 @@ const KlingAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
         title="Kling Intelligence"
         subtitle={`Video generation analytics for Kling AI across the ${dateLabel}. Click any creator to open their detailed profile.`}
       >
+        <button className="rpt-to-canvas" onClick={handleExportReport} disabled={exportBusy} title="Download the one-sheet Kling submission report (Employee, Department, Videos, Credits, Client Heavy Use)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3v12" /><path d="M7 10l5 5 5-5" /><path d="M5 21h14" />
+          </svg>
+          {exportBusy ? 'Generating…' : 'Download Kling Report'}
+        </button>
         {onAddToCanvas && (
           <ToCanvasButton
             label="Move KPIs to canvas"
@@ -101,6 +127,7 @@ const KlingAnalytics = ({ filters, onOpenUser, onDrill, onAddToCanvas }) => {
           />
         )}
       </SectionHeader>
+      {exportError && <div className="rpt-error" style={{ marginTop: 8 }}>{exportError}</div>}
 
       {summaryQ.isError ? (
         <div className="rpt-error">Failed to load Kling summary: {summaryQ.error?.response?.data?.detail || summaryQ.error?.message}</div>

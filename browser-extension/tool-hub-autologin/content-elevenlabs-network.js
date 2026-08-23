@@ -121,12 +121,27 @@
     const hasTimestamp = candidate.date_unix !== undefined
       || candidate.created_at_unix !== undefined
       || candidate.date !== undefined
-      || candidate.created_at !== undefined;
-    return hasTimestamp;
+      || candidate.created_at !== undefined
+      || candidate.created_at_utc !== undefined; // Music (/v1/music/chats), confirmed 2026-08-17
+    if (!hasTimestamp) return false;
+    // Music's chat wrapper (identified by its own `current_song_id` key) is
+    // observed on the wire BEFORE its `song` is filled in (still
+    // generating) - confirmed real 2026-08-17, from a duplicate-capture
+    // report: a chat-only snapshot (id=chat id, no prompt/asset) and the
+    // later song-bearing snapshot of the SAME chat (id=song.id) have
+    // different identities, so the backend has no way to know they're the
+    // same generation and stores two rows, one permanently empty. Nothing
+    // worth capturing exists on a chat with no `song` yet (no prompt, no
+    // asset URL) - skipped here rather than reconciled after the fact.
+    if (candidate.current_song_id !== undefined && !(candidate.song && typeof candidate.song === 'object')) {
+      return false;
+    }
+    return true;
   }
 
   // Handles: a bare array of matching objects, {history:[...]}, {items:[...]},
-  // or a single bare object matching the shape.
+  // {chats:[...]} (Music, confirmed 2026-08-17), or a single bare object
+  // matching the shape.
   function extractHistoryRows(json) {
     if (!json || typeof json !== 'object') return [];
     if (Array.isArray(json)) {
@@ -138,6 +153,9 @@
     }
     if (Array.isArray(json.items)) {
       return json.items.filter(looksLikeElevenlabsHistoryRow);
+    }
+    if (Array.isArray(json.chats)) {
+      return json.chats.filter(looksLikeElevenlabsHistoryRow);
     }
     return [];
   }
@@ -551,6 +569,32 @@
     }
   }
 
+  // Music's <a download> hrefs point straight at a real https:// URL (a
+  // public GCS v4-signed URL, e.g. song.download_url from /v1/music/chats -
+  // no auth needed to fetch it), unlike TTS/blob-URL Download - unconfirmed
+  // whether Music's actual button markup matches this exact <a download>
+  // pattern (see CAPTURE_CONTRACT.md's "Download-click signal" note), best-
+  // effort until a real click confirms/corrects it. Content-type is checked
+  // AFTER fetching (can't know it from the href alone) so an unrelated
+  // <a download> to some non-audio https resource elsewhere on
+  // elevenlabs.io is a wasted fetch, never a false capture.
+  function postBlobDownloadCaptureFromHttpsUrl(href) {
+    fetch(href)
+      .then((response) => {
+        if (!response.ok) throw new Error(`status ${response.status}`);
+        const contentType = response.headers.get('content-type') || '';
+        if (!AUDIO_CONTENT_TYPE_RE.test(contentType)) return null;
+        return response.arrayBuffer().then((buffer) => ({ contentType, buffer }));
+      })
+      .then((result) => {
+        if (!result || !result.buffer || !result.buffer.byteLength || result.buffer.byteLength > MAX_AUDIO_BYTES) return;
+        postBlobDownloadCapture(result.contentType, arrayBufferToBase64(result.buffer));
+      })
+      .catch((error) => console.debug('[RMW ElevenLabs Network] failed to fetch https download href', {
+        href: href.slice(0, 120), error: error?.message || error,
+      }));
+  }
+
   // DIAGNOSTIC (2026-08-14): logs EVERY click whose accessible text/aria-
   // label/title contains "download", regardless of tag or attributes, so the
   // real markup ElevenLabs uses is visible in the console next time someone
@@ -593,7 +637,11 @@
         postBlobDownloadCaptureFromDataUri(href);
         return;
       }
-      console.debug('[RMW ElevenLabs Network] <a download> clicked with neither a tracked blob: nor audio data: href', { href: href.slice(0, 80) });
+      if (/^https?:\/\//i.test(href)) {
+        postBlobDownloadCaptureFromHttpsUrl(href);
+        return;
+      }
+      console.debug('[RMW ElevenLabs Network] <a download> clicked with neither a tracked blob:, audio data:, nor https: href', { href: href.slice(0, 80) });
     } catch {}
   }
 

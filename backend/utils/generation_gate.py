@@ -21,10 +21,13 @@ from sqlalchemy.orm import Session
 from models_new import ITPortalTool
 from providers.elevenlabs.constants import TOOL_SLUGS as ELEVENLABS_GATE_TOOL_SLUGS
 from providers.envato.constants import TOOL_SLUGS as ENVATO_GATE_TOOL_SLUGS
+from providers.epidemicsound.constants import TOOL_SLUGS as EPIDEMIC_GATE_TOOL_SLUGS
 from providers.flow.constants import TOOL_SLUGS as FLOW_GATE_TOOL_SLUGS
 from providers.freepik.constants import TOOL_SLUGS as FREEPIK_GATE_TOOL_SLUGS
 from providers.heygen.constants import TOOL_SLUGS as HEYGEN_GATE_TOOL_SLUGS
 from providers.higgsfield.constants import TOOL_SLUGS as HIGGSFIELD_GATE_TOOL_SLUGS
+from providers.splice.constants import TOOL_SLUGS as SPLICE_GATE_TOOL_SLUGS
+from providers.suno.constants import TOOL_SLUGS as SUNO_GATE_TOOL_SLUGS
 from utils.generation_backfill import KLING_TOOL_SLUGS as KLING_GATE_TOOL_SLUGS
 
 
@@ -46,6 +49,12 @@ def resolve_generation_gate_tool(db: Session, tool_slug: Optional[str]) -> Optio
         slugs = FLOW_GATE_TOOL_SLUGS
     elif normalized in ELEVENLABS_GATE_TOOL_SLUGS:
         slugs = ELEVENLABS_GATE_TOOL_SLUGS
+    elif normalized in SUNO_GATE_TOOL_SLUGS:
+        slugs = SUNO_GATE_TOOL_SLUGS
+    elif normalized in EPIDEMIC_GATE_TOOL_SLUGS:
+        slugs = EPIDEMIC_GATE_TOOL_SLUGS
+    elif normalized in SPLICE_GATE_TOOL_SLUGS:
+        slugs = SPLICE_GATE_TOOL_SLUGS
     else:
         slugs = FREEPIK_GATE_TOOL_SLUGS
     return (

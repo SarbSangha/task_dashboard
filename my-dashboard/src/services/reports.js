@@ -273,6 +273,19 @@ export const reportsAPI = {
   aiWorkbook: async (params = {}, requestConfig = {}) =>
     api.get('/api/reports/ai-workbook.xlsx', { params, responseType: 'blob', timeout: 120000, ...requestConfig }),
 
+  usageDirectory: async (requestConfig = {}) =>
+    (await api.get('/api/reports/usage/directory', { timeout: REPORTS_TIMEOUT_MS, ...requestConfig })).data,
+  usageOverview: async (params = {}, requestConfig = {}) =>
+    (await api.get('/api/reports/usage/overview', withParams(params, requestConfig))).data,
+  usagePreview: async (params = {}, requestConfig = {}) =>
+    (await api.get('/api/reports/usage/preview', withParams(params, requestConfig))).data,
+  usageUser: async (userId, params = {}, requestConfig = {}) =>
+    (await api.get(`/api/reports/usage/users/${userId}`, withParams(params, requestConfig))).data,
+  usageTeam: async (department, params = {}, requestConfig = {}) =>
+    (await api.get(`/api/reports/usage/teams/${encodeURIComponent(department)}`, withParams(params, requestConfig))).data,
+  usageWorkbook: async (params = {}, requestConfig = {}) =>
+    api.get('/api/reports/usage/workbook.xlsx', { params, responseType: 'blob', timeout: 120000, ...requestConfig }),
+
   exportSavedReport: async (id, format) =>
     api.get(`/api/reports/library/${id}/export`, { params: { format }, responseType: 'blob', timeout: REPORTS_TIMEOUT_MS }),
   exportAdhoc: async (payload) =>

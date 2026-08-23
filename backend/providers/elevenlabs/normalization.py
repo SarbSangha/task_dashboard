@@ -18,15 +18,24 @@ and only ever set on first insert or while still 'unknown' - once resolved,
 sticky (same rule providers/freepik/normalization.py's module docstring
 describes).
 
-THE ONE THING THIS FILE DOES DIFFERENTLY FROM FLOW'S: only one piece of real
-ElevenLabs traffic has ever been observed (a `history?...&source=TTS...`
-*request*, not its response body - see CAPTURE_CONTRACT.md). `_extract_fields`
-below is therefore maximally defensive: for every logical field it tries
-several plausible candidate JSON keys, in priority order, and takes the first
-one present. This is NOT the same posture as Flow's _extract_fields (which
-implements one fully-confirmed shape) - update the candidate-key lists the
-moment a real `history` row is captured and confirmed, and tighten
+THE ONE THING THIS FILE DOES DIFFERENTLY FROM FLOW'S: only two shapes of real
+ElevenLabs traffic have ever been observed - a `history?...&source=TTS...`
+row (TTS) and a `music/chats?...` row (Music, confirmed 2026-08-17, see
+CAPTURE_CONTRACT.md). `_extract_fields` below is therefore maximally
+defensive: for every logical field it tries several plausible candidate JSON
+keys, in priority order, and takes the first one present. This is NOT the
+same posture as Flow's _extract_fields (which implements one fully-confirmed
+shape) - update the candidate-key lists the moment a new real row shape
+(Sound Effects/Dubbing/Voice Changer) is captured and confirmed, and tighten
 CAPTURE_CONTRACT.md accordingly.
+
+Music's row shape nests almost everything one level down in a `song` object
+(chat.song.id/created_at_utc/download_url/status/product_type_source, with
+the prompt itself a further level down at
+chat.song.generation_settings.prompt) rather than TTS's flat shape -
+_flatten_music_chat below folds that down to one dict before the rest of
+this function's candidate-key extraction runs, so the same candidate lists
+serve both shapes.
 """
 import hashlib
 import logging
@@ -47,6 +56,7 @@ from providers.elevenlabs.constants import (
     INGESTION_SOURCE_CAPTURED,
     INGESTION_SOURCE_RECOVERED,
     KNOWN_SOURCE_VALUES,
+    MUSIC_CREDITS_PER_SECOND,
     OWNERSHIP_FRESHNESS_WINDOW_SECONDS,
     OWNERSHIP_STATUS_RESOLVED,
     OWNERSHIP_STATUS_UNKNOWN,
@@ -213,6 +223,20 @@ def _credits_used(payload: dict) -> Optional[int]:
     return delta if delta >= 0 else None
 
 
+# Music carries no character_count_change_from/to at all (that's a TTS-only
+# concept) - see MUSIC_CREDITS_PER_SECOND's own comment for the confirmed
+# flat per-second rate this derives from `song_length_ms`
+# (payload.generation_settings.song_length_ms after _flatten_music_chat).
+def _music_credits_used(payload: dict) -> Optional[int]:
+    settings = payload.get("generation_settings")
+    if not isinstance(settings, dict):
+        return None
+    length_ms = settings.get("song_length_ms")
+    if not isinstance(length_ms, (int, float)) or length_ms <= 0:
+        return None
+    return round(length_ms / 1000 * MUSIC_CREDITS_PER_SECOND)
+
+
 def _extract_asset_url(payload: dict) -> Optional[str]:
     """Best-guess asset URL extraction - tries top-level candidates first,
     then a nested `media`/`audio` object's own `url` field (a plausible shape
@@ -233,19 +257,40 @@ def _extract_asset_url(payload: dict) -> Optional[str]:
     return None
 
 
+def _flatten_music_chat(payload: dict) -> dict:
+    """Music's `/v1/music/chats` rows nest almost everything one level down
+    in `song` (id, timestamps, download_url, status, product_type_source)
+    and the prompt two levels down in `song.generation_settings.prompt` -
+    confirmed real shape (2026-08-17, chat id j2A7GA4Gdye2vr76rkck / song id
+    iPZjn5C0kfqSu7CHkx6d). Flattened here into one dict - song-level keys win
+    over chat-level ones of the same name (e.g. `id`), since the song is the
+    actual generation/asset unit and the chat is just the grouping/prompt-
+    thread wrapper around it - so the rest of this function's candidate-key
+    logic works unmodified on either shape. A no-op passthrough for TTS rows
+    (no `song` key)."""
+    song = payload.get("song")
+    if not isinstance(song, dict):
+        return payload
+    flat = {**payload, **song}
+    settings = song.get("generation_settings")
+    if isinstance(settings, dict) and not flat.get("prompt"):
+        flat["prompt"] = settings.get("prompt")
+    return flat
+
+
 def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) -> dict:
-    """Maps one ElevenLabs `history` row object to a flat dict of
-    ElevenlabsGeneration column values. UNCONFIRMED SHAPE - see this module's
-    own docstring and CAPTURE_CONTRACT.md. Every logical field tries several
+    """Maps one ElevenLabs `history` or `music/chats` row object to a flat
+    dict of ElevenlabsGeneration column values - see this module's own
+    docstring and CAPTURE_CONTRACT.md. Every logical field tries several
     plausible candidate keys, in priority order:
 
       identity          -> history_item_id, id, generation_id
-      created timestamp -> date_unix, created_at_unix, created_at, date
-      updated timestamp -> same candidates as created; falls back to the
-                            created timestamp if no separate updated field
-                            exists (there's no confirmed evidence ElevenLabs
-                            even distinguishes the two on a history row)
-      source             -> source, source_type
+      created timestamp -> date_unix, created_at_unix, created_at, date,
+                            created_at_utc
+      updated timestamp -> same candidates as created plus updated_at_utc,
+                            finished_at_utc; falls back to the created
+                            timestamp if no separate updated field exists
+      source             -> source, source_type, product_type_source (Music)
       prompt/text        -> text, prompt, text_input; falls back to joining
                             dialogue[].text when those are all null (Eleven
                             v3 Dialogue/multi-speaker mode - see
@@ -258,7 +303,7 @@ def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) ->
     degrades that one column to None, it never aborts normalization of the
     rest of the row, same convention as every other provider's
     _extract_fields."""
-    payload = payload or {}
+    payload = _flatten_music_chat(payload or {})
 
     creation_id = _first_present(
         payload, "history_item_id", "id", "generation_id",
@@ -266,17 +311,20 @@ def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) ->
     )
 
     created_raw = _first_present(
-        payload, "date_unix", "created_at_unix", "created_at", "date",
+        payload, "date_unix", "created_at_unix", "created_at", "date", "created_at_utc",
         log_field="created_timestamp", capture_event_id=capture_event_id,
     )
     updated_raw = _first_present(
-        payload, "date_unix", "created_at_unix", "created_at", "date",
+        payload, "date_unix", "created_at_unix", "created_at", "date", "updated_at_utc", "finished_at_utc",
         log_field="updated_timestamp", capture_event_id=capture_event_id,
     )
     provider_created_at = _parse_dt(created_raw)
     provider_updated_at = _parse_dt(updated_raw) or provider_created_at
 
-    source = _s(_first_present(payload, "source", "source_type", log_field="source", capture_event_id=capture_event_id), 40)
+    source = _s(
+        _first_present(payload, "source", "source_type", "product_type_source", log_field="source", capture_event_id=capture_event_id),
+        40,
+    )
     if source and source.upper() not in {v.upper() for v in KNOWN_SOURCE_VALUES}:
         logger.debug(
             "elevenlabs normalization: unrecognized source value %r (capture_event_id=%s) - "
@@ -302,6 +350,9 @@ def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) ->
         voice_name = _s(_voice_from_dialogue(dialogue_entries, "voice_name"), 255)
 
     asset_url = _extract_asset_url(payload)
+    credits_used = _credits_used(payload)
+    if credits_used is None:
+        credits_used = _music_credits_used(payload)
 
     return {
         "provider_creation_id": _s(creation_id, 160),
@@ -311,7 +362,7 @@ def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) ->
         "prompt": _s(prompt),
         "prompt_length": len(prompt) if isinstance(prompt, str) else None,
         "prompt_hash": _prompt_hash(prompt if isinstance(prompt, str) else None),
-        "credits_used": _credits_used(payload),
+        "credits_used": credits_used,
         # Not present in any confirmed payload yet - see this module's own
         # docstring and constants.py's GENERATION_STATUS_* comment.
         "status": _s(payload.get("status"), 40),

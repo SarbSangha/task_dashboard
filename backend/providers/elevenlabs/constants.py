@@ -97,6 +97,19 @@ OWNERSHIP_FRESHNESS_WINDOW_SECONDS = 15 * 60
 # traffic - NOT a capture gate (a row with an unrecognized source value is
 # still captured/normalized normally). Used only by normalization.py to log
 # an "unrecognized source value, please report" note so a future pass can
-# tighten KNOWN_SOURCE_VALUES/CAPTURE_CONTRACT.md once Music/Sound-Effects/
-# Dubbing/Voice-Changer are actually observed.
-KNOWN_SOURCE_VALUES = frozenset({"TTS"})
+# tighten KNOWN_SOURCE_VALUES/CAPTURE_CONTRACT.md once Sound-Effects/Dubbing/
+# Voice-Changer are actually observed. "Music" confirmed 2026-08-17 (real
+# `/v1/music/chats` traffic, surfaced via `song.product_type_source`).
+KNOWN_SOURCE_VALUES = frozenset({"TTS", "Music"})
+
+# Music has no TTS-style character-credit tally at all (no
+# character_count_change_from/to on the row) - its cost is a flat per-second
+# rate instead, confirmed from three independent real data points
+# (2026-08-17): a 10s generation cost 150 credits, and two separate 3s
+# generations (requested together as a single 2-sample batch, captured as
+# two independent rows via their own song.id) each cost 45 - all three agree
+# exactly on 15 credits/second of song_length_ms, per song. The UI's
+# displayed batch total for an N-sample request is simply N times this same
+# per-song cost, which capturing each sample as its own row already reflects
+# correctly with no extra bookkeeping needed.
+MUSIC_CREDITS_PER_SECOND = 15

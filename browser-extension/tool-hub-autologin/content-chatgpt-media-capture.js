@@ -820,12 +820,40 @@ try {
       traceStage('NETWORK_ASSET_OBSERVATION', 'FAIL', ctx, { reason: 'PerformanceObserver unavailable in this context' });
       return () => {};
     }
+    // observe({buffered: true}) deliberately replays every resource-timing
+    // entry since page load/buffer-clear, not just ones loading from here
+    // on - needed so a fast-finishing image isn't missed if it loaded in the
+    // gap before .observe() is called. But ChatGPT is a single-page app: a
+    // conversation switch never reloads the page, so that buffer carries
+    // EVERY prior conversation's resource loads too. Each new turn attaches
+    // a fresh observer with its own empty seenUrls Set, so it faithfully
+    // replays and re-captures a PRIOR, unrelated conversation's already-
+    // stored generated image under the CURRENT conversationId - confirmed
+    // live: an older test's output image showed up as a third, unrelated
+    // "generated output" on a brand-new conversation. The per-conversation
+    // dedup guard doesn't catch this because it's keyed by conversationId -
+    // a resource already stored under a DIFFERENT conversation's id looks
+    // brand new from here. attachedAtMs is the cutoff: only entries that
+    // finished loading at/after this turn's observer actually attached are
+    // genuinely this turn's.
+    const attachedAtMs = performance.now();
     const seenUrls = new Set();
     const observer = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         if (seenUrls.has(entry.name)) continue;
         if (!looksLikeMediaResourceEntry(entry)) continue;
+        const loadedBeforeThisTurn = (entry.responseEnd || entry.startTime || 0) < attachedAtMs;
         seenUrls.add(entry.name);
+        if (loadedBeforeThisTurn) {
+          traceStage('NETWORK_ASSET_OBSERVED', 'SKIPPED', ctx, {
+            url: truncateForTrace(entry.name, 300),
+            reason: 'buffered replay of a resource that finished loading before this turn\'s observer attached (almost certainly a prior conversation\'s asset, not this one\'s)',
+            entryResponseEnd: entry.responseEnd || null,
+            entryStartTime: entry.startTime || null,
+            attachedAtMs,
+          });
+          continue;
+        }
         const detectedAt = Date.now();
         // Capture (not just log) the CORS-blocked CDN assets the DOM scan
         // can't reliably reach - fire-and-forget, never blocks logging.
