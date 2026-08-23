@@ -694,7 +694,7 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
     else:
         row = C.callout(
             ws,
-            "Client is what they picked before generating. Not linked means the picker was blank. ChatGPT has no client mapping.",
+            "Client is what they picked before generating. Where no client was picked - it was optional for most of this history - the task it was filed under is shown instead. Not linked means neither was set. ChatGPT has no client mapping.",
             row=row, last_col=LAST,
         )
         client_header = row

@@ -617,9 +617,19 @@ def _load_generation_facts(db: Session, period: dict, previous: bool = False) ->
     return bucket
 
 
-def _client_label(name: Optional[str]) -> str:
+def _client_label(name: Optional[str], task: Optional[str] = None) -> str:
+    """Client for a generation row, falling back to the task it was filed under.
+
+    The client picker was optional for most of the captured history, so a lot of
+    real work carries only a task. Reporting all of it as "Not linked" buried
+    it in one meaningless bucket; the task is the next best answer to "what was
+    this for", so it stands in when no client was picked.
+    """
     value = (name or "").strip()
-    return value if value else NO_CLIENT
+    if value:
+        return value
+    fallback = (task or "").strip()
+    return fallback if fallback else NO_CLIENT
 
 
 def _ist_day(value) -> str:
@@ -633,7 +643,7 @@ def _ist_day(value) -> str:
 def _gen_row(*, day, client, tool, category, credits, status, task, generations=1):
     return {
         "date": _ist_day(day),
-        "client": _client_label(client),
+        "client": _client_label(client, task),
         "tool": tool,
         "category": category or "Uncategorised",
         "generations": int(generations or 0),
