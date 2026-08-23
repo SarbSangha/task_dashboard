@@ -10,6 +10,69 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check out the commit being deployed
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: my-dashboard/package-lock.json
+
+      # The frontend is built here rather than on the droplet. The droplet build
+      # was SIGKILLed during rollup's render phase - a bare "Killed" and exit
+      # 137, which is the kernel's OOM killer, not a V8 heap limit (that prints
+      # "JavaScript heap out of memory" with a stack trace). The old
+      # --max-old-space-size=2048 made it worse rather than better: it let V8
+      # defer GC and keep growing until the kernel stepped in. A runner has far
+      # more headroom, so the failure mode disappears and the droplet keeps its
+      # RAM for serving traffic instead of compiling.
+      - name: Build and package frontend
+        working-directory: my-dashboard
+        run: |
+          set -euo pipefail
+
+          # The API origin comes from the tracked my-dashboard/.env.production.
+          # Deliberately NOT injected as a CI env var: an unset repo variable
+          # arrives here as an empty string, and vite prioritises a prefixed
+          # process env var over .env files, so it would silently clobber the
+          # committed value with "".
+          EXPECTED_ORIGIN="$(sed -n 's/^VITE_API_URL=//p' .env.production | tail -1 | tr -d '\r')"
+          if [ -z "${EXPECTED_ORIGIN}" ]; then
+            echo "VITE_API_URL is missing from my-dashboard/.env.production."
+            echo "The build would inline an empty API origin and every request"
+            echo "from the deployed dashboard would fail."
+            exit 1
+          fi
+          echo "Building against API origin: ${EXPECTED_ORIGIN}"
+
+          npm ci
+          npm run build
+
+          # Refuse to ship an output that is not actually serveable.
+          test -s dist/index.html || { echo "BUILD PRODUCED NO index.html"; exit 1; }
+          test -d dist/assets     || { echo "BUILD PRODUCED NO assets/";   exit 1; }
+
+          # The origin is inlined at build time, so its absence here means the
+          # bundle points somewhere useless no matter how green the build is.
+          grep -rq -- "${EXPECTED_ORIGIN}" dist/assets || {
+            echo "API origin never made it into the bundle"; exit 1;
+          }
+
+          tar -czf dist.tar.gz -C dist .
+          echo "Packaged $(du -h dist.tar.gz | cut -f1) for transfer"
+
+      - name: Copy frontend to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DROPLET_IP }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: my-dashboard/dist.tar.gz
+          target: /tmp
+          strip_components: 1
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v0.1.6
         with:
@@ -21,12 +84,23 @@ jobs:
           script: |
             # Abort on the first failure instead of running every step
             # regardless. Without this the script previously continued past a
-            # failed `npm run build` all the way to `pm2 reload` and printed
+            # failed build all the way to `pm2 reload` and printed
             # "Deploy complete" - which is how a broken build reached
             # production looking like a success.
             set -euo pipefail
 
             cd /var/www/task_dashboard
+
+            # my-dashboard/.env.production used to be gitignored, so this box
+            # has an untracked copy of it. It is tracked in the repo now (the
+            # runner needs it to build the frontend), and git refuses to clobber
+            # an untracked file, so hand over once - keeping the old copy
+            # alongside for comparison rather than deleting it.
+            if [ -f my-dashboard/.env.production ] && \
+               ! git ls-files --error-unmatch my-dashboard/.env.production >/dev/null 2>&1; then
+              echo "Setting aside this box's untracked .env.production; the repo copy is authoritative now"
+              mv my-dashboard/.env.production my-dashboard/.env.production.pre-tracking
+            fi
 
             echo "Pull latest code"
             git pull origin main
@@ -38,36 +112,28 @@ jobs:
             echo "Run database migrations"
             ./venv/bin/python run_db_migrations.py
 
-            echo "Build frontend"
+            # The frontend arrives prebuilt from the runner, so nothing is
+            # compiled on this box any more - no npm, no node, no OOM risk.
+            # It still lands in a staging directory and is verified before the
+            # live one is touched, because a truncated transfer would otherwise
+            # leave an empty dist/: nginx's SPA fallback (try_files $uri
+            # /index.html) returns 500, not 404, when the fallback file itself
+            # is missing, which takes the whole dashboard down.
+            echo "Unpack frontend"
             cd ../my-dashboard
-            npm ci
-            echo "Frontend dependencies installed"
-
-            # Build into a STAGING directory, never straight into the live one.
-            # `vite build` empties its output directory before it writes
-            # anything, so building directly into dist/ meant any failure -
-            # most often the OOM kill this size of droplet is prone to - left
-            # production with an empty dist/. nginx's SPA fallback
-            # (try_files $uri /index.html) returns 500, not 404, when the
-            # fallback file itself is missing, so an interrupted build took the
-            # whole dashboard down with a bare nginx error page.
-            #
-            # Give the build real headroom too: the default Node heap is what
-            # the OOM kill runs into as the bundle grows.
-            export NODE_OPTIONS="--max-old-space-size=${NODE_BUILD_HEAP_MB:-2048}"
             rm -rf dist.new
-            npm run build -- --outDir dist.new --emptyOutDir
+            mkdir dist.new
+            tar -xzf /tmp/dist.tar.gz -C dist.new
 
-            # Refuse to publish an output that isn't actually serveable. This
-            # is the check that makes the staging directory worth having.
-            test -s dist.new/index.html || { echo "BUILD PRODUCED NO index.html - keeping the current site"; exit 1; }
-            test -d dist.new/assets     || { echo "BUILD PRODUCED NO assets/ - keeping the current site"; exit 1; }
-            echo "Frontend build finished and verified"
+            test -s dist.new/index.html || { echo "TRANSFER PRODUCED NO index.html - keeping the current site"; exit 1; }
+            test -d dist.new/assets     || { echo "TRANSFER PRODUCED NO assets/ - keeping the current site";   exit 1; }
+            echo "Frontend transfer verified"
 
-            # Swap atomically-ish, keeping the previous build for rollback.
+            # Swap, keeping the previous build for rollback.
             rm -rf dist.prev
             if [ -d dist ]; then mv dist dist.prev; fi
             mv dist.new dist
+            rm -f /tmp/dist.tar.gz
             echo "Frontend published (previous build kept at my-dashboard/dist.prev)"
 
             echo "Restart server"

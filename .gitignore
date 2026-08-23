@@ -9,6 +9,13 @@ my-dashboard/.env.*
 my-dashboard/.env.example
 my-dashboard/.env.production
 my-dashboard/.env.production.example
+# ...except the production API origin, which is deliberately tracked. Vite
+# inlines VITE_* vars into the bundle every visitor downloads, so this value is
+# public by construction and there is nothing to protect by hiding it. Keeping
+# it in the repo is what lets CI build the frontend: the runner only ever sees
+# a git checkout, never the droplet's filesystem. Do NOT add anything secret to
+# this file - only VITE_-prefixed, client-visible settings belong in it.
+!my-dashboard/.env.production
 
 *.sqlite
 *.sqlite3
@@ -44,6 +51,9 @@ htmlcov/
 
 my-dashboard/node_modules/
 my-dashboard/dist/
+# The deploy unpacks into dist.new/ and keeps the last build in
+# dist.prev/ for rollback; neither should ever look like a local change.
+my-dashboard/dist.*/
 
 # Claude Code local machine state (settings.local.json is per-developer)
 .claude/
