@@ -18,6 +18,7 @@ from openpyxl.chart import BarChart, LineChart, PieChart, Reference
 from openpyxl.chart.label import DataLabelList
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.filters import AutoFilter, FilterColumn, Filters
 
 from utils.ai_report import components as C
 from utils.ai_report import theme as T
@@ -56,6 +57,9 @@ def build_usage_workbook(snapshot: dict) -> tuple[bytes, str, str]:
         if person:
             return _build_person_workbook(snapshot, person)
 
+    if report_type == "consolidated":
+        return _build_consolidated_workbook(snapshot)
+
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -66,6 +70,7 @@ def build_usage_workbook(snapshot: dict) -> tuple[bytes, str, str]:
         ("User Overview", _sheet_users, T.NAVY_TABLE),
         ("Individual Users", _sheet_individual, T.GREEN),
         ("Tool Usage", _sheet_tools, T.NAVY_TABLE),
+        ("Consolidated", _sheet_consolidated, T.GREEN),
         ("Credit Analysis", _sheet_credits, T.NAVY),
         ("Generation Analysis", _sheet_generations, T.GREEN),
         ("Activity Timeline", _sheet_timeline, T.NAVY_TABLE),
@@ -358,6 +363,78 @@ def _sheet_tools(ws, snapshot):
     C.freeze_below(ws, 4)
 
 
+def _sheet_consolidated(ws, snapshot):
+    C.hide_gridlines(ws)
+    period = snapshot["period"]
+    row = C.title_band(
+        ws, "Consolidated",
+        f"Every tool × employee pairing in scope, with usage and when it was last used · {period['label']}",
+        last_col=LAST,
+    )
+    rows = []
+    for user in snapshot.get("users") or []:
+        for t in user.get("tools") or []:
+            last_used = t.get("lastUsed")
+            if not last_used or last_used == "None":
+                continue
+            rows.append({
+                "tool": t.get("tool"),
+                "category": _blank(t.get("category"), "Uncategorised"),
+                "name": user.get("name"),
+                "department": user.get("department"),
+                "generations": t.get("generations") or 0,
+                "credits": round(t.get("credits") or 0, 2),
+                "lastUsed": last_used,
+            })
+    rows.sort(key=lambda r: (r["tool"] or "", r["name"] or ""))
+    row = C.section_header(ws, "Employee tool usage", row=row, last_col=LAST)
+    row = C.data_table(ws, [
+        C.Col("Tool", 18, key="tool"),
+        C.Col("Category", 16, key="category"),
+        C.Col("Employee name", 24, key="name"),
+        C.Col("Team", 18, key="department"),
+        C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
+        C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+        C.Col("Last used", 14, key="lastUsed"),
+    ], rows, start_row=row, table_name="Consolidated")
+
+    teams = snapshot.get("teams") or []
+    row = C.section_header(ws, "Department-wise usage", row=row, last_col=LAST)
+    row = C.data_table(ws, [
+        C.Col("Team", 22, key="name"),
+        C.Col("Users", 10, "right", T.FMT_INT, key="users"),
+        C.Col("Active", 10, "right", T.FMT_INT, key="activeUsers"),
+        C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
+        C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+        C.Col("Hours", 12, "right", T.FMT_DECIMAL1, key="usageHours"),
+        C.Col("Success %", 12, "right", T.FMT_DECIMAL1, key="successRate"),
+    ], teams, start_row=row, table_name="ConsolidatedDepts")
+
+    departments = snapshot.get("departmentUsage") or []
+    if departments:
+        row = C.section_header(ws, "Department detail — members, tools and clients", row=row, last_col=LAST)
+        for i, entry in enumerate(departments):
+            dept_rows = entry.get("rows") or []
+            if not dept_rows:
+                continue
+            row = C.section_header(
+                ws,
+                f"{entry['department']}  ·  {entry.get('totalGenerations', 0)} generations  ·  {entry.get('totalCredits', 0)} credits  ·  ₹{entry.get('totalCostRupees', 0)}",
+                row=row, last_col=LAST,
+            )
+            row = C.data_table(ws, [
+                C.Col("Member", 24, key="name"),
+                C.Col("Tool", 16, key="tool"),
+                C.Col("Client", 22, key="client"),
+                C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
+                C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+                C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+            ], dept_rows, start_row=row, table_name=f"Dept{i}_{_safe_file_stub(entry['department'])[:18]}")
+            row += 1
+
+    C.freeze_below(ws, 4)
+
+
 def _sheet_credits(ws, snapshot):
     C.hide_gridlines(ws)
     period = snapshot["period"]
@@ -539,6 +616,116 @@ def _color_scale(ws, col: int, start_row: int, end_row: int) -> None:
             end_type="max", end_color="C6EFCE",
         ),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Standalone consolidated report (tool x employee x last used, one tab)
+# --------------------------------------------------------------------------- #
+def _build_consolidated_workbook(snapshot: dict) -> tuple[bytes, str, str]:
+    C._used_table_names.clear()
+    wb = Workbook()
+    wb.remove(wb.active)
+    ws = wb.create_sheet(title="Consolidated")
+    ws.sheet_properties.tabColor = T.GREEN
+    _sheet_consolidated(ws, snapshot)
+
+    ws2 = wb.create_sheet(title="Client Usage")
+    ws2.sheet_properties.tabColor = T.NAVY_TABLE
+    _sheet_client_usage(ws2, snapshot)
+
+    ws3 = wb.create_sheet(title="Tool Assignments")
+    ws3.sheet_properties.tabColor = T.GREEN
+    _sheet_tool_assignments(ws3, snapshot)
+
+    period = snapshot["period"]
+    wb.properties.title = "Consolidated Usage Report"
+    wb.properties.creator = "Task Dashboard — Usage Intelligence"
+    wb.properties.subject = f"Tool x employee last-used · {period['label']}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    filename = f"Consolidated_{period['end']}.xlsx"
+    return buf.getvalue(), XLSX_MIMETYPE, filename
+
+
+def _sheet_client_usage(ws, snapshot):
+    C.hide_gridlines(ws)
+    period = snapshot["period"]
+    row = C.title_band(
+        ws, "Client Usage",
+        f"One table per client — who used which tool and how many credits · {period['label']}",
+        last_col=LAST,
+    )
+    clients = snapshot.get("clientUsage") or []
+    if not clients:
+        C.callout(ws, "No client-linked generations in this period.", row=row, last_col=LAST)
+        return
+    for i, entry in enumerate(clients):
+        rows = entry.get("rows") or []
+        if not rows:
+            continue
+        row = C.section_header(
+            ws,
+            f"{entry['client']}  ·  {entry.get('totalGenerations', 0)} generations  ·  {entry.get('totalCredits', 0)} credits  ·  ₹{entry.get('totalCostRupees', 0)}",
+            row=row, last_col=LAST,
+        )
+        row = C.data_table(ws, [
+            C.Col("User", 24, key="name"),
+            C.Col("Tool", 18, key="tool"),
+            C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+        ], rows, start_row=row, table_name=f"Client{i}_{_safe_file_stub(entry['client'])[:18]}")
+        row += 1
+
+
+def _sheet_tool_assignments(ws, snapshot):
+    C.hide_gridlines(ws)
+    period = snapshot["period"]
+    row = C.title_band(
+        ws, "Tool Assignments",
+        f"Every employee assigned a tool and its account, whether used yet or not · {period['label']}",
+        last_col=LAST,
+    )
+
+    assignments = snapshot.get("toolAssignments") or []
+    row = C.section_header(ws, "Tool assignment by employee", row=row, last_col=LAST)
+    row = C.data_table(ws, [
+        C.Col("Tool", 18, key="tool"),
+        C.Col("User", 24, key="name"),
+        C.Col("Department", 20, key="department"),
+        C.Col("Account", 30, key="account"),
+    ], assignments, start_row=row, table_name="ToolAssignments")
+
+    accounts = snapshot.get("toolAccounts") or []
+    row = C.section_header(ws, "Tool accounts", row=row, last_col=LAST)
+    row = C.callout(
+        ws,
+        "Status filter defaults to Current only. Use the Status column filter to also show Old (unassigned) accounts.",
+        row=row, last_col=LAST,
+    )
+    accounts_header_row = row
+    row = C.data_table(ws, [
+        C.Col("Tool", 20, key="tool"),
+        C.Col("Account", 30, key="account"),
+        C.Col("Status", 14, key="status"),
+        C.Col("Renewal date", 16, key="renewalDate"),
+    ], accounts, start_row=row, table_name="ToolAccounts")
+    _filter_to_current(ws, "ToolAccounts", accounts_header_row, accounts, status_col_index=2)
+    C.freeze_below(ws, 4)
+
+
+def _filter_to_current(ws, table_name: str, header_row: int, rows: list[dict], *, status_col_index: int) -> None:
+    """Pre-apply an Excel table filter so only Status == 'Current' rows show on open."""
+    if not rows:
+        return
+    table = ws.tables.get(table_name)
+    if table is None:
+        return
+    table.autoFilter = AutoFilter(ref=table.ref)
+    table.autoFilter.filterColumn.append(FilterColumn(colId=status_col_index, filters=Filters(filter=["Current"])))
+    for i, r in enumerate(rows):
+        if r.get("status") != "Current":
+            ws.row_dimensions[header_row + 1 + i].hidden = True
 
 
 # --------------------------------------------------------------------------- #

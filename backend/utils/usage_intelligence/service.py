@@ -22,7 +22,15 @@ from typing import Optional
 from sqlalchemy import Date, case, cast, func, literal, or_
 from sqlalchemy.orm import Session, joinedload
 
-from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolUsageEvent, User, UserActivity
+from models_new import (
+    ITPortalTool,
+    ITPortalToolAudit,
+    ITPortalToolCredential,
+    ITPortalToolUsageEvent,
+    ToolCreditRate,
+    User,
+    UserActivity,
+)
 from providers.chatgpt.models import ConversationRecord
 from providers.elevenlabs.models import ElevenlabsGeneration
 from providers.envato.models import EnvatoGeneration
@@ -30,6 +38,7 @@ from providers.flow.models import FlowGeneration
 from providers.freepik.models import FreepikGeneration
 from providers.heygen.models import HeygenGeneration
 from providers.higgsfield.models import HiggsfieldGeneration
+from utils.credential_crypto import decrypt_secret
 from utils.permissions import resolve_roles
 
 # --------------------------------------------------------------------------- #
@@ -617,6 +626,231 @@ def _load_generation_facts(db: Session, period: dict, previous: bool = False) ->
     return bucket
 
 
+def _load_client_tool_usage(db: Session, period: dict, user_ids: Optional[set] = None) -> list[dict]:
+    """Return [{client, userId, tool, credentialId, generations, credits}], org-wide
+    (or scoped to user_ids).
+
+    Client falls back to the linked task, same rule as _client_label. ChatGPT
+    carries no client/task columns so it always reports as "Not linked".
+    credentialId is the tool account the generation was captured under -- it
+    feeds ToolCreditRate-based cost conversion downstream. ConversationRecord
+    carries no credential linkage either, so ChatGPT rows always report None
+    and fall back to the default rate.
+    """
+    utc_s, utc_e = period["utc_start"], period["utc_end"]
+    start, end = period["start"], period["end"]
+    rows: list[dict] = []
+
+    def _client_expr(client_col, task_col):
+        return func.coalesce(
+            func.nullif(func.trim(client_col), ""),
+            func.nullif(func.trim(task_col), ""),
+        )
+
+    cg_q = (
+        db.query(
+            ConversationRecord.owner_user_id,
+            func.coalesce(func.sum(ConversationRecord.prompt_count), 0),
+        )
+        .filter(
+            ConversationRecord.archived_at.is_(None),
+            ConversationRecord.provider == "chatgpt",
+            ConversationRecord.created_at >= utc_s,
+            ConversationRecord.created_at < utc_e,
+            ConversationRecord.owner_user_id.isnot(None),
+        )
+    )
+    if user_ids is not None:
+        cg_q = cg_q.filter(ConversationRecord.owner_user_id.in_(user_ids))
+    for uid, gens in cg_q.group_by(ConversationRecord.owner_user_id).all():
+        if gens:
+            rows.append({"client": NO_CLIENT, "userId": uid, "tool": "ChatGPT", "credentialId": None, "generations": int(gens), "credits": 0.0})
+
+    tool_ids = _kling_tool_ids(db)
+    if tool_ids:
+        client_expr = _client_expr(ITPortalToolUsageEvent.linked_client_name, ITPortalToolUsageEvent.linked_task_name)
+        k_q = (
+            db.query(
+                ITPortalToolUsageEvent.user_id,
+                ITPortalToolUsageEvent.credential_id,
+                client_expr,
+                func.count(ITPortalToolUsageEvent.id),
+                func.coalesce(func.sum(_sane_kling_credits()), 0.0),
+            )
+            .filter(
+                ITPortalToolUsageEvent.tool_id.in_(tool_ids),
+                ITPortalToolUsageEvent.event_date >= start,
+                ITPortalToolUsageEvent.event_date <= end,
+            )
+        )
+        if user_ids is not None:
+            k_q = k_q.filter(ITPortalToolUsageEvent.user_id.in_(user_ids))
+        for uid, cred_id, client, gens, credits in k_q.group_by(
+            ITPortalToolUsageEvent.user_id, ITPortalToolUsageEvent.credential_id, client_expr
+        ).all():
+            rows.append({"client": client or NO_CLIENT, "userId": uid, "tool": "Kling", "credentialId": cred_id, "generations": int(gens or 0), "credits": round(float(credits or 0), 2)})
+
+    def _provider_rows(model, tool, credit_col):
+        client_expr = _client_expr(model.linked_client_name, model.linked_task_name)
+        credit = func.coalesce(func.sum(credit_col), 0.0) if credit_col is not None else literal(0.0)
+        q = (
+            db.query(model.owner_user_id, model.credential_id, client_expr, func.count(model.id), credit)
+            .filter(
+                model.owner_user_id.isnot(None),
+                func.coalesce(model.provider_created_at, model.created_at) >= utc_s,
+                func.coalesce(model.provider_created_at, model.created_at) < utc_e,
+            )
+        )
+        if user_ids is not None:
+            q = q.filter(model.owner_user_id.in_(user_ids))
+        for uid, cred_id, client, gens, credits in q.group_by(model.owner_user_id, model.credential_id, client_expr).all():
+            rows.append({"client": client or NO_CLIENT, "userId": uid, "tool": tool, "credentialId": cred_id, "generations": int(gens or 0), "credits": round(float(credits or 0), 2)})
+
+    _provider_rows(FreepikGeneration, "Freepik", FreepikGeneration.credits_charged)
+    _provider_rows(EnvatoGeneration, "Envato", EnvatoGeneration.credits_badge)
+    _provider_rows(HeygenGeneration, "HeyGen", HeygenGeneration.credits_used)
+    _provider_rows(HiggsfieldGeneration, "Higgsfield", HiggsfieldGeneration.credits_used)
+    _provider_rows(ElevenlabsGeneration, "ElevenLabs", ElevenlabsGeneration.credits_used)
+    _provider_rows(FlowGeneration, "Flow", None)
+
+    return rows
+
+
+def _load_credit_rates(db: Session) -> tuple[dict[int, float], float, str]:
+    """Return ({credentialId: rupees per credit}, defaultRatePerCredit, currency).
+
+    Mirrors reports_router._credit_rate_context but returns plain Python
+    structures for use in report code that aggregates credits in Python
+    rather than SQL. A credit-less rate row (rate_per_credit is null) is
+    skipped; the newest row per key wins.
+    """
+    today = datetime.utcnow().date()
+    rows = (
+        db.query(ToolCreditRate)
+        .filter(
+            ToolCreditRate.effective_from <= today,
+            or_(ToolCreditRate.effective_to.is_(None), ToolCreditRate.effective_to >= today),
+        )
+        .order_by(ToolCreditRate.effective_from.desc(), ToolCreditRate.id.desc())
+        .all()
+    )
+    default_rate = 0.0
+    currency = "INR"
+    rates_by_credential: dict[int, float] = {}
+    global_seen = False
+    for r in rows:
+        if r.rate_per_credit is None:
+            continue
+        rate = float(r.rate_per_credit)
+        if r.credential_id is not None:
+            rates_by_credential.setdefault(r.credential_id, rate)
+        elif r.provider is None and r.tool_id is None and not global_seen:
+            default_rate = rate
+            currency = r.currency or "INR"
+            global_seen = True
+    return rates_by_credential, default_rate, currency
+
+
+def _load_tool_accounts(db: Session) -> list[dict]:
+    """Tool -> every distinct login account currently active for it, tagged
+    Current/Old by whether anyone is actually assigned to it right now.
+
+    A tool can carry more than one shared account (e.g. two ChatGPT logins),
+    so this lists every distinct one rather than picking a single "the"
+    account. A scope='user' row that merely links to a shared company
+    credential is skipped here -- it is an assignment, not a distinct
+    account, and is already covered by the company row it points at.
+
+    Status mirrors the IT Portal's own "N users assigned" count: a
+    company-scope account is Current only while at least one active
+    scope='user' row links to it; a standalone personal account is Current
+    by definition (it belongs to the one person holding it). Only the login
+    identifier is decrypted -- passwords, API keys and TOTP secrets are
+    never touched here.
+    """
+    tools = (
+        db.query(ITPortalTool.id, ITPortalTool.name)
+        .filter(ITPortalTool.is_active.is_(True))
+        .order_by(ITPortalTool.name)
+        .all()
+    )
+    creds = (
+        db.query(ITPortalToolCredential)
+        .filter(ITPortalToolCredential.is_active.is_(True))
+        .all()
+    )
+    assigned_counts: dict[int, int] = defaultdict(int)
+    for c in creds:
+        if c.scope == "user" and c.linked_credential_id:
+            assigned_counts[c.linked_credential_id] += 1
+
+    accounts_by_tool: dict[int, list[tuple[str, str, str]]] = defaultdict(list)
+    for c in creds:
+        if c.scope == "user" and c.linked_credential_id:
+            continue
+        account = (decrypt_secret(c.login_identifier_encrypted) or "").strip()
+        if not account:
+            continue
+        is_current = assigned_counts.get(c.id, 0) > 0 if c.scope == "company" else True
+        renewal = c.renewal_date.isoformat() if c.renewal_date else "Not set"
+        accounts_by_tool[c.tool_id].append((account, "Current" if is_current else "Old", renewal))
+
+    out = []
+    for tool_id, name in tools:
+        seen: set[str] = set()
+        distinct = []
+        for account, status, renewal in accounts_by_tool.get(tool_id, []):
+            key = account.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            distinct.append((account, status, renewal))
+        if not distinct:
+            out.append({"tool": name, "account": "Not set", "status": "Old", "renewalDate": "Not set"})
+        else:
+            for account, status, renewal in sorted(distinct, key=lambda x: (x[1] != "Current", x[0].lower())):
+                out.append({"tool": name, "account": account, "status": status, "renewalDate": renewal})
+    return out
+
+
+def _load_tool_assignments(db: Session, people: list[dict]) -> list[dict]:
+    """Every employee currently assigned a tool credential, and the account it
+    resolves to -- whether or not they have generated anything with it yet.
+
+    Assignment = an active scope='user' credential row. If it links to a
+    shared company credential, the account shown is that shared login;
+    otherwise it is the employee's own login identifier.
+    """
+    by_uid = {p["userId"]: p for p in people}
+    tools = {
+        t.id: t.name
+        for t in db.query(ITPortalTool.id, ITPortalTool.name).filter(ITPortalTool.is_active.is_(True)).all()
+    }
+    creds = db.query(ITPortalToolCredential).filter(ITPortalToolCredential.is_active.is_(True)).all()
+    by_id = {c.id: c for c in creds}
+
+    rows = []
+    for c in creds:
+        if c.scope != "user" or not c.user_id:
+            continue
+        tool_name = tools.get(c.tool_id)
+        person = by_uid.get(c.user_id)
+        if not tool_name or not person:
+            continue
+        effective = by_id.get(c.linked_credential_id) if c.linked_credential_id else c
+        account = ((decrypt_secret(effective.login_identifier_encrypted) if effective else None) or "").strip()
+        renewal = effective.renewal_date.isoformat() if effective and effective.renewal_date else "Not set"
+        rows.append({
+            "tool": tool_name,
+            "name": person["name"],
+            "department": person["department"],
+            "account": account or "Not set",
+            "renewalDate": renewal,
+        })
+    rows.sort(key=lambda r: (r["tool"] or "", r["name"] or ""))
+    return rows
+
+
 def _client_label(name: Optional[str], task: Optional[str] = None) -> str:
     """Client for a generation row, falling back to the task it was filed under.
 
@@ -1041,7 +1275,72 @@ def build_snapshot(
     if user_id:
         report_type = "individual"
     elif dept_filter:
-        report_type = report_type if report_type in {"team", "organisation"} else "team"
+        report_type = report_type if report_type in {"team", "organisation", "consolidated"} else "team"
+
+    client_usage: list[dict] = []
+    department_usage: list[dict] = []
+    if report_type == "consolidated":
+        by_uid = {u["userId"]: u for u in scoped}
+        scope_ids = set(by_uid) if (dept_filter or user_id) else None
+        usage_rows = _load_client_tool_usage(db, period, user_ids=scope_ids)
+        rates_by_credential, default_rate, rate_currency = _load_credit_rates(db)
+
+        def _row_cost(r: dict) -> float:
+            cred_id = r.get("credentialId")
+            rate = rates_by_credential.get(cred_id, default_rate) if cred_id is not None else default_rate
+            return round((r.get("credits") or 0) * rate, 2)
+
+        by_client: dict[str, list[dict]] = defaultdict(list)
+        by_department: dict[str, list[dict]] = defaultdict(list)
+        for r in usage_rows:
+            person = by_uid.get(r["userId"])
+            if person is None:
+                continue
+            cost = _row_cost(r)
+            by_client[r["client"]].append({
+                "name": person["name"],
+                "department": person["department"],
+                "tool": r["tool"],
+                "generations": r["generations"],
+                "credits": r["credits"],
+                "costRupees": cost,
+            })
+            by_department[person["department"]].append({
+                "name": person["name"],
+                "tool": r["tool"],
+                "client": r["client"],
+                "generations": r["generations"],
+                "credits": r["credits"],
+                "costRupees": cost,
+            })
+        for name, entries in by_client.items():
+            entries.sort(key=lambda x: x["credits"], reverse=True)
+            client_usage.append({
+                "client": name,
+                "rows": entries,
+                "totalCredits": round(sum(x["credits"] for x in entries), 2),
+                "totalGenerations": sum(x["generations"] for x in entries),
+                "totalCostRupees": round(sum(x["costRupees"] for x in entries), 2),
+            })
+        client_usage.sort(key=lambda c: (c["client"] == NO_CLIENT, -c["totalCredits"], c["client"]))
+
+        for name, entries in by_department.items():
+            entries.sort(key=lambda x: (x["name"] or "", x["tool"] or ""))
+            department_usage.append({
+                "department": name,
+                "rows": entries,
+                "totalCredits": round(sum(x["credits"] for x in entries), 2),
+                "totalGenerations": sum(x["generations"] for x in entries),
+                "totalCostRupees": round(sum(x["costRupees"] for x in entries), 2),
+            })
+        department_usage.sort(key=lambda d: (-d["totalCredits"], d["department"] or ""))
+
+    tool_accounts = _load_tool_accounts(db) if report_type == "consolidated" else []
+    # scoped, not people: people is org-wide, and this report's Tool
+    # Assignments sheet needs to follow the same department/user filter as
+    # everything else above (client_usage, department_usage) or a filtered
+    # download would list every employee company-wide regardless.
+    tool_assignments = _load_tool_assignments(db, scoped) if report_type == "consolidated" else []
 
     snapshot = {
         "success": True,
@@ -1067,6 +1366,10 @@ def build_snapshot(
         "findings": findings,
         "timeline": _assemble_timeline(scoped_facts, scoped),
         "preview": _assemble_preview(kpis, findings, actions, period, scoped, teams),
+        "clientUsage": client_usage,
+        "departmentUsage": department_usage,
+        "toolAccounts": tool_accounts,
+        "toolAssignments": tool_assignments,
     }
     if user_id and scoped:
         pack = _load_person_generation_log(db, period, user_id)

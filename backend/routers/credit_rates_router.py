@@ -1,11 +1,12 @@
 """
 Admin CRUD for credit -> currency rates (Tier 1 cost analytics).
 
-Rates are keyed by Kling account (it_portal_tool_credentials.id): different
-accounts buy credits at a different rupee price. Pricing is entered as a package
-(credits bought for rupees); rate_per_credit is derived. A single global-default
-row (credential_id/provider/tool_id all NULL) is the fallback used for generation
-records that cannot be linked to an account.
+Rates are keyed by tool account (it_portal_tool_credentials.id) across every
+provider, not just Kling: different accounts buy credits at a different rupee
+price. Pricing is entered as a package (credits bought for rupees);
+rate_per_credit is derived. A single global-default row (credential_id/
+provider/tool_id all NULL) is the fallback used for generation records that
+cannot be linked to an account.
 
 All endpoints are admin-gated. Costing itself lives in reports_router; this router
 only manages the rate rows the costing reads.
@@ -100,15 +101,18 @@ def list_credit_rates(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    """List Kling accounts with their current effective rate, plus the global default."""
+    """List every tool account with its current effective rate, plus the global default."""
     global_row = _current_rate_row(db, None)
-    label_map = _kling_account_label_map(db)  # real account names from captured metadata
+    label_map = _kling_account_label_map(db)  # real Kling account names from captured metadata
 
     credentials = (
         db.query(ITPortalToolCredential, ITPortalTool)
         .join(ITPortalTool, ITPortalToolCredential.tool_id == ITPortalTool.id)
-        .filter(func.lower(func.coalesce(ITPortalTool.slug, "")).in_(KLING_SLUGS))
-        .order_by(ITPortalToolCredential.id.asc())
+        .filter(
+            ITPortalToolCredential.scope == "company",
+            ITPortalToolCredential.is_active == True,
+        )
+        .order_by(ITPortalTool.name.asc(), ITPortalToolCredential.id.asc())
         .all()
     )
 
@@ -168,10 +172,7 @@ def upsert_credit_rate(
             .first()
         )
         if not cred:
-            raise HTTPException(status_code=404, detail="Kling account (credential) not found")
-        tool = db.query(ITPortalTool).filter(ITPortalTool.id == cred.tool_id).first()
-        if not tool or (tool.slug or "").strip().lower() not in KLING_SLUGS:
-            raise HTTPException(status_code=400, detail="Credential does not belong to a Kling tool")
+            raise HTTPException(status_code=404, detail="Tool account (credential) not found")
         tool_id = cred.tool_id
 
     effective_from = payload.effectiveFrom or datetime.utcnow().date()

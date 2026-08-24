@@ -136,6 +136,7 @@ class CredentialUpsertPayload(BaseModel):
     totp_secret: Optional[str] = None
     api_key: Optional[str] = None
     notes: Optional[str] = None
+    renewal_date: Optional[str] = None
     is_active: bool = True
     create_new: bool = False
 
@@ -381,6 +382,7 @@ def _serialize_credential_summary(credential: ITPortalToolCredential) -> dict:
         "hasApiKey": bool(credential.api_key_encrypted),
         "loginIdentifierPreview": decrypt_secret(credential.login_identifier_encrypted) or None,
         "notes": credential.notes,
+        "renewalDate": credential.renewal_date.isoformat() if credential.renewal_date else None,
         "isActive": bool(credential.is_active),
         "createdAt": credential.created_at.isoformat() if credential.created_at else None,
         "updatedAt": credential.updated_at.isoformat() if credential.updated_at else None,
@@ -551,6 +553,16 @@ def _normalize_totp_secret(value: Optional[str]) -> Optional[str]:
     if normalized.lower().startswith("otpauth://"):
         return normalized
     return config.secret
+
+
+def _parse_optional_date(value: Optional[str]) -> Optional[date]:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid renewal date; use YYYY-MM-DD")
 
 
 def _decrypt_secret_value(value: Optional[str]) -> Optional[str]:
@@ -3708,8 +3720,16 @@ def upsert_credential(
         credential.totp_secret_encrypted = None
         credential.api_key_encrypted = None
         credential.notes = None
+        credential.renewal_date = None
     else:
-        credential.login_method = login_method
+        # A brand-new credential always gets the (possibly defaulted)
+        # normalized method. An existing one only has it overwritten when the
+        # caller actually sent login_method - otherwise a partial update that
+        # only touches one field (e.g. AdminToolRenewalsTab.jsx saving just a
+        # renewal date, with no login_method in its payload) would silently
+        # reset a Google-login credential back to "email_password".
+        if created or payload.login_method is not None:
+            credential.login_method = login_method
         if payload.login_identifier is not None:
             normalized_login_identifier = (payload.login_identifier or "").strip()
             credential.login_identifier_encrypted = (
@@ -3746,6 +3766,8 @@ def upsert_credential(
             )
         if payload.notes is not None:
             credential.notes = payload.notes.strip() or None
+        if payload.renewal_date is not None:
+            credential.renewal_date = _parse_optional_date(payload.renewal_date)
     if scope == "user":
         credential.linked_credential_id = effective_linked_credential.id if effective_linked_credential else None
     else:
