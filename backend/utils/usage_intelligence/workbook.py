@@ -672,6 +672,7 @@ def _sheet_client_usage(ws, snapshot):
         row = C.data_table(ws, [
             C.Col("User", 24, key="name"),
             C.Col("Tool", 18, key="tool"),
+            C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
             C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
             C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
         ], rows, start_row=row, table_name=f"Client{i}_{_safe_file_stub(entry['client'])[:18]}")
