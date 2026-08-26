@@ -136,6 +136,7 @@ class CredentialUpsertPayload(BaseModel):
     totp_secret: Optional[str] = None
     api_key: Optional[str] = None
     notes: Optional[str] = None
+    renewal_date: Optional[str] = None
     is_active: bool = True
     create_new: bool = False
 
@@ -381,6 +382,7 @@ def _serialize_credential_summary(credential: ITPortalToolCredential) -> dict:
         "hasApiKey": bool(credential.api_key_encrypted),
         "loginIdentifierPreview": decrypt_secret(credential.login_identifier_encrypted) or None,
         "notes": credential.notes,
+        "renewalDate": credential.renewal_date.isoformat() if credential.renewal_date else None,
         "isActive": bool(credential.is_active),
         "createdAt": credential.created_at.isoformat() if credential.created_at else None,
         "updatedAt": credential.updated_at.isoformat() if credential.updated_at else None,
@@ -551,6 +553,16 @@ def _normalize_totp_secret(value: Optional[str]) -> Optional[str]:
     if normalized.lower().startswith("otpauth://"):
         return normalized
     return config.secret
+
+
+def _parse_optional_date(value: Optional[str]) -> Optional[date]:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid renewal date; use YYYY-MM-DD")
 
 
 def _decrypt_secret_value(value: Optional[str]) -> Optional[str]:
@@ -1639,6 +1651,14 @@ def _choose_usage_confidence(existing: Optional[float], incoming: Optional[float
     if existing is None:
         return incoming
     return max(existing, incoming)
+
+
+def _is_admin_reporter(user: Optional[User]) -> bool:
+    if user is None:
+        return False
+    if bool(getattr(user, "is_admin", False)):
+        return True
+    return (getattr(user, "position", None) or "").strip().lower() == "admin"
 
 
 def _choose_usage_credits_burned(
@@ -2996,6 +3016,22 @@ def report_extension_usage_event(
             }
             if reporter_key not in existing_reporter_keys:
                 duplicate_reporters.append(reporter)
+
+            # A row can end up owned by whoever reported the task FIRST, which is
+            # often an admin/shared-account background scan rather than the real
+            # generating employee -- their own later report just merges in here as
+            # a "duplicate reporter" that never counts toward their own totals
+            # (Kling Report, Employee Summary, etc. all key off usage_event.user_id).
+            # If the current owner looks like an admin/shared account and the new
+            # reporter does not, hand ownership to the real employee -- the same
+            # non-admin preference merge_duplicate_kling_usage_events.py already
+            # applies when cleaning up historical duplicate rows.
+            previous_owner = db.query(User).filter(User.id == usage_event.user_id).first()
+            if _is_admin_reporter(previous_owner) and not _is_admin_reporter(current_user):
+                merged_metadata["reassignedFromUserId"] = usage_event.user_id
+                merged_metadata["reassignedAt"] = _serialize_utc_datetime(datetime.utcnow())
+                usage_event.user_id = current_user.id
+
             merged_metadata["crossUserDuplicate"] = True
             merged_metadata["ownerUserId"] = usage_event.user_id
             merged_metadata["duplicateReporters"] = duplicate_reporters[-20:]
@@ -3708,8 +3744,16 @@ def upsert_credential(
         credential.totp_secret_encrypted = None
         credential.api_key_encrypted = None
         credential.notes = None
+        credential.renewal_date = None
     else:
-        credential.login_method = login_method
+        # A brand-new credential always gets the (possibly defaulted)
+        # normalized method. An existing one only has it overwritten when the
+        # caller actually sent login_method - otherwise a partial update that
+        # only touches one field (e.g. AdminToolRenewalsTab.jsx saving just a
+        # renewal date, with no login_method in its payload) would silently
+        # reset a Google-login credential back to "email_password".
+        if created or payload.login_method is not None:
+            credential.login_method = login_method
         if payload.login_identifier is not None:
             normalized_login_identifier = (payload.login_identifier or "").strip()
             credential.login_identifier_encrypted = (
@@ -3746,6 +3790,8 @@ def upsert_credential(
             )
         if payload.notes is not None:
             credential.notes = payload.notes.strip() or None
+        if payload.renewal_date is not None:
+            credential.renewal_date = _parse_optional_date(payload.renewal_date)
     if scope == "user":
         credential.linked_credential_id = effective_linked_credential.id if effective_linked_credential else None
     else:

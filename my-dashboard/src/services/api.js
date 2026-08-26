@@ -2442,4 +2442,17 @@ export const itToolsAPI = {
   },
 };
 
+// Credit -> rupee rates per tool account, used to cost generations/clients.
+export const creditRatesAPI = {
+  list: async (requestConfig = {}) => {
+    const response = await api.get('/api/reports/credit-rates', requestConfig);
+    return response.data;
+  },
+
+  upsert: async (payload) => {
+    const response = await api.post('/api/reports/credit-rates', payload);
+    return response.data;
+  },
+};
+
 export default api;

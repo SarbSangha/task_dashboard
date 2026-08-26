@@ -66,7 +66,7 @@ export default function GenerationPromptView({ generations }) {
       <div className="cgpt-media-empty compact">
         <span className="cgpt-media-empty-icon" aria-hidden="true">💬</span>
         <strong>No prompts available</strong>
-        <p>Prompts that produced media appear here.</p>
+        <p>Prompts from this conversation appear here.</p>
       </div>
     );
   }

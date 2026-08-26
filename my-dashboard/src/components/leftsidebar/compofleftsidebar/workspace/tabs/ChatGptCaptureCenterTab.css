@@ -2514,6 +2514,7 @@
 .cgpt-gen-status.tone-success { color: var(--color-feedback-success-text); }
 .cgpt-gen-status.tone-warning { color: var(--color-feedback-warning-text); }
 .cgpt-gen-status.tone-error { color: var(--color-feedback-error-text); }
+.cgpt-gen-status.tone-muted { color: var(--color-text-secondary); }
 
 .cgpt-gen-head-spacer { flex: 1 1 auto; }
 

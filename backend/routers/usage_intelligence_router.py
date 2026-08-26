@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 from database_config import get_operational_db
 from models_new import User
 from utils.permissions import require_admin
-from utils.usage_intelligence import build_snapshot, build_usage_workbook, directory as usage_directory
+from utils.usage_intelligence import (
+    build_snapshot,
+    build_tool_login_report,
+    build_tool_login_workbook,
+    build_usage_workbook,
+    directory as usage_directory,
+)
 
 router = APIRouter(prefix="/api/reports/usage", tags=["Usage Intelligence"])
 
@@ -187,6 +193,39 @@ def usage_workbook(
     snap = _snapshot(db, preset, start, end, department, user, reportType)
     db.close()
     data, mimetype, filename = build_usage_workbook(snap)
+    return Response(
+        content=data,
+        media_type=mimetype,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/tool-logins")
+def tool_logins(
+    preset: Optional[str] = Query(None),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    return build_tool_login_report(db, preset=preset, start=start, end=end, department=department, user_id=user)
+
+
+@router.get("/tool-logins.xlsx")
+def tool_logins_workbook(
+    preset: Optional[str] = Query(None),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    snap = build_tool_login_report(db, preset=preset, start=start, end=end, department=department, user_id=user)
+    db.close()
+    data, mimetype, filename = build_tool_login_workbook(snap)
     return Response(
         content=data,
         media_type=mimetype,

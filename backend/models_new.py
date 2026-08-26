@@ -706,6 +706,7 @@ class ITPortalToolCredential(Base):
     totp_secret_encrypted = Column(Text)
     api_key_encrypted = Column(Text)
     notes = Column(Text)
+    renewal_date = Column(Date, index=True)
     is_active = Column(Boolean, default=True, index=True)
     created_by = Column(Integer, ForeignKey("users.id"))
     updated_by = Column(Integer, ForeignKey("users.id"))

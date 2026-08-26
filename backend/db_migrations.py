@@ -311,6 +311,8 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "totp_secret_encrypted", "TEXT")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "linked_credential_id", "INTEGER")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "login_method", "VARCHAR(40) DEFAULT 'email_password'")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "renewal_date", "DATE")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_renewal_date ON it_portal_tool_credentials(renewal_date)"))
     _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "external_event_id", "VARCHAR(160)")
     _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "generation_id", "VARCHAR(160)")
     _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "request_id", "VARCHAR(160)")
@@ -2044,3 +2046,6 @@ def ensure_operational_schema(engine) -> None:
             credential_cols = _table_columns(conn, "it_portal_tool_credentials")
             if "login_method" not in credential_cols:
                 conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN login_method VARCHAR(40) DEFAULT 'email_password'"))
+            if "renewal_date" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN renewal_date DATE"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_renewal_date ON it_portal_tool_credentials(renewal_date)"))

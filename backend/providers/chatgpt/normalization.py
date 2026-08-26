@@ -25,7 +25,7 @@ produced by the double-finalize() bug fixed in content-chatgpt.js/
 content-chatgpt-network.js) - updates one row rather than creating a second.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import func
@@ -174,8 +174,16 @@ def _upsert_prompt(db: Session, record: ConversationRecord, event: ConversationC
     prompt.files_json = payload.get("files") or None
     prompt.code_blocks_json = payload.get("codeBlocks") or None
     prompt.content_parts_json = payload.get("contentParts") or None
-    if payload.get("sequenceIndex") is not None:
-        prompt.sequence_index = payload["sequenceIndex"]
+    # sequence_index is set once, at creation, from _next_prompt_sequence
+    # (server-computed, monotonic per conversation) - never from
+    # payload.sequenceIndex. That field is the extension's own local
+    # per-conversation-id counter (bus.nextSequenceIndex), which restarts
+    # from 0 whenever it starts counting under a different id - including
+    # empty string, the id a brand-new thread's opening message is sent
+    # under before ChatGPT assigns one. Trusting it here let a reconciled
+    # orphan (see _reconcile_orphaned_prompt) collide with that same
+    # conversation's next ordinary prompt, both landing on sequence_index 0
+    # - confirmed live in production.
     prompt.prompt_timestamp = _parse_iso_datetime(payload.get("promptTimestamp")) or event.created_at
     db.flush()
     return prompt
@@ -337,6 +345,191 @@ def _upsert_generated_asset_from_content_part(
     return asset
 
 
+# How long a brand-new conversation's opening prompt can plausibly sit
+# unanswered before _reconcile_orphaned_prompt's timestamp-proximity fallback
+# refuses to guess. Generous on purpose: async tool-backed turns (image
+# generation) were independently observed taking 30-90s (see
+# _find_matching_prompt's docstring) - this just needs to comfortably clear
+# that, not pin it exactly.
+ORPHAN_RECONCILE_WINDOW_SECONDS = 15 * 60
+
+
+def _reconcile_orphaned_prompt(db: Session, record: ConversationRecord, event: ConversationCaptureEvent) -> None:
+    """Backfills the one prompt_captured event that genuinely cannot carry a
+    conversation_id at capture time: the very first message of a brand-new
+    conversation, sent before ChatGPT has assigned it an id (see
+    normalize_capture_event's provider_conversation_id guard, whose comment
+    promised "a later event... will carry the id once known" - nothing
+    actually implemented that until now, so that event sat losslessly in
+    ConversationCaptureEvent forever with provider_conversation_id NULL,
+    invisible to every conversation-scoped read; confirmed in production via
+    direct query - dozens of conversations permanently missing their opening
+    prompt/image, not an extension capture bug at all.
+
+    Only relevant when this conversation has no prompt at all yet (a reply
+    inside an existing conversation already carries a real conversation_id at
+    capture time, so there is nothing to reconcile) - gated on that directly,
+    via a live query, rather than on "is this ConversationRecord brand new
+    right now": the latter is only true once per record's entire lifetime, so
+    a second backfill_all() replay - or simply re-running it after a first
+    pass whose only matching response_completed used stream_fallback - would
+    silently stop retrying reconciliation for every record already created by
+    the first pass. A has-any-prompt check is idempotent across any number of
+    replays instead.
+
+    Two link strategies, tried in order:
+    1. response_completed's payload.parentMessageId - ChatGPT's own thread
+       pointer naming the exact prompt message this response replies to.
+       Exact, but only populated when the authoritative conversation-fetch
+       succeeds, which production data shows happening on roughly 1% of
+       response_completed events (RESPONSE_RECONSTRUCTION_REPORT.md's
+       "observed failing 100% of the time" turned out to still be true after
+       that fix shipped) - not a usable primary strategy on its own.
+    2. Nearest still-orphaned prompt_captured event from the SAME user
+       within ORPHAN_RECONCILE_WINDOW_SECONDS before this event - the same
+       "closest preceding event, same actor" heuristic
+       mediaHelpers.buildGenerations already applies client-side for
+       image-to-turn pairing, and the only thing available for the ~99% of
+       turns strategy 1 can't resolve. Approximate the same way that one is:
+       two new conversations from the same user opened within the window
+       could theoretically cross-pair, which is why this only ever runs
+       while the conversation has zero prompts, not on every event of an
+       existing one.
+
+    Patches the raw event's provider_conversation_id (so it stops being
+    orphaned for any future replay too) and normalizes it immediately,
+    before the caller's own handler runs - so response.prompt_id below
+    resolves correctly the very first time instead of only after a second
+    backfill pass. Also repairs a specific corruption this introduced on its
+    way to this fix: before this gate existed, _upsert_response's own
+    "most recently created prompt for this conversation" fallback (see
+    _find_matching_prompt) ran against a conversation that - because its
+    true first prompt was still an unreconciled orphan - genuinely had no
+    prompt at all yet at that point, then later ran again after a *later*
+    turn's ordinary prompt had already been normalized, and paired this
+    first response to that later prompt instead (confirmed live: conv 77's
+    "I wasn't able to generate the image..." response had prompt_id pointing
+    at "try again", its own conversation's *second* message). Once set,
+    _upsert_response's `if response.prompt_id is None` guard never
+    revisits it - so the fix below overwrites it directly rather than
+    relying on that guard to self-correct on replay."""
+    if event.event_type != EVENT_TYPE_RESPONSE_COMPLETED:
+        return
+    # Gated on "is this the earliest response_completed event ever captured
+    # for this real conversation_id" - a property of the immutable raw event
+    # log (ConversationCaptureEvent.id ordering), not of what has or hasn't
+    # been written to ConversationResponse/ConversationPrompt yet. Checking
+    # against those normalized tables instead (prompt exists? response
+    # exists?) sounds equivalent but isn't: both get written by ordinary,
+    # unrelated turns processing before or after this one on a later replay,
+    # and reading that as "already reconciled" is exactly what produced the
+    # corruption this function now also repairs.
+    earliest_response_event_id = (
+        db.query(func.min(ConversationCaptureEvent.id))
+        .filter(
+            ConversationCaptureEvent.provider == PROVIDER,
+            ConversationCaptureEvent.provider_conversation_id == event.provider_conversation_id,
+            ConversationCaptureEvent.event_type == EVENT_TYPE_RESPONSE_COMPLETED,
+        )
+        .scalar()
+    )
+    if earliest_response_event_id != event.id:
+        return
+
+    orphan_query = db.query(ConversationCaptureEvent).filter(
+        ConversationCaptureEvent.provider == PROVIDER,
+        ConversationCaptureEvent.event_type == EVENT_TYPE_PROMPT_CAPTURED,
+        ConversationCaptureEvent.provider_conversation_id.is_(None),
+    )
+
+    orphan = None
+    parent_message_id = (event.payload_json or {}).get("parentMessageId")
+    if parent_message_id:
+        orphan = orphan_query.filter(ConversationCaptureEvent.provider_message_id == parent_message_id).first()
+
+    if orphan is None:
+        window_start = event.created_at - timedelta(seconds=ORPHAN_RECONCILE_WINDOW_SECONDS)
+        orphan = (
+            orphan_query.filter(
+                ConversationCaptureEvent.user_id == event.user_id,
+                ConversationCaptureEvent.created_at >= window_start,
+                ConversationCaptureEvent.created_at <= event.created_at,
+            )
+            .order_by(ConversationCaptureEvent.created_at.desc())
+            .first()
+        )
+
+    if orphan is not None:
+        orphan.provider_conversation_id = event.provider_conversation_id
+        db.flush()
+        prompt = _upsert_prompt(db, record, orphan)
+
+        # Repair: if this exact turn's response was already normalized (by
+        # an earlier run of this backfill, before this reconciliation
+        # existed or before it could find this orphan yet) and got
+        # mis-paired to some other prompt via _find_matching_prompt's
+        # fallback, point it at the real one now instead of leaving it
+        # wrong forever.
+        existing_response = (
+            db.query(ConversationResponse)
+            .filter(ConversationResponse.conversation_id == record.id, ConversationResponse.source_capture_event_id == event.id)
+            .first()
+        )
+        if existing_response is not None and existing_response.prompt_id != prompt.id:
+            existing_response.prompt_id = prompt.id
+            db.flush()
+
+    # Runs whether or not an orphan was found just now, not only inside the
+    # branch above: once an orphan has already been linked by an earlier
+    # replay, orphan_query correctly finds nothing new here every time after
+    # (it only matches provider_conversation_id IS NULL, which this orphan
+    # no longer is) - but sequence_index still needs enforcing on every
+    # replay of this same gated event, since _upsert_prompt's own handling
+    # of this conversation's *other*, ordinary prompts runs later in the
+    # same replay pass and would otherwise have nothing left correcting the
+    # renumbering behind it.
+    _renumber_by_timestamp(db, record)
+
+
+def _renumber_by_timestamp(db: Session, record: ConversationRecord) -> None:
+    """Reassigns sequence_index for every prompt and response in a
+    conversation by true chronological (timestamp) order, overriding
+    whatever the extension's own client-side sequenceIndex payload field
+    said. Only called right after _reconcile_orphaned_prompt links an
+    orphan in, because that is the one situation where sequence_index can
+    disagree with real chronology badly enough to matter: the extension's
+    counter is keyed per conversation_id as it knew it at send time, which
+    is empty for a brand-new thread's opening message - so that prompt's
+    sequenceIndex starts from 0 in its own, separate counting, and so does
+    the conversation's next *ordinary* message once a real id exists,
+    producing two prompts both claiming sequence_index 0 once both land in
+    the same conversation (confirmed live: exactly this collision, between
+    an orphan and the thread's own second message). Nothing else in this
+    file lets two prompts/responses collide this way, so this does not need
+    to run on every event - list_conversation_messages already displays by
+    timestamp regardless, this only fixes the stored column for anything
+    that reads sequence_index directly."""
+    prompts = (
+        db.query(ConversationPrompt)
+        .filter(ConversationPrompt.conversation_id == record.id)
+        .order_by(ConversationPrompt.prompt_timestamp.asc(), ConversationPrompt.id.asc())
+        .all()
+    )
+    for index, prompt in enumerate(prompts, start=1):
+        prompt.sequence_index = index
+
+    responses = (
+        db.query(ConversationResponse)
+        .filter(ConversationResponse.conversation_id == record.id)
+        .order_by(ConversationResponse.response_timestamp.asc(), ConversationResponse.id.asc())
+        .all()
+    )
+    for index, response in enumerate(responses, start=1):
+        response.sequence_index = index
+
+    db.flush()
+
+
 def _handle_generation_captured(db: Session, record: ConversationRecord, event: ConversationCaptureEvent) -> None:
     """generation_captured isn't currently emitted by the extension (images
     now flow through response_completed's contentParts instead - see
@@ -387,13 +580,16 @@ def normalize_capture_event(db: Session, event: ConversationCaptureEvent) -> Opt
     if not event.provider_conversation_id:
         # No conversation identity yet (e.g. the very first prompt_captured
         # of a brand-new conversation, before ChatGPT assigns an id) -
-        # nothing to attach a ConversationRecord to. A later event for the
-        # same underlying conversation will carry the id once known.
+        # nothing to attach a ConversationRecord to yet. Handled once the
+        # conversation's response_completed event arrives (which does carry
+        # the real id) via _reconcile_orphaned_prompt below - this raw event
+        # is not lost, just deferred.
         return None
     handler = _EVENT_HANDLERS.get(event.event_type)
     if handler is None:
         return None
     record = _get_or_create_conversation_record(db, event)
+    _reconcile_orphaned_prompt(db, record, event)
     handler(db, record, event)
     return record
 

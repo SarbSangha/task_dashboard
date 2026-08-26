@@ -18,9 +18,11 @@ from openpyxl.chart import BarChart, LineChart, PieChart, Reference
 from openpyxl.chart.label import DataLabelList
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.filters import AutoFilter, FilterColumn, Filters
 
 from utils.ai_report import components as C
 from utils.ai_report import theme as T
+from utils.usage_intelligence.service import NO_CLIENT
 
 XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 LAST = 12
@@ -56,6 +58,9 @@ def build_usage_workbook(snapshot: dict) -> tuple[bytes, str, str]:
         if person:
             return _build_person_workbook(snapshot, person)
 
+    if report_type == "consolidated":
+        return _build_consolidated_workbook(snapshot)
+
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -66,9 +71,11 @@ def build_usage_workbook(snapshot: dict) -> tuple[bytes, str, str]:
         ("User Overview", _sheet_users, T.NAVY_TABLE),
         ("Individual Users", _sheet_individual, T.GREEN),
         ("Tool Usage", _sheet_tools, T.NAVY_TABLE),
+        ("Consolidated", _sheet_consolidated, T.GREEN),
         ("Credit Analysis", _sheet_credits, T.NAVY),
         ("Generation Analysis", _sheet_generations, T.GREEN),
         ("Activity Timeline", _sheet_timeline, T.NAVY_TABLE),
+        ("Tool Logins", _sheet_tool_logins, T.GREEN),
         ("Trends", _sheet_trends, T.NAVY),
         ("Anomalies & Alerts", _sheet_anomalies, T.GREEN),
         ("Management Actions", _sheet_actions, T.NAVY),
@@ -88,6 +95,26 @@ def build_usage_workbook(snapshot: dict) -> tuple[bytes, str, str]:
     wb.save(buf)
     scope = snapshot.get("reportType") or "organisation"
     filename = f"Usage-Intelligence_{scope}_{period['end']}.xlsx"
+    return buf.getvalue(), XLSX_MIMETYPE, filename
+
+
+def build_tool_login_workbook(snapshot: dict) -> tuple[bytes, str, str]:
+    """Standalone single-sheet download for the Tool Logins report."""
+    C._used_table_names.clear()
+    wb = Workbook()
+    wb.remove(wb.active)
+    ws = wb.create_sheet(title="Tool Logins")
+    ws.sheet_properties.tabColor = T.GREEN
+    _sheet_tool_logins(ws, snapshot)
+
+    period = snapshot["period"]
+    wb.properties.title = "Tool Login Attempts"
+    wb.properties.creator = "Task Dashboard — Usage Intelligence"
+    wb.properties.subject = f"Tool login attempts · {period['label']}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    filename = f"Tool-Logins_{period['end']}.xlsx"
     return buf.getvalue(), XLSX_MIMETYPE, filename
 
 
@@ -144,11 +171,14 @@ def _sheet_dashboard(ws, snapshot):
         line.height = 8
         line.width = 18
         line.style = 10
+        # Source columns are hidden (a clean look for the visible sheet), but
+        # Excel's chart default is to plot visible cells only -- without this,
+        # the chart frame renders with an empty plot area.
+        line.visible_cells_only = False
         cats = Reference(ws, min_col=src_col, min_row=2, max_row=last_data)
         data = Reference(ws, min_col=src_col + 1, min_row=1, max_col=src_col + 2, max_row=last_data)
         line.add_data(data, titles_from_data=True)
         line.set_categories(cats)
-        line.shape = 4
         ws.add_chart(line, f"A{row}")
         row += 16
 
@@ -159,6 +189,7 @@ def _sheet_dashboard(ws, snapshot):
         C.Col("Category", 14, key="category"),
         C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
         C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
         C.Col("Users", 10, "right", T.FMT_INT, key="users"),
         C.Col("Adoption %", 12, "right", T.FMT_DECIMAL1, key="adoptionPct"),
         C.Col("Growth %", 12, "right", T.FMT_DECIMAL1, key="growthPct"),
@@ -174,8 +205,19 @@ def _sheet_dashboard(ws, snapshot):
         C.Col("Hours", 12, "right", T.FMT_DECIMAL1, key="usageHours"),
         C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
         C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
         C.Col("Success %", 12, "right", T.FMT_DECIMAL1, key="successRate"),
     ], teams, start_row=row, table_name="DashTeams")
+
+    top_clients = snapshot.get("topClients") or []
+    row = C.section_header(ws, "Top clients", row=row, last_col=LAST)
+    row = C.data_table(ws, [
+        C.Col("Client", 26, key="client"),
+        C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
+        C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+        C.Col("Users", 10, "right", T.FMT_INT, key="users"),
+    ], top_clients[:15], start_row=row, table_name="DashClients")
     C.freeze_below(ws, 4)
 
 
@@ -193,8 +235,10 @@ def _sheet_summary(ws, snapshot):
         {"metric": "Usage hours", "value": k["usageHours"]["value"], "previous": k["usageHours"]["previous"], "change": k["usageHours"]["deltaPct"]},
         {"metric": "Generations", "value": k["generations"]["value"], "previous": k["generations"]["previous"], "change": k["generations"]["deltaPct"]},
         {"metric": "Credits consumed", "value": k["credits"]["value"], "previous": k["credits"]["previous"], "change": k["credits"]["deltaPct"]},
+        {"metric": "Cost (₹)", "value": k.get("cost", {}).get("value"), "previous": k.get("cost", {}).get("previous"), "change": k.get("cost", {}).get("deltaPct")},
         {"metric": "Average hours / user", "value": k["avgHoursPerUser"]["value"], "previous": k["avgHoursPerUser"]["previous"], "change": k["avgHoursPerUser"]["deltaPct"]},
         {"metric": "Average credits / user", "value": k["avgCreditsPerUser"]["value"], "previous": k["avgCreditsPerUser"]["previous"], "change": k["avgCreditsPerUser"]["deltaPct"]},
+        {"metric": "Average cost / user (₹)", "value": k.get("avgCostPerUser", {}).get("value"), "previous": k.get("avgCostPerUser", {}).get("previous"), "change": k.get("avgCostPerUser", {}).get("deltaPct")},
         {"metric": "Success rate %", "value": k["successRate"]["value"], "previous": k["successRate"]["previous"], "change": k["successRate"]["deltaPct"]},
         {"metric": "Most-used tool", "value": k["mostUsedTool"], "previous": "—", "change": None},
         {"metric": "Fastest-growing tool", "value": k["fastestGrowingTool"], "previous": "—", "change": k.get("fastestGrowingPct")},
@@ -230,9 +274,17 @@ def _sheet_summary(ws, snapshot):
 def _sheet_teams(ws, snapshot):
     C.hide_gridlines(ws)
     period = snapshot["period"]
-    row = C.title_band(ws, "Team Overview", f"Department comparison · {period['label']}", last_col=LAST)
+    row = C.title_band(ws, "Team Overview", f"Department comparison · {period['label']}", last_col=15)
+    row = C.callout(
+        ws,
+        "Click the − / + in the row gutter on the left to open a team and see its members' hours, sessions, credits and cost. "
+        "On a member row the Avg columns are that person's own credits / cost / hours per active day, not a per-user average. "
+        "Clients lists every client worked on, heaviest generation count first.",
+        row=row, last_col=15,
+    )
     teams = snapshot.get("teams") or []
-    row = C.data_table(ws, [
+
+    cols = [
         C.Col("Team", 22, key="name"),
         C.Col("Lead", 18, key="lead"),
         C.Col("Users", 10, "right", T.FMT_INT, key="users"),
@@ -242,13 +294,59 @@ def _sheet_teams(ws, snapshot):
         C.Col("Sessions", 12, "right", T.FMT_INT, key="sessions"),
         C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
         C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
         C.Col("Avg credits/user", 16, "right", T.FMT_DECIMAL1, key="avgCreditsPerUser"),
+        C.Col("Avg cost/user (₹)", 16, "right", T.FMT_DECIMAL1, key="avgCostPerUser"),
         C.Col("Avg hours/user", 14, "right", T.FMT_DECIMAL1, key="avgHoursPerUser"),
         C.Col("Success %", 12, "right", T.FMT_DECIMAL1, key="successRate"),
-    ], teams, start_row=row, table_name="Teams")
-    C.freeze_below(ws, 4)
-    if teams:
-        _color_scale(ws, 9, 4, 3 + len(teams))
+        C.Col("Clients", 44, key="clientsWorked"),
+    ]
+
+    header_row = row
+    row = C.table_header(ws, cols, row=header_row)
+    team_rows: list[int] = []
+    cur = row
+    for i, team in enumerate(teams):
+        team_fill = T.FILL_ALT if i % 2 == 1 else T.FILL_WHITE
+        C.table_row(ws, cols, team, row_idx=cur, fill=team_fill)
+        team_rows.append(cur)
+        cur += 1
+
+        members = team.get("members") or []
+        first_member_row = cur
+        for member in members:
+            is_active = bool(member.get("isActiveInPeriod"))
+            member_row = {
+                "name": f"    {member.get('name') or 'Unknown'}",
+                "lead": team.get("lead") or "Not set",
+                "users": 1,
+                "activeUsers": 1 if is_active else 0,
+                "inactiveUsers": 0 if is_active else 1,
+                "usageHours": member.get("usageHours"),
+                "sessions": member.get("sessions"),
+                "generations": member.get("generations"),
+                "credits": member.get("credits"),
+                "costRupees": member.get("costRupees"),
+                "avgCreditsPerUser": member.get("creditsPerActiveDay"),
+                "avgCostPerUser": member.get("costPerActiveDay"),
+                "avgHoursPerUser": member.get("hoursPerActiveDay"),
+                "successRate": member.get("successRate"),
+                "clientsWorked": member.get("clientsWorked"),
+            }
+            C.table_row(ws, cols, member_row, row_idx=cur, fill=T.FILL_SUBROW)
+            cur += 1
+        if members:
+            ws.row_dimensions.group(first_member_row, cur - 1, outline_level=1, hidden=True)
+
+    last_row = cur - 1
+    if last_row >= header_row:
+        ws.auto_filter.ref = f"A{header_row}:{C.col_letter(len(cols))}{last_row}"
+    ws.sheet_properties.outlinePr.summaryBelow = False
+    ws.sheet_properties.outlinePr.showOutlineSymbols = True
+
+    C.freeze_below(ws, header_row)
+    if team_rows:
+        _color_scale_rows(ws, 9, team_rows)
 
 
 def _sheet_users(ws, snapshot):
@@ -257,7 +355,7 @@ def _sheet_users(ws, snapshot):
     row = C.title_band(
         ws, "User Overview",
         f"Sortable employee metrics · {period['label']} · Engagement is not a productivity score",
-        last_col=14,
+        last_col=16,
     )
     users = snapshot.get("users") or []
     row = C.data_table(ws, [
@@ -270,11 +368,13 @@ def _sheet_users(ws, snapshot):
         C.Col("Active days", 12, "right", T.FMT_INT, key="activeDays"),
         C.Col("Generations", 13, "right", T.FMT_INT, key="generations"),
         C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
         C.Col("Success %", 12, "right", T.FMT_DECIMAL1, key="successRate"),
         C.Col("Credits / success", 16, "right", T.FMT_DECIMAL1, key="creditsPerGeneration"),
         C.Col("Tools", 10, "right", T.FMT_INT, key="toolsUsed"),
         C.Col("Engagement", 12, "right", T.FMT_INT, key="engagementScore"),
         C.Col("Band", 12, key="usageBand"),
+        C.Col("Clients", 44, key="clientsWorked"),
     ], users, start_row=row, table_name="Users")
     C.freeze_below(ws, 4)
 
@@ -317,6 +417,7 @@ def _sheet_individual(ws, snapshot):
             ("Successful", user.get("successfulGenerations")),
             ("Failed", user.get("failedGenerations")),
             ("Credits", user.get("credits")),
+            ("Cost (₹)", user.get("costRupees")),
             ("Credits / success", user.get("creditsPerGeneration") if user.get("creditsPerGeneration") is not None else "—"),
             ("Engagement (not productivity)", user.get("engagementScore")),
         ]
@@ -330,6 +431,7 @@ def _sheet_individual(ws, snapshot):
                 C.Col("Category", 14, key="category"),
                 C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
                 C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+                C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
                 C.Col("Success %", 12, "right", T.FMT_DECIMAL1, key="successRate"),
                 C.Col("Last used", 14, key="lastUsed"),
                 C.Col("Time on tool", 18, key="timeSpentNote"),
@@ -340,7 +442,7 @@ def _sheet_individual(ws, snapshot):
 def _sheet_tools(ws, snapshot):
     C.hide_gridlines(ws)
     period = snapshot["period"]
-    row = C.title_band(ws, "Tool Usage", f"Adoption, volume and efficiency · {period['label']}", last_col=LAST)
+    row = C.title_band(ws, "Tool Usage", f"Adoption, volume and efficiency · {period['label']}", last_col=13)
     row = C.data_table(ws, [
         C.Col("Tool", 16, key="tool"),
         C.Col("Category", 14, key="category"),
@@ -349,12 +451,90 @@ def _sheet_tools(ws, snapshot):
         C.Col("Failed", 10, "right", T.FMT_INT, key="failed"),
         C.Col("Success %", 12, "right", T.FMT_DECIMAL1, key="successRate"),
         C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
         C.Col("Users", 10, "right", T.FMT_INT, key="users"),
         C.Col("Adoption %", 12, "right", T.FMT_DECIMAL1, key="adoptionPct"),
         C.Col("Growth %", 12, "right", T.FMT_DECIMAL1, key="growthPct"),
         C.Col("Credits / success", 16, "right", T.FMT_DECIMAL1, key="creditsPerSuccess"),
         C.Col("Last used", 14, key="lastUsed"),
     ], snapshot.get("tools") or [], start_row=row, table_name="Tools")
+    C.freeze_below(ws, 4)
+
+
+def _sheet_consolidated(ws, snapshot):
+    C.hide_gridlines(ws)
+    period = snapshot["period"]
+    row = C.title_band(
+        ws, "Consolidated",
+        f"Every tool × employee pairing in scope, with usage and when it was last used · {period['label']}",
+        last_col=LAST,
+    )
+    rows = []
+    for user in snapshot.get("users") or []:
+        for t in user.get("tools") or []:
+            last_used = t.get("lastUsed")
+            if not last_used or last_used == "None":
+                continue
+            rows.append({
+                "tool": t.get("tool"),
+                "category": _blank(t.get("category"), "Uncategorised"),
+                "name": user.get("name"),
+                "department": user.get("department"),
+                "generations": t.get("generations") or 0,
+                "credits": round(t.get("credits") or 0, 2),
+                "costRupees": round(t.get("costRupees") or 0, 2),
+                "lastUsed": last_used,
+            })
+    rows.sort(key=lambda r: (r["tool"] or "", r["name"] or ""))
+    row = C.section_header(ws, "Employee tool usage", row=row, last_col=LAST)
+    row = C.data_table(ws, [
+        C.Col("Tool", 18, key="tool"),
+        C.Col("Category", 16, key="category"),
+        C.Col("Employee name", 24, key="name"),
+        C.Col("Team", 18, key="department"),
+        C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
+        C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+        C.Col("Last used", 14, key="lastUsed"),
+    ], rows, start_row=row, table_name="Consolidated")
+
+    teams = snapshot.get("teams") or []
+    row = C.section_header(ws, "Department-wise usage", row=row, last_col=LAST)
+    row = C.data_table(ws, [
+        C.Col("Team", 22, key="name"),
+        C.Col("Users", 10, "right", T.FMT_INT, key="users"),
+        C.Col("Active", 10, "right", T.FMT_INT, key="activeUsers"),
+        C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
+        C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+        C.Col("Hours", 12, "right", T.FMT_DECIMAL1, key="usageHours"),
+        C.Col("Success %", 12, "right", T.FMT_DECIMAL1, key="successRate"),
+    ], teams, start_row=row, table_name="ConsolidatedDepts")
+
+    departments = snapshot.get("departmentUsage") or []
+    if departments:
+        row = C.section_header(ws, "Department detail — members, tools and clients", row=row, last_col=LAST)
+        for i, entry in enumerate(departments):
+            dept_rows = entry.get("rows") or []
+            if not dept_rows:
+                continue
+            row = C.section_header(
+                ws,
+                f"{entry['department']}  ·  {entry.get('totalGenerations', 0)} generations  ·  {entry.get('totalCredits', 0)} credits  ·  ₹{entry.get('totalCostRupees', 0)}",
+                row=row, last_col=LAST,
+            )
+            row = C.data_table(ws, [
+                C.Col("Member", 24, key="name"),
+                C.Col("Tool", 16, key="tool"),
+                C.Col("Purpose", 14, key="purpose"),
+                C.Col("Client", 22, key="client"),
+                C.Col("Account", 26, key="account"),
+                C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
+                C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+                C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+            ], dept_rows, start_row=row, table_name=f"Dept{i}_{_safe_file_stub(entry['department'])[:18]}")
+            row += 1
+
     C.freeze_below(ws, 4)
 
 
@@ -371,6 +551,7 @@ def _sheet_credits(ws, snapshot):
         C.Col("Name", 22, key="name"),
         C.Col("Team", 16, key="department"),
         C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
         C.Col("Successful gens", 16, "right", T.FMT_INT, key="successfulGenerations"),
         C.Col("Credits / success", 16, "right", T.FMT_DECIMAL1, key="creditsPerGeneration"),
         C.Col("Outputs / credit", 16, "right", key="outputsPerCredit"),
@@ -393,6 +574,7 @@ def _sheet_generations(ws, snapshot):
         C.Col("Category", 22, key="category"),
         C.Col("Generations", 16, "right", T.FMT_INT, key="generations"),
         C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
     ], snapshot.get("categories") or [], start_row=row, table_name="Categories")
     row = C.section_header(ws, "By tool", row=row, last_col=LAST)
     row = C.data_table(ws, [
@@ -421,8 +603,28 @@ def _sheet_timeline(ws, snapshot):
         C.Col("Category", 14, key="category"),
         C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
         C.Col("Credits (allocated)", 18, "right", T.FMT_DECIMAL1, key="credits"),
+        C.Col("Cost (₹) (allocated)", 18, "right", T.FMT_DECIMAL1, key="costRupees"),
         C.Col("Status", 12, key="status"),
     ], rows, start_row=row, table_name="Timeline")
+    C.freeze_below(ws, 4)
+
+
+def _sheet_tool_logins(ws, snapshot):
+    C.hide_gridlines(ws)
+    period = snapshot["period"]
+    rows = snapshot.get("toolLogins") or []
+    row = C.title_band(
+        ws, "Tool Logins",
+        f"Every tool launch from the dashboard — who tried to log in, to what, using which assigned account, and when (capped) · {period['label']}",
+        last_col=LAST,
+    )
+    row = C.data_table(ws, [
+        C.Col("Date/time", 18, key="dateTime"),
+        C.Col("User", 22, key="userName"),
+        C.Col("Team", 16, key="department"),
+        C.Col("Tool", 16, key="tool"),
+        C.Col("Assigned account", 28, key="assignedAccount"),
+    ], rows, start_row=row, table_name="ToolLogins")
     C.freeze_below(ws, 4)
 
 
@@ -431,26 +633,28 @@ def _sheet_trends(ws, snapshot):
     period = snapshot["period"]
     daily = (snapshot.get("trends") or {}).get("daily") or []
     row = C.title_band(ws, "Trends", f"Daily usage, generations and credits · {period['label']}", last_col=LAST)
+    header_row = row
     row = C.data_table(ws, [
         C.Col("Date", 14, key="date"),
         C.Col("Active users", 14, "right", T.FMT_INT, key="activeUsers"),
         C.Col("Usage hours", 14, "right", T.FMT_DECIMAL1, key="usageHours"),
         C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
         C.Col("Credits", 12, "right", T.FMT_DECIMAL1, key="credits"),
-    ], daily, start_row=row, table_name="Trends")
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+    ], daily, start_row=header_row, table_name="Trends")
     if len(daily) >= 2:
-        last = 3 + len(daily)
+        last_data_row = header_row + len(daily)
         chart = LineChart()
         chart.y_axis.title = "Volume"
         chart.x_axis.title = "Date"
         chart.height = 8
         chart.width = 18
-        cats = Reference(ws, min_col=1, min_row=4, max_row=last)
-        data = Reference(ws, min_col=4, min_row=3, max_col=5, max_row=last)
+        cats = Reference(ws, min_col=1, min_row=header_row + 1, max_row=last_data_row)
+        data = Reference(ws, min_col=4, min_row=header_row, max_col=5, max_row=last_data_row)
         chart.add_data(data, titles_from_data=True)
         chart.set_categories(cats)
         ws.add_chart(chart, "G3")
-    C.freeze_below(ws, 4)
+    C.freeze_below(ws, header_row)
 
 
 def _sheet_anomalies(ws, snapshot):
@@ -469,6 +673,7 @@ def _sheet_anomalies(ws, snapshot):
         C.Col("Finding", 60, key="finding"),
         C.Col("Recommended action", 50, key="recommendedAction"),
         C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+        C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
         C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
     ], snapshot.get("anomalies") or [], start_row=row, table_name="Anomalies")
     C.freeze_below(ws, 4)
@@ -513,6 +718,7 @@ def _sheet_raw(ws, snapshot):
         C.Col("Category", 14, key="category"),
         C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
         C.Col("Allocated credits", 18, "right", T.FMT_DECIMAL1, key="credits"),
+        C.Col("Allocated cost (₹)", 18, "right", T.FMT_DECIMAL1, key="costRupees"),
     ], rows, start_row=row, table_name="RawData")
     C.freeze_below(ws, 5)
 
@@ -527,18 +733,190 @@ def _delta(metric: dict) -> str:
     return f"{sign}{pct}% vs prior period"
 
 
-def _color_scale(ws, col: int, start_row: int, end_row: int) -> None:
-    if end_row < start_row:
+def _color_scale_rows(ws, col: int, rows: list[int]) -> None:
+    """Credit heat-map scoped to specific (non-contiguous) rows -- team summary
+    rows only, skipping their collapsed member rows so the scale isn't skewed
+    by per-person values."""
+    if not rows:
         return
     letter = get_column_letter(col)
+    ref = " ".join(f"{letter}{r}" for r in rows)
     ws.conditional_formatting.add(
-        f"{letter}{start_row}:{letter}{end_row}",
+        ref,
         ColorScaleRule(
             start_type="min", start_color="FCE4D6",
             mid_type="percentile", mid_value=50, mid_color="FFF2CC",
             end_type="max", end_color="C6EFCE",
         ),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Standalone consolidated report (tool x employee x last used, one tab)
+# --------------------------------------------------------------------------- #
+def _build_consolidated_workbook(snapshot: dict) -> tuple[bytes, str, str]:
+    C._used_table_names.clear()
+    wb = Workbook()
+    wb.remove(wb.active)
+    ws = wb.create_sheet(title="Consolidated")
+    ws.sheet_properties.tabColor = T.GREEN
+    _sheet_consolidated(ws, snapshot)
+
+    ws2 = wb.create_sheet(title="Client Usage")
+    ws2.sheet_properties.tabColor = T.NAVY_TABLE
+    _sheet_client_usage(ws2, snapshot)
+
+    ws3 = wb.create_sheet(title="Tool Assignments")
+    ws3.sheet_properties.tabColor = T.GREEN
+    _sheet_tool_assignments(ws3, snapshot)
+
+    period = snapshot["period"]
+    wb.properties.title = "Consolidated Usage Report"
+    wb.properties.creator = "Task Dashboard — Usage Intelligence"
+    wb.properties.subject = f"Tool x employee last-used · {period['label']}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    filename = f"Consolidated_{period['end']}.xlsx"
+    return buf.getvalue(), XLSX_MIMETYPE, filename
+
+
+def _sheet_client_usage(ws, snapshot):
+    C.hide_gridlines(ws)
+    period = snapshot["period"]
+    row = C.title_band(
+        ws, "Client Usage",
+        f"One table per client — who used which tool and how many credits · {period['label']}",
+        last_col=LAST,
+    )
+    clients = snapshot.get("clientUsage") or []
+    if not clients:
+        C.callout(ws, "No client-linked generations in this period.", row=row, last_col=LAST)
+        return
+    rendered = 0
+    for i, entry in enumerate(clients):
+        if entry.get("client") == NO_CLIENT:
+            # Not linked is its own giant bucket (every generation nobody picked
+            # a client for) rather than a real client, and it dwarfs the actual
+            # per-client tables here -- skipped for now, see chat history.
+            continue
+        rows = entry.get("rows") or []
+        if not rows:
+            continue
+        row = C.section_header(
+            ws,
+            f"{entry['client']}  ·  {entry.get('totalGenerations', 0)} generations  ·  {entry.get('totalCredits', 0)} credits  ·  ₹{entry.get('totalCostRupees', 0)}",
+            row=row, last_col=LAST,
+        )
+        row = C.data_table(ws, [
+            C.Col("User", 24, key="name"),
+            C.Col("Tool", 18, key="tool"),
+            C.Col("Purpose", 14, key="purpose"),
+            C.Col("Account", 26, key="account"),
+            C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
+            C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
+            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+        ], rows, start_row=row, table_name=f"Client{i}_{_safe_file_stub(entry['client'])[:18]}")
+        row += 1
+        rendered += 1
+    if not rendered:
+        C.callout(ws, "No client-linked generations in this period.", row=row, last_col=LAST)
+
+
+def _grouped_by_person_table(ws, rows: list[dict], *, row: int) -> int:
+    """One row per (user, tool) assignment, but with the User/Department
+    cells merged down across each person's block -- avoids cramming a
+    variable number of tools/accounts/dates into one wrapped cell, which
+    breaks alignment once someone has more than one or two tools."""
+    cols = [
+        C.Col("User", 24, key="name"),
+        C.Col("Department", 20, key="department"),
+        C.Col("Tool", 18, key="tool"),
+        C.Col("Account", 32, key="account"),
+        C.Col("Assigned date", 16, key="assignedDate"),
+    ]
+    header_row = row
+    cur = C.table_header(ws, cols, row=header_row)
+    if not rows:
+        return cur + 1
+
+    ordered = sorted(rows, key=lambda r: (r.get("name") or "", r.get("tool") or ""))
+    i = 0
+    n = len(ordered)
+    group_idx = 0
+    while i < n:
+        name = ordered[i].get("name")
+        j = i
+        while j < n and ordered[j].get("name") == name:
+            j += 1
+        block_start = cur
+        fill = T.FILL_ALT if group_idx % 2 == 1 else T.FILL_WHITE
+        for k in range(i, j):
+            C.table_row(ws, cols, ordered[k], row_idx=cur, fill=fill)
+            cur += 1
+        block_end = cur - 1
+        if block_end > block_start:
+            ws.merge_cells(start_row=block_start, start_column=1, end_row=block_end, end_column=1)
+            ws.merge_cells(start_row=block_start, start_column=2, end_row=block_end, end_column=2)
+        group_idx += 1
+        i = j
+
+    last_row = cur - 1
+    ws.auto_filter.ref = f"A{header_row}:{C.col_letter(len(cols))}{last_row}"
+    return cur + 1
+
+
+def _sheet_tool_assignments(ws, snapshot):
+    C.hide_gridlines(ws)
+    period = snapshot["period"]
+    row = C.title_band(
+        ws, "Tool Assignments",
+        f"Every employee assigned a tool and its account, whether used yet or not · {period['label']}",
+        last_col=LAST,
+    )
+
+    assignments = snapshot.get("toolAssignments") or []
+    row = C.section_header(ws, "Tool assignment by employee", row=row, last_col=LAST)
+    row = C.data_table(ws, [
+        C.Col("Tool", 18, key="tool"),
+        C.Col("User", 24, key="name"),
+        C.Col("Department", 20, key="department"),
+        C.Col("Account", 30, key="account"),
+    ], assignments, start_row=row, table_name="ToolAssignments")
+
+    row = C.section_header(ws, "By employee — one row per tool, grouped so each person's tools line up", row=row, last_col=LAST)
+    row = _grouped_by_person_table(ws, assignments, row=row)
+
+    accounts = snapshot.get("toolAccounts") or []
+    row = C.section_header(ws, "Tool accounts", row=row, last_col=LAST)
+    row = C.callout(
+        ws,
+        "Status filter defaults to Current only. Use the Status column filter to also show Old (unassigned) accounts.",
+        row=row, last_col=LAST,
+    )
+    accounts_header_row = row
+    row = C.data_table(ws, [
+        C.Col("Tool", 20, key="tool"),
+        C.Col("Account", 30, key="account"),
+        C.Col("Status", 14, key="status"),
+        C.Col("Renewal date", 16, key="renewalDate"),
+    ], accounts, start_row=row, table_name="ToolAccounts")
+    _filter_to_current(ws, "ToolAccounts", accounts_header_row, accounts, status_col_index=2)
+    C.freeze_below(ws, 4)
+
+
+def _filter_to_current(ws, table_name: str, header_row: int, rows: list[dict], *, status_col_index: int) -> None:
+    """Pre-apply an Excel table filter so only Status == 'Current' rows show on open."""
+    if not rows:
+        return
+    table = ws.tables.get(table_name)
+    if table is None:
+        return
+    table.autoFilter = AutoFilter(ref=table.ref)
+    table.autoFilter.filterColumn.append(FilterColumn(colId=status_col_index, filters=Filters(filter=["Current"])))
+    for i, r in enumerate(rows):
+        if r.get("status") != "Current":
+            ws.row_dimensions[header_row + 1 + i].hidden = True
 
 
 # --------------------------------------------------------------------------- #
@@ -635,6 +1013,12 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
         C.Kpi("Not linked generations", person.get("unlinkedGenerations") or 0, T.FMT_INT),
         C.Kpi("Not linked credits", person.get("unlinkedCredits") or 0, T.FMT_INT),
     ], row=row, span=3)
+    row = C.kpi_cards(ws, [
+        C.Kpi("Cost used (₹)", person.get("costRupees") or 0, T.FMT_DECIMAL1),
+        C.Kpi("Cost on top client (₹)", person.get("primaryClientCostRupees") or 0, T.FMT_DECIMAL1),
+        C.Kpi("Not linked cost (₹)", person.get("unlinkedCostRupees") or 0, T.FMT_DECIMAL1),
+        C.Kpi("Cost / generation (₹)", round((person.get("costRupees") or 0) / person["generations"], 2) if person.get("generations") else 0, T.FMT_DECIMAL1),
+    ], row=row, span=3)
 
     row = C.section_header(ws, "3. Which tools they used", row=row, last_col=LAST)
     if not tools:
@@ -654,6 +1038,7 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
             C.Col("Time", 12, key="timeSpentNote"),
             C.Col("Launches", 12, "right", T.FMT_INT, key="launches"),
             C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
             C.Col("Last used", 14, key="lastUsed"),
         ], tools, start_row=row, table_name="PersonTools")
         n = len(tools)
@@ -687,7 +1072,7 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
         ws.add_chart(tbar, f"G{chart_row}")
         row = chart_row + 16
 
-    clients = person.get("clients") or snapshot.get("clients") or []
+    clients = [c for c in (person.get("clients") or snapshot.get("clients") or []) if c.get("client") != NO_CLIENT]
     row = C.section_header(ws, "4. Where credits were used (by client)", row=row, last_col=LAST)
     if not clients:
         row = C.callout(ws, "No generations in this period, so there is no client spend to show.", row=row, last_col=LAST)
@@ -702,6 +1087,7 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
             C.Col("Client", 22, key="client"),
             C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
             C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
             C.Col("Share of credits %", 18, "right", T.FMT_DECIMAL1, key="share"),
             C.Col("Tools used", 22, key="tools"),
         ], clients, start_row=row, table_name="PersonClients")
@@ -731,6 +1117,7 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
             C.Col("Type of output", 22, key="category"),
             C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
             C.Col("Credits", 12, "right", T.FMT_INT, key="credits"),
+            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
             C.Col("Share of work %", 16, "right", T.FMT_DECIMAL1, key="share"),
         ], categories, start_row=row, table_name="PersonCats")
         n = len(categories)
@@ -760,6 +1147,7 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
             C.Col("Date", 14, key="date"),
             C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
             C.Col("Credits", 12, "right", T.FMT_DECIMAL1, key="credits"),
+            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
         ], daily, start_row=row, table_name="PersonDaily")
         n = len(daily)
         chart_row = row
@@ -810,9 +1198,26 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
             C.Col("Type", 14, key="category"),
             C.Col("Generations", 13, "right", T.FMT_INT, key="generations"),
             C.Col("Credits", 12, "right", T.FMT_DECIMAL1, key="credits"),
+            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
             C.Col("Status", 14, key="status"),
             C.Col("Task", 22, key="task"),
         ], gen_log, start_row=row, table_name="PersonGens")
+
+    logins = person.get("toolLogins") or []
+    row = C.section_header(ws, "8. Login attempts", row=row, last_col=LAST)
+    if not logins:
+        row = C.callout(ws, "No tool launches from the dashboard for this person in the period.", row=row, last_col=LAST)
+    else:
+        row = C.callout(
+            ws,
+            "Every time this person clicked Launch on a tool from the dashboard, with the assigned account it used.",
+            row=row, last_col=LAST,
+        )
+        row = C.data_table(ws, [
+            C.Col("Date/time", 18, key="dateTime"),
+            C.Col("Tool", 16, key="tool"),
+            C.Col("Assigned account", 28, key="assignedAccount"),
+        ], logins, start_row=row, table_name="PersonLogins")
 
     C.set_widths(ws, [22, 22, 16, 16, 16, 16, 14, 16, 14, 14, 14, 16])
     ws.print_title_rows = "1:2"
@@ -825,7 +1230,7 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
 
 
 def _person_daily(snapshot: dict, person: dict, period: dict) -> list[dict]:
-    by_day: dict[str, dict] = defaultdict(lambda: {"generations": 0, "credits": 0.0})
+    by_day: dict[str, dict] = defaultdict(lambda: {"generations": 0, "credits": 0.0, "costRupees": 0.0})
     for row in snapshot.get("timeline") or []:
         if row.get("userId") != person.get("userId"):
             continue
@@ -834,14 +1239,20 @@ def _person_daily(snapshot: dict, person: dict, period: dict) -> list[dict]:
             continue
         by_day[key]["generations"] += int(row.get("generations") or 0)
         by_day[key]["credits"] += float(row.get("credits") or 0)
+        by_day[key]["costRupees"] += float(row.get("costRupees") or 0)
     start = datetime.strptime(period["start"], "%Y-%m-%d").date()
     end = datetime.strptime(period["end"], "%Y-%m-%d").date()
     out = []
     cursor = start
     while cursor <= end:
         key = str(cursor)
-        slot = by_day.get(key, {"generations": 0, "credits": 0.0})
-        out.append({"date": key, "generations": int(slot["generations"]), "credits": round(float(slot["credits"]), 2)})
+        slot = by_day.get(key, {"generations": 0, "credits": 0.0, "costRupees": 0.0})
+        out.append({
+            "date": key,
+            "generations": int(slot["generations"]),
+            "credits": round(float(slot["credits"]), 2),
+            "costRupees": round(float(slot["costRupees"]), 2),
+        })
         cursor += timedelta(days=1)
     if period.get("days", 0) > 60:
         return [d for d in out if d["generations"] or d["credits"]] or out[-30:]
@@ -849,17 +1260,19 @@ def _person_daily(snapshot: dict, person: dict, period: dict) -> list[dict]:
 
 
 def _person_categories(tools: list[dict]) -> list[dict]:
-    by_cat: dict[str, dict] = defaultdict(lambda: {"generations": 0, "credits": 0.0})
+    by_cat: dict[str, dict] = defaultdict(lambda: {"generations": 0, "credits": 0.0, "costRupees": 0.0})
     for tool in tools:
         name = _blank(tool.get("category"), "Uncategorised")
         by_cat[name]["generations"] += int(tool.get("generations") or 0)
         by_cat[name]["credits"] += float(tool.get("credits") or 0)
+        by_cat[name]["costRupees"] += float(tool.get("costRupees") or 0)
     total = sum(v["generations"] for v in by_cat.values()) or 1
     rows = [
         {
             "category": name,
             "generations": vals["generations"],
             "credits": round(vals["credits"], 2),
+            "costRupees": round(vals["costRupees"], 2),
             "share": round(vals["generations"] / total * 100.0, 1),
         }
         for name, vals in by_cat.items()

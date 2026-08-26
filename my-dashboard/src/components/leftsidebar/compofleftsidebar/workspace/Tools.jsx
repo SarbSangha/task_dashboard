@@ -116,6 +116,7 @@ const EMPTY_CREDENTIAL_FORM = {
   backup_codes: '',
   totp_secret: '',
   notes: '',
+  renewal_date: '',
 };
 const USAGE_REPORT_REFRESH_MS = 15000;
 
@@ -2420,6 +2421,7 @@ export default function Tools({ view = 'tools' }) {
       assigned_user_ids: (summary.assignedUserIds || []).map((value) => `${value}`),
       login_identifier: summary.loginIdentifierPreview || '',
       notes: summary.notes || '',
+      renewal_date: summary.renewalDate || '',
     });
   };
 
@@ -2882,6 +2884,7 @@ export default function Tools({ view = 'tools' }) {
           backup_codes: backupCodesValue,
           totp_secret: totpSecretValue,
           notes: credentialForm.notes,
+          renewal_date: credentialForm.renewal_date || '',
         });
         const linkedCredentialId = Number(firstResult?.credential?.linkedCredentialId || 0);
         const followUpPayload = (userId) => (
@@ -2902,6 +2905,7 @@ export default function Tools({ view = 'tools' }) {
               backup_codes: backupCodesValue,
               totp_secret: totpSecretValue,
               notes: credentialForm.notes,
+              renewal_date: credentialForm.renewal_date || '',
             }
         );
 
@@ -2946,6 +2950,7 @@ export default function Tools({ view = 'tools' }) {
           backup_codes: backupCodesValue,
           totp_secret: totpSecretValue,
           notes: credentialForm.notes,
+          renewal_date: credentialForm.renewal_date || '',
           assigned_user_ids: assignedUserIdsValue,
           create_new: supportsSharedCompanyCredentialAssignments(targetToolSlug) && !credentialIdValue,
         });
@@ -3417,6 +3422,9 @@ export default function Tools({ view = 'tools' }) {
                               </button>
                             </div>
                             <small>{summary.notes || 'No internal note saved for this login yet.'}</small>
+                            <small className="it-chatgpt-renewal">
+                              {summary.renewalDate ? `Renews ${summary.renewalDate}` : 'No renewal date set'}
+                            </small>
                             <div className="it-chatgpt-assigned-users">
                               {assignedUsers.length ? assignedUsers.map((assignedUser) => (
                                 <span key={`${summary.id}:${assignedUser.id}`} className="it-chatgpt-user-pill">
@@ -3656,6 +3664,16 @@ export default function Tools({ view = 'tools' }) {
                     <small>Optional. Paste one Google 8-digit backup code per line and the Flow extension will try them in order when backup-code sign-in is shown.</small>
                   </div>
               )}
+              <div className="it-span-2 it-secret-support-field">
+                <label htmlFor="credential-renewal-date">Renewal date</label>
+                <input
+                  id="credential-renewal-date"
+                  type="date"
+                  value={credentialForm.renewal_date || ''}
+                  onChange={(e) => setCredentialForm({ ...credentialForm, renewal_date: e.target.value })}
+                />
+                <small>Optional. When this account's subscription renews or needs re-payment.</small>
+              </div>
             </div>
             <textarea value={credentialForm.notes} onChange={(e) => setCredentialForm({ ...credentialForm, notes: e.target.value })} placeholder="Internal notes optional" autoComplete="off" />
               <div className="it-admin-actions">

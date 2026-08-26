@@ -167,3 +167,17 @@ def attach_owner_summaries(db: Session, dicts: list[dict]) -> list[dict]:
         item["ownerEmployeeId"] = user.employee_id if user else None
         item["ownerDepartment"] = user.department if user else None
     return dicts
+
+
+def attach_event_user_names(db: Session, dicts: list[dict]) -> list[dict]:
+    """Same idea as attach_owner_summaries, for the raw event feed's userId
+    (the actor who triggered/reported the event) - mirrors
+    providers/suno/router.py's _attach_event_user_names."""
+    user_ids = {item.get("userId") for item in dicts if item.get("userId")}
+    if not user_ids:
+        return dicts
+    users_by_id = {user.id: user for user in db.query(User).filter(User.id.in_(user_ids)).all()}
+    for item in dicts:
+        user = users_by_id.get(item.get("userId"))
+        item["userName"] = user.name if user else None
+    return dicts
