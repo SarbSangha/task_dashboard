@@ -79,7 +79,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 20px 28px;
+  height: 52px;
+  min-height: 52px;
+  padding: 0 28px;
   border-bottom: 1px solid var(--color-navbar-border);
   border-radius: 20px 20px 0 0;
   background: var(--color-navbar-surface);
@@ -89,8 +91,6 @@
 
 .header-title-section {
   min-width: 0;
-  display: grid;
-  gap: 6px;
 }
 
 .outbox-main-title {
@@ -102,23 +102,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.current-user-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  max-width: min(34vw, 360px);
-  padding: 6px 12px;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 24%, var(--color-border));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-primary-soft) 68%, var(--color-surface-muted));
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .outbox-header-tools {
@@ -316,7 +299,6 @@
   letter-spacing: 0.08em;
 }
 
-.outbox-modal.minimized .current-user-badge,
 .outbox-modal.minimized .outbox-header-search {
   display: none;
 }
@@ -577,6 +559,8 @@
   }
 
   .outbox-main-header {
+    height: auto;
+    min-height: 0;
     flex-wrap: wrap;
     gap: 12px;
     align-items: center;
@@ -590,10 +574,6 @@
   .outbox-main-header .wc-root {
     flex-shrink: 0;
     order: 2;
-  }
-
-  .current-user-badge {
-    max-width: 100%;
   }
 
   .outbox-header-tools {

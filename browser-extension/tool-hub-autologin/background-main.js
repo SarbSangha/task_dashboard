@@ -2947,6 +2947,20 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     return true;
   }
 
+  if (message?.type === 'GRAMMARLY_DOCS_CAPTURE_EVENT') {
+    handleGrammarlyDocsCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'GRAMMARLY_DOCS_FETCH_ACTIVE_CLIENTS') {
+    handleGrammarlyDocsFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'KLING_FETCH_MY_ACTIVE_TASKS') {
     handleKlingFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse(result))
@@ -3005,6 +3019,11 @@ if (chrome?.runtime?.onStartup) {
     runSafeStartupTask(runSpliceCaptureFlush);
     runSafeStartupTask(() => maybeReportSpliceCaptureHealth(true));
     runSafeStartupTask(() => chrome.alarms.create(SPLICE_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    // Grammarly Docs has no health-check alarm (matches ElevenLabs/Suno's own
+    // posture - see this file's own comment on those two) - only a
+    // retry-flush kick on startup, to drain anything left over from before
+    // the service worker last terminated.
+    runSafeStartupTask(runGrammarlyDocsCaptureFlush);
   });
 }
 
@@ -3025,6 +3044,7 @@ if (chrome?.runtime?.onInstalled) {
     runSafeStartupTask(() => chrome.alarms.create(EPIDEMIC_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
     runSafeStartupTask(runSpliceCaptureFlush);
     runSafeStartupTask(() => chrome.alarms.create(SPLICE_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runGrammarlyDocsCaptureFlush);
   });
 }
 
@@ -3078,6 +3098,9 @@ if (chrome?.alarms?.onAlarm) {
     }
     if (alarm?.name === SPLICE_CAPTURE_HEALTH_ALARM) {
       runSafeStartupTask(() => maybeReportSpliceCaptureHealth(true));
+    }
+    if (alarm?.name === GRAMMARLY_DOCS_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runGrammarlyDocsCaptureFlush);
     }
   });
 }

@@ -185,6 +185,7 @@ def search_generations(
     owner_user_id: Optional[int] = Query(None),
     project_id: Optional[int] = Query(None),
     collection_id: Optional[int] = Query(None),
+    client_id: Optional[int] = Query(None),
     model: Optional[str] = Query(None),
     resolution: Optional[str] = Query(None),
     ownership_status: Optional[str] = Query(None),
@@ -221,6 +222,8 @@ def search_generations(
         query = query.filter(GenerationRecord.owner_user_id == owner_user_id)
     if project_id is not None:
         query = query.filter(GenerationRecord.project_id == project_id)
+    if client_id is not None:
+        query = query.filter(GenerationRecord.linked_client_id == client_id)
     if collection_id is not None:
         query = query.join(
             GenerationCollectionMember, GenerationCollectionMember.generation_id == GenerationRecord.id

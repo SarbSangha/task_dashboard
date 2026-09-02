@@ -116,6 +116,7 @@ const EMPTY_CREDENTIAL_FORM = {
   backup_codes: '',
   totp_secret: '',
   notes: '',
+  renewal_date: '',
 };
 const USAGE_REPORT_REFRESH_MS = 15000;
 
@@ -1166,7 +1167,7 @@ const isWorkplaceToolsAccessDeniedError = (error) => (
   && /active inbox task|workplace tools/i.test(`${error?.response?.data?.detail || ''}`)
 );
 
-export default function Tools({ view = 'tools' }) {
+export default function Tools({ view = 'tools', searchQuery: externalSearchQuery, onSearchChange: externalOnSearchChange }) {
   const activeView = view === 'credits' ? 'credits' : view === 'charts' ? 'charts' : 'tools';
   const isUsageDashboardView = activeView === 'credits' || activeView === 'charts';
   const containerRef = useRef(null);
@@ -1188,7 +1189,12 @@ export default function Tools({ view = 'tools' }) {
   const [mailboxBusy, setMailboxBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
+  // The search box itself now lives in the Workspace window header (so it
+  // doesn't cost this tab its own header row) and is passed down as a
+  // controlled value; fall back to local state when used without it.
+  const [internalSearchQuery, setInternalSearchQuery] = useState('');
+  const searchQuery = externalSearchQuery !== undefined ? externalSearchQuery : internalSearchQuery;
+  const setSearchQuery = externalOnSearchChange || setInternalSearchQuery;
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [toolAdminSection, setToolAdminSection] = useState('assigned');
   const [selectedTool, setSelectedTool] = useState(null);
@@ -2247,14 +2253,37 @@ export default function Tools({ view = 'tools' }) {
     });
   }, [searchQuery, selectedCategory, tools]);
 
+  // The header search box drives the Tool Access Matrix by either a tool
+  // name/category or a user's name/email. A query can only ever mean one of
+  // those, so: if it matches a tool, narrow the columns; if it matches a
+  // user, narrow the rows; if it matches both (e.g. "ab"), narrow both.
   const accessMatrixTools = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return tools;
-    return tools.filter((tool) => (
+    const matchingTools = tools.filter((tool) => (
       tool.name?.toLowerCase().includes(query)
       || tool.category?.toLowerCase().includes(query)
     ));
-  }, [searchQuery, tools]);
+    const matchingUsers = sortedUsers.filter((user) => (
+      user.name?.toLowerCase().includes(query)
+      || user.email?.toLowerCase().includes(query)
+    ));
+    return matchingTools.length > 0 || matchingUsers.length === 0 ? matchingTools : tools;
+  }, [searchQuery, tools, sortedUsers]);
+
+  const accessMatrixUsers = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return sortedUsers;
+    const matchingUsers = sortedUsers.filter((user) => (
+      user.name?.toLowerCase().includes(query)
+      || user.email?.toLowerCase().includes(query)
+    ));
+    const matchingTools = tools.filter((tool) => (
+      tool.name?.toLowerCase().includes(query)
+      || tool.category?.toLowerCase().includes(query)
+    ));
+    return matchingUsers.length > 0 || matchingTools.length === 0 ? matchingUsers : sortedUsers;
+  }, [searchQuery, sortedUsers, tools]);
 
   const activeCredentialTool = useMemo(() => {
     const toolId = `${credentialForm.toolId || selectedTool?.id || ''}`.trim();
@@ -2420,6 +2449,7 @@ export default function Tools({ view = 'tools' }) {
       assigned_user_ids: (summary.assignedUserIds || []).map((value) => `${value}`),
       login_identifier: summary.loginIdentifierPreview || '',
       notes: summary.notes || '',
+      renewal_date: summary.renewalDate || '',
     });
   };
 
@@ -2587,13 +2617,13 @@ export default function Tools({ view = 'tools' }) {
     () => assignmentColumns.map((tool) => `${tool.id}`).join('|'),
     [assignmentColumns],
   );
-  const assignmentPageCount = Math.max(Math.ceil(sortedUsers.length / ASSIGNMENT_USER_PAGE_SIZE), 1);
+  const assignmentPageCount = Math.max(Math.ceil(accessMatrixUsers.length / ASSIGNMENT_USER_PAGE_SIZE), 1);
   const normalizedAssignmentUserPage = Math.min(assignmentUserPage, assignmentPageCount - 1);
   const assignmentPageStart = normalizedAssignmentUserPage * ASSIGNMENT_USER_PAGE_SIZE;
-  const assignmentPageEnd = Math.min(assignmentPageStart + ASSIGNMENT_USER_PAGE_SIZE, sortedUsers.length);
+  const assignmentPageEnd = Math.min(assignmentPageStart + ASSIGNMENT_USER_PAGE_SIZE, accessMatrixUsers.length);
   const assignmentVisibleUsers = useMemo(
-    () => sortedUsers.slice(assignmentPageStart, assignmentPageEnd),
-    [assignmentPageEnd, assignmentPageStart, sortedUsers],
+    () => accessMatrixUsers.slice(assignmentPageStart, assignmentPageEnd),
+    [assignmentPageEnd, assignmentPageStart, accessMatrixUsers],
   );
   const assignmentColumnMetaById = useMemo(() => {
     return assignmentColumns.reduce((accumulator, tool) => {
@@ -2622,7 +2652,7 @@ export default function Tools({ view = 'tools' }) {
 
   useEffect(() => {
     setAssignmentUserPage(0);
-  }, [activeView, assignmentColumnKey, sortedUsers.length]);
+  }, [activeView, assignmentColumnKey, accessMatrixUsers.length, searchQuery]);
 
   const handleEditToolChange = (toolId) => {
     setEditToolId(toolId);
@@ -2882,6 +2912,7 @@ export default function Tools({ view = 'tools' }) {
           backup_codes: backupCodesValue,
           totp_secret: totpSecretValue,
           notes: credentialForm.notes,
+          renewal_date: credentialForm.renewal_date || '',
         });
         const linkedCredentialId = Number(firstResult?.credential?.linkedCredentialId || 0);
         const followUpPayload = (userId) => (
@@ -2902,6 +2933,7 @@ export default function Tools({ view = 'tools' }) {
               backup_codes: backupCodesValue,
               totp_secret: totpSecretValue,
               notes: credentialForm.notes,
+              renewal_date: credentialForm.renewal_date || '',
             }
         );
 
@@ -2946,6 +2978,7 @@ export default function Tools({ view = 'tools' }) {
           backup_codes: backupCodesValue,
           totp_secret: totpSecretValue,
           notes: credentialForm.notes,
+          renewal_date: credentialForm.renewal_date || '',
           assigned_user_ids: assignedUserIdsValue,
           create_new: supportsSharedCompanyCredentialAssignments(targetToolSlug) && !credentialIdValue,
         });
@@ -3205,27 +3238,6 @@ export default function Tools({ view = 'tools' }) {
 
   return (
     <div ref={containerRef} className="app-container">
-      <header ref={headerRef} className="app-header is-visible">
-        <div className="header-wrapper">
-          <div>
-            <h1 className="app-title">RMW Tools Hub</h1>
-          </div>
-
-          <div className="search-wrapper">
-            <div className="search-icon">
-              <Icons.Search />
-            </div>
-            <input
-              type="text"
-              placeholder="Search tools..."
-              className="search-input"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-            />
-          </div>
-        </div>
-      </header>
-
       <main className="app-main">
         {error && <div className="tool-alert error">{error}</div>}
         {notice && <div className="tool-alert success">{notice}</div>}
@@ -3417,6 +3429,9 @@ export default function Tools({ view = 'tools' }) {
                               </button>
                             </div>
                             <small>{summary.notes || 'No internal note saved for this login yet.'}</small>
+                            <small className="it-chatgpt-renewal">
+                              {summary.renewalDate ? `Renews ${summary.renewalDate}` : 'No renewal date set'}
+                            </small>
                             <div className="it-chatgpt-assigned-users">
                               {assignedUsers.length ? assignedUsers.map((assignedUser) => (
                                 <span key={`${summary.id}:${assignedUser.id}`} className="it-chatgpt-user-pill">
@@ -3656,6 +3671,16 @@ export default function Tools({ view = 'tools' }) {
                     <small>Optional. Paste one Google 8-digit backup code per line and the Flow extension will try them in order when backup-code sign-in is shown.</small>
                   </div>
               )}
+              <div className="it-span-2 it-secret-support-field">
+                <label htmlFor="credential-renewal-date">Renewal date</label>
+                <input
+                  id="credential-renewal-date"
+                  type="date"
+                  value={credentialForm.renewal_date || ''}
+                  onChange={(e) => setCredentialForm({ ...credentialForm, renewal_date: e.target.value })}
+                />
+                <small>Optional. When this account's subscription renews or needs re-payment.</small>
+              </div>
             </div>
             <textarea value={credentialForm.notes} onChange={(e) => setCredentialForm({ ...credentialForm, notes: e.target.value })} placeholder="Internal notes optional" autoComplete="off" />
               <div className="it-admin-actions">
@@ -3867,7 +3892,13 @@ export default function Tools({ view = 'tools' }) {
                   ) : !assignmentColumns.length ? (
                     <tr>
                       <td className="it-assignment-empty" colSpan={2}>
-                        No tools match the current filters.
+                        No tools match "{searchQuery.trim()}".
+                      </td>
+                    </tr>
+                  ) : !accessMatrixUsers.length ? (
+                    <tr>
+                      <td className="it-assignment-empty" colSpan={Math.max(assignmentColumns.length + 1, 2)}>
+                        No users match "{searchQuery.trim()}".
                       </td>
                     </tr>
                   ) : (
@@ -3913,10 +3944,10 @@ export default function Tools({ view = 'tools' }) {
                 </tbody>
               </table>
             </div>
-            {!assignmentLoading && sortedUsers.length > ASSIGNMENT_USER_PAGE_SIZE && (
+            {!assignmentLoading && accessMatrixUsers.length > ASSIGNMENT_USER_PAGE_SIZE && (
               <div className="it-assignment-pager">
                 <span>
-                  Showing {assignmentPageStart + 1}-{assignmentPageEnd} of {sortedUsers.length} users
+                  Showing {assignmentPageStart + 1}-{assignmentPageEnd} of {accessMatrixUsers.length} users
                 </span>
                 <div className="it-assignment-pager-actions">
                   <button

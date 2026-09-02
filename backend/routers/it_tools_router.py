@@ -25,7 +25,16 @@ from sqlalchemy.orm import Session
 
 from auth import get_request_session_token, resolve_session_user
 from database_config import get_operational_db
-from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, ITPortalToolUsageEvent, User
+from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, ITPortalToolUsageEvent, ToolCreditRate, User
+from utils.tool_renewal_service import (
+    DEFAULT_RENEWAL_TYPE,
+    calculate_renewal_status,
+    get_current_rate,
+    is_valid_renewal_type,
+    normalize_renewal_type,
+    process_auto_renewal,
+    resolve_remaining_credits,
+)
 from services.otp_mail_service import fetch_auth_link_from_gmail, fetch_otp_from_gmail, latest_otp_uid_from_gmail
 from services.totp_service import generate_totp_code, parse_totp_config
 from services.workplace_access_service import (
@@ -136,6 +145,15 @@ class CredentialUpsertPayload(BaseModel):
     totp_secret: Optional[str] = None
     api_key: Optional[str] = None
     notes: Optional[str] = None
+    renewal_date: Optional[str] = None
+    # Tool Renew configuration (Admin Queue -> Tool Renew -> Configure).
+    # Optional/partial like the rest of this payload: omit a field to leave
+    # it unchanged. See utils/tool_renewal_service.py.
+    credit_enabled: Optional[bool] = None
+    renewal_type: Optional[str] = None
+    auto_renew: Optional[bool] = None
+    purchase_date: Optional[str] = None
+    tool_cost: Optional[float] = None
     is_active: bool = True
     create_new: bool = False
 
@@ -381,15 +399,46 @@ def _serialize_credential_summary(credential: ITPortalToolCredential) -> dict:
         "hasApiKey": bool(credential.api_key_encrypted),
         "loginIdentifierPreview": decrypt_secret(credential.login_identifier_encrypted) or None,
         "notes": credential.notes,
+        "renewalDate": credential.renewal_date.isoformat() if credential.renewal_date else None,
+        # Tool Renew configuration (Admin Queue -> Tool Renew -> Configure).
+        # See utils/tool_renewal_service.py for how these are interpreted.
+        "creditEnabled": bool(credential.credit_enabled),
+        "renewalType": normalize_renewal_type(credential.renewal_type),
+        "autoRenew": bool(credential.auto_renew),
+        "purchaseDate": credential.purchase_date.isoformat() if credential.purchase_date else None,
+        "toolCost": float(credential.tool_cost) if credential.tool_cost is not None else None,
         "isActive": bool(credential.is_active),
         "createdAt": credential.created_at.isoformat() if credential.created_at else None,
         "updatedAt": credential.updated_at.isoformat() if credential.updated_at else None,
     }
 
 
+def _attach_tool_renew_fields(db: Session, credential: ITPortalToolCredential, serialized: dict, rate=None) -> dict:
+    """Adds the computed side of Tool Renew (remaining credits, current rate,
+    renewal status) to an already-serialized credential summary. Kept
+    separate from _serialize_credential_summary so callers that don't need
+    it (e.g. the credential picker inside a tool's launch flow) don't pay for
+    the extra query/credit-consumption lookup. Only looks up a rate when the
+    account is credit-enabled and none was already batched in by the caller
+    -- a disabled account has nothing to look up."""
+    if rate is None and credential.credit_enabled:
+        rate = get_current_rate(db, credential.id)
+    remaining_credits = resolve_remaining_credits(db, credential, rate=rate)
+    status = calculate_renewal_status(credential, remaining_credits)
+    serialized.update({
+        "totalCredits": float(rate.package_credits) if rate and rate.package_credits is not None else None,
+        "costPerCredit": float(rate.rate_per_credit) if rate and rate.rate_per_credit is not None else None,
+        "remainingCredits": remaining_credits,
+        "renewalStatus": status["status"],
+        "renewalRequiresAction": status["requiresRenewal"],
+    })
+    return serialized
+
+
 def _build_admin_credential_summaries_by_tool(
     db: Session,
     tools: list[ITPortalTool],
+    actor_id: Optional[int] = None,
 ) -> dict[str, list[dict]]:
     tool_ids = [tool.id for tool in tools if tool.id]
     if not tool_ids:
@@ -407,6 +456,46 @@ def _build_admin_credential_summaries_by_tool(
         .all()
     )
 
+    # Lazy MONTHLY+auto-renew roll-forward: self-heal any account whose
+    # renewal date has quietly passed before it's ever displayed/reported.
+    # See utils/tool_renewal_service.process_auto_renewal.
+    auto_renewed_any = False
+    for credential in credentials:
+        if credential.scope != "company":
+            continue
+        original_date = credential.renewal_date
+        if process_auto_renewal(db, credential):
+            auto_renewed_any = True
+            _add_audit(
+                db,
+                actor_id=actor_id or credential.updated_by or credential.created_by,
+                action="credential_auto_renewed",
+                tool_id=credential.tool_id,
+                credential_id=credential.id,
+                details={"from": original_date.isoformat() if original_date else None, "to": credential.renewal_date.isoformat()},
+            )
+    if auto_renewed_any:
+        db.commit()
+
+    # Batch the current credit rate for every credit-enabled company account
+    # in one query instead of one round trip per row.
+    credit_enabled_ids = [c.id for c in credentials if c.scope == "company" and c.credit_enabled]
+    rate_by_credential_id: dict[int, ToolCreditRate] = {}
+    if credit_enabled_ids:
+        today = datetime.utcnow().date()
+        rate_rows = (
+            db.query(ToolCreditRate)
+            .filter(
+                ToolCreditRate.credential_id.in_(credit_enabled_ids),
+                ToolCreditRate.effective_from <= today,
+            )
+            .filter((ToolCreditRate.effective_to.is_(None)) | (ToolCreditRate.effective_to >= today))
+            .order_by(ToolCreditRate.effective_from.desc(), ToolCreditRate.id.desc())
+            .all()
+        )
+        for row in rate_rows:
+            rate_by_credential_id.setdefault(row.credential_id, row)  # newest wins
+
     summaries_by_tool_id: dict[str, list[dict]] = {f"{tool.id}": [] for tool in tools}
     tool_by_id = {tool.id: tool for tool in tools}
     serialized_by_tool_and_credential_id: dict[tuple[int, int], dict] = {}
@@ -414,6 +503,8 @@ def _build_admin_credential_summaries_by_tool(
 
     for credential in credentials:
         serialized = _serialize_credential_summary(credential)
+        if credential.scope == "company":
+            _attach_tool_renew_fields(db, credential, serialized, rate=rate_by_credential_id.get(credential.id))
         tool_key = f"{credential.tool_id}"
         summaries_by_tool_id.setdefault(tool_key, []).append(serialized)
         serialized_by_tool_and_credential_id[(credential.tool_id, credential.id)] = serialized
@@ -551,6 +642,16 @@ def _normalize_totp_secret(value: Optional[str]) -> Optional[str]:
     if normalized.lower().startswith("otpauth://"):
         return normalized
     return config.secret
+
+
+def _parse_optional_date(value: Optional[str], field_label: str = "renewal date") -> Optional[date]:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_label}; use YYYY-MM-DD")
 
 
 def _decrypt_secret_value(value: Optional[str]) -> Optional[str]:
@@ -1641,6 +1742,14 @@ def _choose_usage_confidence(existing: Optional[float], incoming: Optional[float
     return max(existing, incoming)
 
 
+def _is_admin_reporter(user: Optional[User]) -> bool:
+    if user is None:
+        return False
+    if bool(getattr(user, "is_admin", False)):
+        return True
+    return (getattr(user, "position", None) or "").strip().lower() == "admin"
+
+
 def _choose_usage_credits_burned(
     existing: Optional[float],
     incoming: Optional[float],
@@ -2481,7 +2590,7 @@ def list_tools(
         "isAdmin": is_admin,
     }
     if is_admin:
-        response["credentialSummariesByToolId"] = _build_admin_credential_summaries_by_tool(db, tools)
+        response["credentialSummariesByToolId"] = _build_admin_credential_summaries_by_tool(db, tools, actor_id=current_user.id)
     return response
 
 
@@ -2996,6 +3105,22 @@ def report_extension_usage_event(
             }
             if reporter_key not in existing_reporter_keys:
                 duplicate_reporters.append(reporter)
+
+            # A row can end up owned by whoever reported the task FIRST, which is
+            # often an admin/shared-account background scan rather than the real
+            # generating employee -- their own later report just merges in here as
+            # a "duplicate reporter" that never counts toward their own totals
+            # (Kling Report, Employee Summary, etc. all key off usage_event.user_id).
+            # If the current owner looks like an admin/shared account and the new
+            # reporter does not, hand ownership to the real employee -- the same
+            # non-admin preference merge_duplicate_kling_usage_events.py already
+            # applies when cleaning up historical duplicate rows.
+            previous_owner = db.query(User).filter(User.id == usage_event.user_id).first()
+            if _is_admin_reporter(previous_owner) and not _is_admin_reporter(current_user):
+                merged_metadata["reassignedFromUserId"] = usage_event.user_id
+                merged_metadata["reassignedAt"] = _serialize_utc_datetime(datetime.utcnow())
+                usage_event.user_id = current_user.id
+
             merged_metadata["crossUserDuplicate"] = True
             merged_metadata["ownerUserId"] = usage_event.user_id
             merged_metadata["duplicateReporters"] = duplicate_reporters[-20:]
@@ -3697,6 +3822,7 @@ def upsert_credential(
             source_credential=source_credential,
         )
 
+    renewal_config_before = None
     if scope == "user" and effective_linked_credential:
         credential.login_method = _normalize_credential_login_method(
             canonical_tool_slug,
@@ -3708,8 +3834,24 @@ def upsert_credential(
         credential.totp_secret_encrypted = None
         credential.api_key_encrypted = None
         credential.notes = None
+        credential.renewal_date = None
+        # Tool Renew configuration belongs to the company account being
+        # linked to, not to this per-user pointer row -- reset to defaults
+        # rather than carrying a stale copy.
+        credential.credit_enabled = False
+        credential.renewal_type = DEFAULT_RENEWAL_TYPE
+        credential.auto_renew = False
+        credential.purchase_date = None
+        credential.tool_cost = None
     else:
-        credential.login_method = login_method
+        # A brand-new credential always gets the (possibly defaulted)
+        # normalized method. An existing one only has it overwritten when the
+        # caller actually sent login_method - otherwise a partial update that
+        # only touches one field (e.g. AdminToolRenewalsTab.jsx saving just a
+        # renewal date, with no login_method in its payload) would silently
+        # reset a Google-login credential back to "email_password".
+        if created or payload.login_method is not None:
+            credential.login_method = login_method
         if payload.login_identifier is not None:
             normalized_login_identifier = (payload.login_identifier or "").strip()
             credential.login_identifier_encrypted = (
@@ -3746,6 +3888,34 @@ def upsert_credential(
             )
         if payload.notes is not None:
             credential.notes = payload.notes.strip() or None
+        # Snapshot before mutating so the audit entry below can record
+        # old -> new for exactly the fields this feature is required to be
+        # auditable for (requirement 16: credits, cost, renewal type,
+        # purchase date, auto-renew).
+        renewal_config_before = {
+            "renewalDate": credential.renewal_date.isoformat() if credential.renewal_date else None,
+            "creditEnabled": bool(credential.credit_enabled),
+            "renewalType": normalize_renewal_type(credential.renewal_type),
+            "autoRenew": bool(credential.auto_renew),
+            "purchaseDate": credential.purchase_date.isoformat() if credential.purchase_date else None,
+            "toolCost": float(credential.tool_cost) if credential.tool_cost is not None else None,
+        }
+        if payload.renewal_date is not None:
+            credential.renewal_date = _parse_optional_date(payload.renewal_date)
+        if payload.credit_enabled is not None:
+            credential.credit_enabled = payload.credit_enabled
+        if payload.renewal_type is not None:
+            if not is_valid_renewal_type(payload.renewal_type):
+                raise HTTPException(status_code=400, detail="renewal_type must be one of MANUAL, MONTHLY, CREDIT_CONSUMPTION")
+            credential.renewal_type = normalize_renewal_type(payload.renewal_type)
+        if payload.auto_renew is not None:
+            credential.auto_renew = payload.auto_renew
+        if payload.purchase_date is not None:
+            credential.purchase_date = _parse_optional_date(payload.purchase_date, field_label="purchase date")
+        if payload.tool_cost is not None:
+            if payload.tool_cost < 0:
+                raise HTTPException(status_code=400, detail="tool_cost must be 0 or greater")
+            credential.tool_cost = payload.tool_cost
     if scope == "user":
         credential.linked_credential_id = effective_linked_credential.id if effective_linked_credential else None
     else:
@@ -3763,6 +3933,22 @@ def upsert_credential(
             assigned_user_ids=payload.assigned_user_ids,
             actor_id=current_user.id,
         )
+    audit_details = {
+        "scope": scope,
+        "linkedCredentialId": credential.linked_credential_id,
+        "assignedUserCount": len(payload.assigned_user_ids or []),
+    }
+    if renewal_config_before is not None:
+        renewal_config_after = {
+            "renewalDate": credential.renewal_date.isoformat() if credential.renewal_date else None,
+            "creditEnabled": bool(credential.credit_enabled),
+            "renewalType": normalize_renewal_type(credential.renewal_type),
+            "autoRenew": bool(credential.auto_renew),
+            "purchaseDate": credential.purchase_date.isoformat() if credential.purchase_date else None,
+            "toolCost": float(credential.tool_cost) if credential.tool_cost is not None else None,
+        }
+        if renewal_config_after != renewal_config_before:
+            audit_details["renewalConfig"] = {"before": renewal_config_before, "after": renewal_config_after}
     _add_audit(
         db,
         actor_id=current_user.id,
@@ -3770,15 +3956,14 @@ def upsert_credential(
         tool_id=tool_id,
         credential_id=credential.id,
         target_user_id=credential.user_id,
-        details={
-            "scope": scope,
-            "linkedCredentialId": credential.linked_credential_id,
-            "assignedUserCount": len(payload.assigned_user_ids or []),
-        },
+        details=audit_details,
     )
     db.commit()
     db.refresh(credential)
-    return {"success": True, "credential": _serialize_credential_summary(credential)}
+    serialized = _serialize_credential_summary(credential)
+    if credential.scope == "company":
+        _attach_tool_renew_fields(db, credential, serialized)
+    return {"success": True, "credential": serialized}
 
 
 @router.delete("/tools/{tool_id}/credentials/{credential_id}")

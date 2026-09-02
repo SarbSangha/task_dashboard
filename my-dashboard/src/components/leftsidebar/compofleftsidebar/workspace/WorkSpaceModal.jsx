@@ -18,7 +18,6 @@ const CONTEXT_CHIP_RESERVE = 172;
 const OverviewTab = lazy(() => import('./tabs/OverviewTab'));
 const ProjectsTab = lazy(() => import('./tabs/ProjectsTab'));
 const GenerationProjectsTab = lazy(() => import('./tabs/GenerationProjectsTab'));
-const TasksTab = lazy(() => import('./tabs/TasksTab'));
 const TeamTab = lazy(() => import('./tabs/TeamTab'));
 const CompanyTab = lazy(() => import('./tabs/CompanyTab'));
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab'));
@@ -27,13 +26,14 @@ const CreditsTab = lazy(() => import('./tabs/CreditsTab'));
 const ChartsTab = lazy(() => import('./tabs/ChartsTab'));
 const CaptureCenterTab = lazy(() => import('./tabs/CaptureCenterTab'));
 const ChatGptCaptureCenterTab = lazy(() => import('./tabs/ChatGptCaptureCenterTab'));
+const GrammarlyDocsCaptureCenterTab = lazy(() => import('./tabs/GrammarlyDocsCaptureCenterTab'));
 const AiExplorerTab = lazy(() => import('./tabs/ai-explorer/AiExplorerTab'));
 
 const PRIMARY_TABS = [
   { key: 'overview', label: 'Overview', icon: '📈' },
-  { key: 'tasks', label: 'Tasks', icon: '✓' },
   { key: 'projects', label: 'Projects', icon: '📁' },
   { key: 'team', label: 'Team', icon: '👥' },
+  { key: 'company', label: 'Company', icon: '🏢' },
   { key: 'analytics', label: 'Analytics', icon: '📊' },
   { key: 'Tools', label: 'Tools', icon: '🧰' },
 ];
@@ -43,7 +43,7 @@ const SECONDARY_TABS = [
   { key: 'generation-projects', label: 'Gen Projects', icon: '🎬' },
   { key: 'capture-center', label: 'Capture Center', icon: '🛟', adminOnly: true },
   { key: 'chatgpt-capture-center', label: 'ChatGPT Capture', icon: '🧠', adminOnly: true },
-  { key: 'company', label: 'Company', icon: '🏢' },
+  { key: 'grammarly-docs-capture-center', label: 'Grammarly Docs', icon: '📝', adminOnly: true },
   { key: 'credits', label: 'Credits', icon: '💳' },
   { key: 'charts', label: 'Charts', icon: '📉' },
 ];
@@ -57,7 +57,7 @@ const TAB_COMPONENTS = {
   'generation-projects': GenerationProjectsTab,
   'capture-center': CaptureCenterTab,
   'chatgpt-capture-center': ChatGptCaptureCenterTab,
-  tasks: TasksTab,
+  'grammarly-docs-capture-center': GrammarlyDocsCaptureCenterTab,
   team: TeamTab,
   company: CompanyTab,
   analytics: AnalyticsTab,
@@ -73,7 +73,7 @@ const TAB_SKELETON_VARIANTS = {
   'generation-projects': 'projects',
   'capture-center': 'projects',
   'chatgpt-capture-center': 'projects',
-  tasks: 'overview',
+  'grammarly-docs-capture-center': 'projects',
   team: 'team',
   company: 'company',
   analytics: 'analytics',
@@ -92,6 +92,12 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(isMobileViewport);
   const minimizedWindowStyle = useMinimizedWindowStack('workspace-window', isOpen && isMinimized);
+
+  // Tools' own search box now lives in this header instead of taking up a
+  // whole extra row inside the Tools tab. It searches by tool name/category,
+  // so it only shows up while that tab is active.
+  const [toolsSearchQuery, setToolsSearchQuery] = useState('');
+  const showToolsSearch = !isMinimized && activeTab === 'Tools';
 
   const visiblePrimaryTabs = useMemo(
     () => PRIMARY_TABS.filter((tab) => !tab.adminOnly || isAdmin),
@@ -244,6 +250,22 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
             <h2>Workspace</h2>
           </div>
 
+          {showToolsSearch && (
+            <div className="workspace-header-search" onClick={(event) => event.stopPropagation()}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.3-4.3" />
+              </svg>
+              <input
+                type="text"
+                placeholder="Search tools by name or category..."
+                aria-label="Search tools by name or category"
+                value={toolsSearchQuery}
+                onChange={(event) => setToolsSearchQuery(event.target.value)}
+              />
+            </div>
+          )}
+
           <div className="workspace-header-right">
             <WindowControls
               isMinimized={isMinimized}
@@ -306,11 +328,17 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
             className={`workspace-content${
               activeTab === 'projects' || activeTab === 'generation-projects' || activeTab === 'capture-center' || activeTab === 'chatgpt-capture-center'
                 ? ' workspace-content-projects'
-                : ''
+                : activeTab === 'Tools'
+                  ? ' workspace-content-tools'
+                  : ''
             }`}
           >
             <Suspense fallback={<TabSkeleton activeTab={activeTab} />}>
-              <ActiveTabComponent onNavigateToTab={setActiveTab} />
+              <ActiveTabComponent
+                onNavigateToTab={setActiveTab}
+                searchQuery={toolsSearchQuery}
+                onSearchChange={setToolsSearchQuery}
+              />
             </Suspense>
           </div>
         )}

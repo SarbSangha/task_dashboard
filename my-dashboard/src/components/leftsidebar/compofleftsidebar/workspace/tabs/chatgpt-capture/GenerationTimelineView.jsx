@@ -89,17 +89,19 @@ function GenerationCard({ generation, onOpen }) {
               </>
             )}
 
-            <div className="cgpt-gen-media">
-              <div className="cgpt-gen-media-label">
-                <span aria-hidden="true">🖼</span> Generated output
-                <span className="cgpt-media-count">{generation.media.length}</span>
+            {generation.media.length > 0 && (
+              <div className="cgpt-gen-media">
+                <div className="cgpt-gen-media-label">
+                  <span aria-hidden="true">🖼</span> Generated output
+                  <span className="cgpt-media-count">{generation.media.length}</span>
+                </div>
+                <div className="cgpt-gen-media-grid">
+                  {generation.media.map((asset) => (
+                    <MediaTile key={asset.id} asset={asset} onOpen={onOpen} />
+                  ))}
+                </div>
               </div>
-              <div className="cgpt-gen-media-grid">
-                {generation.media.map((asset) => (
-                  <MediaTile key={asset.id} asset={asset} onOpen={onOpen} />
-                ))}
-              </div>
-            </div>
+            )}
           </div>
         )}
       </div>

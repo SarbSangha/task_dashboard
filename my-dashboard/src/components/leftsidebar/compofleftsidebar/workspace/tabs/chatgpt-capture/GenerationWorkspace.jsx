@@ -60,7 +60,10 @@ export default function GenerationWorkspace({
   const counts = useMemo(() => {
     const real = allGenerations.filter((g) => !g.ungrouped);
     return {
-      creations: real.length,
+      // "Creations" means turns that actually produced media - a turn whose
+      // reply was text-only (e.g. an error) is kept in `generations` for
+      // sequencing but isn't a creation.
+      creations: real.filter((g) => g.media.length > 0).length,
       prompts: real.filter((g) => g.promptText).length,
       assets: media.length,
     };
@@ -68,9 +71,16 @@ export default function GenerationWorkspace({
 
   const query = search.trim().toLowerCase();
   const generations = useMemo(() => {
-    const built = buildGenerations(messages, filteredMedia);
+    let built = buildGenerations(messages, filteredMedia);
+    // buildGenerations keeps every turn (including text-only ones) so the
+    // default "all" view stays chronologically complete. But once a Type/
+    // Source/Status chip narrows filteredMedia to a subset, a turn with no
+    // matching media isn't part of that filtered result - drop it instead
+    // of showing an empty card, or the filter chips would stop narrowing
+    // the Timeline/Prompts views (Gallery already filters this way).
+    if (activeFilter !== 'all') built = built.filter((g) => g.ungrouped || g.media.length > 0);
     return query ? built.filter((g) => matchesSearch(g, query)) : built;
-  }, [messages, filteredMedia, query]);
+  }, [messages, filteredMedia, activeFilter, query]);
 
   // Metadata for the preview modal ("why does this image exist?").
   const previewMeta = useMemo(() => {

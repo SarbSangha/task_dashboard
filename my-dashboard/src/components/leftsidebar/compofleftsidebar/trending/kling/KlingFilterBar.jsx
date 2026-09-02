@@ -25,11 +25,10 @@ export default function KlingFilterBar({
   onDatePresetChange,
   sortBy,
   onSortChange,
-  projectFilter,
-  onClearProjectFilter,
   collectionFilter,
   onClearCollectionFilter,
-  onViewTimeline,
+  clientFilter,
+  onClearClientFilter,
   allDepartmentsValue,
   allModelsValue,
   allResolutionsValue,
@@ -38,23 +37,20 @@ export default function KlingFilterBar({
 }) {
   return (
     <div className="kling-filter-bar">
-      {(projectFilter || collectionFilter) && (
+      {(collectionFilter || clientFilter) && (
         <div className="kling-filter-bar-row">
-          {projectFilter && (
-            <div className="kling-active-project-chip">
-              <span>Project: {projectFilter.name}</span>
-              <button type="button" className="kling-active-chip-timeline" onClick={onViewTimeline}>
-                View Timeline
-              </button>
-              <button type="button" onClick={onClearProjectFilter} aria-label="Clear project filter">
-                &times;
-              </button>
-            </div>
-          )}
           {collectionFilter && (
             <div className="kling-active-project-chip">
               <span>Collection: {collectionFilter.name}</span>
               <button type="button" onClick={onClearCollectionFilter} aria-label="Clear collection filter">
+                &times;
+              </button>
+            </div>
+          )}
+          {clientFilter && (
+            <div className="kling-active-project-chip">
+              <span>Client: {clientFilter.name}</span>
+              <button type="button" onClick={onClearClientFilter} aria-label="Clear client filter">
                 &times;
               </button>
             </div>

@@ -53,7 +53,9 @@
 
 /* Header */
 .inbox-panel-header {
-  padding: 24px 28px;
+  height: 52px;
+  min-height: 52px;
+  padding: 0 28px;
   background: var(--color-navbar-surface);
   border-bottom: 1px solid var(--color-navbar-border);
   display: flex;
@@ -630,6 +632,8 @@
 
   /* ── Header ─────────────────────────────── */
   .inbox-panel-header {
+    height: auto;
+    min-height: 0;
     padding: 10px 14px 12px;
     flex-wrap: wrap;
     gap: 8px;

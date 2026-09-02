@@ -12,6 +12,7 @@ import WorkSpaceButton from './compofleftsidebar/WorkSpaceButton';
 import AdminQueueButton from './compofleftsidebar/adminqueue/AdminQueueButton';
 import TrendingsButton from './compofleftsidebar/trending/TrendingsButton';
 import ReportsButton from './compofleftsidebar/ReportsButton';
+import TaskReportButton from './compofleftsidebar/TaskReportButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
 import OutboxModal from './compofleftsidebar/outbox/OutboxModal';
 import WorkSpaceModal from './compofleftsidebar/workspace/WorkSpaceModal';
@@ -20,6 +21,7 @@ import TrackingPanel from './compofleftsidebar/tracking/TrackingPanel';
 import AdminRequestPanel from './compofleftsidebar/adminqueue/AdminRequestPanel';
 import TrendingsPanel from './compofleftsidebar/trending/TrendingsPanel';
 import ReportsPanel from '../reports/ReportsPanel';
+import TaskReportPanel from '../reports/TaskReportPanel';
 import { usePermissions } from '../../hooks/usePermissions';
 
 const PANEL_TO_ACTIVE = {
@@ -31,6 +33,7 @@ const PANEL_TO_ACTIVE = {
   'admin-queue': 'admin-queue',
   trendings: 'trendings',
   reports: 'reports',
+  'task-report': 'task-report',
   'create-task': 'create-task',
 };
 
@@ -172,6 +175,9 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
 
   const openReports = () => goTo('reports');
   const closeReports = () => closePanel('reports');
+
+  const openTaskReport = () => goTo('task-report');
+  const closeTaskReport = () => closePanel('task-report');
 
   useEffect(() => {
     if (isCreateTaskVisible) return;
@@ -331,6 +337,10 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
                 isActive={activeItem === 'reports'}
                 onClick={openReports}
               />
+              <TaskReportButton
+                isActive={activeItem === 'task-report'}
+                onClick={openTaskReport}
+              />
             </div>
           )}
 
@@ -407,6 +417,13 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
         onClose={closeReports}
         onMinimizedChange={(isMinimized) => setPanelMinimized('reports', isMinimized)}
         onActivate={() => activatePanel('reports')}
+      />
+
+      <TaskReportPanel
+        isOpen={isPanelVisible('task-report')}
+        onClose={closeTaskReport}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('task-report', isMinimized)}
+        onActivate={() => activatePanel('task-report')}
       />
     </>
   );

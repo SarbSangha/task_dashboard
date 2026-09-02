@@ -1,0 +1,56 @@
+/* ==========================================================================
+   Admin Tool Renewals Tab — set renewal dates on saved tool accounts
+   ========================================================================== */
+
+.art-date-input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.art-date-input:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+.art-number-input {
+  width: 100px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.art-number-input:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+.art-muted { color: var(--color-text-muted); font-size: 12px; }
+
+.art-hint {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Renewal Required pill -- the one status act-status's active/inactive
+   pair (green/gray) doesn't already cover. */
+.act-status--warning {
+  background: var(--color-feedback-warning-bg);
+  border-color: var(--color-feedback-warning-border);
+  color: var(--color-feedback-warning-text);
+}
+
+.art-row-menu-btn {
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+

@@ -656,6 +656,14 @@ export const clientsAPI = {
     const response = await api.patch(`/api/clients/${clientId}`, updates);
     return response.data;
   },
+
+  // Kling tab's "Clients" browse view (replaces the old "Projects" sub-tab) -
+  // session-gated directory of clients that have Kling generations, with
+  // counts. See routers/clients_router.list_kling_client_directory.
+  getKlingDirectory: async (params = {}) => {
+    const response = await api.get('/api/clients/kling-directory', { params });
+    return response.data;
+  },
 };
 
 export const activityAPI = {
@@ -2194,6 +2202,35 @@ export const spliceCaptureAPI = {
   },
 };
 
+// ==================== GRAMMARLY DOCS CAPTURE CENTER API ====================
+export const grammarlyDocsCaptureAPI = {
+  listSessions: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/grammarly-docs/sessions',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getSession: async (sessionId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/grammarly-docs/sessions/${sessionId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/grammarly-docs/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/grammarly-docs/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+};
+
 // ==================== HEYGEN CAPTURE CENTER API ====================
 export const heygenCaptureAPI = {
   listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
@@ -2438,6 +2475,19 @@ export const itToolsAPI = {
 
   getLaunchHistory: async ({ signal, ...params } = {}) => {
     const response = await api.get('/api/it-tools/launch-history', { params, signal });
+    return response.data;
+  },
+};
+
+// Credit -> rupee rates per tool account, used to cost generations/clients.
+export const creditRatesAPI = {
+  list: async (requestConfig = {}) => {
+    const response = await api.get('/api/reports/credit-rates', requestConfig);
+    return response.data;
+  },
+
+  upsert: async (payload) => {
+    const response = await api.post('/api/reports/credit-rates', payload);
     return response.data;
   },
 };

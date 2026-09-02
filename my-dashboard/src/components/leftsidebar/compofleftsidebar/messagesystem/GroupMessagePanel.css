@@ -1959,6 +1959,13 @@
   white-space: nowrap;
 }
 
+.group-chat-upload-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .group-chat-upload-status-percent {
   flex-shrink: 0;
   padding: 4px 8px;
@@ -1967,6 +1974,35 @@
   color: var(--color-feedback-success-text);
   font-size: 10px;
   font-weight: 800;
+}
+
+.group-chat-upload-status-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 4px 9px 4px 7px;
+  border: 1px solid var(--color-feedback-error-border);
+  border-radius: 999px;
+  background: var(--color-feedback-error-bg);
+  color: var(--color-feedback-error-text);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background-color var(--theme-transition-fast, 0.15s ease), transform 0.1s ease;
+}
+
+.group-chat-upload-status-cancel:hover {
+  background: var(--color-feedback-error-border);
+}
+
+.group-chat-upload-status-cancel:active {
+  transform: scale(0.95);
+}
+
+.group-chat-upload-status-cancel svg {
+  flex-shrink: 0;
 }
 
 .group-chat-upload-status-bar {

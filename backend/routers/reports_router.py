@@ -24,7 +24,7 @@ from sqlalchemy import String, and_, case, func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
-from models_new import ActivityStatus, GenerationRecord, GenerationTag, ITPortalTool, ITPortalToolUsageEvent, ParticipantRole, Task, TaskParticipant, TaskStatus, TaskStatusHistory, ToolCreditRate, User, UserActivity
+from models_new import ActivityStatus, GenerationRecord, GenerationTag, ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent, ParticipantRole, Task, TaskParticipant, TaskStatus, TaskStatusHistory, ToolCreditRate, User, UserActivity
 from providers.chatgpt.models import ConversationPrompt, ConversationRecord, ConversationResponse
 from providers.freepik.models import FreepikGeneration
 from utils.permissions import require_admin
@@ -129,6 +129,12 @@ def _credits(query) -> float:
 # on ITPortalToolUsageEvent.credential_id. Records with no linkable account (or an
 # account without a configured rate) fall back to the global default rate. The
 # board assumes a single currency (the global default row's).
+#
+# An account with Credit System disabled (Admin Queue -> Tool Renew ->
+# Configure) never costs anything, even if a rate row still exists from
+# before it was disabled or a global default rate would otherwise apply --
+# see utils/tool_renewal_service.py. This is the one place that decision is
+# enforced; every report below inherits it through this function.
 def _credit_rate_context(db: Session):
     today = datetime.utcnow().date()
     rows = (
@@ -155,10 +161,31 @@ def _credit_rate_context(db: Session):
                 default_rate = rate
                 currency = r.currency or "INR"
                 global_seen = True
-    whens = [
+
+    # Any account with Credit System off never costs anything -- not its own
+    # rate (if one happens to still exist from before it was disabled), and
+    # not the global default either. Scoped to credential_ids that actually
+    # appear on a usage event (bounded, relevant set) rather than every
+    # credential in the company; a usage event with no linkable credential at
+    # all keeps falling back to the global default as before -- unchanged.
+    disabled_credential_ids = {
+        cid for (cid,) in (
+            db.query(ITPortalToolCredential.id)
+            .join(ITPortalToolUsageEvent, ITPortalToolUsageEvent.credential_id == ITPortalToolCredential.id)
+            .filter(ITPortalToolCredential.credit_enabled.is_(False))
+            .distinct()
+            .all()
+        )
+    }
+    # Checked first in the CASE so a disabled account always wins over its
+    # own (stale) rate or the global default.
+    disabled_whens = [(ITPortalToolUsageEvent.credential_id == cid, 0.0) for cid in disabled_credential_ids]
+    rated_whens = [
         (ITPortalToolUsageEvent.credential_id == cid, rate)
         for cid, rate in credential_rates.items()
+        if cid not in disabled_credential_ids
     ]
+    whens = disabled_whens + rated_whens
     rate_expr = case(*whens, else_=default_rate) if whens else literal(default_rate)
     return rate_expr, currency, default_rate
 
@@ -3752,6 +3779,240 @@ def _completed_at_expr():
         .scalar_subquery()
     )
     return func.coalesce(Task.completed_at, hist)
+
+
+def _build_task_detail_query(db: Session, start, end, department, status, user_id):
+    """Shared filter chain for the Task Report (Analytics -> Task Report):
+    the JSON listing (tasks_detail_report) and the Excel export
+    (tasks_detail_xlsx) must agree on exactly which tasks match, so both call
+    this instead of each building their own. Date range is by
+    Task.created_at (when the task was raised), matching how every other
+    report window in this router (_resolve_period) is interpreted.
+    ``user_id`` narrows to tasks that person is an active assignee on (not
+    the creator - "what's on their plate", matching the report's own
+    "Assignees" column). Drafts are always excluded - a draft hasn't been
+    raised yet, so it isn't a task this report should be listing regardless
+    of the ``status`` filter."""
+    start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+
+    query = (
+        db.query(Task)
+        .filter(
+            Task.is_deleted.is_(False),
+            Task.status != TaskStatus.DRAFT,
+            Task.created_at >= start_dt,
+            Task.created_at < end_exclusive,
+        )
+    )
+    query = _task_dept(query, department)
+    if status and status != "all":
+        try:
+            status_enum = TaskStatus(status.strip().lower())
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status. Expected one of {sorted(s.value for s in TaskStatus)}",
+            )
+        query = query.filter(Task.status == status_enum)
+    if user_id is not None:
+        assignee_task_ids = db.query(TaskParticipant.task_id).filter(
+            TaskParticipant.user_id == user_id,
+            TaskParticipant.role == ParticipantRole.ASSIGNEE,
+            TaskParticipant.is_active.is_(True),
+        )
+        query = query.filter(Task.id.in_(assignee_task_ids))
+    return query, start_dt, end_exclusive
+
+
+def _resolve_completed_at_by_task(db: Session, tasks: list) -> dict:
+    """{taskId: resolved completed-at datetime} - shared by the JSON listing
+    and the Excel export. Falls back to the TaskStatusHistory row that moved
+    the task to "completed" when Task.completed_at itself was never written
+    (see _completed_at_expr's docstring: most COMPLETED rows hit this gap),
+    so a completed task doesn't show a blank completion date just because
+    that one column was never populated."""
+    task_ids = [t.id for t in tasks]
+    if not task_ids:
+        return {}
+    resolved_completed_at = _completed_at_expr()
+    rows = db.query(Task.id, resolved_completed_at).filter(Task.id.in_(task_ids)).all()
+    return dict(rows)
+
+
+def _load_task_creators_and_assignees(db: Session, tasks: list):
+    """{creatorId: label} and {taskId: [assignee labels]} for a batch of Task
+    rows - shared by the JSON listing and the Excel export."""
+    task_ids = [t.id for t in tasks]
+    creator_ids = {t.creator_id for t in tasks if t.creator_id}
+
+    assignees_by_task = defaultdict(list)
+    if task_ids:
+        assignee_rows = (
+            db.query(TaskParticipant.task_id, User.name, User.email)
+            .join(User, TaskParticipant.user_id == User.id)
+            .filter(
+                TaskParticipant.task_id.in_(task_ids),
+                TaskParticipant.role == ParticipantRole.ASSIGNEE,
+                TaskParticipant.is_active.is_(True),
+            )
+            .all()
+        )
+        for task_id, name, email in assignee_rows:
+            assignees_by_task[task_id].append(name or email or "Unknown")
+
+    creator_label_by_id = {}
+    if creator_ids:
+        creator_label_by_id = {
+            uid: (name or email)
+            for uid, name, email in (
+                db.query(User.id, User.name, User.email).filter(User.id.in_(creator_ids)).all()
+            )
+        }
+    return creator_label_by_id, assignees_by_task
+
+
+@router.get("/tasks/detail")
+def tasks_detail_report(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    user_id: Optional[int] = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Task Report (Analytics -> Task Report): a raw, one-row-per-task listing
+    for a department over a date range - distinct from the aggregated Task
+    Intelligence dashboards above (contributors/summary/trends/bottlenecks/
+    ai-impact), which report metrics, not task rows."""
+    query, start_dt, end_exclusive = _build_task_detail_query(db, start, end, department, status, user_id)
+
+    total = int(query.with_entities(func.count(Task.id)).scalar() or 0)
+    tasks = query.order_by(Task.created_at.desc()).offset(offset).limit(limit).all()
+    creator_label_by_id, assignees_by_task = _load_task_creators_and_assignees(db, tasks)
+    completed_at_by_id = _resolve_completed_at_by_task(db, tasks)
+
+    rows = [
+        {
+            "id": t.id,
+            "taskNumber": t.task_number,
+            "title": t.title,
+            "projectName": t.project_name,
+            "fromDepartment": t.from_department,
+            "toDepartment": t.to_department,
+            "priority": t.priority.value if t.priority else None,
+            "status": t.status.value if t.status else None,
+            "createdBy": creator_label_by_id.get(t.creator_id),
+            "assignees": assignees_by_task.get(t.id, []),
+            "createdAt": t.created_at.isoformat() if t.created_at else None,
+            "deadline": t.deadline.isoformat() if t.deadline else None,
+            "completedAt": completed_at_by_id.get(t.id).isoformat() if completed_at_by_id.get(t.id) else None,
+        }
+        for t in tasks
+    ]
+
+    return {
+        "success": True,
+        "period": {
+            "start": start_dt.date().isoformat(),
+            "end": (end_exclusive - timedelta(days=1)).date().isoformat(),
+        },
+        "department": department if department and department != "all" else "All Departments",
+        "total": total,
+        "count": len(rows),
+        "tasks": rows,
+    }
+
+
+@router.get("/tasks/detail.xlsx")
+def tasks_detail_xlsx(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    user_id: Optional[int] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Excel version of the Task Report - same filters/rows as
+    GET /tasks/detail (via the shared query builder), exported as a real
+    .xlsx instead of a page of JSON. No Task # column: an internal task
+    number isn't part of what this report is meant to communicate. No
+    Client column: Task has no client association in the data model (Client
+    Mapping - GenerationClient - is deliberately independent of Task, see
+    the docstring on models_new.GenerationClient) - a real client column
+    here would have to be fabricated, so it's left out rather than guessed."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    query, start_dt, end_exclusive = _build_task_detail_query(db, start, end, department, status, user_id)
+    tasks = query.order_by(Task.created_at.desc()).limit(TASK_FETCH_CAP).all()
+    creator_label_by_id, assignees_by_task = _load_task_creators_and_assignees(db, tasks)
+    completed_at_by_id = _resolve_completed_at_by_task(db, tasks)
+
+    def _fmt_dt(value, empty_label=""):
+        return value.strftime("%Y-%m-%d %H:%M") if value else empty_label
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Task Report"
+
+    headers = [
+        "Task", "Project", "From Dept", "To Dept", "Priority", "Status",
+        "Created By", "Assignees", "Created At", "Deadline", "Completed At",
+    ]
+    ws.append(headers)
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for t in tasks:
+        status_label = t.status.value.replace("_", " ").title() if t.status else ""
+        is_completed = t.status == TaskStatus.COMPLETED
+        # Completed At either shows the real completion date (COMPLETED
+        # tasks) or, for anything still in flight, the task's current
+        # status instead of leaving the cell blank -- a blank "Completed
+        # At" otherwise reads as "we don't know", when the real answer is
+        # "not completed yet, currently Pending/In Progress/etc.".
+        completed_at_cell = (
+            _fmt_dt(completed_at_by_id.get(t.id), empty_label="Not set")
+            if is_completed
+            else status_label
+        )
+        ws.append([
+            t.title or "",
+            t.project_name or "",
+            t.from_department or "",
+            t.to_department or "",
+            t.priority.value.title() if t.priority else "",
+            status_label,
+            creator_label_by_id.get(t.creator_id) or "",
+            ", ".join(assignees_by_task.get(t.id, [])),
+            _fmt_dt(t.created_at),
+            _fmt_dt(t.deadline, empty_label="Not set"),
+            completed_at_cell,
+        ])
+
+    for idx, width in enumerate((32, 22, 16, 16, 10, 16, 20, 28, 18, 18, 18), start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = width
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{ws.max_row}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    department_label = department if department and department != "all" else "All-Departments"
+    filename = f"Task-Report_{department_label.replace(' ', '-')}_{(end_exclusive - timedelta(days=1)).date()}.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/tasks/contributors")

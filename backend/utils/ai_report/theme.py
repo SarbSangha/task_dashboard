@@ -77,6 +77,7 @@ FILL_KPI = solid(KPI_BAND)
 FILL_HEADER = solid(NAVY_TABLE)
 FILL_ALT = solid(ALT_ROW)
 FILL_WHITE = solid(WHITE)
+FILL_SUBROW = solid("F5F8FC")   # collapsible member/detail rows nested under a summary row
 
 # --------------------------------------------------------------------------- #
 # Fonts

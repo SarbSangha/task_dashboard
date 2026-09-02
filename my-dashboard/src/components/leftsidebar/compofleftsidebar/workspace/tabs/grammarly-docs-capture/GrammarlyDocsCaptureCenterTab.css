@@ -1,0 +1,292 @@
+/* Grammarly Docs Capture Center - "by person" session groups. Reuses
+   ChatGptCaptureCenterTab.css's shell chrome (badges, alerts, empty states,
+   buttons) via that stylesheet's own class names, same as every other
+   provider tab (see splice-capture/SpliceExplorerBody.jsx's own comment) -
+   this file only adds the group/row layout that provider doesn't need. */
+
+.grammarly-docs-person-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.grammarly-docs-person-group {
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.grammarly-docs-person-group-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: background var(--theme-transition-fast);
+}
+
+.grammarly-docs-person-group-head:hover {
+  background: var(--color-surface-muted);
+}
+
+.grammarly-docs-person-group-head:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.grammarly-docs-person-caret {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  width: 14px;
+}
+
+.grammarly-docs-person-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.grammarly-docs-person-identity strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grammarly-docs-person-meta {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.grammarly-docs-person-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.grammarly-docs-badge-accent {
+  border: 1px solid var(--color-feedback-info-border);
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
+}
+
+.grammarly-docs-person-last-active {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.grammarly-docs-session-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.grammarly-docs-session-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px 10px 44px;
+  font-size: 13px;
+  border: none;
+  border-top: 1px solid var(--color-border-subtle);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.grammarly-docs-session-row:first-child {
+  border-top: none;
+}
+
+.grammarly-docs-session-row-clickable {
+  cursor: pointer;
+  transition: background var(--theme-transition-fast);
+}
+
+.grammarly-docs-session-row-clickable:hover {
+  background: var(--color-surface-muted);
+}
+
+.grammarly-docs-session-row-clickable:focus-visible {
+  outline: none;
+  box-shadow: inset var(--shadow-focus);
+}
+
+.grammarly-docs-session-status {
+  flex: 0 0 auto;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.grammarly-docs-session-status.tone-success { color: var(--color-feedback-success-text); }
+.grammarly-docs-session-status.tone-warning { color: var(--color-feedback-warning-text); }
+.grammarly-docs-session-status.tone-muted { color: var(--color-text-secondary); }
+
+.grammarly-docs-session-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.grammarly-docs-session-author {
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+
+.grammarly-docs-session-when {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Session detail drawer - covers the FULL Workspace panel width instead of
+   the shared chatgpt-capture-drawer default (480px), which left most of the
+   panel dimmed and unused behind a narrow slide-in strip.
+   left:0 + right:0 (no `width` at all), not a computed width value - two
+   different guesses at the right width value (a vw-capped px number, then a
+   percentage) both missed, because the real containing block for this
+   drawer's position:fixed (the Workspace modal, which gets a CSS transform
+   for its own open/scale animation - that's what makes IT the containing
+   block instead of the true browser viewport, per spec) turned out not to
+   be reliably guessable from outside. Setting both left and right instead
+   of width sidesteps needing to know that size at all: the browser fills
+   exactly the space between those two edges of whatever the real
+   containing block is, guaranteed, with no arithmetic to get wrong. */
+.grammarly-docs-drawer {
+  left: 0 !important;
+  right: 0 !important;
+  width: auto !important;
+}
+
+/* align-items: stretch (not "start") - the content column matches the
+   fields column's full height instead of shrinking to its own card's
+   height and leaving the rest of the row as dead space, which is what
+   "align-items: start" was doing before: the fields list runs much longer
+   than one content card, so the row's height was set by the fields column
+   while the content column just sat there at the top, mostly empty
+   underneath it. Fields becomes a fixed-width right-hand sidebar (340px)
+   instead of splitting the row with content - content now stretches to
+   fill essentially all the remaining width instead of sharing it evenly. */
+.grammarly-docs-detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 24px;
+  align-items: stretch;
+  /* This grid is itself a flex item of .chatgpt-capture-drawer-body (a
+     column flexbox) - flex items default to min-width:auto, not 0, which
+     lets them refuse to shrink below their own min-content width and
+     overflow instead of respecting the grid's minmax(0, 1fr) track sizing.
+     Confirmed real (2026-08-27): without this, the whole layout rendered
+     wider than the drawer and the drawer body scrolled horizontally,
+     clipping the left portion of Document content out of view. */
+  min-width: 0;
+  width: 100%;
+}
+
+.grammarly-docs-detail-content-col,
+.grammarly-docs-detail-fields-col {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* No separate small-screen width override for the drawer itself - left:0 +
+   right:0 above already fills the full containing block at any size, no
+   media query needed (and mixing an explicit width back in here would
+   over-constrain left/right/width together, which per spec makes the
+   browser drop `right` and re-anchor from the left instead - the drawer
+   would stop sliding in from the right edge on narrow screens). Only the
+   two-column split inside still needs to collapse on narrow screens. */
+@media (max-width: 720px) {
+  .grammarly-docs-detail-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The content card itself stretches to fill grammarly-docs-detail-content-col
+   (flex:1, not a fixed-height card), and the text block grows to fill
+   whatever's left after its head/note lines - flex:1 + min-height:0 is what
+   lets its own overflow:auto (grammarly-docs-content-pre below) actually
+   scroll internally instead of the card just growing taller than the
+   drawer. */
+.grammarly-docs-content-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Document content block - overrides the JSON viewer's monospace/nowrap
+   defaults (chatgpt-capture-json-pre) with a readable prose font and
+   wrapping, since this is plain doc text, not code/JSON. flex:1 + min-height
+   so it fills the card's remaining height rather than a fixed 420px cap.
+   min-width:0 for the same flex-item-overflow reason as
+   grammarly-docs-detail-layout above - <pre> in particular resists shrinking
+   below its longest line's natural width without it. */
+.grammarly-docs-content-pre {
+  flex: 1;
+  min-height: 200px;
+  min-width: 0;
+  max-width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* Doc-level row (one per doc_id, may roll up several session/page visits -
+   see grammarlyDocsCaptureUtils.js's groupSessionsByDoc for why). Visually
+   identical to a plain session row otherwise - only the nested list below it
+   is indented further to read as "belongs to the doc row above it". */
+.grammarly-docs-doc-row .grammarly-docs-person-caret {
+  width: 14px;
+}
+
+.grammarly-docs-session-list-nested {
+  border-top: none;
+}
+
+.grammarly-docs-session-row-nested {
+  padding-left: 68px;
+  background: var(--color-surface-muted);
+}
+
+.grammarly-docs-session-row-nested .grammarly-docs-session-title {
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+
+.grammarly-docs-session-duration {
+  flex: 0 0 auto;
+  min-width: 52px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}

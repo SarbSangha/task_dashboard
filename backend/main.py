@@ -39,6 +39,10 @@ from providers.freepik.asset_mirror import mirror_pending_generations as mirror_
 from providers.heygen import router as heygen_router
 from providers.heygen.asset_mirror import mirror_pending_generations as mirror_pending_heygen_generations
 from providers.higgsfield import router as higgsfield_router
+from providers.splice import router as splice_router
+from providers.epidemicsound import router as epidemicsound_router
+from providers.suno import router as suno_router
+from providers.grammarly_docs import router as grammarly_docs_router
 # Import routers
 from routers import auth_router
 from routers.tasks import router as tasks_router
@@ -714,6 +718,18 @@ app.include_router(flow_router.router)
 
 # ElevenLabs Generation Capture System
 app.include_router(elevenlabs_router.router)
+
+# Splice Generation Capture System
+app.include_router(splice_router.router)
+
+# Epidemic Sound Generation Capture System
+app.include_router(epidemicsound_router.router)
+
+# Suno Generation Capture System
+app.include_router(suno_router.router)
+
+# Grammarly Docs (coda.grammarly.com) Session Capture System
+app.include_router(grammarly_docs_router.router)
 
 # Reports / Business Intelligence (AI Intelligence Command Center)
 app.include_router(reports_router.router)

@@ -64,7 +64,9 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 24px 28px;
+  height: 52px;
+  min-height: 52px;
+  padding: 0 28px;
   border-bottom: 1px solid var(--color-navbar-border);
   background: var(--color-navbar-surface);
   box-shadow: var(--shadow-navbar);
@@ -1119,6 +1121,8 @@
 
   /* ── Header ─────────────────────────────── */
   .tracking-header {
+    height: auto;
+    min-height: 0;
     padding: 10px 14px 12px;
     flex-wrap: wrap;
     gap: 8px;

@@ -1,0 +1,289 @@
+/* ==========================================================================
+   Configure Tool Account modal — the "⋮ Configure" dialog for one Tool
+   Renew row (Admin Queue -> Tool Renew).
+   ========================================================================== */
+
+.ctam-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.4));
+  z-index: 1300;
+  animation: ctam-overlay-in 0.18s ease;
+}
+
+@keyframes ctam-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.ctam-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1301;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card-hover);
+  overflow: hidden;
+}
+
+.ctam-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.ctam-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--color-text);
+}
+
+.ctam-subtitle {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.ctam-close {
+  border: none;
+  background: transparent;
+  color: var(--color-icon);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 8px;
+}
+
+.ctam-close:hover { background: var(--color-hover-surface); }
+.ctam-close:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.ctam-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.ctam-error {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-feedback-error-bg);
+  border: 1px solid var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ctam-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.ctam-section:last-child { border-bottom: none; padding-bottom: 0; }
+
+.ctam-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.ctam-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ctam-toggle-row--inline {
+  align-items: center;
+  gap: 8px;
+}
+
+.ctam-field-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.ctam-field-hint {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.ctam-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 14px;
+}
+
+.ctam-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.ctam-input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.ctam-input:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+.ctam-input[readonly] { color: var(--color-text-muted); cursor: default; }
+
+.ctam-radio-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ctam-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color var(--theme-transition-fast), border-color var(--theme-transition-fast), color var(--theme-transition-fast);
+}
+
+.ctam-radio input { margin: 0; }
+
+.ctam-radio.is-selected {
+  background: var(--color-button-primary-bg);
+  border-color: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
+}
+
+/* ── Toggle switch (mirrors the app's existing .toggle-switch pattern) ──── */
+
+.ctam-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.ctam-switch input {
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+
+.ctam-switch-track {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  border-radius: 999px;
+  background: var(--color-toggle-track);
+  transition: background-color var(--theme-transition-fast);
+}
+
+.ctam-switch-track::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-toggle-thumb);
+  box-shadow: var(--shadow-control-thumb);
+  transition: transform var(--theme-transition-fast);
+}
+
+.ctam-switch input:checked + .ctam-switch-track {
+  background: var(--color-toggle-active-bg);
+}
+
+.ctam-switch input:checked + .ctam-switch-track::before {
+  transform: translateX(20px);
+}
+
+.ctam-switch input:focus-visible + .ctam-switch-track {
+  box-shadow: var(--shadow-focus);
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────── */
+
+.ctam-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.ctam-btn {
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 9px;
+  border: 1px solid var(--color-border);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ctam-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.ctam-btn--ghost {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.ctam-btn--primary {
+  background: var(--color-button-primary-bg);
+  border-color: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
+}
+
+@media (max-width: 640px) {
+  .ctam-modal {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    transform: none;
+    width: 100%;
+    max-height: min(88vh, 720px);
+    border-radius: 16px 16px 0 0;
+  }
+}

@@ -4,6 +4,7 @@ from providers.elevenlabs.migrations import ensure_elevenlabs_postgres_schema, e
 from providers.envato.migrations import ensure_envato_postgres_schema, ensure_envato_sqlite_schema
 from providers.flow.migrations import ensure_flow_postgres_schema, ensure_flow_sqlite_schema
 from providers.freepik.migrations import ensure_freepik_postgres_schema, ensure_freepik_sqlite_schema
+from providers.grammarly_docs.migrations import ensure_grammarly_docs_postgres_schema, ensure_grammarly_docs_sqlite_schema
 from providers.heygen.migrations import ensure_heygen_postgres_schema, ensure_heygen_sqlite_schema
 from providers.higgsfield.migrations import ensure_higgsfield_postgres_schema, ensure_higgsfield_sqlite_schema
 
@@ -311,6 +312,54 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "totp_secret_encrypted", "TEXT")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "linked_credential_id", "INTEGER")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "login_method", "VARCHAR(40) DEFAULT 'email_password'")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "renewal_date", "DATE")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_renewal_date ON it_portal_tool_credentials(renewal_date)"))
+
+    # Tool Renew configuration (Admin Queue -> Tool Renew: credit system
+    # on/off, renewal type, auto-renew, purchase date, cost -- see
+    # utils/tool_renewal_service.py). Backward compatible: every existing
+    # row keeps behaving exactly like before (MANUAL renewal, no auto-renew,
+    # credit system off) until an admin opens Configure.
+    credit_enabled_is_new = not _pg_column_exists(conn, "it_portal_tool_credentials", "credit_enabled")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "credit_enabled", "BOOLEAN NOT NULL DEFAULT FALSE")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "renewal_type", "VARCHAR(20) NOT NULL DEFAULT 'MANUAL'")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "auto_renew", "BOOLEAN NOT NULL DEFAULT FALSE")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "purchase_date", "DATE")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "tool_cost", "NUMERIC(12,2)")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_renewal_type ON it_portal_tool_credentials(renewal_type)"))
+    if credit_enabled_is_new:
+        # One-time backfill, only on the deploy that introduces the column:
+        # the only existing signal that an account was actually being
+        # tracked for credits is that it already has a rate configured.
+        # Never re-run (would stamp over a manual override made later).
+        conn.execute(
+            text(
+                """
+                UPDATE it_portal_tool_credentials
+                SET credit_enabled = TRUE
+                WHERE id IN (
+                    SELECT DISTINCT credential_id FROM tool_credit_rates
+                    WHERE credential_id IS NOT NULL
+                )
+                """
+            )
+        )
+        # Seed tool_cost from whatever rate was already configured so
+        # existing credit-tracked accounts show a sensible Cost right away.
+        conn.execute(
+            text(
+                """
+                UPDATE it_portal_tool_credentials
+                SET tool_cost = (
+                    SELECT package_rupees FROM tool_credit_rates
+                    WHERE tool_credit_rates.credential_id = it_portal_tool_credentials.id
+                    ORDER BY effective_from DESC, id DESC
+                    LIMIT 1
+                )
+                WHERE credit_enabled = TRUE AND tool_cost IS NULL
+                """
+            )
+        )
     _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "external_event_id", "VARCHAR(160)")
     _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "generation_id", "VARCHAR(160)")
     _pg_add_column_if_missing(conn, "it_portal_tool_usage_events", "request_id", "VARCHAR(160)")
@@ -819,6 +868,9 @@ def _ensure_postgres_schema(conn) -> None:
 
     # ---- Freepik/Magnific Generation Capture System (see providers/freepik/migrations.py) ----
     ensure_freepik_postgres_schema(conn)
+
+    # ---- Grammarly Docs Session Capture System (see providers/grammarly_docs/migrations.py) ----
+    ensure_grammarly_docs_postgres_schema(conn)
 
     # ---- HeyGen Generation Capture System (see providers/heygen/migrations.py) ----
     ensure_heygen_postgres_schema(conn)
@@ -1862,6 +1914,9 @@ def ensure_operational_schema(engine) -> None:
         # ---- Freepik/Magnific Generation Capture System (see providers/freepik/migrations.py) ----
         ensure_freepik_sqlite_schema(conn)
 
+        # ---- Grammarly Docs Session Capture System (see providers/grammarly_docs/migrations.py) ----
+        ensure_grammarly_docs_sqlite_schema(conn)
+
         # ---- HeyGen Generation Capture System (see providers/heygen/migrations.py) ----
         ensure_heygen_sqlite_schema(conn)
 
@@ -2044,3 +2099,59 @@ def ensure_operational_schema(engine) -> None:
             credential_cols = _table_columns(conn, "it_portal_tool_credentials")
             if "login_method" not in credential_cols:
                 conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN login_method VARCHAR(40) DEFAULT 'email_password'"))
+            if "renewal_date" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN renewal_date DATE"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_renewal_date ON it_portal_tool_credentials(renewal_date)"))
+
+            # Tool Renew configuration (Admin Queue -> Tool Renew: credit
+            # system on/off, renewal type, auto-renew, purchase date -- see
+            # utils/tool_renewal_service.py). Backward compatible: every
+            # existing row keeps behaving exactly like before (MANUAL
+            # renewal, no auto-renew) until an admin opens Configure.
+            credit_enabled_is_new = "credit_enabled" not in credential_cols
+            if credit_enabled_is_new:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN credit_enabled BOOLEAN DEFAULT 0"))
+            if "renewal_type" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN renewal_type VARCHAR(20) DEFAULT 'MANUAL'"))
+            if "auto_renew" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN auto_renew BOOLEAN DEFAULT 0"))
+            if "purchase_date" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN purchase_date DATE"))
+            if "tool_cost" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN tool_cost NUMERIC(12,2)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_renewal_type ON it_portal_tool_credentials(renewal_type)"))
+            if credit_enabled_is_new and _table_exists(conn, "tool_credit_rates"):
+                # One-time backfill, only on the boot that introduces the
+                # column: the only existing signal that an account was
+                # actually being tracked for credits is that it already has
+                # a rate configured. Never re-run (would stamp over a
+                # manual override made after this boot).
+                conn.execute(
+                    text(
+                        """
+                        UPDATE it_portal_tool_credentials
+                        SET credit_enabled = 1
+                        WHERE id IN (
+                            SELECT DISTINCT credential_id FROM tool_credit_rates
+                            WHERE credential_id IS NOT NULL
+                        )
+                        """
+                    )
+                )
+                # Seed tool_cost from whatever rate was already configured so
+                # existing credit-tracked accounts show a sensible Cost right
+                # away instead of a blank field.
+                conn.execute(
+                    text(
+                        """
+                        UPDATE it_portal_tool_credentials
+                        SET tool_cost = (
+                            SELECT package_rupees FROM tool_credit_rates
+                            WHERE tool_credit_rates.credential_id = it_portal_tool_credentials.id
+                            ORDER BY effective_from DESC, id DESC
+                            LIMIT 1
+                        )
+                        WHERE credit_enabled = 1 AND tool_cost IS NULL
+                        """
+                    )
+                )

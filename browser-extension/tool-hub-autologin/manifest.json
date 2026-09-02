@@ -242,6 +242,20 @@
     },
     {
       "matches": [
+        "https://coda.grammarly.com/*"
+      ],
+      "js": ["content-grammarly-docs.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://app.grammarly.com/*"
+      ],
+      "js": ["content-grammarly-docs-task-api.js", "content-grammarly-docs-task-modal.js", "content-grammarly-new-doc-gate.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://higgsfield.ai/*",
         "https://*.higgsfield.ai/*"
       ],

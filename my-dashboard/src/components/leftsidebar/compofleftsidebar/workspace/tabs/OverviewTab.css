@@ -233,6 +233,17 @@
   border-color: var(--color-border);
 }
 
+/* A card with nowhere to navigate (no onClick) shouldn't invite a click. */
+.ov-kpi-card--static {
+  cursor: default;
+}
+
+.ov-kpi-card--static:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--color-border-subtle);
+}
+
 .ov-kpi-top {
   display: flex;
   align-items: center;

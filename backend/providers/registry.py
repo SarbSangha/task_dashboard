@@ -237,6 +237,40 @@ PROVIDERS: dict[str, ProviderInfo] = {
             "out of scope - see CAPTURE_CONTRACT.md."
         ),
     ),
+    "grammarly": ProviderInfo(
+        slug="grammarly",
+        display_name="Grammarly (Docs)",
+        tool_slugs=frozenset({"grammarly"}),
+        status="in_development",
+        models_module="providers.grammarly_docs.models",
+        migrations_module=None,
+        notes=(
+            "SESSION-shaped, not generation- or download-shaped like every other provider here - "
+            "coda.grammarly.com (formerly Coda, now under Grammarly) is a document/writing surface, "
+            "not a Generate-and-get-a-credit-cost tool. Reuses the SAME seeded 'grammarly' "
+            "it_portal_tools row content-grammarly.js's login autofill already targets - this is a "
+            "second capture surface on an already-registered tool. Confirmed from live traffic/DOM "
+            "(2026-08-27): GET coda.grammarly.com/d/<docId> returns a full HTML page (not JSON) whose "
+            "inline bootstrap carries docId/title/author, and app.grammarly.com's 'New doc' button "
+            "(data-name=new-ai-doc-add-btn, a React Aria usePress component - fires on pointerdown/"
+            "pointerup, BEFORE native click). 'Session ended' is a client-side tab-lifecycle signal "
+            "(visibilitychange/pagehide), never observed in Coda's own network traffic. Document "
+            "CONTENT is captured too, deliberately breaking this codebase's usual usage-only posture on "
+            "direct request - not via Coda's undocumented codacontent.io shard format, but a best-effort "
+            "DOM read ([contenteditable] regions, falling back to body.innerText), capped at 200k chars, "
+            "excluded from the list endpoint's response to avoid bloating it. A Client Mapping gate "
+            "blocks doc creation until a client is picked (chrome.storage.local handoff across the "
+            "app.grammarly.com -> coda.grammarly.com origin jump). Extension side (content-grammarly-"
+            "docs.js, content-grammarly-new-doc-gate.js, content-grammarly-docs-task-modal.js, "
+            "background-grammarly-docs-capture.js) and a 'Grammarly Docs' Capture Center workspace tab "
+            "(by-person session browser with a click-through detail drawer) are both built. Still no "
+            "capture-health ping, no asset mirroring, no reconciliation sync, no doc-COUNT metric, no "
+            "Reports/AI-report integration, and the 'New doc' dropdown's other creation options aren't "
+            "gated (no confirmed selector for its menu items) - see CAPTURE_CONTRACT.md's known-gaps "
+            "section. No migrations_module: a brand-new set of tables gets its full current schema from "
+            "Base.metadata.create_all() alone."
+        ),
+    ),
 }
 
 
