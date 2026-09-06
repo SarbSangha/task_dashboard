@@ -26,6 +26,7 @@ const ICONS = {
 // section keys map to what ReportsPanel renders; `soon` marks placeholders.
 const TREE = [
   { type: 'item', key: 'usage-intelligence', label: 'Usage Intelligence', icon: 'executive' },
+  { type: 'item', key: 'tool-logins', label: 'Tool Logins', icon: 'tools' },
   { type: 'item', key: 'executive', label: 'Executive Overview', icon: 'executive' },
   { type: 'item', key: 'adoption', label: 'AI Adoption', icon: 'adoption', soon: true },
   {

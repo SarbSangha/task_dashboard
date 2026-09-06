@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { List, useDynamicRowHeight } from 'react-window';
 import './GroupMessagePanel.css';
-import { directMessageAPI, fileAPI, groupAPI, subscribeRealtimeNotifications } from '../../../../services/api';
+import { directMessageAPI, fileAPI, groupAPI, isRequestCanceled, subscribeRealtimeNotifications } from '../../../../services/api';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
 import { useAuth } from '../../../../context/AuthContext';
 import {
@@ -117,7 +117,7 @@ const createInitialComposerDraft = () => ({
   uploadState: createInitialAttachmentUploadState(),
 });
 
-function AttachmentUploadStatus({ uploadState }) {
+function AttachmentUploadStatus({ uploadState, onCancel }) {
   if (!uploadState?.active) return null;
 
   const uploadLabel = uploadState.fileCount === 1 ? 'file' : 'items';
@@ -140,7 +140,21 @@ function AttachmentUploadStatus({ uploadState }) {
             {formatUploadSize(uploadState.uploadedBytes)} of {formatUploadSize(uploadState.totalBytes)} uploaded
           </span>
         </div>
-        <div className="group-chat-upload-status-percent">{uploadState.percent}%</div>
+        <div className="group-chat-upload-status-actions">
+          <div className="group-chat-upload-status-percent">{uploadState.percent}%</div>
+          {onCancel && (
+            <button
+              type="button"
+              className="group-chat-upload-status-cancel"
+              onClick={onCancel}
+              aria-label="Cancel upload"
+              title="Cancel upload"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              <span>Cancel</span>
+            </button>
+          )}
+        </div>
       </div>
       <div className="group-chat-upload-status-bar" aria-hidden="true">
         <span style={{ width: `${uploadState.percent}%` }} />
@@ -831,6 +845,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const [sendingMessage, setSendingMessage] = useState(false);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachmentUploadState, setAttachmentUploadState] = useState(createInitialAttachmentUploadState);
+  const groupUploadAbortRef = useRef(null);
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [groupComposerDrafts, setGroupComposerDrafts] = useState({});
   const [showAddMemberPanel, setShowAddMemberPanel] = useState(false);
@@ -879,6 +894,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const [sendingDirectMessage, setSendingDirectMessage] = useState(false);
   const [uploadingDirectAttachment, setUploadingDirectAttachment] = useState(false);
   const [directAttachmentUploadState, setDirectAttachmentUploadState] = useState(createInitialAttachmentUploadState);
+  const directUploadAbortRef = useRef(null);
   const [directPendingAttachments, setDirectPendingAttachments] = useState([]);
   const [directComposerDrafts, setDirectComposerDrafts] = useState({});
   const [groupUnreadCounts, setGroupUnreadCounts] = useState({});
@@ -2640,6 +2656,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     const targetGroupId = selectedGroupIdRef.current;
     if (!targetGroupId) return;
     const initialUploadState = buildAttachmentUploadState(files);
+    const abortController = new AbortController();
+    groupUploadAbortRef.current = abortController;
     setUploadingAttachment(true);
     setAttachmentUploadState(initialUploadState);
     updateGroupComposerDraft(targetGroupId, {
@@ -2650,6 +2668,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     });
     try {
       const response = await fileAPI.uploadFiles(files, {
+        signal: abortController.signal,
         onProgress: (_percent, metrics = {}) => {
           const applyProgress = (prev) => {
             const totalBytes = prev.totalBytes || initialUploadState.totalBytes;
@@ -2710,8 +2729,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       }
       setFeedback('');
     } catch (error) {
-      setFeedback(error?.response?.data?.detail || 'Failed to upload attachment.');
+      setFeedback(isRequestCanceled(error) ? 'Upload canceled.' : (error?.response?.data?.detail || 'Failed to upload attachment.'));
     } finally {
+      if (groupUploadAbortRef.current === abortController) {
+        groupUploadAbortRef.current = null;
+      }
       if (selectedGroupIdRef.current === targetGroupId) {
         setUploadingAttachment(false);
         setAttachmentUploadState(createInitialAttachmentUploadState());
@@ -2731,6 +2753,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     const targetUserId = selectedDirectUserIdRef.current;
     if (!targetUserId) return;
     const initialUploadState = buildAttachmentUploadState(files);
+    const abortController = new AbortController();
+    directUploadAbortRef.current = abortController;
     setUploadingDirectAttachment(true);
     setDirectAttachmentUploadState(initialUploadState);
     updateDirectComposerDraft(targetUserId, {
@@ -2741,6 +2765,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     });
     try {
       const response = await fileAPI.uploadFiles(files, {
+        signal: abortController.signal,
         onProgress: (_percent, metrics = {}) => {
           const applyProgress = (prev) => {
             const totalBytes = prev.totalBytes || initialUploadState.totalBytes;
@@ -2801,8 +2826,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       }
       setFeedback('');
     } catch (error) {
-      setFeedback(error?.response?.data?.detail || 'Failed to upload attachment.');
+      setFeedback(isRequestCanceled(error) ? 'Upload canceled.' : (error?.response?.data?.detail || 'Failed to upload attachment.'));
     } finally {
+      if (directUploadAbortRef.current === abortController) {
+        directUploadAbortRef.current = null;
+      }
       if (selectedDirectUserIdRef.current === targetUserId) {
         setUploadingDirectAttachment(false);
         setDirectAttachmentUploadState(createInitialAttachmentUploadState());
@@ -2814,6 +2842,14 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         }));
       }
     }
+  };
+
+  const cancelGroupAttachmentUpload = () => {
+    groupUploadAbortRef.current?.abort();
+  };
+
+  const cancelDirectAttachmentUpload = () => {
+    directUploadAbortRef.current?.abort();
   };
 
   const openAttachmentPicker = (mode, onSelect = handleAttachmentSelect) => {
@@ -3652,7 +3688,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                     </button>
                   </div>
                 )}
-                {!isEditingGroupMessage && <AttachmentUploadStatus uploadState={attachmentUploadState} />}
+                {!isEditingGroupMessage && <AttachmentUploadStatus uploadState={attachmentUploadState} onCancel={cancelGroupAttachmentUpload} />}
                 {!isEditingGroupMessage && !!pendingAttachments.length && (
                   <div className="group-chat-attachment-strip">
                     {pendingAttachments.map((attachment, index) => (
@@ -4032,7 +4068,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                       </button>
                     </div>
                   )}
-                  {!isEditingDirectMessage && <AttachmentUploadStatus uploadState={directAttachmentUploadState} />}
+                  {!isEditingDirectMessage && <AttachmentUploadStatus uploadState={directAttachmentUploadState} onCancel={cancelDirectAttachmentUpload} />}
                   {!isEditingDirectMessage && !!directPendingAttachments.length && (
                     <div className="group-chat-attachment-strip">
                       {directPendingAttachments.map((attachment, index) => (

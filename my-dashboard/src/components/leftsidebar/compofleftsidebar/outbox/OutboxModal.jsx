@@ -413,12 +413,6 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
         <div className="outbox-main-header" onClick={isMinimized ? restoreWindow : undefined}>
           <div className="header-title-section">
             <h1 className="outbox-main-title">Outbox</h1>
-            {/* NEW: Display current user info */}
-            {currentUser && (
-              <span className="current-user-badge">
-                {currentUser.name} ({currentUser.email})
-              </span>
-            )}
           </div>
           {!isMinimized && (
             <div className="outbox-header-tools" onClick={(event) => event.stopPropagation()}>

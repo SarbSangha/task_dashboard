@@ -364,6 +364,7 @@ def get_generation(
 
 @router.get("/events", response_model=EventListOut)
 def list_events(
+    client_event_id: Optional[str] = None,
     event_type: Optional[str] = None,
     user_id: Optional[int] = None,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
@@ -372,6 +373,8 @@ def list_events(
     current_user: User = Depends(require_admin),
 ):
     query = db.query(SunoCaptureEvent).filter(SunoCaptureEvent.provider == PROVIDER)
+    if client_event_id:
+        query = query.filter(SunoCaptureEvent.client_event_id == client_event_id)
     if event_type:
         query = query.filter(SunoCaptureEvent.event_type == event_type)
     if user_id is not None:

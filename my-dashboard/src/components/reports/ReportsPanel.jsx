@@ -37,10 +37,12 @@ import PromptDrill from './sections/PromptDrill';
 import ChatGptUsersDrill from './sections/ChatGptUsersDrill';
 import ComingSoon from './sections/ComingSoon';
 import UsageIntelligence from './sections/UsageIntelligence';
+import ToolLogins from './sections/ToolLogins';
 import './ReportsPanel.css';
 
 const SECTION_LABELS = {
   'usage-intelligence': 'Usage Intelligence',
+  'tool-logins': 'Tool Logins',
   executive: 'Executive Overview',
   adoption: 'AI Adoption',
   kling: 'Kling Analytics',
@@ -270,6 +272,9 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
           onOpenUser={(userId, userName, mode) => openUser(userId, userName, mode || 'output')}
         />
       );
+    }
+    if (section === 'tool-logins') {
+      return <ToolLogins />;
     }
     if (section === 'kling') {
       return (

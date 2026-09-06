@@ -510,8 +510,9 @@ def list_capture_events(
         limit=limit,
         offset=offset,
     )
+    data = epidemicsound_queries.attach_event_user_names(db, [item.to_dict() for item in items])
     return EventListOut(
-        data=[item.to_dict() for item in items],
+        data=data,
         pagination=PaginationOut(limit=limit, offset=offset, total=total),
     )
 
@@ -525,4 +526,5 @@ def get_capture_event(
     event = epidemicsound_queries.get_event(db, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Capture event not found")
-    return EventDetailOut(data=event.to_dict())
+    data = epidemicsound_queries.attach_event_user_names(db, [event.to_dict()])[0]
+    return EventDetailOut(data=data)

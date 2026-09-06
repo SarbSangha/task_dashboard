@@ -4,8 +4,13 @@ const AUTH_URL = 'https://login.epidemicsound.com/';
 const BLOCKED_NOTICE_KEY = 'rmw_epidemic_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
 const ENFORCE_LOOP_GUARD_KEY = 'rmw_epidemic_enforce_loop_guard';
+const FRESH_SESSION_GUARD_KEY = 'rmw_epidemic_fresh_session_guard';
 const MAX_ENFORCE_REDIRECTS = 2;
-const SCRIPT_VERSION = 'debug-2026-07-28-epidemic-12-early-mouse-activity';
+// ensureFreshLaunchSession() reloads the tab exactly once to drop whatever
+// session the profile already had. Anything past that is a loop, not a
+// preparation step - see the comment on that function.
+const MAX_FRESH_SESSION_REDIRECTS = 1;
+const SCRIPT_VERSION = 'debug-2026-09-06-epidemic-14-click-target-hardening';
 
 const STATE = {
   credential: null,
@@ -26,6 +31,7 @@ const STATE = {
   launchAuthorized: false,
   launchExpiresAt: 0,
   launchPrepared: false,
+  launchIncognito: false,
   passwordSavingInFlight: false,
   passwordSavingSuppressed: false,
   passwordSavingRestoreTimer: null,
@@ -231,11 +237,51 @@ function captureLaunchTicketFromHash() {
   return ticket;
 }
 
+// Marketing pages inject third-party chrome (consent frames, Google Identity
+// Services' One Tap prompt, experiment overlays) that is full-size but not
+// actually interactive, and whose id/class text often matches the same words
+// the sign-in finders below look for. Clicking one of those does nothing, and
+// the automation has no way to tell it failed - it just retries forever. Treat
+// only genuinely clickable, on-screen nodes as visible. (This is the same
+// hardening content-suno.js needed after One Tap chrome was being matched as
+// Suno's own "Continue with Google" button.)
+const NON_INTERACTIVE_CONTAINER_SELECTOR = [
+  'iframe',
+  '#credential_picker_container',
+  '[id^="credential_picker"]',
+  '#g_id_onload',
+  '[aria-hidden="true"]',
+  '#rmw-epidemic-autologin-status',
+].join(',');
+
+function isInsideNonInteractiveContainer(element) {
+  try {
+    return Boolean(element?.closest?.(NON_INTERACTIVE_CONTAINER_SELECTOR));
+  } catch {
+    return false;
+  }
+}
+
 function isVisible(element) {
   if (!element) return false;
   const rect = element.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return false;
+
   const style = window.getComputedStyle(element);
-  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  if (style.visibility === 'hidden' || style.display === 'none') return false;
+  if (Number(style.opacity) === 0) return false;
+  if (style.pointerEvents === 'none') return false;
+  // Parked off-canvas (the other way these overlays hide themselves: a
+  // left:-10000px / top:-9999px wrapper). Deliberately measured in DOCUMENT
+  // coordinates against a generous margin, not against the viewport: a real
+  // control that merely sits below the fold or above the current scroll
+  // position is perfectly clickable once safeClick() scrolls to it, and must
+  // not be rejected here.
+  const docLeft = rect.left + (window.scrollX || 0);
+  const docTop = rect.top + (window.scrollY || 0);
+  if (docLeft + rect.width < -500 || docTop + rect.height < -500) return false;
+
+  return !isInsideNonInteractiveContainer(element);
 }
 
 function isDisabled(element) {
@@ -610,6 +656,7 @@ function clearPageStorage() {
     const blockedNotice = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY);
     const extensionTicket = window.sessionStorage.getItem(EXTENSION_TICKET_KEY);
     const enforceLoopGuard = window.sessionStorage.getItem(ENFORCE_LOOP_GUARD_KEY);
+    const freshSessionGuard = window.sessionStorage.getItem(FRESH_SESSION_GUARD_KEY);
     window.sessionStorage.clear();
     if (blockedNotice) {
       window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, blockedNotice);
@@ -619,6 +666,12 @@ function clearPageStorage() {
     }
     if (enforceLoopGuard) {
       window.sessionStorage.setItem(ENFORCE_LOOP_GUARD_KEY, enforceLoopGuard);
+    }
+    // Both loop guards have to survive the wipe they are guarding against,
+    // otherwise clearing the page's storage resets the very counter that
+    // stops the clear-and-redirect from repeating.
+    if (freshSessionGuard) {
+      window.sessionStorage.setItem(FRESH_SESSION_GUARD_KEY, freshSessionGuard);
     }
   } catch {}
 }
@@ -1174,6 +1227,7 @@ async function loadLaunchState() {
       STATE.launchAuthorized = true;
       STATE.launchExpiresAt = Number(activation.expiresAt || 0);
       STATE.launchPrepared = Boolean(activation.prepared);
+      STATE.launchIncognito = Boolean(activation.incognito);
       return;
     }
 
@@ -1191,6 +1245,7 @@ async function loadLaunchState() {
   STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
   STATE.launchPrepared = Boolean(response?.ok && response.authorized && response.prepared);
+  STATE.launchIncognito = Boolean(response?.ok && response.incognito);
 }
 
 async function clearToolSession(options = {}) {
@@ -1239,6 +1294,40 @@ async function enforceDashboardOnlyAccess() {
   return false;
 }
 
+function readFreshSessionRedirectCount() {
+  try {
+    return Number(window.sessionStorage.getItem(FRESH_SESSION_GUARD_KEY) || 0) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function noteFreshSessionRedirect(count) {
+  try {
+    window.sessionStorage.setItem(FRESH_SESSION_GUARD_KEY, String(count));
+  } catch {}
+}
+
+// Wipes whatever session the profile already had so a dashboard launch never
+// lands on somebody else's still-signed-in account, then reloads once so the
+// SSR'd page is rendered against the now-empty cookie jar.
+//
+// This used to be the extension's own reload storm on epidemicsound.com. Three
+// separate things could make the single preparation reload repeat forever:
+//   1. The redirect fired unconditionally, even when
+//      TOOL_HUB_MARK_FRESH_SESSION_PREPARED came back not-ok. The MV3 service
+//      worker is very often still cold-starting on the first message of a
+//      fresh tab (the exact race sendRuntimeMessageWithRetry was added for
+//      further up this file), so the "prepared" flag never got written, the
+//      reloaded page saw prepared=false again, and it cleared + reloaded on
+//      every single load. Retry the mark, and never redirect without it.
+//   2. Nothing counted the redirects. Every other redirecting path in this
+//      file (enforceDashboardOnlyAccess) is capped; this one was not.
+//   3. A launch opened into a brand new Incognito window (which is how a
+//      Google-login tool is launched - see shouldLaunchExtensionToolInIncognito
+//      in the dashboard's Tools.jsx) starts with an empty cookie jar, so there
+//      is nothing to clear and the reload is pure cost. content-splice.js
+//      already carries this same fix for the same symptom.
 async function ensureFreshLaunchSession() {
   if (!STATE.launchExpiresAt) {
     return false;
@@ -1248,15 +1337,44 @@ async function ensureFreshLaunchSession() {
     return true;
   }
 
+  // (3) Fresh Incognito window: already a clean session, so mark it prepared
+  // in place and let the login flow continue on THIS page load.
+  if (STATE.launchIncognito) {
+    await sendRuntimeMessageWithRetry({
+      type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED',
+      toolSlug: TOOL_SLUG,
+    });
+    STATE.launchPrepared = true;
+    window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
+    setStatus('Fresh Incognito session - skipping session reset');
+    return true;
+  }
+
+  // (2) Never redirect more than once per tab, whatever the reason.
+  const redirectCount = readFreshSessionRedirectCount() + 1;
+  if (redirectCount > MAX_FRESH_SESSION_REDIRECTS) {
+    STATE.launchPrepared = true;
+    setStatus('Session reset already done - continuing without another reload');
+    return true;
+  }
+
   await clearToolSession({ preserveLaunch: true });
-  const preparedResponse = await sendRuntimeMessage({
+  const preparedResponse = await sendRuntimeMessageWithRetry({
     type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED',
     toolSlug: TOOL_SLUG,
   });
-  if (preparedResponse?.ok) {
-    STATE.launchPrepared = true;
-  }
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
+
+  // (1) The mark is what stops the reloaded page from repeating this step.
+  // Without it, carry on here instead of reloading into the same state.
+  if (!preparedResponse?.ok) {
+    STATE.launchPrepared = true;
+    setStatus('Session cleared, could not record it - continuing without reload');
+    return true;
+  }
+
+  STATE.launchPrepared = true;
+  noteFreshSessionRedirect(redirectCount);
   setStatus('Preparing fresh Epidemic Sound session');
 
   window.location.replace(LOGIN_URL);
@@ -1645,7 +1763,11 @@ function attemptFill() {
     debugLog('attemptFill EXIT settled');
     return;
   }
-  if (document.readyState !== 'complete') {
+  // 'interactive' is enough: the DOM (and therefore the sign-in control) is
+  // parsed and hydrated by then. Insisting on 'complete' would undo boot()'s
+  // early start, since 'complete' is the same `load` milestone the third-party
+  // stack holds open for seconds.
+  if (document.readyState === 'loading') {
     debugLog('attemptFill EXIT page not ready');
     setStatus('Waiting for Epidemic Sound page to finish loading');
     scheduleAttempt(300);
@@ -1707,11 +1829,13 @@ function attemptFill() {
   const passwordInput = findPasswordInput();
   const emailOption = findEmailOptionAction();
   const passwordOption = findUsePasswordInsteadAction();
+  const googleOption = findGoogleOptionAction();
   debugLog('attemptFill DOM snapshot', {
     emailInput: describeElement(emailInput),
     passwordInput: describeElement(passwordInput),
     emailOption: describeElement(emailOption),
     passwordOption: describeElement(passwordOption),
+    googleOption: describeElement(googleOption),
   });
 
   if (!STATE.credential?.loginIdentifier || (!STATE.credential?.password && !shouldUseGoogleProvider())) {
@@ -1719,7 +1843,13 @@ function attemptFill() {
     // Never fetch the credential on Epidemic's own pages — the Google broker
     // navigation above handles the login host, and the credential is applied on
     // accounts.google.com. Fetching here churns and can loop.
-    if (!onAuthHost() && (emailInput || passwordInput || emailOption || passwordOption)) {
+    // googleOption belongs in this list: shouldUseGoogleProvider() reads
+    // STATE.credential.loginMethod, so a sign-in modal that only offers
+    // "Continue with Google" left the credential unfetched forever, which in
+    // turn kept shouldUseGoogleProvider() false and sent the flow down the
+    // email branch of attemptOpenEpidemicLogin() - clicking "Use email" on an
+    // account that has no password, for the life of the tab.
+    if (!onAuthHost() && (emailInput || passwordInput || emailOption || passwordOption || googleOption)) {
       requestCredential();
     }
     if (attemptOpenEpidemicLogin()) {
@@ -1916,21 +2046,28 @@ function start() {
   STATE.observer = new MutationObserver(() => handleMutations());
   STATE.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
   STATE.keepAliveTimer = window.setInterval(() => scheduleAttempt(0), KEEP_ALIVE_MS);
-  loadLaunchState()
-    .catch(() => {
-      STATE.launchChecked = true;
-      STATE.launchAuthorized = false;
-      STATE.launchExpiresAt = 0;
-    })
-    .finally(() => {
-      STATE.settled = false;
-      scheduleAttempt(0);
-    });
+  LAUNCH_STATE_READY.finally(() => {
+    STATE.settled = false;
+    scheduleAttempt(0);
+  });
 }
 
 // Grab the launch ticket from the URL immediately so a later navigation cannot
 // drop it, but defer all DOM work (badge, clicks) until React has hydrated.
 captureLaunchTicketFromHash();
+
+// Resolving the dashboard launch is a pure background round-trip with no DOM
+// involvement, so there is no reason to serialize it behind window.onload +
+// PAGE_SETTLE_AFTER_LOAD_MS the way the click/fill work has to be. On a heavy
+// page - and against a cold-starting MV3 worker, where the retry wrapper can
+// spend a second or more - that ordering put its whole latency at the front of
+// every launch, after the site had already finished loading. Start it now and
+// let start() await whatever it resolved to.
+const LAUNCH_STATE_READY = loadLaunchState().catch(() => {
+  STATE.launchChecked = true;
+  STATE.launchAuthorized = false;
+  STATE.launchExpiresAt = 0;
+});
 
 // Start the activity heartbeat immediately at script load rather than waiting
 // for start()'s PAGE_SETTLE_AFTER_LOAD_MS delay. Every fresh navigation begins
@@ -1941,13 +2078,43 @@ captureLaunchTicketFromHash();
 simulateMouseActivity();
 STATE.mouseActivityTimer = window.setInterval(simulateMouseActivity, MOUSE_ACTIVITY_INTERVAL_MS);
 
+// `load` does not fire until every last third-party subresource has settled -
+// on the Epidemic Sound landing page that is OneTrust, Optimizely and the
+// analytics stack (plus, per this tab's console, a pile of tracker requests
+// its own CSP blocks), well after the page is interactive and the "Log in"
+// button is real. Waiting for it put all of that dead time at the front of
+// every launch. Race `load` against the thing we actually need and take
+// whichever arrives first; the PAGE_SETTLE_AFTER_LOAD_MS hydration settle
+// still applies either way, so this does not reintroduce the React #418
+// click-on-a-discarded-node problem.
 function boot() {
-  const begin = () => window.setTimeout(start, PAGE_SETTLE_AFTER_LOAD_MS);
+  let begun = false;
+  let readyPoll = null;
+
+  const begin = () => {
+    if (begun) return;
+    begun = true;
+    if (readyPoll) {
+      window.clearInterval(readyPoll);
+      readyPoll = null;
+    }
+    window.setTimeout(start, PAGE_SETTLE_AFTER_LOAD_MS);
+  };
+
   if (document.readyState === 'complete') {
     begin();
     return;
   }
+
   window.addEventListener('load', begin, { once: true });
+  readyPoll = window.setInterval(() => {
+    if (begun) return;
+    try {
+      if (findHomeSignInAction() || findGoogleOptionAction() || findEmailInput() || findPasswordInput()) {
+        begin();
+      }
+    } catch {}
+  }, 150);
 }
 
 boot();

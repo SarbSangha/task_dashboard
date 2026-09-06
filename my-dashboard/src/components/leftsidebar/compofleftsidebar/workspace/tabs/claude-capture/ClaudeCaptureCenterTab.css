@@ -1,0 +1,200 @@
+/* Claude Capture Center - "by person" conversation groups. Reuses
+   ChatGptCaptureCenterTab.css's shell chrome (badges, alerts, empty states,
+   buttons, chat bubbles) via that stylesheet's own class names, same as
+   every other provider tab (see splice-capture/SpliceExplorerBody.jsx's own
+   comment) - this file only adds the group/row layout that provider needs.
+   Adapted from grammarly-docs-capture/GrammarlyDocsCaptureCenterTab.css,
+   minus that file's extra per-document nesting level (one Claude
+   conversation is already the row, no further indent level needed). */
+
+.claude-capture-person-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.claude-capture-person-group {
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.claude-capture-person-group-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: background var(--theme-transition-fast);
+}
+
+.claude-capture-person-group-head:hover {
+  background: var(--color-surface-muted);
+}
+
+.claude-capture-person-group-head:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.claude-capture-person-caret {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  width: 14px;
+}
+
+.claude-capture-person-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.claude-capture-person-identity strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-capture-person-meta {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.claude-capture-person-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.claude-capture-badge-accent {
+  border: 1px solid var(--color-feedback-info-border);
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
+}
+
+.claude-capture-person-last-active {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.claude-capture-conversation-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.claude-capture-conversation-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px 10px 44px;
+  font-size: 13px;
+  border: none;
+  border-top: 1px solid var(--color-border-subtle);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.claude-capture-conversation-row:first-child {
+  border-top: none;
+}
+
+.claude-capture-conversation-row-clickable {
+  cursor: pointer;
+  transition: background var(--theme-transition-fast);
+}
+
+.claude-capture-conversation-row-clickable:hover {
+  background: var(--color-surface-muted);
+}
+
+.claude-capture-conversation-row-clickable:focus-visible {
+  outline: none;
+  box-shadow: inset var(--shadow-focus);
+}
+
+.claude-capture-conversation-status {
+  flex: 0 0 auto;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.claude-capture-conversation-status.tone-success { color: var(--color-feedback-success-text); }
+.claude-capture-conversation-status.tone-warning { color: var(--color-feedback-warning-text); }
+.claude-capture-conversation-status.tone-error { color: var(--color-feedback-error-text); }
+.claude-capture-conversation-status.tone-muted { color: var(--color-text-secondary); }
+
+.claude-capture-conversation-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.claude-capture-conversation-preview {
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+
+.claude-capture-conversation-when {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Conversation detail drawer - covers the full Workspace panel width
+   instead of the shared chatgpt-capture-drawer default (480px). See
+   grammarly-docs-capture/GrammarlyDocsCaptureCenterTab.css's identical rule
+   for why left/right (not a computed width) is what actually works here. */
+.claude-capture-drawer {
+  left: 0 !important;
+  right: 0 !important;
+  width: auto !important;
+}
+
+.claude-capture-detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 24px;
+  align-items: stretch;
+  min-width: 0;
+  width: 100%;
+}
+
+.claude-capture-detail-content-col,
+.claude-capture-detail-fields-col {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (max-width: 720px) {
+  .claude-capture-detail-layout {
+    grid-template-columns: 1fr;
+  }
+}

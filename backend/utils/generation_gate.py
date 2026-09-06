@@ -24,6 +24,7 @@ from providers.envato.constants import TOOL_SLUGS as ENVATO_GATE_TOOL_SLUGS
 from providers.epidemicsound.constants import TOOL_SLUGS as EPIDEMIC_GATE_TOOL_SLUGS
 from providers.flow.constants import TOOL_SLUGS as FLOW_GATE_TOOL_SLUGS
 from providers.freepik.constants import TOOL_SLUGS as FREEPIK_GATE_TOOL_SLUGS
+from providers.grammarly_docs.constants import TOOL_SLUGS as GRAMMARLY_DOCS_GATE_TOOL_SLUGS
 from providers.heygen.constants import TOOL_SLUGS as HEYGEN_GATE_TOOL_SLUGS
 from providers.higgsfield.constants import TOOL_SLUGS as HIGGSFIELD_GATE_TOOL_SLUGS
 from providers.splice.constants import TOOL_SLUGS as SPLICE_GATE_TOOL_SLUGS
@@ -55,6 +56,8 @@ def resolve_generation_gate_tool(db: Session, tool_slug: Optional[str]) -> Optio
         slugs = EPIDEMIC_GATE_TOOL_SLUGS
     elif normalized in SPLICE_GATE_TOOL_SLUGS:
         slugs = SPLICE_GATE_TOOL_SLUGS
+    elif normalized in GRAMMARLY_DOCS_GATE_TOOL_SLUGS:
+        slugs = GRAMMARLY_DOCS_GATE_TOOL_SLUGS
     else:
         slugs = FREEPIK_GATE_TOOL_SLUGS
     return (

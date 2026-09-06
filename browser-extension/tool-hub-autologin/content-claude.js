@@ -26,12 +26,42 @@ const STATE = {
   launchAuthorized: false,
   launchExpiresAt: 0,
   launchPrepared: false,
+  lastGoogleSignInClickAt: 0,
+  googleSignInClickAttempts: 0,
   status: 'Waiting for Claude sign-in',
 };
 
 const MIN_RUN_GAP_MS = 900;
 const KEEP_ALIVE_MS = 4000;
 const ACTION_THROTTLE_MS = 1200;
+// Reported bug: clicking "Continue with Google" opens a real
+// window.open() popup - Chrome's popup blocker treats a burst of these in
+// quick succession as spam (confirmed live: 4 blocked in a row) and starts
+// refusing every one of them, even a perfectly genuine later attempt. The
+// generic ACTION_THROTTLE_MS (1200ms) is nowhere near long enough here:
+// Claude's own page re-renders the same button (and often shows its own
+// "There was an error logging you in" banner) the instant a popup gets
+// blocked, so nothing about the DOM signals "already tried" the way a
+// successful click normally would - the button just looks identical to a
+// fresh, never-clicked one on every following attemptFill() pass. This is
+// a much longer, click-specific cooldown, separate from and on top of
+// ACTION_THROTTLE_MS, so at most one popup attempt goes out per window
+// regardless of how often the mutation observer/keepalive timer re-fires.
+// Also deliberately long enough to comfortably outlast a SUCCESSFUL popup's
+// own full flow (chooser -> password -> consent, each with their own
+// multi-second settle/retry waits in content-google.js) - the goal is never
+// clicking a second time while a first, perfectly working popup is simply
+// still in progress. A completed sign-in stops this tab's automation
+// entirely (looksLikeAuthenticatedWorkspace()) well before this would ever
+// fire again anyway.
+const GOOGLE_SIGN_IN_CLICK_COOLDOWN_MS = 20000;
+// Safety valve, not a normal ceiling: if Chrome is still blocking popups
+// from this site after several spaced-out attempts, retrying forever just
+// keeps adding to the blocked-popups list - stop and let the user finish
+// manually (click "Continue with Google" themselves, or "Always allow
+// pop-ups" for claude.ai) rather than fighting the browser's own blocker
+// indefinitely.
+const GOOGLE_SIGN_IN_CLICK_MAX_ATTEMPTS = 3;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -204,6 +234,18 @@ function normalizeText(value) {
   return `${value || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+function normalizeLoginMethod(value) {
+  const method = normalizeText(value).replace(/[-\s]+/g, '_');
+  if (!method) return 'email_password';
+  if (method === 'google' || method.includes('google')) return 'google';
+  if (method === 'email' || method.includes('email') || method.includes('password')) return 'email_password';
+  return method;
+}
+
+function isGoogleLoginCredential(credential) {
+  return normalizeLoginMethod(credential?.loginMethod) === 'google';
+}
+
 function descriptorText(element) {
   const parts = [
     element?.innerText,
@@ -333,6 +375,13 @@ function findContinueButton() {
     exact: ['continue', 'email me a login link', 'send link', 'send sign in link'],
     partial: ['continue', 'email me a login link', 'send link', 'send sign in link', 'email me a secure link'],
     exclude: ['google', 'apple', 'github', 'enterprise', 'sso'],
+  });
+}
+
+function findGoogleOptionAction() {
+  return findActionByText({
+    exact: ['continue with google', 'sign in with google'],
+    partial: ['continue with google', 'sign in with google', 'log in with google', 'login with google', 'continue using google'],
   });
 }
 
@@ -506,7 +555,22 @@ function requestCredential() {
 
       clearStoredLaunchTicket();
       STATE.credential = response.data?.credential || null;
-      setStatus(STATE.credential?.loginIdentifier ? 'Claude email loaded' : 'Claude email missing');
+      // Surfaces exactly which route this credential will take - the single
+      // most useful line for diagnosing "it filled the email field instead
+      // of clicking Google" (or vice versa): that always means the resolved
+      // credential's loginMethod itself is not what was expected (e.g. the
+      // dashboard's Add/Edit Credential form still has "Email" selected, or
+      // a DIFFERENT saved Claude credential than the one just edited is the
+      // one actually being served for this launch) - not a routing bug in
+      // attemptFill() below, which always branches on this exact value.
+      const routeLabel = STATE.credential
+        ? (isGoogleLoginCredential(STATE.credential) ? 'google' : 'email')
+        : 'none';
+      setStatus(
+        STATE.credential?.loginIdentifier
+          ? `Claude credential loaded (${STATE.credential.loginIdentifier}, route=${routeLabel})`
+          : 'Claude email missing'
+      );
       scheduleAttempt(150);
     }
   );
@@ -612,6 +676,60 @@ function submitClaudeEmail(emailInput) {
   return true;
 }
 
+// Mirrors content-suno.js/content-google.js's own attemptProviderChoice /
+// attempt<Tool>GooglePopupFlow pattern: clicking this button opens a real
+// child popup window (window.open from claude.ai's own JS, confirmed live -
+// not a same-tab redirect the way the email magic-link flow is), which
+// navigates to accounts.google.com. That popup gets its own content-script
+// injection per manifest.json's existing accounts.google.com match
+// (content-google.js), which recognizes this as a Claude flow via
+// isClaudeGoogleFlow()/inferToolSlugFromGooglePage() and drives the
+// chooser/password/email steps there - nothing else is needed here once
+// the click lands; looksLikeAuthenticatedWorkspace() below already detects
+// the resulting signed-in state on this tab once the popup completes.
+function attemptGoogleSignIn() {
+  const googleButton = findGoogleOptionAction();
+  if (!googleButton) {
+    // Confirmed live: Claude's login page renders the Google button
+    // asynchronously (a brief loading spinner sits in its place while it
+    // checks for an existing browser Google session) - on an attemptFill()
+    // pass that lands during that window, this simply isn't found yet. The
+    // caller (attemptFill()) must never treat this as "no Google option on
+    // this page, fall back to email" for a credential we already know is
+    // Google-based - see the comment there for the double-flow bug that
+    // produced (both an email fill AND a Google popup, at once) before this
+    // waited instead.
+    setStatus('Waiting for Claude Google sign-in button to render');
+    scheduleAttempt(400);
+    return false;
+  }
+
+  if (STATE.googleSignInClickAttempts >= GOOGLE_SIGN_IN_CLICK_MAX_ATTEMPTS) {
+    // Stop retrying - see GOOGLE_SIGN_IN_CLICK_MAX_ATTEMPTS's own comment.
+    // STATE.settled is deliberately NOT set here: looksLikeAuthenticatedWorkspace()
+    // above still keeps checking on every later mutation/keepalive tick, so
+    // a manual click by the user (or Chrome's own "Always allow" choice
+    // followed by a page reload) is still picked up and completes normally.
+    setStatus('Claude Google sign-in popup keeps getting blocked. Click "Continue with Google" yourself, or allow pop-ups for claude.ai.');
+    return true;
+  }
+
+  const now = Date.now();
+  if (!canActNow() || now - STATE.lastGoogleSignInClickAt < GOOGLE_SIGN_IN_CLICK_COOLDOWN_MS) {
+    setStatus('Waiting to open Claude Google sign-in');
+    scheduleAttempt(1000);
+    return true;
+  }
+
+  markActionTaken();
+  STATE.lastGoogleSignInClickAt = now;
+  STATE.googleSignInClickAttempts += 1;
+  setStatus(`Opening Claude Google sign-in (attempt ${STATE.googleSignInClickAttempts}/${GOOGLE_SIGN_IN_CLICK_MAX_ATTEMPTS})`);
+  safeClick(googleButton);
+  scheduleAttempt(GOOGLE_SIGN_IN_CLICK_COOLDOWN_MS);
+  return true;
+}
+
 function requestAuthLink() {
   if (STATE.authLinkInFlight || STATE.authLinkAttempts >= 1 || STATE.authLinkNavigated) {
     return;
@@ -696,6 +814,35 @@ function attemptFill() {
       revokeLaunch: true,
       hideBadgeAfterMs: 5000,
     });
+    return;
+  }
+
+  // Route on credential type before touching the email field at all - once
+  // a credential is loaded and it's Google-based, click "Continue with
+  // Google" instead of filling the (also always-present, per Claude's own
+  // login page) email field. On the very first pass, before any credential
+  // has loaded yet, STATE.credential is still null - this simply falls
+  // through to the email branch below, which lazily requests the
+  // credential itself (submitClaudeEmail's own requestCredential() call);
+  // once that resolves, scheduleAttempt(150) reruns attemptFill() and this
+  // check runs again with the real credential now known.
+  //
+  // Reported bug: both the email field got filled with the Google
+  // credential's own loginIdentifier AND a Google sign-in popup opened, at
+  // once. Root cause: attemptGoogleSignIn() returning false whenever
+  // findGoogleOptionAction() hadn't found the button YET (Claude's login
+  // page renders "Continue with Google" asynchronously behind a brief
+  // loading spinner - confirmed live) used to be read by this caller as "no
+  // Google option exists on this page, fall back to the email flow" - the
+  // exact same signal as a page that genuinely has no Google button at all.
+  // A later pass, once the spinner resolved into the real button, then
+  // separately succeeded and opened the popup - so both flows fired for the
+  // one credential. `return` unconditionally once we know the route is
+  // Google, matching how the email branch below already waits (via
+  // submitClaudeEmail's own credential/button checks) rather than ever
+  // falling through to some other flow.
+  if (STATE.credential && isGoogleLoginCredential(STATE.credential)) {
+    attemptGoogleSignIn();
     return;
   }
 

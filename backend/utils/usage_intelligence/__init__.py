@@ -21,14 +21,16 @@ Privacy: prompt and response text is never selected into a snapshot, and so
 never reaches a workbook.
 """
 
-from .service import METHODOLOGY, build_snapshot, directory, resolve_period  # noqa: F401
-from .workbook import XLSX_MIMETYPE, build_usage_workbook  # noqa: F401
+from .service import METHODOLOGY, build_snapshot, build_tool_login_report, directory, resolve_period  # noqa: F401
+from .workbook import XLSX_MIMETYPE, build_tool_login_workbook, build_usage_workbook  # noqa: F401
 
 __all__ = [
     "METHODOLOGY",
     "build_snapshot",
+    "build_tool_login_report",
     "directory",
     "resolve_period",
     "build_usage_workbook",
+    "build_tool_login_workbook",
     "XLSX_MIMETYPE",
 ]

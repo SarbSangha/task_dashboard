@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "RMW Tool Hub Auto Login",
   "description": "Auto-fills approved company tool credentials from the RMW Tool Hub.",
-  "version": "0.1.35",
+  "version": "0.1.40",
   "incognito": "split",
   "icons": {
     "16": "icons/icon16.png",
@@ -128,6 +128,23 @@
         "https://claude.ai/*",
         "https://*.claude.ai/*"
       ],
+      "js": ["content-claude-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*",
+        "https://*.claude.ai/*"
+      ],
+      "js": ["content-claude-capture.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*",
+        "https://*.claude.ai/*"
+      ],
       "js": ["content-claude.js"],
       "run_at": "document_idle"
     },
@@ -238,6 +255,20 @@
         "https://*.grammarly.com/*"
       ],
       "js": ["content-grammarly.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://coda.grammarly.com/*"
+      ],
+      "js": ["content-grammarly-docs.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://app.grammarly.com/*"
+      ],
+      "js": ["content-grammarly-docs-task-api.js", "content-grammarly-docs-task-modal.js", "content-grammarly-new-doc-gate.js"],
       "run_at": "document_idle"
     },
     {

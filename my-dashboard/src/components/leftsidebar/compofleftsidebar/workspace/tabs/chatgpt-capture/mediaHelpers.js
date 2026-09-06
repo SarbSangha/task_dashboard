@@ -36,6 +36,7 @@ export function toFile(asset) {
 }
 
 export function generationType(media) {
+  if (media.length === 0) return { icon: '💬', label: 'Text response' };
   const hasVideo = media.some(isVideo);
   const hasImage = media.some((m) => !isVideo(m));
   if (hasVideo && hasImage) return { icon: '🎬', label: 'Media Generation' };
@@ -43,8 +44,13 @@ export function generationType(media) {
   return { icon: '🎨', label: 'Image Generation' };
 }
 
-// Generation lifecycle rolled up from the per-asset `status` field.
+// Generation lifecycle rolled up from the per-asset `status` field. A turn
+// with zero media (e.g. ChatGPT replied with an error and never produced an
+// image) is neither "Completed" nor "Failed" in the asset-status sense -
+// there's no asset to have failed - so it gets its own neutral label rather
+// than defaulting into the "Completed" bucket.
 export function generationStatus(media) {
+  if (media.length === 0) return { tone: 'muted', icon: '⚪', label: 'No image' };
   const failed = media.filter((m) => m.status === 'failed').length;
   const pending = media.filter((m) => m.status === 'pending').length;
   const stored = media.filter((m) => m.status === 'stored').length;
@@ -161,11 +167,14 @@ export function buildGenerations(messages, mediaAssets) {
   );
 
   // Chronological generation numbers (oldest = #1), then display newest-first.
-  const chronological = turns.filter((t) => byTurn.has(t.index));
-  const generations = chronological.map((t, i) => ({
+  // Every turn is kept, not just ones that produced media - a turn whose
+  // response was text-only (e.g. "I wasn't able to generate the image due to
+  // an error on my side") is still a real input/output exchange and needs to
+  // stay in sequence, not vanish from the Timeline/Gallery/Prompts views.
+  const generations = turns.map((t, i) => ({
     ...t,
     number: i + 1,
-    media: sortMedia(byTurn.get(t.index)),
+    media: sortMedia(byTurn.get(t.index) || []),
   }));
   generations.sort((a, b) => b.anchorMs - a.anchorMs);
   if (ungrouped.length) {

@@ -568,28 +568,11 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
     });
   };
 
-  const dynamicModalStyle = (() => {
-    if (isMinimized) return undefined;
-
-    const stepCount = Math.max(1, workflowSteps.length);
-    const baseTrackWidth = (stepCount * 84) + (Math.max(0, stepCount - 1) * 74) + 180;
-    const baseWidth = Math.min(1100, Math.max(860, baseTrackWidth));
-    const modalWidth = isMaximized ? '100vw' : '95%';
-    const modalHeight = isMaximized
-      ? '100vh'
-      : 'calc(100vh - var(--workflow-panel-top-offset) - 24px)';
-
-    const nodeScale = isMaximized ? 1.12 : 1;
-    const connectorWidth = isMaximized ? 106 : 84;
-
-    return {
-      '--workflow-modal-width': modalWidth,
-      '--workflow-modal-max-width': '1400px',
-      '--workflow-modal-height': modalHeight,
-      '--workflow-node-scale': nodeScale,
-      '--workflow-connector-width': `${connectorWidth}px`
-    };
-  })();
+  // Sizing for every state (base / .minimized / .maximized, plus their
+  // responsive variants) lives entirely in TaskWorkflow.css now -- it only
+  // ever depended on isMinimized/isMaximized, both already expressed as CSS
+  // classes on the modal element, so there was nothing here that actually
+  // needed a JS-computed inline style.
 
   const renderStageDetailPanel = () => {
     if (!selectedStage) return null;
@@ -781,7 +764,7 @@ const TaskWorkflow = ({ task, isOpen, onClose }) => {
       {/* Workflow Modal */}
       <div
         className={`workflow-modal ${isMinimized ? 'minimized' : ''} ${isMaximized ? 'maximized' : ''}`}
-        style={isMinimized ? (minimizedWindowStyle || undefined) : dynamicModalStyle}
+        style={isMinimized ? (minimizedWindowStyle || undefined) : undefined}
       >
         {/* Header */}
         <div

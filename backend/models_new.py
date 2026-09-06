@@ -706,6 +706,21 @@ class ITPortalToolCredential(Base):
     totp_secret_encrypted = Column(Text)
     api_key_encrypted = Column(Text)
     notes = Column(Text)
+    renewal_date = Column(Date, index=True)
+    # Tool Renew configuration (Admin Queue -> Tool Renew). These describe
+    # this specific account's billing/renewal shape independently of any
+    # other account on the same tool -- see utils/tool_renewal_service.py,
+    # the single place that interprets them.
+    credit_enabled = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    renewal_type = Column(String(20), nullable=False, default="MANUAL", server_default=text("'MANUAL'"), index=True)  # MANUAL | MONTHLY | CREDIT_CONSUMPTION
+    auto_renew = Column(Boolean, nullable=False, default=False, server_default=text("false"))  # only meaningful when renewal_type == MONTHLY
+    purchase_date = Column(Date)
+    # What this account costs, independent of the credit system -- the one
+    # number a plain monthly/manual (non-credit) tool needs that ToolCreditRate
+    # has no room for (it requires package_credits > 0). When credit_enabled
+    # is also true, this same figure is mirrored into ToolCreditRate.package_rupees
+    # so cost-per-credit and existing report costing keep working unchanged.
+    tool_cost = Column(Numeric(12, 2))
     is_active = Column(Boolean, default=True, index=True)
     created_by = Column(Integer, ForeignKey("users.id"))
     updated_by = Column(Integer, ForeignKey("users.id"))

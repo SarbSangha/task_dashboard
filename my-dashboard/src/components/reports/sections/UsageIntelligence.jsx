@@ -107,6 +107,24 @@ const UsageIntelligence = ({ filters, onOpenUser }) => {
     }
   };
 
+  const downloadConsolidated = async () => {
+    if (busy) return;
+    setBusy(true);
+    setToast('Generating consolidated workbook…');
+    try {
+      const res = await reportsAPI.usageWorkbook(usageParams(filters, { reportType: 'consolidated' }));
+      downloadBlobResponse(res, 'Consolidated.xlsx');
+      setToast('Consolidated report downloaded.');
+    } catch (err) {
+      setToast(err?.response?.status === 403
+        ? 'Admin access is required to generate this report.'
+        : 'Could not generate the workbook. Try a shorter date range.');
+    } finally {
+      setBusy(false);
+      setTimeout(() => setToast(''), 3600);
+    }
+  };
+
   const openPreview = () => {
     if (reportType === 'team' && !scopedTeam) return;
     if (reportType === 'individual' && !scopedUser) return;
@@ -150,6 +168,9 @@ const UsageIntelligence = ({ filters, onOpenUser }) => {
         <div className="ui-head-actions">
           <button type="button" className="rpt-to-canvas" onClick={openPreview} disabled={busy}>
             Preview summary
+          </button>
+          <button type="button" className="rpt-to-canvas" onClick={downloadConsolidated} disabled={busy}>
+            Download consolidated
           </button>
           <button type="button" className="rpt-workbook-btn" onClick={generate} disabled={busy}>
             {busy

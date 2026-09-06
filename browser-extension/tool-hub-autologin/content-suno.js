@@ -3,7 +3,19 @@ const LOGIN_URL = 'https://suno.com/';
 const AUTH_URL = 'https://suno.com/';
 const BLOCKED_NOTICE_KEY = 'rmw_suno_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
-const SCRIPT_VERSION = 'debug-2026-07-28-suno-03-timing';
+const ENFORCE_LOOP_GUARD_KEY = 'rmw_suno_enforce_loop_guard';
+const FRESH_SESSION_GUARD_KEY = 'rmw_suno_fresh_session_guard';
+const MAX_ENFORCE_REDIRECTS = 2;
+// ensureFreshLaunchSession() reloads the tab at most once to drop whatever
+// session the profile already had. Anything past that is a loop, not a
+// preparation step - see the comment on that function.
+const MAX_FRESH_SESSION_REDIRECTS = 1;
+// Safety net for the One Tap misidentification fixed in isVisible(): if what
+// we believe is the Google button has been clicked this many times and the
+// page has not moved on, stop trusting it and go open the login modal the
+// normal way instead of clicking it forever.
+const MAX_GOOGLE_OPTION_CLICKS = 4;
+const SCRIPT_VERSION = 'debug-2026-09-06-suno-05-onetap-click-target-fix';
 
 const STATE = {
   credential: null,
@@ -13,6 +25,7 @@ const STATE = {
   lastSubmitAt: 0,
   lastActionAt: 0,
   loginOpenAttempts: 0,
+  googleOptionClicks: 0,
   scheduledTimer: null,
   keepAliveTimer: null,
   observer: null,
@@ -23,6 +36,7 @@ const STATE = {
   launchAuthorized: false,
   launchExpiresAt: 0,
   launchPrepared: false,
+  launchIncognito: false,
   passwordSavingInFlight: false,
   passwordSavingSuppressed: false,
   passwordSavingRestoreTimer: null,
@@ -140,6 +154,27 @@ function exposeDebugState() {
   } catch {}
 }
 
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+// A page load is often the very first thing that wakes the (MV3,
+// non-persistent) background service worker, so the first message of a fresh
+// tab can come back empty/disconnected even though the request itself was
+// fine. Every launch-state call below routes through this instead of raw
+// sendRuntimeMessage, because a transient miss there is not harmless: it
+// leaves the launch looking unprepared/unauthorized, which sends the tab
+// straight into a clear-session-and-reload it can never get out of.
+async function sendRuntimeMessageWithRetry(message, attempts = 3, gapMs = 300) {
+  let lastResponse = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    lastResponse = await sendRuntimeMessage(message);
+    if (lastResponse?.ok) return lastResponse;
+    if (attempt < attempts) await delay(gapMs);
+  }
+  return lastResponse;
+}
+
 function sendRuntimeMessage(message) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (response) => {
@@ -205,11 +240,57 @@ function captureLaunchTicketFromHash() {
   return ticket;
 }
 
+// suno.com loads Google Identity Services (the [GSI_LOGGER] lines in its
+// console). One Tap injects full-size but invisible containers and
+// cross-origin iframes whose id/class text is full of "google" and "signin" -
+// and findGoogleOptionAction()'s hint matching walks 3 levels of ancestor
+// class names looking for exactly that. So the automation matched One Tap
+// chrome as if it were Suno's own "Continue with Google" button, clicked it
+// every 600ms forever while the real "Log in" button sat untouched in the
+// header, and got nowhere. ("Provider's accounts list is empty" / "FedCM get()
+// rejects" in the console is One Tap answering those pokes.) Nothing inside
+// GSI chrome is ever a click target for us - the real Google hand-off is
+// Suno's own button inside its login modal.
+const NON_INTERACTIVE_CONTAINER_SELECTOR = [
+  'iframe',
+  '#credential_picker_container',
+  '[id^="credential_picker"]',
+  '#g_id_onload',
+  '[aria-hidden="true"]',
+  '#rmw-suno-autologin-status',
+].join(',');
+
+function isInsideNonInteractiveContainer(element) {
+  try {
+    return Boolean(element?.closest?.(NON_INTERACTIVE_CONTAINER_SELECTOR));
+  } catch {
+    return false;
+  }
+}
+
 function isVisible(element) {
   if (!element) return false;
   const rect = element.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return false;
+
   const style = window.getComputedStyle(element);
-  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  if (style.visibility === 'hidden' || style.display === 'none') return false;
+  // A zero-opacity or pointer-events:none node cannot be clicked by a user, so
+  // it must not be clickable by us either. One Tap's prompt container is
+  // usually one or both of these while it has nothing to show.
+  if (Number(style.opacity) === 0) return false;
+  if (style.pointerEvents === 'none') return false;
+  // Parked off-canvas (the other way these overlays hide themselves: a
+  // left:-10000px / top:-9999px wrapper). Deliberately measured in DOCUMENT
+  // coordinates against a generous margin, not against the viewport: a real
+  // control that merely sits below the fold or above the current scroll
+  // position is perfectly clickable once safeClick() scrolls to it, and must
+  // not be rejected here.
+  const docLeft = rect.left + (window.scrollX || 0);
+  const docTop = rect.top + (window.scrollY || 0);
+  if (docLeft + rect.width < -500 || docTop + rect.height < -500) return false;
+
+  return !isInsideNonInteractiveContainer(element);
 }
 
 function isDisabled(element) {
@@ -569,12 +650,23 @@ function clearPageStorage() {
   try {
     const blockedNotice = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY);
     const extensionTicket = window.sessionStorage.getItem(EXTENSION_TICKET_KEY);
+    const enforceLoopGuard = window.sessionStorage.getItem(ENFORCE_LOOP_GUARD_KEY);
+    const freshSessionGuard = window.sessionStorage.getItem(FRESH_SESSION_GUARD_KEY);
     window.sessionStorage.clear();
     if (blockedNotice) {
       window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, blockedNotice);
     }
     if (extensionTicket) {
       window.sessionStorage.setItem(EXTENSION_TICKET_KEY, extensionTicket);
+    }
+    // Both loop guards have to survive the wipe they are guarding against,
+    // otherwise clearing the page's storage resets the very counter that
+    // stops the clear-and-redirect from repeating.
+    if (enforceLoopGuard) {
+      window.sessionStorage.setItem(ENFORCE_LOOP_GUARD_KEY, enforceLoopGuard);
+    }
+    if (freshSessionGuard) {
+      window.sessionStorage.setItem(FRESH_SESSION_GUARD_KEY, freshSessionGuard);
     }
   } catch {}
 }
@@ -979,7 +1071,7 @@ function releasePasswordSavingSuppressed(delay = 0) {
 async function loadLaunchState() {
   const directTicket = captureLaunchTicketFromHash() || getStoredLaunchTicket();
   if (directTicket) {
-    const activation = await sendRuntimeMessage({
+    const activation = await sendRuntimeMessageWithRetry({
       type: 'TOOL_HUB_ACTIVATE_LAUNCH',
       toolSlug: TOOL_SLUG,
       hostname: window.location.hostname,
@@ -993,13 +1085,14 @@ async function loadLaunchState() {
       STATE.launchAuthorized = true;
       STATE.launchExpiresAt = Number(activation.expiresAt || 0);
       STATE.launchPrepared = Boolean(activation.prepared);
+      STATE.launchIncognito = Boolean(activation.incognito);
       return;
     }
 
     clearStoredLaunchTicket();
   }
 
-  const response = await sendRuntimeMessage({
+  const response = await sendRuntimeMessageWithRetry({
     type: 'TOOL_HUB_GET_LAUNCH_STATE',
     toolSlug: TOOL_SLUG,
     hostname: window.location.hostname,
@@ -1010,6 +1103,7 @@ async function loadLaunchState() {
   STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
   STATE.launchPrepared = Boolean(response?.ok && response.authorized && response.prepared);
+  STATE.launchIncognito = Boolean(response?.ok && response.incognito);
 }
 
 async function clearToolSession(options = {}) {
@@ -1026,11 +1120,28 @@ async function enforceDashboardOnlyAccess() {
   releasePasswordSavingSuppressed(0);
 
   if (!isLoginPage()) {
+    // Guard against reload storms: if this redirect-to-LOGIN_URL fires again
+    // right after landing on LOGIN_URL (isLoginPage() misjudging a page that
+    // is still hydrating, or the cookie-consent banner covering the sign-in
+    // control), don't keep clearing the session and redirecting forever.
+    const redirectCount = Number(window.sessionStorage.getItem(ENFORCE_LOOP_GUARD_KEY) || 0) + 1;
+    if (redirectCount > MAX_ENFORCE_REDIRECTS) {
+      setStatus('Blocked: could not detect the Suno login page after repeated redirects');
+      STATE.settled = true;
+      return false;
+    }
+    try {
+      window.sessionStorage.setItem(ENFORCE_LOOP_GUARD_KEY, String(redirectCount));
+    } catch {}
     await clearToolSession();
     window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
     window.location.replace(LOGIN_URL);
     return false;
   }
+
+  try {
+    window.sessionStorage.removeItem(ENFORCE_LOOP_GUARD_KEY);
+  } catch {}
 
   if (!alreadyNotified) {
     window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
@@ -1041,6 +1152,41 @@ async function enforceDashboardOnlyAccess() {
   return false;
 }
 
+function readFreshSessionRedirectCount() {
+  try {
+    return Number(window.sessionStorage.getItem(FRESH_SESSION_GUARD_KEY) || 0) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function noteFreshSessionRedirect(count) {
+  try {
+    window.sessionStorage.setItem(FRESH_SESSION_GUARD_KEY, String(count));
+  } catch {}
+}
+
+// Wipes whatever session the profile already had so a dashboard launch never
+// lands on somebody else's still-signed-in account, then reloads once so the
+// SSR'd page is rendered against the now-empty cookie jar.
+//
+// That reload is the single most expensive thing the extension does to a Suno
+// launch: suno.com is a heavy Next.js app (Turnstile, Google One Tap,
+// analytics) and this step made the tab load the whole thing TWICE, with a
+// cookies-plus-browsingData wipe stalled in between - which is what the
+// timing debugLog below was added to measure. Three things were wrong:
+//   1. The redirect fired unconditionally, even when
+//      TOOL_HUB_MARK_FRESH_SESSION_PREPARED came back not-ok. That flag is
+//      what tells the reloaded page not to repeat this step, so a single
+//      missed message (very easy against a cold-starting MV3 worker, which is
+//      exactly the first message a fresh tab sends) meant clear + reload on
+//      every load, forever. Retry the mark, and never redirect without it.
+//   2. Nothing counted the redirects.
+//   3. A launch opened into a brand new Incognito window - which is how a
+//      Google-login tool is launched, see shouldLaunchExtensionToolInIncognito
+//      in the dashboard's Tools.jsx - starts with an empty cookie jar, so
+//      there is nothing to clear and the whole second page load is pure cost.
+//      content-splice.js already carries this same fix for the same symptom.
 async function ensureFreshLaunchSession() {
   if (!STATE.launchExpiresAt) {
     return false;
@@ -1050,24 +1196,54 @@ async function ensureFreshLaunchSession() {
     return true;
   }
 
+  // (3) Fresh Incognito window: already a clean session, so mark it prepared
+  // in place and let the login flow continue on THIS page load.
+  if (STATE.launchIncognito) {
+    await sendRuntimeMessageWithRetry({
+      type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED',
+      toolSlug: TOOL_SLUG,
+    });
+    STATE.launchPrepared = true;
+    window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
+    setStatus('Fresh Incognito session - skipping session reset');
+    return true;
+  }
+
+  // (2) Never redirect more than once per tab, whatever the reason.
+  const redirectCount = readFreshSessionRedirectCount() + 1;
+  if (redirectCount > MAX_FRESH_SESSION_REDIRECTS) {
+    STATE.launchPrepared = true;
+    setStatus('Session reset already done - continuing without another reload');
+    return true;
+  }
+
   const startedAt = Date.now();
   await clearToolSession({ preserveLaunch: true });
   const clearedAt = Date.now();
-  const preparedResponse = await sendRuntimeMessage({
+  const preparedResponse = await sendRuntimeMessageWithRetry({
     type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED',
     toolSlug: TOOL_SLUG,
   });
   const preparedAt = Date.now();
-  if (preparedResponse?.ok) {
-    STATE.launchPrepared = true;
-  }
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
-  setStatus('Preparing fresh Suno session');
   debugLog('ensureFreshLaunchSession timing', {
     clearToolSessionMs: clearedAt - startedAt,
     markPreparedMs: preparedAt - clearedAt,
     totalMs: preparedAt - startedAt,
+    marked: Boolean(preparedResponse?.ok),
   });
+
+  // (1) The mark is what stops the reloaded page from repeating this step.
+  // Without it, carry on here instead of reloading into the same state.
+  if (!preparedResponse?.ok) {
+    STATE.launchPrepared = true;
+    setStatus('Session cleared, could not record it - continuing without reload');
+    return true;
+  }
+
+  STATE.launchPrepared = true;
+  noteFreshSessionRedirect(redirectCount);
+  setStatus('Preparing fresh Suno session');
 
   window.location.replace(LOGIN_URL);
   return false;
@@ -1299,12 +1475,18 @@ function attemptProviderChoice(source = 'provider-choice') {
 
   if (route === 'google') {
     setStatus(`Choosing Suno Google sign-in (${source})`);
-    if (googleOption) {
+    // Clicking the same "Google option" over and over without the page ever
+    // moving means we matched something that is not really Suno's button.
+    // Fall through to opening the login modal instead of looping on it.
+    const exhausted = STATE.googleOptionClicks >= MAX_GOOGLE_OPTION_CLICKS;
+    if (googleOption && !exhausted) {
+      STATE.googleOptionClicks += 1;
       clickAction(googleOption, 'Google sign-in');
       scheduleAttempt(600);
       return true;
     }
-    if (clickVisibleText(['sign in with google', 'continue with google', 'log in with google', 'login with google'], 'Google sign-in')) {
+    if (!exhausted && clickVisibleText(['sign in with google', 'continue with google', 'log in with google', 'login with google'], 'Google sign-in')) {
+      STATE.googleOptionClicks += 1;
       scheduleAttempt(600);
       return true;
     }
@@ -1312,7 +1494,9 @@ function attemptProviderChoice(source = 'provider-choice') {
     if (findHomeSignInAction() && attemptOpenSunoLogin()) {
       return true;
     }
-    setStatus('Suno Google sign-in option not found');
+    setStatus(exhausted
+      ? 'Suno Google sign-in option did not respond - waiting for the login dialog'
+      : 'Suno Google sign-in option not found');
     return false;
   }
 
@@ -1419,7 +1603,11 @@ function attemptFill() {
     debugLog('attemptFill EXIT settled');
     return;
   }
-  if (document.readyState !== 'complete') {
+  // 'interactive' is enough: the DOM (and therefore the sign-in control) is
+  // parsed and hydrated by then. Insisting on 'complete' would undo boot()'s
+  // early start below, since 'complete' is the same `load` milestone that
+  // Turnstile/GSI/analytics hold open for seconds.
+  if (document.readyState === 'loading') {
     debugLog('attemptFill EXIT page not ready');
     setStatus('Waiting for Suno page to finish loading');
     scheduleAttempt(300);
@@ -1663,29 +1851,65 @@ function start() {
   STATE.observer = new MutationObserver(() => handleMutations());
   STATE.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
   STATE.keepAliveTimer = window.setInterval(() => scheduleAttempt(0), KEEP_ALIVE_MS);
-  loadLaunchState()
-    .catch(() => {
-      STATE.launchChecked = true;
-      STATE.launchAuthorized = false;
-      STATE.launchExpiresAt = 0;
-    })
-    .finally(() => {
-      STATE.settled = false;
-      scheduleAttempt(0);
-    });
+  LAUNCH_STATE_READY.finally(() => {
+    STATE.settled = false;
+    scheduleAttempt(0);
+  });
 }
 
 // Grab the launch ticket from the URL immediately so a later navigation cannot
 // drop it, but defer all DOM work (badge, clicks) until React has hydrated.
 captureLaunchTicketFromHash();
 
+// Resolving the dashboard launch is a pure background round-trip with no DOM
+// involvement, so there is no reason to serialize it behind window.onload +
+// PAGE_SETTLE_AFTER_LOAD_MS the way the click/fill work has to be. On a heavy
+// page - and against a cold-starting MV3 worker, where the retry wrapper can
+// spend a second or more - that ordering put its whole latency at the front of
+// every launch, after the site had already finished loading. Start it now and
+// let start() await whatever it resolved to.
+const LAUNCH_STATE_READY = loadLaunchState().catch(() => {
+  STATE.launchChecked = true;
+  STATE.launchAuthorized = false;
+  STATE.launchExpiresAt = 0;
+});
+
+// `load` does not fire until every last third-party subresource has settled -
+// on suno.com that is Cloudflare Turnstile, Google Identity Services and the
+// analytics stack, seconds AFTER the page is fully interactive and the header's
+// "Log in" button is real and clickable. Waiting for it put all of that dead
+// time at the front of every launch. Race `load` against the thing we actually
+// need (a hydrated sign-in control) and take whichever arrives first; the
+// PAGE_SETTLE_AFTER_LOAD_MS hydration settle still applies either way, so this
+// does not reintroduce the React #418 click-on-a-discarded-node problem.
 function boot() {
-  const begin = () => window.setTimeout(start, PAGE_SETTLE_AFTER_LOAD_MS);
+  let begun = false;
+  let readyPoll = null;
+
+  const begin = () => {
+    if (begun) return;
+    begun = true;
+    if (readyPoll) {
+      window.clearInterval(readyPoll);
+      readyPoll = null;
+    }
+    window.setTimeout(start, PAGE_SETTLE_AFTER_LOAD_MS);
+  };
+
   if (document.readyState === 'complete') {
     begin();
     return;
   }
+
   window.addEventListener('load', begin, { once: true });
+  readyPoll = window.setInterval(() => {
+    if (begun) return;
+    try {
+      if (findHomeSignInAction() || findGoogleOptionAction() || findEmailInput() || findPasswordInput()) {
+        begin();
+      }
+    } catch {}
+  }, 150);
 }
 
 boot();

@@ -19,17 +19,24 @@ function promptPreview(gen) {
 // relationship is preserved (not a flat wall of images). Reuses the same
 // generations the timeline computed - no extra media loading.
 export default function GenerationGalleryView({ generations, onOpen }) {
+  // Media-only: this view exists to browse actual images/videos, so turns
+  // that produced no media (buildGenerations now keeps every turn, not just
+  // media-bearing ones, for the Timeline/Prompts views) are skipped here.
+  const mediaGenerations = useMemo(
+    () => generations.filter((gen) => gen.ungrouped || gen.media.length > 0),
+    [generations]
+  );
   const dateGroups = useMemo(() => {
     const groups = new Map();
-    for (const gen of generations) {
+    for (const gen of mediaGenerations) {
       const key = dateKey(gen.responseTime || gen.media[0]?.createdAt);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(gen);
     }
     return Array.from(groups.entries());
-  }, [generations]);
+  }, [mediaGenerations]);
 
-  if (generations.length === 0) {
+  if (mediaGenerations.length === 0) {
     return (
       <div className="cgpt-media-empty compact">
         <span className="cgpt-media-empty-icon" aria-hidden="true">🖼</span>

@@ -119,6 +119,17 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
   claude: [
     'claude.ai',
     'www.claude.ai',
+    // Added for Google-login support: without this, the Google popup's own
+    // credential fetch inherits the opener claude.ai tab's launch record
+    // (directCredentialIssuedAt included - see fetchCredential()'s opener-
+    // inheritance block) already marked "credential issued" from that first
+    // tab's own successful fetch moments earlier, and isLoginContinuationPage()
+    // rejected accounts.google.com as a valid continuation host for claude
+    // (unlike behance/chatgpt/enhancor above, which already list it) - so
+    // continuationAllowed was always false and the popup's very first
+    // credential request threw "Open this tool from the dashboard first."
+    // before ever reaching Google's own account chooser/password steps.
+    'accounts.google.com',
   ],
   enhancor: [
     'enhancor.ai',
@@ -2447,6 +2458,11 @@ function handleRuntimeMessage(message, sender, sendResponse) {
         expiresAt: Number(launch?.expiresAt || 0),
         prepared: Boolean(launch?.freshSessionPreparedAt),
         authTransitionAt: Number(launch?.authTransitionAt || 0),
+        // A tool launched into a brand new Incognito window starts with an
+        // empty cookie jar, so the content script's "clear the session then
+        // reload" preparation step has nothing to clear and only costs an
+        // extra reload (see ensureFreshLaunchSession in the content scripts).
+        incognito: Boolean(sender?.tab?.incognito),
       }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -2482,6 +2498,7 @@ function handleRuntimeMessage(message, sender, sendResponse) {
         remembered: false,
         toolSlug: normalizeToolSlug(launch?.toolSlug),
         hostname: normalizeHostname(launch?.hostname),
+        incognito: Boolean(sender?.tab?.incognito),
       }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -2683,6 +2700,20 @@ function handleRuntimeMessage(message, sender, sendResponse) {
 
   if (message?.type === 'CHATGPT_MEDIA_CAPTURED') {
     handleChatGptCaptureMediaMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'CLAUDE_CAPTURE_EVENT') {
+    handleClaudeCaptureEventMessage(message)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'CLAUDE_CAPTURE_ATTACHMENT') {
+    handleClaudeCaptureAttachmentMessage(message)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -2947,6 +2978,20 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     return true;
   }
 
+  if (message?.type === 'GRAMMARLY_DOCS_CAPTURE_EVENT') {
+    handleGrammarlyDocsCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'GRAMMARLY_DOCS_FETCH_ACTIVE_CLIENTS') {
+    handleGrammarlyDocsFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'KLING_FETCH_MY_ACTIVE_TASKS') {
     handleKlingFetchMyActiveTasksMessage(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse(result))
@@ -2984,6 +3029,9 @@ if (chrome?.runtime?.onStartup) {
     runSafeStartupTask(runChatGptCaptureFlush);
     runSafeStartupTask(() => maybeReportChatGptCaptureHealth(true));
     runSafeStartupTask(() => chrome.alarms.create(CHATGPT_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runClaudeCaptureFlush);
+    runSafeStartupTask(() => maybeReportClaudeCaptureHealth(true));
+    runSafeStartupTask(() => chrome.alarms.create(CLAUDE_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
     runSafeStartupTask(runFreepikCaptureFlush);
     runSafeStartupTask(() => maybeReportFreepikCaptureHealth(true));
     runSafeStartupTask(() => chrome.alarms.create(FREEPIK_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
@@ -3005,6 +3053,11 @@ if (chrome?.runtime?.onStartup) {
     runSafeStartupTask(runSpliceCaptureFlush);
     runSafeStartupTask(() => maybeReportSpliceCaptureHealth(true));
     runSafeStartupTask(() => chrome.alarms.create(SPLICE_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    // Grammarly Docs has no health-check alarm (matches ElevenLabs/Suno's own
+    // posture - see this file's own comment on those two) - only a
+    // retry-flush kick on startup, to drain anything left over from before
+    // the service worker last terminated.
+    runSafeStartupTask(runGrammarlyDocsCaptureFlush);
   });
 }
 
@@ -3013,6 +3066,8 @@ if (chrome?.runtime?.onInstalled) {
     runSafeStartupTask(flushPendingUsageEvents);
     runSafeStartupTask(runChatGptCaptureFlush);
     runSafeStartupTask(() => chrome.alarms.create(CHATGPT_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runClaudeCaptureFlush);
+    runSafeStartupTask(() => chrome.alarms.create(CLAUDE_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
     runSafeStartupTask(runFreepikCaptureFlush);
     runSafeStartupTask(() => chrome.alarms.create(FREEPIK_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
     runSafeStartupTask(runHiggsfieldCaptureFlush);
@@ -3025,6 +3080,7 @@ if (chrome?.runtime?.onInstalled) {
     runSafeStartupTask(() => chrome.alarms.create(EPIDEMIC_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
     runSafeStartupTask(runSpliceCaptureFlush);
     runSafeStartupTask(() => chrome.alarms.create(SPLICE_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
+    runSafeStartupTask(runGrammarlyDocsCaptureFlush);
   });
 }
 
@@ -3042,6 +3098,13 @@ if (chrome?.alarms?.onAlarm) {
       // per-enqueue alarm: this periodic, always-reliable alarm also nudges
       // the queue on every tick. A harmless no-op if it's already empty.
       runSafeStartupTask(() => runChatGptCaptureFlush());
+    }
+    if (alarm?.name === CLAUDE_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runClaudeCaptureFlush);
+    }
+    if (alarm?.name === CLAUDE_CAPTURE_HEALTH_ALARM) {
+      runSafeStartupTask(() => maybeReportClaudeCaptureHealth(true));
+      runSafeStartupTask(() => runClaudeCaptureFlush());
     }
     if (alarm?.name === FREEPIK_CAPTURE_RETRY_ALARM) {
       runSafeStartupTask(runFreepikCaptureFlush);
@@ -3078,6 +3141,9 @@ if (chrome?.alarms?.onAlarm) {
     }
     if (alarm?.name === SPLICE_CAPTURE_HEALTH_ALARM) {
       runSafeStartupTask(() => maybeReportSpliceCaptureHealth(true));
+    }
+    if (alarm?.name === GRAMMARLY_DOCS_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runGrammarlyDocsCaptureFlush);
     }
   });
 }

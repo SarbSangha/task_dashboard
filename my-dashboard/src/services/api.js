@@ -656,6 +656,14 @@ export const clientsAPI = {
     const response = await api.patch(`/api/clients/${clientId}`, updates);
     return response.data;
   },
+
+  // Kling tab's "Clients" browse view (replaces the old "Projects" sub-tab) -
+  // session-gated directory of clients that have Kling generations, with
+  // counts. See routers/clients_router.list_kling_client_directory.
+  getKlingDirectory: async (params = {}) => {
+    const response = await api.get('/api/clients/kling-directory', { params });
+    return response.data;
+  },
 };
 
 export const activityAPI = {
@@ -1828,6 +1836,75 @@ export const chatgptCaptureAPI = {
   },
 };
 
+// ==================== CLAUDE CAPTURE CENTER API ====================
+// Mirrors chatgptCaptureAPI's shape above (same envelope, same provider-
+// agnostic conversation_* tables under the hood - see backend
+// providers/claude/__init__.py) - trimmed to the endpoints
+// providers/claude/router.py actually exposes: input file attachments
+// (images, PDFs, etc a prompt was submitted with) are captured, but no
+// /media (generated-output-image capture - normal Claude responses don't
+// produce a separate generated-asset URL the way ChatGPT's image tool
+// does) or /users/{id}/conversations, since list_users already returns each
+// user's own conversations inline (see queries.py's get_user_detail).
+export const claudeCaptureAPI = {
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/claude/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/claude/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+
+  listConversations: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/claude/conversations',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getConversation: async (conversationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/claude/conversations/${conversationId}`, requestConfig);
+    return response.data;
+  },
+
+  getConversationMessages: async (conversationId, paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      `/api/providers/claude/conversations/${conversationId}/messages`,
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getConversationAttachments: async (conversationId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/claude/conversations/${conversationId}/attachments`, requestConfig);
+    return response.data;
+  },
+
+  getMetrics: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/claude/metrics', requestConfig);
+    return response.data;
+  },
+
+  listUsers: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/claude/users',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getUser: async (userId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/claude/users/${userId}`, requestConfig);
+    return response.data;
+  },
+};
+
 // ==================== FREEPIK / MAGNIFIC CAPTURE CENTER API ====================
 export const freepikCaptureAPI = {
   listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
@@ -2194,6 +2271,35 @@ export const spliceCaptureAPI = {
   },
 };
 
+// ==================== GRAMMARLY DOCS CAPTURE CENTER API ====================
+export const grammarlyDocsCaptureAPI = {
+  listSessions: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/grammarly-docs/sessions',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getSession: async (sessionId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/grammarly-docs/sessions/${sessionId}`, requestConfig);
+    return response.data;
+  },
+
+  listEvents: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/grammarly-docs/events',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getEvent: async (eventId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/grammarly-docs/events/${eventId}`, requestConfig);
+    return response.data;
+  },
+};
+
 // ==================== HEYGEN CAPTURE CENTER API ====================
 export const heygenCaptureAPI = {
   listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
@@ -2438,6 +2544,19 @@ export const itToolsAPI = {
 
   getLaunchHistory: async ({ signal, ...params } = {}) => {
     const response = await api.get('/api/it-tools/launch-history', { params, signal });
+    return response.data;
+  },
+};
+
+// Credit -> rupee rates per tool account, used to cost generations/clients.
+export const creditRatesAPI = {
+  list: async (requestConfig = {}) => {
+    const response = await api.get('/api/reports/credit-rates', requestConfig);
+    return response.data;
+  },
+
+  upsert: async (payload) => {
+    const response = await api.post('/api/reports/credit-rates', payload);
     return response.data;
   },
 };

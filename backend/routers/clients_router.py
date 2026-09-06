@@ -15,10 +15,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
-from models_new import GenerationClient, User
+from models_new import GenerationClient, GenerationRecord, User
 from routers.it_tools_router import _resolve_usage_event_actor
 from services.workplace_access_service import enforce_workplace_tools_access
 from utils.client_gate import get_active_clients
+from utils.datetime_utils import serialize_utc_datetime
 from utils.generation_gate import resolve_generation_gate_tool
 from utils.permissions import require_admin, require_user
 
@@ -97,6 +98,52 @@ def list_active_clients_for_tasks(
     the admin-only GET "" below (full list, including inactive clients)."""
     clients = get_active_clients(db)
     return {"success": True, "clients": [{"id": client.id, "name": client.name} for client in clients]}
+
+
+@router.get("/kling-directory")
+def list_kling_client_directory(
+    q: Optional[str] = Query(None),
+    current_user: User = Depends(require_user),
+    db: Session = Depends(get_operational_db),
+):
+    """Clients that have at least one Kling generation, with generation
+    counts - the Kling tab's "Clients" browse view (replaces the old
+    "Projects" sub-tab; mirrors generation_projects_router's directory
+    listing, just grouped by Client Mapping instead of Generation Projects).
+
+    Session-gated like Projects' directory, not admin-only like the Reports
+    module's client breakdown (reports_router.kling_clients_breakdown) -
+    this is a directory to browse and filter "All Generations" by, not an
+    analytics report, so any user with Kling access can see it."""
+    rows = (
+        db.query(
+            GenerationRecord.linked_client_id,
+            GenerationRecord.linked_client_name,
+            func.count(GenerationRecord.id).label("generations"),
+            func.max(GenerationRecord.created_at).label("last_generated_at"),
+        )
+        .filter(
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.provider == "kling",
+            GenerationRecord.linked_client_id.isnot(None),
+        )
+        .group_by(GenerationRecord.linked_client_id, GenerationRecord.linked_client_name)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .all()
+    )
+
+    normalized_q = (q or "").strip().lower()
+    clients = [
+        {
+            "id": client_id,
+            "name": client_name or f"Client #{client_id}",
+            "generationCount": int(generations),
+            "lastGeneratedAt": serialize_utc_datetime(last_generated_at),
+        }
+        for client_id, client_name, generations, last_generated_at in rows
+        if not normalized_q or normalized_q in (client_name or "").lower()
+    ]
+    return {"success": True, "clients": clients}
 
 
 @router.get("")

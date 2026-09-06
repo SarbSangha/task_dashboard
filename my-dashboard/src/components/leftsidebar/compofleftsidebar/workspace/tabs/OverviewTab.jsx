@@ -45,10 +45,14 @@ function getStatusConfig(status) {
 }
 
 function KpiCard({ value, label, subtext, icon, colorClass, onClick }) {
+  // Cards without a destination (nothing to navigate to) render as a plain,
+  // non-interactive tile instead of a button that would look clickable but
+  // do nothing.
+  const Tag = onClick ? 'button' : 'div';
   return (
-    <button
-      type="button"
-      className={`ov-kpi-card ${colorClass}`}
+    <Tag
+      type={onClick ? 'button' : undefined}
+      className={`ov-kpi-card ${colorClass}${onClick ? '' : ' ov-kpi-card--static'}`}
       onClick={onClick}
       aria-label={`${label}: ${value}`}
     >
@@ -58,8 +62,8 @@ function KpiCard({ value, label, subtext, icon, colorClass, onClick }) {
       </div>
       <div className="ov-kpi-value">{value}</div>
       <div className="ov-kpi-sub">{subtext}</div>
-      <span className="ov-kpi-arrow" aria-hidden="true">→</span>
-    </button>
+      {onClick && <span className="ov-kpi-arrow" aria-hidden="true">→</span>}
+    </Tag>
   );
 }
 
@@ -180,7 +184,6 @@ export default function OverviewTab({ onNavigateToTab }) {
       subtext:    stats.needWork > 0 ? `${stats.needWork} need${stats.needWork === 1 ? 's' : ''} attention` : 'On track',
       icon:       '◉',
       colorClass: 'ov-kpi-primary',
-      tab:        'tasks',
     },
     {
       key:        'completed',
@@ -189,7 +192,6 @@ export default function OverviewTab({ onNavigateToTab }) {
       subtext:    `${stats.completionRate}% completion rate`,
       icon:       '✓',
       colorClass: 'ov-kpi-success',
-      tab:        'tasks',
     },
     {
       key:        'projects',
@@ -212,7 +214,6 @@ export default function OverviewTab({ onNavigateToTab }) {
   ];
 
   const quickActions = [
-    { icon: '✓', label: 'My Tasks',     tab: 'tasks' },
     { icon: '📁', label: 'Projects',    tab: 'projects' },
     { icon: '📊', label: 'Analytics',   tab: 'analytics' },
     { icon: '🧰', label: 'Tools',       tab: 'Tools' },
@@ -298,7 +299,7 @@ export default function OverviewTab({ onNavigateToTab }) {
                   subtext={card.subtext}
                   icon={card.icon}
                   colorClass={card.colorClass}
-                  onClick={() => card.tab && onNavigateToTab?.(card.tab)}
+                  onClick={card.tab ? () => onNavigateToTab?.(card.tab) : undefined}
                 />
               ))}
             </div>
@@ -320,33 +321,24 @@ export default function OverviewTab({ onNavigateToTab }) {
               {priorityTasks.length === 0 ? (
                 <PriorityEmptyState />
               ) : (
-                <>
-                  <ul className="ov-priority-list" aria-label="Priority tasks">
-                    {priorityTasks.map((task, idx) => {
-                      const cfg   = getStatusConfig(task.status);
-                      const title = task.title || task.taskName || task.taskNumber || 'Task';
-                      return (
-                        <li key={task.id || idx} className="ov-priority-item">
-                          <span className={`ov-priority-dot ov-dot-${cfg.color}`} aria-hidden="true" />
-                          <div className="ov-priority-content">
-                            <span className="ov-priority-title" title={title}>{title}</span>
-                            <span className="ov-priority-meta">
-                              {formatRelativeTime(task.updatedAt || task.createdAt)}
-                            </span>
-                          </div>
-                          <span className={`ov-badge ov-badge-${cfg.color}`}>{cfg.label}</span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  <button
-                    type="button"
-                    className="ov-panel-footer-btn"
-                    onClick={() => onNavigateToTab?.('tasks')}
-                  >
-                    View all tasks →
-                  </button>
-                </>
+                <ul className="ov-priority-list" aria-label="Priority tasks">
+                  {priorityTasks.map((task, idx) => {
+                    const cfg   = getStatusConfig(task.status);
+                    const title = task.title || task.taskName || task.taskNumber || 'Task';
+                    return (
+                      <li key={task.id || idx} className="ov-priority-item">
+                        <span className={`ov-priority-dot ov-dot-${cfg.color}`} aria-hidden="true" />
+                        <div className="ov-priority-content">
+                          <span className="ov-priority-title" title={title}>{title}</span>
+                          <span className="ov-priority-meta">
+                            {formatRelativeTime(task.updatedAt || task.createdAt)}
+                          </span>
+                        </div>
+                        <span className={`ov-badge ov-badge-${cfg.color}`}>{cfg.label}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </section>
 

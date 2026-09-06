@@ -17,6 +17,7 @@ import AdminLoginTab from './AdminLoginTab';
 import AdminPendingTab from './AdminPendingTab';
 import AdminPasswordTab from './AdminPasswordTab';
 import AdminClientsTab from './AdminClientsTab';
+import AdminToolRenewalsTab from './AdminToolRenewalsTab';
 import UserDetailDrawer from './UserDetailDrawer';
 import './AdminRequestPanel.css';
 
@@ -28,6 +29,7 @@ const TABS = [
   { id: 'passwords', label: 'Password Requests' },
   { id: 'policies',  label: 'Workplace Policies' },
   { id: 'clients',   label: 'Manage Clients' },
+  { id: 'renewals',  label: 'Tool Renewals' },
 ];
 
 const STAT_DEFS = [
@@ -331,6 +333,10 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
 
               {activeTab === 'clients' && (
                 <AdminClientsTab search={search} />
+              )}
+
+              {activeTab === 'renewals' && (
+                <AdminToolRenewalsTab search={search} />
               )}
             </div>
           </div>

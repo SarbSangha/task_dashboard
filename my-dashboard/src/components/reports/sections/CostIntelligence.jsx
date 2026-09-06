@@ -153,6 +153,27 @@ const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser, onDrill,
               </PieChart>
             </ChartFrame>
 
+            {/* Not every integrated provider has a credits model yet (Suno,
+                ElevenLabs, Flow, Envato all land in byProvider at credits=0
+                today - see backend routers/reports_router.py's cost_breakdown
+                comment) - a 0-credit slice above is indistinguishable from
+                "nothing happened" on a cost-only pie chart. This shows the
+                same providers by plain generation count instead, so real
+                activity a cost view can't represent stays visible. */}
+            <ChartFrame title="Generations by tool" blockKind="live-generations-tool" onAddToCanvas={onAddToCanvas} hint="All activity, regardless of cost model" height={250}>
+              <BarChart
+                data={[...(bd.byProvider || [])].sort((a, b) => (b.generations || 0) - (a.generations || 0))}
+                layout="vertical"
+                margin={{ top: 4, right: 16, bottom: 0, left: 8 }}
+              >
+                <CartesianGrid stroke={theme.grid} horizontal={false} />
+                <XAxis type="number" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} tickFormatter={formatNumber} />
+                <YAxis type="category" dataKey="provider" tick={{ fill: theme.axis, fontSize: 11 }} tickLine={false} axisLine={false} width={90} />
+                <Tooltip cursor={{ fill: theme.grid }} content={<ChartTooltip valueFormatter={formatNumber} />} />
+                <Bar dataKey="generations" name="Generations" fill={theme.series[0]} radius={[0, 5, 5, 0]} isAnimationActive={false} />
+              </BarChart>
+            </ChartFrame>
+
             <ChartFrame title="Credit spend by department" blockKind="live-cost-dept" onAddToCanvas={onAddToCanvas} hint={onDrill ? 'Top teams · click a bar' : 'Top teams'} height={250}>
               <BarChart
                 data={deptData}

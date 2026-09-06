@@ -218,6 +218,21 @@ export const reportsAPI = {
     return res.data;
   },
 
+  // Task Report (Analytics -> Task Report): raw task listing for a
+  // department + date range, distinct from the aggregated dashboards above.
+  tasksDetail: async (params = {}, requestConfig = {}) => {
+    const res = await api.get('/api/reports/tasks/detail', withParams(params, requestConfig));
+    return res.data;
+  },
+
+  tasksDetailXlsx: async (params = {}, requestConfig = {}) =>
+    api.get('/api/reports/tasks/detail.xlsx', {
+      params,
+      responseType: 'blob',
+      timeout: 60000,
+      ...requestConfig,
+    }),
+
   tasksContributors: async (params = {}, requestConfig = {}) => {
     const res = await api.get('/api/reports/tasks/contributors', withParams(params, requestConfig));
     return res.data;
@@ -285,6 +300,11 @@ export const reportsAPI = {
     (await api.get(`/api/reports/usage/teams/${encodeURIComponent(department)}`, withParams(params, requestConfig))).data,
   usageWorkbook: async (params = {}, requestConfig = {}) =>
     api.get('/api/reports/usage/workbook.xlsx', { params, responseType: 'blob', timeout: 120000, ...requestConfig }),
+
+  toolLogins: async (params = {}, requestConfig = {}) =>
+    (await api.get('/api/reports/usage/tool-logins', withParams(params, requestConfig))).data,
+  toolLoginsWorkbook: async (params = {}, requestConfig = {}) =>
+    api.get('/api/reports/usage/tool-logins.xlsx', { params, responseType: 'blob', timeout: 120000, ...requestConfig }),
 
   exportSavedReport: async (id, format) =>
     api.get(`/api/reports/library/${id}/export`, { params: { format }, responseType: 'blob', timeout: REPORTS_TIMEOUT_MS }),

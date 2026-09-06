@@ -18,6 +18,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import models_new  # noqa: E402,F401 - registers User/etc. with SQLAlchemy metadata so conversation_records' owner_user_id FK resolves
 from database_config import OperationalSessionLocal  # noqa: E402
 from providers.chatgpt.normalization import backfill_all  # noqa: E402
 

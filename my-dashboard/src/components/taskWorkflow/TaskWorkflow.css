@@ -8,7 +8,12 @@
   right: 0;
   bottom: 0;
   background: rgba(0, 0, 0, 0.35);
-  z-index: 1202;
+  /* TaskWorkflow opens on top of whichever panel launched it (Outbox,
+     Inbox, Tracking, or the Company member preview), and those panels'
+     own z-indexes aren't on one shared scale -- Outbox alone runs up to
+     9999. Comfortably above all of them so this always wins regardless of
+     which one it was opened from. */
+  z-index: 10000;
   opacity: 1;
   transition: opacity 0.28s ease;
 }
@@ -32,17 +37,24 @@
   --workflow-home-teal-bright: var(--color-feedback-success-text);
   --workflow-home-purple: var(--color-primary-strong);
   --workflow-home-purple-deep: var(--color-primary);
-  --node-scale: var(--workflow-node-scale, 1);
+  --node-scale: 1;
   --track-min-height: 104px;
-  --connector-width: var(--workflow-connector-width, 84px);
+  --connector-width: 84px;
   --workflow-panel-top-offset: var(--leftbar-popup-top-offset, 120px);
   position: fixed;
   top: var(--workflow-panel-top-offset);
-  left: 50%;
-  transform: translateX(-50%);
-  width: var(--workflow-modal-width, 95%);
-  max-width: var(--workflow-modal-max-width, 1400px);
-  height: var(--workflow-modal-height, calc(100vh - var(--workflow-panel-top-offset) - 24px));
+  /* Same left/right inset formula as every panel this can open from
+     (Outbox, Inbox, Tracking) instead of an independently centered,
+     1400px-capped box -- so it always exactly matches the size and
+     position of whichever panel launched it, rather than floating as a
+     differently-sized window on top of it. */
+  left: var(--panel-left-inset, 250px);
+  right: var(--topnav-inset, 20px);
+  bottom: auto;
+  transform: none;
+  width: auto;
+  max-width: none;
+  height: calc(100vh - var(--workflow-panel-top-offset) - 24px);
   max-height: calc(100vh - var(--workflow-panel-top-offset) - 24px);
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--color-primary-soft) 92%, transparent) 0%, color-mix(in srgb, var(--color-page-accent) 72%, transparent) 100%),
@@ -50,18 +62,21 @@
   border: 1px solid var(--workflow-home-border);
   border-radius: 16px;
   box-shadow: var(--shadow-card);
-  z-index: 1203;
+  z-index: 10001;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   opacity: 1;
   font-family: "Segoe UI", "Inter", "Roboto", sans-serif;
   will-change: width, height, top, left, transform, border-radius;
+  /* right/bottom are deliberately NOT transitioned: the base state leaves
+     them at "auto" while .minimized/.maximized give them real px values, and
+     animating to/from "auto" is unreliable across browsers (can snap to a
+     stale resolved size mid-transition). top/left/width/height/transform
+     already carry the visual motion; right/bottom just snap instantly. */
   transition:
     top 0.12s cubic-bezier(0.22, 1, 0.36, 1),
     left 0.12s cubic-bezier(0.22, 1, 0.36, 1),
-    right 0.12s cubic-bezier(0.22, 1, 0.36, 1),
-    bottom 0.12s cubic-bezier(0.22, 1, 0.36, 1),
     width 0.12s cubic-bezier(0.22, 1, 0.36, 1),
     height 0.12s cubic-bezier(0.22, 1, 0.36, 1),
     max-width 0.12s cubic-bezier(0.22, 1, 0.36, 1),
@@ -116,9 +131,9 @@
 
 /* Maximized State */
 .workflow-modal.maximized {
-  --node-scale: var(--workflow-node-scale, 1.2);
+  --node-scale: 1.2;
   --track-min-height: 124px;
-  --connector-width: var(--workflow-connector-width, 106px);
+  --connector-width: 106px;
   width: 100vw;
   max-width: 100vw;
   height: 100vh;
@@ -1124,12 +1139,14 @@
 /* Responsive */
 @media (max-width: 1024px) {
   .workflow-modal {
-    --node-scale: var(--workflow-node-scale, 0.92);
+    --node-scale: 0.92;
     --track-min-height: 120px;
-    --connector-width: var(--workflow-connector-width, 70px);
-    width: min(95vw, 1080px);
-    height: min(86vh, 700px);
-    max-height: 86vh;
+    --connector-width: 70px;
+    /* Matches .outbox-modal's own 1024px override exactly (left/right
+       inherit from the base rule above, same as Outbox does here). */
+    width: 98%;
+    height: calc(100vh - var(--workflow-panel-top-offset) - 24px);
+    max-height: calc(100vh - var(--workflow-panel-top-offset) - 24px);
   }
 
   .workflow-modal.minimized {
@@ -1172,11 +1189,13 @@
 
 @media (max-width: 768px) {
   .workflow-modal {
-    --node-scale: var(--workflow-node-scale, 0.82);
+    --node-scale: 0.82;
     --track-min-height: 100px;
     --connector-width: 58px;
-    width: calc(100vw - 16px);
-    height: min(94vh, 740px);
+    /* Matches .outbox-modal's own 768px override: width stays the 98% from
+       the 1024px layer above (both queries apply at this width), only
+       height/radius change here. */
+    height: calc(100vh - var(--workflow-panel-top-offset) - 16px);
     max-height: calc(100vh - var(--workflow-panel-top-offset) - 16px);
     border-radius: 12px;
   }

@@ -5,9 +5,8 @@ import { useAuth } from '../../../../../context/AuthContext';
 import KlingFilterBar from './KlingFilterBar';
 import KlingGenerationGrid from './KlingGenerationGrid';
 import KlingGenerationDrawer from './KlingGenerationDrawer';
-import KlingProjectsExplorer from './KlingProjectsExplorer';
+import KlingClientsExplorer from './KlingClientsExplorer';
 import KlingCollectionsExplorer from './KlingCollectionsExplorer';
-import KlingProjectTimeline from './KlingProjectTimeline';
 import KlingUserExplorer from './KlingUserExplorer';
 import KlingUserProfile from './KlingUserProfile';
 import KlingUnclaimedExplorer from './KlingUnclaimedExplorer';
@@ -82,11 +81,10 @@ export default function KlingTab({ isActive, searchInput = '' }) {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [datePreset, setDatePreset] = useState('all');
   const [sortBy, setSortBy] = useState('latest');
-  const [projectFilter, setProjectFilter] = useState(null);
   const [collectionFilter, setCollectionFilter] = useState(null);
+  const [clientFilter, setClientFilter] = useState(null);
   const [tagFilter, setTagFilter] = useState('');
   const [tagOptions, setTagOptions] = useState([]);
-  const [isTimelineOpen, setIsTimelineOpen] = useState(false);
 
   const [generations, setGenerations] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -185,8 +183,8 @@ export default function KlingTab({ isActive, searchInput = '' }) {
         owner_user_id: userFilter === ALL_USERS ? undefined : userFilter,
         is_favorite: favoritesOnly ? true : undefined,
         tag: tagFilter || undefined,
-        project_id: projectFilter?.id ?? undefined,
         collection_id: collectionFilter?.id ?? undefined,
+        client_id: clientFilter?.id ?? undefined,
         date_from: dateFrom,
         date_to: dateTo,
         sort: sortBy,
@@ -203,8 +201,8 @@ export default function KlingTab({ isActive, searchInput = '' }) {
       userFilter,
       favoritesOnly,
       tagFilter,
-      projectFilter,
       collectionFilter,
+      clientFilter,
       datePreset,
       sortBy,
     ]
@@ -328,19 +326,19 @@ export default function KlingTab({ isActive, searchInput = '' }) {
     }
   }, []);
 
-  const handleSelectProject = useCallback((project) => {
-    setProjectFilter({ id: project.id, name: project.name });
+  const handleSelectCollection = useCallback((collection) => {
+    setCollectionFilter({ id: collection.id, name: collection.name });
+    setClientFilter(null);
+    setSubView('all');
+  }, []);
+
+  const handleSelectClient = useCallback((client) => {
+    setClientFilter({ id: client.id, name: client.name });
     setCollectionFilter(null);
     setSubView('all');
   }, []);
 
-  const clearProjectFilter = useCallback(() => setProjectFilter(null), []);
-
-  const handleSelectCollection = useCallback((collection) => {
-    setCollectionFilter({ id: collection.id, name: collection.name });
-    setProjectFilter(null);
-    setSubView('all');
-  }, []);
+  const clearClientFilter = useCallback(() => setClientFilter(null), []);
 
   const clearCollectionFilter = useCallback(() => setCollectionFilter(null), []);
 
@@ -368,11 +366,11 @@ export default function KlingTab({ isActive, searchInput = '' }) {
         <button
           type="button"
           role="tab"
-          aria-selected={subView === 'projects'}
-          className={`kling-subnav-tab ${subView === 'projects' ? 'active' : ''}`}
-          onClick={() => setSubView('projects')}
+          aria-selected={subView === 'clients'}
+          className={`kling-subnav-tab ${subView === 'clients' ? 'active' : ''}`}
+          onClick={() => setSubView('clients')}
         >
-          Projects
+          Clients
         </button>
         <button
           type="button"
@@ -441,11 +439,10 @@ export default function KlingTab({ isActive, searchInput = '' }) {
             onDatePresetChange={setDatePreset}
             sortBy={sortBy}
             onSortChange={setSortBy}
-            projectFilter={projectFilter}
-            onClearProjectFilter={clearProjectFilter}
             collectionFilter={collectionFilter}
             onClearCollectionFilter={clearCollectionFilter}
-            onViewTimeline={() => setIsTimelineOpen(true)}
+            clientFilter={clientFilter}
+            onClearClientFilter={clearClientFilter}
             allDepartmentsValue={ALL_DEPARTMENTS}
             allModelsValue={ALL_MODELS}
             allResolutionsValue={ALL_RESOLUTIONS}
@@ -479,7 +476,7 @@ export default function KlingTab({ isActive, searchInput = '' }) {
         </>
       )}
 
-      {subView === 'projects' && <KlingProjectsExplorer onSelectProject={handleSelectProject} />}
+      {subView === 'clients' && <KlingClientsExplorer onSelectClient={handleSelectClient} />}
 
       {subView === 'collections' && <KlingCollectionsExplorer onSelectCollection={handleSelectCollection} />}
 
@@ -507,13 +504,6 @@ export default function KlingTab({ isActive, searchInput = '' }) {
         />
       )}
 
-      {isTimelineOpen && projectFilter && (
-        <KlingProjectTimeline
-          projectId={projectFilter.id}
-          projectName={projectFilter.name}
-          onClose={() => setIsTimelineOpen(false)}
-        />
-      )}
     </div>
   );
 }
