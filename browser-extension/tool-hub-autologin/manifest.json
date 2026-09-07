@@ -67,6 +67,7 @@
     "https://google.com/*",
     "https://*.google.com/*",
     "https://labs.google/*",
+    "https://flow.google.com/*",
     "https://kling.ai/*",
     "https://*.kling.ai/*",
     "https://klingai.com/*",
@@ -431,7 +432,8 @@
     },
     {
       "matches": [
-        "https://labs.google/*"
+        "https://labs.google/*",
+        "https://flow.google.com/*"
       ],
       "js": ["content-flow-network.js"],
       "run_at": "document_start",
@@ -440,6 +442,7 @@
     {
       "matches": [
         "https://labs.google/*",
+        "https://flow.google.com/*",
         "https://one.google.com/*"
       ],
       "js": ["content-flow-task-api.js", "content-flow-task-modal.js", "content-flow.js"],

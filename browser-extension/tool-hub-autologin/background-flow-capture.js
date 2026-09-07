@@ -314,11 +314,26 @@ async function handleFlowCaptureEventMessage(message, senderTabId = 0, openerTab
 }
 
 // Task Mapping: populates content-flow-task-modal.js's picker. Called from
-// labs.google (a different origin than our dashboard), so identity is the
-// same launch ticket every other Flow endpoint here uses - never a
-// dashboard session cookie. Not queued/retried (unlike capture events): the
-// generation is actively blocked waiting on this, so a failure must surface
-// to the modal immediately as a "Retry" state, not silently retry later.
+// labs.google/flow.google.com (a different origin than our dashboard).
+// Not queued/retried (unlike capture events): the generation is actively
+// blocked waiting on this, so a failure must surface to the modal
+// immediately as a "Retry" state, not silently retry later.
+//
+// Flow is deliberately the one tool that gates every generation the same
+// way whether it was opened through the dashboard launcher (a per-tab
+// ticket, as every other DIRECT_TICKET_ONLY_TOOLS provider requires) OR
+// opened directly on flow.google.com by someone simply logged into the
+// dashboard in this same browser (2026-09-07, requested by Sarbjeet: "flow
+// will be the only tool that can be open outside of the dashboard and
+// inside the dashboard"). Without a per-tab ticket, identity falls back to
+// the dashboard's own session token as an X-Session-Id header -
+// _resolve_usage_event_actor on the backend already resolves a ticket
+// first, then that session, so GET /api/tasks/my-active and GET
+// /api/clients/active need no change at all; only this ticket-or-nothing
+// gate here needed relaxing to ticket-or-session. The hard failure is kept
+// for the one case neither identity source exists: nobody is logged into
+// the dashboard in this browser AT ALL, so there is truly no one to
+// attribute the generation to.
 //
 // tool_slug=flow is REQUIRED on both calls below - GET /api/tasks/my-active
 // and GET /api/clients/active both default to Freepik's tool row when it's
@@ -333,16 +348,16 @@ async function handleFlowFetchMyActiveTasksMessage(message, senderTabId = 0, ope
   const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, 'flow');
   const activeLaunch = directLaunch || inheritedLaunch;
 
-  if (!activeLaunch?.ticket && !activeLaunch?.usageTrackingTicket) {
-    return { ok: false, error: 'Launch Flow from the dashboard before task selection can run.', reason: 'session_expired' };
-  }
-
   try {
     const settings = await getSettings();
+    if (!activeLaunch?.ticket && !activeLaunch?.usageTrackingTicket && !settings.sessionToken) {
+      return { ok: false, error: 'Log into the dashboard in this browser before task selection can run.', reason: 'session_expired' };
+    }
+
     const params = new URLSearchParams();
     params.set('tool_slug', 'flow');
-    if (activeLaunch.usageTrackingTicket) params.set('usage_ticket', activeLaunch.usageTrackingTicket);
-    if (activeLaunch.ticket) params.set('extension_ticket', activeLaunch.ticket);
+    if (activeLaunch?.usageTrackingTicket) params.set('usage_ticket', activeLaunch.usageTrackingTicket);
+    if (activeLaunch?.ticket) params.set('extension_ticket', activeLaunch.ticket);
 
     const headers = {};
     if (settings.sessionToken) headers['X-Session-Id'] = settings.sessionToken;
@@ -363,25 +378,25 @@ async function handleFlowFetchMyActiveTasksMessage(message, senderTabId = 0, ope
   }
 }
 
-// Client Mapping - same ticket-based identity, same non-queued/immediate-
-// failure posture as handleFlowFetchMyActiveTasksMessage above (and the
-// same tool_slug=flow requirement - see that function's comment).
+// Client Mapping - same ticket-or-session identity, same non-queued/
+// immediate-failure posture as handleFlowFetchMyActiveTasksMessage above
+// (and the same tool_slug=flow requirement - see that function's comment).
 async function handleFlowFetchActiveClientsMessage(message, senderTabId = 0, openerTabId = 0) {
   const tabId = message?.tabId || senderTabId || 0;
   const directLaunch = await getActiveLaunch(tabId, 'flow');
   const inheritedLaunch = directLaunch?.ticket ? null : await getActiveLaunch(openerTabId, 'flow');
   const activeLaunch = directLaunch || inheritedLaunch;
 
-  if (!activeLaunch?.ticket && !activeLaunch?.usageTrackingTicket) {
-    return { ok: false, error: 'Launch Flow from the dashboard before client selection can run.', reason: 'session_expired' };
-  }
-
   try {
     const settings = await getSettings();
+    if (!activeLaunch?.ticket && !activeLaunch?.usageTrackingTicket && !settings.sessionToken) {
+      return { ok: false, error: 'Log into the dashboard in this browser before client selection can run.', reason: 'session_expired' };
+    }
+
     const params = new URLSearchParams();
     params.set('tool_slug', 'flow');
-    if (activeLaunch.usageTrackingTicket) params.set('usage_ticket', activeLaunch.usageTrackingTicket);
-    if (activeLaunch.ticket) params.set('extension_ticket', activeLaunch.ticket);
+    if (activeLaunch?.usageTrackingTicket) params.set('usage_ticket', activeLaunch.usageTrackingTicket);
+    if (activeLaunch?.ticket) params.set('extension_ticket', activeLaunch.ticket);
 
     const headers = {};
     if (settings.sessionToken) headers['X-Session-Id'] = settings.sessionToken;

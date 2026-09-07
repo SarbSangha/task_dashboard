@@ -74,7 +74,18 @@ const TOOL_SESSION_DOMAINS = {
   enhancor: ['enhancor.ai', 'www.enhancor.ai', 'app.enhancor.ai'],
   envato: ['envato.com', 'www.envato.com', 'app.envato.com', 'elements.envato.com', 'market.envato.com'],
   freepik: ['freepik.com', 'www.freepik.com', 'magnific.com', 'www.magnific.com'],
-  flow: ['labs.google'],
+  // 2026-09-07: Google Flow moved off labs.google/fx/tools/flow onto its own
+  // flow.google.com domain - the launch URL still routes through labs.google
+  // (see normalizeFlowLaunchUrl/FLOW_DIRECT_ROUTE_URL below, which Google's
+  // own redirect then hands off to flow.google.com), but the actual tool UI
+  // - and every generate request content-flow-network.js needs to gate -
+  // lives at flow.google.com. Without this, the tab is not recognized as
+  // "still on the tool" the moment that redirect lands, and (flow being in
+  // DIRECT_TICKET_ONLY_TOOLS/CLEAR_SESSION_ON_CLOSE_TOOLS) its launch ticket
+  // / session gets treated as abandoned - reported by Sarbjeet 2026-09-07 as
+  // "no client popup on generate", root-caused to this domain never having
+  // been added anywhere in this extension.
+  flow: ['labs.google', 'flow.google.com'],
   genspark: ['genspark.ai', 'www.genspark.ai', 'login.genspark.ai'],
   grammarly: ['grammarly.com', 'www.grammarly.com', 'app.grammarly.com', 'coda.grammarly.com'],
   higgsfield: ['higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'],
@@ -180,6 +191,7 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
   ],
   flow: [
     'labs.google',
+    'flow.google.com', // see TOOL_SESSION_DOMAINS.flow's comment above
     'accounts.google.com',
   ],
   kling: [

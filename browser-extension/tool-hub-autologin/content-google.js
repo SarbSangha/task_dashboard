@@ -1174,7 +1174,7 @@ function inferToolSlugFromGooglePage() {
       return 'behance';
     }
 
-    if (values.some((value) => value.includes('labs.google'))) {
+    if (values.some((value) => value.includes('labs.google') || value.includes('flow.google.com'))) {
       return 'flow';
     }
 
@@ -3556,6 +3556,20 @@ async function attemptKlingGoogleChooserStep(credential) {
     STATE.lastEmailSubmitAt = Date.now();
     STATE.emailSubmitted = true;
     STATE.passwordSubmitted = false;
+    // Reported 2026-09-07: for an account Google already has a live session
+    // for, clicking its chooser tile is the LAST step - no password/TOTP/
+    // backup-code page ever follows, so none of THOSE markAuthTransition()
+    // calls fire. Without one here too, Flow's launch ticket keeps ticking
+    // down through the entire redirect chain that follows this click
+    // (Google's own hand-off, then labs.google, then - since the 2026-09
+    // domain migration - the further hop to flow.google.com) with no grace
+    // window at all, and expires mid-redirect on a slow one (root cause of
+    // "Checking dashboard authorization..." never resolving, then "Launch
+    // expired" once flow.google.com finally loads). Safe to call
+    // unconditionally here even though this function is also reused by
+    // Enhancor/Genspark/ElevenLabs/HeyGen (see this function's callers) -
+    // markAuthTransition() itself no-ops unless isFlowTool().
+    await markAuthTransition();
     scheduleAttempt(700);
     return true;
   }
