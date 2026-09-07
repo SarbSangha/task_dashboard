@@ -491,6 +491,96 @@ def test_cross_column_identity_without_shared_correlation_key_merges() -> None:
     print("ok  an incoming identity value cross-matches every identity column, not just its own")
 
 
+def test_library_asset_listing_row_is_not_normalized_as_a_generation() -> None:
+    """Regression for the duplicate-card bug reported 2026-09-03: HeyGen's
+    project/items listing interleaves generated videos with the library
+    assets (uploaded audio files) used to make them. An uploaded "12.mp3"
+    row - real shape confirmed from the user's own Capture Center dump -
+    must never mint its own HeygenGeneration/GenerationRecord; it has no
+    script, no video, nothing but the source file's own listing metadata."""
+    with SessionLocal() as db:
+        gen = normalize_capture_event(db, _capture(db, {
+            "item_id": "218e88d3b309488384f98ea6b5429c68",
+            "item_type": "audio",
+            "resource_type": "movio_asset",
+            "asset_value": "12.mp3",
+            "file_id": "5a7f53f0",
+            "created_ts": 1788433345,
+        }))
+        _assert(gen is None, f"a library asset listing row must not become a generation, got {gen!r}")
+
+        count = (
+            db.query(HeygenGeneration)
+            .filter(HeygenGeneration.video_id == "218e88d3b309488384f98ea6b5429c68")
+            .count()
+        )
+        _assert(count == 0, f"expected no HeygenGeneration row for the audio asset, found {count}")
+        db.rollback()
+    print("ok  a library asset (uploaded audio) listing row is never normalized as a generation")
+
+
+def test_ticket_then_stamped_listing_discovery_merges_into_one_card() -> None:
+    """Regression for the duplicate-card bug reported 2026-09-03 (the other
+    half): a generation FIRST discovered via the reconciliation listing scan
+    (rather than a live status-poll response) used to mint an orphaned
+    duplicate of the "submitted" ticket row, because the listing walker never
+    attached externalEventId to what it reported. content-heygen.js's
+    onHeygenNetworkListingMessage now stamps externalEventId onto a listing
+    row when its identity is already in the armed generation's
+    capturedIdentities - this proves the backend side of that contract: once
+    stamped, the listing row (a real "pacific_video" row, not a library
+    asset) must resolve to the SAME HeygenGeneration as the ticket, keep the
+    script text, and pick up the real video/credits - exactly one card, not
+    two."""
+    with SessionLocal() as db:
+        ticket = normalize_capture_event(db, _capture(db, {
+            "externalEventId": "hgen_1788432069376_nu2ao5",
+            "scriptText": "और अगर date 3, 12, 21 या 30 है तो इसे growth और progress से जोड़ा जाता है।",
+            "status": "submitted",
+            "avatar": {"name": "Ravi Photo Avatar"},
+        }))
+        db.flush()
+        _assert(ticket is not None, "the ticket snapshot itself must normalize")
+        _assert(ticket.generation_record_id is None, "no real id yet - no GenerationRecord should exist")
+
+        listing_event = _capture(db, {
+            # As stamped by the fixed onHeygenNetworkListingMessage.
+            "externalEventId": "hgen_1788432069376_nu2ao5",
+            "resource_type": "pacific_video",
+            "item_type": "heygen_video",
+            "video_id": "0ae18afad5fb465997a03f4c160044d6",
+            "status": "completed",
+            "duration": 7.86704,
+            "video_url": "https://files2.heygen.ai/example.mp4",
+            "credits": {"used": 3},
+        })
+        listing_event.ownership_confidence = "reconciliation"  # matches isReconciliation: true
+        db.flush()
+        listing = normalize_capture_event(db, listing_event)
+        db.flush()
+
+        _assert(listing.id == ticket.id, "the stamped listing row minted a separate duplicate instead of merging")
+        _assert(
+            listing.script_text == "और अगर date 3, 12, 21 या 30 है तो इसे growth और progress से जोड़ा जाता है।",
+            f"script lost once the real video arrived: {listing.script_text!r}",
+        )
+        _assert(listing.video_url == "https://files2.heygen.ai/example.mp4", f"video_url not merged: {listing.video_url!r}")
+        _assert(listing.credits_used == 3, f"credits not merged: {listing.credits_used!r}")
+        _assert(listing.status == "completed", f"status not updated: {listing.status!r}")
+        # Sticky ownership: the ticket (live, attributable) resolved it first
+        # - the later reconciliation event must not steal attribution.
+        _assert(listing.ownership_source == "ticket", f"ownership was overwritten by the reconciliation event: {listing.ownership_source!r}")
+
+        record_count = (
+            db.query(GenerationRecord)
+            .filter(GenerationRecord.provider == "heygen", GenerationRecord.canonical_asset_key == "0ae18afad5fb465997a03f4c160044d6")
+            .count()
+        )
+        _assert(record_count == 1, f"expected exactly one report row for this generation, found {record_count}")
+        db.rollback()
+    print("ok  a stamped listing-discovered video merges with its ticket into exactly one card")
+
+
 def test_parse_dt_converts_offsets_to_utc() -> None:
     _assert(_parse_dt("2026-07-02T11:27:02+00:00") == datetime(2026, 7, 2, 11, 27, 2), "UTC offset shape changed")
     _assert(_parse_dt("2026-07-02T11:27:02.000000Z") == datetime(2026, 7, 2, 11, 27, 2), "Z shape changed")
@@ -606,6 +696,8 @@ if __name__ == "__main__":
     test_thin_credit_ledger_event_merges_without_erasing_metadata()
     test_bare_id_queue_status_maps_to_video_id_not_workflow_id()
     test_cross_column_identity_without_shared_correlation_key_merges()
+    test_library_asset_listing_row_is_not_normalized_as_a_generation()
+    test_ticket_then_stamped_listing_discovery_merges_into_one_card()
     test_parse_dt_converts_offsets_to_utc()
     test_backfill_repairs_a_pre_fix_row()
     test_capture_batch_commits_and_isolates_duplicates()
