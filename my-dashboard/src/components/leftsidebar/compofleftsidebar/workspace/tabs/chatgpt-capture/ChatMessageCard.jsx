@@ -16,7 +16,7 @@ function AttachmentSection({ label, icon, attachments }) {
   );
 }
 
-export default function ChatMessageCard({ message, eventsById, storedAttachments, media, conversationModel, onOpenWorkspace }) {
+export default function ChatMessageCard({ message, eventsById, storedAttachments, media, inlineMedia, conversationModel, onOpenWorkspace }) {
   const [expanded, setExpanded] = useState(false);
   const isAssistant = message.role === 'assistant';
   const sourceEvents = (message.sourceEventIds || []).map((id) => eventsById.get(id)).filter(Boolean);
@@ -29,7 +29,21 @@ export default function ChatMessageCard({ message, eventsById, storedAttachments
   const matchedImages = useMemo(() => matched.filter((item) => (item.mimeType || '').startsWith('image/')), [matched]);
   const matchedFiles = useMemo(() => matched.filter((item) => !(item.mimeType || '').startsWith('image/')), [matched]);
   const matchedFileNames = useMemo(() => new Set(matched.map((item) => item.fileName)), [matched]);
-  const unmatchedPlaceholders = (message.attachments || []).filter((item) => !matchedFileNames.has(item.label));
+  // Placeholders (from the prompt payload) whose real bytes we never captured.
+  // Dedupe by filename - a single upload commonly appears in the payload's
+  // images AND attachments arrays (backend _build_attachment_list dedupes this
+  // too; this is the client-side guard for data captured before that landed).
+  const unmatchedPlaceholders = useMemo(() => {
+    const seen = new Set();
+    const result = [];
+    for (const item of message.attachments || []) {
+      const key = `${item.label || ''}`.trim().toLowerCase();
+      if (matchedFileNames.has(item.label) || seen.has(key)) continue;
+      seen.add(key);
+      result.push(item);
+    }
+    return result;
+  }, [message.attachments, matchedFileNames]);
 
   const hasContentParts = Array.isArray(message.contentParts) && message.contentParts.length > 0;
   const contentPartsHaveImage = hasContentParts && message.contentParts.some((p) => p && p.type === 'image');
@@ -56,13 +70,18 @@ export default function ChatMessageCard({ message, eventsById, storedAttachments
   // message id, not this app's synthetic row id) is the same correlation
   // mediaHelpers.buildGenerations already uses for the Generation Workspace
   // cards, applied here per-message instead of per-conversation.
+  // ConversationChatView pairs each captured media asset to the turn that
+  // produced it (id match, then nearest-time fallback) and passes this turn's
+  // share as `inlineMedia`. Prefer that; fall back to a local id-only match so
+  // this card still works if rendered without the pairing (e.g. tests).
   const matchedMedia = useMemo(
-    () => (
-      isAssistant && message.providerMessageId
+    () => {
+      if (inlineMedia && inlineMedia.length) return inlineMedia.filter((item) => item.url);
+      return isAssistant && message.providerMessageId
         ? (media || []).filter((item) => item.assistantMessageId === message.providerMessageId && item.url)
-        : []
-    ),
-    [isAssistant, media, message.providerMessageId]
+        : [];
+    },
+    [inlineMedia, isAssistant, media, message.providerMessageId]
   );
   const hasMatchedMedia = matchedMedia.length > 0;
 
@@ -85,7 +104,7 @@ export default function ChatMessageCard({ message, eventsById, storedAttachments
           {message.pending ? (
             <span className="chatgpt-capture-chat-pending">Waiting for response…</span>
           ) : hasContentParts ? (
-            <ConversationContentParts parts={message.contentParts} imagesByFileId={imagesByFileId} />
+            <ConversationContentParts parts={message.contentParts} imagesByFileId={imagesByFileId} mediaAssets={matchedMedia} />
           ) : displayText ? (
             isAssistant ? (
               <MarkdownRenderer>{displayText}</MarkdownRenderer>
@@ -105,6 +124,16 @@ export default function ChatMessageCard({ message, eventsById, storedAttachments
             </span>
           )}
 
+          {/* Response had captured text (or markdown) AND generated an image:
+              the branches above only render the image when there's no text, so
+              show it here, right under the response, instead of only in the
+              Generation Workspace panel. */}
+          {!message.pending && !hasContentParts && displayText && hasMatchedMedia && (
+            <div className="chatgpt-capture-chat-media">
+              <ChatAttachmentGallery attachments={matchedMedia.map(toGalleryMediaAsset)} />
+            </div>
+          )}
+
           {!hasContentParts && (
             <AttachmentSection label={kind === 'output' ? 'Generated Images' : 'Input Images'} icon={kind === 'output' ? '🎨' : '📷'} attachments={matchedImages} />
           )}
@@ -119,8 +148,8 @@ export default function ChatMessageCard({ message, eventsById, storedAttachments
           {unmatchedPlaceholders.length > 0 && (
             <div className="chatgpt-capture-chat-attachments">
               {unmatchedPlaceholders.map((attachment, index) => (
-                <span key={`${attachment.kind}-${index}`} className="chatgpt-capture-badge tone-warning">
-                  {attachment.kind === 'image' ? '🖼️' : '📄'} {attachment.label} - uploaded but not associated with this message.
+                <span key={`${attachment.kind}-${index}`} className="chatgpt-capture-badge tone-muted" title="The file was attached to this message but its contents weren't captured, so there's no preview.">
+                  {attachment.kind === 'image' ? '🖼️' : '📎'} {attachment.label} — attached (preview not captured)
                 </span>
               ))}
             </div>

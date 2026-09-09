@@ -260,6 +260,74 @@ function getSunoAudioUrl(row) {
   return typeof row?.audio_url === 'string' ? row.audio_url : '';
 }
 
+// Byte capture must NOT use getSunoAudioUrl above. That function is for
+// readiness ("does this row have any media reference yet"), and its last two
+// fallbacks can both return https://audiopipe.suno.ai/?item_id=... - a LIVE
+// STREAMING endpoint, not the finished file.
+//
+// Confirmed 2026-09-07 from a stored object that would not play: fetching
+// audiopipe returned 2.99 MB served as audio/mp4 that contains no ftyp/moov/
+// mdat/moof box, no Ogg/FLAC/RIFF magic and no MP3 frame sync - undecodable
+// by any player, which is exactly the "audio player is inactive" symptom.
+// (The base64 transport was ruled out first: sunoArrayBufferToBase64
+// round-trips byte-exact at that precise length.) Rows captured from
+// cdn1.suno.ai/<uuid>.mp3 instead are correct - spot-checked live, they
+// start with a real ID3v2.4 header.
+//
+// So this returns ONLY a finished, downloadable asset, and an empty string
+// when the row does not have one yet. Empty is a safe answer: the row stays
+// un-mirrored and the next pass re-evaluates it, whereas capturing the
+// stream produces a corrupt object that the backend then marks "mirrored"
+// forever (capture_audio short-circuits on already_mirrored).
+const SUNO_STREAMING_HOST_RE = /(^|\.)audiopipe\.suno\.ai$/i;
+const SUNO_AUDIO_FILE_RE = /\.(?:mp3|m4a|mp4|wav|flac|ogg)(?:[?#]|$)/i;
+
+function isSunoStreamingUrl(url) {
+  try {
+    return SUNO_STREAMING_HOST_RE.test(new URL(url, location.href).hostname);
+  } catch {
+    return /audiopipe\.suno\.ai/i.test(`${url || ''}`);
+  }
+}
+
+// A finished asset either declares an audio content_type on its media_urls
+// entry or ends in a real file extension. Both are checked because only the
+// first is confirmed present on every row.
+function isSunoDownloadableAssetUrl(url, contentType) {
+  if (!url || isSunoStreamingUrl(url)) return false;
+  if (contentType && /audio\/(?:mpeg|mp3|mp4|x-m4a|wav|flac|ogg)/i.test(contentType)) return true;
+  return SUNO_AUDIO_FILE_RE.test(url);
+}
+
+function getSunoDownloadableAudioUrl(row) {
+  if (Array.isArray(row?.media_urls)) {
+    // Prefer an explicit mp3 entry, exactly as getSunoAudioUrl does.
+    const mp3Entry = row.media_urls.find((entry) => entry && typeof entry === 'object' && entry.url
+      && /mp3|mpeg/i.test(entry.content_type || '')
+      && isSunoDownloadableAssetUrl(entry.url, entry.content_type));
+    if (mp3Entry) return mp3Entry.url;
+    const anyEntry = row.media_urls.find((entry) => entry && typeof entry === 'object' && entry.url
+      && isSunoDownloadableAssetUrl(entry.url, entry.content_type));
+    if (anyEntry) return anyEntry.url;
+  }
+  const audioUrl = typeof row?.audio_url === 'string' ? row.audio_url : '';
+  return isSunoDownloadableAssetUrl(audioUrl, '') ? audioUrl : '';
+}
+
+// Client-side mirror of the backend's own _looks_like_audio guard. Checked
+// here too so a bad fetch is never even uploaded, and so the reason is
+// visible in the page console where the capture actually happened.
+function sunoLooksLikeAudioBytes(buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < 12) return false;
+  const ascii = (start, end) => String.fromCharCode.apply(null, bytes.subarray(start, end));
+  if (ascii(0, 3) === 'ID3') return true;
+  if (bytes[0] === 0xFF && (bytes[1] & 0xE0) === 0xE0) return true;
+  if (['ftyp', 'styp', 'moov', 'moof', 'mdat'].includes(ascii(4, 8))) return true;
+  if (['OggS', 'fLaC', 'RIFF', 'FORM'].includes(ascii(0, 4))) return true;
+  return false;
+}
+
 // ----------------------------------------------------------------------------
 // Live-capture arm/disarm state machine — mirrors content-elevenlabs-
 // capture.js's identical design (rolling quiet-period reset extends the
@@ -734,8 +802,17 @@ function sunoApiHeaders(extra = {}) {
 
 async function proactivelyFetchSunoAudio(row) {
   const identityValue = getSunoRowIdentity(row);
-  const audioUrl = getSunoAudioUrl(row);
-  if (!identityValue || !audioUrl) return;
+  const audioUrl = getSunoDownloadableAudioUrl(row);
+  if (!identityValue) return;
+  if (!audioUrl) {
+    // Ready by action_config, but still only reachable through the live
+    // stream - see getSunoDownloadableAudioUrl. Skipping leaves the row
+    // un-mirrored and retryable rather than storing an undecodable object.
+    console.debug('[RMW Suno Capture] no finished asset URL yet - skipping byte capture this pass', {
+      identityValue, audioUrl: getSunoAudioUrl(row),
+    });
+    return;
+  }
   try {
     // No Authorization header, no credentials - the audiopipe.suno.ai URL
     // embedded in the row is treated the same way ElevenLabs Music's signed
@@ -755,9 +832,17 @@ async function proactivelyFetchSunoAudio(row) {
     const contentType = response.headers.get('content-type') || 'audio/mpeg';
     const buffer = await response.arrayBuffer();
     if (!buffer || !buffer.byteLength) return;
+    if (!sunoLooksLikeAudioBytes(buffer)) {
+      const head = Array.from(new Uint8Array(buffer).subarray(0, 8))
+        .map((b) => b.toString(16).padStart(2, '0')).join('');
+      console.warn('[RMW Suno Capture] fetched bytes are not a decodable audio file - not uploading', {
+        identityValue, audioUrl, contentType, bytes: buffer.byteLength, first8: head,
+      });
+      return;
+    }
     const audioBase64 = sunoArrayBufferToBase64(buffer);
     console.debug('[RMW Suno Capture] proactively fetched audio', { identityValue, contentType, bytes: buffer.byteLength });
-    reportSunoAudioCapture({ clipId: identityValue, contentType, audioBase64 });
+    reportSunoAudioCapture({ clipId: identityValue, contentType, audioBase64, audioUrl });
   } catch (error) {
     console.debug('[RMW Suno Capture] proactive audio fetch error', { identityValue, error: error?.message || error });
   }
@@ -801,6 +886,10 @@ async function reportSunoAudioCapture(payload, attempt = 1) {
       clipId,
       contentType: payload.contentType || 'audio/mpeg',
       audioBase64,
+      // The finished asset URL these bytes came from - backfills
+      // SunoGeneration.media_url, which is otherwise left NULL forever
+      // because the metadata event is captured while audio_url is still "".
+      audioUrl: payload.audioUrl || '',
     });
     if (result?.ok) {
       sunoRecentlyPushedAudioIds.set(clipId, Date.now());

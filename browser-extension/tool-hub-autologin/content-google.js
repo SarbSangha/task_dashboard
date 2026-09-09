@@ -299,7 +299,8 @@ function shouldProtectGooglePasswordReveal(toolSlug = STATE.toolSlug) {
     || isSunoGoogleFlow(toolSlug)
     || isEpidemicSoundGoogleFlow(toolSlug)
     || isSpliceGoogleFlow(toolSlug)
-    || isClaudeGoogleFlow(toolSlug);
+    || isClaudeGoogleFlow(toolSlug)
+    || isChatGptGoogleFlow(toolSlug);
 }
 
 function shouldAggressivelyDisableGoogleRevealControls(toolSlug = STATE.toolSlug) {
@@ -5356,6 +5357,20 @@ async function attemptFill() {
   }
 
   if (await attemptFlowTotpStep()) return;
+  // ChatGPT's "Continue with Google" is a same-tab redirect (not a popup), so
+  // it falls past every tool-specific *GooglePopupFlow handler above and used
+  // the generic attemptPasswordStep / attemptEmailStep - which drove the
+  // password field into a refill-3-times loop. Route it through the same
+  // proven Kling password/email handlers that ElevenLabs, HeyGen, Suno etc.
+  // use (they only differ from the generic path in the fill/settle/submit
+  // sequencing, which is exactly what was misbehaving).
+  if (isChatGptGoogleFlow()) {
+    const chatGptToolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
+    if (chatGptToolSlug) STATE.toolSlug = chatGptToolSlug;
+    if (await attemptKlingGooglePasswordStep(credential)) return;
+    if (await attemptGoogleConsentContinueStep()) return;
+    if (await attemptKlingGoogleEmailStep(credential)) return;
+  }
   if (await attemptPasswordStep(credential)) return;
   if (await attemptGoogleConsentContinueStep()) return;
   if (await attemptEmailStep(credential)) return;

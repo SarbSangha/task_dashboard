@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "RMW Tool Hub Auto Login",
   "description": "Auto-fills approved company tool credentials from the RMW Tool Hub.",
-  "version": "0.1.40",
+  "version": "0.1.49",
   "incognito": "split",
   "icons": {
     "16": "icons/icon16.png",
@@ -67,6 +67,7 @@
     "https://google.com/*",
     "https://*.google.com/*",
     "https://labs.google/*",
+    "https://flow.google.com/*",
     "https://kling.ai/*",
     "https://*.kling.ai/*",
     "https://klingai.com/*",
@@ -431,7 +432,8 @@
     },
     {
       "matches": [
-        "https://labs.google/*"
+        "https://labs.google/*",
+        "https://flow.google.com/*"
       ],
       "js": ["content-flow-network.js"],
       "run_at": "document_start",
@@ -440,6 +442,7 @@
     {
       "matches": [
         "https://labs.google/*",
+        "https://flow.google.com/*",
         "https://one.google.com/*"
       ],
       "js": ["content-flow-task-api.js", "content-flow-task-modal.js", "content-flow.js"],

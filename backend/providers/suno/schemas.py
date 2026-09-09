@@ -84,6 +84,14 @@ class CaptureAudioIn(BaseModel):
     clip_id: str = Field(..., min_length=1, max_length=160)
     content_type: Optional[str] = Field(default=None, max_length=100)
     audio_base64: str = Field(..., min_length=1)
+    # The URL these bytes were actually fetched from. Suno's feed row carries
+    # audio_url == "" while a clip is still encoding, and the metadata event
+    # is usually captured in exactly that window - so SunoGeneration.media_url
+    # was left NULL on 48 of 72 rows and "open original" had nothing to open,
+    # even though the audio itself mirrored fine minutes later. The proactive
+    # fetch is the first moment a real, finished asset URL is known, so it
+    # reports it here rather than leaving the column permanently empty.
+    audio_url: Optional[str] = Field(default=None, max_length=2000)
     # True only for a confirmed Download-button click, never the proactive-
     # fetch or Play-correlation paths.
     is_download: bool = False

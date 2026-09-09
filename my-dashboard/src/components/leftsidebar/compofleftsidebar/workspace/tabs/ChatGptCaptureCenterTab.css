@@ -3531,3 +3531,189 @@
 .cgpt-dev-jobs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .cgpt-dev-job { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: 8px; background: var(--color-surface-muted); }
 .cgpt-dev-job-label { font-size: 12.5px; font-weight: 700; color: var(--color-text); }
+
+/* ==== "Conversations by person" browser (adopted from the Claude Capture
+   Center's claude-capture-person-* / claude-capture-detail-layout rules -
+   see claude-capture/ClaudeCaptureCenterTab.css - so the ChatGPT tab reads
+   as one clean per-person accordion + full-width drawer instead of the old
+   three-column sidebar/list/detail split). ==== */
+.cgpt-person-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cgpt-person-group {
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.cgpt-person-group-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: background var(--theme-transition-fast);
+}
+
+.cgpt-person-group-head:hover { background: var(--color-surface-muted); }
+.cgpt-person-group-head:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+.cgpt-person-caret {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  width: 14px;
+}
+
+.cgpt-person-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.cgpt-person-identity strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cgpt-person-meta { font-size: 12px; color: var(--color-text-secondary); }
+
+.cgpt-person-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.cgpt-person-badge-accent {
+  border: 1px solid var(--color-feedback-info-border);
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
+}
+
+.cgpt-person-last-active {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.cgpt-person-conversation-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.cgpt-person-conversation-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px 10px 44px;
+  font-size: 13px;
+  border: none;
+  border-top: 1px solid var(--color-border-subtle);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--theme-transition-fast);
+}
+
+.cgpt-person-conversation-row:first-child { border-top: none; }
+.cgpt-person-conversation-row:hover { background: var(--color-surface-muted); }
+.cgpt-person-conversation-row:focus-visible { outline: none; box-shadow: inset var(--shadow-focus); }
+
+.cgpt-person-conversation-status { flex: 0 0 auto; font-size: 13px; line-height: 1; }
+.cgpt-person-conversation-status.tone-success { color: var(--color-feedback-success-text); }
+.cgpt-person-conversation-status.tone-warning { color: var(--color-feedback-warning-text); }
+.cgpt-person-conversation-status.tone-error { color: var(--color-feedback-error-text); }
+.cgpt-person-conversation-status.tone-muted { color: var(--color-text-secondary); }
+
+.cgpt-person-conversation-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.cgpt-person-conversation-preview { font-weight: 400; color: var(--color-text-secondary); }
+
+.cgpt-person-conversation-when {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Full-width slide-over (twin of claude-capture-drawer) - the transcript
+   deserves the whole Workspace panel, not the shared 480px drawer. */
+.chatgpt-capture-by-person-drawer {
+  left: 0 !important;
+  right: 0 !important;
+  width: auto !important;
+}
+
+.cgpt-person-detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 24px;
+  align-items: stretch;
+  min-width: 0;
+  width: 100%;
+}
+
+.cgpt-person-detail-content-col,
+.cgpt-person-detail-fields-col {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cgpt-person-detail-fields-col { gap: 16px; }
+
+/* Collapsible "AI Generations" / "Developer Console" sections in the drawer's
+   right column. */
+.cgpt-person-section-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.cgpt-person-section-toggle:hover { border-color: var(--color-border-strong); }
+.cgpt-person-section-body { margin-top: 12px; }
+
+@media (max-width: 900px) {
+  .cgpt-person-detail-layout { grid-template-columns: 1fr; }
+}

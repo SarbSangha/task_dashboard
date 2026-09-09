@@ -223,6 +223,58 @@ def capture_events(
 MAX_AUDIO_BYTES = 25 * 1024 * 1024  # generous for a single music clip; guards against a pathological payload
 
 
+# Confirmed 2026-09-07 from a real stored object that would not play
+# (suno-mirror/107/...m4a): 2.99 MB of high-entropy bytes served as
+# audio/mp4, containing no ftyp/moov/mdat/moof box, no Ogg/FLAC/RIFF magic
+# and no MP3 frame sync - i.e. not a decodable file in any container. It had
+# been fetched from the audiopipe.suno.ai LIVE-STREAMING endpoint rather than
+# the finished CDN asset. The row was still marked asset_mirror_status
+# "mirrored", and because capture_audio short-circuits on already_mirrored,
+# that verdict was terminal: the clip could never re-mirror itself even once
+# a good URL existed.
+#
+# So the bytes are checked here before anything is stored. The extension now
+# avoids the streaming endpoint too (see content-suno-capture.js), but this
+# is the backstop that has to hold regardless of which extension version is
+# installed - a rejected payload leaves the row "pending" and retryable,
+# which is strictly better than a permanent unplayable "success".
+def _looks_like_audio(data: bytes) -> bool:
+    if len(data) < 12:
+        return False
+    # MP3: an ID3v2 tag, or a raw frame sync (11 set bits).
+    if data[:3] == b"ID3":
+        return True
+    if data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        return True
+    # ISO-BMFF (MP4/M4A): the box type sits at offset 4, after its length.
+    if data[4:8] in (b"ftyp", b"styp", b"moov", b"moof", b"mdat"):
+        return True
+    if data[:4] in (b"OggS", b"fLaC", b"RIFF", b"FORM"):
+        return True
+    # ADTS AAC
+    if data[0] == 0xFF and (data[1] & 0xF6) == 0xF0:
+        return True
+    return False
+
+
+def _sync_canonical_asset_url(db: Session, generation: SunoGeneration) -> None:
+    """Keeps GenerationRecord.canonical_asset_url in step with a media_url set
+    outside normalization - normalization.py's _project_into_generation_record
+    does the same thing on its own path, and a URL learned here must not be
+    invisible to the cross-tool view."""
+    record_id = generation.generation_record_id
+    if not record_id:
+        return
+    try:
+        from models_new import GenerationRecord
+
+        record = db.query(GenerationRecord).filter(GenerationRecord.id == record_id).first()
+        if record is not None:
+            record.canonical_asset_url = generation.media_url
+    except Exception:
+        logger.exception("suno: failed to sync canonical_asset_url for generation_id=%s", generation.id)
+
+
 @router.post("/capture/audio", response_model=CaptureAudioResult)
 def capture_audio(
     payload: CaptureAudioIn,
@@ -252,6 +304,14 @@ def capture_audio(
         generation.downloaded_at = datetime.utcnow()
         db.commit()
 
+    # Recorded before the short-circuit below: a re-observation of an
+    # already-mirrored clip still carries the finished asset URL, which is
+    # exactly what the row is usually missing (see CaptureAudioIn.audio_url).
+    if payload.audio_url and not generation.media_url:
+        generation.media_url = payload.audio_url
+        _sync_canonical_asset_url(db, generation)
+        db.commit()
+
     if generation.asset_mirror_status == "mirrored" and generation.mirrored_asset_key:
         return CaptureAudioResult(success=True, status="already_mirrored")
 
@@ -264,6 +324,13 @@ def capture_audio(
         return CaptureAudioResult(success=False, status="invalid_audio")
 
     if not audio_bytes or len(audio_bytes) > MAX_AUDIO_BYTES:
+        return CaptureAudioResult(success=False, status="invalid_audio")
+
+    if not _looks_like_audio(audio_bytes):
+        logger.warning(
+            "suno capture_audio rejected non-audio payload clip_id=%s content_type=%s bytes=%d first8=%s",
+            payload.clip_id, payload.content_type, len(audio_bytes), audio_bytes[:8].hex(),
+        )
         return CaptureAudioResult(success=False, status="invalid_audio")
 
     content_type = payload.content_type or "audio/mpeg"

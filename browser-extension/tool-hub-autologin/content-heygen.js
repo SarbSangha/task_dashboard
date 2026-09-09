@@ -2304,6 +2304,27 @@ window.addEventListener('message', onHeygenNetworkMessage);
 // page(s) the user's own browsing already triggers. Promote to an active
 // walk (mirroring content-freepik.js's runFreepikReconciliationWalk) once
 // that field is confirmed.
+function isHeygenListingRowLibraryAsset(row) {
+  // Mirrors backend providers/heygen/normalization.py's
+  // _is_non_video_library_asset - kept in sync deliberately. HeyGen's
+  // project/items listing interleaves generated videos with the library
+  // assets (uploaded audio/image files) used to make them; an uploaded
+  // "12.mp3" row has its own "id"/"item_id" that heygenRowIdentity would
+  // otherwise happily read as a video_id, minting a permanently-empty
+  // "generation" card (no script, no preview, nothing) for the source file
+  // itself. Confirmed real shape (2026-09-03, reported by Sarbjeet): a
+  // library asset row carries resource_type "movio_asset" (vs. a video's
+  // "pacific_video"), item_type/file_type "audio" - checked independently
+  // since different HeyGen responses name the same distinction differently.
+  const resourceType = `${row?.resource_type || ''}`.toLowerCase();
+  if (resourceType === 'movio_asset') return true;
+  const itemType = `${row?.item_type || ''}`.toLowerCase();
+  if (itemType === 'audio') return true;
+  const fileType = `${row?.file_type || ''}`.toLowerCase();
+  if (fileType === 'audio') return true;
+  return false;
+}
+
 function onHeygenNetworkListingMessage(event) {
   if (event.source !== window) return;
   const data = event.data;
@@ -2311,6 +2332,7 @@ function onHeygenNetworkListingMessage(event) {
   const rows = data.payload && Array.isArray(data.payload.rows) ? data.payload.rows : [];
 
   rows.forEach((row) => {
+    if (isHeygenListingRowLibraryAsset(row)) return;
     const identity = heygenRowIdentity(row);
     if (!(identity.videoId || identity.renderId || identity.jobId || identity.workflowId)) return;
     // Historical/reconciliation rows are exactly the case Sarbjeet reported
@@ -2321,10 +2343,27 @@ function onHeygenNetworkListingMessage(event) {
     if (isHeygenRowSettled(row) && identity.videoId) {
       queueHeygenCreditLedgerLookup(String(identity.videoId));
     }
+    // If this row's identity was already confirmed (via the live network
+    // intercept in onHeygenNetworkMessage above) to belong to the
+    // currently-armed generation, stamp its externalEventId the same way
+    // that handler's networkPayload does. Without this, a video FIRST
+    // discovered through this listing scan (rather than through a live
+    // status-poll response) has no key in common with the "submitted" click
+    // snapshot, and the backend mints an orphaned duplicate generation
+    // instead of merging into it - reported 2026-09-03. Deliberately only
+    // trusts an identity already present in capturedIdentities (confirmed by
+    // a real direct fetch/XHR response from this tab) rather than "currently
+    // armed", so this can never mis-stamp an unrelated row from the same
+    // listing response onto the wrong generation.
+    const idKey = String(identity.videoId || identity.renderId || identity.jobId || identity.workflowId);
+    const alreadyTracked = heygenActiveGeneration?.capturedIdentities.has(idKey);
+    const listingPayload = alreadyTracked
+      ? { ...row, externalEventId: heygenActiveGeneration.generateIntentId }
+      : row;
     reportHeygenCaptureEvent({
       eventType: 'generation_listing_row',
       isReconciliation: true,
-      payload: row,
+      payload: listingPayload,
       identity,
       changeToken: heygenChangeToken(row),
     });

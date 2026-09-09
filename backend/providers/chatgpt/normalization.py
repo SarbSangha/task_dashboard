@@ -24,7 +24,9 @@ the same underlying message (e.g. the duplicate response_completed rows
 produced by the double-finalize() bug fixed in content-chatgpt.js/
 content-chatgpt-network.js) - updates one row rather than creating a second.
 """
+import difflib
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -247,8 +249,78 @@ def _find_matching_prompt(db: Session, record: ConversationRecord, event: Conver
     )
 
 
+_RESCRAPE_SIMILARITY_THRESHOLD = 0.90
+
+
+def _normalize_for_similarity(text: str) -> str:
+    """Strip the markdown syntax the authoritative capture keeps but the DOM
+    re-scrape drops (**, ###, list bullets, table pipes) and collapse
+    whitespace, so the two representations of the same answer compare equal."""
+    text = re.sub(r"[*_`#>|]+", " ", text or "")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip().lower()
+
+
+def _is_dom_rescrape_duplicate(db: Session, record: ConversationRecord, event: ConversationCaptureEvent, text: str) -> Optional[ConversationResponse]:
+    """A response_completed with no provider_message_id and no contentParts is
+    the DOM fallback that fires when the authoritative fetch fails (see
+    RESPONSE_RECONSTRUCTION_REPORT.md). Confirmed live: that fallback can
+    scrape a stale, still-visible earlier answer instead of the turn that just
+    finished - producing a phantom response row whose text duplicates the
+    previous turn's and attributing it to the wrong prompt. If this event's
+    text closely matches a response already captured in this conversation,
+    treat it as that re-scrape and reuse the existing row rather than minting
+    a new turn. The raw event stays losslessly in ConversationCaptureEvent
+    regardless; only the derived normalized view skips it."""
+    payload = event.payload_json or {}
+    if event.provider_message_id or payload.get("contentParts"):
+        return None
+    normalized_new = _normalize_for_similarity(text)
+    if len(normalized_new) < 40:  # too short to score reliably
+        return None
+    existing_responses = (
+        db.query(ConversationResponse)
+        .filter(ConversationResponse.conversation_id == record.id)
+        .order_by(ConversationResponse.sequence_index.desc())
+        .limit(5)
+        .all()
+    )
+    for candidate in existing_responses:
+        if candidate.source_capture_event_id == event.id:
+            continue
+        ratio = difflib.SequenceMatcher(None, normalized_new, _normalize_for_similarity(candidate.response_text or "")).ratio()
+        if ratio >= _RESCRAPE_SIMILARITY_THRESHOLD:
+            return candidate
+    return None
+
+
 def _upsert_response(db: Session, record: ConversationRecord, event: ConversationCaptureEvent) -> ConversationResponse:
     payload = event.payload_json or {}
+    text = payload.get("text") or ""
+
+    # A DOM re-scrape that grabbed a stale earlier answer: keep the turn (the
+    # prompt genuinely got a reply, and any media captured for it needs
+    # somewhere to attach) but throw away the misattributed words so the
+    # transcript doesn't show one answer under another turn's prompt. The row
+    # then reads as "response text not captured" - accurate - and the
+    # generated image (if any) still renders against it.
+    is_rescrape = _is_dom_rescrape_duplicate(db, record, event, text) is not None
+    if is_rescrape:
+        logger.info(
+            "chatgpt normalization: response_completed event %s is a DOM re-scrape of an earlier answer - keeping the turn, dropping the text (conversation %s)",
+            event.id, record.provider_conversation_id,
+        )
+        text = ""
+        payload = {
+            **payload,
+            "text": "",
+            "codeBlocks": None,
+            "contentParts": None,
+            "citations": None,
+            "hasMarkdown": False,
+            "hasTables": False,
+        }
+
     response = None
     if event.provider_message_id:
         response = (
@@ -266,7 +338,6 @@ def _upsert_response(db: Session, record: ConversationRecord, event: Conversatio
         response = ConversationResponse(conversation_id=record.id, sequence_index=_next_response_sequence(db, record))
         db.add(response)
 
-    text = payload.get("text") or ""
     response.source_capture_event_id = event.id
     if event.provider_message_id:
         response.provider_message_id = event.provider_message_id

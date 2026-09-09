@@ -1316,15 +1316,38 @@ def list_conversation_messages(db: Session, conversation_id: str, *, limit: int 
     }
 
 
+_ATTACHMENT_KIND_RANK = {"image": 0, "file": 1, "attachment": 2}
+
+
 def _build_attachment_list(payload: dict) -> list[dict]:
-    attachments = []
+    """One placeholder per uploaded file. ChatGPT prompt payloads routinely
+    carry the same file in more than one of images/files/attachments (observed
+    live: images_json and attachments_json holding an identical
+    {name, type} entry), which previously rendered as two or three "uploaded
+    but not associated" badges for a single upload. Dedupe by file name
+    (case-insensitive); when the same name arrives under different kinds keep
+    the most specific one (image > file > attachment)."""
+    by_name: dict[str, dict] = {}
+    order: list[str] = []
+
+    def _add(kind: str, item: dict, fallback: str) -> None:
+        label = (item or {}).get("name") or fallback
+        key = str(label).strip().lower()
+        existing = by_name.get(key)
+        if existing is None:
+            by_name[key] = {"kind": kind, "label": label}
+            order.append(key)
+        elif _ATTACHMENT_KIND_RANK[kind] < _ATTACHMENT_KIND_RANK[existing["kind"]]:
+            existing["kind"] = kind
+
     for index, item in enumerate(payload.get("images") or []):
-        attachments.append({"kind": "image", "label": (item or {}).get("name") or f"Image {index + 1}"})
+        _add("image", item, f"Image {index + 1}")
     for index, item in enumerate(payload.get("files") or []):
-        attachments.append({"kind": "file", "label": (item or {}).get("name") or f"File {index + 1}"})
+        _add("file", item, f"File {index + 1}")
     for index, item in enumerate(payload.get("attachments") or []):
-        attachments.append({"kind": "attachment", "label": (item or {}).get("name") or f"Attachment {index + 1}"})
-    return attachments
+        _add("attachment", item, f"Attachment {index + 1}")
+
+    return [by_name[key] for key in order]
 
 
 def list_conversation_attachments(db: Session, conversation_id: str) -> list[dict]:

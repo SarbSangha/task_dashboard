@@ -16,9 +16,92 @@ Flow yet (unlike Freepik's `/sync/cursor`) - anything lost to a dropped queue
 is currently unrecoverable. Worth building if this turns out to matter in
 practice.
 
+## Primary capture path: asset observation (2026-09-07)
+
+`content-flow.js` captures a generation by **observing the generated asset
+download**, not by decoding Google's RPC. This is the path that actually
+runs; the batchexecute decoder described below is a secondary path that
+takes precedence only when it genuinely succeeds.
+
+Rationale: post-migration, the only generation traffic is `/batchexecute`,
+whose method is an opaque `rpcids` code that rotates per Google build and
+whose payloads are positional arrays with no field names. Building capture
+on that means re-deriving an unnamed wire format after every Google release.
+The generated image, by contrast, *has* to be downloaded and shown to the
+user - that is observable through Resource Timing with no selectors, no
+request-body shape, and no dependency on Google's naming.
+
+The join to this contract is exact rather than inferred: in all 26 rows
+captured before the migration, `media_url` is `.../image/<uuid>` where that
+`<uuid>` is byte-for-byte the row's own `primary_media_id` - the key
+`_normalize_media_url_event` already binds on. Remaining fields:
+
+| Field | Source |
+|---|---|
+| `name` (creation id) | the media uuid from the asset URL |
+| `primaryMediaId` | same uuid |
+| `projectId` | `flow.google.com/project/<uuid>`, off `location` |
+| `displayName` (prompt) | the composer, tracked live via `input` events |
+| `batchId` | the arm cycle's `generateIntentId` - exactly "one Generate click" |
+| `createTime`/`updateTime` | observation time |
+
+`_extract_fields()` consumes this unchanged, so **no backend change was
+required**. Rows built this way carry `metadata.rmwCaptureSource =
+"asset-observation"` in `metadata_json` to distinguish them from rows
+decoded out of a real `flowWorkflows` response.
+
+Safeguards: every media id seen while unarmed is recorded and can never
+later be treated as fresh output (so scrolling an existing gallery captures
+nothing); assets are only collected inside an armed window; a settle delay
+groups one click's images into a single batch and lets the network path win
+if it lands first; and per-cycle counting distinguishes network-decoded rows
+from asset-built ones, so precedence never suppresses a later generation in
+the same window.
+
+Covered by `browser-extension/tool-hub-autologin/tests/flow_asset_capture_smoke.js`
+(runs the real content script under a stubbed page; `node tests/flow_asset_capture_smoke.js`).
+
+## Surface migration (2026-09-07) - READ FIRST
+
+Google moved the real Flow app from `labs.google/fx/tools/flow` to
+**`flow.google.com`**, and with it the entire transport. The
+`aisandbox-pa.googleapis.com` REST surface documented in the next section is
+**no longer used by a live generation**. Everything the app does now goes
+through Google's generic RPC framework at
+
+    https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=<opaque>&bl=<build tag>&...
+
+where the method is an opaque `rpcids` code that **rotates per Google build**
+(`bl=boq_labs-ai-sandbox-frontend_20260903.13_p1`) - two captures minutes
+apart showed ~20 codes each with no overlap, so no rpcids allowlist can be
+relied on. See content-flow-network.js's own comments for the DOM-armed gate
+that replaced rpcid matching.
+
+Consequence for capture, and the bug it caused: `shouldInspectUrl()`
+originally hard-required the REST host, so after the migration every
+generation response was rejected before its body was read. On 2026-09-07 a
+real generation armed the picker correctly
+(`[RMW Flow Capture] armed {taskId: 1161, clientId: 2}`) and still produced
+**zero** capture events - the last row in `flow_capture_events` was from
+2026-08-14. `shouldInspectUrl()` now accepts any `/batchexecute` URL
+host-independently, and `inspectBatchExecuteResponse()` decodes the envelope
+(XSSI prefix + length-framed chunks + a double-encoded JSON payload string
+per `wrb.fr` frame) before the existing shape checks run over it.
+
+**Open gap:** batchexecute payloads are *positional arrays*, not the
+named-field objects below. Where `looksLikeFlowWorkflowObject()` still
+matches inside a decoded frame, capture works unchanged. Where it does not,
+`reportBatchExecuteMappingCandidate()` logs the uuids / timestamps / media
+URLs / text candidates it found **with their array paths**, which is what a
+correct positional mapping should be written from. No mapping is guessed.
+
 ## Confirmed network shape
 
-Flow's generation API lives on a **different host** than the page itself:
+Historical (pre-2026-09-07 migration - see above; kept because rows
+captured before that date use this shape, and the field names below are
+still the contract the backend normalizes against).
+
+Flow's generation API lived on a **different host** than the page itself:
 `https://aisandbox-pa.googleapis.com`, not `labs.google`. The page's own JS
 calls this cross-origin directly via `fetch`/XHR with a Bearer OAuth token.
 One generation = one `flowWorkflows/{uuid}` resource, `PATCH`ed by the

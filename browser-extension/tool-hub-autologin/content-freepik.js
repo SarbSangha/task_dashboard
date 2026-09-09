@@ -9,6 +9,23 @@ const MIN_RUN_GAP_MS = 400;
 const KEEP_ALIVE_MS = 2000;
 const LOGIN_OPEN_COOLDOWN_MS = 2500;
 const SUBMIT_COOLDOWN_MS = 1500;
+// After submitting the sign-in, how long to let the request resolve before
+// deciding it failed. A successful login navigates (or flips the page to an
+// authenticated state, caught earlier in attemptFlow) well inside this
+// window; if the login form is still sitting there afterwards, it was
+// rejected.
+const LOGIN_FAILURE_GRACE_MS = 6000;
+
+const LOGIN_ERROR_PHRASES = [
+  'incorrect', 'invalid', 'not valid', "isn't right", 'is not right',
+  'wrong password', 'wrong email', "doesn't match", 'does not match',
+  'try again', 'not found', 'no account', 'no user', 'unable to sign',
+  'unable to log', 'failed to sign', 'failed to log', 'could not sign',
+  'could not log', 'something went wrong', 'too many attempts',
+  'temporarily blocked', 'temporarily locked', 'rate limit',
+  'verify you are human', 'complete the captcha', 'check your email and password',
+  'wrong email or password', 'credentials', 'authentication failed',
+];
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -57,6 +74,8 @@ const STATE = {
   lastLoginOpenAt: 0,
   lastSubmitAt: 0,
   lastEmailContinueAt: 0,
+  emailContinueCount: 0,
+  loginSubmitCount: 0,
   passwordFilled: false,
   passwordRevealGuardAttached: false,
   switchingToLoginUntil: 0,
@@ -1118,6 +1137,48 @@ function isReadyForSubmit(emailInput, passwordInput) {
     && passwordInput.value === STATE.credential.password;
 }
 
+// Best-effort read of whatever the sign-in form is saying after a rejected
+// submit, so the auto-login can stop with something actionable instead of
+// silently looping. Returns '' when nothing error-like is visible.
+function findLoginErrorText(emailInput, passwordInput) {
+  const containers = document.querySelectorAll(
+    '[role="alert"],[aria-live="assertive"],[aria-live="polite"],'
+    + '.error,.error-message,.form-error,.field-error,.input-error,'
+    + '[class*="error" i],[class*="invalid" i],[class*="danger" i],'
+    + '[data-error],.helper-text,.MuiFormHelperText-root,.chakra-form__error-message'
+  );
+  const seen = new Set();
+  for (const el of containers) {
+    if (!isVisible(el)) continue;
+    const text = normalizeText(el.innerText || el.textContent || '');
+    if (!text || text.length > 300 || seen.has(text)) continue;
+    seen.add(text);
+    if (LOGIN_ERROR_PHRASES.some((phrase) => text.includes(phrase))) {
+      return el.innerText?.trim() || text;
+    }
+  }
+
+  // Structured signal: the password (or email) field flagged invalid, with an
+  // aria-describedby message pointing at the explanation.
+  for (const field of [passwordInput, emailInput]) {
+    if (!field || field.getAttribute('aria-invalid') !== 'true') continue;
+    const describedBy = field.getAttribute('aria-describedby');
+    if (describedBy) {
+      const message = describedBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((node) => (node.innerText || node.textContent || '').trim())
+        .filter(Boolean)
+        .join(' ');
+      if (message) return message;
+    }
+    return 'the sign-in form is showing a validation error';
+  }
+
+  return '';
+}
+
 async function enforceDashboardOnlyAccess() {
   const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
   if (!isLoginPage()) {
@@ -1234,6 +1295,34 @@ function attemptFlow() {
     requestCredential();
   }
 
+  // Login-failure guard. The credential has been submitted exactly once. Wait
+  // out the request; if the sign-in form is STILL here afterwards it was
+  // rejected, so stop instead of re-filling and re-submitting in a loop -
+  // leave the page exactly as the site returned it so the real cause (wrong
+  // password, locked account, captcha, ...) is readable. A successful login
+  // never reaches this point: attemptFlow returns at isAuthenticatedMagnificPage()
+  // above, or the page has already navigated.
+  if (
+    (loginFormVisible || hasPasswordOnlyCredentialInput)
+    && !isGoogleCredential()
+    && STATE.loginSubmitCount > 0
+  ) {
+    const sinceSubmit = Date.now() - STATE.lastSubmitAt;
+    if (sinceSubmit < LOGIN_FAILURE_GRACE_MS) {
+      setStatus('Waiting for Magnific to accept the sign-in');
+      scheduleAttempt(LOGIN_FAILURE_GRACE_MS - sinceSubmit + 100);
+      return;
+    }
+
+    const errorText = findLoginErrorText(emailInput, passwordInput);
+    stop(
+      errorText
+        ? `Magnific did not accept the sign-in - auto-login stopped so you can check it.\nPage says: ${errorText}`
+        : 'Magnific sign-in did not go through - auto-login stopped. The login form is still open; check the page for the reason.'
+    );
+    return;
+  }
+
   if (hasEmailOnlyCredentialInput && !isGoogleCredential()) {
     if (!STATE.credential?.loginIdentifier) {
       setStatus('Waiting for credential');
@@ -1242,6 +1331,25 @@ function attemptFlow() {
 
     if (!isVisible(emailInput)) {
       setStatus('Waiting for email field');
+      return;
+    }
+
+    // Same failure guard as the password step: if the email screen is still
+    // here a beat after we pushed Continue with the identifier already in the
+    // field, the identifier was rejected (unknown account, bad format) - stop
+    // rather than keep clicking Continue.
+    if (
+      STATE.emailContinueCount > 0
+      && emailInput.value === STATE.credential.loginIdentifier
+      && (Date.now() - STATE.lastEmailContinueAt) > LOGIN_FAILURE_GRACE_MS
+      && findEmailContinueButton(emailInput, { includeDisabled: true })
+    ) {
+      const errorText = findLoginErrorText(emailInput, null);
+      stop(
+        errorText
+          ? `Magnific did not accept the email - auto-login stopped so you can check it.\nPage says: ${errorText}`
+          : 'Magnific email step did not advance - auto-login stopped. Check the page for the reason.'
+      );
       return;
     }
 
@@ -1268,6 +1376,7 @@ function attemptFlow() {
     }
 
     STATE.lastEmailContinueAt = Date.now();
+    STATE.emailContinueCount += 1;
     setStatus('Submitting Magnific email');
     if (clickElement(continueButton) || submitNearestForm(emailInput) || pressEnter(emailInput)) {
       scheduleAttempt(700);
@@ -1312,6 +1421,7 @@ function attemptFlow() {
     }
 
     STATE.lastSubmitAt = Date.now();
+    STATE.loginSubmitCount += 1;
     STATE.passwordFilled = true;
     setStatus('Submitting Magnific login');
     submitLogin(null, passwordInput, submitButton);
@@ -1481,6 +1591,7 @@ function attemptFlow() {
   }
 
   STATE.lastSubmitAt = Date.now();
+  STATE.loginSubmitCount += 1;
   STATE.passwordFilled = true;
   setStatus('Submitting Magnific login');
   submitLogin(emailInput, passwordInput, submitButton);
