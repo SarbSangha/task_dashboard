@@ -19,13 +19,29 @@
 
 function sunoTaskApiSendMessage(message) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        resolve({ ok: false, error: chrome.runtime.lastError.message });
-        return;
-      }
-      resolve(response || { ok: false, error: 'No response received' });
-    });
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(response || { ok: false, error: 'No response received' });
+      });
+    } catch (error) {
+      // chrome.runtime.sendMessage throws synchronously - bypassing the
+      // lastError callback above entirely - once the background context has
+      // been invalidated since this content script was injected (extension
+      // reloaded/updated while this tab stayed open). Left uncaught, that
+      // throw rejects this Promise, which nothing downstream catches, so the
+      // Task/Client picker's spinner would be stuck on "Loading…" forever
+      // instead of surfacing a Retry state (see content-heygen-task-api.js's
+      // identical fix, 2026-09-11, for the reported case this mirrors).
+      resolve({
+        ok: false,
+        error: error?.message || 'Extension was updated or reloaded - please refresh this tab.',
+        reason: 'extension_context_invalidated',
+      });
+    }
   });
 }
 

@@ -11,8 +11,10 @@ import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowSta
 import { isMobileViewport } from '../../../../utils/isMobileViewport';
 import WindowControls from '../../../common/WindowControls';
 import { useTracking } from '../../../../hooks/useTracking';
+import { useDebouncedValue } from '../../../../hooks/useDebouncedValue';
 import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
-import { formatDateIndia } from '../../../../utils/dateTime';
+import { formatDateIndia, localDateToUtcRange } from '../../../../utils/dateTime';
+import { doesTaskMatchDate, getTaskSearchText } from '../../../../utils/taskListFilters';
 import { TrackingPanelSkeleton } from '../../../ui/TrackingPanelSkeleton';
 import {
   hasMultipleTaskWorkers,
@@ -42,21 +44,6 @@ const getActionLabel = (task, action) => {
   if (action === 'revoke_task') return 'revoke task';
   return action.replace(/_/g, ' ');
 };
-
-const getTaskSearchText = (task) => [
-  task?.title,
-  task?.taskNumber,
-  task?.projectName,
-  task?.customerName,
-  task?.reference,
-  task?.status,
-  task?.priority,
-  task?.description,
-  task?.currentStageTitle,
-  task?.creator?.name,
-  task?.creator?.email,
-  ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
-].filter(Boolean).join(' ').toLowerCase();
 
 const getTaskWorkerNames = (task) => {
   const names = Array.isArray(task?.assignedTo)
@@ -148,28 +135,7 @@ const canReviewTask = (task) => {
   );
 };
 
-const getLocalDateKey = (value) => {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
-};
-
-const doesTaskMatchDate = (task, selectedDate) => {
-  if (!selectedDate) return true;
-  return [
-    task?.createdAt,
-    task?.updatedAt,
-    task?.sentAt,
-    task?.submittedAt,
-    task?.completedAt,
-    task?.approvedAt,
-    task?.currentStageStartedAt,
-    task?.currentStageEndedAt,
-  ].some((value) => getLocalDateKey(value) === selectedDate);
-};
+const TRACKING_PAGE_STEP = 50;
 
 const normalizeTaskStatus = (task) => String(task?.status || '').trim().toLowerCase().replace(/\s+/g, '_');
 
@@ -246,13 +212,32 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
   });
   const handledRouteTaskIdRef = React.useRef(null);
 
+  const [pageLimit, setPageLimit] = useState(TRACKING_PAGE_STEP);
+  const debouncedSearch = useDebouncedValue(taskSearch.trim(), 300);
+  const dateRange = useMemo(() => localDateToUtcRange(taskDateFilter), [taskDateFilter]);
+
+  React.useEffect(() => {
+    setPageLimit(TRACKING_PAGE_STEP);
+  }, [debouncedSearch, taskDateFilter]);
+
+  const trackingParams = useMemo(() => {
+    const params = {};
+    if (pageLimit !== TRACKING_PAGE_STEP) params.limit = pageLimit;
+    if (debouncedSearch) params.q = debouncedSearch;
+    if (dateRange) {
+      params.date_from = dateRange.from;
+      params.date_to = dateRange.to;
+    }
+    return params;
+  }, [pageLimit, debouncedSearch, dateRange]);
+
   const {
     data: trackingData,
     isLoading: loading,
     isFetching,
     error,
     refetch,
-  } = useTracking({}, { enabled: isOpen });
+  } = useTracking(trackingParams, { enabled: isOpen });
 
   React.useEffect(() => {
     onMinimizedChange?.(isOpen && isMinimized);
@@ -300,14 +285,20 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
     `status-${`${status || 'unknown'}`.trim().toLowerCase().replace(/\s+/g, '_').replace(/_/g, '-')}`
   );
 
+  // `q` and the date range are applied server-side via trackingParams so they
+  // reach every matching task, not just the page in memory. The status tab and
+  // the still-settling search term are the only local refinements.
+  const hasMoreTasks = Boolean(trackingData?.hasMore);
+  const pendingSearch = taskSearch.trim().toLowerCase();
+  const serverSearchSettled = pendingSearch === `${debouncedSearch || ''}`.toLowerCase();
   const filteredTasks = tasks.filter((task) => {
     const activeFilter = TRACKING_FILTERS.find((entry) => entry.key === filter) || TRACKING_FILTERS[0];
-    const query = taskSearch.trim().toLowerCase();
-    return (
-      activeFilter.matches(task)
-      && doesTaskMatchDate(task, taskDateFilter)
-      && (!query || getTaskSearchText(task).includes(query))
-    );
+    if (!activeFilter.matches(task)) return false;
+    if (!doesTaskMatchDate(task, taskDateFilter)) return false;
+    if (pendingSearch && !serverSearchSettled) {
+      return getTaskSearchText(task).includes(pendingSearch);
+    }
+    return true;
   });
 
   React.useEffect(() => {
@@ -760,7 +751,21 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                   <path d="M9 12l2 2 4-4" />
                   <circle cx="12" cy="12" r="10" />
                 </svg>
-                <p>No tasks found</p>
+                <p>
+                  {taskSearch.trim() || taskDateFilter
+                    ? 'No tasks match your search or date filter.'
+                    : 'No tasks found'}
+                </p>
+                {hasMoreTasks && (
+                  <button
+                    type="button"
+                    className="tracking-load-more-btn"
+                    onClick={() => setPageLimit((current) => current + TRACKING_PAGE_STEP)}
+                    disabled={isFetching}
+                  >
+                    {isFetching ? 'Loading…' : 'Load older tasks'}
+                  </button>
+                )}
               </div>
             ) : (
               <div className="tasks-grid">
@@ -859,6 +864,16 @@ const TrackingPanel = ({ isOpen, onClose, onMinimizedChange, onActivate, onEditT
                     </div>
                   );
                 })}
+                {hasMoreTasks && (
+                  <button
+                    type="button"
+                    className="tracking-load-more-btn"
+                    onClick={() => setPageLimit((current) => current + TRACKING_PAGE_STEP)}
+                    disabled={isFetching}
+                  >
+                    {isFetching ? 'Loading…' : 'Load more tasks'}
+                  </button>
+                )}
               </div>
             )}
           </div>

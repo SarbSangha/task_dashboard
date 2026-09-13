@@ -348,6 +348,29 @@
   gap: 12px;
 }
 
+.tracking-load-more-btn {
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px 16px;
+  border: 1px solid var(--color-border, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  background: var(--color-surface-muted, rgba(0, 0, 0, 0.03));
+  color: var(--color-text-primary, inherit);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.tracking-load-more-btn:hover:not(:disabled) {
+  background: var(--color-surface-hover, rgba(0, 0, 0, 0.06));
+}
+
+.tracking-load-more-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* Task Card */
 .tracking-task-card {
   display: flex;

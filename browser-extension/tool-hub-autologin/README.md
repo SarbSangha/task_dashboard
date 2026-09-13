@@ -15,6 +15,8 @@ This Chrome extension is the company auto-fill layer for complex login pages suc
 - For ChatGPT, remembers the successful login route by email domain for 45 days: OpenAI password, Google OAuth, Microsoft OAuth, or organization SSO.
 - Does not store the password in Chrome storage.
 - Does not create or transfer an OpenAI session cookie. OpenAI may still require CAPTCHA, 2FA, or device checks.
+- For Freepik/Magnific, fills the email and password but does **not** click "Log in" - Magnific's sign-in is behind invisible reCAPTCHA v3, which rejects a programmatic submit ("Recaptcha validation failed") and repeated tries hit a 24-hour lockout. The user makes the final click; their real click passes the captcha. (Set `AUTO_SUBMIT_LOGIN` in `content-freepik.js` to re-enable auto-submit if Magnific ever drops the captcha.)
+- Also for Freepik/Magnific, stops the auto-login the moment a real captcha challenge or a "too many attempts / try again later" notice appears, and stays stopped across page reloads, so it can never make a lockout worse. The user completes the step by hand, or re-launches from the dashboard to retry.
 
 ## Backend Requirements
 

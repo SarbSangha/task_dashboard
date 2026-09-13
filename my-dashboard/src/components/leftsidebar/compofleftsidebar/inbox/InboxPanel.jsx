@@ -21,6 +21,9 @@ import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowSta
 import { isMobileViewport } from '../../../../utils/isMobileViewport';
 import WindowControls from '../../../common/WindowControls';
 import { useInbox } from '../../../../hooks/useInbox';
+import { useDebouncedValue } from '../../../../hooks/useDebouncedValue';
+import { localDateToUtcRange } from '../../../../utils/dateTime';
+import { doesTaskMatchDate, getTaskSearchText } from '../../../../utils/taskListFilters';
 import { useUpdateTaskStatus } from '../../../../hooks/useTaskActions';
 import { InboxSkeleton } from '../../../ui/InboxSkeleton';
 import './InboxPanel.css';
@@ -35,43 +38,7 @@ const getActiveStageLabel = (task) => {
   return title;
 };
 
-const getTaskSearchText = (task) => [
-  task?.title,
-  task?.taskNumber,
-  task?.projectName,
-  task?.customerName,
-  task?.reference,
-  task?.status,
-  task?.priority,
-  task?.description,
-  task?.currentStageTitle,
-  task?.creator?.name,
-  task?.creator?.email,
-  ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
-].filter(Boolean).join(' ').toLowerCase();
-
-const getLocalDateKey = (value) => {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
-};
-
-const doesTaskMatchDate = (task, selectedDate) => {
-  if (!selectedDate) return true;
-  return [
-    task?.createdAt,
-    task?.updatedAt,
-    task?.sentAt,
-    task?.submittedAt,
-    task?.completedAt,
-    task?.approvedAt,
-    task?.currentStageStartedAt,
-    task?.currentStageEndedAt,
-  ].some((value) => getLocalDateKey(value) === selectedDate);
-};
+const INBOX_PAGE_STEP = 50;
 
 const STARTABLE_TASK_STATUSES = new Set(['pending', 'forwarded', 'assigned', 'need_improvement']);
 
@@ -172,14 +139,38 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
   const submitAttachmentKeyMapRef = React.useRef(new WeakMap());
   const submitAttachmentKeySeqRef = React.useRef(0);
   const minimizedWindowStyle = useMinimizedWindowStack('inbox-panel', isOpen && isMinimized);
+
+  const [pageLimit, setPageLimit] = useState(INBOX_PAGE_STEP);
+  const debouncedSearch = useDebouncedValue(taskSearch.trim(), 300);
+  const dateRange = useMemo(() => localDateToUtcRange(taskDateFilter), [taskDateFilter]);
+
+  // A new search / date narrows the whole table server-side; start back at the
+  // first page so we are not asking for a huge offset we no longer need.
+  useEffect(() => {
+    setPageLimit(INBOX_PAGE_STEP);
+  }, [debouncedSearch, taskDateFilter]);
+
+  const inboxParams = useMemo(() => {
+    // Keep the default view's key as {} so the workspace prefetch is reused.
+    const params = {};
+    if (pageLimit !== INBOX_PAGE_STEP) params.limit = pageLimit;
+    if (debouncedSearch) params.q = debouncedSearch;
+    if (dateRange) {
+      params.date_from = dateRange.from;
+      params.date_to = dateRange.to;
+    }
+    return params;
+  }, [pageLimit, debouncedSearch, dateRange]);
+
   const {
     data: inboxData,
     isLoading,
     isFetching,
     isError,
     refetch,
-  } = useInbox({}, { enabled: isOpen });
+  } = useInbox(inboxParams, { enabled: isOpen });
   const tasks = useMemo(() => inboxData?.tasks || [], [inboxData?.tasks]);
+  const hasMoreTasks = Boolean(inboxData?.hasMore);
   const currentUserId = user?.id != null ? String(user.id) : '';
   const loading = isLoading;
   const isRefreshing = isFetching && !isLoading;
@@ -965,13 +956,18 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
     }
   };
 
+  // `q` (search) and the date range are applied server-side via inboxParams so
+  // they reach every matching task, not just the current page. The status tab
+  // is a purely local view filter. While the search debounce is still settling
+  // we also refine locally so typing stays responsive.
+  const pendingSearch = taskSearch.trim().toLowerCase();
+  const serverSearchSettled = pendingSearch === `${debouncedSearch || ''}`.toLowerCase();
   const filteredTasks = tasks.filter((task) => {
-    const query = taskSearch.trim().toLowerCase();
-    return (
-      doesTaskMatchFilter(task, filter)
-      && doesTaskMatchDate(task, taskDateFilter)
-      && (!query || getTaskSearchText(task).includes(query))
-    );
+    if (!doesTaskMatchFilter(task, filter)) return false;
+    if (pendingSearch && !serverSearchSettled) {
+      return getTaskSearchText(task).includes(pendingSearch);
+    }
+    return true;
   });
 
   if (!isOpen) return null;
@@ -1149,7 +1145,21 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
             <div className="inbox-empty">
               <div className="empty-icon">📭</div>
               <h3>No tasks found</h3>
-              <p>You're all caught up!</p>
+              <p>
+                {taskSearch.trim() || taskDateFilter
+                  ? 'No tasks match your search or date filter.'
+                  : "You're all caught up!"}
+              </p>
+              {hasMoreTasks && (
+                <button
+                  type="button"
+                  className="inbox-retry-btn"
+                  onClick={() => setPageLimit((current) => current + INBOX_PAGE_STEP)}
+                  disabled={isFetching}
+                >
+                  {isFetching ? 'Loading…' : 'Load older tasks'}
+                </button>
+              )}
             </div>
           ) : (
             <div className="inbox-task-list">
@@ -1163,6 +1173,16 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
                   onOpenChat={(t) => setChatTask(t)}
                 />
               ))}
+              {hasMoreTasks && (
+                <button
+                  type="button"
+                  className="inbox-load-more-btn"
+                  onClick={() => setPageLimit((current) => current + INBOX_PAGE_STEP)}
+                  disabled={isFetching}
+                >
+                  {isFetching ? 'Loading…' : 'Load more tasks'}
+                </button>
+              )}
             </div>
           )}
         </div>

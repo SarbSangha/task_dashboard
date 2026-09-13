@@ -14,44 +14,11 @@ import WindowControls from '../../../common/WindowControls';
 import { useDrafts, useOutbox } from '../../../../hooks/useOutbox';
 import { OutboxSkeleton } from '../../../ui/OutboxSkeleton';
 import { useAuth } from '../../../../context/AuthContext';
+import { useDebouncedValue } from '../../../../hooks/useDebouncedValue';
+import { localDateToUtcRange } from '../../../../utils/dateTime';
+import { doesTaskMatchDate, getTaskSearchText } from '../../../../utils/taskListFilters';
 
-const getTaskSearchText = (task) => [
-  task?.title,
-  task?.taskNumber,
-  task?.projectName,
-  task?.customerName,
-  task?.reference,
-  task?.status,
-  task?.priority,
-  task?.description,
-  task?.currentStageTitle,
-  task?.creator?.name,
-  task?.creator?.email,
-  ...(Array.isArray(task?.assignedTo) ? task.assignedTo.map((person) => `${person?.name || ''} ${person?.email || ''}`) : []),
-].filter(Boolean).join(' ').toLowerCase();
-
-const getLocalDateKey = (value) => {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
-};
-
-const doesTaskMatchDate = (task, selectedDate) => {
-  if (!selectedDate) return true;
-  return [
-    task?.createdAt,
-    task?.updatedAt,
-    task?.sentAt,
-    task?.submittedAt,
-    task?.completedAt,
-    task?.approvedAt,
-    task?.currentStageStartedAt,
-    task?.currentStageEndedAt,
-  ].some((value) => getLocalDateKey(value) === selectedDate);
-};
+const OUTBOX_PAGE_STEP = 50;
 
 const isFinalApprovalPending = (task) => {
   const status = `${task?.status || ''}`.toLowerCase();
@@ -84,15 +51,36 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
   const [chatTask, setChatTask] = useState(null);
   const minimizedWindowStyle = useMinimizedWindowStack('outbox-modal', isOpen && isMinimized);
 
+  const [pageLimit, setPageLimit] = useState(OUTBOX_PAGE_STEP);
+  const debouncedSearch = useDebouncedValue(taskSearch.trim(), 300);
+  const dateRange = useMemo(() => localDateToUtcRange(taskDateFilter), [taskDateFilter]);
+
+  useEffect(() => {
+    setPageLimit(OUTBOX_PAGE_STEP);
+  }, [debouncedSearch, taskDateFilter]);
+
+  const outboxParams = useMemo(() => {
+    // Keep the default view's key as {} so the workspace prefetch is reused.
+    const params = {};
+    if (pageLimit !== OUTBOX_PAGE_STEP) params.limit = pageLimit;
+    if (debouncedSearch) params.q = debouncedSearch;
+    if (dateRange) {
+      params.date_from = dateRange.from;
+      params.date_to = dateRange.to;
+    }
+    return params;
+  }, [pageLimit, debouncedSearch, dateRange]);
+
   const {
     data: outboxData,
     isLoading: loading,
     isFetching,
     isError,
     refetch,
-  } = useOutbox({}, { enabled: isOpen });
+  } = useOutbox(outboxParams, { enabled: isOpen });
 
   const tasks = useMemo(() => outboxData?.tasks || [], [outboxData?.tasks]);
+  const hasMoreTasks = Boolean(outboxData?.hasMore);
   const currentUser = outboxData?.user || authUser || null;
 
   const buildHoldUntil = (dateTimeText) => {
@@ -533,13 +521,26 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
           ) : filteredData.length === 0 ? (
             <div className="no-tasks">
               <p>📭 No tasks found</p>
-              {currentUser && (
+              {taskSearch.trim() || taskDateFilter ? (
+                <small className="outbox-empty-note">No tasks match your search or date filter.</small>
+              ) : currentUser && (
                 <small className="outbox-empty-note">
                   Showing only tasks created by you
                 </small>
               )}
+              {hasMoreTasks && filterStatus !== 'draft' && (
+                <button
+                  type="button"
+                  className="outbox-load-more-btn"
+                  onClick={() => setPageLimit((current) => current + OUTBOX_PAGE_STEP)}
+                  disabled={isFetching}
+                >
+                  {isFetching ? 'Loading…' : 'Load older tasks'}
+                </button>
+              )}
             </div>
           ) : (
+            <>
             <div className="outbox-task-grid">
               {filteredData.map(task => (
                 <OutboxTaskCard
@@ -556,6 +557,17 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
                 />
               ))}
             </div>
+            {hasMoreTasks && filterStatus !== 'draft' && (
+              <button
+                type="button"
+                className="outbox-load-more-btn"
+                onClick={() => setPageLimit((current) => current + OUTBOX_PAGE_STEP)}
+                disabled={isFetching}
+              >
+                {isFetching ? 'Loading…' : 'Load more tasks'}
+              </button>
+            )}
+            </>
           )}
         </div>
         )}

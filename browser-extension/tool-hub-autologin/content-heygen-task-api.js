@@ -19,13 +19,33 @@
 
 function heygenTaskApiSendMessage(message) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        resolve({ ok: false, error: chrome.runtime.lastError.message });
-        return;
-      }
-      resolve(response || { ok: false, error: 'No response received' });
-    });
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(response || { ok: false, error: 'No response received' });
+      });
+    } catch (error) {
+      // chrome.runtime.sendMessage throws synchronously - bypassing the
+      // lastError callback above entirely - once the background context has
+      // been invalidated since this content script was injected (extension
+      // reloaded/updated while this HeyGen tab stayed open; confirmed
+      // 2026-09-11 after a tab left open 30+ min during a dev reload cycle
+      // started hitting this on every click). Left uncaught, that throw
+      // rejects this Promise, which neither heygenTaskApiSendMessageWithRetry
+      // below nor content-heygen-task-modal.js's load() ever catches, so the
+      // Task/Client picker's spinner was observed stuck on "Loading…"
+      // forever instead of surfacing a Retry state. Resolving here (instead
+      // of letting the throw propagate as a rejection) is what lets it reach
+      // that Retry UI.
+      resolve({
+        ok: false,
+        error: error?.message || 'Extension was updated or reloaded - please refresh this tab.',
+        reason: 'extension_context_invalidated',
+      });
+    }
   });
 }
 

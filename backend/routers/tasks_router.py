@@ -4491,14 +4491,52 @@ async def update_task_stage(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+def _parse_task_date_bound(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO date/datetime list-filter query param into a UTC-naive datetime.
+
+    Accepts a bare calendar date ("2025-07-15") or a full ISO timestamp
+    (optionally trailing "Z"). The client sends the local-day boundaries already
+    converted to UTC; a bare date is treated as UTC midnight.
+    """
+    text = f"{value or ''}".strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date filter value")
+    return normalize_to_utc_naive(parsed)
+
+
+def _apply_task_date_window(query, date_from: Optional[str], date_to: Optional[str]):
+    """Restrict a Task query to rows whose [created_at, updated_at] activity
+    interval intersects the [date_from, date_to] window. Either bound is
+    optional. Used by the inbox/outbox/all list endpoints so a date search
+    reaches the whole table instead of only the current page.
+    """
+    lower = _parse_task_date_bound(date_from)
+    upper = _parse_task_date_bound(date_to)
+    if lower is not None:
+        query = query.filter(func.coalesce(Task.updated_at, Task.created_at) >= lower)
+    if upper is not None:
+        query = query.filter(Task.created_at <= upper)
+    return query
+
+
 @cache_response(ttl=15, vary_by_user=True, namespace="tasks_inbox")
 def get_inbox(
     request: Request,
     include_read: bool = Query(True),
     q: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     page: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=50),
+    limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
@@ -4570,6 +4608,8 @@ def get_inbox(
             )
         )
 
+    tasks = _apply_task_date_window(tasks, date_from, date_to)
+
     task_rows = (
         tasks.distinct()
         .order_by(Task.updated_at.desc())
@@ -4627,8 +4667,10 @@ def get_inbox(
 def get_outbox(
     request: Request,
     q: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     page: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=50),
+    limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
@@ -4651,6 +4693,8 @@ def get_outbox(
                 Task.project_id.ilike(like_q),
             )
         )
+
+    query = _apply_task_date_window(query, date_from, date_to)
 
     tasks = (
         query.order_by(Task.updated_at.desc())
@@ -4743,8 +4787,10 @@ def get_all_user_tasks(
     task_id: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
     user_id: Optional[int] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     page: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=50),
+    limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
 ):
@@ -4827,6 +4873,8 @@ def get_all_user_tasks(
             )
             .distinct()
         )
+
+    query = _apply_task_date_window(query, date_from, date_to)
 
     tasks = (
         query.order_by(Task.updated_at.desc())

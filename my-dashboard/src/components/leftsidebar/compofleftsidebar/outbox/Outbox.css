@@ -508,6 +508,30 @@
   font-weight: 600;
 }
 
+.outbox-load-more-btn {
+  display: block;
+  width: 100%;
+  margin: 12px 0 4px;
+  padding: 10px 16px;
+  border: 1px solid var(--color-border, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  background: var(--color-surface-muted, rgba(0, 0, 0, 0.03));
+  color: var(--color-text-primary, inherit);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--theme-transition-fast, 0.2s ease);
+}
+
+.outbox-load-more-btn:hover:not(:disabled) {
+  background: var(--color-surface-hover, rgba(0, 0, 0, 0.06));
+}
+
+.outbox-load-more-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .outbox-empty-note {
   display: block;
   margin-top: 8px;
