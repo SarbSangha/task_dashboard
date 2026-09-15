@@ -2,39 +2,32 @@ import { useCallback, useEffect, useState } from 'react';
 import { usePermissions } from '../../../../../../hooks/usePermissions';
 import { chatgptCaptureAPI } from '../../../../../../services/api';
 import MetricsOverview from './MetricsOverview';
-import UserListSidebar from './UserListSidebar';
-import ConversationListSidebar from './ConversationListSidebar';
-import ConversationSearchHeader from './ConversationSearchHeader';
-import ConversationDetailPanel from './ConversationDetailPanel';
 import DeveloperToolsDrawer from './DeveloperToolsDrawer';
-import { useConversationSearch } from './useConversationSearch';
+import ChatGptConversationsByPerson from './ChatGptConversationsByPerson';
 import { normalizeApiError } from './chatgptCaptureUtils';
 import '../ChatGptCaptureCenterTab.css';
 
 const METRICS_REFRESH_MS = 20000;
 
 /**
- * The actual ChatGPT Capture Center UI, extracted out of
- * ChatGptCaptureCenterTab.jsx so the same body can be mounted both as its
- * own standalone workspace tab and as the "ChatGPT" panel inside the AI
- * Explorer shell - without duplicating any of this logic. breadcrumbPrefix
- * supplies the leading breadcrumb segment(s) before the User/Conversation
- * segments this component already tracks; only the last prefix segment is
- * clickable (it resets back to the Users list), matching how "ChatGPT" used
- * to behave as the sole leading segment.
+ * The ChatGPT Capture Center UI - conversations captured, grouped by person
+ * (see ChatGptConversationsByPerson.jsx), each expandable to that person's
+ * conversations and openable in a full-width transcript drawer. Adopted from
+ * the Claude Capture Center's layout (claude-capture/ClaudeExplorerBody.jsx);
+ * the old three-column user/conversation/detail browser and its
+ * sort/filter/pin/advanced-search controls were retired in favour of this
+ * single reading-focused view.
+ *
+ * breadcrumbPrefix supplies the leading breadcrumb segment(s); the same body
+ * is mounted both as its own workspace tab and as the "ChatGPT" panel inside
+ * the AI Explorer shell.
  */
 export default function ChatGptExplorerBody({ breadcrumbPrefix = ['ChatGPT'] }) {
   const { isAdmin } = usePermissions();
+  const [searchInput, setSearchInput] = useState('');
   const [metrics, setMetrics] = useState(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState('');
-  const [selectedUserId, setSelectedUserId] = useState(null);
-  const [selectedUserName, setSelectedUserName] = useState(null);
-  const [selectedConversationId, setSelectedConversationId] = useState(null);
-  const [selectedConversationTitle, setSelectedConversationTitle] = useState(null);
-  // Developer Tools drawer collapsed by default - this page's job is proving
-  // conversations captured correctly, not surfacing internal system metrics
-  // as the first thing someone sees.
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
@@ -67,31 +60,7 @@ export default function ChatGptExplorerBody({ breadcrumbPrefix = ['ChatGPT'] }) 
     return () => window.clearInterval(timer);
   }, [fetchMetrics, isAdmin]);
 
-  const handleSelectUser = useCallback((userId, userName) => {
-    setSelectedUserId(userId);
-    setSelectedUserName(userName || null);
-    setSelectedConversationId(null);
-    setSelectedConversationTitle(null);
-  }, []);
-
-  const handleBackToUsers = useCallback(() => {
-    setSelectedUserId(null);
-    setSelectedUserName(null);
-    setSelectedConversationId(null);
-    setSelectedConversationTitle(null);
-  }, []);
-
-  const handleSelectConversation = useCallback((conversationId, title) => {
-    setSelectedConversationId(conversationId);
-    setSelectedConversationTitle(title || null);
-  }, []);
-
-  const handleCloseConversation = useCallback(() => {
-    setSelectedConversationId(null);
-    setSelectedConversationTitle(null);
-  }, []);
-
-  // Escape closes the drawer, matching standard overlay/drawer conventions.
+  // Escape closes the Developer Tools drawer, matching standard overlay conventions.
   useEffect(() => {
     if (!drawerOpen) return undefined;
     const handleKeyDown = (event) => {
@@ -111,94 +80,51 @@ export default function ChatGptExplorerBody({ breadcrumbPrefix = ['ChatGPT'] }) 
     );
   }
 
-  const leadingCrumbs = breadcrumbPrefix.slice(0, -1);
-  const activeCrumb = breadcrumbPrefix[breadcrumbPrefix.length - 1];
-
   return (
     <div className="tab-content tab-content-projects chatgpt-capture-tab">
       <div className="chatgpt-capture-breadcrumb">
-        {leadingCrumbs.map((segment) => (
-          <span key={segment}>{segment}</span>
+        {breadcrumbPrefix.map((segment, index) => (
+          <span key={segment} className="chatgpt-capture-breadcrumb-crumb">
+            {segment}
+            {index < breadcrumbPrefix.length - 1 ? ' / ' : ''}
+          </span>
         ))}
-        <span>
-          <button type="button" className="chatgpt-capture-breadcrumb-crumb" onClick={handleBackToUsers}>
-            {activeCrumb}
-          </button>
-        </span>
-        <span>
-          {selectedUserId ? (
-            <button
-              type="button"
-              className="chatgpt-capture-breadcrumb-crumb"
-              onClick={() => { setSelectedConversationId(null); setSelectedConversationTitle(null); }}
-            >
-              {selectedUserName || 'User'}
-            </button>
-          ) : (
-            'Users'
-          )}
-        </span>
-        {selectedConversationId && <span>{selectedConversationTitle || 'Conversation'}</span>}
+        <span> / Conversations</span>
       </div>
 
-      {/* Workspace-level chrome (metrics + their Refresh / Developer Tools
-          controls) is admin observability, not reading material — hide the
-          whole band once a conversation is open so the transcript gets the
-          space, and so "Refresh Metrics" isn't offered while metrics are
-          hidden. It all returns on the user / conversation-list views. */}
-      {!selectedConversationId && (
-        <>
-          <div className="chatgpt-capture-actions">
-            <button
-              type="button"
-              className="chatgpt-capture-primary-btn"
-              onClick={() => fetchMetrics({ announce: true })}
-              disabled={metricsLoading}
-            >
-              {metricsLoading ? 'Refreshing…' : 'Refresh Metrics'}
-            </button>
-            <button
-              type="button"
-              className="chatgpt-capture-secondary-btn chatgpt-capture-devtools-toggle"
-              onClick={() => setDrawerOpen(true)}
-              aria-expanded={drawerOpen}
-            >
-              🛠 Developer Tools
-            </button>
-          </div>
-
-          <MetricsOverview metrics={metrics} loading={metricsLoading} error={metricsError} />
-        </>
-      )}
-
-      {selectedUserId ? (
-        <UserConversationsSection
-          userId={selectedUserId}
-          userName={selectedUserName}
-          selectedConversationId={selectedConversationId}
-          onSelectConversation={handleSelectConversation}
-          onBackToUsers={handleBackToUsers}
+      <div className="chatgpt-capture-actions">
+        <button
+          type="button"
+          className="chatgpt-capture-primary-btn"
+          onClick={() => fetchMetrics({ announce: true })}
+          disabled={metricsLoading}
         >
-          <ConversationDetailPanel
-            conversationId={selectedConversationId}
-            onClose={handleCloseConversation}
-            emptyStateMode="conversation"
-          />
-        </UserConversationsSection>
-      ) : (
-        <div className="chatgpt-capture-three-col">
-          <div className="chatgpt-capture-col-sidebar">
-            <UserListSidebar selectedUserId={selectedUserId} onSelectUser={handleSelectUser} />
-          </div>
-          <div className="chatgpt-capture-col-detail">
-            <ConversationDetailPanel
-              conversationId={selectedConversationId}
-              onClose={handleCloseConversation}
-              emptyStateMode="user"
-            />
-          </div>
-        </div>
-      )}
+          {metricsLoading ? 'Refreshing…' : 'Refresh Metrics'}
+        </button>
+        <button
+          type="button"
+          className="chatgpt-capture-secondary-btn chatgpt-capture-devtools-toggle"
+          onClick={() => setDrawerOpen(true)}
+          aria-expanded={drawerOpen}
+        >
+          🛠 Developer Tools
+        </button>
+      </div>
+
+      <MetricsOverview metrics={metrics} loading={metricsLoading} error={metricsError} />
+
+      <div className="chatgpt-capture-actions">
+        <input
+          type="search"
+          className="chatgpt-capture-search-input"
+          placeholder="Search people by name, email, or department..."
+          value={searchInput}
+          onChange={(event) => setSearchInput(event.target.value)}
+          style={{ minWidth: 280 }}
+        />
+      </div>
+
+      <ChatGptConversationsByPerson searchInput={searchInput} />
 
       <DeveloperToolsDrawer
         open={drawerOpen}
@@ -213,35 +139,5 @@ export default function ChatGptExplorerBody({ breadcrumbPrefix = ['ChatGPT'] }) 
         </div>
       )}
     </div>
-  );
-}
-
-/**
- * Owns useConversationSearch for the duration a user's conversation list is
- * being browsed - split out as its own component (rather than called
- * conditionally inside ChatGptExplorerBody) so the hook only runs while this
- * section is actually mounted, same as the fetching it drives only used to
- * happen while ConversationListSidebar itself was mounted.
- */
-function UserConversationsSection({ userId, userName, selectedConversationId, onSelectConversation, onBackToUsers, children }) {
-  const search = useConversationSearch({ userId, selectedConversationId, onSelectConversation });
-
-  return (
-    <>
-      <ConversationSearchHeader {...search} />
-      <div className={`chatgpt-capture-three-col${selectedConversationId ? ' has-selection' : ''}`}>
-        <div className="chatgpt-capture-col-sidebar">
-          <ConversationListSidebar
-            selectedConversationId={selectedConversationId}
-            onSelectConversation={onSelectConversation}
-            userId={userId}
-            userName={userName}
-            onBackToUsers={onBackToUsers}
-            search={search}
-          />
-        </div>
-        <div className="chatgpt-capture-col-detail">{children}</div>
-      </div>
-    </>
   );
 }

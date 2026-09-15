@@ -37,6 +37,21 @@ export function getHealthStatusMeta(status) {
   return HEALTH_STATUS_META[status] || { label: status || 'Unknown', tone: 'muted' };
 }
 
+// Same statuses as getHealthStatusMeta, plus a leading icon - used by the
+// "conversations by person" browser's row status glyph, mirroring the Claude
+// Capture Center's getConversationHealthMeta (claude-capture/claudeCaptureUtils.js).
+export const CONVERSATION_HEALTH_META = {
+  healthy: { label: 'Healthy', icon: '🟢', tone: 'success' },
+  degraded: { label: 'Missing response', icon: '⚠️', tone: 'warning' },
+  no_messages: { label: 'No messages', icon: '⚪', tone: 'muted' },
+  backlogged: { label: 'Backlogged', icon: '🟠', tone: 'warning' },
+  offline: { label: 'Offline', icon: '🔴', tone: 'error' },
+};
+
+export function getConversationHealthMeta(status) {
+  return CONVERSATION_HEALTH_META[status] || { label: status || 'Unknown', icon: '❔', tone: 'muted' };
+}
+
 export function formatCount(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number.toLocaleString() : '0';

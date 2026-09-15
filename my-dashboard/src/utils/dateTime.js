@@ -139,6 +139,26 @@ export function formatRelativeDayIndia(value, nowValue = new Date()) {
   });
 }
 
+/**
+ * Convert a `<input type="date">` value ("YYYY-MM-DD", interpreted in the
+ * viewer's local timezone) into the UTC ISO instants that bound that local
+ * calendar day. Returns null for a missing/malformed value.
+ *
+ * The task list endpoints filter on these bounds server-side, so a date search
+ * reaches every matching task instead of only the current page.
+ */
+export function localDateToUtcRange(localDateStr) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(`${localDateStr || ''}`.trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return { from: start.toISOString(), to: end.toISOString() };
+}
+
 export function formatDateTimeLocalInputIndia(value) {
   const parts = getFormatterParts(value, {
     year: 'numeric',

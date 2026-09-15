@@ -148,6 +148,97 @@
     } catch {}
   }
 
+  // ---- prompt-attachment bytes: URL.createObjectURL hook -----------------
+  // The reliable, entry-method-agnostic capture point for an image a user
+  // adds to a prompt. content-chatgpt-attachment-capture.js's DOM
+  // change/drop/paste listeners run in the isolated world and miss any path
+  // that never bubbles a DOM event to `document` - a file chosen through a
+  // control inside a closed shadow root (change events are composed:false and
+  // never cross the boundary), a drag straight from the thread, an OS "share
+  // to" target, etc. But ChatGPT always calls URL.createObjectURL on the
+  // File/Blob to paint the composer thumbnail, whatever the entry path, so
+  // hooking that in the page's own realm catches every one. Bytes are read
+  // here and handed to the same isolated-world pending buffer via postSignal;
+  // the isolated side correlates them to the prompt (by filename, then by
+  // count) exactly as it already does for the DOM-captured path.
+  (function installObjectUrlAttachmentHook() {
+    if (!isChatGptHost()) return;
+    let NativeCreateObjectURL;
+    try {
+      NativeCreateObjectURL = URL.createObjectURL;
+    } catch { return; }
+    if (typeof NativeCreateObjectURL !== 'function') return;
+
+    const MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024; // a touch above the isolated side's own cap - it does the final gate
+    const seenBlobs = new WeakSet();
+    const hasFile = typeof File !== 'undefined';
+
+    URL.createObjectURL = function rmwChatGptCreateObjectURL(obj) {
+      try {
+        // Deliberately gated on `File`, not bare `Blob`: a user's composer
+        // attachment is always a real File (from an <input>, a DataTransfer,
+        // or the clipboard), whereas ChatGPT object-URLs plenty of nameless
+        // image *Blobs* internally (e.g. a generated image it fetched) that
+        // must NOT be mistaken for prompt uploads.
+        if (hasFile
+          && obj instanceof File
+          && /^image\//i.test(obj.type || '')
+          && obj.size > 0
+          && obj.size <= MAX_ATTACHMENT_BYTES
+          && !seenBlobs.has(obj)) {
+          seenBlobs.add(obj);
+          const fileName = obj.name || '';
+          const reader = new FileReader();
+          reader.onload = () => {
+            postSignal('CHATGPT_ATTACHMENT_FILE_SEEN', {
+              fileName,
+              mimeType: obj.type || 'image/png',
+              sizeBytes: obj.size,
+              dataUrl: reader.result,
+            });
+          };
+          reader.onerror = () => {};
+          reader.readAsDataURL(obj);
+        }
+      } catch {}
+      return NativeCreateObjectURL.call(this, obj);
+    };
+
+    // Secondary catch: a composer that renders its thumbnail from a data URL
+    // instead of an object URL. Same File-only gate, same signal.
+    try {
+      const proto = FileReader && FileReader.prototype;
+      const nativeReadAsDataURL = proto && proto.readAsDataURL;
+      if (typeof nativeReadAsDataURL === 'function') {
+        proto.readAsDataURL = function rmwChatGptReadAsDataURL(blob) {
+          try {
+            if (hasFile
+              && blob instanceof File
+              && /^image\//i.test(blob.type || '')
+              && blob.size > 0
+              && blob.size <= MAX_ATTACHMENT_BYTES
+              && !seenBlobs.has(blob)) {
+              seenBlobs.add(blob);
+              const fileName = blob.name || '';
+              const sideReader = new FileReader();
+              sideReader.onload = () => {
+                postSignal('CHATGPT_ATTACHMENT_FILE_SEEN', {
+                  fileName,
+                  mimeType: blob.type || 'image/png',
+                  sizeBytes: blob.size,
+                  dataUrl: sideReader.result,
+                });
+              };
+              sideReader.onerror = () => {};
+              sideReader.readAsDataURL(blob);
+            }
+          } catch {}
+          return nativeReadAsDataURL.apply(this, arguments);
+        };
+      }
+    } catch {}
+  })();
+
   // Cookie-only auth (credentials: 'include') is NOT enough for every
   // /backend-api/ endpoint - confirmed live: content-chatgpt.js's own
   // authoritative-fetch call to /backend-api/conversations/{id} got a

@@ -315,6 +315,12 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "renewal_date", "DATE")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_renewal_date ON it_portal_tool_credentials(renewal_date)"))
 
+    # Single-seat tool lock (e.g. Semrush only allows one signed-in session
+    # at a time) -- see ITPortalTool.single_seat in models_new.py.
+    _pg_add_column_if_missing(conn, "it_portal_tools", "single_seat", "BOOLEAN NOT NULL DEFAULT FALSE")
+    _pg_add_column_if_missing(conn, "it_portal_tools", "active_session_user_id", "INTEGER")
+    _pg_add_column_if_missing(conn, "it_portal_tools", "active_session_started_at", "TIMESTAMP")
+
     # Tool Renew configuration (Admin Queue -> Tool Renew: credit system
     # on/off, renewal type, auto-renew, purchase date, cost -- see
     # utils/tool_renewal_service.py). Backward compatible: every existing
@@ -1231,6 +1237,13 @@ def _ensure_postgres_schema(conn) -> None:
         )
     )
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_report_audit_created_at ON report_audit_log(created_at)"))
+
+    # Buffer self-upload tags - added after buffer_self_uploads first
+    # shipped (create_all() only creates tables that don't exist yet, so an
+    # already-existing table needs this explicit ALTER to pick up a column
+    # added to the model later; see models_new.py's BufferSelfUpload.tags
+    # for why it's a plain comma-separated string, not a normalized table).
+    _pg_add_column_if_missing(conn, "buffer_self_uploads", "tags", "VARCHAR")
 
 
 def ensure_operational_schema(engine) -> None:
@@ -2155,3 +2168,12 @@ def ensure_operational_schema(engine) -> None:
                         """
                     )
                 )
+
+        # Buffer self-upload tags - see the identical Postgres migration in
+        # _ensure_postgres_schema for why this is needed (create_all() only
+        # creates tables that don't exist yet, so a pre-existing SQLite dev
+        # DB needs this explicit ALTER to pick up the column).
+        if _table_exists(conn, "buffer_self_uploads"):
+            buffer_self_upload_cols = _table_columns(conn, "buffer_self_uploads")
+            if "tags" not in buffer_self_upload_cols:
+                conn.execute(text("ALTER TABLE buffer_self_uploads ADD COLUMN tags VARCHAR"))

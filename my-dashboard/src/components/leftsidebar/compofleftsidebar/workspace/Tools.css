@@ -404,6 +404,22 @@
   margin-top: 1rem;
 }
 
+.it-checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.it-checkbox-field input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--color-primary-strong);
+  cursor: pointer;
+}
+
 .it-admin-card input,
 .it-admin-card select,
 .it-admin-card textarea {
@@ -2964,6 +2980,55 @@
 .tool-meta-sep {
   color: var(--color-border-strong);
   flex-shrink: 0;
+}
+
+.tool-card-wrap {
+  position: relative;
+}
+
+.tool-card-wrap .tool-card {
+  width: 100%;
+}
+
+.tool-in-use-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  background: var(--color-feedback-warning-bg);
+  color: var(--color-feedback-warning-text);
+  font-size: 0.74rem;
+}
+
+.tool-in-use-label {
+  font-weight: 700;
+}
+
+.tool-in-use-contact {
+  color: inherit;
+  opacity: 0.85;
+  font-size: 0.72rem;
+}
+
+.tool-force-release-btn {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 1;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--color-feedback-warning-text);
+  background: var(--color-surface-elevated);
+  color: var(--color-feedback-warning-text);
+  font-size: 0.65rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tool-force-release-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .tool-info {

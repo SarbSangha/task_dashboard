@@ -2004,6 +2004,62 @@ export const freepikCaptureAPI = {
 // Mirrors freepikCaptureAPI's shape exactly, minus the search/download
 // methods - Envato's capture scope is generation-only (see
 // providers/envato/README-worthy design notes in constants.py/models.py).
+// Cross-tool feed of everything tagged with the "Buffer" client (see
+// backend/utils/buffer_feed.py for why this is one fan-out endpoint instead
+// of a per-provider one like envatoCaptureAPI below).
+export const bufferAPI = {
+  getFeed: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/buffer/feed',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  // Self-upload: add a file straight into Buffer, for something a user did
+  // that no provider's own capture flow could tag with the Buffer client.
+  // The bytes go through fileAPI.uploadFiles (the same presigned-R2 path
+  // every attachment in this app uses) - this just records the resulting
+  // attachment metadata. Open to any authenticated user, not admin-only
+  // (see backend/routers/buffer_router.py's module docstring for why).
+  createSelfUpload: async (payload, requestConfig = {}) => {
+    const response = await api.post('/api/buffer/self-uploads', payload, requestConfig);
+    return response.data;
+  },
+
+  getMySelfUploads: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/buffer/self-uploads/mine',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  updateSelfUpload: async (uploadId, payload, requestConfig = {}) => {
+    const response = await api.patch(`/api/buffer/self-uploads/${uploadId}`, payload, requestConfig);
+    return response.data;
+  },
+
+  deleteSelfUpload: async (uploadId, requestConfig = {}) => {
+    const response = await api.delete(`/api/buffer/self-uploads/${uploadId}`, requestConfig);
+    return response.data;
+  },
+
+  // Every self-upload download must name a real client + purpose (a
+  // self-upload has no client of its own - see BufferSelfUpload's docstring
+  // in backend/models_new.py) - called right before the actual file save is
+  // triggered, see BufferDownloadGateModal.jsx.
+  recordSelfUploadDownload: async (uploadId, payload, requestConfig = {}) => {
+    const response = await api.post(`/api/buffer/self-uploads/${uploadId}/download`, payload, requestConfig);
+    return response.data;
+  },
+
+  getSelfUploadDownloadHistory: async (uploadId, requestConfig = {}) => {
+    const response = await api.get(`/api/buffer/self-uploads/${uploadId}/downloads`, requestConfig);
+    return response.data;
+  },
+};
+
 export const envatoCaptureAPI = {
   listGenerations: async (paramsOrConfig = {}, requestConfig = {}) => {
     const response = await api.get(
@@ -2514,6 +2570,11 @@ export const itToolsAPI = {
 
   launchTool: async (toolId) => {
     const response = await api.post(`/api/it-tools/tools/${toolId}/launch`);
+    return response.data;
+  },
+
+  releaseToolSession: async (toolId) => {
+    const response = await api.post(`/api/it-tools/tools/${toolId}/session/release`);
     return response.data;
   },
 

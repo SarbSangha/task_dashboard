@@ -48,7 +48,7 @@ const AUTH_TRANSITION_GRACE_MS = 10 * 60 * 1000;
 const DIRECT_TICKET_ONLY_TOOLS = new Set([
   'behance', 'claude', 'genspark', 'pinterest', 'suno', 'epidemic-sound', 'splice', 'enhancor',
   'canva', 'chatgpt', 'elevenlabs', 'envato', 'flow', 'freepik', 'grammarly', 'heygen',
-  'higgsfield', 'kling', 'kling-ai', 'klingai',
+  'higgsfield', 'kling', 'kling-ai', 'klingai', 'semrush', 'figma',
 ]);
 // Tools whose session is wiped when the launched tab closes, so a shared
 // dashboard login does not linger. Google-login tools launch in incognito and
@@ -56,7 +56,7 @@ const DIRECT_TICKET_ONLY_TOOLS = new Set([
 // window where cookies would otherwise persist and leak the shared session.
 const CLEAR_SESSION_ON_CLOSE_TOOLS = new Set([
   'behance', 'claude', 'freepik', 'genspark', 'pinterest', 'flow',
-  'envato', 'grammarly', 'higgsfield',
+  'envato', 'grammarly', 'higgsfield', 'figma',
 ]);
 const TOOL_SESSION_DOMAINS = {
   behance: [
@@ -74,7 +74,18 @@ const TOOL_SESSION_DOMAINS = {
   enhancor: ['enhancor.ai', 'www.enhancor.ai', 'app.enhancor.ai'],
   envato: ['envato.com', 'www.envato.com', 'app.envato.com', 'elements.envato.com', 'market.envato.com'],
   freepik: ['freepik.com', 'www.freepik.com', 'magnific.com', 'www.magnific.com'],
-  flow: ['labs.google'],
+  // 2026-09-07: Google Flow moved off labs.google/fx/tools/flow onto its own
+  // flow.google.com domain - the launch URL still routes through labs.google
+  // (see normalizeFlowLaunchUrl/FLOW_DIRECT_ROUTE_URL below, which Google's
+  // own redirect then hands off to flow.google.com), but the actual tool UI
+  // - and every generate request content-flow-network.js needs to gate -
+  // lives at flow.google.com. Without this, the tab is not recognized as
+  // "still on the tool" the moment that redirect lands, and (flow being in
+  // DIRECT_TICKET_ONLY_TOOLS/CLEAR_SESSION_ON_CLOSE_TOOLS) its launch ticket
+  // / session gets treated as abandoned - reported by Sarbjeet 2026-09-07 as
+  // "no client popup on generate", root-caused to this domain never having
+  // been added anywhere in this extension.
+  flow: ['labs.google', 'flow.google.com'],
   genspark: ['genspark.ai', 'www.genspark.ai', 'login.genspark.ai'],
   grammarly: ['grammarly.com', 'www.grammarly.com', 'app.grammarly.com', 'coda.grammarly.com'],
   higgsfield: ['higgsfield.ai', 'app.higgsfield.ai', 'beta.higgsfield.ai'],
@@ -87,6 +98,8 @@ const TOOL_SESSION_DOMAINS = {
   suno: ['suno.com', 'www.suno.com', 'studio-api.prod.suno.com'],
   'epidemic-sound': ['epidemicsound.com', 'www.epidemicsound.com', 'login.epidemicsound.com'],
   splice: ['splice.com', 'www.splice.com', 'auth.splice.com'],
+  semrush: ['semrush.com', 'www.semrush.com'],
+  figma: ['figma.com', 'www.figma.com'],
 };
 const TOOL_OPTIONAL_SESSION_DOMAINS = {
   behance: ['accounts.google.com', 'google.com', '.google.com'],
@@ -180,6 +193,7 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
   ],
   flow: [
     'labs.google',
+    'flow.google.com', // see TOOL_SESSION_DOMAINS.flow's comment above
     'accounts.google.com',
   ],
   kling: [
@@ -228,6 +242,16 @@ const TOOL_LOGIN_CONTINUATION_HOSTS = {
     'splice.com',
     'www.splice.com',
     'auth.splice.com',
+    'accounts.google.com',
+  ],
+  semrush: [
+    'semrush.com',
+    'www.semrush.com',
+    'accounts.google.com',
+  ],
+  figma: [
+    'figma.com',
+    'www.figma.com',
     'accounts.google.com',
   ],
 };
@@ -646,6 +670,37 @@ async function getActiveLaunch(tabId, toolSlug) {
     return null;
   }
   return item;
+}
+
+// A DIRECT_TICKET_ONLY_TOOLS tab's authorization lives entirely on its
+// stored launch record's expiresAt, which - with no renewal - is hard-tied
+// to the original 20-minute dashboard-issued ticket (see setActiveLaunch).
+// Most tools' content scripts run once per whole session and never re-check
+// TOOL_HUB_GET_LAUNCH_STATE after the first page load, so this ceiling is
+// mostly invisible. Multi-page tools that cause a REAL page reload on normal
+// navigation (Semrush switching sections, Figma's post-login redirect into
+// /files/...) re-check it on every such reload - so a tab that has been
+// continuously, legitimately signed in for longer than 20 minutes fails the
+// check and gets treated as an unauthorized visit: enforceDashboardOnlyAccess
+// wipes the session and bounces the tab back to the login page mid-use.
+// content-semrush.js/content-figma.js call this periodically (well inside
+// the 20-minute window) once signed in, so the record never actually lapses
+// while the tab stays open. This only EXTENDS a launch that already has a
+// valid ticket when called - it can't grant access to a tab that was never
+// legitimately launched, so the "must come from a real dashboard launch"
+// guarantee for a brand new tab is unchanged.
+const SIGNED_IN_LAUNCH_EXTENSION_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+async function extendActiveLaunch(tabId, toolSlug) {
+  if (!tabId) return false;
+  const launchMap = await getActiveLaunchMap();
+  const item = launchMap[`${tabId}`];
+  if (!item || !item.ticket) return false;
+  if (toolSlug && normalizeToolSlug(item.toolSlug) !== normalizeToolSlug(toolSlug)) return false;
+
+  item.expiresAt = Date.now() + SIGNED_IN_LAUNCH_EXTENSION_MS;
+  await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+  return true;
 }
 
 async function getRecentContinuationLaunch(toolSlug, hostname, pageUrl) {
@@ -1211,6 +1266,7 @@ function getIncognitoWindowToolName(toolSlug, toolName = '') {
   if (normalizedSlug === 'freepik') return 'Freepik';
   if (normalizedSlug === 'elevenlabs') return 'ElevenLabs';
   if (normalizedSlug === 'pinterest') return 'Pinterest';
+  if (normalizedSlug === 'figma') return 'Figma';
   return 'this tool';
 }
 
@@ -1286,6 +1342,32 @@ async function openToolIncognitoWindow(toolSlug, launchUrl, toolName = '', exten
   };
 }
 
+async function releaseSingleSeatToolSession(toolSlug, extensionTicket) {
+  // Fire-and-forget: frees a single-seat tool's lock (e.g. Semrush) so the
+  // next user isn't blocked by a session that has actually already ended.
+  // The backend no-ops harmlessly if the tool isn't single-seat or this
+  // ticket doesn't hold the lock, so it's safe to call unconditionally on
+  // every tracked-tool tab close rather than hardcoding which tools care.
+  try {
+    const settings = await getSettings();
+    const headers = { 'Content-Type': 'application/json' };
+    if (settings.sessionToken) {
+      headers['X-Session-Id'] = settings.sessionToken;
+    }
+    await fetchWithRetry(`${settings.apiBase}/api/it-tools/extension/session/release`, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body: JSON.stringify({
+        tool_slug: toolSlug,
+        extension_ticket: extensionTicket || null,
+      }),
+    }, { attempts: 2, baseDelayMs: 300 });
+  } catch (error) {
+    console.debug('[RMW Tool Hub Auto Login] Single-seat release failed (non-fatal)', toolSlug, error?.message);
+  }
+}
+
 async function cleanupToolSessionForClosedTab(tabId) {
   if (!tabId) return;
 
@@ -1297,30 +1379,32 @@ async function cleanupToolSessionForClosedTab(tabId) {
     return;
   }
 
+  const closedTicket = `${closedLaunch.ticket || ''}`.trim();
+  const hasOtherToolTabs = Object.entries(launchMap).some(([key, item]) => {
+    if (key === `${tabId}`) return false;
+    if (normalizeToolSlug(item?.toolSlug) !== normalizedSlug) return false;
+    return closedTicket && `${item?.ticket || ''}`.trim() === closedTicket;
+  });
+
   const shouldClearSessionOnClose = CLEAR_SESSION_ON_CLOSE_TOOLS.has(normalizedSlug)
     || Boolean(closedLaunch.clearSessionOnClose);
-  if (shouldClearSessionOnClose) {
-    const closedTicket = `${closedLaunch.ticket || ''}`.trim();
-    const hasOtherToolTabs = Object.entries(launchMap).some(([key, item]) => {
-      if (key === `${tabId}`) return false;
-      if (normalizeToolSlug(item?.toolSlug) !== normalizedSlug) return false;
-      return closedTicket && `${item?.ticket || ''}`.trim() === closedTicket;
+  if (shouldClearSessionOnClose && !hasOtherToolTabs) {
+    const cleanupResult = await clearToolSession(normalizedSlug, {
+      includeGoogle: normalizedSlug === 'flow'
+        || normalizedSlug === 'genspark'
+        || normalizedSlug === 'behance'
+        || normalizedSlug === 'pinterest'
+        || Boolean(closedLaunch.clearGoogleOnClose),
     });
+    console.debug('[RMW Tool Hub Auto Login] Cleared closed-tab session', {
+      toolSlug: normalizedSlug,
+      tabId,
+      ...cleanupResult,
+    });
+  }
 
-    if (!hasOtherToolTabs) {
-      const cleanupResult = await clearToolSession(normalizedSlug, {
-        includeGoogle: normalizedSlug === 'flow'
-          || normalizedSlug === 'genspark'
-          || normalizedSlug === 'behance'
-          || normalizedSlug === 'pinterest'
-          || Boolean(closedLaunch.clearGoogleOnClose),
-      });
-      console.debug('[RMW Tool Hub Auto Login] Cleared closed-tab session', {
-        toolSlug: normalizedSlug,
-        tabId,
-        ...cleanupResult,
-      });
-    }
+  if (!hasOtherToolTabs) {
+    runSafeStartupTask(() => releaseSingleSeatToolSession(normalizedSlug, closedTicket));
   }
 
   await clearActiveLaunch(tabId);
@@ -1499,6 +1583,45 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   }
 
   return data;
+}
+
+async function checkSingleSeatSessionStatus(message) {
+  // Polled by content-semrush.js after a successful sign-in so a tab that
+  // lost its single-seat lock (admin "Force release", or the stale-lock
+  // safety net) finds out and can warn the person still sitting on it -
+  // there's no way for the extension to reach into another user's browser
+  // and close their tab directly, this is the next best thing.
+  //
+  // extensionTicket is passed when the caller has one, but is NOT required -
+  // a ticket only ever exists on a tab that started at /login/, so a tab
+  // that was already signed in (bookmarked past login, or one that predates
+  // this polling code entirely) would never have one even after a refresh.
+  // The backend falls back to this same X-Session-Id header every other
+  // /extension/* call already sends, which every tab has regardless.
+  const extensionTicket = `${message.extensionTicket || ''}`.trim();
+  const settings = await getSettings();
+  const headers = { 'Content-Type': 'application/json' };
+  if (settings.sessionToken) {
+    headers['X-Session-Id'] = settings.sessionToken;
+  }
+
+  const response = await fetchWithRetry(`${settings.apiBase}/api/it-tools/extension/session/status`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify({
+      tool_slug: message.toolSlug,
+      extension_ticket: extensionTicket || null,
+    }),
+  }, { attempts: 2, baseDelayMs: 300 });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    // Best-effort check - a transient failure should not itself read as
+    // "you've been signed out".
+    return { stillHolding: true };
+  }
+  return { stillHolding: data.stillHolding !== false };
 }
 
 async function fetchOtp(message, senderTabId = 0, openerTabId = 0) {
@@ -2456,6 +2579,14 @@ function handleRuntimeMessage(message, sender, sendResponse) {
         ok: true,
         authorized: true,
         expiresAt: Number(launch?.expiresAt || 0),
+        // The original activation time - stable across extendActiveLaunch's
+        // later expiresAt bumps (see that function's own comment), unlike
+        // expiresAt itself. The content scripts' ensureFreshLaunchSession
+        // keys its "is this a genuinely new launch, or the same one still
+        // going" check off THIS field precisely so a keep-alive renewal
+        // doesn't look like a brand new launch and wipe the session under a
+        // still-signed-in tab.
+        activatedAt: Number(launch?.activatedAt || 0),
         prepared: Boolean(launch?.freshSessionPreparedAt),
         authTransitionAt: Number(launch?.authTransitionAt || 0),
         // A tool launched into a brand new Incognito window starts with an
@@ -2492,6 +2623,10 @@ function handleRuntimeMessage(message, sender, sendResponse) {
         ok: true,
         authorized: Boolean(launch?.ticket),
         expiresAt: Number(launch?.expiresAt || 0),
+        // See the matching comment on TOOL_HUB_ACTIVATE_LAUNCH's response
+        // above - stable identity for ensureFreshLaunchSession, unaffected
+        // by extendActiveLaunch's periodic expiresAt renewal.
+        activatedAt: Number(launch?.activatedAt || 0),
         prepared: Boolean(launch?.freshSessionPreparedAt),
         authTransitionAt: Number(launch?.authTransitionAt || 0),
         remainingUses: Number(launch?.remainingUses || 0),
@@ -3003,6 +3138,32 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     handleKlingFetchActiveClientsMessage(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_EXTEND_SIGNED_IN_LAUNCH') {
+    extendActiveLaunch(senderTabId, message.toolSlug)
+      .then((extended) => sendResponse({ ok: true, extended }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_CHECK_SESSION_STATUS') {
+    checkSingleSeatSessionStatus(message)
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_CLOSE_THIS_TAB') {
+    // A single-seat tool's tab asking to close itself after losing its lock
+    // (see content-semrush.js's showSessionRevokedBanner) - the extension
+    // can't reach into another user's browser, but a tab CAN always close
+    // its own self via its own background script.
+    if (senderTabId) {
+      runSafeStartupTask(() => chrome.tabs.remove(senderTabId));
+    }
+    sendResponse({ ok: true });
     return true;
   }
 

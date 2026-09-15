@@ -1,0 +1,269 @@
+.bsu-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 4px;
+  padding: 28px 16px;
+  border: 2px dashed var(--color-border-strong, #94a3b8);
+  border-radius: 12px;
+  background: var(--color-surface-elevated, #fff);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.bsu-dropzone:hover {
+  border-color: var(--color-primary-strong, #2563eb);
+}
+
+.bsu-dropzone-icon {
+  font-size: 28px;
+}
+
+.bsu-dropzone-title {
+  margin: 4px 0 0;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.bsu-dropzone-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #475569);
+}
+
+.bsu-dropzone-actions {
+  margin-top: 10px;
+}
+
+.bsu-pending {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle, #e2e8f0);
+  border-radius: 10px;
+  background: var(--color-surface-elevated, #fff);
+}
+
+.bsu-pending-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border-subtle, #e2e8f0);
+}
+
+.bsu-pending-item:last-child {
+  border-bottom: none;
+}
+
+.bsu-pending-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.bsu-pending-size {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #475569);
+}
+
+.bsu-pending-remove {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary, #475569);
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.bsu-pending-remove:hover:not(:disabled) {
+  background: var(--color-surface-hover, #f1f5f9);
+  color: var(--color-danger, #dc2626);
+}
+
+.bsu-pending-remove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bsu-progress-wrap {
+  margin-top: 12px;
+}
+
+.bsu-progress-bar {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-border-subtle, #e2e8f0);
+  overflow: hidden;
+}
+
+.bsu-progress-fill {
+  height: 100%;
+  background: var(--color-primary-strong, #2563eb);
+  transition: width 0.2s ease;
+}
+
+.bsu-progress-note {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #475569);
+}
+
+.bsu-mine-heading {
+  margin: 20px 0 12px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+}
+
+/* Same square-icon-button treatment as common/WindowControls.css's .wc-btn
+   (border, rounded corners, per-action hover tint, focus ring) - a smaller
+   26px cut sized for a card's tighter header row instead of that
+   component's 32px window chrome. */
+.bsu-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.bsu-card-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border-subtle, #e2e8f0);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-secondary, #475569);
+  cursor: pointer;
+  line-height: 1;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+
+.bsu-card-action-btn svg { display: block; }
+
+.bsu-card-action-btn:hover {
+  transform: translateY(-1px);
+}
+
+.bsu-card-action-btn:active {
+  transform: scale(0.92);
+}
+
+.bsu-card-action-btn:focus-visible {
+  outline: 2px solid var(--color-primary-strong, #2563eb);
+  outline-offset: 2px;
+}
+
+.bsu-card-action-btn--download:hover {
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.3);
+  color: var(--color-primary-strong, #2563eb);
+}
+
+.bsu-card-action-btn--edit:hover {
+  background: rgba(217, 119, 6, 0.1);
+  border-color: rgba(217, 119, 6, 0.3);
+  color: #d97706;
+}
+
+.bsu-card-action-btn--delete:hover {
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.3);
+  color: var(--color-danger, #dc2626);
+}
+
+/* Audio/video "play before you download" preview - see
+   BufferFeedCard.jsx's BufferCardPreview. .bsu-play-trigger extends the
+   existing .kling-card-fallback box (same 4:3 aspect-ratio tile every
+   other card preview uses) but is a <button>, so it needs its own reset. */
+.bsu-play-trigger {
+  flex-direction: column;
+  gap: 6px;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-text-muted, #94a3b8);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.bsu-play-trigger:hover {
+  color: var(--color-primary-strong, #2563eb);
+}
+
+.bsu-play-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--color-surface-hover, #f1f5f9);
+  font-size: 16px;
+  padding-left: 2px; /* optically center the ▶ glyph */
+}
+
+.bsu-inline-player {
+  width: 100%;
+  height: 100%;
+}
+
+.bsu-inline-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+
+.bsu-inline-audio-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--color-surface-muted, #f8fafc);
+}
+
+.bsu-inline-audio-icon {
+  display: flex;
+  color: var(--color-text-muted, #94a3b8);
+}
+
+.bsu-inline-audio {
+  width: 90%;
+  max-width: 260px;
+}
+
+.bsu-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: -2px 0 6px;
+}
+
+.bsu-card-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-surface-hover, #f1f5f9);
+  color: var(--color-text-secondary, #475569);
+  font-size: 0.7rem;
+  font-weight: 600;
+}

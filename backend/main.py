@@ -53,6 +53,7 @@ from routers import approvals
 from routers import upload
 from routers import activity_router
 from routers import admin_router
+from routers import buffer_router
 from routers import clients_router
 from routers import groups_router
 from routers import direct_messages_router
@@ -684,6 +685,7 @@ app.include_router(activity_router.router)
 # Admin Management
 app.include_router(admin_router.router)
 app.include_router(clients_router.router)
+app.include_router(buffer_router.router)
 
 # Groups & Messages
 app.include_router(groups_router.router)

@@ -965,6 +965,27 @@ function onLabsHomePage() {
   return window.location.hostname === LABS_HOST && /^\/fx\/?$/.test(window.location.pathname);
 }
 
+// 2026-09-07: Google's own post-migration destination for the real,
+// authenticated Flow app (see manifest.json/background-main.js's own
+// 2026-09-07 comments for the domain move this whole file predates). NOT
+// folded into onLabsPage()/onFlowToolPage() above - those two specifically
+// mean "somewhere under labs.google/fx" (the shared Labs hub that also
+// hosts Genie/MusicFX, and whose own sign-in-automation quirks - the
+// "Create with Flow" entry button, the labs modal sign-in, etc. - are
+// genuinely specific to that hub page) - conflating the two would make
+// those labs.google-only branches fire wrongly once the user's tab is
+// sitting on flow.google.com instead. This is consulted only by the
+// authenticated/signed-out-route detection below, which is the ONE place
+// this file decides "sign-in is done" - isAuthenticated() gated on
+// onLabsPage() alone could never return true once Google's redirect chain
+// actually lands the tab on flow.google.com, so the automation kept
+// re-clicking sign-in forever and burned through the ticket's whole grace
+// window (reported by Sarbjeet 2026-09-07: "signed in successfully" then an
+// endless "booting" loop ending in "Launch expired").
+function onFlowGoogleComPage() {
+  return window.location.hostname === 'flow.google.com';
+}
+
 function onFlowToolPage() {
   return window.location.hostname === LABS_HOST && FLOW_TOOL_PATH_RE.test(window.location.pathname);
 }
@@ -1038,7 +1059,7 @@ function getPageText() {
 }
 
 function isSignedOutFlowRoute() {
-  if (!onFlowToolPage()) return false;
+  if (!onFlowToolPage() && !onFlowGoogleComPage()) return false;
   const text = getPageText();
   if (
     text.includes('where the next wave of storytelling happens')
@@ -1069,6 +1090,16 @@ function isSignedOutFlowRoute() {
 }
 
 function hasLabsLaunchSurface() {
+  // flow.google.com has no Labs hub (no Genie/MusicFX launch tiles to find)
+  // - the real app itself is the only "launch surface" there, so the same
+  // content-length + not-signed-out-route check onFlowToolPage() uses below
+  // is the whole test, same as it was, just no longer requiring onLabsPage().
+  if (onFlowGoogleComPage()) {
+    const body = getPageText();
+    if (body.length < 80) return false;
+    return !isSignedOutFlowRoute();
+  }
+
   if (!onLabsPage()) return false;
 
   const body = getPageText();
@@ -1090,7 +1121,7 @@ function hasLabsLaunchSurface() {
 }
 
 function isAuthenticated() {
-  if (!onLabsPage()) return false;
+  if (!onLabsPage() && !onFlowGoogleComPage()) return false;
   if (!document.body || document.readyState === 'loading') return false;
   if (findGoogleSignInButton()) return false;
   return hasLabsLaunchSurface();
@@ -1277,6 +1308,16 @@ function stopSilently(phase = P.BLOCKED) {
   clearFlowEntryClickAttempt();
   clearOneGoogleRedirectAttempt();
   clearTicket();
+  // "Silently" must mean silently - setStatus() only ever creates/updates
+  // the badge, never hides it, so without this a call site that stops
+  // BEFORE ever calling setStatus leaves nothing on screen (fine), but one
+  // that stops AFTER an earlier setStatus (e.g. P.AUTHORIZE's own "Checking
+  // dashboard authorization..." a few lines before its now-silent no-ticket
+  // exit - 2026-09-07) left that stale, never-updated text stuck on screen
+  // forever, looking like the extension was hung mid-check rather than
+  // having quietly decided there's nothing for it to do here.
+  const badge = document.getElementById('rmw-google-badge');
+  if (badge) badge.remove();
 }
 
 function canTreatCurrentSessionAsSuccess() {
@@ -1355,8 +1396,25 @@ async function run() {
 
 async function tick() {
   if (isAuthenticated()) {
+    // Reported 2026-09-07: canTreatCurrentSessionAsSuccess() below leans on
+    // CTX.authTransitionAt, which only ever gets populated from the
+    // background (see refreshAuthorizationState()) - on a bare fresh CTX
+    // (a brand-new content-flow.js instance, e.g. right after landing on
+    // flow.google.com) it starts at 0. That refresh used to happen ONLY in
+    // the !hasLaunchEvidence() branch below, but hasLaunchEvidence() is true
+    // on a fresh flow.google.com landing purely from cameFromLabs() (the
+    // referrer really is labs.google, the previous hop in Google's own
+    // redirect chain) - a real signal, just not one that proves how RECENT
+    // the underlying sign-in was. Skipping the refresh there meant
+    // canTreatCurrentSessionAsSuccess() judged freshness against a
+    // CTX.authTransitionAt of 0 (i.e. never), so it always concluded "not
+    // recent" and forced yet another sign-in even moments after one had just
+    // completed - the same infinite "booting" loop this whole 2026-09-07
+    // pass fixes elsewhere, from a different angle. Moved here,
+    // unconditionally, so both branches below judge freshness against the
+    // real value.
+    const auth = await refreshAuthorizationState();
     if (!hasLaunchEvidence()) {
-      const auth = await refreshAuthorizationState();
       if (auth.authorized) {
         if (canTreatCurrentSessionAsSuccess()) {
           stop('Signed in successfully', P.DONE);
@@ -1420,13 +1478,26 @@ async function tick() {
       }
 
       if (!auth.authorized) {
+        // Reported 2026-09-07 (Sarbjeet): "we are not forcing the user to go
+        // through the dashboard only - user can come through [either way]".
+        // Flow is deliberately the one tool that also works opened directly
+        // (see this file's and background-flow-capture.js's own 2026-09-07
+        // comments on the client/task gate's session-fallback identity) -
+        // a tab with no launch ticket is therefore NOT an error state here,
+        // it's the other, equally-supported half of the design. The retry
+        // loop itself stays (a genuine dashboard launch can still hit a
+        // brief race before its ticket is stored), but neither the retry
+        // status nor the give-up state may say anything implying the
+        // dashboard is required - that's exactly the message this replaces.
+        // Silent stop either way: auto-login/autofill simply isn't
+        // applicable without a ticket (nothing to fill in credentials
+        // FROM), same as the sibling !flowPageContext branch just above.
         CTX.launchRetries += 1;
         if (CTX.launchRetries > MAX_LAUNCH_RETRIES) {
-          stop('Launch this tool from the dashboard first', P.BLOCKED);
+          stopSilently(P.BLOCKED);
           return;
         }
 
-        setStatus('Launch this tool from the dashboard first');
         wake(1200);
         return;
       }
@@ -1453,6 +1524,33 @@ async function tick() {
       }
 
       if (isAuthenticated()) {
+        // Reported 2026-09-07: this check used to only ever see "already
+        // authenticated" on labs.google, mid-flight BEFORE any real sign-in
+        // had happened - genuinely a stale/wrong cached Google session, so
+        // forcing a fresh one was correct. Now that isAuthenticated() also
+        // recognizes flow.google.com (see that function's own 2026-09-07
+        // comment), this branch is ALSO reached the moment a sign-in that
+        // just legitimately completed lands back here - the redirect from
+        // Google now crosses from labs.google to flow.google.com, a
+        // different origin, so writeCheckpoint()'s sessionStorage record of
+        // "we were already mid sign-in" doesn't survive the hop and P.BOOT
+        // restarts fresh at P.AUTHORIZE/P.PREPARE_SESSION instead of resuming
+        // via the checkpoint. Without this guard, that indistinguishable-
+        // looking "already authenticated" state kept forcing ANOTHER fresh
+        // sign-in every time, forever - each round trip through Google's
+        // chooser + the labs.google-then-flow.google.com redirect chain
+        // burning real time until the ticket's grace window ran out
+        // ("Launch expired"). hasRecentAuthTransition() is populated from
+        // the same background-persisted, cross-origin-safe authTransitionAt
+        // P.AUTHORIZE just read above (extended by every real sign-in step,
+        // including the account-chooser click - see content-google.js's
+        // markAuthTransition() call there) - if we're authenticated AND a
+        // real sign-in step happened recently, this is that sign-in
+        // completing, not a stale session to distrust.
+        if (hasRecentAuthTransition()) {
+          stop('Signed in successfully', P.DONE);
+          return;
+        }
         forceFreshGoogleSignIn();
         return;
       }
@@ -1463,6 +1561,17 @@ async function tick() {
     }
 
     case P.LOAD_CRED: {
+      // Defensive, same reasoning as P.PREPARE_SESSION's own 2026-09-07 guard
+      // just above: reaching this phase while already authenticated (e.g.
+      // the account chooser finished between that check and this one) means
+      // there is nothing left to sign into - fetching credentials and
+      // routing into P.OPEN_GOOGLE below would otherwise redirect an
+      // already-signed-in flow.google.com tab straight back to labs.google
+      // for no reason.
+      if (isAuthenticated()) {
+        stop('Signed in successfully', P.DONE);
+        return;
+      }
       setStatus('Fetching credentials...');
       try {
         const credential = await loadCredential();
@@ -2027,6 +2136,14 @@ function flowGenerationLinkLabel(generation) {
 }
 
 function disarmFlowGeneration() {
+  // Flush before tearing down: the settle timer may still be counting down
+  // on assets that were genuinely observed during the cycle, and dropping
+  // them here would lose a real generation to a timing edge.
+  if (flowMediaSettleTimer) {
+    window.clearTimeout(flowMediaSettleTimer);
+    flowMediaSettleTimer = null;
+    flushFlowSynthesizedRows();
+  }
   clearFlowArmTimers();
   const hadCaptures = Boolean(flowActiveGeneration && flowActiveGeneration.capturedCreationIds.size > 0);
   const linkLabel = flowGenerationLinkLabel(flowActiveGeneration);
@@ -2066,6 +2183,7 @@ function armFlowGeneration() {
       flowActiveGeneration.clientName = pendingSelection.clientName;
     }
     scheduleFlowArmQuietReset();
+    flowPromptAtArm = flowLastPromptText || scanFlowComposerText();
     setFlowCaptureStatus(`Waiting for generation…${flowGenerationLinkLabel(flowActiveGeneration)}`);
     return;
   }
@@ -2088,6 +2206,7 @@ function armFlowGeneration() {
     taskId: flowActiveGeneration.taskId,
     clientId: flowActiveGeneration.clientId,
   });
+  onFlowGenerationArmed();
 }
 
 // ---- Generate gate: holds the real network request, not the DOM gesture ----
@@ -2296,6 +2415,244 @@ async function reportFlowMediaUrl(mediaId, resolvedUrl) {
   }
 }
 
+// ---- Asset-observation capture (2026-09-07) ----------------------------
+//
+// The primary capture path. content-flow-network.js still decodes
+// batchexecute and, if it ever finds a real flowWorkflows row, that row wins
+// outright (see the precedence guard in flushFlowSynthesizedRows below) -
+// but it cannot be relied on, and this file must not depend on it.
+//
+// Why: post-migration, flow.google.com dispatches everything through
+// Google's generic /batchexecute RPC, whose method is an opaque `rpcids`
+// code that rotates per Google build (two captures minutes apart shared not
+// one code) and whose payloads are POSITIONAL arrays with no field names.
+// Chasing that means re-deriving an unnamed wire format after every Google
+// release - it is the most fragile thing in this whole system to build on.
+//
+// What this uses instead is the one artifact that CANNOT change without the
+// product itself changing: the generated image has to be downloaded and
+// shown to the user. That download is observable through Resource Timing,
+// which needs no DOM selectors, no request-body shape, and no knowledge of
+// Google's RPC naming - it survives Angular re-renders and build rotations
+// alike.
+//
+// The join to the backend is exact, not inferred. Every one of the 26 rows
+// already in flow_generations has media_url = ".../image/<uuid>" where that
+// <uuid> is byte-for-byte the row's own primary_media_id, so the asset URL
+// alone yields the identity the backend keys media resolution on. The
+// remaining fields come from sources that are equally not-guessed:
+//   projectId  - flow.google.com/project/<uuid>, straight off location
+//   displayName- the prompt the user typed, read from the composer
+//   batchId    - the arm cycle's own generateIntentId, which is precisely
+//                the "one Generate click" grouping key batchId means
+//   createTime - observation time (the render just completed)
+// so _extract_fields() in providers/flow/normalization.py consumes this with
+// NO backend change at all.
+
+const FLOW_MEDIA_ASSET_RE = /flow-content\.google\/(?:image|video)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+const FLOW_PROJECT_ID_RE = /\/project\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+// Settle delay after the LAST asset of a batch appears. Two purposes: it
+// groups every image of one Generate click into a single batchId, and it
+// gives content-flow-network.js's decoder a chance to land a real
+// flowWorkflows row first, so the synthetic path only ever fills a genuine
+// gap rather than racing the authoritative one.
+const FLOW_MEDIA_SETTLE_MS = 5000;
+// A scroll through an existing gallery loads old assets too. The seen-set
+// below already excludes anything observed before arming, and the armed
+// window is bounded, but this caps the blast radius if both are somehow
+// defeated at once.
+const FLOW_MEDIA_MAX_PER_CYCLE = 12;
+const FLOW_MEDIA_DOM_SCAN_MS = 2000;
+
+// Every media id ever observed in this tab, armed or not. An asset already
+// in here is, by construction, not output of the generation being watched:
+// it was on screen before the click, or it is a re-load of one that was.
+const flowSeenMediaIds = new Set();
+const flowSynthesizedMediaIds = new Set(); // ids already turned into a row
+let flowPendingSynthMedia = new Map();     // mediaId -> asset url, current cycle
+// Counts ONLY rows decoded from the network this cycle. Deliberately not
+// derived from flowActiveGeneration.capturedCreationIds, which this file
+// also writes its own asset-built rows into: using that as the precedence
+// signal made the first flush of a cycle poison every later one, so a
+// second Generate click inside the same arm window silently captured
+// nothing.
+let flowNetworkRowsThisCycle = 0;
+let flowMediaSettleTimer = null;
+let flowMediaDomScanTimer = null;
+let flowLastPromptText = '';
+let flowPromptAtArm = '';
+
+function getFlowProjectId() {
+  const match = FLOW_PROJECT_ID_RE.exec(window.location.pathname || '');
+  return match ? match[1] : null;
+}
+
+function extractFlowMediaId(url) {
+  const match = FLOW_MEDIA_ASSET_RE.exec(`${url || ''}`);
+  return match ? match[1] : '';
+}
+
+// The composer is tracked continuously rather than read at click time on
+// purpose: by the time the gate resolves, focus has usually left the prompt
+// box (and Flow may have cleared it on submit), so a read-at-synthesis-time
+// approach loses the prompt exactly when it matters. Listening for input
+// keeps the last thing the user actually typed regardless of later focus or
+// DOM churn.
+function readFlowComposerText(el) {
+  if (!el) return '';
+  let text = '';
+  if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') text = el.value || '';
+  else if (el.isContentEditable) text = el.innerText || '';
+  return text.trim();
+}
+
+document.addEventListener('input', (event) => {
+  const text = readFlowComposerText(event.target);
+  if (text) flowLastPromptText = text.slice(0, 2000);
+}, true);
+
+// Fallback for a prompt that was never typed in this page instance (e.g.
+// restored by Flow itself, or pasted in a way that produced no input event).
+function scanFlowComposerText() {
+  let best = '';
+  try {
+    const nodes = document.querySelectorAll('textarea, [contenteditable="true"]');
+    for (const node of nodes) {
+      const text = readFlowComposerText(node);
+      if (text.length > best.length) best = text;
+    }
+  } catch {}
+  return best.slice(0, 2000);
+}
+
+function noteFlowMediaAsset(url) {
+  const mediaId = extractFlowMediaId(url);
+  if (!mediaId) return;
+
+  // Not armed: this is pre-existing gallery content. Record it so it can
+  // never later be mistaken for fresh output, and stop.
+  if (!isFlowGenerationArmed()) {
+    flowSeenMediaIds.add(mediaId);
+    return;
+  }
+  if (flowSeenMediaIds.has(mediaId) || flowSynthesizedMediaIds.has(mediaId)) return;
+  flowSeenMediaIds.add(mediaId);
+
+  if (flowPendingSynthMedia.size >= FLOW_MEDIA_MAX_PER_CYCLE) return;
+  flowPendingSynthMedia.set(mediaId, `${url}`);
+  console.debug('[RMW Flow Capture] observed new generated asset', { mediaId });
+  setFlowCaptureStatus('Generation detected — capturing…');
+  scheduleFlowArmQuietReset(); // real activity: keep the arm window open
+
+  if (flowMediaSettleTimer) window.clearTimeout(flowMediaSettleTimer);
+  flowMediaSettleTimer = window.setTimeout(flushFlowSynthesizedRows, FLOW_MEDIA_SETTLE_MS);
+}
+
+function buildFlowWorkflowRowFromAsset(mediaId, batchId, nowIso) {
+  const prompt = flowPromptAtArm || flowLastPromptText || scanFlowComposerText();
+  return {
+    name: mediaId,
+    projectId: getFlowProjectId(),
+    metadata: {
+      displayName: prompt || null,
+      createTime: nowIso,
+      updateTime: nowIso,
+      primaryMediaId: mediaId,
+      batchId,
+      // Provenance marker - lands in FlowGeneration.metadata_json, so a row
+      // built from an observed asset is always distinguishable from one
+      // decoded out of a real flowWorkflows response.
+      rmwCaptureSource: 'asset-observation',
+    },
+  };
+}
+
+function flushFlowSynthesizedRows() {
+  flowMediaSettleTimer = null;
+  const pending = flowPendingSynthMedia;
+  flowPendingSynthMedia = new Map();
+  if (!pending.size) return;
+
+  if (!flowActiveGeneration || !isFlowGenerationArmed()) {
+    console.debug('[RMW Flow Capture] asset settle fired after disarm - dropping', { count: pending.size });
+    return;
+  }
+
+  // Precedence: a real flowWorkflows row decoded from the network carries
+  // Flow's own creation id, batch id and timestamps, all of which are more
+  // authoritative than anything reconstructed here. If that path already
+  // captured this cycle, stand down entirely rather than writing a second,
+  // differently-keyed row for the same images.
+  if (flowNetworkRowsThisCycle > 0) {
+    console.debug('[RMW Flow Capture] network path already captured this cycle - skipping asset-built rows', {
+      networkRows: flowNetworkRowsThisCycle, skipped: pending.size,
+    });
+    return;
+  }
+
+  const batchId = flowActiveGeneration.generateIntentId;
+  const nowIso = new Date().toISOString();
+  for (const [mediaId, url] of pending) {
+    flowSynthesizedMediaIds.add(mediaId);
+    flowActiveGeneration.capturedCreationIds.set(mediaId, { settled: true });
+    const row = buildFlowWorkflowRowFromAsset(mediaId, batchId, nowIso);
+    console.debug('[RMW Flow Capture] reporting asset-built generation row', {
+      mediaId, batchId, prompt: row.metadata.displayName,
+    });
+    reportFlowGenerationRow(row, { isReconciliation: false });
+    // Separate, already-supported event: _normalize_media_url_event binds it
+    // to the row above by primary_media_id, which is this same id.
+    reportFlowMediaUrl(mediaId, url);
+  }
+  persistFlowLastLiveCapturedAt(Date.now());
+  scheduleFlowArmQuietReset();
+}
+
+// Resource Timing sees the <img> loads that fetch/XHR interception cannot -
+// generated images are rendered as elements, never fetched by page JS.
+function installFlowMediaObserver() {
+  try {
+    for (const entry of performance.getEntriesByType('resource')) noteFlowMediaAsset(entry.name);
+  } catch {}
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) noteFlowMediaAsset(entry.name);
+    }).observe({ type: 'resource', buffered: true });
+  } catch (error) {
+    console.warn('[RMW Flow Capture] PerformanceObserver unavailable', error?.message || error);
+  }
+}
+
+// Backstop for an asset served from the memory cache, which can produce no
+// resource-timing entry at all. Only runs while armed, so it costs nothing
+// in the idle case.
+function scanFlowDomForMediaAssets() {
+  try {
+    for (const img of document.querySelectorAll('img[src]')) noteFlowMediaAsset(img.src);
+    for (const video of document.querySelectorAll('video[src], source[src]')) noteFlowMediaAsset(video.src);
+  } catch {}
+}
+
+function onFlowGenerationArmed() {
+  flowPromptAtArm = flowLastPromptText || scanFlowComposerText();
+  flowPendingSynthMedia = new Map();
+  flowNetworkRowsThisCycle = 0;
+  if (flowMediaSettleTimer) { window.clearTimeout(flowMediaSettleTimer); flowMediaSettleTimer = null; }
+  if (!flowMediaDomScanTimer) {
+    flowMediaDomScanTimer = window.setInterval(() => {
+      if (!isFlowGenerationArmed()) {
+        window.clearInterval(flowMediaDomScanTimer);
+        flowMediaDomScanTimer = null;
+        return;
+      }
+      scanFlowDomForMediaAssets();
+    }, FLOW_MEDIA_DOM_SCAN_MS);
+  }
+  console.debug('[RMW Flow Capture] asset observation active', {
+    promptAtArm: flowPromptAtArm, projectId: getFlowProjectId(), knownAssets: flowSeenMediaIds.size,
+  });
+}
+
 function onFlowNetworkGenerationMessage(payload) {
   const rows = payload && Array.isArray(payload.rows) ? payload.rows : [];
   const transport = (payload && payload.transport) || 'http';
@@ -2326,6 +2683,7 @@ function onFlowNetworkGenerationMessage(payload) {
     }
 
     persistFlowLastLiveCapturedAt(evaluation.rowTimestampMs);
+    flowNetworkRowsThisCycle += 1; // see flushFlowSynthesizedRows' precedence guard
     setFlowCaptureStatus(settled ? 'Capturing…' : 'Generation detected — rendering…');
     console.debug('[RMW Flow Capture] qualifying row - reporting as live', {
       creationId: evaluation.creationId, settled, isPendingCompletion: Boolean(evaluation.isPendingCompletion),
@@ -2360,6 +2718,7 @@ window.addEventListener('message', onFlowNetworkMessage);
 
 function start() {
   globalThis.cleanupFlowSessionOnFinish = cleanupFlowSessionOnFinish;
+  installFlowMediaObserver();
   CTX.ticket = captureTicket();
   if (onGooglePage()) return;
   ensureBadge();

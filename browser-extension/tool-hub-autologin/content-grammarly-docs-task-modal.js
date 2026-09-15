@@ -289,7 +289,20 @@ function createGrammarlyDocsClientPickerSection(container, { onSelectionChange }
 
   async function load() {
     listEl.innerHTML = '<div class="rmw-state"><div class="rmw-spinner"></div><span>Loading…</span></div>';
-    const result = await fetchActiveGrammarlyDocsClients();
+    // fetchActiveGrammarlyDocsClients() is meant to never reject - it
+    // normalizes every failure into { ok: false, error } - but this
+    // try/catch is the backstop against any future/unforeseen throw slipping
+    // through: without it, an unhandled rejection here leaves the spinner
+    // above stuck on "Loading…" forever with no Retry affordance, since
+    // nothing else in this call chain has a .catch either.
+    let result;
+    try {
+      result = await fetchActiveGrammarlyDocsClients();
+    } catch (error) {
+      if (state.closed) return;
+      renderError(error?.message || `Unable to load ${title.toLowerCase()}.`);
+      return;
+    }
     if (state.closed) return;
 
     if (!result?.ok) {

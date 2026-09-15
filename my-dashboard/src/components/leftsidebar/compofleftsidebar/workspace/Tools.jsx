@@ -102,6 +102,7 @@ const EMPTY_TOOL_FORM = {
   auto_login_username_field: 'email',
   auto_login_password_field: 'password',
   description: '',
+  single_seat: false,
 };
 
 const EMPTY_CREDENTIAL_FORM = {
@@ -119,6 +120,9 @@ const EMPTY_CREDENTIAL_FORM = {
   renewal_date: '',
 };
 const USAGE_REPORT_REFRESH_MS = 15000;
+// How often the tools catalog is quietly re-fetched to keep single-seat
+// "in use by X" occupancy fresh for other viewers without a page reload.
+const SINGLE_SEAT_STATUS_POLL_MS = 6000;
 
 const EMPTY_MAILBOX_FORM = {
   toolId: '',
@@ -179,7 +183,9 @@ const toolSupportsCredentialLoginMethodSelection = (value) => {
     || normalizedToolSlug === 'suno'
     || normalizedToolSlug === 'epidemic-sound'
     || normalizedToolSlug === 'splice'
-    || normalizedToolSlug === 'claude';
+    || normalizedToolSlug === 'claude'
+    || normalizedToolSlug === 'semrush'
+    || normalizedToolSlug === 'figma';
 };
 
 const getDefaultCredentialLoginMethod = (value) => {
@@ -201,6 +207,20 @@ const shouldLaunchExtensionToolInIncognito = (toolSlug, loginMethod) => {
   if (normalizedToolSlug === 'envato') return true;
   if (normalizedToolSlug === 'grammarly') return true;
   if (normalizedToolSlug === 'higgsfield') return true;
+  // Figma's own login modal does not render its content under Chrome
+  // Incognito's stricter third-party cookie/storage blocking - confirmed
+  // 2026-09-14: it worked in a normal tab, then rendered permanently blank
+  // once launched into Incognito for session isolation, and reverting back
+  // to a normal tab was the actual fix. Incognito isolation isn't viable for
+  // this tool; CLEAR_SESSION_ON_CLOSE_TOOLS in background-main.js still
+  // clears its cookies/storage when the launched tab closes as a (weaker,
+  // but Incognito-independent) mitigation for the shared-session leak this
+  // would otherwise have prevented.
+  if (normalizedToolSlug === 'figma') return false;
+  // Semrush always launches in a normal (non-incognito) window regardless of
+  // login method - unlike the shared-credential tools above, this is
+  // intentional and not the "google login = incognito" default below.
+  if (normalizedToolSlug === 'semrush') return false;
   return normalizedLoginMethod === 'google';
 };
 
@@ -229,6 +249,8 @@ const getAuthenticatorSeedToolLabel = (toolSlug) => {
   if (normalizedToolSlug === 'epidemic-sound') return 'Epidemic Sound';
   if (normalizedToolSlug === 'splice') return 'Splice';
   if (normalizedToolSlug === 'claude') return 'Claude';
+  if (normalizedToolSlug === 'semrush') return 'Semrush';
+  if (normalizedToolSlug === 'figma') return 'Figma';
   return 'Google';
 };
 
@@ -336,7 +358,7 @@ const waitForExtensionLaunchStored = (toolSlug) => new Promise((resolve) => {
     finish({
       ok: false,
       stored: false,
-      error: 'Extension bridge did not respond on this dashboard URL. Reload the extension and open the dashboard on a supported domain.',
+      error: 'Extension bridge did not respond. If you just reloaded the extension in chrome://extensions, refresh this dashboard tab (its connection to the old extension instance is now stale) and try launching again.',
     });
   }, 2500);
 
@@ -1201,6 +1223,7 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
   const [toolAdminSection, setToolAdminSection] = useState('assigned');
   const [selectedTool, setSelectedTool] = useState(null);
   const [launchingToolId, setLaunchingToolId] = useState('');
+  const [releasingToolId, setReleasingToolId] = useState('');
   const [editToolId, setEditToolId] = useState('');
   const [toolForm, setToolForm] = useState(EMPTY_TOOL_FORM);
   const [credentialForm, setCredentialForm] = useState(EMPTY_CREDENTIAL_FORM);
@@ -1409,6 +1432,53 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
       controller.abort();
     };
   }, [activeView, loadTools, toolsAccess.canAccess, toolsAccess.loading]);
+
+  // Lightweight re-fetch (no loading spinner, no admin user/credential
+  // fetches) that just keeps single-seat occupancy ("in use by X") current
+  // for anyone looking at the tools catalog, not only the person who holds
+  // the lock.
+  const refreshToolsQuietly = useCallback(async (signal) => {
+    try {
+      const response = await itToolsAPI.listTools({ signal });
+      if (signal?.aborted) return;
+      setTools(response.tools || []);
+    } catch (err) {
+      if (isRequestCanceled(err) || signal?.aborted) return;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (toolsAccess.loading || !toolsAccess.canAccess || activeView !== 'tools') {
+      return undefined;
+    }
+    const intervalId = window.setInterval(() => {
+      void refreshToolsQuietly();
+    }, SINGLE_SEAT_STATUS_POLL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeView, refreshToolsQuietly, toolsAccess.canAccess, toolsAccess.loading]);
+
+  // A user switching back to this tab to check "is it free yet?" shouldn't
+  // have to wait out the poll interval - refresh immediately whenever the
+  // tab/window regains focus or visibility.
+  useEffect(() => {
+    if (toolsAccess.loading || !toolsAccess.canAccess || activeView !== 'tools') {
+      return undefined;
+    }
+    const handleFocusOrVisible = () => {
+      if (document.visibilityState === 'hidden') return;
+      void refreshToolsQuietly();
+    };
+    window.addEventListener('focus', handleFocusOrVisible);
+    document.addEventListener('visibilitychange', handleFocusOrVisible);
+
+    return () => {
+      window.removeEventListener('focus', handleFocusOrVisible);
+      document.removeEventListener('visibilitychange', handleFocusOrVisible);
+    };
+  }, [activeView, refreshToolsQuietly, toolsAccess.canAccess, toolsAccess.loading]);
 
   useEffect(() => {
     const rootElement = containerRef.current;
@@ -2687,6 +2757,7 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
       auto_login_username_field: autoLogin.usernameField || 'email',
       auto_login_password_field: autoLogin.passwordField || 'password',
       description: tool.description || '',
+      single_seat: Boolean(tool.singleSeat),
     });
   };
 
@@ -3126,8 +3197,18 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
     setSelectedTool(tool);
     setLaunchResult(null);
     setError('');
+    // launchTool() below claims a single-seat tool's lock server-side as
+    // soon as it succeeds, before any of the extension hand-off (which can
+    // still fail - bridge not responding, incognito window blocked, etc.)
+    // If that hand-off fails, no tab is ever opened and so no tab-close
+    // event will ever release the lock we just claimed, leaving Semrush
+    // permanently (well, until the 4h stale-lock safety net) shown as "in
+    // use" by someone who never actually got in. So: track whether this
+    // attempt claimed the lock, and release it on any failure afterward.
+    let claimedSingleSeatLock = false;
     try {
       const response = await itToolsAPI.launchTool(tool.id);
+      claimedSingleSeatLock = Boolean(response.tool?.singleSeat && response.tool?.activeSession);
       setLaunchResult(response);
       let launchUrl = response.launchUrl;
       const responseToolSlug = normalizeToolSlug(response.tool?.slug || tool?.slug || tool?.name);
@@ -3186,8 +3267,39 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
       }
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Unable to launch tool.');
+      if (claimedSingleSeatLock) {
+        try {
+          await itToolsAPI.releaseToolSession(tool.id);
+          void refreshToolsQuietly();
+        } catch {
+          // Best-effort - the 4h stale-lock safety net still covers this
+          // if the release call itself fails.
+        }
+      }
     } finally {
       setLaunchingToolId('');
+    }
+  };
+
+  // Admin-only escape hatch for a single-seat tool's lock (Semrush et al.):
+  // normally released automatically when the holder's launched tab closes
+  // (see the extension's tab-close hook), this exists for when that hook is
+  // missed - a crashed browser, a force-quit, lost network on close.
+  const handleReleaseTool = async (tool, event) => {
+    event?.stopPropagation();
+    const toolId = `${tool?.id || ''}`;
+    if (!toolId || releasingToolId === toolId) return;
+
+    setReleasingToolId(toolId);
+    setError('');
+    try {
+      await itToolsAPI.releaseToolSession(tool.id);
+      await loadTools();
+      setNotice(`${tool.name} has been released and is free to launch again.`);
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Unable to release this tool.');
+    } finally {
+      setReleasingToolId('');
     }
   };
 
@@ -3304,13 +3416,13 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
                   <option value="external_link">External link</option>
                   <option value="sso">SSO</option>
                   <option value="api_proxy">API proxy</option>
-                  <option value="extension_autofill">Extension auto-fill (Behance, Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, Pinterest)</option>
+                  <option value="extension_autofill">Extension auto-fill (Behance, Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, Pinterest, Semrush, Figma)</option>
                   <option value="automation">Auto-login form submit</option>
                 </select>
               </div>
               {toolForm.launch_mode === 'extension_autofill' && (
                 <p className="it-card-copy">
-                  The current browser extension build supports Behance, Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, and Pinterest
+                  The current browser extension build supports Behance, Canva, Claude, ChatGPT/OpenAI, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, Pinterest, Semrush, and Figma
                   extension scaffold. For other tools, use Manual credential or Auto-login form submit.
                 </p>
               )}
@@ -3343,6 +3455,14 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
                   />
                 </div>
               )}
+              <label className="it-checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={Boolean(toolForm.single_seat)}
+                  onChange={(e) => updateToolFormField(setToolForm, setError, 'single_seat', e.target.checked)}
+                />
+                Single seat - only one user can have this tool open at a time (e.g. Semrush)
+              </label>
               <textarea value={toolForm.description} onChange={(e) => updateToolFormField(setToolForm, setError, 'description', e.target.value)} placeholder="Short description" autoComplete="off" />
               <div className="it-admin-actions">
                 <button className="it-primary-btn" type="submit" disabled={saving}>{saving ? 'Saving...' : editToolId ? 'Update Tool' : 'Add Tool'}</button>
@@ -3653,6 +3773,10 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
                           ? 'This Epidemic Sound credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                         : activeCredentialToolSlug === 'splice'
                           ? 'This Splice credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                        : activeCredentialToolSlug === 'semrush'
+                          ? 'This Semrush credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
+                        : activeCredentialToolSlug === 'figma'
+                          ? 'This Figma credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'
                           : 'This Kling credential will use Continue with Google. Save the Google email here, and add the Google password too if this account reaches the password step during sign-in.'}
                   </div>
                 )}
@@ -4520,31 +4644,54 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
               ) : filteredTools.length > 0 ? (
                 filteredTools.map((tool) => {
                   const CardIcon = IconComponent(tool.icon);
+                  const activeSession = tool.singleSeat ? tool.activeSession : null;
+                  const isLocked = Boolean(activeSession);
                   return (
-                    <button
-                      key={tool.id}
-                      type="button"
-                      className="tool-card"
-                      onClick={() => handleLaunchTool(tool)}
-                      disabled={launchingToolId === `${tool.id}`}
-                    >
-                      <div className="tool-header">
-                        <div className="tool-icon-group">
-                          <div className="tool-icon"><CardIcon /></div>
-                          <h3 className="tool-name">{tool.name}</h3>
+                    <div key={tool.id} className="tool-card-wrap">
+                      <button
+                        type="button"
+                        className="tool-card"
+                        onClick={() => handleLaunchTool(tool)}
+                        disabled={launchingToolId === `${tool.id}` || isLocked}
+                        title={isLocked ? `In use by ${activeSession.userName} - ask them to close it, or wait until they're done.` : undefined}
+                      >
+                        <div className="tool-header">
+                          <div className="tool-icon-group">
+                            <div className="tool-icon"><CardIcon /></div>
+                            <h3 className="tool-name">{tool.name}</h3>
+                          </div>
+                          <div className="status-badge">
+                            <span className={`status-dot ${tool.status === 'active' ? 'status-active' : 'status-maintenance'}`}></span>
+                            <span className="tool-status-label">{tool.status || 'active'}</span>
+                          </div>
                         </div>
-                        <div className="status-badge">
-                          <span className={`status-dot ${tool.status === 'active' ? 'status-active' : 'status-maintenance'}`}></span>
-                          <span className="tool-status-label">{tool.status || 'active'}</span>
+                        <p className="tool-description">{tool.description || 'Open this company tool.'}</p>
+                        {isLocked && (
+                          <div className="tool-in-use-banner">
+                            <span className="tool-in-use-label">In use by {activeSession.userName}</span>
+                            {activeSession.userEmail && (
+                              <span className="tool-in-use-contact">{activeSession.userEmail}</span>
+                            )}
+                          </div>
+                        )}
+                        <div className="tool-meta" aria-label={`${tool.name} metadata`}>
+                          <span className="tool-meta-item">{tool.category}</span>
+                          <span className="tool-meta-sep" aria-hidden="true">·</span>
+                          <span className="tool-meta-item">{tool.hasCredential ? tool.credentialScope : 'Not assigned'}</span>
                         </div>
-                      </div>
-                      <p className="tool-description">{tool.description || 'Open this company tool.'}</p>
-                      <div className="tool-meta" aria-label={`${tool.name} metadata`}>
-                        <span className="tool-meta-item">{tool.category}</span>
-                        <span className="tool-meta-sep" aria-hidden="true">·</span>
-                        <span className="tool-meta-item">{tool.hasCredential ? tool.credentialScope : 'Not assigned'}</span>
-                      </div>
-                    </button>
+                      </button>
+                      {isLocked && isAdmin && (
+                        <button
+                          type="button"
+                          className="tool-force-release-btn"
+                          onClick={(event) => handleReleaseTool(tool, event)}
+                          disabled={releasingToolId === `${tool.id}`}
+                          title="Admin override: free this tool's lock without waiting for the holder to close it"
+                        >
+                          {releasingToolId === `${tool.id}` ? 'Releasing...' : 'Force release'}
+                        </button>
+                      )}
+                    </div>
                   );
                 })
               ) : (

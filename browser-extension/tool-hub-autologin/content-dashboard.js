@@ -142,6 +142,7 @@ function getIncognitoLaunchToolName(toolSlug) {
   if (toolSlug === 'freepik') return 'Freepik';
   if (toolSlug === 'elevenlabs') return 'ElevenLabs';
   if (toolSlug === 'pinterest') return 'Pinterest';
+  if (toolSlug === 'figma') return 'Figma';
   return 'this tool';
 }
 

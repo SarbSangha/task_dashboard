@@ -778,12 +778,30 @@ async function requestOtp() {
       setStatus('OTP was already fetched for this launch. Relaunch Higgsfield from the dashboard if the code field was refreshed.');
       return;
     }
-    setStatus(errorMessage);
+    // The raw backend diagnostic (afterUid/notBeforeMs/etc.) only gets
+    // shown once every attempt is exhausted. A single failed mailbox poll
+    // isn't a failure - it's an expected part of retrying while the email
+    // is still in transit - so surfacing that same "did not arrive" wording
+    // on attempts 1-3 read as a terminal error even when the OTP went on to
+    // arrive and fill successfully on the very next attempt (reported live
+    // 2026-09-15: badge stuck showing the error text after the code had
+    // already been filled in).
+    setStatus(
+      STATE.otpRequestAttempts >= 4
+        ? errorMessage
+        : `Waiting for OTP email to arrive... (attempt ${STATE.otpRequestAttempts} of 4)`
+    );
     scheduleAttempt(2000);
     return;
   }
 
   STATE.otpValue = `${response.otp}`.trim();
+  // Overwrite whatever the badge said immediately (a prior "waiting"/error
+  // message from an earlier attempt would otherwise sit there until the
+  // next attemptFill() tick notices otpValue is set and calls fillOtp,
+  // which is usually under a second but not instant) - see the comment on
+  // the failure branch above for the report this closes out.
+  setStatus('OTP received, filling code');
   scheduleAttempt(100);
 }
 

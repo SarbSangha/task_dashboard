@@ -153,6 +153,67 @@ class GenerationClient(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class BufferSelfUpload(Base):
+    """A file a user manually uploads straight into the Buffer feed, for
+    something they did that no provider's own capture flow could tag with
+    the Buffer GenerationClient - e.g. work done outside any tool this
+    codebase tracks, or a result the extension's capture missed. The actual
+    bytes go through the same presigned R2 upload flow as every other
+    attachment in this app (see routers/upload.py's /api/uploads/presign);
+    this table only records the resulting attachment metadata plus who
+    uploaded it, and gets fanned into the merged feed by
+    utils/buffer_feed.py alongside every provider's own captured rows.
+
+    Unlike every other source buffer_feed.py reads from, there is no other
+    GenerationClient a self-upload could belong to - it only ever exists to
+    show up in Buffer - so this table deliberately has no linked_client_id
+    column; every row here is implicitly Buffer content."""
+    __tablename__ = "buffer_self_uploads"
+    __table_args__ = (
+        Index("ix_buffer_self_uploads_owner_created_at", "owner_user_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String, nullable=True)
+    # Comma-separated, same lightweight free-text convention as the rest of
+    # this codebase's few tag-ish fields - not worth a normalized tags table
+    # for a per-upload label list nobody queries by tag yet.
+    tags = Column(String, nullable=True)
+    media_type = Column(String(20), nullable=False, default="other")
+    asset_url = Column(String, nullable=False)
+    file_path = Column(String, nullable=True)
+    mime_type = Column(String(255), nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    original_filename = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class BufferSelfUploadDownload(Base):
+    """One row per time someone downloads a Buffer self-upload - captures
+    who downloaded it and, since a self-upload has no client of its own (see
+    BufferSelfUpload's docstring), which REAL client and purpose the
+    download is actually for. Mirrors why every provider's Generate/Download
+    action is gated behind the Task/Client picker (utils/client_gate.py) -
+    same accountability, just recorded after the fact here since the upload
+    itself predates any particular use of it, unlike a live generation.
+
+    client_name is free text, not a GenerationClient FK - same posture as
+    Task.customer_name, which lets the picker's typed-in value differ from
+    the curated list without failing the download."""
+    __tablename__ = "buffer_self_upload_downloads"
+    __table_args__ = (
+        Index("ix_buffer_self_upload_downloads_upload_created_at", "upload_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    upload_id = Column(Integer, ForeignKey("buffer_self_uploads.id", ondelete="CASCADE"), nullable=False, index=True)
+    downloaded_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    client_name = Column(String, nullable=False)
+    purpose = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class Task(Base):
     __tablename__ = "tasks"
     
@@ -685,6 +746,14 @@ class ITPortalTool(Base):
     status = Column(String, default="active", index=True)
     is_active = Column(Boolean, default=True, index=True)
     metadata_json = Column(JSON)
+    # Single-seat lock (e.g. Semrush only allows one signed-in session at a
+    # time). When single_seat is true, launch_tool() refuses to hand out a
+    # second session while active_session_user_id is set and fresh - see
+    # SINGLE_SEAT_STALE_LOCK_SEC in it_tools_router.py for the safety-net
+    # expiry that reclaims an abandoned lock if the release call never fires.
+    single_seat = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    active_session_user_id = Column(Integer, ForeignKey("users.id"))
+    active_session_started_at = Column(DateTime)
     created_by = Column(Integer, ForeignKey("users.id"))
     updated_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow, index=True)

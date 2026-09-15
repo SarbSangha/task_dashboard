@@ -11,6 +11,7 @@ import GroupMessagePanel from './compofleftsidebar/messagesystem/GroupMessagePan
 import WorkSpaceButton from './compofleftsidebar/WorkSpaceButton';
 import AdminQueueButton from './compofleftsidebar/adminqueue/AdminQueueButton';
 import TrendingsButton from './compofleftsidebar/trending/TrendingsButton';
+import BufferButton from './compofleftsidebar/buffer/BufferButton';
 import ReportsButton from './compofleftsidebar/ReportsButton';
 import TaskReportButton from './compofleftsidebar/TaskReportButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
@@ -20,6 +21,7 @@ import InboxPanel from './compofleftsidebar/inbox/InboxPanel';
 import TrackingPanel from './compofleftsidebar/tracking/TrackingPanel';
 import AdminRequestPanel from './compofleftsidebar/adminqueue/AdminRequestPanel';
 import TrendingsPanel from './compofleftsidebar/trending/TrendingsPanel';
+import BufferPanel from './compofleftsidebar/buffer/BufferPanel';
 import ReportsPanel from '../reports/ReportsPanel';
 import TaskReportPanel from '../reports/TaskReportPanel';
 import { usePermissions } from '../../hooks/usePermissions';
@@ -32,6 +34,7 @@ const PANEL_TO_ACTIVE = {
   messages: 'message-system',
   'admin-queue': 'admin-queue',
   trendings: 'trendings',
+  buffer: 'buffer',
   reports: 'reports',
   'task-report': 'task-report',
   'create-task': 'create-task',
@@ -169,6 +172,9 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
 
   const openTrendingsPanel = () => goTo('trendings');
   const closeTrendingsPanel = () => closePanel('trendings');
+
+  const openBufferPanel = () => goTo('buffer');
+  const closeBufferPanel = () => closePanel('buffer');
 
   const openAdminQueue = () => goTo('admin-queue');
   const closeAdminQueue = () => closePanel('admin-queue');
@@ -318,6 +324,10 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
               isActive={activeItem === 'trendings'}
               onClick={openTrendingsPanel}
             />
+            <BufferButton
+              isActive={activeItem === 'buffer'}
+              onClick={openBufferPanel}
+            />
             {can('view_admin_queue') && (
               <AdminQueueButton
                 isActive={activeItem === 'admin-queue'}
@@ -387,6 +397,13 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
         onClose={closeTrendingsPanel}
         onMinimizedChange={(isMinimized) => setPanelMinimized('trendings', isMinimized)}
         onActivate={() => activatePanel('trendings')}
+      />
+
+      <BufferPanel
+        isOpen={isPanelVisible('buffer')}
+        onClose={closeBufferPanel}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('buffer', isMinimized)}
+        onActivate={() => activatePanel('buffer')}
       />
 
       <OutboxModal

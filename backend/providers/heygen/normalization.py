@@ -374,8 +374,49 @@ def _is_stale_snapshot(generation: HeygenGeneration, fields: dict) -> bool:
     return bool(incoming and stored and incoming < stored)
 
 
+def _is_non_video_library_asset(payload: dict) -> bool:
+    """True when this payload is HeyGen's own project/items listing row for a
+    LIBRARY ASSET (an uploaded audio/image file the user attached as a
+    script's voice track) rather than a generated video. Confirmed real
+    shape (2026-09-03, reported by Sarbjeet): the reconciliation listing
+    walker (content-heygen.js's onHeygenNetworkListingMessage) observes BOTH
+    kinds of row interleaved in the same api2.heygen.com/v1/project/items
+    response - an uploaded "12.mp3" row sits right next to the video it was
+    used to generate, carrying its own row-level "id"/"item_id" that
+    _extract_fields would otherwise happily accept as a video_id (nothing
+    upstream of this function distinguishes the two). Left unguarded, every
+    source-audio upload mints its own permanently-empty "generation" card
+    (no script, no preview, no credits - there is nothing else in that row)
+    alongside the real card for the video it was used in. A real audio
+    library row is unambiguous: resource_type "movio_asset" (vs. a video's
+    "pacific_video"), item_type/file_type "audio" - checked independently
+    since different HeyGen responses have been observed naming the same
+    distinction under different keys."""
+    resource_type = _s(payload.get("resource_type"))
+    if resource_type and resource_type.lower() == "movio_asset":
+        return True
+    for key in ("item_type", "file_type"):
+        value = _s(payload.get(key))
+        if value and value.lower() == "audio":
+            return True
+    return False
+
+
 def normalize_capture_event(db: Session, event: HeygenCaptureEvent) -> Optional[HeygenGeneration]:
-    fields = _extract_fields(event.payload_json or {})
+    payload = event.payload_json or {}
+    if _is_non_video_library_asset(payload):
+        # Never even reaches the identity check below - a library asset row
+        # is intentionally not a generation, not a case of "no identity
+        # field present". The raw HeygenCaptureEvent is never lost either way
+        # (see capture.py) - only the normalized projection is skipped.
+        logger.info(
+            "heygen normalization skipped capture_event_id=%s: payload is a library asset row "
+            "(resource_type/item_type=audio), not a video generation",
+            event.id,
+        )
+        return None
+
+    fields = _extract_fields(payload)
     if not (
         fields["video_id"] or fields["render_id"] or fields["job_id"]
         or fields["workflow_id"] or fields["external_event_id"]

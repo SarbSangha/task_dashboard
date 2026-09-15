@@ -56,6 +56,13 @@ LOGGER = logging.getLogger(__name__)
 VALID_SCOPES = {"company", "user"}
 VALID_LAUNCH_MODES = {"external_link", "manual_credential", "sso", "api_proxy", "automation", "extension_autofill"}
 EXTENSION_AUTOFILL_TICKET_TTL_SEC = 20 * 60
+# Safety net only, not the primary release path: a single-seat tool's lock is
+# normally released by an explicit /session/release call (the extension's
+# tab-close hook, or the dashboard's manual "Release" button). This expiry
+# just reclaims a lock that was never released - crashed browser, lost
+# network, force-quit - after a generously long window so it never fires
+# during a real, still-in-progress session.
+SINGLE_SEAT_STALE_LOCK_SEC = 4 * 60 * 60
 MAX_REASONABLE_KLING_CREDIT_BURN = 3000
 MAX_EXPECTED_LOCK_AUTO_BURN = 300
 HOSTNAME_EQUIVALENT_GROUPS = (
@@ -76,9 +83,11 @@ HOSTNAME_EQUIVALENT_GROUPS = (
     {"suno.com", "www.suno.com", "studio-api.prod.suno.com"},
     {"epidemicsound.com", "www.epidemicsound.com", "login.epidemicsound.com"},
     {"splice.com", "www.splice.com", "auth.splice.com"},
+    {"semrush.com", "www.semrush.com"},
+    {"figma.com", "www.figma.com"},
 )
 SUPPORTED_EXTENSION_AUTOFILL_HOSTS = frozenset().union(*HOSTNAME_EQUIVALENT_GROUPS)
-SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"behance", "canva", "chatgpt", "claude", "enhancor", "elevenlabs", "eleven-labs", "eleven-lab", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow", "pinterest", "pintrest", "suno", "epidemic-sound", "epidemicsound", "epidemic", "splice"}
+SUPPORTED_EXTENSION_AUTOFILL_SLUGS = {"behance", "canva", "chatgpt", "claude", "enhancor", "elevenlabs", "eleven-labs", "eleven-lab", "envato", "freepik", "genspark", "grammarly", "higgsfield", "heygen", "kling", "kling-ai", "klingai", "flow", "pinterest", "pintrest", "suno", "epidemic-sound", "epidemicsound", "epidemic", "splice", "semrush", "figma"}
 PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS = {"claude"}
 TOOL_CREDENTIAL_LOGIN_METHODS = {
     "behance": {"email_password", "google"},
@@ -97,6 +106,8 @@ TOOL_CREDENTIAL_LOGIN_METHODS = {
     "suno": {"email_password", "google"},
     "epidemic-sound": {"email_password", "google"},
     "splice": {"email_password", "google"},
+    "semrush": {"email_password", "google"},
+    "figma": {"email_password", "google"},
 }
 
 
@@ -115,6 +126,7 @@ class ToolCreatePayload(BaseModel):
     auto_login_password_field: str = Field("password", max_length=80)
     status: str = Field("active", max_length=40)
     is_active: bool = True
+    single_seat: bool = False
 
 
 class ToolUpdatePayload(BaseModel):
@@ -131,6 +143,7 @@ class ToolUpdatePayload(BaseModel):
     auto_login_password_field: Optional[str] = Field(None, max_length=80)
     status: Optional[str] = Field(None, max_length=40)
     is_active: Optional[bool] = None
+    single_seat: Optional[bool] = None
 
 
 class CredentialUpsertPayload(BaseModel):
@@ -249,6 +262,24 @@ def _tool_supports_password_optional_credential(canonical_tool_slug: str) -> boo
     return canonical_tool_slug in PASSWORD_OPTIONAL_EXTENSION_AUTOFILL_SLUGS
 
 
+def _single_seat_lock_is_stale(tool) -> bool:
+    if not tool.active_session_started_at:
+        return True
+    age_seconds = (datetime.utcnow() - tool.active_session_started_at).total_seconds()
+    return age_seconds > SINGLE_SEAT_STALE_LOCK_SEC
+
+
+def _single_seat_lock_holder_id(tool) -> Optional[int]:
+    """The user id currently holding tool's single-seat lock, or None if the
+    tool isn't single-seat, nothing is holding it, or the lock is stale
+    (abandoned - see SINGLE_SEAT_STALE_LOCK_SEC)."""
+    if not tool.single_seat or not tool.active_session_user_id:
+        return None
+    if _single_seat_lock_is_stale(tool):
+        return None
+    return tool.active_session_user_id
+
+
 def _tool_uses_extension_autofill(tool, *, allow_automation: bool = False) -> bool:
     if not tool:
         return False
@@ -361,7 +392,12 @@ def _validate_scope(payload: CredentialUpsertPayload) -> str:
     return scope
 
 
-def _serialize_tool(tool: ITPortalTool, credential: Optional[ITPortalToolCredential] = None, is_admin: bool = False) -> dict:
+def _serialize_tool(
+    tool: ITPortalTool,
+    credential: Optional[ITPortalToolCredential] = None,
+    is_admin: bool = False,
+    active_session_holder: Optional[User] = None,
+) -> dict:
     data = {
         "id": tool.id,
         "name": tool.name,
@@ -378,7 +414,17 @@ def _serialize_tool(tool: ITPortalTool, credential: Optional[ITPortalToolCredent
         "credentialScope": credential.scope if credential else None,
         "createdAt": tool.created_at.isoformat() if tool.created_at else None,
         "updatedAt": tool.updated_at.isoformat() if tool.updated_at else None,
+        "singleSeat": bool(tool.single_seat),
+        "activeSession": None,
     }
+    holder_id = _single_seat_lock_holder_id(tool)
+    if holder_id and active_session_holder and active_session_holder.id == holder_id:
+        data["activeSession"] = {
+            "userId": active_session_holder.id,
+            "userName": active_session_holder.name or active_session_holder.email,
+            "userEmail": active_session_holder.email,
+            "startedAt": tool.active_session_started_at.isoformat() if tool.active_session_started_at else None,
+        }
     if is_admin:
         data["metadata"] = tool.metadata_json or {}
         data["autoLogin"] = (tool.metadata_json or {}).get("autoLogin") or {}
@@ -1368,7 +1414,7 @@ def _validate_extension_autofill_target(
 
     raise HTTPException(
         status_code=400,
-        detail="Extension auto-fill currently supports Behance, Canva, ChatGPT/OpenAI, Claude, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, and Pinterest. Use Manual credential or Auto-login form submit for other tools.",
+        detail="Extension auto-fill currently supports Behance, Canva, ChatGPT/OpenAI, Claude, Enhancor, Envato, ElevenLabs, Freepik, Genspark, Grammarly, Higgsfield, HeyGen, Kling AI, Flow, Pinterest, Semrush, and Figma. Use Manual credential or Auto-login form submit for other tools.",
     )
 
 
@@ -1469,7 +1515,14 @@ def _usage_tracking_ticket_error() -> HTTPException:
 OTP_POLL_INTERVAL_SEC = 5
 OTP_CODE_POLL_INTERVAL_SEC = 2
 OTP_MAX_WAIT_SEC = 60
-OTP_HIGGSFIELD_MAX_WAIT_SEC = 12
+# Was 12s (introduced alongside skew_ms's Higgsfield special-case below,
+# commit 595b0fd, no comment explaining either). Real Gmail SMTP delivery +
+# IMAP search-index latency regularly exceeds 12s, so the backend was
+# routinely giving up on a genuinely on-time OTP email before it ever
+# became searchable - reported live 2026-09-15 ("OTP came on time but not
+# fetching"). Matches OTP_MAX_WAIT_SEC now; no evidence Higgsfield ever
+# needed a shorter budget than every other OTP-gated tool.
+OTP_HIGGSFIELD_MAX_WAIT_SEC = 60
 OTP_EMAIL_MAX_AGE_SEC = 120
 OTP_EMAIL_SCAN_LIMIT = 75
 OTP_TICKET_TTL_SEC = 600
@@ -2582,10 +2635,20 @@ def list_tools(
     if not is_admin:
         tools = [tool for tool in tools if tool.id in credentials_by_tool]
 
+    holder_ids = {_single_seat_lock_holder_id(tool) for tool in tools} - {None}
+    holders_by_id = {}
+    if holder_ids:
+        holders_by_id = {u.id: u for u in db.query(User).filter(User.id.in_(holder_ids)).all()}
+
     response = {
         "success": True,
         "tools": [
-            _serialize_tool(tool, credentials_by_tool.get(tool.id), is_admin=is_admin)
+            _serialize_tool(
+                tool,
+                credentials_by_tool.get(tool.id),
+                is_admin=is_admin,
+                active_session_holder=holders_by_id.get(tool.active_session_user_id),
+            )
             for tool in tools
         ],
         "isAdmin": is_admin,
@@ -2623,6 +2686,7 @@ def create_tool(
         launch_mode=launch_mode,
         status=(payload.status or "active").strip().lower() or "active",
         is_active=payload.is_active,
+        single_seat=bool(payload.single_seat),
         metadata_json=_auto_login_config_from_payload(payload),
         created_by=current_user.id,
         updated_by=current_user.id,
@@ -2671,6 +2735,13 @@ def update_tool(
         tool.status = payload.status.strip().lower() or "active"
     if payload.is_active is not None:
         tool.is_active = payload.is_active
+    if payload.single_seat is not None:
+        tool.single_seat = payload.single_seat
+        if not tool.single_seat:
+            # Turning the lock off should free whoever currently holds it,
+            # not leave a dangling lock nothing can ever check again.
+            tool.active_session_user_id = None
+            tool.active_session_started_at = None
     _validate_extension_autofill_target(tool.launch_mode, tool.website_url, tool.login_url, tool.slug)
     tool.updated_by = current_user.id
     tool.updated_at = datetime.utcnow()
@@ -2779,6 +2850,102 @@ def get_extension_credential(
             "backupCodes": _decode_backup_codes(credential),
         },
     }
+
+
+@router.post("/extension/session/status")
+def get_extension_tool_session_status(
+    payload: ExtensionCredentialPayload,
+    request: Request,
+    db: Session = Depends(get_operational_db),
+):
+    """Lets a tab that's already signed into a single-seat tool check whether
+    it's still the recognized holder of the lock. Polled periodically by
+    content-semrush.js so that an admin's "Force release" (or the stale-lock
+    safety net expiring) doesn't just silently do nothing from that tab's own
+    point of view - the extension can't reach into another user's browser to
+    close their tab, but it CAN tell that tab's own content script to show a
+    "you've been signed out here" banner the next time it checks in.
+
+    Identifies the caller from EITHER the launch ticket OR the extension's
+    own cached dashboard session token (same X-Session-Id header used by
+    every other /extension/* call) - a ticket is only ever captured at the
+    /login/ page, so a tab that was already signed in before this polling
+    existed (or one someone bookmarked straight past login) would otherwise
+    never have one to poll with, even after a refresh. The session token has
+    no such gap: every tab already carries it."""
+    tool = _find_extension_tool(db, payload)
+    if not tool or not tool.single_seat:
+        return {"success": True, "stillHolding": True}
+
+    user = None
+    extension_ticket = f"{payload.extension_ticket or ''}".strip()
+    if extension_ticket:
+        try:
+            user, _ = _resolve_user_from_extension_ticket(tool=tool, extension_ticket=extension_ticket, db=db)
+        except HTTPException:
+            user = None
+
+    if not user:
+        session_token = get_request_session_token(
+            request.cookies.get("session_id"),
+            request.headers.get("X-Session-Id"),
+        )
+        if session_token:
+            try:
+                user = resolve_session_user(session_token, db, raise_on_missing=False)
+            except HTTPException:
+                user = None
+
+    if not user:
+        # Could not identify the caller at all - default to "still holding"
+        # rather than false-alarming a real session over an auth hiccup.
+        return {"success": True, "stillHolding": True}
+
+    return {"success": True, "stillHolding": tool.active_session_user_id == user.id}
+
+
+@router.post("/extension/session/release")
+def release_extension_tool_session(
+    payload: ExtensionCredentialPayload,
+    db: Session = Depends(get_operational_db),
+):
+    """Frees a single-seat tool's lock from the extension's tab-close hook
+    (see background-main.js's cleanupToolSessionForClosedTab). Resolves the
+    holder purely from the extension_ticket - no dashboard session cookie
+    required, since a background service worker firing this on tab close may
+    not have one fresh. Anything that doesn't check out (no ticket, tool
+    isn't single-seat, this ticket's user isn't the current holder) is a
+    silent no-op rather than an error: this is a best-effort cleanup, and
+    SINGLE_SEAT_STALE_LOCK_SEC is the real safety net."""
+    tool = _find_extension_tool(db, payload)
+    if not tool:
+        return {"success": True, "released": False}
+
+    extension_ticket = f"{payload.extension_ticket or ''}".strip()
+    if not extension_ticket:
+        return {"success": True, "released": False}
+
+    try:
+        user, _ = _resolve_user_from_extension_ticket(tool=tool, extension_ticket=extension_ticket, db=db)
+    except HTTPException:
+        return {"success": True, "released": False}
+
+    tool = (
+        db.query(ITPortalTool)
+        .filter(ITPortalTool.id == tool.id, ITPortalTool.is_active == True)
+        .with_for_update()
+        .first()
+    )
+    if not tool or not tool.single_seat or not tool.active_session_user_id:
+        return {"success": True, "released": False}
+
+    if tool.active_session_user_id != user.id:
+        return {"success": True, "released": False}
+
+    tool.active_session_user_id = None
+    tool.active_session_started_at = None
+    db.commit()
+    return {"success": True, "released": True}
 
 
 @router.post("/extension/usage-event")
@@ -3364,7 +3531,14 @@ async def get_extension_otp(
     canonical_tool_slug = _canonical_tool_slug(tool.slug or payload.tool_slug or "")
     otp_not_before_dt = None
     if payload.otp_not_before_epoch_ms:
-        skew_ms = 1000 if canonical_tool_slug == "higgsfield" else 5000
+        # Was 1000ms for Higgsfield vs 5000ms for every other tool (same
+        # unexplained special-case, same commit, as OTP_HIGGSFIELD_MAX_WAIT_SEC
+        # above) - a smaller skew tolerance makes the "is this OTP email too
+        # old" cutoff stricter, so any clock skew between this server and the
+        # extension's browser clock could reject a genuinely fresh OTP purely
+        # on timing. No reason found for Higgsfield needing tighter tolerance
+        # than everything else; matches the other tools' skew now.
+        skew_ms = 5000
         otp_not_before_dt = datetime.fromtimestamp(
             max(0, payload.otp_not_before_epoch_ms - skew_ms) / 1000,
             tz=timezone.utc,
@@ -4039,13 +4213,38 @@ def launch_tool(
     current_user: User = Depends(get_current_user_with_workplace_tools_access),
     db: Session = Depends(get_operational_db),
 ):
-    tool = db.query(ITPortalTool).filter(ITPortalTool.id == tool_id, ITPortalTool.is_active == True).first()
+    # Row lock: two users clicking Launch on a single-seat tool at the same
+    # instant must not both win the lock - the second request's SELECT blocks
+    # here until the first request's transaction commits (or rolls back),
+    # then re-reads the now-updated row.
+    tool = (
+        db.query(ITPortalTool)
+        .filter(ITPortalTool.id == tool_id, ITPortalTool.is_active == True)
+        .with_for_update()
+        .first()
+    )
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
 
     credential = _resolve_tool_credential(db, tool.id, current_user.id)
     if not credential:
         raise HTTPException(status_code=403, detail="You are not assigned to this tool.")
+
+    if tool.single_seat:
+        holder_id = _single_seat_lock_holder_id(tool)
+        if holder_id and holder_id != current_user.id:
+            holder = db.query(User).filter(User.id == holder_id).first()
+            holder_label = (holder.name or holder.email) if holder else "another user"
+            holder_contact = f" ({holder.email})" if holder and holder.email else ""
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{tool.name} is currently in use by {holder_label}{holder_contact}. "
+                    "Ask them to close it, or wait until they're done."
+                ),
+            )
+        tool.active_session_user_id = current_user.id
+        tool.active_session_started_at = datetime.utcnow()
 
     revealed = None
     canonical_tool_slug = _canonical_tool_slug_for_tool(tool)
@@ -4121,9 +4320,41 @@ def launch_tool(
         "extensionTicketExpiresAt": extension_ticket_expires_at,
         "usageTrackingTicket": usage_tracking_ticket,
         "usageTrackingTicketExpiresAt": usage_tracking_ticket_expires_at,
-        "tool": _serialize_tool(tool, credential=credential),
+        "tool": _serialize_tool(tool, credential=credential, active_session_holder=current_user if tool.single_seat else None),
         "credential": revealed,
     }
+
+
+@router.post("/tools/{tool_id}/session/release")
+def release_tool_session(
+    tool_id: int,
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
+    db: Session = Depends(get_operational_db),
+):
+    """Frees a single-seat tool's lock. Called by the browser extension when
+    the launched tab closes (see content-semrush.js / background-main.js),
+    and by the dashboard's manual "Release" button for when that hook is
+    missed (browser crash, force-quit, lost network)."""
+    tool = (
+        db.query(ITPortalTool)
+        .filter(ITPortalTool.id == tool_id, ITPortalTool.is_active == True)
+        .with_for_update()
+        .first()
+    )
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+
+    if not tool.single_seat or not tool.active_session_user_id:
+        return {"success": True, "released": False}
+
+    is_holder = tool.active_session_user_id == current_user.id
+    if not is_holder and not has_any_role(current_user, {"admin"}):
+        raise HTTPException(status_code=403, detail="Only the current holder or an admin can release this tool.")
+
+    tool.active_session_user_id = None
+    tool.active_session_started_at = None
+    db.commit()
+    return {"success": True, "released": True}
 
 
 @router.get("/usage-report")

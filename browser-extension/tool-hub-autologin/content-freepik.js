@@ -4,11 +4,52 @@ const SIGNUP_URL_PATH_FRAGMENT = '/sign-up';
 const PREPARED_LAUNCH_KEY = 'rmw_freepik_prepared_launch';
 const BLOCKED_NOTICE_KEY = 'rmw_freepik_blocked_notice';
 const EXTENSION_TICKET_KEY = 'rmw_extension_ticket';
+// Set when the auto-login gives up for a reason a page reload will not fix - a
+// rejected sign-in, a captcha challenge, a rate-limit notice. attemptFlow()
+// refuses to touch the page while this is set, so Magnific bouncing us back to
+// the login form (or the user refreshing to solve the captcha) cannot restart
+// the fill/submit loop. Cleared only by a completed login or a fresh
+// dashboard launch.
+const AUTOLOGIN_HALT_KEY = 'rmw_freepik_autologin_halt';
+// Counts credential submits across page reloads. A rejected Magnific sign-in
+// usually reloads straight back to the form, wiping the in-memory guard below,
+// so without this the extension re-submits on every load and walks the account
+// into "failed to login N times, try again in 24 hours". The credential is
+// submitted automatically at most this many times per browser session.
+const LOGIN_SUBMIT_TRACK_KEY = 'rmw_freepik_login_submit_track';
+const MAX_PERSISTED_LOGIN_SUBMITS = 1;
+const PERSISTED_SUBMIT_WINDOW_MS = 3 * 60 * 1000;
 
 const MIN_RUN_GAP_MS = 400;
 const KEEP_ALIVE_MS = 2000;
 const LOGIN_OPEN_COOLDOWN_MS = 2500;
 const SUBMIT_COOLDOWN_MS = 1500;
+// After submitting the sign-in, how long to let the request resolve before
+// deciding it failed. A successful login navigates (or flips the page to an
+// authenticated state, caught earlier in attemptFlow) well inside this
+// window; if the login form is still sitting there afterwards, it was
+// rejected.
+const LOGIN_FAILURE_GRACE_MS = 6000;
+
+const LOGIN_ERROR_PHRASES = [
+  'incorrect', 'invalid', 'not valid', "isn't right", 'is not right',
+  'wrong password', 'wrong email', "doesn't match", 'does not match',
+  'try again', 'not found', 'no account', 'no user', 'unable to sign',
+  'unable to log', 'failed to sign', 'failed to log', 'could not sign',
+  'could not log', 'something went wrong', 'too many attempts',
+  'temporarily blocked', 'temporarily locked', 'rate limit',
+  'verify you are human', 'complete the captcha', 'check your email and password',
+  'wrong email or password', 'credentials', 'authentication failed',
+];
+
+// Magnific's sign-in sits behind invisible reCAPTCHA v3, which scores the
+// submit on real user interaction. A programmatic click never clears it - every
+// automated submit comes back "Recaptcha validation failed, please reload this
+// page and try again", and repeated tries walk the account into a 24-hour
+// lockout. A real click on "Log in" passes (confirmed: manual sign-in works).
+// So the extension fills the credentials and leaves the final click to the
+// user. Flip this to true only if Magnific ever drops the captcha.
+const AUTO_SUBMIT_LOGIN = false;
 
 const EMAIL_SELECTORS = [
   'input[type="email"]',
@@ -57,10 +98,14 @@ const STATE = {
   lastLoginOpenAt: 0,
   lastSubmitAt: 0,
   lastEmailContinueAt: 0,
+  emailContinueCount: 0,
+  loginSubmitCount: 0,
   passwordFilled: false,
   passwordRevealGuardAttached: false,
   switchingToLoginUntil: 0,
   lastBackNavigationAt: 0,
+  submitButtonHighlighted: false,
+  credentialFillCount: 0,
   stopped: false,
 };
 
@@ -130,6 +175,7 @@ function stop(message) {
 }
 
 function complete(message = 'Magnific login complete') {
+  clearHaltRecord();
   STATE.stopped = true;
   if (STATE.scheduledTimer) {
     window.clearTimeout(STATE.scheduledTimer);
@@ -146,6 +192,47 @@ function complete(message = 'Magnific login complete') {
   STATE.status = message;
   console.debug('[RMW Magnific Auto Login]', message);
   window.setTimeout(() => hideStatusBadge(), 600);
+}
+
+function readHaltRecord() {
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(AUTOLOGIN_HALT_KEY) || 'null');
+    return parsed && parsed.reason ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearHaltRecord() {
+  try { window.sessionStorage.removeItem(AUTOLOGIN_HALT_KEY); } catch {}
+  try { window.sessionStorage.removeItem(LOGIN_SUBMIT_TRACK_KEY); } catch {}
+}
+
+// Stop the auto-login AND remember why, so a page reload does not silently
+// restart the fill/submit loop. Use this (not stop()) for anything a human
+// has to resolve: rejected credentials, a captcha, a rate-limit lockout.
+function haltAutoLogin(reason) {
+  try {
+    window.sessionStorage.setItem(AUTOLOGIN_HALT_KEY, JSON.stringify({ reason, at: Date.now() }));
+  } catch {}
+  stop(reason);
+}
+
+function readSubmitTrackCount() {
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(LOGIN_SUBMIT_TRACK_KEY) || 'null');
+    if (!parsed || typeof parsed.count !== 'number') return 0;
+    if (Date.now() - (parsed.at || 0) > PERSISTED_SUBMIT_WINDOW_MS) return 0;
+    return parsed.count;
+  } catch {
+    return 0;
+  }
+}
+
+function recordLoginSubmit() {
+  const next = { count: readSubmitTrackCount() + 1, at: Date.now() };
+  try { window.sessionStorage.setItem(LOGIN_SUBMIT_TRACK_KEY, JSON.stringify(next)); } catch {}
+  return next.count;
 }
 
 function sendRuntimeMessage(message) {
@@ -1067,9 +1154,52 @@ function clickGoogleLoginAction(element) {
 }
 
 function submitLogin(emailInput, passwordInput, submitButton) {
+  // Count this before the click - it must survive the page reload a rejected
+  // sign-in triggers so the cross-reload guard in attemptFlow() can see it.
+  recordLoginSubmit();
   if (clickElementAtCenter(submitButton) || clickElement(submitButton)) return true;
   if (submitNearestForm(passwordInput || emailInput)) return true;
   return pressEnter(passwordInput || emailInput);
+}
+
+function highlightSubmitButton(button) {
+  if (!button || STATE.submitButtonHighlighted) return;
+  STATE.submitButtonHighlighted = true;
+  try {
+    button.style.outline = '3px solid #22c55e';
+    button.style.outlineOffset = '2px';
+    button.style.borderRadius = button.style.borderRadius || '8px';
+  } catch {}
+}
+
+// The credential fields are filled and the form is ready. When AUTO_SUBMIT_LOGIN
+// is on we click Log in; otherwise (Magnific's default - see the constant) we
+// stop here with the fields populated and let the user click, because their
+// real click is what passes the invisible reCAPTCHA.
+function finishLoginForm(emailInput, passwordInput, submitButton) {
+  if (AUTO_SUBMIT_LOGIN) {
+    STATE.lastSubmitAt = Date.now();
+    STATE.loginSubmitCount += 1;
+    STATE.passwordFilled = true;
+    setStatus('Submitting Magnific login');
+    submitLogin(emailInput, passwordInput, submitButton);
+    return;
+  }
+
+  STATE.passwordFilled = true;
+  highlightSubmitButton(submitButton);
+  const pageText = normalizeText(document.body?.innerText || '');
+  if (
+    pageText.includes('recaptcha validation failed')
+    || pageText.includes('reload this page and try again')
+  ) {
+    setStatus('Magnific\'s captcha check failed. Reload this page (Ctrl+R), then click "Log in" - the fields will be re-filled for you.');
+  } else {
+    setStatus('Email and password are filled. Click "Log in" to finish - Magnific\'s captcha needs your click.');
+  }
+  // Stay alive so the fields get topped up if Magnific clears them, but do not
+  // touch the submit button.
+  scheduleAttempt(1500);
 }
 
 function requestCredential() {
@@ -1118,6 +1248,157 @@ function isReadyForSubmit(emailInput, passwordInput) {
     && passwordInput.value === STATE.credential.password;
 }
 
+// Best-effort read of whatever the sign-in form is saying after a rejected
+// submit, so the auto-login can stop with something actionable instead of
+// silently looping. Returns '' when nothing error-like is visible.
+function findLoginErrorText(emailInput, passwordInput) {
+  const containers = document.querySelectorAll(
+    '[role="alert"],[aria-live="assertive"],[aria-live="polite"],'
+    + '.error,.error-message,.form-error,.field-error,.input-error,'
+    + '[class*="error" i],[class*="invalid" i],[class*="danger" i],'
+    + '[data-error],.helper-text,.MuiFormHelperText-root,.chakra-form__error-message'
+  );
+  const seen = new Set();
+  for (const el of containers) {
+    if (!isVisible(el)) continue;
+    const text = normalizeText(el.innerText || el.textContent || '');
+    if (!text || text.length > 300 || seen.has(text)) continue;
+    seen.add(text);
+    if (LOGIN_ERROR_PHRASES.some((phrase) => text.includes(phrase))) {
+      return el.innerText?.trim() || text;
+    }
+  }
+
+  // Structured signal: the password (or email) field flagged invalid, with an
+  // aria-describedby message pointing at the explanation.
+  for (const field of [passwordInput, emailInput]) {
+    if (!field || field.getAttribute('aria-invalid') !== 'true') continue;
+    const describedBy = field.getAttribute('aria-describedby');
+    if (describedBy) {
+      const message = describedBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((node) => (node.innerText || node.textContent || '').trim())
+        .filter(Boolean)
+        .join(' ');
+      if (message) return message;
+    }
+    return 'the sign-in form is showing a validation error';
+  }
+
+  return '';
+}
+
+const CAPTCHA_TEXT_SIGNALS = [
+  "i'm not a robot", 'im not a robot',
+  'verify you are human', "verify you're human", 'confirm you are human',
+  "confirm you're human", 'human verification',
+  'complete the captcha', 'complete a captcha',
+  'please complete the security check', 'unusual traffic from your',
+];
+
+const LOCKOUT_TEXT_SIGNALS = [
+  'failed to login', 'failed to log in', 'you have failed',
+  'try again in 24', 'too many attempts', 'too many failed',
+  'too many login', 'account is locked', 'account has been locked',
+  'temporarily locked', 'temporarily blocked',
+];
+
+// True when a rect actually overlaps the viewport (Google/hCaptcha sometimes
+// "hide" a widget by parking it thousands of px off-screen with opacity 1).
+function rectIsOnScreen(rect) {
+  return rect.width > 0
+    && rect.height > 0
+    && rect.bottom > 0
+    && rect.right > 0
+    && rect.top < (window.innerHeight || 0)
+    && rect.left < (window.innerWidth || 0);
+}
+
+// A rendered captcha iframe is only a real challenge when it (and its
+// wrappers) are actually shown. Google/hCaptcha keep the challenge popup in
+// the DOM hidden (visibility:hidden / opacity:0 / off-screen) until it fires.
+function isChallengeIframeActive(frame) {
+  if (!frame) return false;
+  const rect = frame.getBoundingClientRect();
+  if (rect.width < 40 || rect.height < 40 || !rectIsOnScreen(rect)) return false;
+  let node = frame;
+  for (let depth = 0; node && depth < 6; depth += 1) {
+    const style = window.getComputedStyle(node);
+    if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) {
+      return false;
+    }
+    node = node.parentElement;
+  }
+  return true;
+}
+
+// The passive reCAPTCHA v3 / invisible-v2 widget (the little corner badge that
+// says "protected by reCAPTCHA") is ALWAYS on a Magnific login page and is not
+// something the user has to do anything about. Its anchor iframe carries
+// size=invisible and/or sits inside .grecaptcha-badge. Only an anchor WITHOUT
+// those - a real "I'm not a robot" checkbox - counts as a challenge.
+function isInteractiveRecaptchaAnchor(frame) {
+  if (!frame) return false;
+  const src = `${frame.getAttribute('src') || frame.src || ''}`;
+  if (src.includes('size=invisible')) return false;
+  if (frame.closest && frame.closest('.grecaptcha-badge')) return false;
+  const rect = frame.getBoundingClientRect();
+  if (!rectIsOnScreen(rect)) return false;
+  // The interactive v2 checkbox anchor renders at ~304x78 (compact ~164x144).
+  // The passive v3 / invisible badge anchor is ~256x60 - separable by height.
+  const looksLikeCheckbox = rect.height >= 70 || (rect.width < 200 && rect.height >= 120);
+  if (!looksLikeCheckbox) return false;
+  return isVisible(frame);
+}
+
+// Returns a human-readable reason when the page is showing something the
+// extension must not automate through - an interactive captcha / human check,
+// or a rate-limit / lockout notice - otherwise ''. The always-present
+// invisible reCAPTCHA v3 badge and the "protected by reCAPTCHA" legal footer
+// are deliberately ignored; only a live challenge or an error counts.
+function detectActiveChallenge() {
+  const bodyText = normalizeText(document.body?.innerText || '');
+  if (LOCKOUT_TEXT_SIGNALS.some((phrase) => bodyText.includes(phrase))) {
+    return 'Magnific is rate-limiting sign-ins - the page shows a "failed to login" / "try again later" notice. Auto-login stopped so it does not make the lockout worse. Wait it out or sign in yourself.';
+  }
+
+  const widgetSelectors = [
+    'iframe[src*="recaptcha/api2/bframe"]',
+    'iframe[src*="recaptcha/enterprise/bframe"]',
+    'iframe[src*="hcaptcha.com"]',
+    'iframe[src*="challenges.cloudflare.com"]',
+    '.h-captcha iframe',
+    '.cf-turnstile iframe',
+  ];
+  for (const selector of widgetSelectors) {
+    if (Array.from(document.querySelectorAll(selector)).some(isChallengeIframeActive)) {
+      return 'A captcha / human-verification challenge is open. Auto-login is paused - complete it yourself and the sign-in will go through.';
+    }
+  }
+
+  const anchorFrames = document.querySelectorAll(
+    'iframe[src*="recaptcha/api2/anchor"], iframe[src*="recaptcha/enterprise/anchor"]'
+  );
+  if (Array.from(anchorFrames).some(isInteractiveRecaptchaAnchor)) {
+    return 'An "I\'m not a robot" checkbox is on the page. Auto-login is paused - tick it yourself and the sign-in will continue.';
+  }
+
+  const nodes = document.querySelectorAll('h1,h2,h3,h4,p,span,div,label,strong,button');
+  for (const el of nodes) {
+    if (el.children.length > 3) continue;
+    const text = normalizeText(el.innerText || el.textContent || '');
+    if (!text || text.length > 160) continue;
+    if (text.includes('protected by recaptcha') || (text.includes('privacy') && text.includes('terms'))) continue;
+    if (CAPTCHA_TEXT_SIGNALS.some((phrase) => text.includes(phrase)) && isVisible(el)) {
+      return 'The page is asking for human verification. Auto-login is paused - complete the check yourself.';
+    }
+  }
+
+  return '';
+}
+
 async function enforceDashboardOnlyAccess() {
   const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
   if (!isLoginPage()) {
@@ -1150,6 +1431,10 @@ async function ensureFreshLaunchSession() {
   window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
   try { window.localStorage.setItem(PREPARED_LAUNCH_KEY, launchKey); } catch {}
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
+  // A new dashboard launch is a deliberate retry - clear any persisted halt
+  // (rejected sign-in / captcha / lockout) so this fresh session gets a clean
+  // first attempt.
+  clearHaltRecord();
   setStatus('Preparing fresh Magnific session');
 
   if (window.location.href !== LOGIN_URL) {
@@ -1200,6 +1485,18 @@ function attemptFlow() {
     return;
   }
 
+  // A captcha / human-check / rate-limit notice is on the page. Never automate
+  // through these - a wrong or missing captcha token is exactly what drives
+  // the "failed to login N times, try again in 24 hours" lockout. Halt
+  // persistently so a reload (or the user refreshing to solve it) does not
+  // restart the fill/submit loop; a completed login or a fresh dashboard
+  // launch clears it.
+  const activeChallenge = detectActiveChallenge();
+  if (activeChallenge) {
+    haltAutoLogin(activeChallenge);
+    return;
+  }
+
   if (
     STATE.launchExpiresAt
     && getPreparedLaunchKey() !== `${STATE.launchExpiresAt}`
@@ -1234,6 +1531,54 @@ function attemptFlow() {
     requestCredential();
   }
 
+  // Cross-reload lockout guard. The credential was already submitted in this
+  // browser session and we are looking at a sign-in surface again on a fresh
+  // page load (STATE.loginSubmitCount === 0) - so that earlier submit was
+  // rejected or bounced us back here. Submitting again is precisely the path
+  // that reaches "failed to login N times". Halt for a human instead.
+  if (
+    !isGoogleCredential()
+    && (loginFormVisible || hasPasswordOnlyCredentialInput || hasEmailOnlyCredentialInput)
+    && STATE.loginSubmitCount === 0
+    && readSubmitTrackCount() >= MAX_PERSISTED_LOGIN_SUBMITS
+  ) {
+    const priorError = findLoginErrorText(emailInput, passwordInput);
+    haltAutoLogin(
+      priorError
+        ? `Magnific already rejected a sign-in this session - auto-login stopped so it does not lock the account.\nPage says: ${priorError}`
+        : 'Magnific already rejected a sign-in this session - auto-login stopped so it does not lock the account. Finish signing in yourself, then re-launch from the dashboard.'
+    );
+    return;
+  }
+
+  // Login-failure guard. The credential has been submitted exactly once. Wait
+  // out the request; if the sign-in form is STILL here afterwards it was
+  // rejected, so stop instead of re-filling and re-submitting in a loop -
+  // leave the page exactly as the site returned it so the real cause (wrong
+  // password, locked account, captcha, ...) is readable. A successful login
+  // never reaches this point: attemptFlow returns at isAuthenticatedMagnificPage()
+  // above, or the page has already navigated.
+  if (
+    (loginFormVisible || hasPasswordOnlyCredentialInput)
+    && !isGoogleCredential()
+    && STATE.loginSubmitCount > 0
+  ) {
+    const sinceSubmit = Date.now() - STATE.lastSubmitAt;
+    if (sinceSubmit < LOGIN_FAILURE_GRACE_MS) {
+      setStatus('Waiting for Magnific to accept the sign-in');
+      scheduleAttempt(LOGIN_FAILURE_GRACE_MS - sinceSubmit + 100);
+      return;
+    }
+
+    const errorText = findLoginErrorText(emailInput, passwordInput);
+    haltAutoLogin(
+      errorText
+        ? `Magnific did not accept the sign-in - auto-login stopped so you can check it.\nPage says: ${errorText}`
+        : 'Magnific sign-in did not go through - auto-login stopped. The login form is still open; check the page for the reason.'
+    );
+    return;
+  }
+
   if (hasEmailOnlyCredentialInput && !isGoogleCredential()) {
     if (!STATE.credential?.loginIdentifier) {
       setStatus('Waiting for credential');
@@ -1242,6 +1587,25 @@ function attemptFlow() {
 
     if (!isVisible(emailInput)) {
       setStatus('Waiting for email field');
+      return;
+    }
+
+    // Same failure guard as the password step: if the email screen is still
+    // here a beat after we pushed Continue with the identifier already in the
+    // field, the identifier was rejected (unknown account, bad format) - stop
+    // rather than keep clicking Continue.
+    if (
+      STATE.emailContinueCount > 0
+      && emailInput.value === STATE.credential.loginIdentifier
+      && (Date.now() - STATE.lastEmailContinueAt) > LOGIN_FAILURE_GRACE_MS
+      && findEmailContinueButton(emailInput, { includeDisabled: true })
+    ) {
+      const errorText = findLoginErrorText(emailInput, null);
+      haltAutoLogin(
+        errorText
+          ? `Magnific did not accept the email - auto-login stopped so you can check it.\nPage says: ${errorText}`
+          : 'Magnific email step did not advance - auto-login stopped. Check the page for the reason.'
+      );
       return;
     }
 
@@ -1268,6 +1632,7 @@ function attemptFlow() {
     }
 
     STATE.lastEmailContinueAt = Date.now();
+    STATE.emailContinueCount += 1;
     setStatus('Submitting Magnific email');
     if (clickElement(continueButton) || submitNearestForm(emailInput) || pressEnter(emailInput)) {
       scheduleAttempt(700);
@@ -1311,10 +1676,7 @@ function attemptFlow() {
       return;
     }
 
-    STATE.lastSubmitAt = Date.now();
-    STATE.passwordFilled = true;
-    setStatus('Submitting Magnific login');
-    submitLogin(null, passwordInput, submitButton);
+    finishLoginForm(null, passwordInput, submitButton);
     return;
   }
 
@@ -1457,6 +1819,14 @@ function attemptFlow() {
   }
 
   if (filledCredentialField) {
+    STATE.credentialFillCount += 1;
+    // If Magnific keeps clearing what we type in, stop hammering setInputValue
+    // every 120ms - back off and let the user take over.
+    if (STATE.credentialFillCount > 8) {
+      setStatus('Magnific is not holding the auto-filled credentials. Type them in and click "Log in".');
+      scheduleAttempt(3000);
+      return;
+    }
     setStatus('Filling Magnific login form');
     scheduleAttempt(120);
     return;
@@ -1480,10 +1850,7 @@ function attemptFlow() {
     return;
   }
 
-  STATE.lastSubmitAt = Date.now();
-  STATE.passwordFilled = true;
-  setStatus('Submitting Magnific login');
-  submitLogin(emailInput, passwordInput, submitButton);
+  finishLoginForm(emailInput, passwordInput, submitButton);
 }
 
 function runAttempt() {
@@ -1512,6 +1879,25 @@ function scheduleAttempt(delay = 0) {
 
 function start() {
   ensureStatusBadge();
+
+  // A prior attempt in this browser session halted for a reason a reload will
+  // not fix (rejected sign-in, captcha, lockout). Stay stopped and keep the
+  // message on screen instead of re-running the fill/submit loop. Recover only
+  // if the page is now authenticated (the user finished it by hand) or a fresh
+  // dashboard launch (a new ticket in the URL) signals a deliberate retry.
+  const halt = readHaltRecord();
+  if (halt && !readLaunchTicketFromUrl()) {
+    if (isAuthenticatedMagnificPage()) {
+      clearHaltRecord();
+    } else {
+      STATE.stopped = true;
+      setStatus(halt.reason);
+      return;
+    }
+  } else if (halt) {
+    clearHaltRecord();
+  }
+
   captureLaunchTicket();
 
   STATE.observer = new MutationObserver(() => scheduleAttempt(450));

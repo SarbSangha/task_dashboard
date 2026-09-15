@@ -348,6 +348,7 @@ async function handleSunoCaptureAudioMessage(message) {
         clip_id: clipId,
         content_type: message.contentType || 'audio/mpeg',
         audio_base64: audioBase64,
+        audio_url: message.audioUrl || null,
       }),
     });
     const data = await response.json().catch(() => ({}));
