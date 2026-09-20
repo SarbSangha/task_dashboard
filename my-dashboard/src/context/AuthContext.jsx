@@ -82,8 +82,18 @@ export const AuthProvider = ({ children }) => {
   // Keep `checkAuth` reachable from the subscription effect below without
   // making that effect re-subscribe on every render (checkAuth is a new
   // function each time).
+  //
+  // The assignment MUST stay inside an effect. `checkAuth` is a `const`
+  // arrow function declared further down this component, so touching it
+  // during render hits the temporal dead zone and throws
+  // "Cannot access 'checkAuth' before initialization" — which, thrown from
+  // the provider, blanks the entire app. Effects run after render, by which
+  // point the binding is initialized. (The mount effect above can call
+  // checkAuth() for the same reason.)
   const checkAuthRef = useRef(null);
-  checkAuthRef.current = checkAuth;
+  useEffect(() => {
+    checkAuthRef.current = checkAuth;
+  });
 
   /* ---- Live permission changes ----------------------------------------
      checkAuth() otherwise runs only on mount, so an admin granting or

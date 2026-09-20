@@ -6,6 +6,14 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 
 export default [
   { ignores: ['dist'] },
+  // Build/test tooling under scripts/ runs in Node, not the browser, so it
+  // needs Node globals (process, console) rather than browser ones.
+  {
+    files: ['scripts/**/*.{js,mjs,jsx}'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser },
+    },
+  },
   {
     files: ['**/*.{js,jsx}'],
     languageOptions: {

@@ -97,9 +97,16 @@ def notify_feature_access_changed(user_ids: Iterable[int], feature: str, enabled
 
     Best-effort by design: this is a UI nudge, not the enforcement, so a
     full queue or a disconnected socket is logged and swallowed rather than
-    failing the admin's write, which has already been committed.
+    failing the admin's write, which has already been committed. That is
+    also why the import below is inside the guard - it is deferred to call
+    time to avoid a circular import, and a failure there would otherwise
+    surface to the admin as a 500 on a grant that actually succeeded.
     """
-    from routers.tasks_router import notification_dispatcher
+    try:
+        from routers.tasks_router import notification_dispatcher
+    except Exception:  # pragma: no cover - depends on runtime infra
+        logger.exception("Notification dispatcher unavailable; skipping feature access notice")
+        return
 
     payload = {
         "eventType": "user_feature_access_changed",
