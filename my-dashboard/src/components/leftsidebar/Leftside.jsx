@@ -25,6 +25,7 @@ import BufferPanel from './compofleftsidebar/buffer/BufferPanel';
 import ReportsPanel from '../reports/ReportsPanel';
 import TaskReportPanel from '../reports/TaskReportPanel';
 import { usePermissions } from '../../hooks/usePermissions';
+import { useAuth } from '../../context/AuthContext';
 
 const PANEL_TO_ACTIVE = {
   inbox: 'inbox',
@@ -45,6 +46,16 @@ const getPanelFromPath = (pathname = '') =>
 
 const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
   const { can, isAdmin } = usePermissions();
+  const { user: authUser, loading: authLoading } = useAuth();
+
+  // Per-user grants an admin hands out in Admin Queue -> Section Access.
+  // Used for both the sidebar buttons and the panels themselves: the panels
+  // are routed (/dashboard/trendings, /dashboard/buffer), so hiding only the
+  // button would still leave them reachable by typing the URL.
+  const canViewRmwData = can('view_rmw_data');
+  const canViewBuffer = can('view_buffer');
+  const canViewAdminQueue = can('view_admin_queue');
+  const hasAnyInsightItem = canViewRmwData || canViewBuffer || canViewAdminQueue;
   const navigate = useNavigate();
   const location = useLocation();
   const { pathname, search } = location;
@@ -175,6 +186,18 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
 
   const openBufferPanel = () => goTo('buffer');
   const closeBufferPanel = () => closePanel('buffer');
+
+  /* ---- Bounce off a gated route the user cannot open ---- */
+  // Without this, typing /dashboard/trendings while ungranted leaves the
+  // user parked on a route that renders nothing. Waits for auth to resolve
+  // so a page refresh straight onto a granted section does not redirect in
+  // the moment before /me comes back.
+  useEffect(() => {
+    if (authLoading || !authUser) return;
+    if ((panel === 'trendings' && !canViewRmwData) || (panel === 'buffer' && !canViewBuffer)) {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [authLoading, authUser, panel, canViewRmwData, canViewBuffer, navigate]);
 
   const openAdminQueue = () => goTo('admin-queue');
   const closeAdminQueue = () => closePanel('admin-queue');
@@ -315,26 +338,35 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
           </div>
 
           {/* ── INSIGHT ── */}
+          {/* Header is conditional too: with RMW Data and Buffer both
+              ungranted and no admin queue, the section would otherwise
+              render as a bare "Insight" label with nothing under it. */}
+          {hasAnyInsightItem && (
           <div className="nav-section">
             <div className="nav-section-header">
               <span className="nav-section-label">Insight</span>
             </div>
 
-            <TrendingsButton
-              isActive={activeItem === 'trendings'}
-              onClick={openTrendingsPanel}
-            />
-            <BufferButton
-              isActive={activeItem === 'buffer'}
-              onClick={openBufferPanel}
-            />
-            {can('view_admin_queue') && (
+            {canViewRmwData && (
+              <TrendingsButton
+                isActive={activeItem === 'trendings'}
+                onClick={openTrendingsPanel}
+              />
+            )}
+            {canViewBuffer && (
+              <BufferButton
+                isActive={activeItem === 'buffer'}
+                onClick={openBufferPanel}
+              />
+            )}
+            {canViewAdminQueue && (
               <AdminQueueButton
                 isActive={activeItem === 'admin-queue'}
                 onClick={openAdminQueue}
               />
             )}
           </div>
+          )}
 
           {/* ── ANALYTICS (admin only) ── */}
           {isAdmin && (
@@ -393,14 +425,14 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
       />
 
       <TrendingsPanel
-        isOpen={isPanelVisible('trendings')}
+        isOpen={canViewRmwData && isPanelVisible('trendings')}
         onClose={closeTrendingsPanel}
         onMinimizedChange={(isMinimized) => setPanelMinimized('trendings', isMinimized)}
         onActivate={() => activatePanel('trendings')}
       />
 
       <BufferPanel
-        isOpen={isPanelVisible('buffer')}
+        isOpen={canViewBuffer && isPanelVisible('buffer')}
         onClose={closeBufferPanel}
         onMinimizedChange={(isMinimized) => setPanelMinimized('buffer', isMinimized)}
         onActivate={() => activatePanel('buffer')}

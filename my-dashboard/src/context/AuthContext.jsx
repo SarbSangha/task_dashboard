@@ -1,7 +1,7 @@
 // src/context/AuthContext.jsx - ADD useAuth HOOK
 
 import React, { createContext, useState, useEffect, useContext, useCallback, useRef } from 'react';
-import { activityAPI, authAPI } from '../services/api';
+import { activityAPI, authAPI, subscribeRealtimeNotifications } from '../services/api';
 import useActivityTracker from '../hooks/useActivityTracker';
 import { cleanupWebPushSubscription } from '../utils/webPush';
 
@@ -31,13 +31,13 @@ const resetAuthBootstrapCache = () => {
 
 const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
-const getCurrentUserWithRetry = async () => {
+const getCurrentUserWithRetry = async ({ fresh = false } = {}) => {
   let attempt = 0;
   let lastError = null;
 
   while (attempt < AUTH_BOOTSTRAP_RETRY_COUNT) {
     try {
-      return await authAPI.getCurrentUser();
+      return await authAPI.getCurrentUser({ fresh });
     } catch (error) {
       lastError = error;
       if (!isAuthServiceUnavailable(error) || attempt === AUTH_BOOTSTRAP_RETRY_COUNT - 1) {
@@ -79,6 +79,33 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, []);
 
+  // Keep `checkAuth` reachable from the subscription effect below without
+  // making that effect re-subscribe on every render (checkAuth is a new
+  // function each time).
+  const checkAuthRef = useRef(null);
+  checkAuthRef.current = checkAuth;
+
+  /* ---- Live permission changes ----------------------------------------
+     checkAuth() otherwise runs only on mount, so an admin granting or
+     revoking a gated section (RMW Data, Buffer) would not reach a
+     logged-in user until they reloaded the page - leaving a revoked user
+     looking at a sidebar entry whose API calls now 403. The server sends
+     `user_feature_access_changed` to exactly the affected users, and the
+     refetch is `fresh` so it cannot be answered from the /me cache that
+     was populated before the change. */
+  useEffect(() => {
+    if (!user?.id) return undefined;
+
+    const unsubscribe = subscribeRealtimeNotifications({
+      onMessage: (event) => {
+        if (event?.eventType !== 'user_feature_access_changed') return;
+        void checkAuthRef.current?.({ fresh: true });
+      },
+    });
+
+    return unsubscribe;
+  }, [user?.id]);
+
   const fetchAndPatchAvatar = useCallback(async (currentUser) => {
     if (!currentUser?.id) return;
     if (currentUser.avatar) return;
@@ -102,17 +129,23 @@ export const AuthProvider = ({ children }) => {
     }
   }, []);
 
-  const checkAuth = async () => {
+  const checkAuth = async ({ fresh = false } = {}) => {
     console.log('🔍 Checking authentication...');
     try {
       const now = Date.now();
       let response = null;
 
+      // `fresh` bypasses both this client-side bootstrap cache and the
+      // server's /me cache — see refreshPermissions below.
+      if (fresh) {
+        resetAuthBootstrapCache();
+      }
+
       if (authBootstrapCachedResult && (now - authBootstrapCachedAt) < AUTH_BOOTSTRAP_CACHE_MS) {
         response = authBootstrapCachedResult;
       } else {
         if (!authBootstrapPromise) {
-          authBootstrapPromise = getCurrentUserWithRetry()
+          authBootstrapPromise = getCurrentUserWithRetry({ fresh })
             .then((result) => {
               authBootstrapCachedResult = result;
               authBootstrapCachedAt = Date.now();

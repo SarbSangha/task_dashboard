@@ -1639,6 +1639,32 @@ def get_current_user_from_session(
         return None
 
 
+def require_rmw_data_access(
+    current_user: Optional[User] = Depends(get_current_user_from_session),
+) -> User:
+    """Gate the RMW Data (Trendings) asset endpoints on the per-user grant.
+
+    Must be a dependency rather than a check inside the handler body: those
+    endpoints are wrapped in @cache_response(vary_by_user=False), which
+    returns the cached payload before the body ever runs, so a body-level
+    check would be skipped on every cache hit - and with one shared cache
+    key, the first allowed caller would warm a response that everyone else
+    could then read. FastAPI resolves dependencies before invoking the
+    wrapper, and de-duplicates get_current_user_from_session within a
+    request, so this costs no extra session lookup.
+    """
+    from services.feature_access_service import FEATURE_RMW_DATA, has_feature_access
+
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not has_feature_access(current_user, FEATURE_RMW_DATA):
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to RMW Data. Ask an administrator to grant it.",
+        )
+    return current_user
+
+
 def add_history(
     db: Session,
     task: Task,
@@ -5323,6 +5349,7 @@ def get_task_assets(
     include_totals: bool = Query(False),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
+    _rmw_access: User = Depends(require_rmw_data_access),
 ):
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -5367,6 +5394,7 @@ def get_task_asset_directory_groups(
     project_key: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
+    _rmw_access: User = Depends(require_rmw_data_access),
 ):
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -5412,6 +5440,7 @@ def get_task_asset_directory_files(
     project_key: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(get_current_user_from_session),
+    _rmw_access: User = Depends(require_rmw_data_access),
 ):
     if not current_user:
         raise HTTPException(status_code=401, detail="Not authenticated")

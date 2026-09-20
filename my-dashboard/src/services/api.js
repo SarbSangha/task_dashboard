@@ -469,9 +469,13 @@ export const authAPI = {
     }
   },
 
-  getCurrentUser: async () => {
+  // `fresh` skips the server's short-lived /me response cache — used when
+  // the client has been told its permissions changed and must not be
+  // handed a copy of the answer from before that change.
+  getCurrentUser: async ({ fresh = false } = {}) => {
     const response = await api.get('/api/auth/me', {
       timeout: AUTH_BOOTSTRAP_TIMEOUT_MS,
+      ...(fresh ? { params: { fresh: 1 } } : {}),
     });
     return response.data;
   },
@@ -628,6 +632,30 @@ export const authAPI = {
     const response = await api.patch('/api/admin/users/workplace-policy/bulk', {
       user_ids: userIds,
       enforce_active_task_policy: enforceActiveTaskPolicy,
+    });
+    return response.data;
+  },
+
+  // Per-user access to the deny-by-default sidebar sections (RMW Data,
+  // Buffer) - the "Section Access" tab in the Admin Queue panel.
+  getFeatureAccessCatalog: async () => {
+    const response = await api.get('/api/admin/feature-access/catalog');
+    return response.data;
+  },
+
+  setUserFeatureAccess: async (userId, feature, enabled) => {
+    const response = await api.patch(`/api/admin/users/${userId}/feature-access`, {
+      feature,
+      enabled,
+    });
+    return response.data;
+  },
+
+  bulkSetFeatureAccess: async (userIds, feature, enabled) => {
+    const response = await api.post('/api/admin/users/feature-access/bulk', {
+      user_ids: userIds,
+      feature,
+      enabled,
     });
     return response.data;
   },

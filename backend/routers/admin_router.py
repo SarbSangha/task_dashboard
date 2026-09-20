@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from database_config import get_operational_db
 from models_new import DepartmentDirectory, User, UserApprovalRequest
@@ -14,6 +14,15 @@ from services.admin_workflow_service import (
     pending_password_change_for_request,
     push_admin_realtime_event,
     sanitize_request_payload,
+)
+from services.feature_access_service import (
+    FEATURE_LABELS,
+    GATED_FEATURES,
+    feature_access_map,
+    is_feature_exempt,
+    normalize_feature,
+    notify_feature_access_changed,
+    set_feature_access,
 )
 from services.role_service import user_role_names
 from utils.cache import invalidate_pattern
@@ -55,6 +64,17 @@ class BulkWorkplacePolicyPayload(BaseModel):
     enforce_active_task_policy: bool
 
 
+class FeatureAccessPayload(BaseModel):
+    feature: str = Field(..., min_length=1, max_length=80)
+    enabled: bool
+
+
+class BulkFeatureAccessPayload(BaseModel):
+    user_ids: List[int] = Field(..., min_length=1)
+    feature: str = Field(..., min_length=1, max_length=80)
+    enabled: bool
+
+
 def _serialize_user(user: User, approval_status: str) -> dict:
     return {
         "id": user.id,
@@ -77,6 +97,10 @@ def _serialize_user(user: User, approval_status: str) -> dict:
         "createdAt": serialize_utc_datetime(user.created_at),
         "lastLogin": serialize_utc_datetime(user.last_login),
         "enforceActiveTaskPolicy": bool(getattr(user, "enforce_active_task_policy", False)),
+        # {"rmw_data": bool, "buffer": bool} - reads True for every feature on
+        # admins, who bypass the grant table entirely.
+        "featureAccess": feature_access_map(user),
+        "isFeatureExempt": is_feature_exempt(user),
     }
 
 
@@ -536,12 +560,160 @@ def set_user_workplace_policy(
     return {"success": True, "user": _serialize_user(user, "approved" if user.is_active else "pending")}
 
 
+def _commit_feature_access(db: Session, apply_changes) -> None:
+    """Commit grant changes, converging if another admin raced us.
+
+    (user_id, feature) is unique, so two admins granting the same section
+    to the same person at the same moment turn one of the inserts into an
+    IntegrityError - a 500 for whoever lost. Re-running the apply step
+    after a rollback converges instead: the second pass re-reads, finds the
+    row the other transaction committed, and becomes a no-op. Both admins
+    then see the state they asked for.
+    """
+    try:
+        apply_changes()
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        apply_changes()
+        db.commit()
+
+
+@router.get("/feature-access/catalog")
+def feature_access_catalog(_: User = Depends(require_admin)):
+    """The gated sections the Section Access tab renders columns for.
+
+    Served rather than hardcoded in the frontend so adding a feature to
+    GATED_FEATURES surfaces it in the admin UI without a frontend change.
+    """
+    return {
+        "success": True,
+        "features": [
+            {"key": key, "label": FEATURE_LABELS.get(key, key)}
+            for key in GATED_FEATURES
+        ],
+    }
+
+
+@router.patch("/users/{user_id}/feature-access")
+def set_user_feature_access(
+    user_id: int,
+    payload: FeatureAccessPayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    feature = normalize_feature(payload.feature)
+    if not feature:
+        raise HTTPException(status_code=400, detail=f"Unknown section: {payload.feature}")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_deleted:
+        raise HTTPException(status_code=400, detail="Cannot update section access for a deleted account")
+    if is_feature_exempt(user):
+        raise HTTPException(
+            status_code=400,
+            detail="Administrators always have access to every section",
+        )
+
+    _commit_feature_access(
+        db,
+        lambda: set_feature_access(db, user, feature, payload.enabled, granted_by=current_user.id),
+    )
+    db.refresh(user)
+    notify_feature_access_changed([user.id], feature, payload.enabled)
+
+    label = FEATURE_LABELS.get(feature, feature)
+    push_admin_realtime_event(
+        db,
+        "admin_user_feature_access_changed",
+        "Section Access Updated",
+        f"{label} access {'granted to' if payload.enabled else 'revoked for'} {user.name}.",
+        {
+            "userId": user.id,
+            "userName": user.name,
+            "feature": feature,
+            "enabled": payload.enabled,
+            "updatedBy": current_user.id,
+        },
+    )
+    return {"success": True, "user": _serialize_user(user, "approved" if user.is_active else "pending")}
+
+
+@router.post("/users/feature-access/bulk")
+def bulk_set_feature_access(
+    payload: BulkFeatureAccessPayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    feature = normalize_feature(payload.feature)
+    if not feature:
+        raise HTTPException(status_code=400, detail=f"Unknown section: {payload.feature}")
+    if not payload.user_ids:
+        raise HTTPException(status_code=400, detail="No user IDs provided")
+
+    rows = (
+        db.query(User)
+        .filter(User.id.in_(payload.user_ids), User.is_deleted == False)
+        .all()
+    )
+
+    updated = []
+    skipped = []
+
+    def _apply():
+        updated.clear()
+        skipped.clear()
+        for user in rows:
+            # Admins are skipped rather than rejected so a "select all" bulk
+            # action still applies to everyone it legitimately can.
+            if is_feature_exempt(user):
+                skipped.append(user.id)
+                continue
+            set_feature_access(db, user, feature, payload.enabled, granted_by=current_user.id)
+            updated.append(user.id)
+
+    _commit_feature_access(db, _apply)
+    notify_feature_access_changed(updated, feature, payload.enabled)
+
+    label = FEATURE_LABELS.get(feature, feature)
+    push_admin_realtime_event(
+        db,
+        "admin_user_feature_access_changed",
+        "Section Access Bulk Update",
+        f"{label} access {'granted to' if payload.enabled else 'revoked for'} {len(updated)} user(s).",
+        {
+            "updatedUserIds": updated,
+            "skippedUserIds": skipped,
+            "feature": feature,
+            "enabled": payload.enabled,
+            "updatedBy": current_user.id,
+        },
+    )
+    return {
+        "success": True,
+        "updatedCount": len(updated),
+        "skippedCount": len(skipped),
+        "feature": feature,
+        "enabled": payload.enabled,
+    }
+
+
 @router.get("/deleted-users")
 def deleted_users(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    rows = db.query(User).filter(User.is_deleted == True).order_by(User.deleted_at.desc(), User.created_at.desc()).all()
+    # Same eager load as /all-users: _serialize_user touches role_assignments
+    # and feature_grants on every row.
+    rows = (
+        db.query(User)
+        .options(selectinload(User.role_assignments), selectinload(User.feature_grants))
+        .filter(User.is_deleted == True)
+        .order_by(User.deleted_at.desc(), User.created_at.desc())
+        .all()
+    )
     return {
         "success": True,
         "count": len(rows),
@@ -554,7 +726,15 @@ def all_users(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
 ):
-    users = db.query(User).order_by(User.is_deleted.asc(), User.created_at.desc()).all()
+    # Eager-load the two collections _serialize_user touches per row
+    # (role_assignments via user_role_names, feature_grants via
+    # feature_access_map) - lazy loading them here is one query per user.
+    users = (
+        db.query(User)
+        .options(selectinload(User.role_assignments), selectinload(User.feature_grants))
+        .order_by(User.is_deleted.asc(), User.created_at.desc())
+        .all()
+    )
     signup_requests = (
         db.query(UserApprovalRequest)
         .filter(UserApprovalRequest.request_type == "signup")

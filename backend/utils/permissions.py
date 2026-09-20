@@ -87,3 +87,31 @@ class RoleChecker:
 require_admin = RoleChecker(["admin"])
 require_faculty = RoleChecker(["admin", "faculty"])
 require_user = RoleChecker(["admin", "faculty", "user"])
+
+
+class FeatureChecker:
+    """Gate a route on a per-user feature grant (deny-by-default).
+
+    Hiding the sidebar button only stops the honest path - the panels are
+    reachable by typing /dashboard/buffer - so the sections' endpoints carry
+    this too. Imported lazily to avoid a circular import:
+    services.feature_access_service imports has_any_role from this module.
+    """
+
+    def __init__(self, feature: str):
+        self.feature = feature
+
+    def __call__(self, user: User = Depends(get_current_user)):
+        from services.feature_access_service import FEATURE_LABELS, has_feature_access
+
+        if not has_feature_access(user, self.feature):
+            label = FEATURE_LABELS.get(self.feature, self.feature)
+            raise HTTPException(
+                status_code=403,
+                detail=f"You do not have access to {label}. Ask an administrator to grant it.",
+            )
+        return user
+
+
+require_rmw_data_access = FeatureChecker("rmw_data")
+require_buffer_access = FeatureChecker("buffer")

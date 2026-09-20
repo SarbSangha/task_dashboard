@@ -12,6 +12,23 @@ const PERMISSION_MATRIX = {
   view_kling_analytics: ['admin', 'faculty'],
 };
 
+/**
+ * Sidebar sections that are hidden unless an admin grants them per user.
+ *
+ * These deliberately sit OUTSIDE PERMISSION_MATRIX: that matrix answers
+ * "does this role do X", while these answer "was this person given X",
+ * which no role can imply. The server sends the grants on the user as
+ * `featureAccess` (see backend/services/feature_access_service.py) and
+ * enforces them on the matching endpoints - what follows only decides
+ * whether the UI is drawn.
+ *
+ * Keys mirror GATED_FEATURES in feature_access_service.py.
+ */
+export const FEATURE_PERMISSIONS = {
+  view_rmw_data: 'rmw_data',
+  view_buffer: 'buffer',
+};
+
 export function normalizeRoles(user) {
   const roles = new Set(
     Array.isArray(user?.roles)
@@ -48,12 +65,33 @@ export function resolvePermissionSnapshot(user) {
   const roleSet = new Set(roles);
   const hasApprovedLoginAccess = Boolean(user && user.isActive !== false && user.isDeleted !== true);
 
+  const isAdmin = roleSet.has('admin');
+  const featureAccess = user?.featureAccess || {};
+
   return {
     roles,
-    isAdmin: roleSet.has('admin'),
-    isFaculty: roleSet.has('admin') || roleSet.has('faculty'),
-    isUser: roleSet.has('user') || roleSet.has('admin') || roleSet.has('faculty'),
+    isAdmin,
+    isFaculty: isAdmin || roleSet.has('faculty'),
+    isUser: roleSet.has('user') || isAdmin || roleSet.has('faculty'),
+    featureAccess,
     can: (action) => {
+      // Per-user grants, checked before the role matrix. Deny-by-default:
+      // a missing/absent flag means "not granted", so a stale client that
+      // has not yet re-fetched the user hides the section rather than
+      // flashing it.
+      //
+      // Deliberately does NOT fall back to the local isAdmin: that one
+      // also counts a position string containing "admin", while the server
+      // only counts the is_admin flag and explicit role rows. Trusting the
+      // local flag here would show the section to someone the API then
+      // answers with 403. The server already reports True for both
+      // sections on a real admin, so reading its answer covers the admin
+      // bypass without re-deriving it.
+      const feature = FEATURE_PERMISSIONS[action];
+      if (feature) {
+        if (!hasApprovedLoginAccess) return false;
+        return featureAccess[feature] === true;
+      }
       if ((action === 'download_rmw_data' || action === 'view_kling_generations') && !hasApprovedLoginAccess) {
         return false;
       }

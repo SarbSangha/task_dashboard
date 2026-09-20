@@ -106,6 +106,12 @@ class User(Base):
     participations = relationship("TaskParticipant", back_populates="user")
     comments = relationship("TaskComment", back_populates="user")
     role_assignments = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
+    feature_grants = relationship(
+        "UserFeatureAccess",
+        foreign_keys="UserFeatureAccess.user_id",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserRole(Base):
@@ -121,6 +127,32 @@ class UserRole(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     user = relationship("User", back_populates="role_assignments")
+
+
+class UserFeatureAccess(Base):
+    """Per-user grants for sidebar sections that are hidden by default.
+
+    Deliberately a row-per-grant table keyed by a feature string rather than
+    another boolean column on `users` (the shape
+    `enforce_active_task_policy` uses): the set of gated sections is expected
+    to grow, and a new one should not need a schema migration. A row's
+    presence IS the grant - revoking deletes the row - so "no row" and
+    "never granted" are the same state, which is what deny-by-default means.
+    Admins bypass this table entirely; see services/feature_access_service.py.
+    """
+    __tablename__ = "user_feature_access"
+    __table_args__ = (
+        UniqueConstraint("user_id", "feature", name="uq_user_feature_access_user_feature"),
+        Index("ix_user_feature_access_feature_user_id", "feature", "user_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    feature = Column(String(80), nullable=False, index=True)
+    granted_by = Column(Integer, ForeignKey("users.id"))
+    granted_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", foreign_keys=[user_id], back_populates="feature_grants")
 
 
 class DepartmentDirectory(Base):

@@ -52,6 +52,7 @@ from services.admin_workflow_service import (
     push_admin_realtime_event,
     sanitize_request_payload,
 )
+from services.feature_access_service import feature_access_map
 from services.role_service import normalize_roles, replace_user_roles, user_role_names
 
 
@@ -370,6 +371,13 @@ def _serialize_user(user: User) -> dict:
         "roles": sorted(user_role_names(user)),
         "isAdmin": user.is_admin,
         "lastLogin": user.last_login.isoformat() if user.last_login else None,
+        # Deny-by-default sidebar sections (RMW Data, Buffer). The sidebar
+        # reads this to decide what to render; the matching endpoints are
+        # gated server-side by FeatureChecker, so this is a UI hint, not the
+        # enforcement. Rides the /me response cache
+        # (AUTH_RESPONSE_CACHE_TTL_SECONDS, 10s by default), which is why an
+        # admin's grant shows up for the user within seconds.
+        "featureAccess": feature_access_map(user),
     }
 
 
@@ -959,17 +967,24 @@ async def login(
 @router.get("/me")
 async def get_current_user_profile(
     request: Request,
+    fresh: bool = False,
     session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     db: Session = Depends(get_operational_db)
 ):
-    """Get current authenticated user"""
+    """Get current authenticated user
+
+    `fresh=1` skips the short-lived response cache. The client uses it when
+    it has been told its permissions changed (see the
+    user_feature_access_changed realtime event) and must not be handed a
+    copy of the answer from before that change.
+    """
     resolved_session_id = get_request_session_token(session_id, x_session_id)
     if not resolved_session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
+
     try:
-        cached_user = await _get_auth_response_cache(resolved_session_id)
+        cached_user = None if fresh else await _get_auth_response_cache(resolved_session_id)
         if cached_user:
             await run_in_threadpool(
                 verify_session_token,

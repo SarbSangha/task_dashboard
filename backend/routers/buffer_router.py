@@ -6,11 +6,18 @@ table).
 
 Also owns the Buffer self-upload endpoints - a way for someone to add a file
 into Buffer directly, for something they did that no provider's own capture
-flow could tag with the Buffer client. Unlike /feed, these are open to any
-authenticated user (not admin-only): uploading your own work into a shared
-speculative-content pool isn't a privileged action, it's what any team
-member does when the automated capture missed something. See
-BufferSelfUpload's own docstring in models_new.py for the storage shape."""
+flow could tag with the Buffer client. See BufferSelfUpload's own docstring
+in models_new.py for the storage shape.
+
+Access: every endpoint here requires the per-user `buffer` grant
+(services/feature_access_service.py), which an admin hands out in Admin
+Queue -> Section Access. Admins bypass the grant table, so they keep the
+access they always had. This replaced two older rules - /feed was
+admin-only, and the self-uploads were open to any authenticated user -
+because a grant that did not actually open the feed would have been
+meaningless: the point of granting Buffer to one person is that they can
+then use it. Ownership checks inside the self-upload handlers are unchanged
+and still apply on top of the grant."""
 
 from typing import Optional
 
@@ -21,17 +28,11 @@ from sqlalchemy.orm import Session
 from database_config import get_operational_db
 from models_new import BufferSelfUpload, BufferSelfUploadDownload, GenerationClient, User
 from utils.buffer_feed import MEDIA_AUDIO, MEDIA_IMAGE, MEDIA_OTHER, MEDIA_VIDEO, get_buffer_feed
-from utils.permissions import get_current_user, has_any_role
+from utils.permissions import has_any_role, require_buffer_access
 
 router = APIRouter(prefix="/api/buffer", tags=["Buffer"])
 
 BUFFER_CLIENT_NAME = "Buffer"
-
-
-def _require_admin(current_user: User = Depends(get_current_user)) -> User:
-    if not has_any_role(current_user, {"admin"}):
-        raise HTTPException(status_code=403, detail="Admin access required.")
-    return current_user
 
 
 def _resolve_buffer_client_id(db: Session) -> int:
@@ -51,7 +52,7 @@ def get_feed(
     q: Optional[str] = None,
     limit: int = 24,
     offset: int = 0,
-    current_user: User = Depends(_require_admin),
+    current_user: User = Depends(require_buffer_access),
     db: Session = Depends(get_operational_db),
 ):
     client_id = _resolve_buffer_client_id(db)
@@ -128,7 +129,7 @@ def _self_upload_to_dict(row: BufferSelfUpload, owner_name: Optional[str] = None
 @router.post("/self-uploads")
 def create_self_upload(
     payload: BufferSelfUploadCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_buffer_access),
     db: Session = Depends(get_operational_db),
 ):
     title = (payload.title or payload.originalName or "").strip()[:512] or None
@@ -153,7 +154,7 @@ def create_self_upload(
 def list_my_self_uploads(
     limit: int = 50,
     offset: int = 0,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_buffer_access),
     db: Session = Depends(get_operational_db),
 ):
     limit = max(1, min(limit, 100))
@@ -178,7 +179,7 @@ def list_my_self_uploads(
 def update_self_upload(
     upload_id: int,
     payload: BufferSelfUploadUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_buffer_access),
     db: Session = Depends(get_operational_db),
 ):
     """Rename and/or re-tag a self-upload - owner or admin only, same rule
@@ -209,7 +210,7 @@ def update_self_upload(
 @router.delete("/self-uploads/{upload_id}")
 def delete_self_upload(
     upload_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_buffer_access),
     db: Session = Depends(get_operational_db),
 ):
     row = db.query(BufferSelfUpload).filter(BufferSelfUpload.id == upload_id).first()
@@ -226,7 +227,7 @@ def delete_self_upload(
 def record_self_upload_download(
     upload_id: int,
     payload: BufferSelfUploadDownloadCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_buffer_access),
     db: Session = Depends(get_operational_db),
 ):
     """Logs who downloaded a self-upload, and which real client/purpose the
@@ -259,7 +260,7 @@ def record_self_upload_download(
 @router.get("/self-uploads/{upload_id}/downloads")
 def list_self_upload_downloads(
     upload_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_buffer_access),
     db: Session = Depends(get_operational_db),
 ):
     """Download history for one self-upload - owner or admin only, so the

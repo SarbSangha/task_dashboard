@@ -418,6 +418,35 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_user_id ON user_roles(user_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role ON user_roles(role)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_created_at ON user_roles(created_at)"))
+
+    # Per-user grants for deny-by-default sidebar sections (RMW Data,
+    # Buffer) -- see services/feature_access_service.py. Creating the table
+    # empty IS the deny-by-default rollout: no rows means no non-admin sees
+    # either section until an admin grants it in Admin Queue -> Section
+    # Access. Admins bypass the table, so nobody can lock themselves out.
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS user_feature_access (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                feature VARCHAR(80) NOT NULL,
+                granted_by INTEGER REFERENCES users(id),
+                granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_user_feature_access_user_feature UNIQUE (user_id, feature)
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_feature_access_user_id ON user_feature_access(user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_feature_access_feature ON user_feature_access(feature)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_feature_access_granted_at ON user_feature_access(granted_at)"))
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_user_feature_access_feature_user_id "
+            "ON user_feature_access(feature, user_id)"
+        )
+    )
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role_user_id ON user_roles(role, user_id)"))
     conn.execute(
         text(
@@ -1316,6 +1345,34 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role ON user_roles(role)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_created_at ON user_roles(created_at)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role_user_id ON user_roles(role, user_id)"))
+
+        # Per-user grants for deny-by-default sidebar sections -- SQLite twin
+        # of the PostgreSQL block in _ensure_postgres_schema().
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS user_feature_access (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    feature VARCHAR(80) NOT NULL,
+                    granted_by INTEGER,
+                    granted_at DATETIME,
+                    UNIQUE(user_id, feature),
+                    FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE,
+                    FOREIGN KEY(granted_by) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_feature_access_user_id ON user_feature_access(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_feature_access_feature ON user_feature_access(feature)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_feature_access_granted_at ON user_feature_access(granted_at)"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_user_feature_access_feature_user_id "
+                "ON user_feature_access(feature, user_id)"
+            )
+        )
         conn.execute(
             text(
                 """
