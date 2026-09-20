@@ -396,6 +396,9 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "tasks", "current_stage_order", "INTEGER")
     _pg_add_column_if_missing(conn, "tasks", "current_stage_title", "VARCHAR")
     _pg_add_column_if_missing(conn, "tasks", "final_approval_required", "BOOLEAN DEFAULT FALSE")
+    # Designated approver(s) for a plain (non-workflow) task - see
+    # Task.approver_ids_json's docstring in models_new.py.
+    _pg_add_column_if_missing(conn, "tasks", "approver_ids_json", "JSON")
     _pg_add_column_if_missing(conn, "task_comments", "stage_id", "INTEGER")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_is_deleted ON users(is_deleted)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_session_revoked_at ON users(session_revoked_at)"))
@@ -1245,6 +1248,14 @@ def _ensure_postgres_schema(conn) -> None:
     # for why it's a plain comma-separated string, not a normalized table).
     _pg_add_column_if_missing(conn, "buffer_self_uploads", "tags", "VARCHAR")
 
+    # Per-stage configurable approvers - designated approvers themselves are
+    # just TaskStageAssignee rows with role="approver" (no new table needed),
+    # but the stage needs to know how they combine, and each approver row
+    # needs to record its own approval - see models_new.py's TaskStage.
+    # approval_mode / TaskStageAssignee.approved_at docstrings.
+    _pg_add_column_if_missing(conn, "task_stages", "approval_mode", "VARCHAR(10) NOT NULL DEFAULT 'any'")
+    _pg_add_column_if_missing(conn, "task_stage_assignees", "approved_at", "TIMESTAMP")
+
 
 def ensure_operational_schema(engine) -> None:
     """Best-effort additive migrations for existing SQLite databases."""
@@ -1424,6 +1435,7 @@ def ensure_operational_schema(engine) -> None:
                 "current_stage_order": "INTEGER",
                 "current_stage_title": "VARCHAR",
                 "final_approval_required": "BOOLEAN DEFAULT 0",
+                "approver_ids_json": "JSON",
             }
             for column, sql_type in add_columns.items():
                 if column not in task_cols:
@@ -2177,3 +2189,14 @@ def ensure_operational_schema(engine) -> None:
             buffer_self_upload_cols = _table_columns(conn, "buffer_self_uploads")
             if "tags" not in buffer_self_upload_cols:
                 conn.execute(text("ALTER TABLE buffer_self_uploads ADD COLUMN tags VARCHAR"))
+
+        # Per-stage configurable approvers - see the identical Postgres
+        # migration in _ensure_postgres_schema for why this is needed.
+        if _table_exists(conn, "task_stages"):
+            task_stage_cols = _table_columns(conn, "task_stages")
+            if "approval_mode" not in task_stage_cols:
+                conn.execute(text("ALTER TABLE task_stages ADD COLUMN approval_mode VARCHAR(10) NOT NULL DEFAULT 'any'"))
+        if _table_exists(conn, "task_stage_assignees"):
+            task_stage_assignee_cols = _table_columns(conn, "task_stage_assignees")
+            if "approved_at" not in task_stage_assignee_cols:
+                conn.execute(text("ALTER TABLE task_stage_assignees ADD COLUMN approved_at TIMESTAMP"))

@@ -297,6 +297,17 @@
     box-shadow var(--theme-transition-fast);
 }
 
+/* Read-only/disabled fields (e.g. "My Department") looked identical to an
+   editable one - only the browser's faint default dimming hinted otherwise.
+   Muting them explicitly makes "you can't type here" obvious at a glance. */
+.assign-field input:disabled,
+.assign-field input:read-only,
+.assign-field select:disabled {
+  background: var(--assign-surface-muted);
+  color: var(--assign-text-secondary);
+  cursor: not-allowed;
+}
+
 .assign-field input:focus,
 .assign-field select:focus {
   outline: none;
@@ -345,7 +356,11 @@
   line-height: 1.4;
 }
 
-.assign-self-toggle.disabled {
+/* Was gated on an ".disabled" modifier class the JSX never actually applied
+   (only the inner input got the disabled attribute) - :has() reaches the
+   real state directly, so the whole panel dims instead of just the
+   checkbox looking inert. */
+.assign-self-toggle:has(input:disabled) {
   opacity: 0.65;
   cursor: not-allowed;
 }
@@ -413,6 +428,7 @@
 }
 
 .assignment-flow-option {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -445,21 +461,64 @@
   color: var(--assign-text);
 }
 
-.assignment-flow-option span {
+.assignment-flow-option-desc {
   font-size: 12px;
   line-height: 1.55;
   color: var(--assign-text-secondary);
 }
 
+/* Active state reads as "selected" (tinted, colored border, a checkmark),
+   not as a solid-fill button - the two cards are equally valid choices,
+   not a primary action next to a disabled-looking one. */
 .assignment-flow-option.active {
-  border-color: transparent;
-  background: var(--color-button-primary-bg);
-  box-shadow: var(--shadow-button-primary);
+  border-color: var(--color-feedback-info-border);
+  background: color-mix(in srgb, var(--color-feedback-info-bg) 60%, var(--assign-surface));
+  box-shadow: var(--shadow-card-hover);
 }
 
-.assignment-flow-option.active strong,
-.assignment-flow-option.active span {
-  color: var(--color-button-primary-text);
+.assignment-flow-check {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--color-feedback-info-text);
+  color: var(--assign-surface);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.assignment-flow-option-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.flow-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-feedback-info-text);
+  opacity: 0.55;
+}
+
+.assignment-flow-option.active .flow-dot {
+  opacity: 1;
+}
+
+.flow-arrow {
+  width: 12px;
+  height: 1px;
+  background: var(--color-feedback-info-text);
+  opacity: 0.35;
+}
+
+.assignment-flow-option.active .flow-arrow {
+  opacity: 0.7;
 }
 
 .assignment-flow-summary {
@@ -708,6 +767,11 @@
     box-shadow var(--theme-transition-fast);
 }
 
+.workflow-stage-assignee-option:has(input:checked) {
+  background: color-mix(in srgb, var(--color-feedback-info-bg) 55%, var(--assign-surface));
+  border-color: var(--color-feedback-info-border);
+}
+
 .workflow-stage-assignee-option input {
   margin-top: 2px;
   accent-color: var(--color-primary);
@@ -729,6 +793,73 @@
   line-height: 1.4;
 }
 
+.workflow-stage-approvers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--assign-border);
+}
+
+.workflow-stage-approver-department {
+  max-width: 280px;
+}
+
+.workflow-stage-approver-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workflow-stage-approver-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  border-radius: 999px;
+  background: var(--color-feedback-info-bg);
+  color: var(--color-feedback-info-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workflow-stage-approver-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.workflow-stage-approver-chip button:hover {
+  background: color-mix(in srgb, var(--color-feedback-info-text) 16%, transparent);
+}
+
+.workflow-stage-approval-mode {
+  align-items: flex-start;
+  white-space: normal;
+}
+
+.workflow-stage-approval-mode span {
+  display: grid;
+  gap: 2px;
+}
+
+.workflow-stage-approval-mode small {
+  color: var(--assign-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
 .workflow-stage-empty,
 .workflow-builder-empty {
   padding: 12px 14px;
@@ -742,25 +873,166 @@
   justify-content: flex-end;
 }
 
-/* Priority */
+/* Priority - a colored segmented control reads at a glance, unlike plain
+   radio buttons that all look identical regardless of urgency. */
+.priority-card {
+  flex: 0 0 auto;
+  min-width: 220px;
+}
+
 .assign-priority-options {
   display: flex;
-  gap: 12px;
-  margin-bottom: 10px;
-  font-size: 13px;
+  gap: 8px;
+}
+
+.priority-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--assign-border);
+  background: var(--assign-surface);
   color: var(--assign-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast),
+    transform var(--theme-transition-fast);
+}
+
+.priority-pill:hover {
+  transform: translateY(-1px);
+}
+
+.priority-pill input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.priority-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+.priority-pill.priority-high.active {
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
+}
+
+.priority-pill.priority-medium.active {
+  background: var(--color-feedback-warning-bg);
+  border-color: var(--color-feedback-warning-border);
+  color: var(--color-feedback-warning-text);
+}
+
+.priority-pill.priority-low.active {
+  background: var(--color-feedback-success-bg);
+  border-color: var(--color-feedback-success-border);
+  color: var(--color-feedback-success-text);
+}
+
+.priority-pill.active .priority-pill-dot {
+  opacity: 1;
 }
 
 /* Timeline */
 .assign-timeline-row {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 12px;
+}
+
+.assign-field-hint-inline {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--assign-text-muted);
+  text-transform: none;
+}
+
+.deadline-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.deadline-input-icon {
+  position: absolute;
+  left: 10px;
+  font-size: 13px;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.deadline-input-row input[type="datetime-local"] {
+  width: 100%;
+  padding-left: 32px;
+  color-scheme: light dark;
+}
+
+.deadline-quick-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.deadline-quick-picks button {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--assign-border);
+  background: var(--assign-surface);
+  color: var(--assign-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--theme-transition-fast),
+    border-color var(--theme-transition-fast),
+    color var(--theme-transition-fast);
+}
+
+.deadline-quick-picks button:hover {
+  border-color: var(--assign-border-strong);
+  background: var(--assign-surface-muted);
+}
+
+.deadline-quick-picks button.deadline-clear-btn {
+  color: var(--color-feedback-error-text);
+  border-color: var(--color-feedback-error-border);
+  background: var(--color-feedback-error-bg);
 }
 
 .assign-radio-group label {
   font-size: 13px;
   color: var(--assign-text-secondary);
+}
+
+/* Task Classification */
+.assign-classification-row {
+  display: flex;
+  gap: 12px;
+}
+
+.task-textarea-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.task-textarea-footer span {
+  font-size: 11px;
+  color: var(--assign-text-muted);
 }
 
 /* Attachments */
@@ -894,8 +1166,14 @@
     border-radius: 12px;
   }
 
-  .assign-row {
+  .assign-row,
+  .assign-row:has(.project-id-actions) {
     flex-direction: column;
+    align-items: stretch;
+  }
+
+  .project-id-actions {
+    max-width: none;
   }
 
   .workflow-builder-header,
@@ -909,9 +1187,14 @@
     justify-content: flex-start;
   }
 
-  .assign-timeline-row {
+  .assign-timeline-row,
+  .assign-classification-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .priority-card {
+    min-width: 0;
   }
 
   .assign-actions {
@@ -953,18 +1236,6 @@
   text-transform: uppercase;
   cursor: pointer;
   box-shadow: var(--shadow-button-primary);
-}
-
-/* Secondary button */
-.assign-secondary-btn {
-  padding: 10px 20px;
-  border-radius: 999px;
-  border: 1px solid var(--color-button-outline-border);
-  background: var(--color-button-outline-bg);
-  color: var(--color-button-outline-text);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
 }
 
 /* Radio labels & other text */
@@ -1400,19 +1671,45 @@
   font-size: 14px;
 }
 
-/* Link Section Styles */
+/* Related Links card - full-width, matches the header+hint pattern used by
+   the workflow builder cards (see .workflow-builder-header) rather than the
+   old fixed-120px-label grid, which depended on a stylesheet that was never
+   actually imported and left the input collapsed to its intrinsic width
+   (hence the clipped placeholder). */
+.link-area-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.assign-card-header p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--assign-text-secondary);
+}
+
 .link-section {
   display: flex;
+  align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
+  width: 100%;
+}
+
+.link-input-icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  opacity: 0.7;
 }
 
 .link-input {
   flex: 1;
+  min-width: 0;
+  width: 100%;
   padding: 10px 12px;
   background: var(--color-input-bg);
   border: 1px solid var(--color-input-border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--color-input-text);
   font-size: 13px;
   transition:
@@ -1434,13 +1731,14 @@
 }
 
 .add-link-btn {
+  flex: 0 0 auto;
   padding: 10px 20px;
   background: var(--color-feedback-info-bg);
   border: 1px solid var(--color-feedback-info-border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--color-feedback-info-text);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
   transition:
     background-color var(--theme-transition-fast),
@@ -1467,21 +1765,43 @@
   gap: 8px;
 }
 
+.link-container-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .link-count {
   font-size: 12px;
   color: var(--assign-text-muted);
-  margin: 0 0 8px 0;
+  margin: 0;
   font-weight: 500;
+}
+
+.link-clear-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-feedback-error-text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.link-clear-btn:hover {
+  text-decoration: underline;
 }
 
 .link-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 10px;
   padding: 10px 12px;
   background: var(--assign-surface);
   border: 1px solid var(--assign-border);
-  border-radius: 6px;
+  border-radius: 8px;
   transition:
     background-color var(--theme-transition-fast),
     border-color var(--theme-transition-fast),
@@ -1493,23 +1813,56 @@
   border-color: var(--assign-border-strong);
 }
 
-.link-item a {
+.link-item-link {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--color-link);
   text-decoration: none;
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   transition: color 0.2s;
 }
 
-.link-item a:hover {
+.link-item-link:hover {
   color: var(--color-primary-hover);
+}
+
+.link-item-link:hover .link-item-text strong {
   text-decoration: underline;
 }
 
+.link-item-icon {
+  flex: 0 0 auto;
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.link-item-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.link-item-text strong {
+  font-size: 13px;
+  color: var(--assign-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.link-item-text small {
+  font-size: 11px;
+  color: var(--assign-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .remove-btn {
+  flex: 0 0 auto;
   width: 24px;
   height: 24px;
   background: var(--color-feedback-error-bg);
@@ -1528,9 +1881,24 @@
   justify-content: center;
 }
 
-.remove-btn:hover {
+.remove-btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--color-feedback-error-bg) 100%, var(--assign-surface));
   transform: scale(1.1);
+}
+
+.remove-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .link-section {
+    flex-wrap: wrap;
+  }
+
+  .link-input {
+    flex-basis: 100%;
+  }
 }
 
 /* Scrollbar for file/link lists */
@@ -1629,7 +1997,16 @@
   display: grid;
   grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.25fr);
   gap: 16px;
-  align-items: start;
+  /* Stretch (the grid default) instead of start - the two cards' content
+     lengths differ a lot depending on how many users are in the browsed
+     department, and letting one card float shorter than the other reads as
+     broken alignment rather than "this one just has less to show". */
+  align-items: stretch;
+}
+
+.assign-receiver-panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .selected-receivers-header {
@@ -1664,6 +2041,8 @@
 }
 
 .selected-receivers-list {
+  flex: 1;
+  align-content: start;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 10px;
@@ -1680,6 +2059,14 @@
   background: var(--assign-surface);
   border: 1px solid var(--assign-border);
   box-shadow: var(--shadow-soft);
+  transition:
+    border-color var(--theme-transition-fast),
+    box-shadow var(--theme-transition-fast);
+}
+
+.selected-receiver-chip:hover {
+  border-color: var(--assign-border-strong);
+  box-shadow: var(--shadow-card-hover);
 }
 
 .selected-receiver-copy {
@@ -1701,6 +2088,9 @@
 
 .selected-receivers-empty,
 .receiver-panel-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
   margin-top: 14px;
   border: 1px dashed var(--assign-border);
   border-radius: 14px;
@@ -1751,7 +2141,24 @@
   white-space: nowrap;
 }
 
+.receiver-select-all-btn {
+  margin-top: 10px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-feedback-info-text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.receiver-select-all-btn:hover {
+  text-decoration: underline;
+}
+
 .department-users-list {
+  flex: 1;
+  align-content: start;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
@@ -1785,6 +2192,13 @@
   background: var(--assign-surface-muted);
   border-color: var(--assign-border-strong);
   box-shadow: var(--shadow-card-hover);
+}
+
+/* Without this, "already added" was only visible by spotting the tiny
+   checkbox tick - easy to miss in a grid of a dozen near-identical cards. */
+.user-checkbox-item:has(input:checked) {
+  background: color-mix(in srgb, var(--color-feedback-info-bg) 55%, var(--assign-surface));
+  border-color: var(--color-feedback-info-border);
 }
 
 .user-checkbox-item input[type="checkbox"] {
@@ -1847,10 +2261,17 @@
   }
 }
 
+/* Bottom-aligns this field with its sibling input field, so the button row
+   lines up with the input regardless of either field's label height -
+   more robust than reserving space with an invisible label above the
+   buttons, which only lines up when both labels happen to be the same
+   height. */
+.assign-row:has(.project-id-actions) {
+  align-items: flex-end;
+}
+
 .project-id-actions {
   max-width: 320px;
-  display: flex;
-  justify-content: flex-end;
 }
 
 .project-id-btn-row {
@@ -1864,10 +2285,28 @@
   flex: 1;
   min-height: 42px;
   padding: 0 14px;
+  border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   white-space: nowrap;
+}
+
+/* .assign-draft-btn has no unscoped color rule of its own (it's only
+   styled where it's actually used, e.g. .assign-actions), so without this
+   it fell through to the bare browser button default here - flat grey,
+   next to Validate's themed pill. Generate is filled rather than outlined
+   since it's the action people reach for first (there's rarely an existing
+   ID to validate against). */
+.id-generate-btn {
+  background: var(--color-feedback-info-bg);
+  border: 1px solid var(--color-feedback-info-border);
+  color: var(--color-feedback-info-text);
+  font-weight: 700;
+}
+
+.id-generate-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-feedback-info-bg) 100%, var(--assign-surface));
 }
 
 .project-id-status {

@@ -564,6 +564,13 @@ class TaskCreate(BaseModel):
     attachments: List[dict] = Field(default_factory=list)
     workflow: Optional["TaskWorkflowCreatePayload"] = None
     submissionMode: str = Field(default="all")
+    # Designated approver(s) for a plain (non-workflow) task - any company
+    # user, e.g. someone the creator wants to sign off instead of relying on
+    # the default creator/HOD/SPOC approval, most useful when self-assigning
+    # (see can_approve / _task_approver_ids). Ignored when workflow.enabled
+    # is set - a staged task uses each stage's own approverIds instead.
+    approverIds: List[int] = Field(default_factory=list)
+    approvalMode: str = Field(default="any")
 
 
 class TaskWorkflowStageCreatePayload(BaseModel):
@@ -572,6 +579,11 @@ class TaskWorkflowStageCreatePayload(BaseModel):
     description: Optional[str] = None
     approvalRequired: bool = False
     assigneeIds: List[int] = Field(default_factory=list)
+    # Optional designated approver(s) for this stage - any company user, not
+    # just people already added as receivers. Empty means "use the default
+    # approval flow" (creator/HOD/SPOC/super_admin) - see can_approve_stage.
+    approverIds: List[int] = Field(default_factory=list)
+    approvalMode: str = Field(default="any")
 
 
 class TaskWorkflowCreatePayload(BaseModel):
@@ -600,6 +612,8 @@ class TaskUpdate(BaseModel):
     attachments: Optional[List[dict]] = None
     workflow: Optional["TaskWorkflowCreatePayload"] = None
     submissionMode: Optional[str] = None
+    approverIds: Optional[List[int]] = None
+    approvalMode: Optional[str] = None
 
 
 class TaskActionPayload(BaseModel):
@@ -697,6 +711,8 @@ class TaskStageUpdatePayload(BaseModel):
     description: Optional[str] = None
     approval_required: Optional[bool] = None
     assignee_ids: Optional[List[int]] = None
+    approver_ids: Optional[List[int]] = None
+    approval_mode: Optional[str] = None
 
 
 if hasattr(TaskCreate, "model_rebuild"):
@@ -863,7 +879,28 @@ def can_approve(user: User, task: Task) -> bool:
         return True
     if "hod" in roles and task.status in APPROVABLE_TASK_STATUSES:
         return True
+    # A plain task's designated approver(s) - additive, same as
+    # can_approve_stage's workflow-stage equivalent below: someone who
+    # self-assigns (or any creator) can name a specific person to sign off
+    # instead of relying only on the default creator/HOD/SPOC tiers.
+    if user.id in _task_approver_ids(task):
+        return True
     return False
+
+
+def can_approve_stage(user: User, task: Task, stage: Optional["TaskStage"]) -> bool:
+    """Stage-aware approval gate. Purely additive to can_approve: the
+    default creator/HOD/SPOC/super_admin rule always wins first, and a
+    stage's designated approvers (TaskStageAssignee rows with
+    role=WORKFLOW_APPROVER_ROLE - see _stage_approver_ids) are only ever an
+    extra path on top of that, never a restriction - per the product
+    decision that designating approvers hands out additional approval
+    rights without taking any away."""
+    if can_approve(user, task):
+        return True
+    if not stage or not task_is_ready_for_approval(task):
+        return False
+    return user.id in _stage_approver_ids(stage)
 
 
 def can_assign(user: User, task: Task) -> bool:
@@ -872,6 +909,10 @@ def can_assign(user: User, task: Task) -> bool:
 
 
 WORKFLOW_ASSIGNEE_ROLE = "assignee"
+# Designated stage approver - a TaskStageAssignee row with this role is an
+# additional person (any company user, not just a stage assignee) who may
+# approve that specific stage - see can_approve_stage.
+WORKFLOW_APPROVER_ROLE = "approver"
 WORKFLOW_SUMMARY_APPROVAL_META_KEY = "workflowCurrentStageApprovalRequired"
 WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY = "workflowCurrentStageAssigneeNames"
 WORKFLOW_FINAL_PENDING_META_KEY = "workflowFinalApprovalPending"
@@ -979,6 +1020,31 @@ def _stage_assignee_names(stage: Optional[TaskStage]) -> List[str]:
             continue
         names.append(assignee.user.name)
     return names
+
+
+def _stage_approver_ids(stage: Optional[TaskStage]) -> List[int]:
+    if not stage:
+        return []
+    return [
+        assignee.user_id
+        for assignee in (stage.assignees or [])
+        if assignee.is_active and assignee.role == WORKFLOW_APPROVER_ROLE
+    ]
+
+
+def _stage_approver_names(stage: Optional[TaskStage]) -> List[str]:
+    if not stage:
+        return []
+    names = []
+    for assignee in stage.assignees or []:
+        if not assignee.is_active or assignee.role != WORKFLOW_APPROVER_ROLE or not assignee.user:
+            continue
+        names.append(assignee.user.name)
+    return names
+
+
+def _normalize_approval_mode(value: Optional[str]) -> str:
+    return "all" if f"{value or ''}".strip().lower() == "all" else "any"
 
 
 def _normalize_stage_payload(
@@ -1472,6 +1538,7 @@ def _serialize_task_stage(
         "description": stage.description,
         "status": stage.status,
         "approvalRequired": bool(stage.approval_required),
+        "approvalMode": _normalize_approval_mode(stage.approval_mode),
         "isFinalStage": bool(stage.is_final_stage),
         "startedAt": serialize_utc_datetime(stage.started_at),
         "submittedAt": serialize_utc_datetime(stage.submitted_at),
@@ -1486,6 +1553,7 @@ def _serialize_task_stage(
                 "department": assignee.user.department if assignee.user else None,
                 "role": assignee.role,
                 "isPrimary": bool(assignee.is_primary),
+                "approvedAt": serialize_utc_datetime(assignee.approved_at),
             }
             for assignee in (stage.assignees or [])
             if assignee.is_active
@@ -1520,11 +1588,17 @@ def _serialize_task_workflow_stages_for_edit(task: Task) -> List[dict]:
             "title": stage.title,
             "description": stage.description,
             "approvalRequired": bool(stage.approval_required),
+            "approvalMode": _normalize_approval_mode(stage.approval_mode),
             "status": stage.status,
             "assigneeIds": [
                 assignee.user_id
                 for assignee in (stage.assignees or [])
                 if assignee.is_active and assignee.role == WORKFLOW_ASSIGNEE_ROLE
+            ],
+            "approverIds": [
+                assignee.user_id
+                for assignee in (stage.assignees or [])
+                if assignee.is_active and assignee.role == WORKFLOW_APPROVER_ROLE
             ],
             "assignees": [
                 {
@@ -1536,6 +1610,15 @@ def _serialize_task_workflow_stages_for_edit(task: Task) -> List[dict]:
                 }
                 for assignee in (stage.assignees or [])
                 if assignee.is_active and assignee.role == WORKFLOW_ASSIGNEE_ROLE
+            ],
+            "approvers": [
+                {
+                    "id": assignee.user_id,
+                    "name": assignee.user.name if assignee.user else "Unknown",
+                    "department": assignee.user.department if assignee.user else None,
+                }
+                for assignee in (stage.assignees or [])
+                if assignee.is_active and assignee.role == WORKFLOW_APPROVER_ROLE
             ],
         }
         for stage in stages
@@ -1724,6 +1807,17 @@ TASK_WORKER_PROGRESS_META_KEY = "workerProgress"
 TASK_SUBMISSION_MODE_ANY = "any"
 TASK_SUBMISSION_MODE_ALL = "all"
 
+# Designated approver(s) for a plain (non-workflow) task - approvalMode
+# mirrors submissionMode's any/all shape above, but governs who may approve
+# the task once submitted (see can_approve) rather than who must submit it.
+# approvalVotes tracks individual votes for "all" mode the same way
+# workerSubmissions tracks individual worker submissions above - there is no
+# TaskStage to hang per-approver rows off of for a plain task, so this
+# lives in metadata_json like every other per-task ad-hoc tracking field
+# here, not a new table.
+TASK_APPROVAL_MODE_META_KEY = "approvalMode"
+TASK_APPROVAL_VOTES_META_KEY = "approvalVotes"
+
 
 def _normalize_task_submission_mode(value: Optional[str]) -> str:
     normalized = f"{value or ''}".strip().lower().replace("-", "_")
@@ -1735,6 +1829,42 @@ def _normalize_task_submission_mode(value: Optional[str]) -> str:
 def _get_task_submission_mode(task: Task) -> str:
     meta = task.metadata_json if isinstance(task.metadata_json, dict) else {}
     return _normalize_task_submission_mode(meta.get(TASK_SUBMISSION_MODE_META_KEY))
+
+
+def _normalize_task_approval_mode(value: Optional[str]) -> str:
+    return "all" if f"{value or ''}".strip().lower() == "all" else "any"
+
+
+def _get_task_approval_mode(task: Task) -> str:
+    meta = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    return _normalize_task_approval_mode(meta.get(TASK_APPROVAL_MODE_META_KEY))
+
+
+def _task_approver_ids(task: Task) -> List[int]:
+    ids = task.approver_ids_json if isinstance(task.approver_ids_json, list) else []
+    return [int(user_id) for user_id in ids if user_id]
+
+
+def _task_approval_votes(task: Task) -> Set[int]:
+    meta = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+    votes = meta.get(TASK_APPROVAL_VOTES_META_KEY)
+    return {int(user_id) for user_id in votes if user_id} if isinstance(votes, list) else set()
+
+
+def _record_task_approval_vote(task: Task, user_id: int) -> Set[int]:
+    meta = dict(task.metadata_json or {})
+    votes = _task_approval_votes(task)
+    votes.add(int(user_id))
+    meta[TASK_APPROVAL_VOTES_META_KEY] = sorted(votes)
+    task.metadata_json = meta
+    return votes
+
+
+def _clear_task_approval_votes(task: Task) -> None:
+    meta = dict(task.metadata_json or {})
+    if TASK_APPROVAL_VOTES_META_KEY in meta:
+        meta[TASK_APPROVAL_VOTES_META_KEY] = []
+        task.metadata_json = meta
 
 
 def _normalize_result_links(items: Optional[List[str]]) -> List[str]:
@@ -2559,6 +2689,9 @@ def serialize_task_with_context(
     task_dict["resultLinks"] = meta.get("resultLinks", [])
     task_dict["resultAttachments"] = meta.get("resultAttachments", [])
     task_dict["submissionMode"] = _get_task_submission_mode(task)
+    task_dict["approverIds"] = _task_approver_ids(task)
+    task_dict["approvalMode"] = _get_task_approval_mode(task)
+    task_dict["approvalVotes"] = sorted(_task_approval_votes(task))
     task_dict["revocation"] = meta.get("revocation")
     task_dict["currentStageAssigneeIds"] = task.current_assignee_ids_json or []
     task_dict["currentStageApprovalRequired"] = bool(meta.get(WORKFLOW_SUMMARY_APPROVAL_META_KEY))
@@ -2592,6 +2725,7 @@ def serialize_task_with_context(
                 TaskParticipant.is_active == True,
             ).all()
     assigned_to = []
+    approvers = []
     for participant_row in participants:
         participant = participant_row if isinstance(participant_row, TaskParticipant) else participant_row[0]
         participant_user = None
@@ -2599,7 +2733,17 @@ def serialize_task_with_context(
             participant_user = participant.user
         else:
             participant_user = participant_row[1]
-        if participant.role != ParticipantRole.ASSIGNEE or not participant_user:
+        if not participant_user:
+            continue
+        if participant.role == ParticipantRole.APPROVER:
+            approvers.append(
+                {
+                    "id": participant_user.id,
+                    "name": participant_user.name,
+                    "department": participant_user.department,
+                }
+            )
+        if participant.role != ParticipantRole.ASSIGNEE:
             continue
         assigned_to.append(
             {
@@ -2610,6 +2754,10 @@ def serialize_task_with_context(
             }
         )
     task_dict["assignedTo"] = assigned_to
+    # Resolved names for the plain-task designated approvers (approverIds
+    # above is bare ids for permission checks) - lets the edit form show
+    # existing approvers by name before any department gets browsed.
+    task_dict["approvers"] = approvers
     task_dict["workerSubmissions"] = _build_worker_submission_summary(task, assigned_to, current_user)
 
     comment_counts = (context or {}).get("comment_counts") or {}
@@ -3687,10 +3835,33 @@ async def create_task(
                     status_code=400,
                     detail=f"Assignees not found or inactive: {', '.join(str(user_id) for user_id in missing_assignee_ids)}",
                 )
+
+        # Designated approver(s) only apply to a plain task - a staged
+        # workflow task uses each stage's own approverIds instead (see
+        # TaskWorkflowStageCreatePayload).
+        initial_approver_ids = (
+            []
+            if workflow_config
+            else sorted({user_id for user_id in (task_data.approverIds or []) if user_id})
+        )
+        if initial_approver_ids:
+            approver_users_by_id = {
+                user.id: user
+                for user in db.query(User).filter(User.id.in_(initial_approver_ids), User.is_active == True).all()
+            }
+            missing_approver_ids = sorted(set(initial_approver_ids) - set(approver_users_by_id))
+            if missing_approver_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Approvers not found or inactive: {', '.join(str(user_id) for user_id in missing_approver_ids)}",
+                )
+
         metadata_json = {
             "customerName": task_data.customerName,
             "suggestedAssigneeIds": initial_assignee_ids,
             TASK_SUBMISSION_MODE_META_KEY: _normalize_task_submission_mode(task_data.submissionMode),
+            TASK_APPROVAL_MODE_META_KEY: _normalize_task_approval_mode(task_data.approvalMode),
+            TASK_APPROVAL_VOTES_META_KEY: [],
             TASK_WORKER_SUBMISSIONS_META_KEY: {},
             TASK_WORKER_PROGRESS_META_KEY: {},
             "reference": (task_data.reference or "").strip() or None,
@@ -3738,6 +3909,7 @@ async def create_task(
             current_stage_title=initial_stage_payload.title if initial_stage_payload else None,
             final_approval_required=bool(workflow_config.finalApprovalRequired) if workflow_config else False,
             current_assignee_ids_json=sorted({user_id for user_id in ((initial_stage_payload.assigneeIds if initial_stage_payload else []) or []) if user_id}),
+            approver_ids_json=initial_approver_ids,
             deadline=deadline,
             task_edit_locked=False,
             result_edit_locked=True,
@@ -3750,6 +3922,9 @@ async def create_task(
         db.flush()
 
         ensure_participant(db, new_task.id, current_user.id, ParticipantRole.CREATOR)
+
+        for approver_id in initial_approver_ids:
+            ensure_participant(db, new_task.id, approver_id, ParticipantRole.APPROVER)
 
         if workflow_config:
             assignee_users = (
@@ -3774,6 +3949,7 @@ async def create_task(
                     description=stage_payload.description,
                     status=TaskStageStatus.ACTIVE.value if index == 0 else TaskStageStatus.NOT_STARTED.value,
                     approval_required=bool(stage_payload.approvalRequired),
+                    approval_mode=_normalize_approval_mode(stage_payload.approvalMode),
                     is_final_stage=index == len(normalized_workflow_stages) - 1,
                     created_at=datetime.utcnow(),
                     updated_at=datetime.utcnow(),
@@ -3793,6 +3969,18 @@ async def create_task(
                         )
                     )
                     ensure_participant(db, new_task.id, assignee_id, ParticipantRole.ASSIGNEE)
+                for approver_id in sorted(set(stage_payload.approverIds or [])):
+                    db.add(
+                        TaskStageAssignee(
+                            stage_id=stage.id,
+                            user_id=approver_id,
+                            role=WORKFLOW_APPROVER_ROLE,
+                            is_primary=False,
+                            is_active=True,
+                            assigned_at=datetime.utcnow(),
+                        )
+                    )
+                    ensure_participant(db, new_task.id, approver_id, ParticipantRole.APPROVER)
                 created_stages.append(stage)
 
             db.flush()
@@ -3828,6 +4016,17 @@ async def create_task(
                     "task_received",
                     f"New task received: {new_task.title}",
                     "You have been included in a newly created task.",
+                    actor=current_user,
+                )
+
+            for approver_id in initial_approver_ids:
+                create_notification(
+                    db,
+                    new_task,
+                    approver_id,
+                    "task_approver_designated",
+                    f"You're an approver on: {new_task.title}",
+                    f"{current_user.name} designated you to approve this task once it's submitted.",
                     actor=current_user,
                 )
 
@@ -3929,21 +4128,23 @@ def _submit_workflow_stage(
     if stage.approval_required:
         stage.status = TaskStageStatus.SUBMITTED.value
         _sync_task_workflow_summary(task, db, now=now)
-        create_notification(
-            db,
-            task,
-            task.creator_id,
-            "workflow_stage_submitted",
-            f"Stage {stage.stage_order} submitted: {task.title}",
-            payload.comments or "A workflow stage is waiting for approval.",
-            actor=current_user,
-            metadata_json={
-                "stageId": stage.id,
-                "stageOrder": stage.stage_order,
-                "stageTitle": stage.title,
-                "workflowEvent": "stage_submitted",
-            },
-        )
+        notify_ids = {task.creator_id, *_stage_approver_ids(stage)}
+        for notify_id in notify_ids:
+            create_notification(
+                db,
+                task,
+                notify_id,
+                "workflow_stage_submitted",
+                f"Stage {stage.stage_order} submitted: {task.title}",
+                payload.comments or "A workflow stage is waiting for approval.",
+                actor=current_user,
+                metadata_json={
+                    "stageId": stage.id,
+                    "stageOrder": stage.stage_order,
+                    "stageTitle": stage.title,
+                    "workflowEvent": "stage_submitted",
+                },
+            )
     else:
         stage.status = TaskStageStatus.COMPLETED.value
         stage.completed_at = now
@@ -4062,6 +4263,79 @@ def _approve_workflow_stage(
             .filter(TaskStageSubmission.stage_id == stage.id, TaskStageSubmission.is_current == True)
             .first()
         )
+
+        # Designated approvers (role=WORKFLOW_APPROVER_ROLE) are additive on
+        # top of the default creator/HOD/SPOC/super_admin right (see
+        # can_approve_stage) - stamping this specific approver's own row lets
+        # "all" mode below tell who has already voted. A default approver's
+        # own approval (not a designated approver themselves) always
+        # finalizes the stage immediately, same as today - they're not one
+        # vote among several, they're the existing full-override path.
+        stage_approver_ids = _stage_approver_ids(stage)
+        is_designated_approver = current_user.id in stage_approver_ids
+        if is_designated_approver:
+            approver_row = next(
+                (
+                    assignee for assignee in (stage.assignees or [])
+                    if assignee.user_id == current_user.id
+                    and assignee.role == WORKFLOW_APPROVER_ROLE
+                    and assignee.is_active
+                ),
+                None,
+            )
+            if approver_row:
+                approver_row.approved_at = now
+
+            if _normalize_approval_mode(stage.approval_mode) == "all":
+                active_approvers = [
+                    assignee for assignee in (stage.assignees or [])
+                    if assignee.is_active and assignee.role == WORKFLOW_APPROVER_ROLE
+                ]
+                if not all(assignee.approved_at for assignee in active_approvers):
+                    add_history(
+                        db,
+                        task,
+                        current_user.id,
+                        "workflow_stage_partial_approval",
+                        task.status.value,
+                        payload.comments or f"Approved by {current_user.name} - awaiting other designated approvers",
+                        metadata_json={
+                            "stageId": stage.id,
+                            "stageOrder": stage.stage_order,
+                            "stageTitle": stage.title,
+                        },
+                    )
+                    _post_stage_comment(
+                        db, task, stage, current_user.id,
+                        payload.comments or "Approved (awaiting other designated approvers)",
+                        "approved",
+                    )
+                    for pending_id in stage_approver_ids:
+                        if pending_id == current_user.id:
+                            continue
+                        create_notification(
+                            db,
+                            task,
+                            pending_id,
+                            "workflow_stage_co_approval_recorded",
+                            f"Stage {stage.stage_order} needs your approval too: {task.title}",
+                            payload.comments or f"{current_user.name} approved this stage - it still needs your approval.",
+                            actor=current_user,
+                            metadata_json={
+                                "stageId": stage.id,
+                                "stageOrder": stage.stage_order,
+                                "stageTitle": stage.title,
+                                "workflowEvent": "co_approval_recorded",
+                            },
+                        )
+                    db.commit()
+                    return {
+                        "success": True,
+                        "message": "Approval recorded - awaiting other designated approvers",
+                        "task": serialize_task(task, db, current_user),
+                        "stage": _serialize_task_stage(stage, current_submission),
+                    }
+
         stage.status = TaskStageStatus.COMPLETED.value
         stage.approved_at = now
         stage.approved_by_user_id = current_user.id
@@ -4172,6 +4446,14 @@ def _request_workflow_stage_improvement(
     task.metadata_json = task_meta
     _sync_task_workflow_summary(task, db, now=now)
     task.updated_at = now
+
+    # A single designated approver's revision request sends the stage back
+    # immediately regardless of approval_mode (no "all" quorum needed to
+    # reject) - clear every approver's vote so the resubmission starts a
+    # clean approval round instead of inheriting stale approvals.
+    for assignee in stage.assignees or []:
+        if assignee.role == WORKFLOW_APPROVER_ROLE and assignee.approved_at is not None:
+            assignee.approved_at = None
 
     for assignee_id in _stage_assignee_ids(stage):
         create_notification(
@@ -4359,7 +4641,8 @@ async def approve_task_stage(
         raise HTTPException(status_code=404, detail="Task not found")
     if not _is_workflow_task(task):
         raise HTTPException(status_code=400, detail="This task does not use workflow stages")
-    if not can_approve(current_user, task):
+    stage_for_permission = _get_task_workflow_stage(stage_id, task.id, db)
+    if not can_approve_stage(current_user, task, stage_for_permission):
         raise HTTPException(status_code=403, detail="Permission denied")
     try:
         result = _approve_workflow_stage(task, payload, db, current_user, stage_id=stage_id)
@@ -4387,7 +4670,8 @@ async def request_stage_improvement(
         raise HTTPException(status_code=404, detail="Task not found")
     if not _is_workflow_task(task):
         raise HTTPException(status_code=400, detail="This task does not use workflow stages")
-    if not can_approve(current_user, task):
+    stage_for_permission = _get_task_workflow_stage(stage_id, task.id, db)
+    if not can_approve_stage(current_user, task, stage_for_permission):
         raise HTTPException(status_code=403, detail="Permission denied")
     try:
         result = _request_workflow_stage_improvement(task, payload, db, current_user, stage_id=stage_id)
@@ -4450,7 +4734,7 @@ async def update_task_stage(
 
             (
                 db.query(TaskStageAssignee)
-                .filter(TaskStageAssignee.stage_id == stage.id)
+                .filter(TaskStageAssignee.stage_id == stage.id, TaskStageAssignee.role == WORKFLOW_ASSIGNEE_ROLE)
                 .update({TaskStageAssignee.is_active: False}, synchronize_session=False)
             )
             for index, assignee_id in enumerate(normalized_user_ids):
@@ -4465,6 +4749,57 @@ async def update_task_stage(
                     )
                 )
                 ensure_participant(db, task.id, assignee_id, ParticipantRole.ASSIGNEE)
+
+        if payload.approval_mode is not None:
+            stage.approval_mode = _normalize_approval_mode(payload.approval_mode)
+
+        if payload.approver_ids is not None:
+            normalized_approver_ids = sorted({user_id for user_id in (payload.approver_ids or []) if user_id})
+            if normalized_approver_ids:
+                approver_users = (
+                    db.query(User)
+                    .filter(User.id.in_(normalized_approver_ids), User.is_active == True)
+                    .all()
+                )
+                approver_users_by_id = {user.id: user for user in approver_users}
+                missing_approver_ids = sorted(set(normalized_approver_ids) - set(approver_users_by_id))
+                if missing_approver_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Workflow approvers not found or inactive: {', '.join(str(user_id) for user_id in missing_approver_ids)}",
+                    )
+
+            # Replacing the approver list resets everyone's vote - see
+            # TaskStageAssignee.approved_at's docstring on why a stale
+            # approval must never carry over to a different approver set.
+            (
+                db.query(TaskStageAssignee)
+                .filter(TaskStageAssignee.stage_id == stage.id, TaskStageAssignee.role == WORKFLOW_APPROVER_ROLE)
+                .update({TaskStageAssignee.is_active: False, TaskStageAssignee.approved_at: None}, synchronize_session=False)
+            )
+            for approver_id in normalized_approver_ids:
+                db.add(
+                    TaskStageAssignee(
+                        stage_id=stage.id,
+                        user_id=approver_id,
+                        role=WORKFLOW_APPROVER_ROLE,
+                        is_primary=False,
+                        is_active=True,
+                        assigned_at=datetime.utcnow(),
+                    )
+                )
+                ensure_participant(db, task.id, approver_id, ParticipantRole.APPROVER)
+        elif payload.approval_mode is not None:
+            # Mode alone changed (approver list untouched) - still reset
+            # votes so an "all" switch doesn't inherit approvals cast under
+            # a different mode (e.g. a lone "any" approval that already
+            # finished the stage would never reach here, but a still-open
+            # stage's partial "all" votes should restart under the new rule).
+            (
+                db.query(TaskStageAssignee)
+                .filter(TaskStageAssignee.stage_id == stage.id, TaskStageAssignee.role == WORKFLOW_APPROVER_ROLE)
+                .update({TaskStageAssignee.approved_at: None}, synchronize_session=False)
+            )
 
         stage.updated_at = datetime.utcnow()
         db.flush()
@@ -5651,7 +5986,14 @@ async def approve_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     ensure_task_not_held(task)
-    if not can_approve(current_user, task):
+    # No explicit stage_id on this generic endpoint - resolve whatever stage
+    # is currently active so a designated approver (who may not otherwise
+    # pass can_approve) is recognized here too. None when the task is fully
+    # past its stages and waiting on final approval, which correctly falls
+    # back to can_approve-only (final approval isn't scoped to one stage's
+    # approver list).
+    current_stage_for_permission = _get_current_workflow_stage(task, db) if _is_workflow_task(task) else None
+    if not can_approve_stage(current_user, task, current_stage_for_permission):
         raise HTTPException(status_code=403, detail="Permission denied")
     _repair_legacy_hod_approval_if_needed(task)
     if _is_workflow_task(task):
@@ -5667,6 +6009,8 @@ async def approve_task(
             raise HTTPException(status_code=400, detail=str(exc))
 
     actor_roles = role_set(current_user)
+    designated_approver_ids = _task_approver_ids(task)
+    is_designated_approver = current_user.id in designated_approver_ids
     if current_user.id == task.creator_id and task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED}:
         task.status = TaskStatus.COMPLETED
         task.workflow_stage = "creator_approved"
@@ -5696,6 +6040,47 @@ async def approve_task(
             payload.comments or "HOD has approved the submitted result.",
             actor=current_user,
         )
+    elif is_designated_approver:
+        # A specifically chosen approver stands in for the creator's own
+        # sign-off - that is the whole point of naming one (most often
+        # after self-assigning, so the creator isn't the one approving
+        # their own submitted work). See _task_approver_ids/can_approve.
+        mode = _get_task_approval_mode(task)
+        if mode == "all" and len(designated_approver_ids) > 1:
+            votes = _record_task_approval_vote(task, current_user.id)
+            if not votes >= set(designated_approver_ids):
+                add_history(
+                    db, task, current_user.id, "approved", task.status.value,
+                    payload.comments or f"Approved by {current_user.name} - awaiting other designated approvers",
+                )
+                post_system_comment(
+                    db, task, current_user.id,
+                    payload.comments or "Approved (awaiting other designated approvers)",
+                    "approved",
+                )
+                for pending_id in designated_approver_ids:
+                    if pending_id in votes:
+                        continue
+                    create_notification(
+                        db,
+                        task,
+                        pending_id,
+                        "task_co_approval_recorded",
+                        f"This task still needs your approval: {task.title}",
+                        payload.comments or f"{current_user.name} approved this task - it still needs your approval.",
+                        actor=current_user,
+                    )
+                db.commit()
+                await invalidate_task_lane_b_cache()
+                return {
+                    "success": True,
+                    "message": "Approval recorded - awaiting other designated approvers",
+                    "status": task.status.value,
+                }
+        task.status = TaskStatus.COMPLETED
+        task.workflow_stage = "approver_approved"
+        task.task_edit_locked = True
+        task.result_edit_locked = True
     else:
         task.status = TaskStatus.APPROVED
         task.workflow_stage = "approved"
@@ -5758,6 +6143,8 @@ async def request_improvement(
         meta.pop("lastWorkerSubmission", None)
     if TASK_WORKER_PROGRESS_META_KEY in meta:
         meta[TASK_WORKER_PROGRESS_META_KEY] = {}
+    if TASK_APPROVAL_VOTES_META_KEY in meta:
+        meta[TASK_APPROVAL_VOTES_META_KEY] = []
     task.metadata_json = meta
     task.status = TaskStatus.NEED_IMPROVEMENT
     task.workflow_stage = "need_improvement"
@@ -6201,6 +6588,8 @@ async def edit_task_details(
             "attachments",
             "workflow",
             "submissionMode",
+            "approverIds",
+            "approvalMode",
         )
         if payload_field_was_set(payload, field_name)
     }
@@ -6224,6 +6613,8 @@ async def edit_task_details(
         "links": meta.get("links", []),
         "attachments": meta.get("attachments", []),
         "submissionMode": _normalize_task_submission_mode(meta.get(TASK_SUBMISSION_MODE_META_KEY)),
+        "approverIds": _task_approver_ids(task),
+        "approvalMode": _get_task_approval_mode(task),
         "assigneeIds": [
             participant.user_id
             for participant in (task.participants or [])
@@ -6308,6 +6699,17 @@ async def edit_task_details(
             )
         meta[TASK_SUBMISSION_MODE_META_KEY] = next_submission_mode
 
+    if "approvalMode" in update_fields:
+        meta[TASK_APPROVAL_MODE_META_KEY] = _normalize_task_approval_mode(payload.approvalMode)
+        # Mode change invalidates any in-flight "all" votes cast under the
+        # previous mode - same reasoning as the stage-level equivalent in
+        # update_task_stage.
+        meta[TASK_APPROVAL_VOTES_META_KEY] = []
+
+    approver_ids_to_apply: Optional[List[int]] = None
+    if "approverIds" in update_fields:
+        approver_ids_to_apply = sorted({int(user_id) for user_id in (payload.approverIds or []) if user_id})
+
     assignee_ids_to_apply: Optional[List[int]] = None
     if "assigneeIds" in update_fields:
         assignee_ids_to_apply = sorted({int(user_id) for user_id in (payload.assigneeIds or []) if user_id})
@@ -6359,6 +6761,11 @@ async def edit_task_details(
         meta[WORKFLOW_SUMMARY_APPROVAL_META_KEY] = bool(initial_stage_payload.approvalRequired) if initial_stage_payload else False
         meta[WORKFLOW_SUMMARY_ASSIGNEE_NAMES_META_KEY] = []
         assignee_ids_to_apply = workflow_assignee_ids
+        if workflow_config:
+            # Switching into a staged workflow retires the plain task's own
+            # designated approvers - each stage carries its own instead
+            # (TaskWorkflowStageCreatePayload.approverIds).
+            approver_ids_to_apply = []
 
         if workflow_config:
             assignee_users = (
@@ -6382,6 +6789,7 @@ async def edit_task_details(
                     description=stage_payload.description,
                     status=TaskStageStatus.ACTIVE.value if index == 0 else TaskStageStatus.NOT_STARTED.value,
                     approval_required=bool(stage_payload.approvalRequired),
+                    approval_mode=_normalize_approval_mode(stage_payload.approvalMode),
                     is_final_stage=index == len(normalized_workflow_stages) - 1,
                     created_at=datetime.utcnow(),
                     updated_at=datetime.utcnow(),
@@ -6397,6 +6805,17 @@ async def edit_task_details(
                             user_id=assignee_id,
                             role=WORKFLOW_ASSIGNEE_ROLE,
                             is_primary=assignee_index == 0,
+                            is_active=True,
+                            assigned_at=datetime.utcnow(),
+                        )
+                    )
+                for approver_id in sorted(set(stage_payload.approverIds or [])):
+                    db.add(
+                        TaskStageAssignee(
+                            stage_id=stage.id,
+                            user_id=approver_id,
+                            role=WORKFLOW_APPROVER_ROLE,
+                            is_primary=False,
                             is_active=True,
                             assigned_at=datetime.utcnow(),
                         )
@@ -6444,6 +6863,35 @@ async def edit_task_details(
                 if str(user_id).isdigit() and int(user_id) in valid_assignee_ids
             }
 
+    if approver_ids_to_apply is not None:
+        valid_approver_ids = set()
+        if approver_ids_to_apply:
+            valid_approver_ids = {
+                user.id
+                for user in db.query(User).filter(User.id.in_(approver_ids_to_apply), User.is_active == True).all()
+            }
+            missing_approver_ids = sorted(set(approver_ids_to_apply) - valid_approver_ids)
+            if missing_approver_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Approvers not found or inactive: {', '.join(str(user_id) for user_id in missing_approver_ids)}",
+                )
+        existing_approver_rows = db.query(TaskParticipant).filter(
+            TaskParticipant.task_id == task.id,
+            TaskParticipant.role == ParticipantRole.APPROVER,
+        ).all()
+        for participant in existing_approver_rows:
+            participant.is_active = participant.user_id in valid_approver_ids
+            if participant.is_active:
+                participant.is_read = False
+                participant.read_at = None
+        for approver_id in sorted(valid_approver_ids):
+            ensure_participant(db, task.id, approver_id, ParticipantRole.APPROVER)
+        task.approver_ids_json = sorted(valid_approver_ids)
+        # Approver list changed - votes cast against the old list no longer
+        # mean anything for "all" mode.
+        meta[TASK_APPROVAL_VOTES_META_KEY] = []
+
     task.metadata_json = meta
 
     task.task_version = (task.task_version or 1) + 1
@@ -6473,6 +6921,8 @@ async def edit_task_details(
                 "links": meta.get("links", []),
                 "attachments": meta.get("attachments", []),
                 "submissionMode": _normalize_task_submission_mode(meta.get(TASK_SUBMISSION_MODE_META_KEY)),
+                "approverIds": task.approver_ids_json or [],
+                "approvalMode": _get_task_approval_mode(task),
                 "assigneeIds": assignee_ids_to_apply,
                 "workflowEnabled": bool(task.workflow_enabled),
                 "finalApprovalRequired": bool(task.final_approval_required),

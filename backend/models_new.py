@@ -266,7 +266,14 @@ class Task(Base):
     current_stage_title = Column(String)
     final_approval_required = Column(Boolean, default=False, nullable=False)
     current_assignee_ids_json = Column(JSON)
-    
+    # Designated approver(s) for a plain (non-workflow) task - e.g. someone
+    # who self-assigns wants a specific person, not just the creator/HOD/
+    # SPOC default, to sign off on their own submission. Empty/null keeps
+    # today's default behavior (see can_approve in routers/tasks_router.py).
+    # Ignored for workflow tasks, which use TaskStageAssignee role="approver"
+    # per stage instead - see that model's docstring.
+    approver_ids_json = Column(JSON)
+
     # Deadlines & Timing
     deadline = Column(DateTime)
     estimated_hours = Column(Integer)
@@ -461,6 +468,13 @@ class TaskStage(Base):
     description = Column(Text)
     status = Column(String, nullable=False, default=TaskStageStatus.NOT_STARTED.value, index=True)
     approval_required = Column(Boolean, default=False, nullable=False)
+    # How designated approvers (TaskStageAssignee rows with role="approver",
+    # see that model) combine - "any" (first approval completes the stage)
+    # or "all" (every designated approver must approve). Ignored when the
+    # stage has no designated approvers - see can_approve_stage in
+    # routers/tasks_router.py for how that stays purely additive to the
+    # existing creator/HOD/SPOC approval rights.
+    approval_mode = Column(String(10), nullable=False, default="any", server_default=text("'any'"))
     is_final_stage = Column(Boolean, default=False, nullable=False)
     started_at = Column(DateTime)
     submitted_at = Column(DateTime)
@@ -496,6 +510,12 @@ class TaskStageAssignee(Base):
     is_primary = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     assigned_at = Column(DateTime, default=datetime.utcnow, index=True)
+    # Only meaningful for role="approver" rows: when this specific designated
+    # approver approved the stage. Used to tell whether everyone has voted
+    # yet in TaskStage.approval_mode == "all" - see _approve_workflow_stage.
+    # Reset to NULL whenever the stage goes back to revision_requested so a
+    # resubmission starts a fresh approval round.
+    approved_at = Column(DateTime, nullable=True)
 
     stage = relationship("TaskStage", back_populates="assignees")
     user = relationship("User", foreign_keys=[user_id])

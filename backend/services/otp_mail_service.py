@@ -235,10 +235,22 @@ def _search_uid_candidates(
     criteria: str,
     raw_queries: list[str],
     collect_all_raw: bool = False,
+    after_uid_int: int = 0,
 ) -> tuple[list[bytes], str]:
     if collect_all_raw:
         combined: dict[int, bytes] = {}
         sources: list[str] = []
+        # The extra query variants (and the standard IMAP search below) exist
+        # to catch a genuinely NEW email a narrower query variant misses
+        # outright - not to keep querying once a candidate newer than the
+        # baseline is already in hand. Each variant is its own sequential
+        # IMAP round trip, so running all of them unconditionally on every
+        # 2-second poll tick (as this used to) adds real, compounding
+        # latency for no benefit in the common case where the very first,
+        # most specific query already finds the new email. Stopping as soon
+        # as a genuinely-newer candidate turns up keeps the exhaustive
+        # fallback for when it's actually needed while cutting the typical
+        # case from up to 5 round trips down to 1.
         for query in raw_queries:
             uids = _gmail_raw_uid_search(mail, query)
             if not uids:
@@ -246,6 +258,8 @@ def _search_uid_candidates(
             sources.append(f"raw:{query}")
             for uid in uids:
                 combined[_uid_int(uid)] = uid
+            if after_uid_int and any(uid_int > after_uid_int for uid_int in combined):
+                return list(combined.values()), "+".join(sources)
         standard_uids = _standard_uid_search(mail, criteria)
         if standard_uids:
             sources.append(f"imap:{criteria}")
@@ -295,15 +309,6 @@ def _internal_datetime(fetch_metadata) -> Optional[datetime]:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-
-def _header_message_from_fetch(raw) -> Optional[Message]:
-    try:
-        if not raw or not raw[0] or not raw[0][1]:
-            return None
-        return email.message_from_bytes(raw[0][1])
     except Exception:
         return None
 
@@ -433,6 +438,7 @@ def fetch_otp_from_gmail(
                 criteria=criteria,
                 raw_queries=raw_queries,
                 collect_all_raw=after_uid_int > 0,
+                after_uid_int=after_uid_int,
             )
             if message_uids:
                 recent_message_ids = sorted(
@@ -449,36 +455,32 @@ def fetch_otp_from_gmail(
                     after_uid_int,
                 )
                 for msg_id in recent_message_ids:
-                    header_status, header_raw = _uid_fetch(mail, msg_id, "(RFC822.HEADER INTERNALDATE)")
-                    if header_status != "OK" or not header_raw or not header_raw[0]:
-                        continue
-
-                    header_message = _header_message_from_fetch(header_raw)
-                    if not header_message:
-                        continue
-
-                    message_dt = _internal_datetime(header_raw[0][0]) or _message_datetime(header_message.get("Date", ""))
-                    if message_dt and message_dt < (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)):
-                        continue
-
-                    subject = _decode_mime_header(header_message.get("Subject", ""))
-                    logger.debug("[OTP IMAP] checking subject=%r", subject[:60])
-
-                    match = re.search(pattern, subject)
-                    if match:
-                        otp = match.group(1)
-                        if not_before_dt is not None and message_dt and message_dt < cutoff_dt:
-                            continue
-                        logger.info("[OTP IMAP] OTP extracted for %s", email_address)
-                        return otp
-
-                    fetch_status, raw = _uid_fetch(mail, msg_id, "(BODY.PEEK[])")
+                    # One combined FETCH per candidate instead of a
+                    # header-only probe followed by a conditional second
+                    # round trip for the body - BODY.PEEK[] already returns
+                    # the full RFC822 message (headers included), so the
+                    # separate header fetch bought nothing but an extra
+                    # network round trip on every candidate whose code lives
+                    # in the body rather than the subject (the common case
+                    # for every OTP email seen so far). With a shared mailbox
+                    # fielding OTPs for more and more tools over time, more
+                    # candidates land in each poll's "newer than afterUid"
+                    # window, and that doubled round-trip count per candidate
+                    # is what turned a ~20s fetch into 60s - halving it here
+                    # halves the poll loop's dominant cost.
+                    fetch_status, raw = _uid_fetch(mail, msg_id, "(BODY.PEEK[] INTERNALDATE)")
                     if fetch_status != "OK" or not raw or not raw[0]:
                         continue
 
                     message = email.message_from_bytes(raw[0][1])
-                    body = _extract_body(message)
-                    match = re.search(pattern, body)
+                    message_dt = _internal_datetime(raw[0][0]) or _message_datetime(message.get("Date", ""))
+                    if message_dt and message_dt < (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)):
+                        continue
+
+                    subject = _decode_mime_header(message.get("Subject", ""))
+                    logger.debug("[OTP IMAP] checking subject=%r", subject[:60])
+
+                    match = re.search(pattern, subject) or re.search(pattern, _extract_body(message))
                     if match:
                         otp = match.group(1)
                         if not_before_dt is not None and message_dt and message_dt < cutoff_dt:

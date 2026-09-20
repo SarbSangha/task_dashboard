@@ -149,6 +149,21 @@ def _multipart_part_count(size: int, part_size: int) -> int:
     return max(1, (size + part_size - 1) // part_size)
 
 
+def _r2_hosts() -> set[str]:
+    """Hostnames that actually point at our own R2 bucket - anything else is
+    some other CDN's URL (Freepik, Suno, etc.) that happens to have a
+    non-empty path, not a key inside our bucket."""
+    hosts = set()
+    for env_name in ("R2_PUBLIC_BASE_URL", "R2_ENDPOINT"):
+        raw = _env(env_name)
+        if not raw:
+            continue
+        netloc = urlparse(raw).netloc.lower()
+        if netloc:
+            hosts.add(netloc)
+    return hosts
+
+
 def _extract_r2_key(path: Optional[str], url: Optional[str]) -> Optional[str]:
     bucket = (_env("R2_BUCKET") or "").strip()
     if path:
@@ -159,6 +174,14 @@ def _extract_r2_key(path: Optional[str], url: Optional[str]) -> Optional[str]:
     if not url:
         return None
     parsed = urlparse(url)
+    if parsed.netloc.lower() not in _r2_hosts():
+        # A real, externally-hosted URL (the provider's own CDN) - not one of
+        # our own R2 keys just because it has a path component. Let the
+        # caller fall through to its plain-redirect branch instead of trying
+        # (and failing) to fetch this path out of our bucket. Also correct
+        # when R2 isn't configured at all (_r2_hosts() then empty): with no
+        # bucket of our own, nothing can genuinely be one of our R2 keys.
+        return None
     candidate = (parsed.path or "").lstrip("/")
     if not candidate:
         return None
@@ -570,12 +593,12 @@ def open_file(
     url: Optional[str] = Query(None),
     path: Optional[str] = Query(None),
 ):
-    """Open a file from R2 via short-lived signed URL."""
-    if not _is_r2_configured():
-        raise HTTPException(status_code=500, detail="R2 is not configured on server")
-
+    """Open a file from R2 via short-lived signed URL, or redirect straight
+    through for a plain externally-hosted URL (no R2 involved)."""
     r2_key = _extract_r2_key(path, url)
     if r2_key:
+        if not _is_r2_configured():
+            raise HTTPException(status_code=500, detail="R2 is not configured on server")
         try:
             client = _build_r2_client()
             signed_url = client.generate_presigned_url(
@@ -599,15 +622,17 @@ def thumbnail_file(
     path: Optional[str] = Query(None),
     width: int = Query(360, ge=120, le=960),
 ):
-    """Serve a cached WebP thumbnail for image/video files stored in R2."""
-    if not _is_r2_configured():
-        raise HTTPException(status_code=500, detail="R2 is not configured on server")
-
+    """Serve a cached WebP thumbnail for image/video files stored in R2, or
+    redirect straight through for a plain externally-hosted URL (no R2
+    involved - the provider's own CDN already serves a usable image)."""
     r2_key = _extract_r2_key(path, url)
     if not r2_key:
         if url and (url.startswith("http://") or url.startswith("https://")):
             return RedirectResponse(url=url, status_code=307)
         raise HTTPException(status_code=404, detail="File not found")
+
+    if not _is_r2_configured():
+        raise HTTPException(status_code=500, detail="R2 is not configured on server")
 
     client = _build_r2_client()
     bucket = _env("R2_BUCKET")
@@ -658,13 +683,13 @@ def download_file(
     url: Optional[str] = Query(None),
     path: Optional[str] = Query(None),
 ):
-    """Force-download a file from R2."""
+    """Force-download a file from R2, or redirect straight through for a
+    plain externally-hosted URL (no R2 involved)."""
     download_name = _safe_filename(filename)
-    if not _is_r2_configured():
-        raise HTTPException(status_code=500, detail="R2 is not configured on server")
-
     r2_key = _extract_r2_key(path, url)
     if r2_key:
+        if not _is_r2_configured():
+            raise HTTPException(status_code=500, detail="R2 is not configured on server")
         try:
             client = _build_r2_client()
             obj = client.get_object(Bucket=_env("R2_BUCKET"), Key=r2_key)

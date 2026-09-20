@@ -1,12 +1,19 @@
 # database_config.py - Dual Database Configuration (Env-driven, SQLite/PostgreSQL)
 import os
 import re
+import threading
 from urllib.parse import urlparse, urlunparse
 from sqlalchemy import create_engine, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import NullPool
 from contextlib import contextmanager
+
+
+class ConnectionPoolSaturatedError(RuntimeError):
+    """Raised when the NullPool connection limiter (see
+    _install_connection_limiter below) has no free slot within the
+    configured wait. main.py maps this to a 503 instead of a generic 500."""
 
 
 def _is_truthy(value: str) -> bool:
@@ -178,15 +185,35 @@ def _create_engine(url: str):
             "connect_timeout": max(3, _int_env("DB_CONNECT_TIMEOUT", 10)),
         },
     }
-    if _uses_external_pooler(normalized) and not _is_truthy(os.getenv("DB_USE_SQLALCHEMY_POOL")):
+    pool_settings = _pool_settings(normalized)
+    uses_null_pool = _uses_external_pooler(normalized) and not _is_truthy(os.getenv("DB_USE_SQLALCHEMY_POOL"))
+    if uses_null_pool:
         # PgBouncer/Supabase poolers are already the connection pool. Holding another
         # app-side QueuePool on top leaves idle client connections open until a
         # process restart, which can make login fail during traffic bursts.
         kwargs["poolclass"] = NullPool
     else:
-        kwargs.update(_pool_settings(normalized))
+        kwargs.update(pool_settings)
     engine = create_engine(normalized, **kwargs)
     _install_session_timeouts(engine)
+    if uses_null_pool:
+        # NullPool has no ceiling of its own - every checkout opens a brand
+        # new real connection against the hosted pooler, unlike QueuePool
+        # (the `else` branch above), which already bounds itself via
+        # pool_size/max_overflow/pool_timeout. A burst of concurrent
+        # requests, or this process's own periodic background sync loops
+        # (asset mirrors, notification outbox, report schedules - see
+        # main.py) firing alongside live traffic, can open more simultaneous
+        # connections than the pooler's own project-level budget allows,
+        # which the pooler then refuses outright - indistinguishable from
+        # "the DB is exhausted" from here, and identical in shape to a real
+        # leak even though every one of those connections closes normally on
+        # its own. Reusing DB_POOL_SIZE/DB_MAX_OVERFLOW/DB_POOL_TIMEOUT here
+        # gives NullPool the same app-side ceiling QueuePool would have
+        # provided, without reintroducing the idle-connection buildup the
+        # comment above chose NullPool to avoid.
+        max_concurrent = max(1, pool_settings["pool_size"] + pool_settings["max_overflow"])
+        _install_connection_limiter(engine, max_concurrent, pool_settings["pool_timeout"])
     return engine
 
 
@@ -233,6 +260,38 @@ def _install_session_timeouts(engine) -> None:
                     cursor.execute(f"SET {name} = {int(milliseconds)}")
         except Exception:  # noqa: BLE001 - a pooler that refuses SET must not break connecting
             pass
+
+
+def _install_connection_limiter(engine, max_concurrent: int, timeout_seconds: int) -> None:
+    """Bounds concurrent DBAPI connections for an engine using NullPool.
+
+    SQLAlchemy fires "checkout"/"checkin" around every connection use for
+    every pool implementation, including NullPool - this is the standard
+    pattern for giving a poolless engine the same app-side ceiling a real
+    pool provides. Every caller of OperationalSessionLocal()/
+    ArchiveSessionLocal() goes through this (get_operational_db, the
+    background sync loops in main.py, the websocket auth check in
+    tasks_router.py, ad-hoc scripts, ...), so this is enforced once here
+    rather than needing every call site to cooperate.
+
+    A checkout that can't get a slot within timeout_seconds raises
+    ConnectionPoolSaturatedError instead of piling on the pooler - main.py
+    turns that into a 503 for request handlers; a background loop's own
+    try/except around its cycle just logs and retries next tick.
+    """
+    semaphore = threading.Semaphore(max_concurrent)
+
+    @event.listens_for(engine, "checkout")
+    def _acquire_slot(dbapi_connection, connection_record, connection_proxy):  # noqa: ANN001
+        if not semaphore.acquire(timeout=timeout_seconds):
+            raise ConnectionPoolSaturatedError(
+                f"database connection limiter saturated ({max_concurrent} concurrent connections in use) - "
+                "retry shortly"
+            )
+
+    @event.listens_for(engine, "checkin")
+    def _release_slot(dbapi_connection, connection_record):  # noqa: ANN001
+        semaphore.release()
 
 
 # ==================== OPERATIONAL DATABASE ====================

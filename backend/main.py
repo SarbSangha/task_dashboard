@@ -15,14 +15,15 @@ from sqlalchemy import text
 
 # FIXED: Use relative imports or backend prefix
 from database_config import (
-    operational_engine, 
-    archive_engine, 
-    Base, 
+    operational_engine,
+    archive_engine,
+    Base,
     ArchiveBase,
     OperationalSessionLocal,
     ArchiveSessionLocal,
     OPERATIONAL_DB_URL,
     ARCHIVE_DB_URL,
+    ConnectionPoolSaturatedError,
 )
 from db_migrations import ensure_operational_schema
 
@@ -641,6 +642,20 @@ def validation_exception_handler(request: Request, exc: RequestValidationError):
     # next to the request in this same console.
     _safe_print(f"422 validation error on {request.method} {request.url.path}: {exc.errors()}")
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+@app.exception_handler(ConnectionPoolSaturatedError)
+def connection_pool_saturated_handler(request: Request, exc: ConnectionPoolSaturatedError):
+    """The NullPool connection limiter (database_config.py) tripped - the
+    pooler-side connection budget is genuinely full right now, not a code
+    bug. 503 + Retry-After tells the caller to back off and retry instead of
+    reading as a generic server error."""
+    _safe_print(f"DB connection limiter saturated on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=503,
+        content={"success": False, "message": "Database is busy, please retry shortly."},
+        headers={"Retry-After": "2"},
+    )
 
 
 @app.exception_handler(Exception)

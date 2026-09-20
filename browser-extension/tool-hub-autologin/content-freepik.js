@@ -107,7 +107,34 @@ const STATE = {
   submitButtonHighlighted: false,
   credentialFillCount: 0,
   stopped: false,
+  launchKeepAliveTimer: null,
 };
+
+// Magnific's SPA can go 20+ minutes of continuous use without ever re-running
+// this content script (no full page reload), so complete() below never
+// re-checks TOOL_HUB_GET_LAUNCH_STATE again once signed in - but if Magnific
+// itself ever does trigger a real reload (switching between tool sections
+// lands on a different Next.js route group, or a manual refresh), that check
+// runs against the launch's original 20-minute ticket TTL with nothing having
+// extended it, and a still-legitimately-signed-in tab gets treated as an
+// unauthorized visit: enforceDashboardOnlyAccess revokes the launch and
+// bounces the tab back to the login page mid-use - reported as "Freepik gets
+// logged out after some time of use". Same root cause and fix as Semrush's
+// startLaunchKeepAlive in content-semrush.js: once signed in, periodically
+// ping the background script to extend the stored launch's expiry so it
+// never actually lapses while this tab stays open.
+const LAUNCH_KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
+
+function startLaunchKeepAlive() {
+  if (STATE.launchKeepAliveTimer) return;
+  const extend = () => {
+    chrome.runtime.sendMessage({ type: 'TOOL_HUB_EXTEND_SIGNED_IN_LAUNCH', toolSlug: TOOL_SLUG }, () => {
+      void chrome.runtime.lastError;
+    });
+  };
+  extend();
+  STATE.launchKeepAliveTimer = window.setInterval(extend, LAUNCH_KEEPALIVE_INTERVAL_MS);
+}
 
 function normalizeLoginMethod(value) {
   return `${value || ''}`.trim().toLowerCase() || 'email_password';
@@ -192,6 +219,48 @@ function complete(message = 'Magnific login complete') {
   STATE.status = message;
   console.debug('[RMW Magnific Auto Login]', message);
   window.setTimeout(() => hideStatusBadge(), 600);
+  startLaunchKeepAlive();
+}
+
+function readHaltRecord() {
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(AUTOLOGIN_HALT_KEY) || 'null');
+    return parsed && parsed.reason ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearHaltRecord() {
+  try { window.sessionStorage.removeItem(AUTOLOGIN_HALT_KEY); } catch {}
+  try { window.sessionStorage.removeItem(LOGIN_SUBMIT_TRACK_KEY); } catch {}
+}
+
+// Stop the auto-login AND remember why, so a page reload does not silently
+// restart the fill/submit loop. Use this (not stop()) for anything a human
+// has to resolve: rejected credentials, a captcha, a rate-limit lockout.
+function haltAutoLogin(reason) {
+  try {
+    window.sessionStorage.setItem(AUTOLOGIN_HALT_KEY, JSON.stringify({ reason, at: Date.now() }));
+  } catch {}
+  stop(reason);
+}
+
+function readSubmitTrackCount() {
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(LOGIN_SUBMIT_TRACK_KEY) || 'null');
+    if (!parsed || typeof parsed.count !== 'number') return 0;
+    if (Date.now() - (parsed.at || 0) > PERSISTED_SUBMIT_WINDOW_MS) return 0;
+    return parsed.count;
+  } catch {
+    return 0;
+  }
+}
+
+function recordLoginSubmit() {
+  const next = { count: readSubmitTrackCount() + 1, at: Date.now() };
+  try { window.sessionStorage.setItem(LOGIN_SUBMIT_TRACK_KEY, JSON.stringify(next)); } catch {}
+  return next.count;
 }
 
 function readHaltRecord() {

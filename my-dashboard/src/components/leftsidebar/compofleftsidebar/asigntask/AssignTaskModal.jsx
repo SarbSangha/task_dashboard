@@ -38,6 +38,12 @@ const TASK_TAG_OPTIONS = [
   'Others',
 ];
 
+const PRIORITY_OPTIONS = [
+  { value: 'High', tone: 'high', hint: 'Time-sensitive - jump the queue' },
+  { value: 'Medium', tone: 'medium', hint: 'Normal turnaround' },
+  { value: 'Low', tone: 'low', hint: 'No rush' },
+];
+
 const ASSIGN_REFERENCE_CACHE_TTL_MS = 5 * 60 * 1000;
 const ASSIGN_DEPARTMENT_USERS_CACHE_TTL_MS = 3 * 60 * 1000;
 const createEmptyWorkflowStage = (order = 1) => ({
@@ -46,6 +52,8 @@ const createEmptyWorkflowStage = (order = 1) => ({
   description: '',
   approvalRequired: false,
   assigneeIds: [],
+  approverIds: [],
+  approvalMode: 'any',
 });
 
 const normalizeUserId = (value) => {
@@ -63,6 +71,25 @@ const normalizeUserIds = (values = []) => (
 
 const getMinimumDeadlineInputValue = () => formatDateTimeLocalInputIndia(new Date());
 
+// Quick-pick deadline shortcuts - end of day N days out, IST, so "Tomorrow"
+// means end of tomorrow rather than exactly-24-hours-from-now (which drifts
+// into an odd time of day depending on when the task happens to be created).
+const getQuickDeadlineValue = (daysFromNow) => {
+  const target = new Date();
+  target.setDate(target.getDate() + daysFromNow);
+  target.setHours(18, 0, 0, 0);
+  return formatDateTimeLocalInputIndia(target);
+};
+
+// "EOD" - today's date, 6:30 PM specifically (half an hour later than the
+// other quick-picks' end-of-day time), per how this team actually defines
+// end-of-day for same-day deadlines.
+const getEndOfDayDeadlineValue = () => {
+  const target = new Date();
+  target.setHours(18, 30, 0, 0);
+  return formatDateTimeLocalInputIndia(target);
+};
+
 const validateDeadlineNotInPast = (deadlineValue) => {
   const value = `${deadlineValue || ''}`.trim();
   if (!value) return true;
@@ -76,6 +103,16 @@ const getStageAssigneeIds = (stage = {}) => normalizeUserIds([
   ...(Array.isArray(stage.assignees) ? stage.assignees.map((assignee) => assignee?.id) : []),
 ]);
 
+// Approvers are sourced separately from assignees (any company user, not
+// just people already on the task's receiver list - see the department
+// browser reused for this in the Stage Setup card below).
+const getStageApproverIds = (stage = {}) => normalizeUserIds([
+  ...(Array.isArray(stage.approverIds) ? stage.approverIds : []),
+  ...(Array.isArray(stage.approvers) ? stage.approvers.map((approver) => approver?.id) : []),
+]);
+
+const normalizeApprovalMode = (value) => (`${value || ''}`.trim().toLowerCase() === 'all' ? 'all' : 'any');
+
 const buildWorkflowSnapshot = (formData = {}) => {
   const workflowStages = Array.isArray(formData.workflowStages) ? formData.workflowStages : [];
   return JSON.stringify({
@@ -87,6 +124,8 @@ const buildWorkflowSnapshot = (formData = {}) => {
       description: `${stage?.description || ''}`.trim(),
       approvalRequired: Boolean(stage?.approvalRequired),
       assigneeIds: getStageAssigneeIds(stage).sort((left, right) => left - right),
+      approverIds: getStageApproverIds(stage).sort((left, right) => left - right),
+      approvalMode: normalizeApprovalMode(stage?.approvalMode),
     })),
   });
 };
@@ -114,6 +153,8 @@ const buildDirtySnapshot = (formData = {}) => {
     workflowEnabled: Boolean(formData.workflowEnabled),
     finalApprovalRequired: Boolean(formData.finalApprovalRequired),
     submissionMode: formData.submissionMode === 'any' ? 'any' : 'all',
+    approverIds: normalizeUserIds(formData.approverIds).sort((left, right) => left - right),
+    approvalMode: normalizeApprovalMode(formData.approvalMode),
     selectedUserIds: (Array.isArray(formData.selectedUserIds) ? formData.selectedUserIds : [])
       .map((value) => `${value || ''}`)
       .sort(),
@@ -138,6 +179,8 @@ const buildDirtySnapshot = (formData = {}) => {
       description: `${stage?.description || ''}`.trim(),
       approvalRequired: Boolean(stage?.approvalRequired),
       assigneeIds: getStageAssigneeIds(stage).sort((left, right) => left - right),
+      approverIds: getStageApproverIds(stage).sort((left, right) => left - right),
+      approvalMode: normalizeApprovalMode(stage?.approvalMode),
     })),
   });
 };
@@ -157,11 +200,17 @@ const createEmptyFormData = (myDepartment = '') => ({
   deadline: '',
   priority: 'High',
   taskDetails: '',
-  taskTag: 'Audio',
+  taskTag: '',
   taskType: 'task',
   attachments: [],
   links: [],
   submissionMode: 'all',
+  // Designated approver(s) for the normal (non-staged) flow - e.g. someone
+  // who self-assigns wants a specific person to sign off instead of
+  // relying on the default creator/HOD/SPOC approval. See the "Task
+  // Approvers" section shown for single-step tasks below.
+  approverIds: [],
+  approvalMode: 'any',
   workflowEnabled: false,
   finalApprovalRequired: false,
   workflowStages: [],
@@ -226,6 +275,12 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
   // NEW: Department and user data
   const [departments, setDepartments] = useState([]);
   const [departmentUsers, setDepartmentUsers] = useState([]);
+  // Independent department browser for the Stage Approvers pickers - see
+  // loadApproverDepartmentUsers for why this is separate from
+  // departmentUsers/formData.toDepartment (the receiver pool's browser).
+  const [approverBrowseDepartment, setApproverBrowseDepartment] = useState('');
+  const [approverDepartmentUsers, setApproverDepartmentUsers] = useState([]);
+  const [loadingApproverUsers, setLoadingApproverUsers] = useState(false);
   const [knownUsersById, setKnownUsersById] = useState({});
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
@@ -477,6 +532,54 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     }
   };
 
+  // Approvers browse departments independently of the receiver pool above -
+  // otherwise picking an approver from a different department than the one
+  // currently browsed for receivers meant scrolling all the way back up to
+  // Step 1, changing it there (which also disturbs the receiver list's own
+  // department view), then scrolling back down to the stage card. Shares
+  // the same department-users cache key as loadDepartmentUsers (keyed only
+  // by department name) so browsing the same department for both never
+  // double-fetches.
+  const loadApproverDepartmentUsers = async (departmentName) => {
+    const normalizedDepartment = normalizeDepartmentName(departmentName);
+    if (!normalizedDepartment) {
+      setApproverDepartmentUsers([]);
+      return;
+    }
+
+    const cacheKey = cacheKeys?.departmentUsers(normalizedDepartment);
+    const cachedUsers = cacheKey
+      ? getTaskPanelCache(cacheKey, ASSIGN_DEPARTMENT_USERS_CACHE_TTL_MS)
+      : null;
+
+    if (cachedUsers?.users) {
+      setApproverDepartmentUsers(cachedUsers.users);
+      rememberUsers(cachedUsers.users);
+      setLoadingApproverUsers(false);
+      return;
+    }
+    setLoadingApproverUsers(true);
+    try {
+      const response = await authAPI.getUsersByDepartment(normalizedDepartment);
+      if (response.users) {
+        setApproverDepartmentUsers(response.users);
+        rememberUsers(response.users);
+        if (cacheKey) {
+          setTaskPanelCache(cacheKey, {
+            users: response.users,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error loading approver department users:', error);
+      if (!cachedUsers?.users) {
+        showMessage('Failed to load users', 'error');
+      }
+    } finally {
+      setLoadingApproverUsers(false);
+    }
+  };
+
   // Initialize form when modal opens.
   useEffect(() => {
     if (!isOpen) return;
@@ -492,6 +595,8 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
             description: stage.description || '',
             approvalRequired: Boolean(stage.approvalRequired),
             assigneeIds: getStageAssigneeIds(stage),
+            approverIds: getStageApproverIds(stage),
+            approvalMode: normalizeApprovalMode(stage.approvalMode),
           }))
         : (
             editingTask.workflowEnabled
@@ -505,6 +610,8 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                       ? editingTask.currentStageAssigneeIds
                       : selectedUserIds
                   ),
+                  approverIds: [],
+                  approvalMode: 'any',
                 }]
               : []
           );
@@ -532,11 +639,13 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
           ? editingTask.priority.charAt(0).toUpperCase() + editingTask.priority.slice(1).toLowerCase()
           : 'High',
         taskDetails: editingTask.description || '',
-        taskTag: editingTask.taskTag || 'Audio',
+        taskTag: editingTask.taskTag || '',
         taskType: editingTask.taskType || 'task',
         attachments: editingTask.attachments || [],
         links: editingTask.links || [],
         submissionMode: editingTask.submissionMode === 'all' ? 'all' : 'any',
+        approverIds: normalizeUserIds(editingTask.approverIds),
+        approvalMode: normalizeApprovalMode(editingTask.approvalMode),
         workflowEnabled: Boolean(editingTask.workflowEnabled),
         finalApprovalRequired: Boolean(editingTask.finalApprovalRequired),
         workflowStages: mappedWorkflowStages,
@@ -546,10 +655,12 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       initialWorkflowSnapshotRef.current = buildWorkflowSnapshot(mappedEditData);
       rememberUsers([
         ...(Array.isArray(editingTask.assignedTo) ? editingTask.assignedTo : []),
+        ...(Array.isArray(editingTask.approvers) ? editingTask.approvers : []),
         ...(Array.isArray(editingTask.workflowStages)
-          ? editingTask.workflowStages.flatMap((stage) => (
-              Array.isArray(stage?.assignees) ? stage.assignees : []
-            ))
+          ? editingTask.workflowStages.flatMap((stage) => ([
+              ...(Array.isArray(stage?.assignees) ? stage.assignees : []),
+              ...(Array.isArray(stage?.approvers) ? stage.approvers : []),
+            ]))
           : []),
       ]);
       updateCurrentDraftId(isDraftEdit ? editingTask.id : null);
@@ -587,6 +698,14 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
   }, [currentUserDepartment, formData.myDepartment, isOpen]);
 
   useEffect(() => {
+    if (!isOpen || approverBrowseDepartment) return;
+    const defaultDepartment = formData.toDepartment || currentUserDepartment;
+    if (defaultDepartment) {
+      setApproverBrowseDepartment(normalizeDepartmentName(defaultDepartment));
+    }
+  }, [isOpen, approverBrowseDepartment, formData.toDepartment, currentUserDepartment]);
+
+  useEffect(() => {
     if (!isOpen) return;
     const normalizedToDepartment = normalizeDepartmentName(formData.toDepartment);
     if (normalizedToDepartment && normalizedToDepartment !== formData.toDepartment) {
@@ -602,6 +721,20 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       setDepartmentUsers([]);
     }
   }, [departments, formData.toDepartment, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const normalizedApproverDepartment = normalizeDepartmentName(approverBrowseDepartment);
+    if (normalizedApproverDepartment && normalizedApproverDepartment !== approverBrowseDepartment) {
+      setApproverBrowseDepartment(normalizedApproverDepartment);
+      return;
+    }
+    if (normalizedApproverDepartment) {
+      void loadApproverDepartmentUsers(normalizedApproverDepartment);
+    } else {
+      setApproverDepartmentUsers([]);
+    }
+  }, [departments, approverBrowseDepartment, isOpen]);
 
   // Drafts are saved only after an explicit user action:
   // the Save Draft button, or choosing Save Draft from the close confirmation.
@@ -673,6 +806,31 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         ? normalizeUserIds(prev.selectedUserIds).filter(id => id !== normalizedUserId)
         : [...normalizeUserIds(prev.selectedUserIds), normalizedUserId]
     }));
+  };
+
+  // Bulk toggle for the currently-browsed department's user list - a real
+  // time-saver once a department has more than a handful of people.
+  // Deselects instead of selecting when everyone visible is already picked,
+  // so the one control does both jobs depending on current state.
+  const areAllDepartmentUsersSelected = departmentUsers.length > 0 && departmentUsers.every(
+    (candidate) => normalizeUserIds(formData.selectedUserIds).includes(normalizeUserId(candidate.id))
+  );
+
+  const toggleSelectAllDepartmentUsers = () => {
+    const departmentUserIds = departmentUsers
+      .map((candidate) => normalizeUserId(candidate.id))
+      .filter(Boolean);
+    if (departmentUserIds.length === 0) return;
+    setFormData((prev) => {
+      const currentIds = normalizeUserIds(prev.selectedUserIds);
+      const allSelected = departmentUserIds.every((id) => currentIds.includes(id));
+      return {
+        ...prev,
+        selectedUserIds: allSelected
+          ? currentIds.filter((id) => !departmentUserIds.includes(id))
+          : normalizeUserIds([...currentIds, ...departmentUserIds]),
+      };
+    });
   };
 
   const toggleSelfAssignment = () => {
@@ -754,6 +912,47 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         return { ...stage, assigneeIds };
       }),
     }));
+  };
+
+  // Approvers are picked from any company user (not just the receiver
+  // pool - see the department browser reused for this below), so a picked
+  // user might not already be in knownUsersById the way a receiver always
+  // is. Remember them here so their name resolves in the selected-approver
+  // chips even after the creator browses away to a different department.
+  const toggleStageApprover = (stageIndex, userId, userMeta) => {
+    const normalizedUserId = normalizeUserId(userId);
+    if (!normalizedUserId) return;
+    if (userMeta) {
+      rememberUsers([{ ...userMeta, id: normalizedUserId }]);
+    }
+    setFormData((prev) => ({
+      ...prev,
+      workflowStages: prev.workflowStages.map((stage, index) => {
+        if (index !== stageIndex) return stage;
+        const currentApproverIds = normalizeUserIds(stage.approverIds);
+        const approverIds = currentApproverIds.includes(normalizedUserId)
+          ? currentApproverIds.filter((id) => id !== normalizedUserId)
+          : [...currentApproverIds, normalizedUserId];
+        return { ...stage, approverIds };
+      }),
+    }));
+  };
+
+  // Task-level equivalent of toggleStageApprover, for the normal
+  // (non-staged) single-step flow's own "Task Approvers" picker.
+  const toggleTaskApprover = (userId, userMeta) => {
+    const normalizedUserId = normalizeUserId(userId);
+    if (!normalizedUserId) return;
+    if (userMeta) {
+      rememberUsers([{ ...userMeta, id: normalizedUserId }]);
+    }
+    setFormData((prev) => {
+      const currentApproverIds = normalizeUserIds(prev.approverIds);
+      const approverIds = currentApproverIds.includes(normalizedUserId)
+        ? currentApproverIds.filter((id) => id !== normalizedUserId)
+        : [...currentApproverIds, normalizedUserId];
+      return { ...prev, approverIds };
+    });
   };
 
   const selectedReceivers = useMemo(
@@ -882,7 +1081,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         reference: draftFormData.reference || '',
         myDepartment: draftFormData.myDepartment || currentUserDepartment || '',
         taskType: draftFormData.taskType || 'task',
-        taskTag: draftFormData.taskTag || 'Audio',
+        taskTag: draftFormData.taskTag || '',
         priority: (draftFormData.priority || 'medium').toLowerCase(),
         toDepartment: draftFormData.toDepartment || '',
         selectedUserIds: normalizeUserIds(draftFormData.selectedUserIds),
@@ -898,6 +1097,8 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               description: `${stage.description || ''}`.trim(),
               approvalRequired: Boolean(stage.approvalRequired),
               assigneeIds: normalizeUserIds(stage.assigneeIds),
+              approverIds: normalizeUserIds(stage.approverIds),
+              approvalMode: normalizeApprovalMode(stage.approvalMode),
             }))
           : [],
       };
@@ -964,6 +1165,11 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
       return;
     }
 
+    if (!formData.taskTag) {
+      showMessage('Please select a Tag of Task.', 'error');
+      return;
+    }
+
     if (!validateDeadlineNotInPast(formData.deadline)) {
       showMessage('Deadline cannot be in the past. Select a future date and time.', 'error');
       return;
@@ -978,6 +1184,10 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
           assigneeIds: Array.isArray(stage.assigneeIds)
             ? Array.from(new Set(stage.assigneeIds.map((id) => Number(id)).filter(Boolean)))
             : [],
+          approverIds: Array.isArray(stage.approverIds)
+            ? Array.from(new Set(stage.approverIds.map((id) => Number(id)).filter(Boolean)))
+            : [],
+          approvalMode: normalizeApprovalMode(stage.approvalMode),
         }))
       : [];
 
@@ -1096,7 +1306,10 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         projectIdHex: formData.projectIdHex || null,
         customerName: formData.customerName || '',
         taskType: formData.taskType || 'task',
-        taskTag: formData.taskTag || 'Audio',
+        // No fallback here on purpose - handleCreateTask's validation above
+        // already blocks submission unless a real tag is picked, and
+        // silently substituting "Audio" would defeat that requirement.
+        taskTag: formData.taskTag,
         priority: formData.priority.toLowerCase(),
         toDepartment: formData.toDepartment,
         deadline: formData.deadline || null,
@@ -1105,6 +1318,8 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         links: formData.links || [],
         attachments: finalAttachments,
         submissionMode: formData.submissionMode === 'any' ? 'any' : 'all',
+        approverIds: normalizeUserIds(formData.approverIds),
+        approvalMode: normalizeApprovalMode(formData.approvalMode),
         ...(shouldSendWorkflow ? { workflow: workflowPayload } : {}),
       };
 
@@ -1449,7 +1664,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
 
           <div className="assign-row">
             <div className="assign-field">
-              <label>Task ID (existing or generated)</label>
+              <label>Task ID <span className="assign-field-hint-inline">(existing or generated)</span></label>
               <input
                 type="text"
                 placeholder="TASK-XXXX-YYYYMMDD-ZZZZ"
@@ -1467,13 +1682,12 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               )}
             </div>
             <div className="assign-field project-id-actions">
-              <label>&nbsp;</label>
               <div className="project-id-btn-row">
-                <button type="button" className="assign-secondary-btn" onClick={handleValidateTaskId}>
-                  Validate Task ID
+                <button type="button" className="assign-secondary-btn" onClick={handleValidateTaskId} aria-label="Validate Task ID">
+                  Validate
                 </button>
-                <button type="button" className="assign-draft-btn" onClick={handleGenerateTaskId}>
-                  Generate Task ID
+                <button type="button" className="assign-draft-btn id-generate-btn" onClick={handleGenerateTaskId} aria-label="Generate a new Task ID">
+                  Generate New
                 </button>
               </div>
             </div>
@@ -1481,7 +1695,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
 
           <div className="assign-row">
             <div className="assign-field">
-              <label>Project ID (existing or generated)</label>
+              <label>Project ID <span className="assign-field-hint-inline">(existing or generated)</span></label>
               <input
                 type="text"
                 placeholder="PROJ-XXXX-YYYYMMDD-ZZZZ"
@@ -1499,13 +1713,12 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               )}
             </div>
             <div className="assign-field project-id-actions">
-              <label>&nbsp;</label>
               <div className="project-id-btn-row">
-                <button type="button" className="assign-secondary-btn" onClick={handleValidateProjectId}>
-                  Validate Proj ID
+                <button type="button" className="assign-secondary-btn" onClick={handleValidateProjectId} aria-label="Validate Project ID">
+                  Validate
                 </button>
-                <button type="button" className="assign-draft-btn" onClick={handleGenerateProjectId}>
-                  Generate Proj ID
+                <button type="button" className="assign-draft-btn id-generate-btn" onClick={handleGenerateProjectId} aria-label="Generate a new Project ID">
+                  Generate New
                 </button>
               </div>
             </div>
@@ -1545,8 +1758,12 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                     onClick={() => setWorkflowEnabled(false)}
                     aria-pressed={!formData.workflowEnabled}
                   >
+                    {!formData.workflowEnabled && <span className="assignment-flow-check" aria-hidden="true">✓</span>}
+                    <span className="assignment-flow-option-icon" aria-hidden="true">
+                      <span className="flow-dot" />
+                    </span>
                     <strong>Single-step task</strong>
-                    <span>Assign the task normally and let one receiver or shared receiver pool handle it.</span>
+                    <span className="assignment-flow-option-desc">Assign the task normally and let one receiver or shared receiver pool handle it.</span>
                   </button>
 
                   <button
@@ -1555,8 +1772,16 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                     onClick={() => setWorkflowEnabled(true)}
                     aria-pressed={formData.workflowEnabled}
                   >
+                    {formData.workflowEnabled && <span className="assignment-flow-check" aria-hidden="true">✓</span>}
+                    <span className="assignment-flow-option-icon" aria-hidden="true">
+                      <span className="flow-dot" />
+                      <span className="flow-arrow" />
+                      <span className="flow-dot" />
+                      <span className="flow-arrow" />
+                      <span className="flow-dot" />
+                    </span>
                     <strong>Staged workflow</strong>
-                    <span>Create Stage 1, 2, 3 handoffs where each stage can have its own assignee and approval gate.</span>
+                    <span className="assignment-flow-option-desc">Create Stage 1, 2, 3 handoffs where each stage can have its own assignee and approval gate.</span>
                   </button>
                 </div>
 
@@ -1718,6 +1943,12 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                   )}
                 </div>
 
+                {formData.toDepartment && departmentUsers.length > 1 && (
+                  <button type="button" className="receiver-select-all-btn" onClick={toggleSelectAllDepartmentUsers}>
+                    {areAllDepartmentUsersSelected ? 'Deselect all' : `Select all ${departmentUsers.length}`}
+                  </button>
+                )}
+
                 {formData.toDepartment ? (
                   loadingUsers ? (
                     <div className="receiver-panel-state">Loading users...</div>
@@ -1751,6 +1982,113 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               </div>
             </div>
           </div>
+
+          {!formData.workflowEnabled && (
+            <div className="assign-row">
+              <div className="assign-card full-width workflow-builder-card">
+                <div className="workflow-builder-header">
+                  <div>
+                    <div className="workflow-builder-title-row">
+                      <h3>Task Approvers (optional)</h3>
+                    </div>
+                    <p>
+                      Pick specific people to approve this task once it's submitted, instead of the
+                      default flow (creator, HOD, or SPOC). Especially useful when you assign the task
+                      to yourself - naming an approver here means someone other than you signs off on
+                      your own work. Leave empty to keep the default.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="workflow-stage-approvers">
+                  {normalizeUserIds(formData.approverIds).length > 0 && (
+                    <div className="workflow-stage-approver-chips">
+                      {normalizeUserIds(formData.approverIds).map((approverId) => {
+                        const approver = knownUsersById[approverId] || { id: approverId, name: `User #${approverId}` };
+                        return (
+                          <span key={`task-approver-${approverId}`} className="workflow-stage-approver-chip">
+                            {approver.name}
+                            <button
+                              type="button"
+                              onClick={() => toggleTaskApprover(approverId)}
+                              aria-label={`Remove ${approver.name} as approver`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="assign-field workflow-stage-approver-department">
+                    <label>Find approvers in department</label>
+                    <select
+                      value={approverBrowseDepartment}
+                      onChange={(e) => setApproverBrowseDepartment(e.target.value)}
+                    >
+                      <option value="">-- Select Department --</option>
+                      {departments.map((dept) => (
+                        <option key={dept} value={dept}>{dept}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {approverBrowseDepartment ? (
+                    loadingApproverUsers ? (
+                      <div className="workflow-stage-empty">Loading users...</div>
+                    ) : approverDepartmentUsers.length > 0 ? (
+                      <div className="workflow-stage-assignee-list">
+                        {approverDepartmentUsers.map((candidate) => {
+                          const candidateId = normalizeUserId(candidate.id);
+                          if (!candidateId) return null;
+                          return (
+                            <label key={`task-approver-option-${candidateId}`} className="workflow-stage-assignee-option">
+                              <input
+                                type="checkbox"
+                                checked={normalizeUserIds(formData.approverIds).includes(candidateId)}
+                                onChange={() => toggleTaskApprover(candidateId, candidate)}
+                              />
+                              <span>
+                                <strong>{candidate.name}</strong>
+                                <small>
+                                  {[candidate.department, candidate.position].filter(Boolean).join(' | ')}
+                                </small>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="workflow-stage-empty">No users found in this department.</div>
+                    )
+                  ) : (
+                    <div className="workflow-stage-empty">
+                      Pick a department above to find approvers from that team.
+                    </div>
+                  )}
+
+                  {normalizeUserIds(formData.approverIds).length > 1 && (
+                    <label className="workflow-toggle compact workflow-stage-approval-mode">
+                      <input
+                        type="checkbox"
+                        checked={normalizeApprovalMode(formData.approvalMode) === 'all'}
+                        onChange={(e) => handleChange('approvalMode', e.target.checked ? 'all' : 'any')}
+                      />
+                      <span>
+                        Require every approver to approve
+                        <small>
+                          {normalizeApprovalMode(formData.approvalMode) === 'all'
+                            ? 'This task only completes once all selected approvers have approved.'
+                            : 'This task completes as soon as any one selected approver approves.'}
+                        </small>
+                      </span>
+                    </label>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="assign-row">
             <div className="assign-card full-width workflow-builder-card">
@@ -1879,6 +2217,102 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                             </div>
                           )}
                         </div>
+
+                        <div className="workflow-stage-approvers">
+                          <div className="workflow-stage-assignees-copy">
+                            <h4>Stage Approvers (optional)</h4>
+                            <p>
+                              Pick specific people to approve this stage instead of the default flow
+                              (creator, HOD, or SPOC). Leave empty to keep the default. Approvers can be
+                              anyone in the company, from any department - not just this task's receivers.
+                            </p>
+                          </div>
+
+                          {normalizeUserIds(stage.approverIds).length > 0 && (
+                            <div className="workflow-stage-approver-chips">
+                              {normalizeUserIds(stage.approverIds).map((approverId) => {
+                                const approver = knownUsersById[approverId] || { id: approverId, name: `User #${approverId}` };
+                                return (
+                                  <span key={`${stageIndex}-approver-${approverId}`} className="workflow-stage-approver-chip">
+                                    {approver.name}
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleStageApprover(stageIndex, approverId)}
+                                      aria-label={`Remove ${approver.name} as approver`}
+                                    >
+                                      ×
+                                    </button>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          <div className="assign-field workflow-stage-approver-department">
+                            <label>Find approvers in department</label>
+                            <select
+                              value={approverBrowseDepartment}
+                              onChange={(e) => setApproverBrowseDepartment(e.target.value)}
+                            >
+                              <option value="">-- Select Department --</option>
+                              {departments.map((dept) => (
+                                <option key={dept} value={dept}>{dept}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {approverBrowseDepartment ? (
+                            loadingApproverUsers ? (
+                              <div className="workflow-stage-empty">Loading users...</div>
+                            ) : approverDepartmentUsers.length > 0 ? (
+                              <div className="workflow-stage-assignee-list">
+                                {approverDepartmentUsers.map((candidate) => {
+                                  const candidateId = normalizeUserId(candidate.id);
+                                  if (!candidateId) return null;
+                                  return (
+                                    <label key={`${stageIndex}-approver-option-${candidateId}`} className="workflow-stage-assignee-option">
+                                      <input
+                                        type="checkbox"
+                                        checked={normalizeUserIds(stage.approverIds).includes(candidateId)}
+                                        onChange={() => toggleStageApprover(stageIndex, candidateId, candidate)}
+                                      />
+                                      <span>
+                                        <strong>{candidate.name}</strong>
+                                        <small>
+                                          {[candidate.department, candidate.position].filter(Boolean).join(' | ')}
+                                        </small>
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="workflow-stage-empty">No users found in this department.</div>
+                            )
+                          ) : (
+                            <div className="workflow-stage-empty">
+                              Pick a department above to find approvers from that team.
+                            </div>
+                          )}
+
+                          {normalizeUserIds(stage.approverIds).length > 1 && (
+                            <label className="workflow-toggle compact workflow-stage-approval-mode">
+                              <input
+                                type="checkbox"
+                                checked={normalizeApprovalMode(stage.approvalMode) === 'all'}
+                                onChange={(e) => updateWorkflowStage(stageIndex, { approvalMode: e.target.checked ? 'all' : 'any' })}
+                              />
+                              <span>
+                                Require every approver to approve
+                                <small>
+                                  {normalizeApprovalMode(stage.approvalMode) === 'all'
+                                    ? 'This stage only advances once all selected approvers have approved.'
+                                    : 'This stage advances as soon as any one selected approver approves.'}
+                                </small>
+                              </span>
+                            </label>
+                          )}
+                        </div>
                       </div>
                     ))}
 
@@ -1899,44 +2333,65 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
           {/* Timeline & Priority */}
           <div className="assign-row">
             <div className="assign-card full-width">
-              <h3>Timeline</h3>
+              <div className="assign-card-header">
+                <h3>Timeline</h3>
+                <p>When this is due, and how urgently it should be picked up.</p>
+              </div>
               <div className="assign-timeline-row">
                 <div className="assign-field">
-                  <label>Deadline</label>
-                  <input 
-                    type="datetime-local" 
-                    value={formData.deadline}
-                    min={getMinimumDeadlineInputValue()}
-                    onChange={(e) => handleChange('deadline', e.target.value)}
-                  />
+                  <label>Deadline <span className="assign-field-hint-inline">(IST)</span></label>
+                  <div className="deadline-input-row">
+                    <span className="deadline-input-icon" aria-hidden="true">📅</span>
+                    <input
+                      type="datetime-local"
+                      value={formData.deadline}
+                      min={getMinimumDeadlineInputValue()}
+                      onChange={(e) => handleChange('deadline', e.target.value)}
+                    />
+                  </div>
+                  <div className="deadline-quick-picks">
+                    <button type="button" onClick={() => handleChange('deadline', getEndOfDayDeadlineValue())}>
+                      EOD
+                    </button>
+                    <button type="button" onClick={() => handleChange('deadline', getQuickDeadlineValue(1))}>
+                      Tomorrow
+                    </button>
+                    <button type="button" onClick={() => handleChange('deadline', getQuickDeadlineValue(3))}>
+                      +3 days
+                    </button>
+                    <button type="button" onClick={() => handleChange('deadline', getQuickDeadlineValue(7))}>
+                      +1 week
+                    </button>
+                    {formData.deadline && (
+                      <button
+                        type="button"
+                        className="deadline-clear-btn"
+                        onClick={() => handleChange('deadline', '')}
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="assign-card">
+                <div className="assign-card priority-card">
                   <h3>Priority</h3>
                   <div className="assign-priority-options">
-                    <label>
-                      <input 
-                        type="radio" 
-                        name="priority" 
-                        checked={formData.priority === 'High'}
-                        onChange={() => handleChange('priority', 'High')}
-                      /> High
-                    </label>
-                    <label>
-                      <input 
-                        type="radio" 
-                        name="priority" 
-                        checked={formData.priority === 'Medium'}
-                        onChange={() => handleChange('priority', 'Medium')}
-                      /> Medium
-                    </label>
-                    <label>
-                      <input 
-                        type="radio" 
-                        name="priority" 
-                        checked={formData.priority === 'Low'}
-                        onChange={() => handleChange('priority', 'Low')}
-                      /> Low
-                    </label>
+                    {PRIORITY_OPTIONS.map((option) => (
+                      <label
+                        key={option.value}
+                        className={`priority-pill priority-${option.tone} ${formData.priority === option.value ? 'active' : ''}`}
+                        title={option.hint}
+                      >
+                        <input
+                          type="radio"
+                          name="priority"
+                          checked={formData.priority === option.value}
+                          onChange={() => handleChange('priority', option.value)}
+                        />
+                        <span className="priority-pill-dot" aria-hidden="true" />
+                        {option.value}
+                      </label>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -1946,7 +2401,10 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
           {/* Task Details */}
           <div className="assign-row assign-card">
             <div className="task-details-box">
-              <h3>Task Details</h3>
+              <div className="assign-card-header">
+                <h3>Task Details</h3>
+                <p>Be specific: goals, references, and any constraints the assignee needs to know.</p>
+              </div>
               <textarea
                 placeholder="Enter detailed description..."
                 className="task-textarea"
@@ -1954,32 +2412,46 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                 value={formData.taskDetails}
                 onChange={(e) => handleChange('taskDetails', e.target.value)}
               />
+              {formData.taskDetails?.trim() ? (
+                <div className="task-textarea-footer">
+                  <span>{formData.taskDetails.trim().length} characters</span>
+                </div>
+              ) : null}
             </div>
           </div>
 
           {/* Request Type + Task Tag */}
           <div className="assign-row">
-            <div className="assign-field">
-              <label>Request Type</label>
-              <select
-                value={formData.taskType}
-                onChange={(e) => handleChange('taskType', e.target.value)}
-              >
-                <option value="task">Task</option>
-                <option value="task_approval">Task Approval</option>
-                <option value="submission_result">Submission Result</option>
-              </select>
-            </div>
-            <div className="assign-field">
-              <label>Tag of Task</label>
-              <select 
-                value={formData.taskTag}
-                onChange={(e) => handleChange('taskTag', e.target.value)}
-              >
-                {TASK_TAG_OPTIONS.map((tag) => (
-                  <option key={tag} value={tag}>{tag}</option>
-                ))}
-              </select>
+            <div className="assign-card full-width">
+              <div className="assign-card-header">
+                <h3>Task Classification</h3>
+                <p>How this task should be categorized and routed.</p>
+              </div>
+              <div className="assign-classification-row">
+                <div className="assign-field">
+                  <label>Request Type</label>
+                  <select
+                    value={formData.taskType}
+                    onChange={(e) => handleChange('taskType', e.target.value)}
+                  >
+                    <option value="task">Task</option>
+                    <option value="task_approval">Task Approval</option>
+                    <option value="submission_result">Submission Result</option>
+                  </select>
+                </div>
+                <div className="assign-field">
+                  <label>Tag of Task <span className="required">*</span></label>
+                  <select
+                    value={formData.taskTag}
+                    onChange={(e) => handleChange('taskTag', e.target.value)}
+                  >
+                    <option value="">-- Select Tag --</option>
+                    {TASK_TAG_OPTIONS.map((tag) => (
+                      <option key={tag} value={tag}>{tag}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
 
