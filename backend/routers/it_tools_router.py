@@ -1420,6 +1420,7 @@ def _validate_extension_autofill_target(
 
 def _find_extension_tool(db: Session, payload: ExtensionCredentialPayload) -> Optional[ITPortalTool]:
     extension_ticket = f"{payload.extension_ticket or ''}".strip()
+    requested_slug = _canonical_tool_slug(payload.tool_slug or "")
     if extension_ticket:
         try:
             ticket_payload = _decode_ticket(extension_ticket)
@@ -1434,10 +1435,23 @@ def _find_extension_tool(db: Session, payload: ExtensionCredentialPayload) -> Op
                     .filter(ITPortalTool.id == tool_id, ITPortalTool.is_active == True)
                     .first()
                 )
-                if ticket_tool:
+                # The ticket only proves "extension auto-fill was authorized at
+                # some point" - it says nothing about which page is asking
+                # right now. Trusting it outright let a stale/leftover ticket
+                # from one tool's tab (e.g. Suno) hand back that tool's
+                # credential to a request another tool's content script
+                # explicitly labelled with its own slug (e.g. elevenlabs).
+                # The content script always sends tool_slug, so when it's
+                # present it must agree with the ticket's tool; otherwise fall
+                # through to the normal slug/hostname resolution below.
+                if ticket_tool and (
+                    not requested_slug
+                    or requested_slug == "tool"
+                    or _canonical_tool_slug_for_tool(ticket_tool) == requested_slug
+                ):
                     return ticket_tool
 
-    tool_slug = _canonical_tool_slug(payload.tool_slug or "")
+    tool_slug = requested_slug
     hostname = _normalize_hostname(payload.hostname or payload.page_url)
 
     query = db.query(ITPortalTool).filter(ITPortalTool.is_active == True)

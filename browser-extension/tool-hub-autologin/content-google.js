@@ -3,7 +3,6 @@ const GOOGLE_SCRIPT_VERSION = 'debug-2026-07-21-google-02';
 const LOGIN_FLOW_STORAGE_KEY = 'rmw_chatgpt_login_flow_hints_v1';
 const LOGIN_FLOW_HINT_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const FLOW_EXTENSION_TICKET_STORAGE_KEY = 'rmw_flow_google_extension_ticket';
-const LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY = 'rmw_google_extension_ticket_last_tool_slug';
 const STATE = {
   credential: null,
   requested: false,
@@ -1027,46 +1026,21 @@ function sleep(ms) {
 }
 
 function getGoogleExtensionTicketStorageKey(toolSlug = STATE.toolSlug) {
-  const normalizedToolSlug = normalizeToolSlug(
-    toolSlug
-    || inferToolSlugFromGooglePage()
-    || readStoredGoogleLastToolSlug()
-  );
+  // Deliberately NOT falling back to "whichever tool's Google flow ran most
+  // recently" here (see the removed readStoredGoogleLastToolSlug/
+  // inferStoredGoogleToolSlug below): accounts.google.com is a single shared
+  // origin, so that fallback is a genuinely global value across every tab -
+  // opening Suno's Google sign-in and then ElevenLabs's within the same
+  // browser profile made ElevenLabs's tab silently inherit Suno's "last
+  // tool" and fetch/fill Suno's credentials. When toolSlug/page-inference
+  // can't identify the tool, the caller resolves it from the tab/opener-tab
+  // launch record via the background script instead (see loadLaunchState),
+  // which is scoped per tab and therefore actually reliable.
+  const normalizedToolSlug = normalizeToolSlug(toolSlug || inferToolSlugFromGooglePage());
   if (normalizedToolSlug === 'flow') {
     return FLOW_EXTENSION_TICKET_STORAGE_KEY;
   }
   return `rmw_google_extension_ticket_${normalizedToolSlug || 'default'}`;
-}
-
-function readStoredGoogleLastToolSlug() {
-  try {
-    const sessionToolSlug = normalizeToolSlug(window.sessionStorage.getItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY));
-    if (sessionToolSlug) return sessionToolSlug;
-
-    const localToolSlug = normalizeToolSlug(window.localStorage.getItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY));
-    if (localToolSlug) {
-      try { window.sessionStorage.setItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY, localToolSlug); } catch {}
-      return localToolSlug;
-    }
-  } catch {}
-
-  return '';
-}
-
-function listKnownGoogleToolSlugs() {
-  return ['flow', 'behance', 'chatgpt', 'enhancor', 'elevenlabs', 'freepik', 'genspark', 'heygen', 'kling-ai', 'pinterest', 'suno', 'epidemic-sound', 'splice', 'claude'];
-}
-
-function inferStoredGoogleToolSlug() {
-  const rememberedToolSlug = readStoredGoogleLastToolSlug();
-  if (rememberedToolSlug && readStoredGoogleExtensionTicket(rememberedToolSlug)) {
-    return rememberedToolSlug;
-  }
-
-  const matchingToolSlugs = listKnownGoogleToolSlugs()
-    .filter((toolSlug) => Boolean(readStoredGoogleExtensionTicket(toolSlug)));
-
-  return matchingToolSlugs.length === 1 ? matchingToolSlugs[0] : '';
 }
 
 function readStoredGoogleExtensionTicket(toolSlug = STATE.toolSlug) {
@@ -1093,10 +1067,6 @@ function storeGoogleExtensionTicket(ticket, toolSlug = STATE.toolSlug) {
     if (ticket) {
       window.sessionStorage.setItem(storageKey, ticket);
       window.localStorage.setItem(storageKey, ticket);
-      if (normalizedToolSlug) {
-        window.sessionStorage.setItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY, normalizedToolSlug);
-        window.localStorage.setItem(LAST_GOOGLE_TOOL_SLUG_STORAGE_KEY, normalizedToolSlug);
-      }
     } else {
       window.sessionStorage.removeItem(storageKey);
       window.localStorage.removeItem(storageKey);
@@ -1415,7 +1385,13 @@ function inferToolSlugFromGooglePage() {
     return 'claude';
   }
 
-  return inferStoredGoogleToolSlug();
+  // No fallback to "whichever tool's Google flow ran most recently" here -
+  // see getGoogleExtensionTicketStorageKey's comment for why that fallback
+  // caused Suno/ElevenLabs credential cross-contamination. Returning empty
+  // when this page genuinely can't be identified lets callers fall back to
+  // the background script's tab/opener-tab launch record instead, which is
+  // scoped per tab and so can't leak across tools.
+  return '';
 }
 
 function supportsPasswordOptionalGoogleCredential(toolSlug = STATE.toolSlug) {
@@ -3262,11 +3238,11 @@ async function loadLaunchState() {
 
 async function retryLaunchStateIfNeeded() {
   if (isGoogleTransitionLocked()) return false;
-  const inferredToolSlug = normalizeToolSlug(
-    STATE.toolSlug
-    || inferToolSlugFromGooglePage()
-    || inferStoredGoogleToolSlug()
-  );
+  // No stale cross-tool storage fallback here either (see
+  // getGoogleExtensionTicketStorageKey's comment) - if STATE.toolSlug isn't
+  // set yet and this page doesn't identify itself, loadLaunchState's next
+  // pass (tab/opener-tab based) is what resolves it, not a guess.
+  const inferredToolSlug = normalizeToolSlug(STATE.toolSlug || inferToolSlugFromGooglePage());
   if (!inferredToolSlug) return false;
   if (STATE.launchRetryAttempts >= MAX_LAUNCH_RETRIES) return false;
 

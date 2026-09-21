@@ -787,6 +787,13 @@ export const taskAPI = {
                   assigneeIds: Array.isArray(stage.assigneeIds)
                     ? Array.from(new Set(stage.assigneeIds.map((id) => Number(id)).filter(Boolean)))
                     : [],
+                  // Each stage's designated approvers. Rebuilding the stage
+                  // without these dropped them on the way to the server, so
+                  // a workflow's chosen approvers never reached the task.
+                  approverIds: Array.isArray(stage.approverIds)
+                    ? Array.from(new Set(stage.approverIds.map((id) => Number(id)).filter(Boolean)))
+                    : [],
+                  approvalMode: stage.approvalMode === 'all' ? 'all' : 'any',
                 }))
                 .filter((stage) => stage.title && stage.assigneeIds.length > 0)
             : [],
@@ -813,6 +820,15 @@ export const taskAPI = {
       links: normalizedLinks,
       attachments: normalizedAttachments,
       submissionMode: taskData.submissionMode === 'any' ? 'any' : 'all',
+      // Task-level designated approvers ("Task Approvers" on a single-step
+      // task). This payload is an explicit whitelist, so a field missing
+      // here is silently dropped no matter what the form collected — which
+      // is how a chosen approver reached the server as an empty list and
+      // the task ended up with approver_ids_json = [].
+      approverIds: Array.isArray(taskData.approverIds)
+        ? Array.from(new Set(taskData.approverIds.map((id) => Number(id)).filter(Boolean)))
+        : [],
+      approvalMode: taskData.approvalMode === 'all' ? 'all' : 'any',
       workflow: normalizedWorkflow,
     };
     

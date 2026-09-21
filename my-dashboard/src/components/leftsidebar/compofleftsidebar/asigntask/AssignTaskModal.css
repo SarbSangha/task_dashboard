@@ -308,6 +308,22 @@
   cursor: not-allowed;
 }
 
+.assign-readonly-value {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-input-border);
+  font-size: 13px;
+  background: var(--assign-surface-muted);
+  color: var(--color-input-text);
+}
+
+.assign-field-hint {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--assign-text-muted);
+}
+
 .assign-field input:focus,
 .assign-field select:focus {
   outline: none;
@@ -841,6 +857,12 @@
 
 .workflow-stage-approver-chip button:hover {
   background: color-mix(in srgb, var(--color-feedback-info-text) 16%, transparent);
+}
+
+.workflow-stage-approver-chip--implied {
+  padding: 5px 10px;
+  background: transparent;
+  border: 1px dashed var(--color-feedback-info-text);
 }
 
 .workflow-stage-approval-mode {

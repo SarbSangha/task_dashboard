@@ -855,6 +855,21 @@ def task_is_ready_for_approval(task: Task) -> bool:
     return task.status in APPROVABLE_TASK_STATUSES
 
 
+def _is_active_assignee(task: Task, user_id: Optional[int]) -> bool:
+    if not user_id:
+        return False
+    try:
+        participants = task.participants or []
+    except SQLAlchemyError:
+        return False
+    return any(
+        participant.user_id == user_id
+        and participant.role == ParticipantRole.ASSIGNEE
+        and participant.is_active
+        for participant in participants
+    )
+
+
 def can_approve(user: User, task: Task) -> bool:
     if not task_is_ready_for_approval(task):
         return False
@@ -869,6 +884,22 @@ def can_approve(user: User, task: Task) -> bool:
     )
     if "super_admin" in roles:
         return True
+    designated_approver_ids = _task_approver_ids(task)
+    # Naming a specific approver for a plain task hands that task's sign-off
+    # to that person alone. Without this, whoever actually did the work
+    # could still approve their own submission just by separately holding a
+    # creator/HOD/SPOC role - e.g. an HOD assigned (not self-assigned) a
+    # task by someone else, who then uses their HOD tier to rubber-stamp
+    # their own result even though a different approver was named. Only
+    # super_admin (above) overrides this.
+    self_review_delegated = (
+        not _is_workflow_task(task)
+        and bool(designated_approver_ids)
+        and user.id not in designated_approver_ids
+        and _is_active_assignee(task, user.id)
+    )
+    if self_review_delegated:
+        return False
     if user.id == task.creator_id and (
         workflow_waiting_approval
         or legacy_hod_approval_ready
@@ -883,7 +914,7 @@ def can_approve(user: User, task: Task) -> bool:
     # can_approve_stage's workflow-stage equivalent below: someone who
     # self-assigns (or any creator) can name a specific person to sign off
     # instead of relying only on the default creator/HOD/SPOC tiers.
-    if user.id in _task_approver_ids(task):
+    if user.id in designated_approver_ids:
         return True
     return False
 
@@ -1871,6 +1902,20 @@ def _task_approver_ids(task: Task) -> List[int]:
     return [int(user_id) for user_id in ids if user_id]
 
 
+def _effective_required_approver_ids(task: Task) -> Set[int]:
+    """Who "require every approver" actually binds for this task: the
+    stored designated approvers, plus the creator - even when the creator
+    is HOD/admin and so isn't written into approver_ids_json (see
+    create_task's auto-add). That's a storage detail, not an exemption from
+    a requirement the creator turned on themselves. Used by both
+    approve_task (to gate completion) and task serialization (to show
+    progress) so the two can never disagree."""
+    designated = set(_task_approver_ids(task))
+    if _get_task_approval_mode(task) == "all" and designated:
+        designated = designated | {task.creator_id}
+    return designated
+
+
 def _task_approval_votes(task: Task) -> Set[int]:
     meta = task.metadata_json if isinstance(task.metadata_json, dict) else {}
     votes = meta.get(TASK_APPROVAL_VOTES_META_KEY)
@@ -2273,14 +2318,33 @@ def compute_available_actions(
         actions.append("hold_task")
 
     if not is_held and has_any_role(user, {"hod", "super_admin"}):
-        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW, TaskStatus.APPROVED}:
-            actions.extend(["approve", "need_improvement", "forward"])
+        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW}:
+            # Gated through can_approve so an HOD/super_admin who is also
+            # this task's assignee - and so would be signing off on their
+            # own submitted work - doesn't get the button when a different
+            # approver was specifically named for it (see can_approve's
+            # self_review_delegated check).
+            if can_approve(user, task):
+                actions.extend(["approve", "need_improvement"])
+            actions.append("forward")
+        elif task.status == TaskStatus.APPROVED:
+            actions.append("forward")
         if can_assign(user, task):
             actions.append("assign")
 
     if not is_held and "spoc" in roles and user.department == task.to_department:
-        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW, TaskStatus.APPROVED}:
-            actions.extend(["approve", "need_improvement", "forward"])
+        if task.status in {TaskStatus.SUBMITTED, TaskStatus.UNDER_REVIEW}:
+            if can_approve(user, task):
+                actions.extend(["approve", "need_improvement"])
+            actions.append("forward")
+        elif task.status == TaskStatus.APPROVED:
+            actions.append("forward")
+
+    # A plain task's designated approver(s) who aren't otherwise covered by
+    # the creator/HOD/SPOC branches above (e.g. an approver named who holds
+    # none of those roles) still need the button to actually approve.
+    if not is_held and user.id in _task_approver_ids(task) and can_approve(user, task):
+        actions.extend(["approve", "need_improvement"])
 
     if not is_held and is_assignee:
         if task.status in {TaskStatus.PENDING, TaskStatus.FORWARDED, TaskStatus.ASSIGNED, TaskStatus.NEED_IMPROVEMENT}:
@@ -2310,8 +2374,28 @@ def compute_available_actions(
             actions.append("revoke_task")
         if can_edit_task_details(user, task):
             actions.append("edit_task")
-        if not is_held and task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED}:
+        # Gated through can_approve (not a bare status check) so a creator
+        # who self-assigned and named a designated approver doesn't still
+        # get shown an Approve/Need Improvement button that the actual
+        # permission check (can_approve) would then 403 on.
+        if not is_held and task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED} and can_approve(user, task):
             actions.extend(["approve", "need_improvement"])
+
+    # Once someone has cast their vote in an in-progress "require all"
+    # round, their part is done - hide Approve/Need Improvement so they
+    # aren't shown a button that would just silently re-record the same
+    # vote. This overrides every branch above, including super_admin's
+    # unconditional access, since a blanket role override otherwise leaves
+    # the button visible even after that specific person has already acted.
+    if not _is_workflow_task(task):
+        required_approver_ids = _effective_required_approver_ids(task)
+        already_voted = (
+            len(required_approver_ids) > 1
+            and user.id in required_approver_ids
+            and user.id in _task_approval_votes(task)
+        )
+        if already_voted:
+            actions = [action for action in actions if action not in {"approve", "need_improvement"}]
 
     deduped = []
     for action in actions:
@@ -2709,6 +2793,8 @@ def serialize_task_with_context(
     meta = task.metadata_json or {}
     task_dict["customerName"] = meta.get("customerName")
     task_dict["reference"] = meta.get("reference")
+    task_dict["lastApproverName"] = meta.get("lastApproverName")
+    task_dict["lastApproverRole"] = meta.get("lastApproverRole")
     task_dict["links"] = meta.get("links", [])
     task_dict["attachments"] = meta.get("attachments", [])
     task_dict["resultText"] = task.result_text
@@ -2784,6 +2870,28 @@ def serialize_task_with_context(
     # above is bare ids for permission checks) - lets the edit form show
     # existing approvers by name before any department gets browsed.
     task_dict["approvers"] = approvers
+    # Who "require every approver" actually binds (see
+    # _effective_required_approver_ids) with each one's vote status, so the
+    # UI can show "Approved by X - waiting on Y" instead of just "Submitted"
+    # while a multi-approver "all" vote is in progress. Includes the
+    # creator even when they're HOD/admin and so aren't a TaskParticipant
+    # APPROVER row.
+    required_approver_ids = _effective_required_approver_ids(task) if not _is_workflow_task(task) else set()
+    if len(required_approver_ids) > 1:
+        approver_name_by_id = {approver["id"]: approver["name"] for approver in approvers}
+        if creator and creator.id in required_approver_ids:
+            approver_name_by_id.setdefault(creator.id, creator.name)
+        voted_ids = _task_approval_votes(task)
+        task_dict["requiredApprovers"] = [
+            {
+                "id": approver_id,
+                "name": approver_name_by_id.get(approver_id, f"User #{approver_id}"),
+                "approved": approver_id in voted_ids,
+            }
+            for approver_id in sorted(required_approver_ids)
+        ]
+    else:
+        task_dict["requiredApprovers"] = []
     task_dict["workerSubmissions"] = _build_worker_submission_summary(task, assigned_to, current_user)
 
     comment_counts = (context or {}).get("comment_counts") or {}
@@ -3882,6 +3990,48 @@ async def create_task(
                     detail=f"Approvers not found or inactive: {', '.join(str(user_id) for user_id in missing_approver_ids)}",
                 )
 
+        # Self-assigning without naming an approver lets a task's creator
+        # approve their own submitted work (see the creator branch of
+        # can_approve). HOD/super_admin are trusted to self-approve; anyone
+        # else self-assigning must delegate sign-off to a designated approver.
+        if (
+            not workflow_config
+            and current_user.id in initial_assignee_ids
+            and not initial_approver_ids
+            and not has_any_role(current_user, {"super_admin", "hod"})
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Select an approver before assigning this task to yourself.",
+            )
+
+        # Mirror image of the self-assign rule above: a plain (non-HOD/
+        # admin) creator who assigns the work to someone else keeps their
+        # default approve right regardless, but is now explicitly one of
+        # this task's designated approvers too. This has no effect on its
+        # own (their approval still completes the task solo, same as
+        # always) - it only matters once "require every approver" is
+        # turned on, at which point the creator becomes a real required
+        # vote alongside whoever else was named, instead of that toggle
+        # only ever being able to govern people other than the creator.
+        if (
+            not workflow_config
+            and current_user.id not in initial_assignee_ids
+            and not has_any_role(current_user, {"super_admin", "hod"})
+        ):
+            initial_approver_ids = sorted(set(initial_approver_ids) | {current_user.id})
+
+        # Request Type is no longer a manual choice - it's derived from how
+        # the task is assigned. Self-assigning with a designated approver
+        # means someone else's inbox card for this task is purely an
+        # approval request, not work of their own, so it's labelled
+        # accordingly; everything else is a plain task.
+        effective_task_type = (
+            "task_approval"
+            if not workflow_config and current_user.id in initial_assignee_ids and initial_approver_ids
+            else "task"
+        )
+
         metadata_json = {
             "customerName": task_data.customerName,
             "suggestedAssigneeIds": initial_assignee_ids,
@@ -3921,7 +4071,7 @@ async def create_task(
             project_id=(task_data.projectId or "").strip() or None,
             project_id_raw=task_data.projectIdRaw,
             project_id_hex=task_data.projectIdHex,
-            task_type=task_data.taskType,
+            task_type=effective_task_type,
             task_tag=task_data.taskTag,
             priority=priority,
             creator_id=current_user.id,
@@ -4027,6 +4177,35 @@ async def create_task(
                         "workflowEvent": "stage_assigned",
                     },
                 )
+
+            # Designated stage approvers get told too. Without this they were
+            # the only people added to a task who received nothing at all:
+            # ensure_participant above puts the task in their Inbox list, but
+            # with no notification there is no bell entry and no unread badge,
+            # so in practice the task went unnoticed. The plain-task branch
+            # below has always sent its approvers task_approver_designated;
+            # this is the staged-workflow twin of it, named per stage because
+            # a workflow can designate a different approver for each one.
+            for stage_index, stage in enumerate(created_stages):
+                stage_payload = normalized_workflow_stages[stage_index]
+                for approver_id in sorted(set(stage_payload.approverIds or [])):
+                    create_notification(
+                        db,
+                        new_task,
+                        approver_id,
+                        "workflow_stage_approver_designated",
+                        f"You approve stage {stage.stage_order}: {stage.title}",
+                        (
+                            f"{current_user.name} designated you to approve stage "
+                            f"{stage.stage_order} of this task once it's submitted."
+                        ),
+                        actor=current_user,
+                        metadata_json={
+                            "stageOrder": stage.stage_order,
+                            "stageTitle": stage.title,
+                            "workflowEvent": "stage_approver_designated",
+                        },
+                    )
         else:
             # Add selected receivers so they can see this in Inbox immediately.
             # They remain passive until approval/assignment actions progress workflow.
@@ -6040,7 +6219,54 @@ async def approve_task(
     actor_roles = role_set(current_user)
     designated_approver_ids = _task_approver_ids(task)
     is_designated_approver = current_user.id in designated_approver_ids
-    if current_user.id == task.creator_id and task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED}:
+    approval_mode = _get_task_approval_mode(task)
+    # See _effective_required_approver_ids: folds the creator into the
+    # required set whenever "require all" is on, regardless of whether
+    # they're physically stored in approver_ids_json (HOD/admin creators
+    # aren't). Shared with task serialization so the approve/complete
+    # decision here and the progress shown on the task can never disagree.
+    full_required_approver_ids = _effective_required_approver_ids(task)
+    requires_all_designated_approvers = approval_mode == "all" and len(full_required_approver_ids) > 1
+    is_required_voter = current_user.id in full_required_approver_ids
+
+    if is_required_voter and requires_all_designated_approvers:
+        votes = _record_task_approval_vote(task, current_user.id)
+        if not votes >= full_required_approver_ids:
+            add_history(
+                db, task, current_user.id, "approved", task.status.value,
+                payload.comments or f"Approved by {current_user.name} - awaiting other designated approvers",
+            )
+            post_system_comment(
+                db, task, current_user.id,
+                payload.comments or "Approved (awaiting other designated approvers)",
+                "approved",
+            )
+            for pending_id in full_required_approver_ids:
+                if pending_id in votes:
+                    continue
+                create_notification(
+                    db,
+                    task,
+                    pending_id,
+                    "task_co_approval_recorded",
+                    f"This task still needs your approval: {task.title}",
+                    payload.comments or f"{current_user.name} approved this task - it still needs your approval.",
+                    actor=current_user,
+                )
+            db.commit()
+            await invalidate_task_lane_b_cache()
+            return {
+                "success": True,
+                "message": "Approval recorded - awaiting other designated approvers",
+                "status": task.status.value,
+            }
+        # Every required approver (including the creator, if "require all"
+        # is on) has now voted.
+        task.status = TaskStatus.COMPLETED
+        task.workflow_stage = "approver_approved"
+        task.task_edit_locked = True
+        task.result_edit_locked = True
+    elif current_user.id == task.creator_id and task.status in {TaskStatus.SUBMITTED, TaskStatus.APPROVED}:
         task.status = TaskStatus.COMPLETED
         task.workflow_stage = "creator_approved"
         task.task_edit_locked = True
@@ -6048,6 +6274,10 @@ async def approve_task(
     elif "spoc" in actor_roles:
         task.status = TaskStatus.APPROVED
         task.workflow_stage = "spoc_approved"
+        meta = dict(task.metadata_json or {})
+        meta["lastApproverName"] = current_user.name
+        meta["lastApproverRole"] = "spoc"
+        task.metadata_json = meta
         create_notification(
             db,
             task,
@@ -6060,6 +6290,10 @@ async def approve_task(
     elif "hod" in actor_roles:
         task.status = TaskStatus.APPROVED
         task.workflow_stage = "hod_approved"
+        meta = dict(task.metadata_json or {})
+        meta["lastApproverName"] = current_user.name
+        meta["lastApproverRole"] = "hod"
+        task.metadata_json = meta
         create_notification(
             db,
             task,
@@ -6074,38 +6308,8 @@ async def approve_task(
         # sign-off - that is the whole point of naming one (most often
         # after self-assigning, so the creator isn't the one approving
         # their own submitted work). See _task_approver_ids/can_approve.
-        mode = _get_task_approval_mode(task)
-        if mode == "all" and len(designated_approver_ids) > 1:
-            votes = _record_task_approval_vote(task, current_user.id)
-            if not votes >= set(designated_approver_ids):
-                add_history(
-                    db, task, current_user.id, "approved", task.status.value,
-                    payload.comments or f"Approved by {current_user.name} - awaiting other designated approvers",
-                )
-                post_system_comment(
-                    db, task, current_user.id,
-                    payload.comments or "Approved (awaiting other designated approvers)",
-                    "approved",
-                )
-                for pending_id in designated_approver_ids:
-                    if pending_id in votes:
-                        continue
-                    create_notification(
-                        db,
-                        task,
-                        pending_id,
-                        "task_co_approval_recorded",
-                        f"This task still needs your approval: {task.title}",
-                        payload.comments or f"{current_user.name} approved this task - it still needs your approval.",
-                        actor=current_user,
-                    )
-                db.commit()
-                await invalidate_task_lane_b_cache()
-                return {
-                    "success": True,
-                    "message": "Approval recorded - awaiting other designated approvers",
-                    "status": task.status.value,
-                }
+        # (The "require all" case is handled above - this is the single
+        # approver / "any one approver" path.)
         task.status = TaskStatus.COMPLETED
         task.workflow_stage = "approver_approved"
         task.task_edit_locked = True
@@ -6690,8 +6894,9 @@ async def edit_task_details(
     if "customerName" in update_fields:
         meta["customerName"] = payload.customerName
         task.task_id_customer_hex = to_hex4(payload.customerName or task.creator.name or "user")
-    if "taskType" in update_fields:
-        task.task_type = (payload.taskType or "task").strip() or "task"
+    # taskType is no longer settable from the payload - it's derived below
+    # from how the task ends up assigned (see the override right before
+    # task.metadata_json is written).
     if "taskTag" in update_fields:
         task.task_tag = payload.taskTag
     if "priority" in update_fields and payload.priority is not None:
@@ -6905,21 +7110,58 @@ async def edit_task_details(
                     status_code=400,
                     detail=f"Approvers not found or inactive: {', '.join(str(user_id) for user_id in missing_approver_ids)}",
                 )
-        existing_approver_rows = db.query(TaskParticipant).filter(
-            TaskParticipant.task_id == task.id,
-            TaskParticipant.role == ParticipantRole.APPROVER,
-        ).all()
-        for participant in existing_approver_rows:
-            participant.is_active = participant.user_id in valid_approver_ids
-            if participant.is_active:
-                participant.is_read = False
-                participant.read_at = None
-        for approver_id in sorted(valid_approver_ids):
-            ensure_participant(db, task.id, approver_id, ParticipantRole.APPROVER)
-        task.approver_ids_json = sorted(valid_approver_ids)
-        # Approver list changed - votes cast against the old list no longer
-        # mean anything for "all" mode.
-        meta[TASK_APPROVAL_VOTES_META_KEY] = []
+
+    if not task.workflow_enabled:
+        effective_assignee_ids = (
+            sorted(valid_assignee_ids) if assignee_ids_to_apply is not None else before["assigneeIds"]
+        )
+        effective_approver_ids = set(
+            valid_approver_ids if approver_ids_to_apply is not None else _task_approver_ids(task)
+        )
+        if (
+            current_user.id in effective_assignee_ids
+            and not effective_approver_ids
+            and not has_any_role(current_user, {"super_admin", "hod"})
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Select an approver before assigning this task to yourself.",
+            )
+        # Mirror image of the self-assign rule above - see the matching
+        # comment in create_task for why this makes "require every
+        # approver" actually include the creator once it's turned on.
+        if (
+            current_user.id not in effective_assignee_ids
+            and not has_any_role(current_user, {"super_admin", "hod"})
+        ):
+            effective_approver_ids = effective_approver_ids | {current_user.id}
+
+        if effective_approver_ids != set(_task_approver_ids(task)) or approver_ids_to_apply is not None:
+            existing_approver_rows = db.query(TaskParticipant).filter(
+                TaskParticipant.task_id == task.id,
+                TaskParticipant.role == ParticipantRole.APPROVER,
+            ).all()
+            for participant in existing_approver_rows:
+                participant.is_active = participant.user_id in effective_approver_ids
+                if participant.is_active:
+                    participant.is_read = False
+                    participant.read_at = None
+            for approver_id in sorted(effective_approver_ids):
+                ensure_participant(db, task.id, approver_id, ParticipantRole.APPROVER)
+            task.approver_ids_json = sorted(effective_approver_ids)
+            # Approver list changed - votes cast against the old list no
+            # longer mean anything for "all" mode.
+            meta[TASK_APPROVAL_VOTES_META_KEY] = []
+
+        # Request Type is derived, not manually set - see the matching logic
+        # in create_task.
+        task.task_type = (
+            "task_approval"
+            if current_user.id in effective_assignee_ids and effective_approver_ids
+            else "task"
+        )
+    else:
+        task.task_type = "task"
 
     task.metadata_json = meta
 

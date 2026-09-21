@@ -166,6 +166,26 @@ function sendRuntimeMessage(message) {
   });
 }
 
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+// A page load is often the very first thing that wakes the (MV3,
+// non-persistent) background service worker, so the first message of a
+// fresh tab can come back empty/disconnected even though the request itself
+// was fine (see content-suno.js's identical helper). Launch-state calls
+// route through this instead of raw sendRuntimeMessage so a transient miss
+// here doesn't leave the launch looking unauthorized on the very first try.
+async function sendRuntimeMessageWithRetry(message, attempts = 3, gapMs = 300) {
+  let lastResponse = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    lastResponse = await sendRuntimeMessage(message);
+    if (lastResponse?.ok) return lastResponse;
+    if (attempt < attempts) await delay(gapMs);
+  }
+  return lastResponse;
+}
+
 function readLaunchTicketFromUrl() {
   try {
     const searchParams = new URLSearchParams(window.location.search || '');
@@ -228,7 +248,7 @@ function captureLaunchTicket() {
 async function loadLaunchState() {
   const storedTicket = captureLaunchTicket();
   if (storedTicket) {
-    const activation = await sendRuntimeMessage({
+    const activation = await sendRuntimeMessageWithRetry({
       type: 'TOOL_HUB_ACTIVATE_LAUNCH',
       toolSlug: TOOL_SLUG,
       hostname: window.location.hostname,
@@ -250,7 +270,7 @@ async function loadLaunchState() {
     STATE.lastLaunchError = `${activation?.error || 'Dashboard launch ticket was not accepted'}`.trim();
   }
 
-  const response = await sendRuntimeMessage({
+  const response = await sendRuntimeMessageWithRetry({
     type: 'TOOL_HUB_GET_LAUNCH_STATE',
     toolSlug: TOOL_SLUG,
     hostname: window.location.hostname,

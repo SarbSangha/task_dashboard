@@ -36,6 +36,14 @@ class DraftCreate(BaseModel):
     workflowEnabled: bool = False
     finalApprovalRequired: bool = False
     workflowStages: List[Dict[str, Any]] = Field(default_factory=list)
+    # Task-level designated approvers for the plain (non-staged) flow, plus
+    # the two mode switches that sit beside them in the form. These round
+    # trip through the draft like everything else - without them, saving a
+    # draft and reopening it silently dropped the chosen approver, and the
+    # task was then created with no approver at all.
+    approverIds: List[int] = Field(default_factory=list)
+    approvalMode: str = Field(default="any")
+    submissionMode: str = Field(default="all")
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -60,6 +68,9 @@ def _build_draft_metadata(draft_data: DraftCreate) -> Dict[str, Any]:
         "attachments": draft_data.attachments or [],
         "links": [str(link).strip() for link in (draft_data.links or []) if str(link).strip()],
         "workflowStages": draft_data.workflowStages or [],
+        "approverIds": [int(user_id) for user_id in (draft_data.approverIds or []) if str(user_id).strip()],
+        "approvalMode": "all" if f"{draft_data.approvalMode or ''}".strip().lower() == "all" else "any",
+        "submissionMode": "any" if f"{draft_data.submissionMode or ''}".strip().lower() == "any" else "all",
     }
 
 
@@ -93,6 +104,10 @@ def _has_meaningful_draft_content(draft_data: DraftCreate) -> bool:
         return True
     if any(str(user_id).strip() for user_id in (draft_data.selectedUserIds or [])):
         return True
+    # Naming an approver is itself a real decision worth keeping, even if
+    # nothing else has been filled in yet.
+    if any(str(user_id).strip() for user_id in (draft_data.approverIds or [])):
+        return True
     if draft_data.attachments or draft_data.links:
         return True
     if bool(draft_data.workflowEnabled) and any(_is_meaningful_workflow_stage(stage) for stage in (draft_data.workflowStages or [])):
@@ -113,6 +128,9 @@ def _serialize_draft(task: Task) -> Dict[str, Any]:
         "workflowEnabled": bool(task.workflow_enabled),
         "finalApprovalRequired": bool(task.final_approval_required),
         "workflowStages": meta.get("workflowStages") or [],
+        "approverIds": meta.get("approverIds") or [],
+        "approvalMode": meta.get("approvalMode") or "any",
+        "submissionMode": meta.get("submissionMode") or "all",
     })
     return task_dict
 

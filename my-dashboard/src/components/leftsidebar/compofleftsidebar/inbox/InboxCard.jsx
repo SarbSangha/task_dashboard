@@ -140,7 +140,14 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
         inferred.push('edit_task');
       }
     } else {
-      if (isCreatorTask && canReviewTask) {
+      // A self-assigned creator who named a designated approver has handed
+      // their own sign-off to that approver - the backend's can_approve
+      // agrees and 403s the creator here, so don't infer a button that
+      // would just fail (see compute_available_actions in tasks_router.py).
+      const creatorSelfApprovalDelegated = isCreatorTask
+        && Array.isArray(task.approverIds) && task.approverIds.length > 0
+        && assignedPeople.some((person) => Number(person.id) === Number(task.creatorId));
+      if (isCreatorTask && canReviewTask && !creatorSelfApprovalDelegated) {
         inferred.push('approve', 'need_improvement');
       }
       if (isCreatorTask && !terminalStatuses.includes(normalizedStatus)) {
@@ -163,8 +170,8 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     ? ['chat', ...dedupedActions]
     : dedupedActions;
   const actions = isRevoked ? [] : withChat;
-  const visibleActions = isCreatorTask ? actions : actions.filter((action) => action !== 'approve');
-  const showInlineApprove = isCreatorTask && visibleActions.includes('approve');
+  const visibleActions = actions;
+  const showInlineApprove = visibleActions.includes('approve');
   const menuActions = showInlineApprove ? visibleActions.filter((action) => action !== 'approve') : visibleActions;
   const assignedNames = assignedPeople.map((x) => x.name).join(', ') || 'Unassigned';
   const description = task.description || '';
@@ -201,10 +208,32 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     if (normalizedStatus === 'draft') return 'status-draft';
     return 'status-default';
   })();
+  // Authoritative "require all" roster from the backend
+  // (_effective_required_approver_ids) - includes the creator even when
+  // they're HOD/admin and so hold no APPROVER participant row, which
+  // task.approvers alone would miss.
+  const requiredApprovers = Array.isArray(task.requiredApprovers) ? task.requiredApprovers : [];
+  const pendingApprovalStatuses = ['submitted', 'under_review', 'approved'];
+  const showApprovalProgress = !isWorkflowTask
+    && requiredApprovers.length > 1
+    && pendingApprovalStatuses.includes(normalizedStatus);
+  const approvedApproverNames = requiredApprovers
+    .filter((approver) => approver.approved)
+    .map((approver) => approver.name);
+  const pendingApproverNames = requiredApprovers
+    .filter((approver) => !approver.approved)
+    .map((approver) => approver.name);
   const statusDisplayLabel = (() => {
-    if (!isWorkflowTask && normalizedStatus === 'approved' && isCreatorTask) {
-      if (normalizedWorkflowStage === 'hod_approved') return 'HOD approved - final approval pending';
-      if (normalizedWorkflowStage === 'spoc_approved') return 'SPOC approved - final approval pending';
+    if (!isWorkflowTask && normalizedStatus === 'approved') {
+      const pendingApproverName = task.creator?.name || 'Creator';
+      if (normalizedWorkflowStage === 'hod_approved' || normalizedWorkflowStage === 'spoc_approved') {
+        const reviewerLabel = task.lastApproverName
+          || (normalizedWorkflowStage === 'hod_approved' ? 'HOD' : 'SPOC');
+        return `${reviewerLabel} approved - final approval pending (${pendingApproverName})`;
+      }
+    }
+    if (showApprovalProgress && approvedApproverNames.length > 0) {
+      return `Approved by ${approvedApproverNames.join(', ')} - waiting on ${pendingApproverNames.join(', ')}`;
     }
     return (task.status || '').replace(/_/g, ' ') || '-';
   })();

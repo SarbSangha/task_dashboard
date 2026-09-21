@@ -7,6 +7,7 @@ import TaskForm from './LinkArea';
 import { taskAPI, draftAPI, authAPI, fileAPI, clientsAPI } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
 import { useAuth } from '../../../../context/AuthContext';
+import { usePermissions } from '../../../../hooks/usePermissions';
 import CacheStatusBanner from '../../../common/CacheStatusBanner';
 import {
   buildTaskPanelCacheKey,
@@ -266,6 +267,8 @@ const formatUploadSize = (bytes = 0) => {
 const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMinimizedChange, onActivate }, ref) => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const { roles: currentUserRoles } = usePermissions();
+  const isHodOrAdmin = currentUserRoles.includes('hod') || currentUserRoles.includes('admin');
   const { showConfirm } = useCustomDialogs();
   const isDraftEdit = Boolean(editingTask && `${editingTask.status || ''}`.toLowerCase() === 'draft');
   const isTaskEditMode = Boolean(editingTask && !isDraftEdit);
@@ -967,6 +970,30 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
     [formData.selectedUserIds, knownUsersById]
   );
   const isSelfAssigned = Boolean(user?.id && normalizeUserIds(formData.selectedUserIds).includes(normalizeUserId(user.id)));
+  // Request Type is derived, not manually picked - mirrors the backend
+  // override in create_task/edit_task_details. Self-assigning with a
+  // named approver means the approver's inbox card is purely an approval
+  // request, not their own work, so it's labelled accordingly.
+  const isTaskApprovalRequest = !formData.workflowEnabled
+    && isSelfAssigned
+    && normalizeUserIds(formData.approverIds).length > 0;
+  const derivedTaskType = isTaskApprovalRequest ? 'task_approval' : 'task';
+  // Mirrors the backend's auto-add rule (create_task/edit_task_details): a
+  // plain (non-HOD/admin) creator who isn't self-assigning is automatically
+  // one of the task's approvers, so "require every approver" can actually
+  // include them once turned on instead of only ever governing other names.
+  const isCreatorImpliedApprover = !formData.workflowEnabled && !isSelfAssigned && !isHodOrAdmin;
+  // HOD/admin creators aren't added to the actual approver list server-side
+  // (they already have blanket approve rights via their role - see
+  // can_approve), but their name should still show here so the list
+  // reflects who can approve, not just who was manually named.
+  const isCreatorDisplayedApprover = !formData.workflowEnabled && !isSelfAssigned;
+  const currentUserId = normalizeUserId(user?.id);
+  // Excludes the creator's own id (an existing task's approverIds already
+  // includes them, per the backend's auto-add rule) so they aren't rendered
+  // twice - once as the dedicated "implied" chip, once as a normal one.
+  const manualApproverIds = normalizeUserIds(formData.approverIds).filter((id) => id !== currentUserId);
+  const effectiveApproverCount = manualApproverIds.length + (isCreatorImpliedApprover ? 1 : 0);
 
   const workflowAssignedStageCount = useMemo(
     () => formData.workflowStages.filter((stage) => normalizeUserIds(stage.assigneeIds).length > 0).length,
@@ -1090,6 +1117,13 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         attachments: Array.isArray(draftFormData.attachments) ? draftFormData.attachments : [],
         workflowEnabled: Boolean(draftFormData.workflowEnabled),
         finalApprovalRequired: Boolean(draftFormData.finalApprovalRequired),
+        // Task-level approvers must round trip too. They were missing here
+        // while each stage's own approverIds were saved, so a plain task
+        // that went through a draft came back with its "Task Approvers"
+        // selection silently emptied — and was then created with none.
+        approverIds: normalizeUserIds(draftFormData.approverIds),
+        approvalMode: normalizeApprovalMode(draftFormData.approvalMode),
+        submissionMode: draftFormData.submissionMode === 'any' ? 'any' : 'all',
         workflowStages: Array.isArray(draftFormData.workflowStages)
           ? draftFormData.workflowStages.map((stage, index) => ({
               order: Number(stage.order || index + 1),
@@ -1172,6 +1206,19 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
 
     if (!validateDeadlineNotInPast(formData.deadline)) {
       showMessage('Deadline cannot be in the past. Select a future date and time.', 'error');
+      return;
+    }
+
+    if (
+      !formData.workflowEnabled
+      && isSelfAssigned
+      && !isHodOrAdmin
+      && normalizeUserIds(formData.approverIds).length === 0
+    ) {
+      showMessage(
+        'Select an approver in "Task Approvers" before assigning this task to yourself.',
+        'error'
+      );
       return;
     }
 
@@ -1305,7 +1352,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
         projectIdRaw: formData.projectIdRaw || null,
         projectIdHex: formData.projectIdHex || null,
         customerName: formData.customerName || '',
-        taskType: formData.taskType || 'task',
+        taskType: derivedTaskType,
         // No fallback here on purpose - handleCreateTask's validation above
         // already blocks submission unless a real tag is picked, and
         // silently substituting "Audio" would defeat that requirement.
@@ -1989,21 +2036,37 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                 <div className="workflow-builder-header">
                   <div>
                     <div className="workflow-builder-title-row">
-                      <h3>Task Approvers (optional)</h3>
+                      <h3>{isSelfAssigned && !isHodOrAdmin ? 'Task Approvers (required)' : 'Task Approvers (optional)'}</h3>
                     </div>
                     <p>
-                      Pick specific people to approve this task once it's submitted, instead of the
-                      default flow (creator, HOD, or SPOC). Especially useful when you assign the task
-                      to yourself - naming an approver here means someone other than you signs off on
-                      your own work. Leave empty to keep the default.
+                      {isSelfAssigned && !isHodOrAdmin
+                        ? "You're assigning this task to yourself, so you can't approve your own submitted work. Pick at least one approver here - they'll sign off on it instead of you."
+                        : "Pick specific people to approve this task once it's submitted, instead of the default flow (creator, HOD, or SPOC). Especially useful when you assign the task to yourself - naming an approver here means someone other than you signs off on your own work. Leave empty to keep the default."}
                     </p>
+                    {isCreatorDisplayedApprover && (
+                      <p className="assign-field-hint">
+                        {isCreatorImpliedApprover
+                          ? 'You\'re automatically one of this task\'s approvers since you\'re assigning it to someone else. This only changes anything if you also turn on "require every approver" below.'
+                          : 'You can already approve this task via your HOD/Admin role, shown here for reference - naming other approvers is additional, not a replacement.'}
+                      </p>
+                    )}
                   </div>
                 </div>
 
                 <div className="workflow-stage-approvers">
-                  {normalizeUserIds(formData.approverIds).length > 0 && (
+                  {(isCreatorDisplayedApprover || manualApproverIds.length > 0) && (
                     <div className="workflow-stage-approver-chips">
-                      {normalizeUserIds(formData.approverIds).map((approverId) => {
+                      {isCreatorDisplayedApprover && (
+                        <span
+                          className="workflow-stage-approver-chip workflow-stage-approver-chip--implied"
+                          title={isCreatorImpliedApprover
+                            ? "Automatic - you're the creator and this task isn't self-assigned"
+                            : 'You approve via your HOD/Admin role, not this list'}
+                        >
+                          {user?.name || 'You'} (creator)
+                        </span>
+                      )}
+                      {manualApproverIds.map((approverId) => {
                         const approver = knownUsersById[approverId] || { id: approverId, name: `User #${approverId}` };
                         return (
                           <span key={`task-approver-${approverId}`} className="workflow-stage-approver-chip">
@@ -2046,7 +2109,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                             <label key={`task-approver-option-${candidateId}`} className="workflow-stage-assignee-option">
                               <input
                                 type="checkbox"
-                                checked={normalizeUserIds(formData.approverIds).includes(candidateId)}
+                                checked={manualApproverIds.includes(candidateId)}
                                 onChange={() => toggleTaskApprover(candidateId, candidate)}
                               />
                               <span>
@@ -2068,7 +2131,7 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                     </div>
                   )}
 
-                  {normalizeUserIds(formData.approverIds).length > 1 && (
+                  {effectiveApproverCount > 0 && (
                     <label className="workflow-toggle compact workflow-stage-approval-mode">
                       <input
                         type="checkbox"
@@ -2078,9 +2141,13 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
                       <span>
                         Require every approver to approve
                         <small>
-                          {normalizeApprovalMode(formData.approvalMode) === 'all'
-                            ? 'This task only completes once all selected approvers have approved.'
-                            : 'This task completes as soon as any one selected approver approves.'}
+                          {effectiveApproverCount < 2
+                            ? 'Add a second approver for this to matter - with only one, they always complete the task on approval.'
+                            : normalizeApprovalMode(formData.approvalMode) === 'all'
+                              ? isCreatorImpliedApprover
+                                ? 'This task only completes once you and every selected approver have approved.'
+                                : 'This task only completes once all selected approvers have approved.'
+                              : 'This task completes as soon as any one selected approver approves.'}
                         </small>
                       </span>
                     </label>
@@ -2430,14 +2497,14 @@ const AssignTaskModal = forwardRef(({ isOpen, onClose, editingTask = null, onMin
               <div className="assign-classification-row">
                 <div className="assign-field">
                   <label>Request Type</label>
-                  <select
-                    value={formData.taskType}
-                    onChange={(e) => handleChange('taskType', e.target.value)}
-                  >
-                    <option value="task">Task</option>
-                    <option value="task_approval">Task Approval</option>
-                    <option value="submission_result">Submission Result</option>
-                  </select>
+                  <div className="assign-readonly-value">
+                    {isTaskApprovalRequest ? 'Task Approval' : 'Task'}
+                  </div>
+                  <p className="assign-field-hint">
+                    {isTaskApprovalRequest
+                      ? "Auto-set: you're assigning this to yourself with an approver, so your approver sees this as an approval request, not their own task."
+                      : 'Auto-set based on how this task is assigned.'}
+                  </p>
                 </div>
                 <div className="assign-field">
                   <label>Tag of Task <span className="required">*</span></label>
