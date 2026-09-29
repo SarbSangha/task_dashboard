@@ -26,8 +26,18 @@ from utils.permissions import has_any_role
 #: my-dashboard/src/hooks/usePermissions.js - keep the two lists in step.
 FEATURE_RMW_DATA = "rmw_data"
 FEATURE_BUFFER = "buffer"
+#: Unlike the two above (which hide a whole sidebar section), this one gates
+#: a write capability *within* an already-visible section: viewing the
+#: Buffer tab's Purpose Sheet only needs FEATURE_BUFFER, but creating a
+#: purpose or editing a row's Audio Name/Client/Editor Name additionally
+#: needs this grant (see buffer_router.py's Purpose Sheet section). Reuses
+#: this same deny-by-default per-user table rather than inventing a second
+#: grant mechanism - the "does this user see X" and "can this user edit X"
+#: questions are both "was this specific person granted a specific thing",
+#: which is exactly what this table already answers.
+FEATURE_BUFFER_SHEET_EDIT = "buffer_sheet_edit"
 
-GATED_FEATURES: tuple[str, ...] = (FEATURE_RMW_DATA, FEATURE_BUFFER)
+GATED_FEATURES: tuple[str, ...] = (FEATURE_RMW_DATA, FEATURE_BUFFER, FEATURE_BUFFER_SHEET_EDIT)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +45,7 @@ logger = logging.getLogger(__name__)
 FEATURE_LABELS = {
     FEATURE_RMW_DATA: "RMW Data",
     FEATURE_BUFFER: "Buffer",
+    FEATURE_BUFFER_SHEET_EDIT: "Purpose Sheet Editing",
 }
 
 

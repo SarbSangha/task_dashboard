@@ -507,10 +507,20 @@
   // Confirmed real request (2026-08-06, DevTools capture): GET
   // https://fnf-api-gw.higgsfield.ai/fnf/workspaces/credit-ledger?limit=<n>&page=<n>
   // - Bearer-JWT authenticated, same as the other two proactive endpoints.
-  // limit=500&page=1 in ONE request rather than paging through - this
-  // account's own usage page showed "1,000.7 credits spent" / 64 total
-  // generations, a bounded, modest history; no need for the asset-listing
-  // sweep's tighter size cap here. No per-row retry-on-failure the way the
+  // Originally used limit=500&page=1 in ONE request rather than paging
+  // through, on the assumption (based on this account's usage page at the
+  // time: "1,000.7 credits spent" / 64 total generations) that the server
+  // had no cap worth worrying about. Reported live 2026-09-22 ("no
+  // prompt/credits captured" on literally every row): every single one of
+  // these requests was failing with 422 Unprocessable Content, body
+  // {"detail":[{"loc":["query","limit"],"msg":"Input should be less than or
+  // equal to 100","ctx":{"le":100}}]} - Higgsfield added a server-side cap
+  // of 100 on this param at some point after that August capture, and the
+  // credit half of every generation's capture (prompt still worked via the
+  // separate job-detail endpoint) silently died here ever since, on every
+  // sweep, for every account, with nothing surfacing the failure beyond a
+  // console network error. limit=100 is the largest value the server still
+  // accepts. No per-row retry-on-failure the way the
   // job-detail fetch has: this whole sweep just runs again on its own
   // periodic timer (see content-higgsfield.js), so an occasional stale-token
   // miss self-heals on the next tick rather than needing individual
@@ -528,7 +538,7 @@
       return;
     }
 
-    const url = `${HIGGSFIELD_CREDIT_LEDGER_ENDPOINT}?limit=500&page=1`;
+    const url = `${HIGGSFIELD_CREDIT_LEDGER_ENDPOINT}?limit=100&page=1`;
     rawFetch(url, {
       credentials: 'include',
       headers: { Authorization: token },

@@ -15,6 +15,15 @@ import { normalizeApiError } from './bufferCaptureUtils';
  * and the shared .custom-dialog* look from CustomDialogs.css, already
  * loaded app-wide by CustomDialogProvider at the app root.
  *
+ * The Client and Purpose typed in here are exactly what
+ * POST /self-uploads/:id/download (backend/routers/buffer_router.py) uses to
+ * find-or-create a group and row in the Buffer tab's Purpose Sheet - this
+ * form IS how that sheet gets populated, not a separate step, so the
+ * Purpose field suggests existing sheet purposes (fetched once alongside the
+ * client list) to keep people landing on "Teacher's Day" instead of
+ * splitting into "Teachers Day" / "teacher's day" variants that would show
+ * up as separate groups.
+ *
  * Rendered via createPortal straight onto document.body - this component is
  * mounted inside BufferFeedCard, which lives inside .kling-card
  * (KlingTab.css), and that class sets `will-change: transform`
@@ -27,6 +36,7 @@ import { normalizeApiError } from './bufferCaptureUtils';
  */
 export default function BufferDownloadGateModal({ item, onClose }) {
   const [clientOptions, setClientOptions] = useState([]);
+  const [purposeOptions, setPurposeOptions] = useState([]);
   const [clientName, setClientName] = useState('');
   const [purpose, setPurpose] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -38,6 +48,13 @@ export default function BufferDownloadGateModal({ item, onClose }) {
       .then((response) => {
         if (cancelled) return;
         setClientOptions(Array.isArray(response?.clients) ? response.clients : []);
+      })
+      .catch(() => {});
+    bufferAPI.getSheet()
+      .then((response) => {
+        if (cancelled) return;
+        const names = Array.isArray(response?.purposes) ? response.purposes.map((p) => p.name) : [];
+        setPurposeOptions(names);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -78,7 +95,8 @@ export default function BufferDownloadGateModal({ item, onClose }) {
       >
         <div className="custom-dialog-title">Download "{item.title || 'this file'}"</div>
         <div className="custom-dialog-message">
-          This came from Buffer's Self Upload, so it isn't tied to a client yet. Tell us who it's for before it downloads.
+          This came from Buffer's Self Upload, so it isn't tied to a client yet. Tell us who it's for and which
+          occasion it's for - this also adds a row to the Purpose Sheet, under that occasion.
         </div>
 
         <div>
@@ -103,16 +121,21 @@ export default function BufferDownloadGateModal({ item, onClose }) {
 
         <div>
           <label htmlFor="bsu-download-purpose" style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
-            Purpose
+            Purpose / Occasion
           </label>
-          <textarea
+          <input
             id="bsu-download-purpose"
-            className="custom-dialog-textarea"
+            className="custom-dialog-input"
+            list="bsu-download-purpose-options"
             value={purpose}
             onChange={(event) => setPurpose(event.target.value)}
-            placeholder="What is this download for?"
-            style={{ minHeight: 80 }}
+            placeholder="e.g. Teacher's Day, Diwali, Dussehra"
           />
+          <datalist id="bsu-download-purpose-options">
+            {purposeOptions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         </div>
 
         {error && <div className="custom-dialog-message" style={{ color: 'var(--color-danger, #dc2626)' }}>{error}</div>}

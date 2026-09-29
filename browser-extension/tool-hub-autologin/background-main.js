@@ -1,5 +1,10 @@
 const DEFAULT_API_BASE = 'https://dashboard.ritzmediaworld.in';
 const ACTIVE_TAB_LAUNCHES_STORAGE_KEY = 'activeExtensionTabLaunches';
+// Tracks, independently of activeExtensionTabLaunches above, which tab was
+// THE dashboard-launched tab for a CLEAR_SESSION_ON_CLOSE_TOOLS tool - see
+// markRootSessionTab's comment for why this has to live separately from the
+// ticket-based launch map.
+const ROOT_SESSION_TABS_STORAGE_KEY = 'rmw_root_session_tabs_v1';
 const PASSWORD_SAVING_STATE_STORAGE_KEY = 'passwordSavingSuppressionState';
 const USAGE_EVENT_RETRY_QUEUE_STORAGE_KEY = 'pendingUsageEventReports';
 const USAGE_EVENT_RETRY_ALARM = 'retryPendingUsageEvents';
@@ -55,8 +60,21 @@ const DIRECT_TICKET_ONLY_TOOLS = new Set([
 // clear automatically; the email/password tools below launch in a normal
 // window where cookies would otherwise persist and leak the shared session.
 const CLEAR_SESSION_ON_CLOSE_TOOLS = new Set([
-  'behance', 'claude', 'freepik', 'genspark', 'pinterest', 'flow',
+  'behance', 'claude', 'chatgpt', 'freepik', 'genspark', 'pinterest', 'flow',
   'envato', 'grammarly', 'higgsfield', 'figma',
+  // Reported live: signing into Suno with account X, then ElevenLabs, signed
+  // ElevenLabs into X too - sometimes without even showing Google's account
+  // chooser. Root cause: every one of these launches in a fresh Incognito
+  // window, but MULTIPLE Incognito windows opened while at least one is
+  // already open share the SAME cookie jar (a Chrome behavior, not something
+  // this extension controls) - so Google's OWN session for the first tool
+  // was still "live" when the second tool's OAuth popup opened, and Google
+  // silently reused it. flow/genspark/behance/pinterest were already covered
+  // here (see their entries in TOOL_OPTIONAL_SESSION_DOMAINS and the
+  // includeGoogle check below) for the identical reason - these five share
+  // the same architecture (Google-capable credential + incognito launch) and
+  // were simply missed.
+  'suno', 'elevenlabs', 'kling', 'kling-ai', 'klingai', 'heygen', 'epidemic-sound', 'splice',
 ]);
 const TOOL_SESSION_DOMAINS = {
   behance: [
@@ -106,6 +124,16 @@ const TOOL_OPTIONAL_SESSION_DOMAINS = {
   flow: ['accounts.google.com', 'google.com', '.google.com'],
   genspark: ['accounts.google.com', 'google.com', '.google.com'],
   pinterest: ['accounts.google.com', 'google.com', '.google.com'],
+  // See CLEAR_SESSION_ON_CLOSE_TOOLS's comment - same shared-Incognito-cookie
+  // -jar leak, same fix.
+  suno: ['accounts.google.com', 'google.com', '.google.com'],
+  elevenlabs: ['accounts.google.com', 'google.com', '.google.com'],
+  kling: ['accounts.google.com', 'google.com', '.google.com'],
+  'kling-ai': ['accounts.google.com', 'google.com', '.google.com'],
+  klingai: ['accounts.google.com', 'google.com', '.google.com'],
+  heygen: ['accounts.google.com', 'google.com', '.google.com'],
+  'epidemic-sound': ['accounts.google.com', 'google.com', '.google.com'],
+  splice: ['accounts.google.com', 'google.com', '.google.com'],
 };
 const TOOL_LOGIN_CONTINUATION_HOSTS = {
   behance: [
@@ -333,6 +361,22 @@ function normalizeToolSlug(value) {
   if (['enhencor', 'enhencer', 'enhancer'].includes(normalized)) return 'enhancor';
   if (['eleven-labs', 'eleven-lab'].includes(normalized)) return 'elevenlabs';
   if (normalized === 'pintrest') return 'pinterest';
+  return normalized;
+}
+
+// normalizeToolSlug() deliberately leaves "kling-ai"/"klingai" alone (see
+// getActiveKlingLaunch's comment below) because every launch/tab-matching
+// call in this file keys off the extension's own "kling-ai" identity. The
+// backend's ITPortalTool row for this tool is canonically slugged "kling"
+// though, and /api/it-tools/extension/{credential,otp,auth-link} compare
+// the tool_slug we send against that row's canonical slug with a strict
+// string match - sending "kling-ai" there never matches "kling" and made
+// every Kling Google sign-in 404 with "No matching tool found for this
+// page". This translates ONLY the outgoing API field, right where each
+// request body is built, so tab/launch matching above it is untouched.
+function toBackendToolSlug(toolSlug) {
+  const normalized = normalizeToolSlug(toolSlug);
+  if (normalized === 'kling-ai' || normalized === 'klingai') return 'kling';
   return normalized;
 }
 
@@ -752,7 +796,7 @@ async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug,
       const inheritedDirectLaunch = await getActiveLaunch(fallbackTabId, toolSlug);
       if (inheritedDirectLaunch?.ticket) {
         if (primaryTabId) {
-          await setActiveLaunch(primaryTabId, inheritedDirectLaunch);
+          await setActiveLaunch(primaryTabId, { ...inheritedDirectLaunch, isRootLaunch: false });
         }
         return inheritedDirectLaunch;
       }
@@ -769,7 +813,7 @@ async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug,
     const fallbackLaunch = await getActiveLaunch(fallbackTabId, toolSlug);
     if (fallbackLaunch?.ticket) {
       if (primaryTabId) {
-        await setActiveLaunch(primaryTabId, fallbackLaunch);
+        await setActiveLaunch(primaryTabId, { ...fallbackLaunch, isRootLaunch: false });
       }
       return fallbackLaunch;
     }
@@ -777,7 +821,7 @@ async function getAuthorizedLaunchForTabs(primaryTabId, fallbackTabId, toolSlug,
 
   const continuationLaunch = await getRecentContinuationLaunch(toolSlug, hostname, pageUrl);
   if (continuationLaunch?.ticket && primaryTabId) {
-    await setActiveLaunch(primaryTabId, continuationLaunch);
+    await setActiveLaunch(primaryTabId, { ...continuationLaunch, isRootLaunch: false });
   }
   return continuationLaunch;
 }
@@ -803,8 +847,11 @@ async function activatePendingLaunchForTab(tabId, toolSlug, hostname, pageUrl) {
     expiresAt: Number(storedLaunch.expiresAt || 0),
     usageTrackingTicket: `${storedLaunch.usageTrackingTicket || ''}`.trim(),
     usageTrackingTicketExpiresAt: Number(storedLaunch.usageTrackingTicketExpiresAt || 0),
+    isRootLaunch: true,
   };
+  await clearGoogleSessionForFreshLaunch(launch.toolSlug);
   await setActiveLaunch(tabId, launch);
+  await markRootSessionTab(tabId, launch.toolSlug);
   return launch;
 }
 
@@ -866,6 +913,16 @@ async function setActiveLaunch(tabId, launch) {
       || launch.clearGoogleOnClose
       || (sameTicket && existingLaunch.clearGoogleOnClose)
     ),
+    // True only for the one tab the dashboard itself opened with a fresh
+    // ticket (activateLaunchForTab/activatePendingLaunchForTab) - every
+    // caller that copies a launch onto ANOTHER tab (opener inheritance for a
+    // Google/OAuth popup, an artifact standalone view, a recent-continuation
+    // reuse) explicitly passes `isRootLaunch: false` alongside the rest of
+    // the copied fields, specifically so that tab is never mistaken for the
+    // root. See cleanupToolSessionForClosedTab: closing the root tab must
+    // always end the session, even while an inherited tab elsewhere is still
+    // legitimately using it - closing anything else must not.
+    isRootLaunch: Boolean(launch.isRootLaunch),
   };
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
 }
@@ -881,6 +938,69 @@ async function clearActiveLaunch(tabId, toolSlug = '') {
   }
   delete launchMap[key];
   await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+}
+
+// Removes every tab's launch record for a given ticket, not just one tab's -
+// used when the underlying session itself is being wiped (see
+// cleanupToolSessionForClosedTab's isRootLaunch branch). Leaving another
+// tab's inherited record in place after its cookies are gone would let that
+// tab's content script find it "still authorized" on its next reload and
+// automatically sign back in with the stored credential, silently undoing
+// the wipe the root tab's closure was supposed to cause.
+async function clearLaunchesByTicket(ticket, toolSlug) {
+  const trimmedTicket = `${ticket || ''}`.trim();
+  if (!trimmedTicket) return;
+  const normalizedSlug = normalizeToolSlug(toolSlug);
+  const launchMap = await getActiveLaunchMap();
+  let changed = false;
+  for (const [key, item] of Object.entries(launchMap)) {
+    if (
+      normalizeToolSlug(item?.toolSlug) === normalizedSlug
+      && `${item?.ticket || ''}`.trim() === trimmedTicket
+    ) {
+      delete launchMap[key];
+      changed = true;
+    }
+  }
+  if (changed) {
+    await chrome.storage.local.set({ [ACTIVE_TAB_LAUNCHES_STORAGE_KEY]: launchMap });
+  }
+}
+
+// Reported bug: closing the Claude tab opened from the dashboard did not
+// clear the session - Claude was still reachable by opening claude.ai
+// directly afterward. Root cause: content-claude.js's own success handler
+// calls revokeActiveLaunch() ~8s after detecting a signed-in workspace (see
+// REVOKE_LAUNCH_GRACE_MS there), which deletes this tab's entry from
+// activeExtensionTabLaunches entirely - long before the user actually closes
+// the tab. By the time chrome.tabs.onRemoved fires, cleanupToolSessionForClosedTab
+// finds no record at all for that tab id and does nothing, so the
+// isRootLaunch check added there never gets a chance to run. This tracks the
+// same "was this the dashboard-launched tab" fact in a SEPARATE map that
+// nothing else ever revokes early - only cleanupToolSessionForClosedTab
+// itself consumes (and removes) an entry, once the tab actually closes.
+async function getRootSessionTabsMap() {
+  const stored = await chrome.storage.local.get([ROOT_SESSION_TABS_STORAGE_KEY]);
+  return stored[ROOT_SESSION_TABS_STORAGE_KEY] || {};
+}
+
+async function markRootSessionTab(tabId, toolSlug) {
+  const normalizedSlug = normalizeToolSlug(toolSlug);
+  if (!tabId || !CLEAR_SESSION_ON_CLOSE_TOOLS.has(normalizedSlug)) return;
+  const map = await getRootSessionTabsMap();
+  map[`${tabId}`] = normalizedSlug;
+  await chrome.storage.local.set({ [ROOT_SESSION_TABS_STORAGE_KEY]: map });
+}
+
+async function consumeRootSessionTab(tabId) {
+  const map = await getRootSessionTabsMap();
+  const key = `${tabId}`;
+  const toolSlug = map[key] || '';
+  if (toolSlug) {
+    delete map[key];
+    await chrome.storage.local.set({ [ROOT_SESSION_TABS_STORAGE_KEY]: map });
+  }
+  return toolSlug;
 }
 
 async function revokeActiveLaunch(tabId, toolSlug = '') {
@@ -1032,8 +1152,11 @@ async function activateLaunchForTab(tabId, toolSlug, hostname, extensionTicket) 
       expiresAt: Number(storedLaunch.expiresAt || 0),
       usageTrackingTicket: `${storedLaunch.usageTrackingTicket || ''}`.trim(),
       usageTrackingTicketExpiresAt: Number(storedLaunch.usageTrackingTicketExpiresAt || 0),
+      isRootLaunch: true,
     };
+    await clearGoogleSessionForFreshLaunch(launch.toolSlug);
     await setActiveLaunch(tabId, launch);
+    await markRootSessionTab(tabId, launch.toolSlug);
     return launch;
   }
 
@@ -1041,8 +1164,11 @@ async function activateLaunchForTab(tabId, toolSlug, hostname, extensionTicket) 
   if (!directTicketLaunch) {
     throw new Error('Open this tool from the dashboard first.');
   }
+  directTicketLaunch.isRootLaunch = true;
 
+  await clearGoogleSessionForFreshLaunch(directTicketLaunch.toolSlug);
   await setActiveLaunch(tabId, directTicketLaunch);
+  await markRootSessionTab(tabId, directTicketLaunch.toolSlug);
   return directTicketLaunch;
 }
 
@@ -1148,6 +1274,36 @@ async function clearToolSession(toolSlug, options = {}) {
   });
 
   return { removed, siteDataCleared };
+}
+
+// Reported live: signing into Suno (account X), then - WITHOUT closing that
+// tab - launching ElevenLabs, silently signed ElevenLabs into X too, with no
+// chooser or sign-in screen at all. Root cause: multiple tools launch into a
+// fresh Incognito window each, but every Incognito window opened while at
+// least one is already open shares the SAME cookie jar (a Chrome behavior,
+// not something this extension controls). With Suno's tab still open, its
+// Google session was still live in that shared jar, so when ElevenLabs's
+// "Continue with Google" fired, Google did a fully silent server-side
+// re-authentication - no interactive accounts.google.com page ever renders
+// in that case, so there is no page left for content-google.js to act on;
+// by the time any of our automation could run, the OAuth round trip had
+// already completed with the wrong account. Clearing a tool's Google session
+// reactively when ITS tab closes (see cleanupToolSessionForClosedTab) does
+// nothing for this - Suno's tab was never closed. The only way to prevent
+// the silent reuse is to make sure the shared jar has no live Google session
+// left BEFORE the next tool's launch can reach its own "Continue with
+// Google" step, so this runs synchronously as part of activating every fresh
+// root launch (see markRootSessionTab's call sites) - the content script
+// only proceeds once TOOL_HUB_ACTIVATE_LAUNCH's response comes back, so this
+// is guaranteed to finish before any click can happen.
+async function clearGoogleSessionForFreshLaunch(toolSlug) {
+  const normalizedSlug = normalizeToolSlug(toolSlug);
+  if (!(TOOL_OPTIONAL_SESSION_DOMAINS[normalizedSlug] || []).length) return;
+  try {
+    await clearToolSession(normalizedSlug, { includeGoogle: true });
+  } catch (error) {
+    console.debug('[RMW Tool Hub Auto Login] Pre-launch Google session clear failed (non-fatal)', normalizedSlug, error?.message);
+  }
 }
 
 function getPasswordSavingEnabledDetails() {
@@ -1371,31 +1527,63 @@ async function releaseSingleSeatToolSession(toolSlug, extensionTicket) {
 async function cleanupToolSessionForClosedTab(tabId) {
   if (!tabId) return;
 
+  // Read (and remove) the root-session marker FIRST, before the ticket-based
+  // launch map lookup below - see markRootSessionTab's comment. This is the
+  // one signal guaranteed to still exist even after content-claude.js's own
+  // post-signin revoke has already deleted the tab's entry from
+  // activeExtensionTabLaunches, which happens well before the tab actually
+  // closes on any normal-length session.
+  const rootToolSlug = await consumeRootSessionTab(tabId);
+
   const launchMap = await getStoredActiveLaunchMap();
   const closedLaunch = launchMap[`${tabId}`];
-  const normalizedSlug = normalizeToolSlug(closedLaunch?.toolSlug);
+  const normalizedSlug = normalizeToolSlug(closedLaunch?.toolSlug) || rootToolSlug;
+  const isRootTab = Boolean(rootToolSlug) || Boolean(closedLaunch?.isRootLaunch);
 
-  if (!closedLaunch) {
+  if (!closedLaunch && !isRootTab) {
     return;
   }
 
-  const closedTicket = `${closedLaunch.ticket || ''}`.trim();
-  const hasOtherToolTabs = Object.entries(launchMap).some(([key, item]) => {
+  const closedTicket = `${closedLaunch?.ticket || ''}`.trim();
+  const hasOtherToolTabs = Boolean(closedTicket) && Object.entries(launchMap).some(([key, item]) => {
     if (key === `${tabId}`) return false;
     if (normalizeToolSlug(item?.toolSlug) !== normalizedSlug) return false;
-    return closedTicket && `${item?.ticket || ''}`.trim() === closedTicket;
+    return `${item?.ticket || ''}`.trim() === closedTicket;
   });
 
   const shouldClearSessionOnClose = CLEAR_SESSION_ON_CLOSE_TOOLS.has(normalizedSlug)
-    || Boolean(closedLaunch.clearSessionOnClose);
-  if (shouldClearSessionOnClose && !hasOtherToolTabs) {
+    || Boolean(closedLaunch?.clearSessionOnClose);
+  // The tab the dashboard itself opened (isRootTab) ending the session is the
+  // one signal that must always be honored, even while some other tab - an
+  // artifact standalone view, a shared link opened alongside it, a
+  // Google/OAuth popup - inherited the same ticket and is still sitting
+  // open. Reported live: closing the dashboard-launched Claude tab left
+  // Claude still reachable from one of those other tabs (and, separately,
+  // directly on claude.ai with no dashboard involved at all) because
+  // hasOtherToolTabs (tracking-based) found it and skipped the wipe. Any
+  // OTHER tab closing still defers to hasOtherToolTabs as before - it must
+  // not kill the session while the actual root tab is still open.
+  if (shouldClearSessionOnClose && (isRootTab || !hasOtherToolTabs)) {
     const cleanupResult = await clearToolSession(normalizedSlug, {
       includeGoogle: normalizedSlug === 'flow'
         || normalizedSlug === 'genspark'
         || normalizedSlug === 'behance'
         || normalizedSlug === 'pinterest'
-        || Boolean(closedLaunch.clearGoogleOnClose),
+        || normalizedSlug === 'suno'
+        || normalizedSlug === 'elevenlabs'
+        || normalizedSlug === 'kling'
+        || normalizedSlug === 'kling-ai'
+        || normalizedSlug === 'klingai'
+        || normalizedSlug === 'heygen'
+        || normalizedSlug === 'epidemic-sound'
+        || normalizedSlug === 'splice'
+        || Boolean(closedLaunch?.clearGoogleOnClose),
     });
+    // Cookies for this ticket are gone - make sure no OTHER tab's own launch
+    // record can outlive them (see clearLaunchesByTicket's comment).
+    if (closedTicket) {
+      await clearLaunchesByTicket(closedTicket, normalizedSlug);
+    }
     console.debug('[RMW Tool Hub Auto Login] Cleared closed-tab session', {
       toolSlug: normalizedSlug,
       tabId,
@@ -1407,7 +1595,9 @@ async function cleanupToolSessionForClosedTab(tabId) {
     runSafeStartupTask(() => releaseSingleSeatToolSession(normalizedSlug, closedTicket));
   }
 
-  await clearActiveLaunch(tabId);
+  if (closedLaunch) {
+    await clearActiveLaunch(tabId);
+  }
 }
 
 async function getSettings() {
@@ -1498,7 +1688,7 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
     const openerLaunch = await getActiveLaunch(openerTabId, message.toolSlug);
     if (openerLaunch?.ticket) {
       if (tabId) {
-        await setActiveLaunch(tabId, openerLaunch);
+        await setActiveLaunch(tabId, { ...openerLaunch, isRootLaunch: false });
       }
       directLaunch = openerLaunch;
     }
@@ -1547,7 +1737,7 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
     credentials: 'include',
     headers,
     body: JSON.stringify({
-      tool_slug: message.toolSlug,
+      tool_slug: toBackendToolSlug(message.toolSlug),
       hostname: message.hostname,
       page_url: message.pageUrl,
       extension_ticket: extensionTicket || null,
@@ -1649,7 +1839,7 @@ async function fetchOtp(message, senderTabId = 0, openerTabId = 0) {
     credentials: 'include',
     headers,
     body: JSON.stringify({
-      tool_slug: message.toolSlug,
+      tool_slug: toBackendToolSlug(message.toolSlug),
       hostname: message.hostname,
       page_url: message.pageUrl,
       extension_ticket: extensionTicket || null,
@@ -1697,7 +1887,7 @@ async function fetchOtpBaseline(message, senderTabId = 0, openerTabId = 0) {
     credentials: 'include',
     headers,
     body: JSON.stringify({
-      tool_slug: message.toolSlug,
+      tool_slug: toBackendToolSlug(message.toolSlug),
       hostname: message.hostname,
       page_url: message.pageUrl,
       extension_ticket: extensionTicket || null,
@@ -1737,7 +1927,7 @@ async function fetchAuthLink(message, senderTabId = 0, openerTabId = 0) {
     credentials: 'include',
     headers,
     body: JSON.stringify({
-      tool_slug: message.toolSlug,
+      tool_slug: toBackendToolSlug(message.toolSlug),
       hostname: message.hostname,
       page_url: message.pageUrl,
       extension_ticket: extensionTicket || null,
@@ -2086,7 +2276,7 @@ async function openRecoveredGoogleOauthPopup(url, senderTab = null) {
         || await getActiveLaunch(senderTab.id, 'kling')
         || await getActiveLaunch(senderTab.id, 'elevenlabs');
       if (openerLaunch?.ticket) {
-        await setActiveLaunch(popupTabId, openerLaunch);
+        await setActiveLaunch(popupTabId, { ...openerLaunch, isRootLaunch: false });
       }
     }
     googleOauthRecoveryWindows.set(recoveryKey, {
@@ -2116,7 +2306,7 @@ async function openRecoveredGoogleOauthPopup(url, senderTab = null) {
       const openerLaunch = await getActiveLaunch(senderTab.id, 'kling-ai')
         || await getActiveLaunch(senderTab.id, 'kling');
       if (openerLaunch?.ticket) {
-        await setActiveLaunch(createdTab.id, openerLaunch);
+        await setActiveLaunch(createdTab.id, { ...openerLaunch, isRootLaunch: false });
       }
     }
     googleOauthRecoveryWindows.set(recoveryKey, {
@@ -2144,7 +2334,7 @@ function buildUsageEventPayload(message, activeLaunch) {
   return {
     event_id: message.eventId,
     credential_id: message.credentialId,
-    tool_slug: message.toolSlug,
+    tool_slug: toBackendToolSlug(message.toolSlug),
     hostname: message.hostname,
     page_url: message.pageUrl,
     event_date: message.eventDate,
@@ -2426,7 +2616,7 @@ async function fetchTotp(message, senderTabId = 0, openerTabId = 0) {
 
   try {
     return await postTotpRequest(settings, {
-      tool_slug: message.toolSlug,
+      tool_slug: toBackendToolSlug(message.toolSlug),
       hostname: message.hostname,
       page_url: message.pageUrl,
       extension_ticket: extensionTicket || null,

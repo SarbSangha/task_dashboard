@@ -36,6 +36,7 @@ different names - doesn't require a matching change here.
 """
 import hashlib
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -246,6 +247,140 @@ def _find_existing_generation(db: Session, *, generation_id, job_id, request_id,
     return None
 
 
+# ---- Click-record <-> API-record merge (2026-09-29) ----
+#
+# Higgsfield is captured through two INDEPENDENT paths that each produce a
+# record for ONE real generation, and - uniquely among the identities this
+# module handles - they share no identifier at all:
+#
+#   click path (content-higgsfield.js, at Generate-click time)
+#     has    : external_event_id ("hfgen_<epoch ms>_<rand>"), the prompt as
+#              typed, and the task/client the user picked in the gate modal
+#     lacks  : every real Higgsfield id - none exists yet, the job has not
+#              been created at the moment the button is clicked
+#
+#   API path (job detail / assets listing / reconciliation)
+#     has    : id, job_set_id, params.prompt, results.*.url, created_at
+#     lacks  : external_event_id - Higgsfield has never heard of it
+#
+# _find_existing_generation therefore cannot join them and each becomes its
+# own HiggsfieldGeneration: the user's task/client attribution lands on a
+# record with no video, and the video lands on a record with no attribution.
+# Confirmed live 2026-09-29 - generation 65ec04db-2f6f-4b31-8120-281c31e7b597
+# (video, no client) vs click intent hfgen_1790592569709_z9rpi3 (client "VVIP
+# YAMUNA", no video), 997ms apart, same prompt.
+#
+# The prompt is the only shared content, but it CANNOT be compared directly:
+# the click path reads the composer UI, which renders image references as
+# "@Image 1", while the API returns the same prompt with "<<<image_1>>>", and
+# paragraph spacing differs (\n\n vs \n). Those two real strings are only 94%
+# similar raw and byte-identical once placeholders and whitespace are
+# normalized - hence a fingerprint rather than equality.
+#
+# Same conservative posture as the credit-ledger matcher below: a merge needs
+# EXACTLY ONE candidate inside a bounded time window and refuses to guess
+# otherwise. Re-running an identical prompt is common, and two duplicate rows
+# are recoverable later while a wrong merge silently attributes one client's
+# work to another.
+CLICK_MERGE_WINDOW_SECONDS = 180
+# Coarse pre-filter only, to bound how many orphan rows are loaded for the
+# precise in-Python check - deliberately far wider than the real ~1s gap.
+CLICK_MERGE_COARSE_BOUND_DAYS = 1
+# A prompt shorter than this (once normalized) is not distinctive enough to
+# merge on - "make a video" would collide with every other generation using
+# those words.
+CLICK_MERGE_MIN_PROMPT_CHARS = 24
+
+_PROMPT_API_PLACEHOLDER_RE = re.compile(r"<<<\s*image[_\s]*(\d+)\s*>>>", re.I)
+_PROMPT_UI_PLACEHOLDER_RE = re.compile(r"@\s*image\s*(\d+)", re.I)
+_PROMPT_WHITESPACE_RE = re.compile(r"\s+")
+# content-higgsfield.js mints `hfgen_${Date.now()}_${rand}` (see its
+# generateIntentId) - the embedded epoch-ms IS the click moment.
+_CLICK_INTENT_ID_RE = re.compile(r"^hfgen_(\d{10,16})_", re.I)
+
+
+def _prompt_fingerprint(text: Any) -> Optional[str]:
+    """Stable fingerprint of a prompt across the click/API spelling
+    differences described above. Returns None when the prompt is missing or
+    too short to be distinctive, which callers treat as "cannot merge"."""
+    if not isinstance(text, str):
+        return None
+    normalized = _PROMPT_API_PLACEHOLDER_RE.sub(r"@image\1", text)
+    normalized = _PROMPT_UI_PLACEHOLDER_RE.sub(r"@image\1", normalized)
+    normalized = _PROMPT_WHITESPACE_RE.sub(" ", normalized).strip().lower()
+    if len(normalized) < CLICK_MERGE_MIN_PROMPT_CHARS:
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _click_intent_timestamp(external_event_id: Any) -> Optional[datetime]:
+    """The click moment, parsed out of the intent id. A click-only record
+    usually has no other timestamp to offer - its provider_created_at is null
+    because Higgsfield had not created the job yet."""
+    match = _CLICK_INTENT_ID_RE.match(_s(external_event_id) or "")
+    if not match:
+        return None
+    try:
+        return datetime.fromtimestamp(int(match.group(1)) / 1000.0, tz=timezone.utc).replace(tzinfo=None)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _find_orphaned_click_generation(db: Session, fields: dict) -> Optional[HiggsfieldGeneration]:
+    """An API-sourced event adopting the click record for the same
+    generation, so attribution and media end up on ONE row."""
+    # Only an event carrying a REAL Higgsfield id may adopt a click record -
+    # never a second click event, never another id-less payload.
+    if not (fields.get("generation_id") or fields.get("job_id")):
+        return None
+    # Already carries the click identity, so _find_existing_generation has
+    # handled it by the strong path already.
+    if fields.get("external_event_id"):
+        return None
+    fingerprint = _prompt_fingerprint(fields.get("prompt_text"))
+    if not fingerprint:
+        return None
+    api_created = fields.get("provider_created_at")
+    if not api_created:
+        return None
+
+    coarse = timedelta(days=CLICK_MERGE_COARSE_BOUND_DAYS)
+    orphans = (
+        db.query(HiggsfieldGeneration)
+        .filter(
+            HiggsfieldGeneration.provider == PROVIDER,
+            HiggsfieldGeneration.external_event_id.isnot(None),
+            # Never adopt a row that already resolved to a real generation -
+            # that row belongs to its own generation, not this one.
+            HiggsfieldGeneration.generation_id.is_(None),
+            HiggsfieldGeneration.job_id.is_(None),
+            HiggsfieldGeneration.prompt_text.isnot(None),
+            HiggsfieldGeneration.created_at >= api_created - coarse,
+            HiggsfieldGeneration.created_at <= api_created + coarse,
+        )
+        .all()
+    )
+
+    matches = [
+        orphan
+        for orphan in orphans
+        if _prompt_fingerprint(orphan.prompt_text) == fingerprint
+        and (clicked_at := (_click_intent_timestamp(orphan.external_event_id) or orphan.created_at))
+        and abs((api_created - clicked_at).total_seconds()) <= CLICK_MERGE_WINDOW_SECONDS
+    ]
+
+    if len(matches) != 1:
+        if matches:
+            logger.info(
+                "higgsfield click-merge refused for generation_id=%s: %d click records share this prompt "
+                "within %ss (%s) - leaving them unmerged rather than guessing which one this is",
+                fields.get("generation_id"), len(matches), CLICK_MERGE_WINDOW_SECONDS,
+                [orphan.external_event_id for orphan in matches],
+            )
+        return None
+    return matches[0]
+
+
 # ---- Credit-ledger matching (2026-08-06) ----
 #
 # CONFIRMED real shape (GET .../fnf/workspaces/credit-ledger?limit=<n>&
@@ -296,9 +431,29 @@ CREDIT_LEDGER_MATCH_WINDOW_SECONDS = 300
 # name, which doesn't always match the technical job_set_type (confirmed
 # via a real -20 credit "Angles" row landing 70ms after a real
 # qwen_camera_control generation, the only such generation in this account).
+#
+# "Seedance 2.5" added 2026-09-29 against a real cross-reference, same bar as
+# every other entry here: ledger row tx_id=1f075b41-3b74-4e56-ae81-cda25992e5f8
+# (display_name "Seedance 2.5", total_credits -16800, tooltip "168.0
+# Subscription") at 2026-09-28T10:49:30.746718Z, versus generation
+# 65ec04db-2f6f-4b31-8120-281c31e7b597 (job_set_type "seedance_2_5",
+# expectedCredits 168) created at 1790592570.706437 = 10:49:30.706Z - a 40ms
+# gap, comfortably inside CREDIT_LEDGER_TIGHT_MATCH_WINDOW_SECONDS. Every
+# Seedance 2.5 generation was silently uncredited before this, because an
+# unmapped display_name makes _attempt_credit_ledger_match bail (see the
+# warning it now logs there).
+#
+# "Viral hub" is deliberately NOT mapped yet, for exactly the reason this
+# table's rule exists: real ledger rows for it were observed in the same
+# capture (-8400 spend / +8400 refund, 2026-09-21), but no generation of a
+# known job_set_type has been cross-referenced against one, so there is
+# nothing CONFIRMED to map it to. Its credits stay unlinked (and now log a
+# warning naming it) until such a correlation exists - same posture as
+# "Qwen Camera Control" had before "Angles" resolved it.
 _DISPLAY_NAME_TO_PRESET_CATEGORY = {
     "Nano Banana Pro": "nano_banana_2",
     "Seedance 2.0": "seedance_2_0",
+    "Seedance 2.5": "seedance_2_5",
     "Seedance 1.5 Pro": "seedance1_5",
     "Kling v3.0": "kling3_0",
     "Angles": "qwen_camera_control",
@@ -395,8 +550,26 @@ def _attempt_credit_ledger_match(db: Session, event: HiggsfieldCaptureEvent, pay
         if matched:
             return matched
 
-    mapped_category = _DISPLAY_NAME_TO_PRESET_CATEGORY.get(_s(payload.get("display_name")) or "")
+    display_name = _s(payload.get("display_name")) or ""
+    mapped_category = _DISPLAY_NAME_TO_PRESET_CATEGORY.get(display_name)
     if not mapped_category:
+        # Logged distinctly, at WARNING, because this failure is a CONFIG GAP
+        # with a known one-line fix - unlike the genuinely ambiguous cases
+        # below (two candidates in one window), which are an accepted,
+        # documented limitation. Confirmed real 2026-09-29: every Seedance 2.5
+        # generation in this account stayed permanently uncredited purely
+        # because _DISPLAY_NAME_TO_PRESET_CATEGORY predates that model, and
+        # the silent `return None` here made a missing table entry look
+        # identical to an unmatchable row. The exact display_name is echoed so
+        # the mapping can be added from a REAL observed string rather than a
+        # guessed one - which is this table's whole rule (see its comment).
+        logger.warning(
+            "higgsfield credit ledger row tx_id=%s has display_name=%r, which is NOT in "
+            "_DISPLAY_NAME_TO_PRESET_CATEGORY - this feature's credits can never be linked to any "
+            "generation until a mapping is added for it (map it to the preset_category/job_set_type "
+            "that real generations of this feature carry)",
+            payload.get("tx_id"), display_name,
+        )
         return None
     ledger_created_at = _parse_dt(payload.get("created_at"))
     if not ledger_created_at:
@@ -490,8 +663,26 @@ def _normalize_credit_ledger_event(db: Session, event: HiggsfieldCaptureEvent, p
     # across every display_name observed). credit_ledger_json still stores
     # the raw payload as-is for fidelity/debugging - only this derived
     # column applies the conversion.
-    net_raw_credits = sum(_f(entry.get("total_credits")) or 0.0 for entry in ledger_list if isinstance(entry, dict))
-    matched.credits_used = abs(net_raw_credits) / 100.0
+    # Sign-aware, NOT abs() of the net sum. Higgsfield signs these rows
+    # consistently (confirmed across every row of a real ledger capture): a
+    # spend is negative, a refund is positive. The previous abs(net)
+    # formulation was correct for every case EXCEPT one that really happens -
+    # a refund whose matching spend was never captured (the spend fell off the
+    # 100-row page, predates this account's capture, or was lost to one of the
+    # silent sweep failures documented in content-higgsfield-network.js's
+    # credit-ledger section). abs() turned that +16800 refund into "168.0
+    # credits used", reporting a reversal as a charge. Splitting by sign and
+    # flooring at zero makes that impossible: refunds can only ever reduce
+    # credits_used, never create it.
+    amounts = [
+        _f(entry.get("total_credits")) or 0.0
+        for entry in ledger_list
+        if isinstance(entry, dict)
+    ]
+    spent_raw = sum(-amount for amount in amounts if amount < 0)
+    refunded_raw = sum(amount for amount in amounts if amount > 0)
+    matched.credits_used = max(0.0, spent_raw - refunded_raw) / 100.0
+    matched.credits_refunded = refunded_raw / 100.0
     matched.source_capture_event_id = event.id
     db.flush()
 
@@ -640,15 +831,39 @@ def _extract_fields(payload: dict) -> dict:
 
         "prompt_text": _s(prompt_text),
         "prompt_length": len(prompt_text) if isinstance(prompt_text, str) else None,
-        # preset_id/name: the real shape has no separate human-readable
-        # preset name (the "Seedance Pro" label from the reference
-        # screenshot is a UI-only concept) - params.model (e.g.
-        # "seedance_2_0_fast") is the closest confirmed equivalent, used for
-        # both id and name since nothing more readable is available.
-        # job_set_type (e.g. "seedance_2_0") is a coarser categorization of
-        # the same choice, used as preset_category.
-        "preset_id": _s(_first(preset, "id", "presetId") or params.get("model"), 160),
-        "preset_name": _s(_first(preset, "name", "presetName") or params.get("model"), 255),
+        # preset_id/name: originally believed the real shape had no
+        # separate human-readable preset name (params.model, e.g.
+        # "seedance_2_0_fast", was the closest confirmed equivalent) - that
+        # was true for the prompt-driven job types this was built against,
+        # but CONFIRMED WRONG 2026-09-22 for template/preset-driven jobs
+        # (job_set_type "viral_hub_video" and siblings): those carry
+        # params.prompt as a genuinely empty string (there is no prompt to
+        # enter - the user picks a template and supplies images instead) AND
+        # a real, human-readable params.chain_preset.name /
+        # params.preset.name (e.g. "Floating fall", identical between the
+        # two keys in the one confirmed capture). Reported live: "No prompt
+        # captured" on effectively every row, because most of this account's
+        # usage is exactly this preset-driven kind - not a capture bug, but
+        # prompt_text alone was never going to have anything meaningful to
+        # show for these, and nothing was falling back to the preset name
+        # that WAS available. params.model still wins when present (video/
+        # image jobs that DO have a written prompt tend to carry it as the
+        # more specific signal); chain_preset/preset.name is now the
+        # fallback for the jobs that don't.
+        "preset_id": _s(
+            _first(preset, "id", "presetId")
+            or params.get("model")
+            or (params.get("chain_preset") or {}).get("id")
+            or (params.get("preset") or {}).get("id"),
+            160,
+        ),
+        "preset_name": _s(
+            _first(preset, "name", "presetName")
+            or params.get("model")
+            or (params.get("chain_preset") or {}).get("name")
+            or (params.get("preset") or {}).get("name"),
+            255,
+        ),
         "preset_category": _s(_first(preset, "category", "presetCategory") or payload.get("job_set_type"), 120),
         "multi_shot": _b(multi_shot_raw),
         "enhance_prompt": _b(_first(payload, "enhancePrompt", "enhance_prompt")),
@@ -797,6 +1012,19 @@ def normalize_capture_event(db: Session, event: HiggsfieldCaptureEvent) -> Optio
         request_id=fields["request_id"],
         external_event_id=fields["external_event_id"],
     )
+
+    if existing is None:
+        # No shared identifier with anything stored - but this may still be
+        # the API half of a generation whose click half is already here under
+        # an external_event_id only. See _find_orphaned_click_generation.
+        existing = _find_orphaned_click_generation(db, fields)
+        if existing is not None:
+            logger.info(
+                "higgsfield click-merge: adopting click record id=%s (external_event_id=%s, task=%s, client=%s) "
+                "for generation_id=%s - matched on normalized prompt within %ss",
+                existing.id, existing.external_event_id, existing.linked_task_name,
+                existing.linked_client_name, fields.get("generation_id"), CLICK_MERGE_WINDOW_SECONDS,
+            )
 
     is_reconciliation = event.ownership_confidence == "reconciliation"
     generation = existing or HiggsfieldGeneration(provider=PROVIDER)

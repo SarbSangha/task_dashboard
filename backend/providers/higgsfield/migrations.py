@@ -171,6 +171,7 @@ def ensure_higgsfield_postgres_schema(conn) -> None:
                 credits_before FLOAT,
                 credits_after FLOAT,
                 credits_used FLOAT,
+                credits_refunded FLOAT,
                 credit_ledger_json JSON,
                 status VARCHAR(40),
                 provider_created_at TIMESTAMP,
@@ -223,6 +224,11 @@ def ensure_higgsfield_postgres_schema(conn) -> None:
     # covers an install that ran migrations before that column existed.
     _pg_add_column_if_missing(conn, "higgsfield_generations", "output_type", "VARCHAR(20)")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_higgsfield_generations_output_type ON higgsfield_generations(output_type)"))
+    # Left NULL (not backfilled to 0.0) on an existing install: NULL honestly
+    # means "never recomputed since this column existed", which is different
+    # from a real 0.0 "nothing was refunded". Rows get a real value the next
+    # time their ledger is normalized.
+    _pg_add_column_if_missing(conn, "higgsfield_generations", "credits_refunded", "FLOAT")
 
     conn.execute(
         text(
@@ -413,6 +419,7 @@ def ensure_higgsfield_sqlite_schema(conn) -> None:
                 credits_before FLOAT,
                 credits_after FLOAT,
                 credits_used FLOAT,
+                credits_refunded FLOAT,
                 credit_ledger_json JSON,
                 status VARCHAR(40),
                 provider_created_at DATETIME,
@@ -470,6 +477,8 @@ def ensure_higgsfield_sqlite_schema(conn) -> None:
     # covers an install that ran migrations before that column existed.
     _sqlite_add_column_if_missing(conn, "higgsfield_generations", "output_type", "VARCHAR(20)")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_higgsfield_generations_output_type ON higgsfield_generations(output_type)"))
+    # See the Postgres counterpart's comment for why this is not backfilled.
+    _sqlite_add_column_if_missing(conn, "higgsfield_generations", "credits_refunded", "FLOAT")
 
     conn.execute(
         text(

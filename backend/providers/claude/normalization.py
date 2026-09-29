@@ -356,6 +356,61 @@ def _find_unnormalized_message_events(db: Session, events: list) -> list:
     return missing
 
 
+def _find_unapplied_conversation_metadata_events(db: Session, events: list) -> list:
+    """Of the given events, the conversation_created/conversation_opened ones
+    whose title/provider_created_time never landed on the ConversationRecord -
+    the same silent-failure shape _find_unnormalized_message_events guards
+    against above, just for the other event types (the ones
+    _handle_conversation_snapshot_metadata writes onto the record instead of
+    a child prompt/response row).
+
+    Confirmed live (2026-09-22): two conversations (69 and 214 messages)
+    ended up with title=None and provider_created_time=None on the normalized
+    record despite their raw conversation_opened events carrying both fields
+    correctly - every prompt/response in them normalized fine, only the
+    conversation-level metadata silently did not stick, and nothing ever
+    retried it (unlike the message events above, which have carried this
+    exact protection since dd876ec)."""
+    missing = []
+    for event in events:
+        if event.event_type not in (EVENT_TYPE_CONVERSATION_CREATED, EVENT_TYPE_CONVERSATION_OPENED):
+            continue
+        if not event.provider_conversation_id:
+            continue
+        payload = event.payload_json or {}
+        has_title = bool(payload.get("title"))
+        has_created_at = bool(payload.get("providerCreatedAt"))
+        if not has_title and not has_created_at:
+            # Nothing in this event's own payload could have changed the
+            # record either way - no point flagging it as "unapplied".
+            continue
+        record = (
+            db.query(ConversationRecord)
+            .filter(
+                ConversationRecord.provider == PROVIDER,
+                ConversationRecord.provider_conversation_id == event.provider_conversation_id,
+            )
+            .first()
+        )
+        if record is None:
+            missing.append(event)
+            continue
+        if has_title and not record.title:
+            missing.append(event)
+            continue
+        if has_created_at and not record.provider_created_time:
+            missing.append(event)
+    return missing
+
+
+def _find_events_needing_retry(db: Session, events: list) -> list:
+    """Union of both silent-failure checks above - message events missing
+    their prompt/response row, and conversation-level events missing their
+    title/provider_created_time. The two checks filter on disjoint event_type
+    sets, so the result never contains the same event twice."""
+    return _find_unnormalized_message_events(db, events) + _find_unapplied_conversation_metadata_events(db, events)
+
+
 def _normalize_events_once(db: Session, events: list) -> tuple[dict, int]:
     """One pass: each event in its own SAVEPOINT (so one bad event only
     discards its own changes), then a single commit for the whole batch."""
@@ -382,31 +437,34 @@ def normalize_capture_events_batch(db: Session, events: list) -> dict:
     connection-pool-exhaustion reasoning as
     providers/chatgpt/normalization.py's identical function.
 
-    Then VERIFIES that every message-bearing event actually produced its row,
-    and retries just the ones that did not - see
-    _find_unnormalized_message_events for the incident that motivated this.
-    The retry is bounded (one extra pass) and idempotent: every upsert here
-    keys off (conversation, provider_message_id), so re-running an event that
-    did land is a no-op, not a duplicate."""
+    Then VERIFIES that every message-bearing event actually produced its row
+    AND that every conversation-level event's title/provider_created_time
+    actually landed on the record, and retries just the ones that did not -
+    see _find_unnormalized_message_events and
+    _find_unapplied_conversation_metadata_events for the two incidents that
+    motivated this. The retry is bounded (one extra pass) and idempotent:
+    every upsert here keys off (conversation, provider_message_id), or off
+    provider_conversation_id for the conversation-level fields, so re-running
+    an event that did land is a no-op, not a duplicate."""
     touched_records, errors = _normalize_events_once(db, events)
 
-    unnormalized = _find_unnormalized_message_events(db, events)
+    unnormalized = _find_events_needing_retry(db, events)
     if unnormalized:
         logger.warning(
-            "claude normalization left %d message event(s) without a normalized row - retrying: %s",
+            "claude normalization left %d event(s) unapplied - retrying: %s",
             len(unnormalized),
             [event.id for event in unnormalized],
         )
         retry_records, retry_errors = _normalize_events_once(db, unnormalized)
         touched_records.update(retry_records)
         errors += retry_errors
-        still_missing = _find_unnormalized_message_events(db, unnormalized)
+        still_missing = _find_events_needing_retry(db, unnormalized)
         if still_missing:
             # Deliberately loud: the raw events are still the lossless source
             # of truth and scripts/backfill_claude_normalization.py can replay
             # them, but nothing automatic will retry again after this.
             logger.error(
-                "claude normalization STILL missing rows for event_id(s)=%s after retry - "
+                "claude normalization STILL unapplied for event_id(s)=%s after retry - "
                 "run scripts/backfill_claude_normalization.py",
                 [event.id for event in still_missing],
             )

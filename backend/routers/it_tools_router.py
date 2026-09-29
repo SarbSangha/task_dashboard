@@ -240,6 +240,8 @@ def _canonical_tool_slug(value: str) -> str:
         return "pinterest"
     if slug in {"epidemicsound", "epidemic", "epidemic-sounds"}:
         return "epidemic-sound"
+    if slug in {"kling-ai", "klingai"}:
+        return "kling"
     return slug
 
 

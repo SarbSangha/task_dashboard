@@ -66,7 +66,7 @@ export default function BufferPanel({ isOpen, onClose, onMinimizedChange, onActi
           {!isMinimized && (
             <input
               className="bfp-search"
-              placeholder="Search titles..."
+              placeholder="Search titles and tags..."
               aria-label="Search the Buffer feed by title"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}

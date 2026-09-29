@@ -147,7 +147,13 @@ export default function GenerationDetailPanel({ generationId }) {
 
       <div className="kling-drawer-section">
         <h4>Prompt</h4>
-        <p className="kling-drawer-prompt">{generation.promptText || 'No prompt captured for this generation.'}</p>
+        <p className="kling-drawer-prompt">
+          {generation.promptText
+            // See HiggsfieldGenerationCard.jsx's identical fallback - preset
+            // -driven generations have no prompt by design.
+            || (generation.presetName && `No prompt - generated from preset "${generation.presetName}"`)
+            || 'No prompt captured for this generation.'}
+        </p>
       </div>
 
       <div className="kling-drawer-section kling-drawer-metadata-grid">

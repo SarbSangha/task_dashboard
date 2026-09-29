@@ -424,7 +424,20 @@ def get_buffer_feed(
 
     normalized_q = (q or "").strip().lower()
     if normalized_q:
-        filtered = [item for item in filtered if normalized_q in (item.title or "").lower()]
+        # Title OR tags. Tags are substring-matched exactly like the title is,
+        # so searching "camp" still finds a "q3-campaign" tag - matching whole
+        # tags only would be surprising next to a title box that has always
+        # matched partials.
+        #
+        # Only self-uploads actually carry tags (see _fetch_self_uploads);
+        # every other source leaves the field None, so this is a no-op for
+        # them and the search behaves exactly as before.
+        def _matches_query(item) -> bool:
+            if normalized_q in (item.title or "").lower():
+                return True
+            return any(normalized_q in (tag or "").lower() for tag in (item.tags or []))
+
+        filtered = [item for item in filtered if _matches_query(item)]
 
     filtered.sort(key=lambda item: item.created_at or datetime.min, reverse=True)
 

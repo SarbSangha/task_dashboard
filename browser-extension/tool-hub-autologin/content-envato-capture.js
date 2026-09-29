@@ -609,6 +609,46 @@ function extractEnvatoImageUrl(img) {
   return direct || null;
 }
 
+const ENVATO_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+// A THIRD, network-independent source for the item uuid - the one identifier
+// that makes a download traceable back to the actual item (it builds the
+// permanent elements.envato.com/item-uuid-redirect/<uuid> link).
+//
+// Confirmed real 2026-09-29: a music download captured on app.envato.com
+// stored item_uuid NULL while the SAME payload carried assetTitle "African
+// Sunshine" and assetAuthor "Triple7Music" - both read straight off the
+// button's own data-analytics-* attributes. So the clicked element is richly
+// annotated even when the network correlation yields nothing, which makes it
+// the most reliable place to look.
+//
+// Deliberately NOT hardcoded to one attribute name: the two known-good ones
+// here are data-analytics-item_title / data-analytics-item_author, so an id
+// is likely alongside them under some spelling (item_id, item_uuid, itemId,
+// ...), but no real sample of that attribute has been captured to confirm
+// which. Scanning every attribute for a UUID-SHAPED value finds it under any
+// of those names, and a v4 uuid is specific enough that a false positive
+// would have to be another uuid attribute entirely on the same button.
+function findEnvatoItemUuidInDom(button, container) {
+  for (const element of [button, container]) {
+    const attributes = element?.attributes;
+    if (!attributes) continue;
+    for (const attr of attributes) {
+      const match = ENVATO_UUID_RE.exec(attr.value || '');
+      if (match) return match[0].toLowerCase();
+    }
+  }
+  // Failing that, any link inside the card pointing at the item itself -
+  // app.envato.com item links are /<section>/<uuid> (confirmed: that URL 302s
+  // to the item's real page). The listing page's own URL is NOT a fallback
+  // here: it is usually just /music or /photos with no uuid at all.
+  for (const anchor of container?.querySelectorAll?.('a[href]') || []) {
+    const match = ENVATO_UUID_RE.exec(anchor.getAttribute('href') || '');
+    if (match) return match[0].toLowerCase();
+  }
+  return null;
+}
+
 function collectEnvatoDownloadAssetInfo(button) {
   const container = findEnvatoDownloadCardContainer(button);
   const img = container?.querySelector?.('img');
@@ -616,11 +656,21 @@ function collectEnvatoDownloadAssetInfo(button) {
   const analyticsAuthor = button.getAttribute?.('data-analytics-item_author');
   const rawTitle = analyticsTitle || img?.getAttribute('alt') || container?.getAttribute?.('aria-label') || container?.getAttribute?.('title') || document.title || null;
   const anchor = container?.querySelector?.('a[href]');
+  const itemUuid = findEnvatoItemUuidInDom(button, container);
+  if (itemUuid) {
+    console.debug('[RMW Envato Capture] item uuid found in the DOM for this download', { itemUuid, assetTitle: rawTitle });
+  } else {
+    console.debug('[RMW Envato Capture] no item uuid in the DOM - relying on the network signal alone', {
+      assetTitle: rawTitle,
+      buttonAttrs: Array.from(button?.attributes || []).map((a) => a.name).join(','),
+    });
+  }
   return {
     assetTitle: rawTitle ? String(rawTitle).trim().slice(0, 2000) : null,
     assetAuthor: analyticsAuthor ? String(analyticsAuthor).trim().slice(0, 255) : null,
     assetThumbnailUrl: extractEnvatoImageUrl(img),
     assetSourceUrl: anchor?.href || null,
+    itemUuid,
   };
 }
 
@@ -650,6 +700,42 @@ function readEnvatoSearchTermFromUrl(href) {
 const ENVATO_DOWNLOAD_CORRELATION_WINDOW_MS = 20000;
 let envatoPendingDownloadReport = null; // { assetInfo, selection, timer, resolved }
 
+// Correlation has to work in BOTH orders, not just click-then-network.
+//
+// Confirmed real 2026-09-29: every envato_downloads row created since this
+// correlation shipped (2026-08-08) has item_uuid NULL - 15 rows across four
+// separate days, including rows captured minutes earlier the same day the
+// user watched `GET /download.data?itemUuid=...` go past in their own
+// DevTools Network panel. So the request definitely fires; its itemUuid was
+// simply being thrown away.
+//
+// The reason is ordering. The ENVATO_NETWORK_DOWNLOAD handler used to
+// correlate only against an ALREADY-PENDING report and `return` otherwise,
+// discarding the payload. But the Task/Client gate sits between the user's
+// click and the real download: the gate modal opens, the user picks a task,
+// and only the re-dispatched bypass click schedules the pending report. A
+// network signal that lands before that - which is exactly what happens when
+// the page issues download.data off the first click - finds no pending
+// report and is lost, leaving the DOM-only path to report the row with a
+// null itemUuid.
+//
+// Buffering the most recent signal for the same window closes that without
+// touching the existing forward path: scheduleEnvatoDownloadReport now
+// checks this buffer first and correlates immediately when a fresh signal is
+// already waiting.
+const ENVATO_NETWORK_DOWNLOAD_BUFFER_MS = ENVATO_DOWNLOAD_CORRELATION_WINDOW_MS;
+let envatoRecentNetworkDownload = null; // { payload, seenAt }
+
+function takeRecentEnvatoNetworkDownload() {
+  if (!envatoRecentNetworkDownload) return null;
+  const { payload, seenAt } = envatoRecentNetworkDownload;
+  // One-shot: a buffered signal belongs to exactly one download, so it is
+  // cleared whether or not it was still fresh enough to use.
+  envatoRecentNetworkDownload = null;
+  if (Date.now() - seenAt > ENVATO_NETWORK_DOWNLOAD_BUFFER_MS) return null;
+  return payload;
+}
+
 function reportEnvatoDownloadClick(assetInfo, selection, networkInfo) {
   const clientEventId = `envato:download:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
   envatoSendRuntimeMessage({
@@ -657,9 +743,18 @@ function reportEnvatoDownloadClick(assetInfo, selection, networkInfo) {
     event: {
       event_type: 'download_click',
       client_event_id: clientEventId,
-      item_uuid: networkInfo?.itemUuid || null,
+      // Network signal first (it is Envato's own request parameter, so it is
+      // authoritative), then the DOM-scraped uuid as a fallback - see
+      // findEnvatoItemUuidInDom for why a fallback is needed at all. Either
+      // source is enough to build the permanent item link.
+      item_uuid: networkInfo?.itemUuid || assetInfo?.itemUuid || null,
       payload: {
         itemType: networkInfo?.itemType || null,
+        // Mirrored into the payload too, so the raw captured JSON shows which
+        // identifier a row was built from rather than only the normalized
+        // column revealing it.
+        itemUuid: networkInfo?.itemUuid || assetInfo?.itemUuid || null,
+        itemUuidSource: networkInfo?.itemUuid ? (networkInfo.via || 'download_data') : (assetInfo?.itemUuid ? 'dom' : null),
         assetTitle: assetInfo.assetTitle,
         assetAuthor: assetInfo.assetAuthor,
         assetThumbnailUrl: assetInfo.assetThumbnailUrl,
@@ -688,6 +783,18 @@ function reportEnvatoDownloadClick(assetInfo, selection, networkInfo) {
 
 function scheduleEnvatoDownloadReport(assetInfo, selection) {
   if (envatoPendingDownloadReport?.timer) window.clearTimeout(envatoPendingDownloadReport.timer);
+
+  // The network signal may already have gone past while the Task/Client gate
+  // was open - use it right away rather than waiting out a window for a
+  // request that has, in that case, already happened.
+  const buffered = takeRecentEnvatoNetworkDownload();
+  if (buffered) {
+    console.debug('[RMW Envato Capture] correlated download click with an ALREADY-SEEN network signal', buffered);
+    envatoPendingDownloadReport = null;
+    reportEnvatoDownloadClick(assetInfo, selection, buffered);
+    return;
+  }
+
   const pending = { assetInfo, selection, resolved: false };
   pending.timer = window.setTimeout(() => {
     if (pending.resolved) return;
@@ -891,7 +998,14 @@ function onEnvatoNetworkMessage(event) {
       envatoPendingDownloadReport = null;
       console.debug('[RMW Envato Capture] correlated download click with network signal', data.payload);
       reportEnvatoDownloadClick(assetInfo, selection, data.payload);
+      return;
     }
+    // No pending report yet - buffer instead of discarding, so a signal that
+    // arrives BEFORE the gated click finishes scheduling one is still used
+    // (see takeRecentEnvatoNetworkDownload's comment for the confirmed
+    // all-rows-null-itemUuid case this fixes).
+    envatoRecentNetworkDownload = { payload: data.payload, seenAt: Date.now() };
+    console.debug('[RMW Envato Capture] buffered network download signal - no click report pending yet', data.payload);
     return;
   }
 

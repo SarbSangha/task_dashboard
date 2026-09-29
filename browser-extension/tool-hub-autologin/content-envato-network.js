@@ -34,6 +34,51 @@
   // click against this network signal rather than relying on DOM alone.
   const DOWNLOAD_PATH_RE = /\/download\.data(?:[?#]|$)/i;
 
+  // The SAME item uuid appears a second time, on the actual asset fetch that
+  // follows download.data - confirmed 2026-09-29 from a real music download:
+  //   https://audio-downloads.elements.envatousercontent.com/files/320663754/
+  //     Melancholic%20Lo-Fi%20Hip%20Hop.zip?item_id=9f45d40d-6d19-4e5b-af1e-184a7317efc2&...
+  // Note the param is `item_id` here, not `itemUuid`, and the host is
+  // *.envatousercontent.com - which HOST_RE (app.envato.com only) rejects, so
+  // this request was previously invisible to every check in this file.
+  //
+  // Worth capturing as an INDEPENDENT second source for the same identity:
+  // if the download.data signal is ever missed (a shape change, a request
+  // this hook does not see), the asset fetch still carries the uuid, and vice
+  // versa. Either one alone is enough to build the permanent item link.
+  const DOWNLOAD_ASSET_HOST_RE = /(^|\.)envatousercontent\.com$/i;
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  function maybeReportDownloadAssetRequest(url) {
+    if (!url) return;
+    try {
+      const parsed = new URL(url, location.href);
+      if (!DOWNLOAD_ASSET_HOST_RE.test(parsed.hostname)) return;
+      const itemUuid = parsed.searchParams.get('item_id');
+      if (!itemUuid || !UUID_RE.test(itemUuid)) return;
+      console.debug('[RMW Envato Network] item uuid observed on the asset download request', {
+        itemUuid, host: parsed.hostname, file: parsed.pathname.split('/').pop(),
+      });
+      window.postMessage({
+        source: SOURCE,
+        type: 'ENVATO_NETWORK_DOWNLOAD',
+        payload: {
+          itemUuid,
+          // The asset URL carries no itemType (download.data's query string
+          // does) - left null rather than guessed from the host, since
+          // "audio-downloads" is a delivery bucket, not Envato's own item
+          // type vocabulary.
+          itemType: null,
+          sourceUrl: `${url}`.slice(0, 2000),
+          capturedAt: Date.now(),
+          // Distinguishes this from the download.data-sourced signal in the
+          // isolated world's logs, since both post the same message type.
+          via: 'asset_request',
+        },
+      }, location.origin);
+    } catch {}
+  }
+
   function isEnvatoHost(url) {
     try {
       return HOST_RE.test(new URL(url, location.href).hostname);
@@ -121,10 +166,71 @@
     } catch {}
   }
 
+  // Confirmed real response (2026-09-29, Network panel capture of a music
+  // download from app.envato.com/music): /download.data's body is an ordinary
+  // turbo-stream payload that decodes to
+  //   { "routes/download/route": { data: { downloadUrl: "https://audio-downloads.elements.envatousercontent.com/files/<id>/<Name>.zip?...&Expires=...&Signature=..." } } }
+  // Searched for by KEY rather than by that exact path, so a route rename (the
+  // path literally contains the React Router route id) cannot silently break
+  // it.
+  //
+  // Worth knowing about what this URL points at: for an audio item it is a
+  // ZIP (Envato packages the track), NOT a raw playable file, and it is a
+  // short-lived signed CloudFront URL (the confirmed sample carried an
+  // Expires ~10 minutes out). So it is useful as a provenance/source record
+  // and for mirroring the bytes promptly - it is NOT something a player can
+  // be pointed at later, and it will 403 once it expires.
+  function findEnvatoDownloadUrl(value, depth = 0) {
+    if (!value || typeof value !== 'object' || depth > 8) return '';
+    const entries = Array.isArray(value) ? value.map((entry) => [null, entry]) : Object.entries(value);
+    for (const [key, entry] of entries) {
+      if (key && /^downloadurl$/i.test(key) && typeof entry === 'string' && /^https?:\/\//i.test(entry)) {
+        return entry;
+      }
+      const found = findEnvatoDownloadUrl(entry, depth + 1);
+      if (found) return found;
+    }
+    return '';
+  }
+
   function inspectResponseText(url, text, method) {
     if (!text || text.length > MAX_TEXT_LENGTH) return;
     const decoded = parseEnvatoTurboStreamResponse(text);
     if (!decoded) return;
+
+    // A /download.data response carries no generation rows at all, so before
+    // this it fell straight through collectEnvatoRows and was discarded -
+    // the real asset URL it contains was never read, even though
+    // maybeReportDownloadRequest had already reported the REQUEST side of the
+    // very same call (from the query string alone).
+    if (DOWNLOAD_PATH_RE.test(url)) {
+      const downloadUrl = findEnvatoDownloadUrl(decoded);
+      let itemUuid = null;
+      try {
+        itemUuid = new URL(url, location.href).searchParams.get('itemUuid');
+      } catch {}
+      if (downloadUrl) {
+        console.debug('[RMW Envato Network] resolved real asset URL from download.data response', {
+          itemUuid, downloadUrl: downloadUrl.slice(0, 120),
+        });
+        window.postMessage({
+          source: SOURCE,
+          type: 'ENVATO_NETWORK_DOWNLOAD_ASSET',
+          payload: {
+            itemUuid,
+            downloadUrl: `${downloadUrl}`.slice(0, 4000),
+            sourceUrl: `${url}`.slice(0, 2000),
+            capturedAt: Date.now(),
+          },
+        }, location.origin);
+      } else {
+        console.debug('[RMW Envato Network] download.data response carried no downloadUrl - please report this shape', {
+          itemUuid, snippet: text.slice(0, 400),
+        });
+      }
+      return;
+    }
+
     const rows = [];
     collectEnvatoRows(decoded, 0, rows);
     if (rows.length) {
@@ -140,6 +246,7 @@
       const url = typeof input === 'string' ? input : (input && input.url) || '';
       const method = (init && init.method) || (typeof input === 'object' && input && input.method) || 'GET';
       maybeReportDownloadRequest(url); // fired at request time, not response - see this file's own comment on why
+      maybeReportDownloadAssetRequest(url); // independent second source for the same item uuid
       const promise = rawFetch.apply(this, arguments);
       if (!shouldInspectUrl(url)) return promise;
       return promise.then((response) => {
@@ -161,6 +268,7 @@
       this.__rmwEnvatoUrl = url;
       this.__rmwEnvatoMethod = method;
       maybeReportDownloadRequest(url);
+      maybeReportDownloadAssetRequest(url); // independent second source for the same item uuid
       return rawOpen.call(this, method, url, ...rest);
     };
 

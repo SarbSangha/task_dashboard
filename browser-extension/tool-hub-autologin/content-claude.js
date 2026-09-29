@@ -29,11 +29,30 @@ const STATE = {
   lastGoogleSignInClickAt: 0,
   googleSignInClickAttempts: 0,
   status: 'Waiting for Claude sign-in',
+  scriptStartedAt: 0,
 };
 
 const MIN_RUN_GAP_MS = 900;
 const KEEP_ALIVE_MS = 4000;
 const ACTION_THROTTLE_MS = 1200;
+// Reported bug: a full page reload/navigation (clicking an artifact's "open
+// standalone" view, or opening a claude.ai link in a fresh tab) would log an
+// already-signed-in user straight back out. Root cause: start() runs
+// attemptFill() as soon as loadLaunchState()'s runtime-message round trip
+// resolves - which is fast - while claude.ai's own SPA can still take a
+// moment longer to render the textarea/"New chat" markers
+// looksLikeAuthenticatedWorkspace() looks for. This tab's launch ticket is
+// also long gone by then (see REVOKE_LAUNCH_GRACE_MS - the extension
+// considers its job done ~8s after the original sign-in), so
+// STATE.launchAuthorized is false too. With neither check passing yet, on
+// that very first pass attemptFill() fell through to
+// enforceDashboardOnlyAccess(), which wipes the (perfectly valid) session
+// and bounces to /login before the page ever got a chance to prove itself
+// authenticated. Withholding that enforcement for a short window after
+// start() gives the real page load a chance to finish rendering first - a
+// genuinely unauthorized visit still gets caught once the grace period
+// elapses, since looksLikeAuthenticatedWorkspace() will still be false then.
+const STARTUP_GRACE_MS = 2500;
 // Reported bug: clicking "Continue with Google" opens a real
 // window.open() popup - Chrome's popup blocker treats a burst of these in
 // quick succession as spam (confirmed live: 4 blocked in a row) and starts
@@ -801,6 +820,17 @@ function attemptFill() {
   // looksLikeAuthenticatedWorkspace() first, above, means an already
   // signed-in tab never reaches this gate at all on a refresh.
   if (!STATE.launchAuthorized) {
+    // See STARTUP_GRACE_MS's comment: give a real page load (reload, new
+    // tab, artifact standalone view) a moment to actually render before
+    // concluding this is a genuine unauthorized visit. Skipped once we're
+    // already sitting on Claude's own login page - nothing there to wipe,
+    // so enforceDashboardOnlyAccess() can report that immediately.
+    const withinStartupGrace = Date.now() - STATE.scriptStartedAt < STARTUP_GRACE_MS;
+    if (withinStartupGrace && !isLoginPage()) {
+      setStatus('Checking Claude session');
+      scheduleAttempt(200);
+      return;
+    }
     scheduleAsyncStep(enforceDashboardOnlyAccess);
     return;
   }
@@ -913,6 +943,7 @@ function handleMutations() {
 }
 
 function start() {
+  STATE.scriptStartedAt = Date.now();
   ensureStatusBadge();
   syncAuthStateFromStorage();
   captureLaunchTicketFromHash();

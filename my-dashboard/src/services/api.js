@@ -2102,6 +2102,50 @@ export const bufferAPI = {
     const response = await api.get(`/api/buffer/self-uploads/${uploadId}/downloads`, requestConfig);
     return response.data;
   },
+
+  // Purpose Sheet: the event-grouped Audio Name / Client / Editor Name
+  // tracking sheet (Janmashtami, Teacher's Day, ...) - see
+  // backend/routers/buffer_router.py's "Purpose Sheet" section for the
+  // shared-write access model (any Buffer-access user can edit any group
+  // or row, same as a real shared spreadsheet).
+  getSheet: async (requestConfig = {}) => {
+    const response = await api.get('/api/buffer/sheet', requestConfig);
+    return response.data;
+  },
+
+  createPurpose: async (payload, requestConfig = {}) => {
+    const response = await api.post('/api/buffer/sheet/purposes', payload, requestConfig);
+    return response.data;
+  },
+
+  updatePurpose: async (purposeId, payload, requestConfig = {}) => {
+    const response = await api.patch(`/api/buffer/sheet/purposes/${purposeId}`, payload, requestConfig);
+    return response.data;
+  },
+
+  deletePurpose: async (purposeId, requestConfig = {}) => {
+    const response = await api.delete(`/api/buffer/sheet/purposes/${purposeId}`, requestConfig);
+    return response.data;
+  },
+
+  // No createRow: every row is created server-side by the Client/Purpose
+  // download gate (BufferDownloadGateModal -> recordSelfUploadDownload), not
+  // typed in by hand - see buffer_router.py's Purpose Sheet section.
+  updateRow: async (rowId, payload, requestConfig = {}) => {
+    const response = await api.patch(`/api/buffer/sheet/rows/${rowId}`, payload, requestConfig);
+    return response.data;
+  },
+
+  deleteRow: async (rowId, requestConfig = {}) => {
+    const response = await api.delete(`/api/buffer/sheet/rows/${rowId}`, requestConfig);
+    return response.data;
+  },
+
+  // Returns the raw axios blob response so callers can hand it to
+  // downloadBlobResponse() (services/reports.js) - same convention as
+  // reportsAPI.aiWorkbook/usageWorkbook.
+  exportSheet: async (params = {}, requestConfig = {}) =>
+    api.get('/api/buffer/sheet/export.xlsx', { params, responseType: 'blob', ...requestConfig }),
 };
 
 export const envatoCaptureAPI = {

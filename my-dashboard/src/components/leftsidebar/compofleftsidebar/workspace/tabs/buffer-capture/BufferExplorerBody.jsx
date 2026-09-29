@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { bufferAPI } from '../../../../../../services/api';
 import BufferFeedGrid from './BufferFeedGrid';
 import BufferSelfUploadTab from './BufferSelfUploadTab';
+import BufferPurposeSheet from './BufferPurposeSheet';
 import { MEDIA_TYPE_META, normalizeApiError } from './bufferCaptureUtils';
 // Reuses the same card/grid/empty-state CSS every other capture tab already
 // shares (see envato-capture/EnvatoExplorerBody.jsx's own comment for why).
@@ -14,6 +15,7 @@ const MEDIA_TYPE_ORDER = ['all', 'image', 'video', 'audio', 'other'];
 const SECTIONS = [
   { key: 'feed', label: 'Feed', icon: '📦' },
   { key: 'self-upload', label: 'Self Upload', icon: '📤' },
+  { key: 'sheet', label: 'Purpose Sheet', icon: '🗂️' },
 ];
 
 /**
@@ -103,6 +105,8 @@ export default function BufferExplorerBody({ searchInput = '' }) {
 
       {section === 'self-upload' ? (
         <BufferSelfUploadTab />
+      ) : section === 'sheet' ? (
+        <BufferPurposeSheet />
       ) : (
         <>
           <div className="buffer-filter-row" role="tablist" aria-label="Filter Buffer feed by media type">

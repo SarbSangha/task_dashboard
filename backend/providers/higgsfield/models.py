@@ -237,7 +237,17 @@ class HiggsfieldGeneration(Base):
     # ---- Credits ----
     credits_before = Column(Float)
     credits_after = Column(Float)
+    # NET credits actually consumed, refunds already subtracted (so a failed,
+    # fully-refunded generation is 0.0). Because it is net, 0.0 alone is
+    # ambiguous - it means "free generation" OR "spent then fully refunded" -
+    # which is why credits_refunded exists alongside it rather than callers
+    # having to re-derive that from credit_ledger_json.
     credits_used = Column(Float)
+    # Gross credits refunded against this generation (0.0 when none). > 0 is
+    # the signal that a charge was reversed, typically because the generation
+    # failed - Higgsfield issues the refund as its own later ledger row
+    # (observed 3-9 minutes after the spend), never by amending the original.
+    credits_refunded = Column(Float)
     credit_ledger_json = Column(JSON)
 
     # ---- Status / lifecycle ----
@@ -320,6 +330,10 @@ class HiggsfieldGeneration(Base):
             "creditsBefore": self.credits_before,
             "creditsAfter": self.credits_after,
             "creditsUsed": self.credits_used,
+            "creditsRefunded": self.credits_refunded,
+            # Derived, not stored: lets a client show "refunded" without
+            # re-implementing the > 0 check or walking creditLedger itself.
+            "wasRefunded": bool(self.credits_refunded),
             "creditLedger": self.credit_ledger_json or [],
             "status": self.status,
             "providerCreatedAt": serialize_utc_datetime(self.provider_created_at),

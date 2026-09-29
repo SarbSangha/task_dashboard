@@ -27,6 +27,11 @@ const PERMISSION_MATRIX = {
 export const FEATURE_PERMISSIONS = {
   view_rmw_data: 'rmw_data',
   view_buffer: 'buffer',
+  // Gates writes within the Buffer tab's Purpose Sheet (create a purpose,
+  // edit a row's Audio Name/Client/Editor Name) - separate from view_buffer,
+  // which only gates whether the tab itself is visible. See
+  // backend/services/feature_access_service.py's FEATURE_BUFFER_SHEET_EDIT.
+  edit_buffer_sheet: 'buffer_sheet_edit',
 };
 
 export function normalizeRoles(user) {

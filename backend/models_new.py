@@ -246,6 +246,60 @@ class BufferSelfUploadDownload(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class BufferSheetPurpose(Base):
+    """One event/campaign group in the Buffer tab's "Purpose Sheet" (e.g.
+    "Janmashtami", "Teacher's Day") - the colored header block the team used
+    to track by hand in a spreadsheet: which audio was made for which
+    occasion, for which client, by which editor. Deliberately separate from
+    GenerationClient (that's the real, curated client picker every
+    provider's capture flow gates Generate/Download behind - see
+    utils/client_gate.py); a purpose here is an occasion a batch of work is
+    for, not a client, and rows under it get filled in progressively as work
+    is assigned, so this needs its own plannable rows rather than reusing
+    BufferSelfUploadDownload (that table only ever records a download that
+    already happened, with every field required - it can't hold a half-empty
+    row for something not started yet)."""
+    __tablename__ = "buffer_sheet_purposes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    # Hex color for this group's header bar/row, both in the UI and the
+    # xlsx export - assigned round-robin from a fixed palette at creation
+    # time (see PURPOSE_COLOR_PALETTE in routers/buffer_router.py) so every
+    # group is visually distinct without the person creating it having to
+    # pick one.
+    color = Column(String(7), nullable=False, default="#22D3EE")
+    sort_order = Column(Integer, nullable=False, default=0, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BufferSheetRow(Base):
+    """One row under a BufferSheetPurpose group - Audio Name / Client /
+    Editor Name, matching the reference sheet's columns exactly. Client and
+    editor are free text (same posture as BufferSelfUploadDownload.client_name
+    and Task.customer_name), not FKs to GenerationClient/User, since rows are
+    filled in over time - most start with only an audio name and get a
+    client/editor added later - and an editor name here isn't necessarily a
+    system User."""
+    __tablename__ = "buffer_sheet_rows"
+    __table_args__ = (
+        Index("ix_buffer_sheet_rows_purpose_sort", "purpose_id", "sort_order"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    purpose_id = Column(Integer, ForeignKey("buffer_sheet_purposes.id", ondelete="CASCADE"), nullable=False, index=True)
+    audio_name = Column(String, nullable=False)
+    client_name = Column(String, nullable=True)
+    editor_name = Column(String, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Task(Base):
     __tablename__ = "tasks"
     

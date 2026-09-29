@@ -1,23 +1,53 @@
 import React from 'react';
 import { UserAvatar } from '../../../../../common/UserAvatar';
+import { useNearViewport } from '../../../../../../hooks/useNearViewport';
 import { formatCount, formatRelativeTime, getOwnershipStatusMeta, truncate } from './elevenlabsCaptureUtils';
 
-// Visual twin of flow-capture/FlowGenerationCard.jsx's FlowGenerationCard,
-// adapted for audio instead of image previews: ElevenLabs generations are
-// TTS/Music/Sound-Effects/Dubbing/Voice-Changer audio clips (Speech-to-Text
-// rows have no audio output at all), not images. Mounting a real <audio>
-// element inside every card in a scrolling grid (dozens mounted at once)
-// would be expensive with no precedent anywhere in this codebase - see
-// trending/TrendingsPanel.jsx's own `mediaType === 'music'` card fallback,
-// which renders a static "Audio Preview" tile rather than an <audio>
-// element, for the identical reason. So this card always renders a static
-// fallback tile reusing the same .kling-card-fallback class every other
-// provider card here already uses for its own no-preview case; the one real
-// <audio controls> element lives only in GenerationDetailPanel.jsx.
+// ElevenLabs generations are TTS/Music/Sound-Effects/Dubbing/Voice-Changer
+// audio clips, so the card plays them inline - the same way
+// epidemicsound-capture/EpidemicDownloadCard.jsx, splice-capture/
+// SpliceDownloadCard.jsx and envato-capture/DownloadCard.jsx already do, and
+// matching suno-capture/SunoGenerationCard.jsx.
+//
+// This card used to render a permanently static "🔊 Audio" tile, on the
+// reasoning that mounting an <audio> element in every card of a scrolling
+// grid (dozens at once) was too expensive and had no precedent here. The
+// cost is real but the precedent does exist: the three cards above solve it
+// with useNearViewport, which mounts a player only as a card approaches the
+// viewport, plus preload="metadata" so even a mounted player never pulls a
+// whole file. Off-screen cards keep rendering the cheap static tile.
+//
+// Speech-to-Text rows genuinely have no audio output at all, so the
+// no-audio branch below is a real state here (unlike Suno, where every row
+// is a music clip), not just a not-captured-yet placeholder.
 const ElevenLabsCardPreview = React.memo(function ElevenLabsCardPreview({ generation }) {
-  const hasAudio = Boolean(generation.mirroredAssetUrl || generation.mediaUrl);
+  const [previewRef, isNearViewport] = useNearViewport();
+  const audioUrl = generation.mirroredAssetUrl || generation.mediaUrl;
+
+  if (!audioUrl) {
+    return <div className="kling-card-fallback">No audio available</div>;
+  }
+
   return (
-    <div className="kling-card-fallback">{hasAudio ? '🔊 Audio' : 'No audio available'}</div>
+    <div ref={previewRef} className="kling-card-lazy-frame">
+      {isNearViewport ? (
+        // stopPropagation: this card's preview area is itself a click target
+        // that opens the detail drawer (the Epidemic/Splice cards this
+        // pattern comes from have no drawer, so they never needed this).
+        // Without it, hitting play or dragging the scrubber would also open
+        // the drawer over the player the user just started. Clicking the
+        // surrounding tile, or the title, still opens it.
+        <audio
+          src={audioUrl}
+          controls
+          preload="metadata"
+          style={{ width: '100%' }}
+          onClick={(event) => event.stopPropagation()}
+        />
+      ) : (
+        <div className="kling-card-fallback">🔊 Audio</div>
+      )}
+    </div>
   );
 });
 

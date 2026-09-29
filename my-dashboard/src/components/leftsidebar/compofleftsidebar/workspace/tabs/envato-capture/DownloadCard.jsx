@@ -46,10 +46,26 @@ const DownloadCardPreview = React.memo(function DownloadCardPreview({ download }
     return (
       <div ref={previewRef} className="kling-card-lazy-frame">
         {isNearViewport ? (
+          // stopPropagation: the surrounding .kling-card-preview is a click
+          // target that opens the download drawer, so without this, using the
+          // player's own controls would open the drawer on top of it.
           isEnvatoVideoDownload(download) ? (
-            <video src={mirroredUrl} poster={imageUrl || undefined} className="kling-card-image" controls preload="metadata" />
+            <video
+              src={mirroredUrl}
+              poster={imageUrl || undefined}
+              className="kling-card-image"
+              controls
+              preload="metadata"
+              onClick={(event) => event.stopPropagation()}
+            />
           ) : (
-            <audio src={mirroredUrl} controls preload="metadata" style={{ width: '100%' }} />
+            <audio
+              src={mirroredUrl}
+              controls
+              preload="metadata"
+              style={{ width: '100%' }}
+              onClick={(event) => event.stopPropagation()}
+            />
           )
         ) : (
           <div className="kling-card-fallback">{isEnvatoVideoDownload(download) ? '🎬 Video' : '🎵 Audio'}</div>
@@ -84,10 +100,20 @@ const DownloadCardPreview = React.memo(function DownloadCardPreview({ download }
   );
 });
 
-export const DownloadCard = React.memo(function DownloadCard({ download }) {
+export const DownloadCard = React.memo(function DownloadCard({ download, onOpen }) {
+  // onOpen is optional: this card was inert (no detail view existed for
+  // downloads at all) before EnvatoDownloadDrawer was added, and the splice/
+  // epidemicsound download cards it mirrors still are. Guarding here keeps it
+  // usable from any caller that has no drawer to open.
+  const open = onOpen ? () => onOpen(download) : undefined;
+
   return (
     <div className="kling-card">
-      <div className="kling-card-preview">
+      {/* Clicking the tile opens the drawer; the media elements inside
+          DownloadCardPreview stop their own clicks from bubbling here, so
+          hitting play or dragging a scrubber does not also open the drawer
+          over the media the user just started. */}
+      <div className="kling-card-preview" onClick={open}>
         <DownloadCardPreview download={download} />
       </div>
 
@@ -97,7 +123,7 @@ export const DownloadCard = React.memo(function DownloadCard({ download }) {
         </div>
       </div>
 
-      <h4 className="kling-card-prompt" title={download.assetTitle || ''}>
+      <h4 className="kling-card-prompt" title={download.assetTitle || ''} onClick={open}>
         {truncate(download.assetTitle, 90) || 'No title captured'}
       </h4>
 

@@ -1,20 +1,54 @@
 import React from 'react';
 import { UserAvatar } from '../../../../../common/UserAvatar';
+import { useNearViewport } from '../../../../../../hooks/useNearViewport';
 import { formatCount, formatRelativeTime, getOwnershipStatusMeta, truncate } from './sunoCaptureUtils';
 
-// Visual twin of elevenlabs-capture/ElevenLabsGenerationCard.jsx's
-// ElevenLabsGenerationCard, adapted for Suno (suno.com): every Suno
-// generation is a music clip (no TTS/SFX/Dubbing surface split, no
-// Speech-to-Text-style "no audio output" rows), but the "mount a real
-// <audio> element inside every scrolling-grid card" cost is identical, so
-// this card still always renders a static fallback tile reusing the same
-// .kling-card-fallback class every other provider card here already uses
-// for its own no-preview case; the one real <audio controls> element lives
-// only in GenerationDetailPanel.jsx.
+// Every Suno generation is a music clip, so the card plays it inline, the
+// same way epidemicsound-capture/EpidemicDownloadCard.jsx, splice-capture/
+// SpliceDownloadCard.jsx and envato-capture/DownloadCard.jsx all already do
+// for their own audio.
+//
+// This card used to render a permanently static "🔊 Audio" tile instead,
+// on the reasoning that mounting an <audio> element in every card of a
+// scrolling grid (dozens at once) was too expensive. That cost is real, but
+// the three cards above solve it rather than accept it: useNearViewport
+// gates the element on the card actually approaching the viewport, and
+// preload="metadata" keeps even a mounted player from pulling whole audio
+// files. Off-screen cards still render the cheap static tile, so the grid
+// cost is unchanged - only the handful of cards in view mount a player.
 const SunoCardPreview = React.memo(function SunoCardPreview({ generation }) {
-  const hasAudio = Boolean(generation.mirroredAssetUrl || generation.mediaUrl);
+  const [previewRef, isNearViewport] = useNearViewport();
+  // mirroredAssetUrl (our own stored copy of the captured bytes) is preferred
+  // over mediaUrl: for Suno the latter is frequently absent or a non-playable
+  // reference, since the real bytes are captured off the page's MSE playback
+  // rather than fetched from a URL (see content-suno-network.js).
+  const audioUrl = generation.mirroredAssetUrl || generation.mediaUrl;
+
+  if (!audioUrl) {
+    return <div className="kling-card-fallback">No audio available</div>;
+  }
+
   return (
-    <div className="kling-card-fallback">{hasAudio ? '🔊 Audio' : 'No audio available'}</div>
+    <div ref={previewRef} className="kling-card-lazy-frame">
+      {isNearViewport ? (
+        // stopPropagation because - unlike the Epidemic/Splice cards this
+        // pattern comes from, which have no detail drawer at all - this
+        // card's preview area is itself a click target that opens the
+        // drawer. Without it, hitting play or dragging the scrubber would
+        // also open the drawer over the player the user just started. The
+        // surrounding preview area stays clickable, so opening the drawer by
+        // clicking the tile (or the title) still works.
+        <audio
+          src={audioUrl}
+          controls
+          preload="metadata"
+          style={{ width: '100%' }}
+          onClick={(event) => event.stopPropagation()}
+        />
+      ) : (
+        <div className="kling-card-fallback">🔊 Audio</div>
+      )}
+    </div>
   );
 });
 

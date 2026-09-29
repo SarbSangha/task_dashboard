@@ -4,35 +4,66 @@
    command center.
    ========================================================================== */
 
+/* Geometry mirrors .trendings-overlay/.trendings-panel in
+   leftsidebar/compofleftsidebar/trending/TrendingsPanel.css (and matches
+   buffer/BufferPanel.css, changed the same way): every sidebar window should
+   dock beside the sidebar and fill the remaining width, so switching between
+   them does not move or resize the window. This previously used
+   `inset: 3.5vh 3vw`, which centers over the whole viewport and covers the
+   left sidebar. Keep in sync with TrendingsPanel.css if that changes. */
 .trp-overlay {
   position: fixed;
   inset: 0;
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.4));
-  z-index: 1000;
+  /* Transparent, not a dimming scrim - the dashboard behind stays readable,
+     as it does behind RMW Data. */
+  background: transparent;
+  backdrop-filter: none;
+  z-index: 1199;
 }
 
 .trp-overlay.disabled { pointer-events: none; background: transparent; }
 
 .trp-panel {
   position: fixed;
-  inset: 3.5vh 3vw;
+  top: var(--leftbar-popup-top-offset);
+  left: var(--panel-left-inset, 250px);
+  right: var(--topnav-inset, 20px);
+  width: auto;
+  max-width: none;
+  height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
+  max-height: calc(100vh - var(--leftbar-popup-top-offset) - 24px);
   display: flex;
   flex-direction: column;
   background: var(--color-surface-modal);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 16px;
+  border-radius: 18px;
   box-shadow: var(--shadow-card-hover);
   overflow: hidden;
-  z-index: 1001;
+  z-index: 1200;
   color: var(--color-text);
 }
 
-.trp-panel.maximized { inset: 0; border-radius: 0; }
+/* Explicit box rather than `inset: 0`: the base rule sets height via calc(),
+   which inset alone cannot undo. */
+.trp-panel.maximized {
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+}
 
 .trp-panel.minimized {
-  inset: auto;
-  width: 260px;
-  height: 48px;
+  top: auto;
+  left: auto;
+  bottom: 20px;
+  right: 20px;
+  width: 360px;
+  height: 64px;
+  max-width: calc(100vw - 40px);
+  max-height: 64px;
   border-radius: 12px;
   cursor: pointer;
 }
@@ -282,7 +313,26 @@
 .trp-status-need_improvement, .trp-status-under_review { background: var(--color-feedback-warning-bg); border-color: var(--color-feedback-warning-border); color: var(--color-feedback-warning-text); }
 
 @media (max-width: 768px) {
-  .trp-panel { inset: 0; border-radius: 0; }
+  /* Mirrors .trendings-panel's mobile rule. Explicit box (not `inset: 0`)
+     because the base rule sets height via calc(), which inset cannot undo. */
+  .trp-panel {
+    top: var(--leftbar-popup-top-offset);
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    width: 95vw;
+    height: calc(100vh - var(--leftbar-popup-top-offset) - 16px);
+    max-height: calc(100vh - var(--leftbar-popup-top-offset) - 16px);
+  }
+
+  .trp-panel.minimized {
+    left: auto;
+    right: 10px;
+    transform: none;
+    width: calc(100vw - 20px);
+    max-width: none;
+  }
+
   .trp-body { padding: 14px 16px; }
   .trp-filters { flex-direction: column; align-items: stretch; }
   .trp-field select, .trp-field input { min-width: 0; width: 100%; }

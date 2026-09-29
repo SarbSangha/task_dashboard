@@ -30,6 +30,7 @@ it was for ElevenLabs' unconfirmed shape.
 """
 import hashlib
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
@@ -104,6 +105,28 @@ def _prompt_hash(prompt: Optional[str]) -> Optional[str]:
     if not prompt:
         return None
     return hashlib.sha256(prompt.encode("utf-8", errors="ignore")).hexdigest()
+
+
+# Reported live 2026-09-22: "Open Original" on a captured clip returned an S3
+# -style AccessDenied page. The stored media_url was the literal string
+# "https://studio-api.prod.suno.com/api/forbidden" - not an expired/signed
+# URL, not a shape mismatch, but Suno's OWN API returning a sentinel
+# placeholder in the audio_url field in place of a real asset URL, presumably
+# because the Suno session that captured this row's clip belongs to (or has
+# visibility into, via a shared feed) doesn't hold download rights for it.
+# _extract_fields stored that string verbatim since it's non-empty and
+# well-formed as a URL, and the frontend then rendered it as a normal-looking
+# working link. Filtered out here, the single place media_url is computed,
+# so every capture path (live click, reconciliation walker, audio push) is
+# covered rather than just one.
+_SUNO_FORBIDDEN_URL_RE = re.compile(r"^https?://[^/]*\bsuno\.com/api/forbidden(?:[?#]|$)", re.IGNORECASE)
+
+
+def _suno_real_asset_url(value: Any) -> Optional[str]:
+    text = _s(value)
+    if text and _SUNO_FORBIDDEN_URL_RE.match(text):
+        return None
+    return text
 
 
 def _is_fresh_enough_for_attribution(provider_created_at: Optional[datetime], captured_at: Optional[datetime]) -> bool:
@@ -198,7 +221,7 @@ def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) ->
         "status": _s(payload.get("status"), 40),
         "provider_created_at": provider_created_at,
         "provider_updated_at": provider_updated_at,
-        "media_url": _s(payload.get("audio_url")),
+        "media_url": _suno_real_asset_url(payload.get("audio_url")),
         "thumbnail_url": _s(payload.get("image_url")),
         "metadata_json": payload,
     }

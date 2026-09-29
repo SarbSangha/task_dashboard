@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { envatoCaptureAPI } from '../../../../../../services/api';
 import KlingCardSkeletonGrid from '../../../trending/kling/KlingCardSkeletonGrid';
 import DownloadCard from './DownloadCard';
+import EnvatoDownloadDrawer from './EnvatoDownloadDrawer';
 import { normalizeApiError } from './envatoCaptureUtils';
 
 const DOWNLOAD_PAGE_SIZE = 24;
@@ -20,6 +21,11 @@ export default function DownloadsBrowser({ searchInput, taskFilter, clientFilter
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
+  // The whole download object, not an id: DownloadDetailPanel renders from
+  // the already-loaded row rather than fetching (see its header), and holding
+  // the object keeps the drawer readable even if a later page load reorders
+  // or drops the row from `downloads`.
+  const [openDownload, setOpenDownload] = useState(null);
   const requestTokenRef = useRef(0);
 
   const loadDownloads = useCallback(
@@ -84,7 +90,7 @@ export default function DownloadsBrowser({ searchInput, taskFilter, clientFilter
         <div>
           <div className="kling-virtual-grid-wrap kling-plain-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
             {downloads.map((download) => (
-              <DownloadCard key={download.id} download={download} />
+              <DownloadCard key={download.id} download={download} onOpen={setOpenDownload} />
             ))}
           </div>
           {loadingMore && (
@@ -104,6 +110,8 @@ export default function DownloadsBrowser({ searchInput, taskFilter, clientFilter
           )}
         </div>
       )}
+
+      <EnvatoDownloadDrawer download={openDownload} onClose={() => setOpenDownload(null)} />
     </div>
   );
 }

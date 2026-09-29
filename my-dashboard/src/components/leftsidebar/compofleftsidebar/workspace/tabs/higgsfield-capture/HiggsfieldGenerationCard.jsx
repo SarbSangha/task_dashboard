@@ -79,7 +79,14 @@ export const HiggsfieldGenerationCard = React.memo(function HiggsfieldGeneration
       </div>
 
       <h4 className="kling-card-prompt" title={generation.promptText || ''} onClick={() => onOpen(generation)}>
-        {truncate(generation.promptText, 90) || 'No prompt captured'}
+        {truncate(generation.promptText, 90)
+          // Template/preset-driven generations (e.g. Higgsfield's "viral hub"
+          // effects) have no prompt by design - the user picks a preset and
+          // supplies images instead of writing text. presetName ("Floating
+          // fall", etc.) is the meaningful label for those; only fall back to
+          // the generic message when neither is available.
+          || (generation.presetName && `Preset: ${generation.presetName}`)
+          || 'No prompt captured'}
       </h4>
 
       <div className="kling-card-meta-row">

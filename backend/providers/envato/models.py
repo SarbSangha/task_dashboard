@@ -431,6 +431,24 @@ class EnvatoDownload(Base):
             "linkedClientName": self.linked_client_name,
             "itemUuid": self.item_uuid,
             "itemType": self.item_type,
+            # Permanent, public link to the item itself, derived rather than
+            # stored so it can never go stale. Verified live 2026-09-29 with
+            # no auth at all: /item-uuid-redirect/<uuid> 302s to the item's
+            # real slug page (e.g. .../dynamic-rap-NDJQW8G), for both a music
+            # and a stock-video uuid.
+            #
+            # Chosen over app.envato.com/<itemType>/<uuid> (which resolves to
+            # the same page) precisely BECAUSE it needs no item_type: that
+            # column is frequently null, and its path segment is not always
+            # the type string anyway ("stock-video" vs itemType "video").
+            #
+            # This is the durable reference for a download. The real asset URL
+            # is a short-lived signed CloudFront link (~10 min) and, for audio,
+            # points at a ZIP - neither is usable as a stored link.
+            "itemPageUrl": (
+                f"https://elements.envato.com/item-uuid-redirect/{self.item_uuid}"
+                if self.item_uuid else None
+            ),
             "assetTitle": self.asset_title,
             "assetThumbnailUrl": self.asset_thumbnail_url,
             "assetSourceUrl": self.asset_source_url,

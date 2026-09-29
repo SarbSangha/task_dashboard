@@ -3230,10 +3230,25 @@ async function loadLaunchState() {
   } else if (inferredToolSlug) {
     STATE.toolSlug = inferredToolSlug;
   }
-
-  if (inferredToolSlug === 'flow' && !extensionTicket) {
-    STATE.launchAuthorized = false;
-  }
+  // Reported bug: Flow's Google sign-in got stuck on the very first
+  // "Sign in" screen forever, cycling "Re-checking Flow dashboard launch"
+  // with the email field never filled - even though the launch was
+  // perfectly legitimate. Root cause: this function used to force
+  // launchAuthorized back to false for Flow whenever extensionTicket (above)
+  // came up empty, discarding whatever TOOL_HUB_GET_LAUNCH_STATE's response
+  // - which is already authoritative and tab-id based, not URL based - had
+  // just determined. extensionTicket is derived by sniffing this PAGE's own
+  // URL/continue=/referrer for the ticket, which is unreliable by design on
+  // the very first accounts.google.com screen: there is no earlier Google
+  // page to have cached it yet, Chrome's default Referrer-Policy strips
+  // document.referrer to a bare origin on this cross-origin hop, and
+  // whether Google's own continue= happens to still embed our ticket
+  // depends entirely on how Flow's own client constructs that redirect at
+  // that moment - not something this extension controls. Every other
+  // Google-login tool (Behance, ChatGPT, ElevenLabs, HeyGen, Pinterest,
+  // Suno, ...) already trusts TOOL_HUB_GET_LAUNCH_STATE's tab-based answer
+  // alone with no such override, and works reliably; Flow now does the
+  // same.
 }
 
 async function retryLaunchStateIfNeeded() {

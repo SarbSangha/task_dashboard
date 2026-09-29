@@ -2085,16 +2085,61 @@ const HIGGSFIELD_ASSET_SCAN_MAX_MS = 10 * 60 * 1000;
 let higgsfieldAssetScanTimer = null;
 let higgsfieldAssetScanStartedAt = 0;
 
-function collectHiggsfieldVisibleOutputUrl() {
-  const video = Array.from(document.querySelectorAll('video[src], video source[src]'))
-    .find((el) => isVisible(el.closest('video') || el));
-  if (video) {
-    const src = video.tagName === 'VIDEO' ? video.currentSrc || video.src : video.src;
-    if (src && !src.startsWith('blob:')) return src;
+// Confirmed real bug (2026-09-29): this scanner used to return the FIRST
+// visible <video> on the page with no validation at all, and Higgsfield
+// renders its own marketing banner clip
+// (https://static.higgsfield.ai/seedance-2.5/video-banner-general.mp4 - a
+// generic model promo, nothing to do with the user's generation). That
+// banner was captured as the generation's output every time, and because
+// startHiggsfieldAssetDetection stops the scan the moment this function
+// returns ANYTHING, the wrong URL was locked in permanently - the real
+// output was never looked for again. Confirmed live against a generation
+// whose reconciliation snapshot carried the true asset at
+// d8j0ntlcm91z4.cloudfront.net/user_<id>/hf_<date>_<time>_<gen uuid>.mp4
+// while its click-time record held only the banner.
+//
+// A real generated asset is always USER-SCOPED - its path carries a
+// /user_<id>/ segment (true for both the video CDN and the thumbnail CDN in
+// that confirmed payload) and its filename is hf_<date>_<time>_<uuid>.
+// Marketing/static assets are served from static.higgsfield.ai under
+// product-named paths instead, so they fail both tests.
+const HIGGSFIELD_STATIC_ASSET_HOST_RE = /(^|\.)static\.higgsfield\.ai$/i;
+const HIGGSFIELD_USER_ASSET_PATH_RE = /\/user_[^/]+\//i;
+const HIGGSFIELD_GENERATED_FILENAME_RE = /\/hf_\d{8}_\d{6}_[0-9a-f-]{36}\./i;
+
+function isHiggsfieldGeneratedOutputUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  if (url.startsWith('blob:') || url.startsWith('data:')) return false;
+  try {
+    const parsed = new URL(url, location.href);
+    if (HIGGSFIELD_STATIC_ASSET_HOST_RE.test(parsed.hostname)) return false;
+    return HIGGSFIELD_USER_ASSET_PATH_RE.test(parsed.pathname)
+      || HIGGSFIELD_GENERATED_FILENAME_RE.test(parsed.pathname);
+  } catch {
+    return false;
   }
-  const downloadLink = Array.from(document.querySelectorAll('a[href*=".mp4" i], a[download]'))
-    .find((el) => isVisible(el));
-  return downloadLink?.href || null;
+}
+
+function collectHiggsfieldVisibleOutputUrl() {
+  // Every visible candidate is checked, not just the first - the banner sits
+  // above the real output in the DOM on at least some layouts, so "first
+  // visible" and "the user's actual generation" are not the same element.
+  const videoSources = Array.from(document.querySelectorAll('video[src], video source[src]'))
+    .filter((el) => isVisible(el.closest('video') || el))
+    .map((el) => (el.tagName === 'VIDEO' ? el.currentSrc || el.src : el.src));
+  const match = videoSources.find((src) => isHiggsfieldGeneratedOutputUrl(src));
+  if (match) return match;
+
+  const downloadHref = Array.from(document.querySelectorAll('a[href*=".mp4" i], a[download]'))
+    .filter((el) => isVisible(el))
+    .map((el) => el.href)
+    .find((href) => isHiggsfieldGeneratedOutputUrl(href));
+  if (downloadHref) return downloadHref;
+
+  // Nothing that passes validation yet - returning null (rather than a
+  // best-effort wrong URL) keeps the scan alive for the next tick, which is
+  // the whole point: a rejected candidate must not end the search.
+  return null;
 }
 
 function stopHiggsfieldAssetDetection() {

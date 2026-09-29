@@ -222,6 +222,20 @@ function getSunoDownloadAction(row) {
   return actions.find((action) => action && typeof action === 'object' && action.action_type === 'download_song') || null;
 }
 
+// providers/suno/CAPTURE_CONTRACT.md's "Known gaps" section - the only
+// confirmed status progression is queued -> submitted -> streaming ->
+// complete, and the CloudFront progressive-download asset
+// sunoCloudfrontFallbackUrl guesses at is only confirmed to actually exist
+// once status reaches this value (media_urls gains that entry at the same
+// moment, per the same doc).
+const SUNO_STATUS_COMPLETE = 'complete';
+// Suno's own generic "not available" placeholder for an audio_url it isn't
+// ready to serve yet - NOT a real, working asset reference. Seen on a
+// "submitted" row (2026-09-28, two clips in one batch) alongside
+// download_song.disabled: false, same false-positive shape as the
+// empty-string case below, just a different placeholder value.
+const SUNO_AUDIO_URL_FORBIDDEN = 'https://studio-api.prod.suno.com/api/forbidden';
+
 function sunoRowIsReadyForDownload(row) {
   const action = getSunoDownloadAction(row);
   // No action_config.actions[] at all, or no download_song entry within it -
@@ -240,7 +254,28 @@ function sunoRowIsReadyForDownload(row) {
   // evaluateSunoRowForLiveCapture honest - a row seen this early no longer
   // gets marked readyForDownload, so it still gets its one extra pass once
   // the URL actually appears.
-  return Boolean(getSunoAudioUrl(row));
+  //
+  // Confirmed real 2026-09-28: that "real URL" requirement alone is STILL
+  // not sufficient - a "submitted" row (one stage later than "queued", per
+  // CAPTURE_CONTRACT.md's confirmed progression) can carry
+  // download_song.disabled: false AND a non-empty but bogus
+  // SUNO_AUDIO_URL_FORBIDDEN placeholder, which is truthy and so passed the
+  // Boolean() check below undetected. sunoCloudfrontFallbackUrl was then
+  // constructed and fetched against a song that had not finished encoding
+  // yet, 404'd every time (confirmed - two clips, repeated 404s in the same
+  // batch), and - because evaluateSunoRowForLiveCapture's dedup only tracks
+  // this function's true/false transition, not whether the byte fetch
+  // itself ever succeeded - the row was marked "ready" this one time and
+  // never re-evaluated again, permanently losing the audio even once
+  // Suno's own status genuinely reached "complete" moments later. Gating on
+  // the row's own reported status (the one signal CAPTURE_CONTRACT.md has
+  // confirmed actually tracks real completion) fixes both problems at once:
+  // it can't fire early, so there's nothing left to survive a rename to
+  // fix.
+  if (row?.status !== SUNO_STATUS_COMPLETE) return false;
+  const audioUrl = getSunoAudioUrl(row);
+  if (!audioUrl || audioUrl === SUNO_AUDIO_URL_FORBIDDEN) return false;
+  return true;
 }
 
 // The best available playable URL on a row - prefers an mp3 entry in
@@ -299,6 +334,32 @@ function isSunoDownloadableAssetUrl(url, contentType) {
   return SUNO_AUDIO_FILE_RE.test(url);
 }
 
+// Reported live 2026-09-22 ("waited, played it, still Pending" on the user's
+// own freshly-generated, fully playable track): confirmed via a real
+// DevTools capture that /api/feed/v3's audio_url field can be the literal
+// string "https://studio-api.prod.suno.com/api/forbidden" for a clip the
+// requesting account fully owns and can play right now in Suno's own UI -
+// not an access-control case (see normalization.py's identical finding for
+// the OTHER "forbidden" report this same day), and not something a longer
+// wait or a permission fix resolves, since the API keeps reporting it that
+// way regardless. Suno's own player does not actually use this field at all
+// once a clip is finished: the real file was found (same capture) at
+// https://d2lwuy8qc234o3.cloudfront.net/1/clip/<clip id>.m4a - a public,
+// unauthenticated CloudFront asset (Access-Control-Allow-Origin: *, no
+// cookies sent) keyed only by the clip's own `id`. sunoRowIsReadyForDownload
+// already correctly says this row IS ready (action_config's disabled flag
+// is false) - only the URL this function returns was wrong. Tried last,
+// after every URL the row's own payload might supply, so a real audio_url
+// or media_urls entry (when Suno's API does supply one) is still preferred
+// over guessing.
+const SUNO_CLOUDFRONT_CLIP_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function sunoCloudfrontFallbackUrl(row) {
+  const id = getSunoRowIdentity(row);
+  if (!id || !SUNO_CLOUDFRONT_CLIP_ID_RE.test(id)) return '';
+  return `https://d2lwuy8qc234o3.cloudfront.net/1/clip/${id}.m4a`;
+}
+
 function getSunoDownloadableAudioUrl(row) {
   if (Array.isArray(row?.media_urls)) {
     // Prefer an explicit mp3 entry, exactly as getSunoAudioUrl does.
@@ -311,7 +372,9 @@ function getSunoDownloadableAudioUrl(row) {
     if (anyEntry) return anyEntry.url;
   }
   const audioUrl = typeof row?.audio_url === 'string' ? row.audio_url : '';
-  return isSunoDownloadableAssetUrl(audioUrl, '') ? audioUrl : '';
+  if (isSunoDownloadableAssetUrl(audioUrl, '')) return audioUrl;
+  if (sunoRowIsReadyForDownload(row)) return sunoCloudfrontFallbackUrl(row);
+  return '';
 }
 
 // Client-side mirror of the backend's own _looks_like_audio guard. Checked
@@ -344,10 +407,17 @@ const SUNO_ARM_MAX_DURATION_MS = 10 * 60 * 1000;
 // same row don't count - see evaluateSunoRowForLiveCapture's
 // already_captured_this_session gate). A quiet arm was disarming before
 // real audio ever showed up, silently falling back on the ~20-minute
-// reconciliation walk instead of catching it live. Widened to give a full
-// song's typical generation time room to breathe; SUNO_ARM_MAX_DURATION_MS
-// above is the real backstop regardless.
-const SUNO_ARM_QUIET_PERIOD_MS = 4 * 60 * 1000;
+// reconciliation walk instead of catching it live. Widened once already (to
+// 4 minutes) for this reason - reported live again 2026-09-22 ("waited,
+// played it, still Pending" on a track that took longer than that to
+// render): the same disarm-too-early failure, just past the previous
+// widening's margin. Set equal to SUNO_ARM_MAX_DURATION_MS this time rather
+// than picking another guessed value that can go stale the same way - the
+// quiet timer can now never fire before the hard ceiling does (it only ever
+// restarts from a fresh qualifying capture, never earlier than the arm
+// itself), so SUNO_ARM_MAX_DURATION_MS alone decides when a still-not-ready
+// generation gives up, exactly as its own comment already says it should.
+const SUNO_ARM_QUIET_PERIOD_MS = SUNO_ARM_MAX_DURATION_MS;
 const SUNO_CLOCK_SKEW_SLACK_MS = 60 * 1000;
 const SUNO_LAST_LIVE_CAPTURED_AT_KEY = 'rmw_suno_last_live_captured_at';
 // Suno's own row shape carries a `batch_index` field, confirming a single
@@ -357,8 +427,19 @@ const SUNO_LAST_LIVE_CAPTURED_AT_KEY = 'rmw_suno_last_live_captured_at';
 // registration-delay behavior hasn't been separately confirmed for Suno.
 // Extended well past the old 80s ceiling (see SUNO_ARM_QUIET_PERIOD_MS's own
 // comment for why) - each entry still comfortably beats the quiet-period
-// timer it's racing, same margin convention as before.
-const SUNO_ACCELERATED_POLL_DELAYS_MS = [4000, 15000, 30000, 60000, 90000, 120000, 180000, 230000];
+// timer it's racing, same margin convention as before. Extended again
+// 2026-09-22 alongside that same constant's second widening: the schedule
+// used to stop at 230s, well short of SUNO_ARM_MAX_DURATION_MS (10 minutes)
+// - a song that simply took longer than 3:50 to render had no poll left to
+// catch it becoming ready, even though the arm itself (now) stays alive for
+// the full 10 minutes. Checkpoints now run every minute out to 9:30,
+// comfortably inside the 10-minute ceiling so the very last poll still has
+// a chance to run before triggerSunoFeedPoll's own isSunoGenerationArmed()
+// check would reject it.
+const SUNO_ACCELERATED_POLL_DELAYS_MS = [
+  4000, 15000, 30000, 60000, 90000, 120000, 180000, 230000,
+  300000, 360000, 420000, 480000, 540000, 570000,
+];
 
 // { generateIntentId, armedAt, expiresAt, capturedClipIds: Map,
 //   taskId, taskName, clientId, clientName } - null when idle.
@@ -638,7 +719,21 @@ function evaluateSunoRowForLiveCapture(row) {
   // a completion signal" comment), so this file would hit the exact same bug
   // on day one without it.
   const isNewlyResolvedDownload = Boolean(previousCapture && !previousCapture.readyForDownload && readyForDownload);
-  if (previousCapture && !isNewlyResolvedDownload) {
+  // Confirmed real 2026-09-29: the CloudFront fallback sunoCloudfrontFallbackUrl
+  // guesses at (see that function's comment) can 200 with a full-size body that
+  // still isn't decodable audio (same undecodable-audiopipe-stream symptom
+  // documented at getSunoAudioUrl's "Byte capture must NOT use..." comment,
+  // just from the OTHER guessed URL this time) - readyForDownload alone doesn't
+  // mean the byte fetch actually succeeded. Without this, that one bad attempt
+  // was PERMANENT: every later poll re-fetches a fresh row from Suno's own API
+  // (which can pick up a real cdn1.suno.ai media_urls entry once it propagates),
+  // but this gate silently dropped every one of them since readyForDownload was
+  // already true. Re-qualifying until a push actually confirms (tracked the
+  // same way reportSunoAudioCapture already dedupes successful pushes) gives
+  // each later poll a real second chance instead of being starved by the first
+  // one's bad guess.
+  const readyButUnconfirmed = Boolean(readyForDownload && !sunoRecentlyPushedAudioIds.has(identityValue));
+  if (previousCapture && !isNewlyResolvedDownload && !readyButUnconfirmed) {
     return { qualifies: false, reason: 'already_captured_this_session' };
   }
 
@@ -769,6 +864,33 @@ function onSunoNetworkMessage(event) {
       browserToken: data.payload?.browserToken,
       deviceId: data.payload?.deviceId,
     };
+    return;
+  }
+
+  // Real audio bytes, reassembled from the MSE chunks the browser actually
+  // played - see content-suno-network.js's "CONFIRMED CAPTURE PATH" comment
+  // for why this exists and why proactivelyFetchSunoAudio's URL-based path
+  // cannot work for these clips (the asset it fetches is proven ciphertext).
+  // This arrives only for a clip that was actually PLAYED in the tab.
+  if (data.type === 'SUNO_NETWORK_MSE_AUDIO') {
+    const clipId = `${data.payload?.clipId || ''}`.trim();
+    const audioBase64 = data.payload?.audioBase64 || '';
+    if (!clipId || !audioBase64) {
+      console.warn('[RMW Suno Capture] MSE audio arrived without a clip id - cannot attribute, dropping', {
+        hasClipId: Boolean(clipId), base64Length: audioBase64.length,
+      });
+      return;
+    }
+    console.debug('[RMW Suno Capture] MSE audio relayed from playback - pushing', { clipId, base64Length: audioBase64.length });
+    reportSunoAudioCapture({
+      clipId,
+      contentType: data.payload?.contentType || 'audio/mp4',
+      audioBase64,
+      // Deliberately empty, not a placeholder string: these bytes came off
+      // the MSE pipeline, not a fetchable URL, and media_url is a real URL
+      // column - leaving it NULL is honest, a fake value is not.
+      audioUrl: '',
+    });
   }
 }
 
@@ -800,7 +922,29 @@ function sunoApiHeaders(extra = {}) {
 // own asset URL once ready, no separate lookup-by-id call needed, no
 // Play/Download-click correlation needed either - see this file's header) ----
 
-async function proactivelyFetchSunoAudio(row) {
+// Reported live 2026-09-28: two clips in a row both 404'd on their very
+// first (and, before this, only) fetch attempt at
+// https://d2lwuy8qc234o3.cloudfront.net/1/clip/<id>.m4a - the exact fallback
+// sunoCloudfrontFallbackUrl returns once sunoRowIsReadyForDownload says the
+// row IS ready. Root cause: action_config.actions[].disabled flipping to
+// false is Suno's OWN server-side "the encode finished" signal, but the
+// finished file reaching this public CloudFront distribution is a SEPARATE,
+// slightly-later step - a few seconds of CDN propagation lag between the two
+// is enough to 404. That alone would be survivable (this same row gets
+// re-observed on the next poll), except evaluateSunoRowForLiveCapture's
+// dedup only tracks the not-ready -> ready METADATA transition, not whether
+// the byte fetch actually succeeded - once a row has been seen ready once,
+// it is marked "already_captured_this_session" for the rest of the arm
+// window and this function is never called again for it. So a 404 here
+// used to be permanent, not transient, for that row - the song looked
+// captured (its metadata event landed) but its audio never did. Retrying
+// the SAME url a few times with backoff, entirely within this one function
+// call, fixes that without touching the dedup logic (which is correct for
+// its own job of not re-reporting metadata).
+const SUNO_AUDIO_FETCH_MAX_ATTEMPTS = 4;
+const SUNO_AUDIO_FETCH_RETRY_DELAY_MS = 3000; // 3s, 6s, 9s - CDN propagation lag is a few seconds, not the ~10s+ scale reportSunoAudioCapture's generation_not_found retry targets
+
+async function proactivelyFetchSunoAudio(row, attempt = 1) {
   const identityValue = getSunoRowIdentity(row);
   const audioUrl = getSunoDownloadableAudioUrl(row);
   if (!identityValue) return;
@@ -813,6 +957,15 @@ async function proactivelyFetchSunoAudio(row) {
     });
     return;
   }
+  const retryIfPossible = (reason, extra = {}) => {
+    if (attempt >= SUNO_AUDIO_FETCH_MAX_ATTEMPTS) {
+      console.warn('[RMW Suno Capture] giving up on audio fetch after repeated failures', { identityValue, audioUrl, attempt, reason, ...extra });
+      return;
+    }
+    const delay = SUNO_AUDIO_FETCH_RETRY_DELAY_MS * attempt;
+    console.debug('[RMW Suno Capture] retrying audio fetch shortly - likely CDN propagation lag', { identityValue, attempt, delay, reason, ...extra });
+    window.setTimeout(() => proactivelyFetchSunoAudio(row, attempt + 1), delay);
+  };
   try {
     // No Authorization header, no credentials - the audiopipe.suno.ai URL
     // embedded in the row is treated the same way ElevenLabs Music's signed
@@ -824,9 +977,7 @@ async function proactivelyFetchSunoAudio(row) {
     const response = await fetch(audioUrl);
     if (!response.ok) {
       const errorBody = await response.text().catch(() => '');
-      console.debug('[RMW Suno Capture] proactive audio fetch failed', {
-        identityValue, status: response.status, errorBody: errorBody.slice(0, 1000),
-      });
+      retryIfPossible('http_status', { status: response.status, errorBody: errorBody.slice(0, 1000) });
       return;
     }
     const contentType = response.headers.get('content-type') || 'audio/mpeg';
@@ -844,7 +995,7 @@ async function proactivelyFetchSunoAudio(row) {
     console.debug('[RMW Suno Capture] proactively fetched audio', { identityValue, contentType, bytes: buffer.byteLength });
     reportSunoAudioCapture({ clipId: identityValue, contentType, audioBase64, audioUrl });
   } catch (error) {
-    console.debug('[RMW Suno Capture] proactive audio fetch error', { identityValue, error: error?.message || error });
+    retryIfPossible('network_error', { error: error?.message || error });
   }
 }
 
