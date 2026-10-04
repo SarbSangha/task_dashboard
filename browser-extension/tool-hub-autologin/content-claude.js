@@ -480,6 +480,36 @@ async function clearToolSession(options = {}) {
   });
 }
 
+// Reported bug: opening a second Claude tab logged every Claude tab out.
+// Claude's session is one set of cookies shared by all tabs (and
+// clearToolSession() wipes it from every cookie store), so both wipe paths
+// below - a fresh dashboard launch's ensureFreshLaunchSession() and an
+// un-launched tab's enforceDashboardOnlyAccess() - killed the session the
+// OTHER, already-signed-in tabs were using. These two checks let them
+// recognize "a real Claude session already exists" and leave it alone.
+//
+// Asks Claude itself (cookie-authenticated, same-origin) rather than the
+// DOM: a slow-rendering page can't produce a false "signed out" here. Any
+// failure answers false, i.e. falls back to the previous behavior.
+async function hasLiveClaudeSession() {
+  try {
+    const response = await fetch('/api/organizations', {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) return false;
+    const body = await response.json();
+    return Array.isArray(body) && body.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function hasOtherOpenClaudeTabs() {
+  const response = await sendRuntimeMessage({ type: 'TOOL_HUB_HAS_OTHER_TOOL_TABS', toolSlug: TOOL_SLUG });
+  return Boolean(response?.ok && response.hasOtherTabs);
+}
+
 async function revokeActiveLaunch() {
   await sendRuntimeMessage({
     type: 'TOOL_HUB_REVOKE_ACTIVE_LAUNCH',
@@ -491,6 +521,15 @@ async function enforceDashboardOnlyAccess() {
   const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
 
   if (!isLoginPage()) {
+    // A page that merely hasn't rendered its signed-in markers yet (slow
+    // load past STARTUP_GRACE_MS, or a path looksLikeAuthenticatedWorkspace
+    // doesn't list) must not wipe a session other tabs are using - see
+    // hasLiveClaudeSession's comment. Only a genuinely signed-out visit
+    // reaches the wipe below.
+    if (await hasLiveClaudeSession()) {
+      stopAutomation('Signed in successfully');
+      return false;
+    }
     await clearToolSession();
     window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
     window.location.replace(LOGIN_URL);
@@ -512,6 +551,21 @@ async function ensureFreshLaunchSession() {
   }
 
   if (STATE.launchPrepared) {
+    return true;
+  }
+
+  // Opening Claude from the dashboard again while another Claude tab is
+  // already signed in: reuse that session instead of wiping it out from
+  // under the other tab - see hasLiveClaudeSession's comment. Still marked
+  // prepared so this launch doesn't try again on its next pass.
+  if (await hasOtherOpenClaudeTabs() && await hasLiveClaudeSession()) {
+    await sendRuntimeMessage({ type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED', toolSlug: TOOL_SLUG });
+    STATE.launchPrepared = true;
+    setStatus('Using existing Claude session');
+    if ((window.location.pathname || '').startsWith('/login')) {
+      window.location.replace('https://claude.ai/new');
+      return false;
+    }
     return true;
   }
 

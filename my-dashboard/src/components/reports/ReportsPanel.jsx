@@ -106,17 +106,21 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     staleTime: 10 * 60_000,
   });
   const departments = filtersQuery.data?.departments || [];
+  const tools = filtersQuery.data?.tools || filtersQuery.data?.providers || [];
   const klingAccounts = filtersQuery.data?.klingAccounts || [];
   const klingUsers = filtersQuery.data?.klingUsers || [];
+  const toolScopes = filtersQuery.data?.toolScopes || null;
 
   const queryFilters = useMemo(() => {
     const f = { start: filters.start, end: filters.end };
     if (filters.department && filters.department !== 'all') f.department = filters.department;
+    // Tool -> its account (login/ID) -> the person who used it.
+    if (filters.tool && filters.tool !== 'all') f.tool = filters.tool;
     if (filters.account && filters.account !== 'all') f.account = filters.account;
-    // The person who generated, as opposed to the shared Kling login above.
+    // The person who used the tool, as opposed to the shared login above.
     if (filters.klingUser && filters.klingUser !== 'all') f.user = filters.klingUser;
     return f;
-  }, [filters.start, filters.end, filters.department, filters.account, filters.klingUser]);
+  }, [filters.start, filters.end, filters.department, filters.tool, filters.account, filters.klingUser]);
 
   const updateFilters = (patch) => {
     if (patch.preset) setPreset(patch.preset);
@@ -274,7 +278,7 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       );
     }
     if (section === 'tool-logins') {
-      return <ToolLogins />;
+      return <ToolLogins filters={queryFilters} />;
     }
     if (section === 'kling') {
       return (
@@ -471,7 +475,7 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         </div>
 
         {!isMinimized && (
-          <GlobalFilters filters={filters} preset={preset} onChange={updateFilters} departments={departments} klingAccounts={klingAccounts} klingUsers={klingUsers} />
+          <GlobalFilters filters={filters} preset={preset} onChange={updateFilters} departments={departments} tools={tools} toolScopes={toolScopes} klingAccounts={klingAccounts} klingUsers={klingUsers} />
         )}
 
         {!isMinimized && (

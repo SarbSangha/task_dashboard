@@ -124,7 +124,8 @@ function handleLaunchDetail(detail) {
   if (!isAllowedDashboardPage()) return;
 
   Promise.resolve()
-    .then(() => syncSessionToken())
+    // A tool launch is a click in this very tab - it may select the server.
+    .then(() => syncSessionToken({ allowApiBaseSwitch: true }))
     .catch(() => {})
     .then(() => savePendingLaunch(detail))
     .then(() => {
@@ -270,7 +271,22 @@ function sendRuntimeMessage(message) {
   });
 }
 
-async function syncSessionToken() {
+// Reported bug: with a local dashboard (localhost) and the live dashboard
+// open in the same browser, every tab pushed its own server here every 3s,
+// so the extension's target server flipped back and forth - captures landed
+// in whichever database happened to be current at upload time, and uploads
+// carrying one server's token were rejected by the other. Now only the tab
+// the user is actually on may switch the server; any other dashboard tab may
+// still refresh the token, but only for the server already selected.
+function isActiveDashboardTab() {
+  try {
+    return document.visibilityState === 'visible' && document.hasFocus();
+  } catch {
+    return false;
+  }
+}
+
+async function syncSessionToken({ allowApiBaseSwitch = isActiveDashboardTab() } = {}) {
   const sessionToken = readStoredToken();
   const apiBase = resolveApiBaseFromDashboard();
   await sendRuntimeMessage({
@@ -278,14 +294,15 @@ async function syncSessionToken() {
     sessionToken,
     apiBase,
     dashboardUrl: window.location.href,
+    allowApiBaseSwitch: Boolean(allowApiBaseSwitch),
   });
 }
 
-function queueSync() {
+function queueSync(options = {}) {
   if (!isAllowedDashboardPage()) return;
 
   window.setTimeout(() => {
-    syncSessionToken().catch(() => {});
+    syncSessionToken(options).catch(() => {});
   }, 250);
 }
 
@@ -322,12 +339,12 @@ function pollForTokenChange() {
   syncSessionToken().catch(() => {});
 }
 
-window.addEventListener('load', queueSync);
-window.addEventListener('focus', queueSync);
+window.addEventListener('load', () => queueSync({ allowApiBaseSwitch: document.visibilityState === 'visible' }));
+window.addEventListener('focus', () => queueSync({ allowApiBaseSwitch: true }));
 // Tab-switch coverage beyond window-focus (e.g. switching tabs within an
 // already-focused browser window, which never fires 'focus').
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') queueSync();
+  if (document.visibilityState === 'visible') queueSync({ allowApiBaseSwitch: true });
 });
 // Cross-tab coverage: a login/logout in a DIFFERENT tab updates this tab's
 // view of localStorage via the native 'storage' event (which, unlike the

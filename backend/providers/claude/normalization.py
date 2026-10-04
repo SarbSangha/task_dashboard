@@ -302,8 +302,33 @@ def normalize_capture_event(db: Session, event: ConversationCaptureEvent) -> Opt
     if handler is None:
         return None
     record = _get_or_create_conversation_record(db, event)
+    _maybe_claim_by_typed_prompt(record, event)
     handler(db, record, event)
     return record
+
+
+def _maybe_claim_by_typed_prompt(record: ConversationRecord, event: ConversationCaptureEvent) -> None:
+    """The one exception to "ownership is decided once, at record creation".
+
+    Claude in Chrome (side panel) prompts arrive with typedInThisBrowser=True
+    only when the extension saw that prompt's own send request leave this
+    user's browser (background-claude-cic-capture.js reads the prompt uuid out
+    of the POST .../v1/code/sessions/{id}/events body). That is direct proof
+    of who typed it - stronger than the age heuristic in _is_attributable,
+    which side panel chats routinely fail: the session is created ahead of
+    time, and a chat resumed from the side panel's history is old by
+    definition. So an UNOWNED record is claimed by the first user who
+    provably typed into it. A record that already has an owner is never
+    reassigned."""
+    if record.owner_user_id is not None or record.ownership_status == OWNERSHIP_STATUS_RESOLVED:
+        return
+    if event.event_type != EVENT_TYPE_PROMPT_CAPTURED or not event.user_id:
+        return
+    if (event.payload_json or {}).get("typedInThisBrowser") is not True:
+        return
+    record.owner_user_id = event.user_id
+    record.ownership_status = OWNERSHIP_STATUS_RESOLVED
+    record.ownership_source = "typed_prompt_capture"
 
 
 def _find_unnormalized_message_events(db: Session, events: list) -> list:

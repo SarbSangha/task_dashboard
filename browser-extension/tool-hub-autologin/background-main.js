@@ -465,7 +465,30 @@ async function syncAuthContext(message = {}) {
     sessionToken = await readSessionTokenFromCookies(apiBase, dashboardUrl);
   }
 
-  const stored = await chrome.storage.local.get(['apiBase', 'sessionToken', 'sessionTokenSyncedAt']);
+  const stored = await chrome.storage.local.get(['apiBase', 'sessionToken', 'sessionTokenSyncedAt', 'sessionTokenByApiBase']);
+  const storedApiBase = `${stored.apiBase || ''}`.trim();
+
+  // Remember each server's own token, so events already queued for one
+  // server can still be uploaded there after the user switches to another
+  // (see background-claude-capture.js's per-event apiBase).
+  const tokensByApiBase = { ...(stored.sessionTokenByApiBase || {}) };
+  if ((tokensByApiBase[apiBase] || '') !== sessionToken) {
+    if (sessionToken) tokensByApiBase[apiBase] = sessionToken;
+    else delete tokensByApiBase[apiBase];
+    await chrome.storage.local.set({ sessionTokenByApiBase: tokensByApiBase });
+  }
+
+  // Only the dashboard tab the user is actually on may change the server -
+  // see content-dashboard.js's isActiveDashboardTab. undefined (an older
+  // content script) keeps the previous always-switch behaviour.
+  if (message.allowApiBaseSwitch === false && storedApiBase && storedApiBase !== apiBase) {
+    return {
+      apiBase: storedApiBase,
+      sessionToken: `${stored.sessionToken || ''}`.trim(),
+      ignored: 'inactive_tab_for_other_server',
+    };
+  }
+
   const nextValues = {};
   const removeKeys = [];
 
@@ -990,6 +1013,43 @@ async function markRootSessionTab(tabId, toolSlug) {
   const map = await getRootSessionTabsMap();
   map[`${tabId}`] = normalizedSlug;
   await chrome.storage.local.set({ [ROOT_SESSION_TABS_STORAGE_KEY]: map });
+}
+
+// Any open tab (other than excludeTabId) currently on one of the tool's own
+// session domains. tabs.query's url filter only needs the host permissions
+// this extension already holds for these domains, not the "tabs" permission.
+async function hasOtherOpenToolTabs(toolSlug, excludeTabId = 0) {
+  const origins = domainsToOrigins(getToolSessionDomains(toolSlug)).filter((origin) => origin.startsWith('https://'));
+  if (!origins.length || !chrome?.tabs?.query) return false;
+  const tabs = await chrome.tabs.query({ url: origins.map((origin) => `${origin}/*`) }).catch(() => []);
+  return tabs.some((tab) => tab?.id && tab.id !== excludeTabId);
+}
+
+// Reported bug: with Claude opened from the dashboard more than once,
+// closing ONE of those tabs logged the others out - each dashboard launch
+// is its own root tab, and the root-close wipe below ran regardless. The
+// session now ends when the LAST dashboard-launched tab for the tool
+// closes. Stale entries (tabs already gone, e.g. after a browser crash)
+// are pruned here so they can't block a wipe forever.
+async function hasOtherOpenRootTab(toolSlug, excludeTabId) {
+  const normalizedSlug = normalizeToolSlug(toolSlug);
+  const map = await getRootSessionTabsMap();
+  let found = false;
+  let pruned = false;
+  for (const [key, slug] of Object.entries(map)) {
+    if (key === `${excludeTabId}` || normalizeToolSlug(slug) !== normalizedSlug) continue;
+    const tab = await chrome.tabs.get(Number(key)).catch(() => null);
+    if (tab) {
+      found = true;
+    } else {
+      delete map[key];
+      pruned = true;
+    }
+  }
+  if (pruned) {
+    await chrome.storage.local.set({ [ROOT_SESSION_TABS_STORAGE_KEY]: map });
+  }
+  return found;
 }
 
 async function consumeRootSessionTab(tabId) {
@@ -1563,7 +1623,12 @@ async function cleanupToolSessionForClosedTab(tabId) {
   // hasOtherToolTabs (tracking-based) found it and skipped the wipe. Any
   // OTHER tab closing still defers to hasOtherToolTabs as before - it must
   // not kill the session while the actual root tab is still open.
-  if (shouldClearSessionOnClose && (isRootTab || !hasOtherToolTabs)) {
+  // ...but a root tab closing while ANOTHER root tab for the same tool is
+  // still open (the tool was launched from the dashboard more than once)
+  // must not end the session that other launch is using - see
+  // hasOtherOpenRootTab's comment.
+  const otherRootTabOpen = isRootTab && await hasOtherOpenRootTab(normalizedSlug, tabId);
+  if (shouldClearSessionOnClose && !otherRootTabOpen && (isRootTab || !hasOtherToolTabs)) {
     const cleanupResult = await clearToolSession(normalizedSlug, {
       includeGoogle: normalizedSlug === 'flow'
         || normalizedSlug === 'genspark'
@@ -2874,6 +2939,13 @@ function handleRuntimeMessage(message, sender, sendResponse) {
   if (message?.type === 'TOOL_HUB_REVOKE_ACTIVE_LAUNCH') {
     revokeActiveLaunch(senderTabId, message.toolSlug)
       .then((ok) => sendResponse({ ok }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === 'TOOL_HUB_HAS_OTHER_TOOL_TABS') {
+    hasOtherOpenToolTabs(message.toolSlug, senderTabId)
+      .then((hasOtherTabs) => sendResponse({ ok: true, hasOtherTabs }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

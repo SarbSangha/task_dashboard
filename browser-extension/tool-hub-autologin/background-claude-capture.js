@@ -183,12 +183,32 @@ function armClaudeCaptureFlushBackstop() {
   } catch {}
 }
 
+// Each event is pinned to the server that was selected when it was
+// captured. Without this, an event queued while testing on localhost would
+// be uploaded to live if the user switched dashboards before it was flushed
+// (or while it was waiting on a retry) - confirmed 2026-10-01: a captured
+// reply landed in the live database while its conversation was in local.
+async function getClaudeCaptureUploadSettings(apiBase) {
+  const settings = await getSettings();
+  if (!apiBase || apiBase === settings.apiBase) return settings;
+  const stored = await chrome.storage.local.get(['sessionTokenByApiBase']);
+  return {
+    apiBase,
+    sessionToken: `${stored.sessionTokenByApiBase?.[apiBase] || ''}`.trim(),
+  };
+}
+
 async function enqueueClaudeCaptureEvent(event) {
   const now = Date.now();
+  let apiBase = '';
+  try {
+    apiBase = (await getSettings()).apiBase || '';
+  } catch {}
   const queue = await withClaudeCaptureQueueLock(async () => {
     const current = await readClaudeCaptureQueue();
     current.push({
       key: event.client_event_id,
+      apiBase,
       event,
       enqueuedAt: now,
       attempts: 0,
@@ -262,13 +282,18 @@ async function flushClaudeCaptureQueue() {
     return { attempted: 0, remaining: queue.length };
   }
 
-  const batch = readyItems.slice(0, CLAUDE_CAPTURE_BATCH_MAX);
+  // One server per batch: the oldest ready item's. Items queued for another
+  // server go in the next pass (the "stillReady" check below re-runs).
+  const batchApiBase = readyItems[0].apiBase || '';
+  const batch = readyItems
+    .filter((item) => (item.apiBase || '') === batchApiBase)
+    .slice(0, CLAUDE_CAPTURE_BATCH_MAX);
   const batchKeys = new Set(batch.map((item) => item.key));
   const flags = await readClaudeCaptureFeatureFlags();
   const startedAt = Date.now();
 
   try {
-    const settings = await getSettings();
+    const settings = await getClaudeCaptureUploadSettings(batchApiBase);
     const response = await postClaudeCaptureEventsBatch(settings, batch.map((item) => ({
       ...item.event,
       session_id: item.event.session_id || settings.sessionToken || undefined,

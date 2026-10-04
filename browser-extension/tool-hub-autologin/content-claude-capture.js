@@ -133,6 +133,7 @@
   const seenMessageUuids = new Set();
   const seenConversationUuids = new Set();
   const titleByConversation = new Map();
+  const updatedAtByConversation = new Map();
   // Separate from seenMessageUuids: a message can be marked "seen" (its
   // prompt_captured event sent) while its attachment upload is still
   // pending, retried, or simply skipped this pass (best-effort, not gated
@@ -371,10 +372,29 @@
     return content[content.length - 1]?.stop_timestamp || message?.updated_at || undefined;
   }
 
+  // Where the conversation happened. Claude in Chrome's side panel embeds
+  // this same claude.ai web app in an iframe (sidepanel.html loads
+  // https://claude.ai/cic/new?surface=cic_sidepanel), which is why this
+  // script now also runs in subframes (manifest all_frames) - this tag is
+  // what lets the dashboard tell those conversations apart from ones in a
+  // normal claude.ai tab.
+  function detectSurface() {
+    try {
+      if ((location.pathname || '').startsWith('/cic')) return 'claude_in_chrome';
+      if (new URLSearchParams(location.search || '').get('surface') === 'cic_sidepanel') return 'claude_in_chrome';
+      if (window.top !== window) return 'embedded';
+    } catch {
+      // Cross-origin window.top access can throw - only possible when embedded.
+      return 'embedded';
+    }
+    return 'web';
+  }
+
   function conversationContextFields(conversation, newConversation) {
     return {
       isNewConversation: newConversation,
       providerCreatedAt: conversation.created_at || undefined,
+      surface: detectSurface(),
     };
   }
 
@@ -502,11 +522,17 @@
           },
         })
       );
-    } else {
-      // Refresh metadata (title/model/last-activity) on every later
-      // observation of an already-tracked conversation, via the same
-      // conversation_opened event type - see
-      // providers/claude/normalization.py's _handle_conversation_snapshot_metadata.
+    } else if (
+      conversation.updated_at !== updatedAtByConversation.get(conversationUuid)
+      || currentTitle !== (previousTitle || '')
+    ) {
+      // Refresh metadata (title/model/last-activity) on a later observation
+      // of an already-tracked conversation, via the same conversation_opened
+      // event type - see providers/claude/normalization.py's
+      // _handle_conversation_snapshot_metadata. Only when something actually
+      // changed: content-claude-network.js's fallback observer can re-fetch
+      // the same unchanged snapshot several times, and each identical
+      // refresh would otherwise be stored as a new raw event.
       sendEvent(
         buildEnvelope(EVENT_TYPE.CONVERSATION_OPENED, {
           conversationId: conversationUuid,
@@ -529,6 +555,7 @@
       }
     }
     titleByConversation.set(conversationUuid, currentTitle);
+    updatedAtByConversation.set(conversationUuid, conversation.updated_at);
 
     const messages = conversation.chat_messages
       .slice()
@@ -546,6 +573,30 @@
         payload: { detectedVia: 'explicit_delete_action' },
       })
     );
+  }
+
+  // Relay for background-claude-cic-capture.js: when claude.ai refuses the
+  // service worker's own direct read of a Claude in Chrome session, the
+  // background asks an open claude.ai tab to do the same GET same-origin.
+  // Read-only, and only for the code-sessions API on claude.ai itself.
+  if (window.top === window) {
+    try {
+      chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+        if (message?.type !== 'CLAUDE_CIC_FETCH') return false;
+        const url = `${message.url || ''}`;
+        if (!url.startsWith('https://claude.ai/v1/code/sessions/')) {
+          sendResponse({ status: 0, error: 'url not allowed' });
+          return false;
+        }
+        fetch(url, { method: 'GET', credentials: 'include', headers: message.headers || {} })
+          .then(async (response) => {
+            const body = await response.json().catch(() => null);
+            sendResponse({ status: response.status, body });
+          })
+          .catch((error) => sendResponse({ status: 0, error: `${error?.message || error}` }));
+        return true;
+      });
+    } catch {}
   }
 
   window.addEventListener(

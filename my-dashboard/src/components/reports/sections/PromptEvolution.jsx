@@ -8,12 +8,17 @@ import InsightBanner from '../primitives/InsightBanner';
 import ChartFrame, { ChartTooltip } from '../primitives/ChartFrame';
 import { formatNumber, formatDayLabel } from '../utils/format';
 
-// Simple first-half vs second-half comparison to answer "are we improving?"
+// First-half vs second-half comparison to answer "are we improving?".
+// Weighted by each day's prompt count: a plain average of daily rates let a
+// day with one failed prompt pull the half as hard as a day with a hundred.
 const trendDelta = (daily, key) => {
-  const pts = (daily || []).filter((d) => d[key] != null);
+  const pts = (daily || []).filter((d) => d[key] != null && (d.prompts || 0) > 0);
   if (pts.length < 4) return null;
   const mid = Math.floor(pts.length / 2);
-  const avg = (arr) => arr.reduce((s, d) => s + d[key], 0) / (arr.length || 1);
+  const avg = (arr) => {
+    const weight = arr.reduce((s, d) => s + d.prompts, 0);
+    return weight ? arr.reduce((s, d) => s + d[key] * d.prompts, 0) / weight : 0;
+  };
   const first = avg(pts.slice(0, mid));
   const second = avg(pts.slice(mid));
   return { first: Math.round(first), second: Math.round(second), up: second >= first };

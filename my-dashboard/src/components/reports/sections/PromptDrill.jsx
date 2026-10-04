@@ -190,6 +190,7 @@ const PromptTimeline = ({ userId, userName, filters, onAddToCanvas }) => {
           userId={userId}
           userName={userName}
           date={openDate}
+          filters={filters}
           onAddToCanvas={onAddToCanvas}
           onClose={() => setOpenDate(null)}
         />
@@ -255,13 +256,22 @@ const PromptDrill = ({ mode = 'volume', filters, onAddToCanvas }) => {
       {q.isLoading ? (
         <div className="rpt-card" style={{ padding: 16 }}>Loading prompt authors…</div>
       ) : users.length === 0 ? (
-        <div className="rpt-card" style={{ padding: 16 }}>No prompts in this period.</div>
+        <div className="rpt-card" style={{ padding: 16 }}>
+          {totals.unattributedPrompts > 0
+            ? `${formatNumber(totals.unattributedPrompts)} prompts in this period, but none is linked to a person yet.`
+            : 'No prompts in this period.'}
+        </div>
       ) : (
         <>
           <div className="rpt-card-head">
             <h3 className="rpt-card-title" style={{ fontSize: 14 }}>{users.length} people</h3>
             <span className="rpt-card-hint">
               {formatNumber(totals.prompts)} prompts · {formatNumber(totals.uniquePrompts)} unique · {totals.reuseRate}% reuse
+              {totals.unattributedPrompts > 0 && (
+                <> · <span title="Prompts whose generation or chat has no owner yet - counted in the totals, not under any person">
+                  {formatNumber(totals.unattributedPrompts)} unattributed
+                </span></>
+              )}
             </span>
           </div>
           <DataTable

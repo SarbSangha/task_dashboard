@@ -481,7 +481,13 @@ def _load_dashboard_tool_seconds(db: Session, utc_start: datetime, utc_end: date
     return out
 
 
-def _load_tool_login_attempts(db: Session, period: dict, user_ids: Optional[set] = None) -> list[dict]:
+def _load_tool_login_attempts(
+    db: Session,
+    period: dict,
+    user_ids: Optional[set] = None,
+    tool_ids: Optional[set] = None,
+    credential_id: Optional[int] = None,
+) -> list[dict]:
     """Every dashboard tool launch ("login try") in the window: who tried to
     log in to which tool, using which assigned account, and when.
 
@@ -509,6 +515,10 @@ def _load_tool_login_attempts(db: Session, period: dict, user_ids: Optional[set]
     )
     if user_ids is not None:
         q = q.filter(ITPortalToolAudit.actor_id.in_(user_ids))
+    if tool_ids is not None:
+        q = q.filter(ITPortalToolAudit.tool_id.in_(tool_ids))
+    if credential_id is not None:
+        q = q.filter(ITPortalToolAudit.credential_id == credential_id)
     rows = q.order_by(ITPortalToolAudit.created_at.desc()).limit(TIMELINE_CAP).all()
 
     cred_ids = {cred_id for _uid, _created, cred_id, _name, _slug in rows if cred_id is not None}
@@ -1749,6 +1759,8 @@ def build_tool_login_report(
     end: Optional[str] = None,
     department: Optional[str] = None,
     user_id: Optional[int] = None,
+    tool: Optional[str] = None,
+    account: Optional[int] = None,
 ) -> dict:
     """Every dashboard tool launch ("login try") in the window: user, tool,
     the assigned account it used, and when. Standalone from build_snapshot so
@@ -1766,7 +1778,18 @@ def build_tool_login_report(
         scoped = [p for p in scoped if p["userId"] == user_id]
 
     user_ids = {p["userId"] for p in scoped} if (dept_filter or user_id) else None
-    raw = _load_tool_login_attempts(db, period, user_ids)
+    # Tool is the provider key the reports' global Tool filter sends (slug,
+    # with the same aliases /reports/filters uses); Account is a credential id.
+    tool_key = (tool or "").strip().lower()
+    tool_ids = None
+    if tool_key and tool_key not in {"all", "*"}:
+        slug_to_provider = {"chat-gpt": "chatgpt", "epidemic-sound": "epidemicsound"}
+        tool_ids = {
+            tid for tid, slug in db.query(ITPortalTool.id, ITPortalTool.slug).all()
+            if slug_to_provider.get((slug or "").lower(), (slug or "").lower()) == tool_key
+        }
+    credential_id = int(account) if account else None
+    raw = _load_tool_login_attempts(db, period, user_ids, tool_ids, credential_id)
     rows = _assemble_tool_logins(raw, scoped)
 
     by_tool: dict[str, int] = defaultdict(int)
@@ -1783,7 +1806,7 @@ def build_tool_login_report(
             "days": period["days"],
             "label": period["label"],
         },
-        "filters": {"department": dept_filter, "userId": user_id},
+        "filters": {"department": dept_filter, "userId": user_id, "tool": tool_key or None, "account": credential_id},
         "toolLogins": rows,
         "totalRows": len(rows),
         "capped": len(rows) >= TIMELINE_CAP,

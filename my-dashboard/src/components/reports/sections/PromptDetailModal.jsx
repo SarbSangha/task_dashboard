@@ -22,7 +22,19 @@ const OutputTile = ({ gen }) => {
         aspectRatio: '16 / 9', background: 'var(--color-secondary)', borderRadius: 6,
         overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
-        {url && isVideo(url) && !failed ? (
+        {!url && gen.responseText ? (
+          // Chat tools (ChatGPT/Claude) have no generated asset - show the
+          // start of the answer the prompt got instead.
+          <span
+            title={gen.responseText}
+            style={{
+              alignSelf: 'stretch', width: '100%', padding: 8, fontSize: 11, lineHeight: 1.4,
+              overflow: 'hidden', textAlign: 'left', whiteSpace: 'pre-wrap',
+            }}
+          >
+            {gen.responseText}
+          </span>
+        ) : url && isVideo(url) && !failed ? (
           <video
             src={url}
             poster={gen.thumbnailUrl || undefined}

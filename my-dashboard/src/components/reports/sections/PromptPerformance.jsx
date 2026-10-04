@@ -28,12 +28,15 @@ const PromptPerformance = ({ filters, onDrill, onAddToCanvas }) => {
   }
 
   const topTheme = (trends.topThemes || [])[0];
+  const isChat = summaryQ.data?.source === 'chat';
+  const chatgptPrompts = summaryQ.data?.chatgptPrompts || 0;
+  const claudePrompts = summaryQ.data?.claudePrompts || 0;
 
   return (
     <div>
       <SectionHeader
         title="Prompt Performance"
-        subtitle="How prompts translate into successful outputs. Success is measured from real generation outcomes; ChatGPT prompts add volume where no success signal exists."
+        subtitle="How prompts translate into successful outputs. For image, video and audio tools success is the real generation outcome; for ChatGPT and Claude it means the prompt got a completed answer."
       >
         {onAddToCanvas && (
           <ToCanvasButton
@@ -51,10 +54,12 @@ const PromptPerformance = ({ filters, onDrill, onAddToCanvas }) => {
             : 'Healthy reuse — promote the highest-success prompts into the golden library and route teams to them.'
         }
       >
-        <b>{formatFull(k.totalPrompts?.value)}</b> generation prompts ran this period{' '}
+        <b>{formatFull(k.totalPrompts?.value)}</b> {isChat ? 'chat' : 'generation'} prompts ran this period{' '}
         {k.totalPrompts?.deltaPct != null && (<>(<b>{k.totalPrompts.deltaPct > 0 ? '+' : ''}{k.totalPrompts.deltaPct}%</b>) </>)}
-        with a <b>{k.successfulPct?.value ?? 0}%</b> success rate and <b>{k.reuseRate?.value ?? 0}%</b> reuse.{' '}
-        Plus <b>{formatNumber(summaryQ.data?.chatgptPrompts)}</b> ChatGPT prompts.{' '}
+        with a <b>{k.successfulPct?.value ?? 0}%</b> {isChat ? 'answered' : 'success'} rate and <b>{k.reuseRate?.value ?? 0}%</b> reuse.{' '}
+        {!isChat && (chatgptPrompts > 0 || claudePrompts > 0) && (
+          <>Plus <b>{formatNumber(chatgptPrompts)}</b> ChatGPT and <b>{formatNumber(claudePrompts)}</b> Claude prompts (select the tool to analyse them).{' '}</>
+        )}
         {topTheme && <>Top theme: <b>{topTheme.theme}</b>.</>}
       </InsightBanner>
 

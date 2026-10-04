@@ -1,19 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { reportsAPI, downloadBlobResponse } from '../../../services/reports';
-import { presetRange } from '../utils/format';
 import SectionHeader from '../primitives/SectionHeader';
 import DataTable from '../primitives/DataTable';
-
-const PRESETS = [
-  { key: '7d', label: '7 Days' },
-  { key: '30d', label: '30 Days' },
-  { key: '90d', label: '90 Days' },
-  { key: 'month', label: 'This month' },
-  { key: 'prev_month', label: 'Last month' },
-  { key: 'all', label: 'All Time' },
-  { key: 'custom', label: 'Custom' },
-];
 
 const COLUMNS = [
   { key: 'dateTime', label: 'Date / time' },
@@ -23,33 +12,13 @@ const COLUMNS = [
   { key: 'assignedAccount', label: 'Assigned account' },
 ];
 
-const ToolLogins = () => {
-  const [preset, setPreset] = useState('30d');
-  const [range, setRange] = useState(() => presetRange('30d'));
-  const [team, setTeam] = useState('');
-  const [userId, setUserId] = useState('');
+// Date, department, tool, account and user all come from the Reports panel's
+// global filter bar (queryFilters) - this section has no filters of its own.
+const ToolLogins = ({ filters }) => {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState('');
 
-  const setPresetKey = (key) => {
-    setPreset(key);
-    if (key !== 'custom') setRange(presetRange(key));
-  };
-
-  const directoryQuery = useQuery({
-    queryKey: ['reports', 'tool-logins', 'directory'],
-    queryFn: () => reportsAPI.usageDirectory(),
-    staleTime: 10 * 60_000,
-  });
-  const teams = directoryQuery.data?.teams || [];
-  const people = directoryQuery.data?.users || [];
-
-  const params = useMemo(() => {
-    const p = { start: range.start, end: range.end };
-    if (team) p.department = team;
-    if (userId) p.user = Number(userId);
-    return p;
-  }, [range, team, userId]);
+  const params = filters;
 
   const dataQuery = useQuery({
     queryKey: ['reports', 'tool-logins', params],
@@ -83,7 +52,7 @@ const ToolLogins = () => {
     <div>
       <SectionHeader
         title="Tool Logins"
-        subtitle="Every time someone clicked Launch on a tool from the dashboard — who, which tool, the assigned account used, and when. Its own date range, independent of the other reports."
+        subtitle="Every time someone clicked Launch on a tool from the dashboard — who, which tool, the assigned account used, and when. Uses the filters at the top of Reports."
       >
         <div className="ui-head-actions">
           <button type="button" className="rpt-workbook-btn" onClick={download} disabled={busy}>
@@ -91,64 +60,6 @@ const ToolLogins = () => {
           </button>
         </div>
       </SectionHeader>
-
-      <div className="ui-wizard">
-        <label className="ui-field">
-          <span>Date range</span>
-          <div className="rpt-date-presets" role="group">
-            {PRESETS.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                className={`rpt-date-preset ${preset === p.key ? 'active' : ''}`}
-                onClick={() => setPresetKey(p.key)}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-        </label>
-        {preset === 'custom' && (
-          <label className="ui-field">
-            <span>Custom</span>
-            <div className="rpt-date-inputs">
-              <input
-                type="date"
-                className="rpt-input"
-                value={range.start || ''}
-                max={range.end || undefined}
-                onChange={(e) => setRange((r) => ({ ...r, start: e.target.value }))}
-                aria-label="Start date"
-              />
-              <span style={{ color: 'var(--color-text-muted)' }}>–</span>
-              <input
-                type="date"
-                className="rpt-input"
-                value={range.end || ''}
-                min={range.start || undefined}
-                onChange={(e) => setRange((r) => ({ ...r, end: e.target.value }))}
-                aria-label="End date"
-              />
-            </div>
-          </label>
-        )}
-        <label className="ui-field">
-          <span>Team</span>
-          <select className="rpt-select" value={team} onChange={(e) => { setTeam(e.target.value); setUserId(''); }}>
-            <option value="">All teams</option>
-            {teams.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.userCount})</option>)}
-          </select>
-        </label>
-        <label className="ui-field">
-          <span>User</span>
-          <select className="rpt-select" value={userId} onChange={(e) => setUserId(e.target.value)}>
-            <option value="">All users</option>
-            {people
-              .filter((p) => !team || p.department === team)
-              .map((p) => <option key={p.userId} value={p.userId}>{p.name} · {p.department}</option>)}
-          </select>
-        </label>
-      </div>
 
       {toast && <div className="rpt-canvas-toast">{toast}</div>}
 

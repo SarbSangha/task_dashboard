@@ -14,6 +14,7 @@ fabricating a value.
 import io
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -25,7 +26,8 @@ from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
 from models_new import ActivityStatus, GenerationRecord, GenerationTag, ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent, ParticipantRole, Task, TaskParticipant, TaskStatus, TaskStatusHistory, ToolCreditRate, User, UserActivity
-from providers.chatgpt.models import ConversationPrompt, ConversationRecord, ConversationResponse
+from providers.chatgpt.models import ConversationCaptureEvent, ConversationPrompt, ConversationRecord, ConversationResponse
+from utils.credential_crypto import decrypt_secret
 from providers.freepik.models import FreepikGeneration
 from utils.permissions import require_admin
 
@@ -369,10 +371,118 @@ def report_filters(
         for uid, name, dept, count in kling_user_rows
     ]
 
+    # Every active tool in the system (the IT portal catalogue), as the value
+    # the reports' Tool filter sends: the provider id the capture data uses.
+    # Tools with generations but no catalogue entry are kept too.
+    slug_to_provider = {"chat-gpt": "chatgpt", "epidemic-sound": "epidemicsound"}
+    tool_options = {}
+    for tool_name, slug in (
+        db.query(ITPortalTool.name, ITPortalTool.slug)
+        .filter(ITPortalTool.is_active.is_(True))
+        .order_by(ITPortalTool.name.asc())
+        .all()
+    ):
+        key = slug_to_provider.get((slug or "").lower(), (slug or "").lower())
+        if key and key not in tool_options:
+            tool_options[key] = tool_name
+    for provider_id in providers:
+        tool_options.setdefault(provider_id, provider_id)
+    tools = [{"id": key, "name": tool_name} for key, tool_name in tool_options.items()]
+
+    # Accounts (tool logins) and users for each tool, so the Account/User
+    # filters can follow the selected Tool; "all" holds every one of them.
+    tool_key_by_id = {}
+    for tool_id, slug in db.query(ITPortalTool.id, ITPortalTool.slug).all():
+        tool_key_by_id[tool_id] = slug_to_provider.get((slug or "").lower(), (slug or "").lower())
+
+    def _scope(key):
+        return tool_scopes.setdefault(key, {"accounts": {}, "users": {}})
+
+    # Catalogue names are free text ("CHAT GPT", "heygen"); these read better.
+    display_names = {
+        "chatgpt": "ChatGPT", "claude": "Claude", "kling": "Kling AI", "freepik": "Freepik",
+        "heygen": "HeyGen", "elevenlabs": "ElevenLabs", "higgsfield": "Higgsfield",
+        "epidemicsound": "Epidemic Sound", "genspark": "GenSpark",
+    }
+    tool_scopes = {}
+    # Only accounts that were actually used (a usage event or a capture upload
+    # names them) - every saved login, incl. never-used per-user copies, made
+    # the list unusably long.
+    capture_triples = _capture_tool_account_user_triples(db)
+    used_credential_ids = {
+        cid for (cid,) in db.query(ITPortalToolUsageEvent.credential_id)
+        .filter(ITPortalToolUsageEvent.credential_id.isnot(None)).distinct().all()
+    } | {
+        cid for (cid,) in db.query(ConversationCaptureEvent.credential_id)
+        .filter(ConversationCaptureEvent.credential_id.isnot(None)).distinct().all()
+    } | {cid for _tool_id, cid, _uid in capture_triples if cid}
+    for cred_id, tool_id, login_encrypted in (
+        db.query(ITPortalToolCredential.id, ITPortalToolCredential.tool_id, ITPortalToolCredential.login_identifier_encrypted)
+        .filter(ITPortalToolCredential.id.in_(used_credential_ids) if used_credential_ids else literal(False))
+        .all()
+    ):
+        key = tool_key_by_id.get(tool_id)
+        if not key:
+            continue
+        try:
+            login = (decrypt_secret(login_encrypted) or "").strip()
+        except Exception:
+            login = ""
+        # Kling captures the account's own email on each event - same label
+        # the Kling account filter has always shown.
+        label = login or label_map.get(cred_id) or f"Account #{cred_id}"
+        _scope(key)["accounts"][cred_id] = label
+        _scope("all")["accounts"][cred_id] = f"{display_names.get(key) or tool_options.get(key, key)} - {label}"
+
+    user_info = {
+        uid: (name or f"User #{uid}", dept or "Unassigned")
+        for uid, name, dept in db.query(User.id, User.name, User.department).filter(User.is_deleted.is_(False)).all()
+    }
+
+    def _add_user(key, uid):
+        if key and uid in user_info:
+            _scope(key)["users"][uid] = user_info[uid]
+            _scope("all")["users"][uid] = user_info[uid]
+
+    for tool_id, uid in db.query(ITPortalToolUsageEvent.tool_id, ITPortalToolUsageEvent.user_id).distinct().all():
+        _add_user(tool_key_by_id.get(tool_id), uid)
+    for tool_id, _cid, uid in capture_triples:
+        _add_user(tool_key_by_id.get(tool_id), uid)
+    for provider_id, uid in (
+        db.query(GenerationRecord.provider, GenerationRecord.owner_user_id)
+        .filter(GenerationRecord.owner_user_id.isnot(None))
+        .distinct()
+        .all()
+    ):
+        _add_user(provider_id, uid)
+    for provider_id, uid in (
+        db.query(ConversationRecord.provider, ConversationRecord.owner_user_id)
+        .filter(ConversationRecord.owner_user_id.isnot(None))
+        .distinct()
+        .all()
+    ):
+        _add_user(provider_id, uid)
+
+    tool_scopes_out = {
+        key: {
+            "accounts": sorted(
+                [{"credentialId": cid, "label": label} for cid, label in scope["accounts"].items()],
+                key=lambda a: a["label"].lower(),
+            ),
+            "users": sorted(
+                [{"userId": uid, "name": name, "department": dept} for uid, (name, dept) in scope["users"].items()],
+                key=lambda u: u["name"].lower(),
+            ),
+        }
+        for key, scope in tool_scopes.items()
+    }
+
     return {
         "success": True,
         "departments": departments,
         "providers": providers,
+        "tools": tools,
+        "toolScopes": tool_scopes_out,
         "models": models,
         "klingAccounts": kling_accounts,
         "klingUsers": kling_users,
@@ -3059,7 +3169,160 @@ def user_day(
     }
 
 
-def _gen_prompt_query(db: Session, start_dt, end_exclusive, department: Optional[str], user: Optional[int] = None):
+def _report_tool_provider(tool: Optional[str]) -> Optional[str]:
+    """The reports page's global Tool filter ('all', or a GenerationRecord
+    provider such as 'kling'/'freepik') as a provider to filter on, or None."""
+    value = (tool or "").strip().lower()
+    return None if value in ("", "all") else value
+
+
+def _capture_tool_account_user_triples(db: Session) -> set:
+    """Distinct (tool_id, credential_id, user_id) across every provider's own
+    capture log (envato_capture_events, freepik_capture_events, ...).
+
+    Most tools record who used which account only there, not in
+    it_portal_tool_usage_events - confirmed for Envato (2026-10-01): 88 capture
+    events naming its account and user, zero usage events - so the reports'
+    Account/User lists came out empty for them. Discovered from the schema so
+    a newly added provider is covered without touching this code; table names
+    come from information_schema, never from the request."""
+    tables = [
+        name for (name,) in db.execute(text(
+            """
+            SELECT c.table_name
+            FROM information_schema.columns c
+            JOIN information_schema.tables t
+              ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+            WHERE c.table_schema = current_schema()
+              AND t.table_type = 'BASE TABLE'
+              AND c.table_name LIKE '%\_capture\_events'
+              AND c.column_name IN ('tool_id', 'credential_id', 'user_id')
+            GROUP BY c.table_name
+            HAVING COUNT(DISTINCT c.column_name) = 3
+            """
+        )).fetchall()
+    ]
+    triples = set()
+    for name in tables:
+        if not name.replace("_", "").isalnum():
+            continue
+        try:
+            rows = db.execute(text(f'SELECT DISTINCT tool_id, credential_id, user_id FROM "{name}"')).fetchall()
+        except Exception:
+            db.rollback()
+            continue
+        triples.update((tool_id, cid, uid) for tool_id, cid, uid in rows)
+    return triples
+
+
+def _report_account_id(account: Optional[str]) -> Optional[int]:
+    """The reports' Account filter (a tool credential id, or 'all')."""
+    try:
+        value = int(f"{account or ''}".strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _scope_generations(q, user: Optional[int], account: Optional[str]):
+    """Apply the reports' User (owner) and Account (credential) filters to a
+    GenerationRecord query. A generation knows its account through the usage
+    event it was captured from."""
+    if user:
+        q = q.filter(GenerationRecord.owner_user_id == user)
+    account_id = _report_account_id(account)
+    if account_id:
+        q = q.filter(
+            GenerationRecord.source_usage_event_id.in_(
+                select(ITPortalToolUsageEvent.id).where(ITPortalToolUsageEvent.credential_id == account_id)
+            )
+        )
+    return q
+
+
+def _scope_chats(q, provider: str, user: Optional[int], account: Optional[str]):
+    """Same as _scope_generations for ConversationRecord queries: a chat knows
+    its account through the capture events it was uploaded with."""
+    if user:
+        q = q.filter(ConversationRecord.owner_user_id == user)
+    account_id = _report_account_id(account)
+    if account_id:
+        q = q.filter(
+            ConversationRecord.provider_conversation_id.in_(
+                select(ConversationCaptureEvent.provider_conversation_id).where(
+                    ConversationCaptureEvent.provider == provider,
+                    ConversationCaptureEvent.credential_id == account_id,
+                )
+            )
+        )
+    return q
+
+
+# Chat tools keep their prompts in the conversation capture tables, not in
+# GenerationRecord - the prompt reports read them from there when one of these
+# is the selected Tool.
+CHAT_PROMPT_PROVIDERS = ("chatgpt", "claude")
+_CHAT_PROMPT_NOISE_RE = re.compile(r"<system-reminder>[\s\S]*?</system-reminder>")
+
+
+def _clean_chat_prompt(text_value: Optional[str]) -> str:
+    """Claude in Chrome sends hidden <system-reminder> context as user-role
+    messages; older captures stored those as prompts. Never a real prompt."""
+    return _CHAT_PROMPT_NOISE_RE.sub("", text_value or "").strip()
+
+
+def _chat_prompt_rows(db: Session, start_dt, end_exclusive, department: Optional[str], provider: str, user: Optional[int] = None, account: Optional[str] = None):
+    """Owned chat prompts in the window as tuples:
+    (text, answered, owner_id, model_label, name, avatar, department, at).
+    'answered' = a completed, non-empty response is linked to the prompt -
+    the chat equivalent of a generation's success status."""
+    answered = (
+        select(ConversationResponse.id)
+        .where(
+            ConversationResponse.prompt_id == ConversationPrompt.id,
+            ConversationResponse.response_status == "completed",
+            func.coalesce(ConversationResponse.response_length, 0) > 0,
+        )
+        .exists()
+    )
+    at = func.coalesce(ConversationPrompt.prompt_timestamp, ConversationPrompt.created_at)
+    q = (
+        db.query(
+            ConversationPrompt.prompt_text,
+            answered.label("answered"),
+            ConversationRecord.owner_user_id,
+            ConversationRecord.model_label,
+            User.name,
+            User.avatar,
+            User.department,
+            at.label("at"),
+        )
+        .join(ConversationRecord, ConversationRecord.id == ConversationPrompt.conversation_id)
+        # Outer join: chats nobody owns yet still count, exactly like unowned
+        # generations do - with an inner join "All tools" showed 170 Claude
+        # prompts while selecting Claude showed 20.
+        .outerjoin(User, ConversationRecord.owner_user_id == User.id)
+        .filter(
+            ConversationRecord.provider == provider,
+            ConversationRecord.archived_at.is_(None),
+            at >= start_dt,
+            at < end_exclusive,
+            ConversationPrompt.prompt_text.isnot(None),
+            ConversationPrompt.prompt_text != "",
+        )
+    )
+    if department and department != "all":
+        q = q.filter(User.department == department)
+    q = _scope_chats(q, provider, user, account)
+    rows = []
+    for text_value, ok, owner_id, model_label, name, avatar, dept, when in q.order_by(at.asc()).limit(GOLDEN_FETCH_CAP).all():
+        cleaned = _clean_chat_prompt(text_value)
+        if cleaned:
+            rows.append((cleaned, bool(ok), owner_id, model_label, name, avatar, dept, when))
+    return rows
+
+
+def _gen_prompt_query(db: Session, start_dt, end_exclusive, department: Optional[str], user: Optional[int] = None, provider: Optional[str] = None):
     """Generation records that carry a prompt, in-window, non-archived."""
     q = (
         db.query(GenerationRecord)
@@ -3075,12 +3338,55 @@ def _gen_prompt_query(db: Session, start_dt, end_exclusive, department: Optional
         q = q.join(User, GenerationRecord.owner_user_id == User.id).filter(User.department == department)
     if user:
         q = q.filter(GenerationRecord.owner_user_id == user)
+    if provider:
+        q = q.filter(GenerationRecord.provider == provider)
     return q
 
 
 def _prompt_norm():
-    """Normalised prompt text — the same key prompts_summary counts as 'unique'."""
-    return func.lower(func.trim(GenerationRecord.prompt_text))
+    """Normalised prompt text - the key every prompt report counts as 'unique'.
+
+    Mirrors _norm_prompt exactly (lowercase, every whitespace run collapsed to
+    one space, trimmed, first 400 chars). The SQL side used to be only
+    lower(trim()), so Prompt Performance and the Golden Prompt Library
+    disagreed on how many unique prompts the same period had."""
+    collapsed = func.regexp_replace(func.lower(GenerationRecord.prompt_text), r"\s+", " ", "g")
+    return func.left(func.trim(collapsed), 400)
+
+
+def _iso_utc(value) -> Optional[str]:
+    """Timestamps are stored as naive UTC. Without an explicit offset the
+    browser reads them as local time, so prompt times showed 5h30m early."""
+    if value is None:
+        return None
+    text_value = value.isoformat()
+    return text_value if value.tzinfo is not None else f"{text_value}Z"
+
+
+def _scoped_prompt_query(db: Session, start_dt, end_exclusive, department, tool, user, account):
+    """_gen_prompt_query plus the page-wide Tool / Account / User filters."""
+    q = _gen_prompt_query(db, start_dt, end_exclusive, department, provider=_report_tool_provider(tool))
+    return _scope_generations(q, user, account)
+
+
+class _UnattributedUser:
+    """Stand-in row for prompts whose generation/chat has no owner, so they
+    show up (as "Unattributed") instead of vanishing from detail views."""
+    id = None
+    name = "Unattributed"
+    avatar = None
+    department = None
+
+
+_UNATTRIBUTED = _UnattributedUser()
+
+
+def _chat_day(value) -> Optional[str]:
+    return value.date().isoformat() if value else None
+
+
+def _chat_ist_day(value) -> Optional[str]:
+    return (value + timedelta(minutes=330)).date().isoformat() if value else None
 
 
 @router.get("/prompts/contributors")
@@ -3088,21 +3394,76 @@ def prompts_contributors(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    tool: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    account: Optional[str] = Query(None),
     limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
-    """Per-person prompt volume, uniqueness and reuse — the drill behind the prompt KPIs.
+    """Per-person prompt volume, uniqueness and reuse - the drill behind the prompt KPIs.
 
     Reuse is computed the same way as the KPI card: 1 - unique/total, so a person
     who leans on a small set of proven prompts shows a high rate.
     """
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+    provider = _report_tool_provider(tool)
+
+    if provider in CHAT_PROMPT_PROVIDERS:
+        rows = _chat_prompt_rows(db, start_dt, end_exclusive, department, provider, user=user, account=account)
+        per = {}
+        unattributed = 0
+        for text_value, ok, owner_id, _m, name, avatar, dept, when in rows:
+            if owner_id is None:
+                unattributed += 1
+                continue
+            u = per.setdefault(owner_id, {"name": name, "avatar": avatar, "dept": dept, "total": 0, "norms": set(), "success": 0, "len": 0, "days": set()})
+            u["total"] += 1
+            u["norms"].add(_norm_prompt(text_value))
+            u["success"] += 1 if ok else 0
+            u["len"] += len(text_value)
+            if when:
+                u["days"].add(_chat_day(when))
+        ordered = sorted(per.items(), key=lambda kv: -kv[1]["total"])[:limit]
+        users = []
+        for rank, (uid, u) in enumerate(ordered, start=1):
+            total, uniq = u["total"], len(u["norms"])
+            users.append({
+                "rank": rank, "userId": uid, "name": u["name"] or "Unknown", "avatar": u["avatar"],
+                "department": u["dept"] or "Unassigned", "prompts": total, "uniquePrompts": uniq,
+                "reusedPrompts": total - uniq,
+                "reuseRate": round((1 - uniq / total) * 100, 1) if total else 0.0,
+                "successPct": round(u["success"] / total * 100, 1) if total else 0.0,
+                "avgLength": int(round(u["len"] / total)) if total else 0,
+                "activeDays": len(u["days"]),
+            })
+        overall_total = len(rows)
+        overall_unique = len({_norm_prompt(r[0]) for r in rows})
+        return {
+            "success": True,
+            "count": len(users),
+            "totals": {
+                "prompts": overall_total,
+                "uniquePrompts": overall_unique,
+                "reuseRate": round((1 - overall_unique / overall_total) * 100, 1) if overall_total else 0.0,
+                "unattributedPrompts": unattributed,
+            },
+            "users": users,
+        }
+
     norm = _prompt_norm()
 
+    def gq():
+        return _scoped_prompt_query(db, start_dt, end_exclusive, department, tool, user, account)
+
+    # _gen_prompt_query already joins User when a department is selected;
+    # joining it again made Postgres reject the query ("table name users
+    # specified more than once") - the drill failed for any department.
+    people_q = gq()
+    if not (department and department != "all"):
+        people_q = people_q.join(User, GenerationRecord.owner_user_id == User.id)
     rows = (
-        _gen_prompt_query(db, start_dt, end_exclusive, department)
-        .join(User, GenerationRecord.owner_user_id == User.id)
+        people_q
         .with_entities(
             User.id, User.name, User.avatar, User.department,
             func.count(GenerationRecord.id).label("total"),
@@ -3138,15 +3499,13 @@ def prompts_contributors(
 
     # Unique counts are per-person; summing them would double-count a prompt two
     # people both used. Recompute the true distinct across the whole scope.
-    overall_unique = int(
-        _gen_prompt_query(db, start_dt, end_exclusive, department)
-        .with_entities(func.count(func.distinct(norm)))
-        .scalar() or 0
-    )
-    overall_total = int(
-        _gen_prompt_query(db, start_dt, end_exclusive, department)
-        .with_entities(func.count(GenerationRecord.id))
-        .scalar() or 0
+    overall_unique = int(gq().with_entities(func.count(func.distinct(norm))).scalar() or 0)
+    overall_total = int(gq().with_entities(func.count(GenerationRecord.id)).scalar() or 0)
+    # Prompts whose generation has no owner are in the totals (and in the KPI
+    # this drill opens from) but belong to no person row - reported so the
+    # table visibly adds up instead of silently coming up short.
+    unattributed = int(
+        gq().filter(GenerationRecord.owner_user_id.is_(None)).with_entities(func.count(GenerationRecord.id)).scalar() or 0
     )
     return {
         "success": True,
@@ -3155,6 +3514,7 @@ def prompts_contributors(
             "prompts": overall_total,
             "uniquePrompts": overall_unique,
             "reuseRate": round((1 - (overall_unique / overall_total)) * 100, 1) if overall_total else 0.0,
+            "unattributedPrompts": unattributed,
         },
         "users": users,
     }
@@ -3165,20 +3525,56 @@ def prompts_user_timeline(
     userId: int = Query(...),
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
+    tool: Optional[str] = Query(None),
+    account: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
-    """One person's prompt activity per day — level 3 of the prompt drill."""
+    """One person's prompt activity per day - level 3 of the prompt drill."""
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
     u = db.query(User).filter(User.id == userId).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
+    provider = _report_tool_provider(tool)
+
+    if provider in CHAT_PROMPT_PROVIDERS:
+        rows = _chat_prompt_rows(db, start_dt, end_exclusive, None, provider, user=userId, account=account)
+        per_day = {}
+        for text_value, ok, _o, _m, _n, _a, _d, when in rows:
+            b = per_day.setdefault(_chat_ist_day(when) or "unknown", {"total": 0, "norms": set(), "success": 0, "len": 0})
+            b["total"] += 1
+            b["norms"].add(_norm_prompt(text_value))
+            b["success"] += 1 if ok else 0
+            b["len"] += len(text_value)
+        timeline = []
+        for day in sorted(per_day, reverse=True):
+            b = per_day[day]
+            total, uniq = b["total"], len(b["norms"])
+            timeline.append({
+                "date": day, "prompts": total, "uniquePrompts": uniq, "reusedPrompts": total - uniq,
+                "reuseRate": round((1 - uniq / total) * 100, 1) if total else 0.0,
+                "successPct": round(b["success"] / total * 100, 1) if total else 0.0,
+                "avgLength": int(round(b["len"] / total)) if total else 0,
+            })
+        return {
+            "success": True,
+            "user": {"userId": u.id, "name": u.name, "department": u.department, "avatar": u.avatar},
+            "totals": {
+                "days": len(timeline),
+                "prompts": len(rows),
+                "uniquePrompts": len({_norm_prompt(r[0]) for r in rows}),
+            },
+            "timeline": timeline,
+        }
 
     norm = _prompt_norm()
     day_expr = func.date(GenerationRecord.created_at + IST_INTERVAL)  # bucket by IST day
+
+    def gq():
+        return _scoped_prompt_query(db, start_dt, end_exclusive, None, tool, userId, account)
+
     rows = (
-        _gen_prompt_query(db, start_dt, end_exclusive, None)
-        .filter(GenerationRecord.owner_user_id == userId)
+        gq()
         .with_entities(
             day_expr.label("day"),
             func.count(GenerationRecord.id).label("total"),
@@ -3211,14 +3607,9 @@ def prompts_user_timeline(
         "totals": {
             "days": len(timeline),
             "prompts": sum(t["prompts"] for t in timeline),
-            # Distinct across the whole window — NOT the sum of the daily uniques,
+            # Distinct across the whole window - NOT the sum of the daily uniques,
             # which counts a prompt reused on another day twice.
-            "uniquePrompts": int(
-                _gen_prompt_query(db, start_dt, end_exclusive, None)
-                .filter(GenerationRecord.owner_user_id == userId)
-                .with_entities(func.count(func.distinct(norm)))
-                .scalar() or 0
-            ),
+            "uniquePrompts": int(gq().with_entities(func.count(func.distinct(norm))).scalar() or 0),
         },
         "timeline": timeline,
     }
@@ -3231,6 +3622,9 @@ def prompts_list(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    tool: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    account: Optional[str] = Query(None),
     repeatedOnly: bool = Query(False),
     limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_operational_db),
@@ -3246,13 +3640,24 @@ def prompts_list(
             day = datetime.strptime(date, "%Y-%m-%d").date()
         except ValueError:
             raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
-        start_dt = datetime.combine(day, datetime.min.time())
+        # The timeline this date comes from buckets by IST day
+        # (prompts_user_timeline), so list the same IST day - a plain UTC day
+        # dropped/added everything between 00:00 and 05:30 IST.
+        start_dt = datetime.combine(day, datetime.min.time()) - timedelta(minutes=330)
         end_exclusive = start_dt + timedelta(days=1)
     else:
         start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
 
+    provider = _report_tool_provider(tool)
+    # userId is the prompt drill's own "this person" parameter; user is the
+    # page-wide User filter. Either narrows to one owner.
+    owner = userId if userId is not None else user
+    if provider in CHAT_PROMPT_PROVIDERS:
+        return _chat_prompts_list(db, start_dt, end_exclusive, department, provider, owner, repeatedOnly, limit, account)
+
     norm = _prompt_norm()
-    q = _gen_prompt_query(db, start_dt, end_exclusive, department)
+    q = _gen_prompt_query(db, start_dt, end_exclusive, department, provider=provider)
+    q = _scope_generations(q, user if userId is None else None, account)
     if userId is not None:
         q = q.filter(GenerationRecord.owner_user_id == userId)
 
@@ -3287,8 +3692,8 @@ def prompts_list(
             "credits": round(float(credits or 0), 2),
             "people": int(people or 0),
             "length": len((text or "").strip()),
-            "firstAt": first_at.isoformat() if first_at else None,
-            "lastAt": last_at.isoformat() if last_at else None,
+            "firstAt": _iso_utc(first_at),
+            "lastAt": _iso_utc(last_at),
         })
 
     return {
@@ -3297,6 +3702,166 @@ def prompts_list(
         "repeatedOnly": repeatedOnly,
         "totals": {"uses": sum(p["uses"] for p in prompts), "distinct": len(prompts)},
         "prompts": prompts,
+    }
+
+
+def _chat_prompts_list(db: Session, start_dt, end_exclusive, department, provider, user_id, repeated_only, limit, account=None):
+    """prompts_list's response, built from ChatGPT/Claude conversation prompts."""
+    agg = {}
+    for text_value, ok, owner_id, _model, _name, _avatar, _dept, when in _chat_prompt_rows(
+        db, start_dt, end_exclusive, department, provider, user=user_id, account=account
+    ):
+        norm = _norm_prompt(text_value)
+        if not norm:
+            continue
+        a = agg.get(norm)
+        if a is None:
+            a = agg[norm] = {"text": text_value, "uses": 0, "success": 0, "people": set(), "first": when, "last": when}
+        a["uses"] += 1
+        a["success"] += 1 if ok else 0
+        if owner_id is not None:
+            a["people"].add(owner_id)
+        if when and (a["first"] is None or when < a["first"]):
+            a["first"] = when
+        if when and (a["last"] is None or when > a["last"]):
+            a["last"] = when
+
+    items = [a for a in agg.values() if not repeated_only or a["uses"] > 1]
+    items.sort(key=lambda a: (a["uses"], a["last"] or datetime.min), reverse=True)
+    prompts = []
+    for rank, a in enumerate(items[:limit], start=1):
+        text_value = (a["text"] or "").strip()
+        prompts.append({
+            "rank": rank,
+            "prompt": text_value,
+            "promptHash": _prompt_hash(text_value),
+            "uses": a["uses"],
+            "successPct": round((a["success"] / a["uses"]) * 100, 1) if a["uses"] else 0.0,
+            "credits": 0.0,
+            "people": len(a["people"]),
+            "length": len(text_value),
+            "firstAt": _iso_utc(a["first"]),
+            "lastAt": _iso_utc(a["last"]),
+        })
+    return {
+        "success": True,
+        "count": len(prompts),
+        "repeatedOnly": repeated_only,
+        "totals": {"uses": sum(p["uses"] for p in prompts), "distinct": len(prompts)},
+        "prompts": prompts,
+    }
+
+
+def _chat_prompt_detail(db: Session, prompt_hash, start_dt, end_exclusive, department, provider, limit, user=None, account=None):
+    """prompt_detail's response for a ChatGPT/Claude prompt: who sent it and
+    the answer each time (responseText in place of a generated asset)."""
+    at = func.coalesce(ConversationPrompt.prompt_timestamp, ConversationPrompt.created_at)
+    q = (
+        db.query(ConversationPrompt, ConversationRecord, User)
+        .join(ConversationRecord, ConversationRecord.id == ConversationPrompt.conversation_id)
+        # Outer join: chats nobody owns yet still count, exactly like unowned
+        # generations do - with an inner join "All tools" showed 170 Claude
+        # prompts while selecting Claude showed 20.
+        .outerjoin(User, ConversationRecord.owner_user_id == User.id)
+        .filter(
+            ConversationRecord.provider == provider,
+            ConversationRecord.archived_at.is_(None),
+            at >= start_dt,
+            at < end_exclusive,
+            ConversationPrompt.prompt_text.isnot(None),
+            ConversationPrompt.prompt_text != "",
+        )
+    )
+    if department and department != "all":
+        q = q.filter(User.department == department)
+    q = _scope_chats(q, provider, user, account)
+
+    matches = []
+    for prompt, record, usr in q.order_by(at.asc()).limit(GOLDEN_FETCH_CAP).all():
+        cleaned = _clean_chat_prompt(prompt.prompt_text)
+        if cleaned and _prompt_hash(cleaned) == prompt_hash:
+            matches.append((cleaned, prompt, record, usr or _UNATTRIBUTED))
+    if not matches:
+        raise HTTPException(status_code=404, detail="Prompt not found in this period")
+
+    responses = {}
+    for response in (
+        db.query(ConversationResponse)
+        .filter(ConversationResponse.prompt_id.in_([m[1].id for m in matches]))
+        .order_by(ConversationResponse.id.asc())
+        .all()
+    ):
+        current = responses.get(response.prompt_id)
+        # Prefer an answer with text over an empty placeholder row.
+        if current is None or (not (current.response_text or "").strip() and (response.response_text or "").strip()):
+            responses[response.prompt_id] = response
+
+    by_user = {}
+    runs = []
+    success_total = 0
+    for cleaned, prompt, record, usr in matches:
+        response = responses.get(prompt.id)
+        answer = (response.response_text or "").strip() if response else ""
+        ok = bool(response and response.response_status == "completed" and answer)
+        success_total += 1 if ok else 0
+        ts = prompt.prompt_timestamp or prompt.created_at
+        u = by_user.setdefault(usr.id, {
+            "userId": usr.id, "name": usr.name or "Unknown", "avatar": usr.avatar,
+            "department": usr.department or "Unassigned",
+            "uses": 0, "success": 0, "credits": 0.0, "firstAt": None, "lastAt": None,
+        })
+        u["uses"] += 1
+        u["success"] += 1 if ok else 0
+        if ts:
+            if u["firstAt"] is None or ts < u["firstAt"]:
+                u["firstAt"] = ts
+            if u["lastAt"] is None or ts > u["lastAt"]:
+                u["lastAt"] = ts
+        runs.append({
+            "generationId": f"chat-{prompt.id}",
+            "time": _iso_utc(ts),
+            "userId": usr.id,
+            "userName": usr.name or "Unknown",
+            "model": record.model_label,
+            "duration": None,
+            "resolution": None,
+            "credits": None,
+            "status": "answered" if ok else "no answer",
+            "success": ok,
+            "assetUrl": None,
+            "thumbnailUrl": None,
+            "responseText": answer[:600] or None,
+            "conversationTitle": record.title,
+        })
+
+    users = []
+    for u in by_user.values():
+        users.append({
+            **u,
+            "successPct": round((u["success"] / u["uses"]) * 100, 1) if u["uses"] else 0.0,
+            "firstAt": _iso_utc(u["firstAt"]),
+            "lastAt": _iso_utc(u["lastAt"]),
+        })
+    users.sort(key=lambda x: -x["uses"])
+    for i, u in enumerate(users, start=1):
+        u["rank"] = i
+
+    runs.sort(key=lambda g: g["time"] or "", reverse=True)
+    uses = len(matches)
+    return {
+        "success": True,
+        "promptHash": prompt_hash,
+        "prompt": matches[0][0],
+        "totals": {
+            "uses": uses,
+            "people": len(users),
+            "successPct": round((success_total / uses) * 100, 1) if uses else 0.0,
+            "credits": 0.0,
+            "withAsset": 0,
+        },
+        "users": users,
+        "generations": runs[:limit],
+        "generationsTruncated": len(runs) > limit,
     }
 
 
@@ -3332,6 +3897,9 @@ def prompt_detail(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    tool: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    account: Optional[str] = Query(None),
     limit: int = Query(120, ge=1, le=300),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
@@ -3344,9 +3912,15 @@ def prompt_detail(
     """
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
 
+    provider = _report_tool_provider(tool)
+    if provider in CHAT_PROMPT_PROVIDERS:
+        return _chat_prompt_detail(db, hash, start_dt, end_exclusive, department, provider, limit, user=user, account=account)
+
     q = (
         db.query(GenerationRecord, User)
-        .join(User, GenerationRecord.owner_user_id == User.id)
+        # Outer join: the library and lists include unowned generations, so
+        # opening one of those prompts must not answer "Prompt not found".
+        .outerjoin(User, GenerationRecord.owner_user_id == User.id)
         .filter(
             GenerationRecord.archived_at.is_(None),
             GenerationRecord.created_at >= start_dt,
@@ -3357,11 +3931,14 @@ def prompt_detail(
     )
     if department and department != "all":
         q = q.filter(User.department == department)
+    if provider:
+        q = q.filter(GenerationRecord.provider == provider)
+    q = _scope_generations(q, user, account)
 
     matches = []
     for rec, usr in q.order_by(GenerationRecord.created_at.asc()).limit(GOLDEN_FETCH_CAP).all():
         if _prompt_hash(rec.prompt_text) == hash:
-            matches.append((rec, usr))
+            matches.append((rec, usr or _UNATTRIBUTED))
 
     if not matches:
         raise HTTPException(status_code=404, detail="Prompt not found in this period")
@@ -3394,7 +3971,7 @@ def prompt_detail(
 
         generations.append({
             "generationId": rec.id,
-            "time": rec.created_at.isoformat() if rec.created_at else None,
+            "time": _iso_utc(rec.created_at),
             "userId": usr.id,
             "userName": usr.name or "Unknown",
             "model": rec.model_label,
@@ -3412,8 +3989,8 @@ def prompt_detail(
             **u,
             "credits": round(u["credits"], 2),
             "successPct": round((u["success"] / u["uses"]) * 100, 1) if u["uses"] else 0.0,
-            "firstAt": u["firstAt"].isoformat() if u["firstAt"] else None,
-            "lastAt": u["lastAt"].isoformat() if u["lastAt"] else None,
+            "firstAt": _iso_utc(u["firstAt"]),
+            "lastAt": _iso_utc(u["lastAt"]),
         })
     users.sort(key=lambda x: -x["uses"])
     for i, u in enumerate(users, start=1):
@@ -3444,26 +4021,14 @@ def prompts_summary(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    tool: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    account: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
-    norm_expr = func.lower(func.trim(GenerationRecord.prompt_text))
-
-    def block(s, e):
-        total = int(_gen_prompt_query(db, s, e, department).with_entities(func.count(GenerationRecord.id)).scalar() or 0)
-        success = int(
-            _gen_prompt_query(db, s, e, department)
-            .with_entities(func.count(GenerationRecord.id))
-            .filter(GenerationRecord.capture_status.in_(SUCCESS_STATUSES))
-            .scalar()
-            or 0
-        )
-        distinct_norm = int(_gen_prompt_query(db, s, e, department).with_entities(func.count(func.distinct(norm_expr))).scalar() or 0)
-        return {"total": total, "success": success, "distinct": distinct_norm}
-
-    cur = block(start_dt, end_exclusive)
-    prv = block(prev_start, prev_end)
+    provider = _report_tool_provider(tool)
 
     def success_pct(b):
         return round((b["success"] / b["total"]) * 100.0, 1) if b["total"] else 0.0
@@ -3471,36 +4036,81 @@ def prompts_summary(
     def reuse_pct(b):
         return round((1 - (b["distinct"] / b["total"])) * 100.0, 1) if b["total"] else 0.0
 
-    avg_length = float(
-        _gen_prompt_query(db, start_dt, end_exclusive, department)
-        .with_entities(func.avg(func.length(GenerationRecord.prompt_text)))
-        .scalar()
-        or 0
-    )
+    if provider in CHAT_PROMPT_PROVIDERS:
+        # ChatGPT / Claude: prompts come from captured chats; "success" means
+        # the prompt got a completed answer (see _chat_prompt_rows).
+        def chat_block(s_dt, e_dt):
+            rows = _chat_prompt_rows(db, s_dt, e_dt, department, provider, user=user, account=account)
+            return rows, {
+                "total": len(rows),
+                "success": sum(1 for r in rows if r[1]),
+                "distinct": len({_norm_prompt(r[0]) for r in rows}),
+            }
 
-    # ChatGPT prompt volume (no success signal).
-    cg_q = (
-        db.query(func.count(ConversationPrompt.id))
-        .join(ConversationRecord, ConversationPrompt.conversation_id == ConversationRecord.id)
-        .filter(
-            ConversationRecord.provider == CHATGPT_PROVIDER,
-            ConversationRecord.archived_at.is_(None),
-            ConversationPrompt.created_at >= start_dt,
-            ConversationPrompt.created_at < end_exclusive,
+        cur_rows, cur = chat_block(start_dt, end_exclusive)
+        _prev_rows, prv = chat_block(prev_start, prev_end)
+        avg_length = (sum(len(r[0]) for r in cur_rows) / len(cur_rows)) if cur_rows else 0
+        per_day = Counter(_chat_day(r[7]) for r in cur_rows if r[7])
+        series = [{"date": d, "value": per_day[d]} for d in sorted(per_day)]
+        chat_counts = {provider: cur["total"]}
+    else:
+        def gq(s_dt, e_dt):
+            return _scoped_prompt_query(db, s_dt, e_dt, department, tool, user, account)
+
+        norm_expr = _prompt_norm()
+
+        def block(s_dt, e_dt):
+            total = int(gq(s_dt, e_dt).with_entities(func.count(GenerationRecord.id)).scalar() or 0)
+            success = int(
+                gq(s_dt, e_dt)
+                .with_entities(func.count(GenerationRecord.id))
+                .filter(GenerationRecord.capture_status.in_(SUCCESS_STATUSES))
+                .scalar()
+                or 0
+            )
+            distinct_norm = int(gq(s_dt, e_dt).with_entities(func.count(func.distinct(norm_expr))).scalar() or 0)
+            return {"total": total, "success": success, "distinct": distinct_norm}
+
+        cur = block(start_dt, end_exclusive)
+        prv = block(prev_start, prev_end)
+        avg_length = float(
+            gq(start_dt, end_exclusive).with_entities(func.avg(func.length(GenerationRecord.prompt_text))).scalar() or 0
         )
-    )
-    if department and department != "all":
-        cg_q = cg_q.join(User, ConversationRecord.owner_user_id == User.id).filter(User.department == department)
-    chatgpt_prompts = int(cg_q.scalar() or 0)
+        daily_rows = (
+            gq(start_dt, end_exclusive)
+            .with_entities(func.date(GenerationRecord.created_at), func.count(GenerationRecord.id))
+            .group_by(func.date(GenerationRecord.created_at))
+            .order_by(func.date(GenerationRecord.created_at).asc())
+            .all()
+        )
+        series = [{"date": str(d), "value": int(c)} for d, c in daily_rows]
 
-    daily_rows = (
-        _gen_prompt_query(db, start_dt, end_exclusive, department)
-        .with_entities(func.date(GenerationRecord.created_at), func.count(GenerationRecord.id))
-        .group_by(func.date(GenerationRecord.created_at))
-        .order_by(func.date(GenerationRecord.created_at).asc())
-        .all()
-    )
-    series = [{"date": str(d), "value": int(c)} for d, c in daily_rows]
+        # Chat prompt volume shown alongside, only when no specific tool is
+        # selected. Counted by when the prompt was sent (not when it was
+        # uploaded), without the hidden <system-reminder> messages Claude in
+        # Chrome sends, and now including Claude - it was ChatGPT only.
+        chat_counts = {}
+        if not provider and not _report_account_id(account):
+            at = func.coalesce(ConversationPrompt.prompt_timestamp, ConversationPrompt.created_at)
+            for chat_provider in CHAT_PROMPT_PROVIDERS:
+                cq = (
+                    db.query(func.count(ConversationPrompt.id))
+                    .join(ConversationRecord, ConversationPrompt.conversation_id == ConversationRecord.id)
+                    .filter(
+                        ConversationRecord.provider == chat_provider,
+                        ConversationRecord.archived_at.is_(None),
+                        at >= start_dt,
+                        at < end_exclusive,
+                        ConversationPrompt.prompt_text.isnot(None),
+                        ConversationPrompt.prompt_text != "",
+                        ~ConversationPrompt.prompt_text.like("<system-reminder>%"),
+                    )
+                )
+                if department and department != "all":
+                    cq = cq.join(User, ConversationRecord.owner_user_id == User.id).filter(User.department == department)
+                if user:
+                    cq = cq.filter(ConversationRecord.owner_user_id == user)
+                chat_counts[chat_provider] = int(cq.scalar() or 0)
 
     return {
         "success": True,
@@ -3512,7 +4122,9 @@ def prompts_summary(
             "uniquePrompts": _metric(cur["distinct"], prv["distinct"]),
             "avgLength": {**_metric(round(avg_length, 0), None), "unit": "chars"},
         },
-        "chatgptPrompts": chatgpt_prompts,
+        "source": "chat" if provider in CHAT_PROMPT_PROVIDERS else "generations",
+        "chatgptPrompts": chat_counts.get("chatgpt", 0),
+        "claudePrompts": chat_counts.get("claude", 0),
     }
 
 
@@ -3521,13 +4133,44 @@ def prompts_trends(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    tool: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    account: Optional[str] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
+    provider = _report_tool_provider(tool)
+
+    if provider in CHAT_PROMPT_PROVIDERS:
+        rows = _chat_prompt_rows(db, start_dt, end_exclusive, department, provider, user=user, account=account)
+        by_day = {}
+        by_model = {}
+        for text_value, ok, _owner, model_label, _n, _a, _d, when in rows:
+            day = _chat_day(when)
+            if day:
+                b = by_day.setdefault(day, [0, 0, 0])
+                b[0] += 1
+                b[1] += 1 if ok else 0
+                b[2] += len(text_value)
+            m = by_model.setdefault(model_label or "Unknown", [0, 0])
+            m[0] += 1
+            m[1] += 1 if ok else 0
+        daily = [
+            {"date": d, "prompts": c, "successRate": round(ok_n / c * 100.0, 1) if c else 0.0, "avgLength": round(ln / c, 0) if c else 0}
+            for d, (c, ok_n, ln) in sorted(by_day.items())
+        ]
+        success_by_model = sorted(
+            [{"model": m, "prompts": c, "successRate": round(ok_n / c * 100.0, 1) if c else 0.0} for m, (c, ok_n) in by_model.items()],
+            key=lambda x: -x["prompts"],
+        )[:8]
+        return {"success": True, "daily": daily, "topThemes": [], "successByModel": success_by_model, "source": "chat"}
+
+    def gq():
+        return _scoped_prompt_query(db, start_dt, end_exclusive, department, tool, user, account)
 
     daily_rows = (
-        _gen_prompt_query(db, start_dt, end_exclusive, department)
+        gq()
         .with_entities(
             func.date(GenerationRecord.created_at),
             func.count(GenerationRecord.id),
@@ -3548,14 +4191,11 @@ def prompts_trends(
         for d, c, s, ln in daily_rows
     ]
 
+    # Themes over the same generations as every other number on the page -
+    # this used to ignore the Department filter (and every later filter).
     tag_rows = (
         db.query(GenerationTag.normalized_tag, func.count(GenerationTag.id))
-        .join(GenerationRecord, GenerationRecord.id == GenerationTag.generation_id)
-        .filter(
-            GenerationRecord.archived_at.is_(None),
-            GenerationRecord.created_at >= start_dt,
-            GenerationRecord.created_at < end_exclusive,
-        )
+        .filter(GenerationTag.generation_id.in_(gq().with_entities(GenerationRecord.id)))
         .group_by(GenerationTag.normalized_tag)
         .order_by(func.count(GenerationTag.id).desc())
         .limit(10)
@@ -3567,7 +4207,7 @@ def prompts_trends(
     # GROUP BY render identical bind params (otherwise Postgres raises GroupingError).
     model_label_expr = func.coalesce(func.nullif(GenerationRecord.model_label, ""), "Unknown")
     model_rows = (
-        _gen_prompt_query(db, start_dt, end_exclusive, department)
+        gq()
         .with_entities(
             model_label_expr,
             func.count(GenerationRecord.id),
@@ -3583,7 +4223,7 @@ def prompts_trends(
         for m, c, s in model_rows
     ]
 
-    return {"success": True, "daily": daily, "topThemes": top_themes, "successByModel": success_by_model}
+    return {"success": True, "daily": daily, "topThemes": top_themes, "successByModel": success_by_model, "source": "generations"}
 
 
 @router.get("/prompts/golden")
@@ -3591,6 +4231,9 @@ def prompts_golden(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    tool: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    account: Optional[str] = Query(None),
     limit: int = Query(60, ge=1, le=120),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
@@ -3610,7 +4253,11 @@ def prompts_golden(
             User.avatar,
             User.department,
         )
-        .join(User, GenerationRecord.owner_user_id == User.id)
+        # Outer join: unowned generations count toward the library's stats
+        # exactly as they do in Prompt Performance and in the "All prompts"
+        # list this page opens - an inner join made "Unique Prompts" here
+        # smaller than the list it drills into.
+        .outerjoin(User, GenerationRecord.owner_user_id == User.id)
         .filter(
             GenerationRecord.archived_at.is_(None),
             GenerationRecord.created_at >= start_dt,
@@ -3621,7 +4268,20 @@ def prompts_golden(
     )
     if department and department != "all":
         q = q.filter(User.department == department)
-    rows = q.order_by(GenerationRecord.created_at.asc()).limit(GOLDEN_FETCH_CAP).all()
+    provider = _report_tool_provider(tool)
+    if provider in CHAT_PROMPT_PROVIDERS:
+        # Same tuple shape as the generation query below; chat prompts cost no
+        # credits, and success means the prompt got a completed answer.
+        rows = [
+            (text_value, "completed" if ok else "failed", owner_id, 0, model_label, name, avatar, dept)
+            for text_value, ok, owner_id, model_label, name, avatar, dept, _at in
+            _chat_prompt_rows(db, start_dt, end_exclusive, department, provider, user=user, account=account)
+        ]
+    else:
+        if provider:
+            q = q.filter(GenerationRecord.provider == provider)
+        q = _scope_generations(q, user, account)
+        rows = q.order_by(GenerationRecord.created_at.asc()).limit(GOLDEN_FETCH_CAP).all()
 
     agg = {}
     for prompt_text, status, owner_id, credits, model_label, name, avatar, dept in rows:
@@ -3640,7 +4300,8 @@ def prompts_golden(
         a["uses"] += 1
         if status in SUCCESS_STATUSES:
             a["success"] += 1
-        a["owners"].add(owner_id)
+        if owner_id is not None:
+            a["owners"].add(owner_id)
         a["credits"] += float(credits or 0)
         a["depts"][dept or "Unassigned"] += 1
 
@@ -3686,39 +4347,56 @@ def prompts_engineers(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
+    tool: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    account: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
-    norm_expr = func.lower(func.trim(GenerationRecord.prompt_text))
+    provider = _report_tool_provider(tool)
 
-    rows = (
-        db.query(
-            User.id, User.name, User.avatar, User.department,
-            func.count(GenerationRecord.id).label("prompts"),
-            func.sum(_SUCCESS_CASE).label("successes"),
-            func.count(func.distinct(norm_expr)).label("unique_prompts"),
-            func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+    if provider in CHAT_PROMPT_PROVIDERS:
+        per = {}
+        for text_value, ok, owner_id, _m, name, avatar, dept, _when in _chat_prompt_rows(
+            db, start_dt, end_exclusive, department, provider, user=user, account=account
+        ):
+            if owner_id is None:
+                continue
+            e = per.setdefault(owner_id, [name, avatar, dept, 0, 0, set()])
+            e[3] += 1
+            e[4] += 1 if ok else 0
+            e[5].add(_norm_prompt(text_value))
+        rows = [(uid, n, a, d, c, s_ok, len(norms), 0) for uid, (n, a, d, c, s_ok, norms) in per.items()]
+    else:
+        norm_expr = _prompt_norm()
+        q = (
+            db.query(
+                User.id, User.name, User.avatar, User.department,
+                func.count(GenerationRecord.id).label("prompts"),
+                func.sum(_SUCCESS_CASE).label("successes"),
+                func.count(func.distinct(norm_expr)).label("unique_prompts"),
+                func.coalesce(func.sum(GenerationRecord.credits_burned), 0).label("credits"),
+            )
+            .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
+            .filter(
+                User.is_deleted.is_(False),
+                GenerationRecord.archived_at.is_(None),
+                GenerationRecord.created_at >= start_dt,
+                GenerationRecord.created_at < end_exclusive,
+                GenerationRecord.prompt_text.isnot(None),
+                GenerationRecord.prompt_text != "",
+            )
         )
-        .join(GenerationRecord, GenerationRecord.owner_user_id == User.id)
-        .filter(
-            User.is_deleted.is_(False),
-            GenerationRecord.archived_at.is_(None),
-            GenerationRecord.created_at >= start_dt,
-            GenerationRecord.created_at < end_exclusive,
-            GenerationRecord.prompt_text.isnot(None),
-            GenerationRecord.prompt_text != "",
-        )
-    )
-    if department and department != "all":
-        rows = rows.filter(User.department == department)
-    rows = (
-        rows.group_by(User.id, User.name, User.avatar, User.department)
-        .order_by(func.count(GenerationRecord.id).desc())
-        .limit(200)
-        .all()
-    )
+        if department and department != "all":
+            q = q.filter(User.department == department)
+        if provider:
+            q = q.filter(GenerationRecord.provider == provider)
+        q = _scope_generations(q, user, account)
+        # No volume pre-cut before scoring: ranking is by score, and a
+        # high-scoring person with fewer prompts must not be dropped first.
+        rows = q.group_by(User.id, User.name, User.avatar, User.department).all()
 
     engineers = []
     for uid, name, avatar, dept, prompts, successes, unique_prompts, credits in rows:
@@ -3738,7 +4416,7 @@ def prompts_engineers(
             "uniquePrompts": unique_prompts,
             "successRate": round(success_rate, 1),
             "uniquenessPct": round(uniqueness, 1),
-            "credits": float(credits),
+            "credits": float(credits or 0),
             "performanceScore": score,
             "topEngineer": score >= 75,
         })

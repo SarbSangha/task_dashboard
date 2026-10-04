@@ -212,10 +212,14 @@ def tool_logins(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     user: Optional[int] = Query(None),
+    tool: Optional[str] = Query(None),
+    account: Optional[int] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
-    return build_tool_login_report(db, preset=preset, start=start, end=end, department=department, user_id=user)
+    return build_tool_login_report(
+        db, preset=preset, start=start, end=end, department=department, user_id=user, tool=tool, account=account,
+    )
 
 
 @router.get("/tool-logins.xlsx")
@@ -225,10 +229,14 @@ def tool_logins_workbook(
     end: Optional[str] = Query(None),
     department: Optional[str] = Query(None),
     user: Optional[int] = Query(None),
+    tool: Optional[str] = Query(None),
+    account: Optional[int] = Query(None),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
-    snap = build_tool_login_report(db, preset=preset, start=start, end=end, department=department, user_id=user)
+    snap = build_tool_login_report(
+        db, preset=preset, start=start, end=end, department=department, user_id=user, tool=tool, account=account,
+    )
     db.close()
     data, mimetype, filename = build_tool_login_workbook(snap)
     return Response(

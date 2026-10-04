@@ -78,6 +78,18 @@
   flex: none;
 }
 .rpt-filter-group { display: flex; align-items: center; gap: 7px; }
+/* Row 1: date presets. Row 2: Department / Tool / Account / User as equal,
+   aligned columns - the last three narrow each other left to right. */
+.rpt-filters-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; width: 100%; }
+.rpt-filters-grid {
+  display: grid; width: 100%; gap: 10px 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.rpt-filter-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rpt-filter-field .rpt-select { width: 100%; min-width: 0; }
+.rpt-filter-field .rpt-select:disabled { opacity: .6; cursor: not-allowed; }
+@media (max-width: 900px) { .rpt-filters-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .rpt-filters-grid { grid-template-columns: 1fr; } }
 .rpt-filter-label {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em;
   color: var(--color-text-muted, #94a3b8); font-weight: 700;
