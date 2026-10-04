@@ -4,7 +4,7 @@ Centralized "Tool Renew" domain logic (Admin Queue -> Tool Renew).
 
 Every account (ITPortalToolCredential) independently configures whether it
 uses a credit system (`credit_enabled`) and how it renews (`renewal_type`:
-MANUAL / MONTHLY / CREDIT_CONSUMPTION). Those two concerns are intentionally
+MANUAL / MONTHLY / YEARLY / CREDIT_CONSUMPTION). Those two concerns are intentionally
 separate columns, not one merged enum, so any combination is valid (e.g. a
 monthly-billed tool that also tracks credits).
 
@@ -16,8 +16,9 @@ API (routers/it_tools_router.py), the report/AI-workbook builder
   - what the account's current credit rate is (`get_current_rate`)
   - how many credits it has left (`resolve_remaining_credits`)
   - whether it needs renewing right now (`calculate_renewal_status`)
-  - keeping a stale MONTHLY+auto-renew date rolled forward
-    (`process_auto_renewal`)
+  - keeping a stale MONTHLY/YEARLY + auto-renew account rolled forward
+    (`process_auto_renewal`): the renewal that just happened becomes the
+    purchase date, and the renewal date moves on one billing period
 
 Nothing here deletes historical ToolCreditRate/usage-event data; turning
 credit_enabled off only stops these functions from reporting a balance/cost
@@ -31,7 +32,9 @@ from sqlalchemy.orm import Session
 
 from models_new import GenerationRecord, ITPortalToolCredential, ITPortalToolUsageEvent, ToolCreditRate
 
-RENEWAL_TYPES = ("MANUAL", "MONTHLY", "CREDIT_CONSUMPTION")
+RENEWAL_TYPES = ("MANUAL", "MONTHLY", "YEARLY", "CREDIT_CONSUMPTION")
+# Calendar-billed plans and how many months one billing period spans.
+PLAN_PERIOD_MONTHS = {"MONTHLY": 1, "YEARLY": 12}
 DEFAULT_RENEWAL_TYPE = "MANUAL"
 
 STATUS_OK = "ok"
@@ -111,11 +114,12 @@ def resolve_remaining_credits(
     return max(float(rate.package_credits) - consumed, 0.0)
 
 
-def calculate_next_renewal_date(renewal_date: date) -> date:
-    """One calendar month forward, clamping the day (e.g. Jan 31 -> Feb 28)."""
-    month = renewal_date.month + 1
-    year = renewal_date.year + (1 if month > 12 else 0)
-    month = 1 if month > 12 else month
+def calculate_next_renewal_date(renewal_date: date, months: int = 1) -> date:
+    """`months` calendar months forward (1 = monthly, 12 = yearly), clamping
+    the day (e.g. Jan 31 -> Feb 28, Feb 29 2028 -> Feb 28 2029)."""
+    total = renewal_date.month - 1 + months
+    year = renewal_date.year + total // 12
+    month = total % 12 + 1
     day = renewal_date.day
     while True:
         try:
@@ -134,7 +138,7 @@ def calculate_renewal_status(
     renewal_type = normalize_renewal_type(credential.renewal_type)
     today = today or datetime.utcnow().date()
 
-    if renewal_type == "MONTHLY":
+    if renewal_type in PLAN_PERIOD_MONTHS:
         if not credential.renewal_date:
             return {"status": STATUS_NOT_APPLICABLE, "requiresRenewal": False, "reason": "no_renewal_date"}
         requires = credential.renewal_date < today
@@ -159,13 +163,15 @@ def calculate_renewal_status(
 
 
 def process_auto_renewal(db: Session, credential: ITPortalToolCredential, today: Optional[date] = None) -> bool:
-    """Lazy roll-forward for MONTHLY + auto_renew accounts: if the stored
-    renewal_date has passed, advance it (repeatedly, in case the tool went
-    unopened for 2+ months) to the next date that is still in the future.
-    Returns whether it changed anything; the caller is responsible for
-    committing and audit-logging the change (see it_tools_router._add_audit,
-    action="credential_auto_renewed")."""
-    if normalize_renewal_type(credential.renewal_type) != "MONTHLY":
+    """Lazy roll-forward for MONTHLY/YEARLY + auto_renew accounts. Once the
+    stored renewal date arrives the tool has been renewed (charged) on that
+    date, so that date becomes the new purchase date and the renewal date
+    moves on one billing period -- repeatedly, in case the page went
+    unopened for several periods. Returns whether it changed anything; the
+    caller is responsible for committing and audit-logging the change (see
+    it_tools_router._add_audit, action="credential_auto_renewed")."""
+    months = PLAN_PERIOD_MONTHS.get(normalize_renewal_type(credential.renewal_type))
+    if not months:
         return False
     if not credential.auto_renew or not credential.renewal_date:
         return False
@@ -173,11 +179,14 @@ def process_auto_renewal(db: Session, credential: ITPortalToolCredential, today:
     today = today or datetime.utcnow().date()
     original = credential.renewal_date
     next_date = credential.renewal_date
+    last_renewed = None
     guard = 0
-    while next_date < today and guard < 240:  # 240 months = 20yr safety cap
-        next_date = calculate_next_renewal_date(next_date)
+    while next_date <= today and guard < 240:  # 240 periods safety cap
+        last_renewed = next_date
+        next_date = calculate_next_renewal_date(next_date, months)
         guard += 1
     if next_date == original:
         return False
     credential.renewal_date = next_date
+    credential.purchase_date = last_renewed
     return True

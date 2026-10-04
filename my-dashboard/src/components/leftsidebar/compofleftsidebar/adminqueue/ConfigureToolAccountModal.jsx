@@ -3,10 +3,27 @@ import { creditRatesAPI, itToolsAPI } from '../../../../services/api';
 import './ConfigureToolAccountModal.css';
 
 const RENEWAL_TYPE_OPTIONS = [
-  { value: 'MONTHLY', label: 'Monthly Auto Renewal' },
+  { value: 'MONTHLY', label: 'Monthly Plan' },
+  { value: 'YEARLY', label: 'Yearly Plan' },
   { value: 'CREDIT_CONSUMPTION', label: 'Credit Consumption' },
   { value: 'MANUAL', label: 'Manual' },
 ];
+
+// Calendar-billed plans and how many months one billing period spans --
+// mirrors PLAN_PERIOD_MONTHS in backend utils/tool_renewal_service.py.
+const PLAN_PERIOD_MONTHS = { MONTHLY: 1, YEARLY: 12 };
+
+// 'YYYY-MM-DD' + n months, clamping the day (Jan 31 + 1 -> Feb 28).
+const addMonths = (isoDate, months) => {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  if (!y || !m || !d) return '';
+  const total = m - 1 + months;
+  const year = y + Math.floor(total / 12);
+  const month = (total % 12) + 1;
+  const lastDay = new Date(year, month, 0).getDate();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${year}-${pad(month)}-${pad(Math.min(d, lastDay))}`;
+};
 
 const formatRupees = (value) => {
   if (value === null || value === undefined) return '—';
@@ -32,6 +49,20 @@ export default function ConfigureToolAccountModal({ row, onClose, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  const planMonths = PLAN_PERIOD_MONTHS[renewalType];
+
+  // On a monthly/yearly plan the renewal date follows from the purchase
+  // date, so fill it in (still editable) whenever either one changes.
+  const changePurchaseDate = (value) => {
+    setPurchaseDate(value);
+    if (value && planMonths) setRenewalDate(addMonths(value, planMonths));
+  };
+  const changeRenewalType = (value) => {
+    setRenewalType(value);
+    const months = PLAN_PERIOD_MONTHS[value];
+    if (months && purchaseDate) setRenewalDate(addMonths(purchaseDate, months));
+  };
+
   const handleSave = async () => {
     if (toolCost !== '' && Number(toolCost) < 0) {
       setError('Cost must be 0 or greater.');
@@ -50,7 +81,7 @@ export default function ConfigureToolAccountModal({ row, onClose, onSaved }) {
         scope: 'company',
         credit_enabled: creditEnabled,
         renewal_type: renewalType,
-        auto_renew: renewalType === 'MONTHLY' ? autoRenew : false,
+        auto_renew: planMonths ? autoRenew : false,
         purchase_date: purchaseDate || '',
         tool_cost: toolCost === '' ? 0 : Number(toolCost),
       };
@@ -146,7 +177,7 @@ export default function ConfigureToolAccountModal({ row, onClose, onSaved }) {
                     name="renewalType"
                     value={option.value}
                     checked={renewalType === option.value}
-                    onChange={() => setRenewalType(option.value)}
+                    onChange={() => changeRenewalType(option.value)}
                   />
                   <span>{option.label}</span>
                 </label>
@@ -164,7 +195,7 @@ export default function ConfigureToolAccountModal({ row, onClose, onSaved }) {
                     onChange={(e) => setRenewalDate(e.target.value)}
                   />
                 </label>
-                {renewalType === 'MONTHLY' && (
+                {planMonths && (
                   <div className="ctam-toggle-row ctam-toggle-row--inline">
                     <span className="ctam-field-label">Auto Renew</span>
                     <label className="ctam-switch">
@@ -172,13 +203,21 @@ export default function ConfigureToolAccountModal({ row, onClose, onSaved }) {
                         type="checkbox"
                         checked={autoRenew}
                         onChange={(e) => setAutoRenew(e.target.checked)}
-                        aria-label="Auto renew monthly"
+                        aria-label="Auto renew"
                       />
                       <span className="ctam-switch-track" aria-hidden="true" />
                     </label>
                   </div>
                 )}
               </div>
+            )}
+
+            {planMonths && (
+              <p className="ctam-field-hint">
+                {autoRenew
+                  ? `Auto renew: when the renewal date arrives it becomes the new purchase date and the renewal date moves ${planMonths === 12 ? 'one year' : 'one month'} ahead.`
+                  : 'Turn on Auto Renew if this tool is charged automatically; otherwise it is flagged once the renewal date passes.'}
+              </p>
             )}
 
             {renewalType === 'CREDIT_CONSUMPTION' && (
@@ -199,7 +238,7 @@ export default function ConfigureToolAccountModal({ row, onClose, onSaved }) {
                   type="date"
                   className="ctam-input"
                   value={purchaseDate}
-                  onChange={(e) => setPurchaseDate(e.target.value)}
+                  onChange={(e) => changePurchaseDate(e.target.value)}
                 />
               </label>
               <label className="ctam-field">

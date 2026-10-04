@@ -505,14 +505,16 @@ def _build_admin_credential_summaries_by_tool(
         .all()
     )
 
-    # Lazy MONTHLY+auto-renew roll-forward: self-heal any account whose
-    # renewal date has quietly passed before it's ever displayed/reported.
+    # Lazy MONTHLY/YEARLY + auto-renew roll-forward: self-heal any account
+    # whose renewal date has quietly passed before it's ever displayed/reported
+    # (the passed renewal date becomes the purchase date).
     # See utils/tool_renewal_service.process_auto_renewal.
     auto_renewed_any = False
     for credential in credentials:
         if credential.scope != "company":
             continue
         original_date = credential.renewal_date
+        original_purchase = credential.purchase_date
         if process_auto_renewal(db, credential):
             auto_renewed_any = True
             _add_audit(
@@ -521,7 +523,12 @@ def _build_admin_credential_summaries_by_tool(
                 action="credential_auto_renewed",
                 tool_id=credential.tool_id,
                 credential_id=credential.id,
-                details={"from": original_date.isoformat() if original_date else None, "to": credential.renewal_date.isoformat()},
+                details={
+                    "from": original_date.isoformat() if original_date else None,
+                    "to": credential.renewal_date.isoformat(),
+                    "purchaseFrom": original_purchase.isoformat() if original_purchase else None,
+                    "purchaseTo": credential.purchase_date.isoformat() if credential.purchase_date else None,
+                },
             )
     if auto_renewed_any:
         db.commit()
@@ -4097,7 +4104,7 @@ def upsert_credential(
             credential.credit_enabled = payload.credit_enabled
         if payload.renewal_type is not None:
             if not is_valid_renewal_type(payload.renewal_type):
-                raise HTTPException(status_code=400, detail="renewal_type must be one of MANUAL, MONTHLY, CREDIT_CONSUMPTION")
+                raise HTTPException(status_code=400, detail="renewal_type must be one of MANUAL, MONTHLY, YEARLY, CREDIT_CONSUMPTION")
             credential.renewal_type = normalize_renewal_type(payload.renewal_type)
         if payload.auto_renew is not None:
             credential.auto_renew = payload.auto_renew

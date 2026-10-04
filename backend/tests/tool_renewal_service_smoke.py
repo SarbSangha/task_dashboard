@@ -142,7 +142,7 @@ def main() -> int:
     # 1. renewal_type validation
     _assert(is_valid_renewal_type("MONTHLY"), "MONTHLY should be valid")
     _assert(is_valid_renewal_type("manual"), "lowercase manual should be valid (case-insensitive)")
-    _assert(not is_valid_renewal_type("YEARLY"), "YEARLY is not a supported renewal type")
+    _assert(not is_valid_renewal_type("WEEKLY"), "WEEKLY is not a supported renewal type")
     _assert(normalize_renewal_type(None) == "MANUAL", "missing renewal_type normalizes to MANUAL")
     _assert(normalize_renewal_type("bogus") == "MANUAL", "invalid renewal_type normalizes to MANUAL")
     print("PASS renewal_type validation")
@@ -151,6 +151,8 @@ def main() -> int:
     _assert(calculate_next_renewal_date(date(2026, 1, 15)) == date(2026, 2, 15), "simple month roll")
     _assert(calculate_next_renewal_date(date(2026, 1, 31)) == date(2026, 2, 28), "Jan 31 -> Feb 28 (2026 not a leap year)")
     _assert(calculate_next_renewal_date(date(2026, 12, 15)) == date(2027, 1, 15), "December rolls into next year")
+    _assert(calculate_next_renewal_date(date(2026, 2, 24), 12) == date(2027, 2, 24), "yearly roll")
+    _assert(calculate_next_renewal_date(date(2028, 2, 29), 12) == date(2029, 2, 28), "Feb 29 yearly -> Feb 28")
     print("PASS calculate_next_renewal_date")
 
     with SessionLocal() as db:
@@ -248,6 +250,27 @@ def main() -> int:
         original = no_auto.renewal_date
         _assert(process_auto_renewal(db, no_auto) is False, "auto_renew=False must never roll the date forward")
         _assert(no_auto.renewal_date == original, "date is untouched without auto_renew")
+        # Renewed date becomes the purchase date (monthly).
+        rolled = _make_credential(
+            db, tool_id, renewal_type="MONTHLY", auto_renew=True,
+            purchase_date=date(2026, 8, 13), renewal_date=date(2026, 9, 13),
+        )
+        process_auto_renewal(db, rolled, today=date(2026, 10, 4))
+        _assert(rolled.purchase_date == date(2026, 9, 13), f"purchase date should be last renewal, got {rolled.purchase_date}")
+        _assert(rolled.renewal_date == date(2026, 10, 13), f"renewal should be next month, got {rolled.renewal_date}")
+        # On the renewal day itself it renews.
+        process_auto_renewal(db, rolled, today=date(2026, 10, 13))
+        _assert(rolled.purchase_date == date(2026, 10, 13) and rolled.renewal_date == date(2026, 11, 13), "renews on the renewal day")
+
+        # YEARLY + auto renew.
+        yearly = _make_credential(
+            db, tool_id, renewal_type="YEARLY", auto_renew=True,
+            purchase_date=date(2025, 2, 24), renewal_date=date(2026, 2, 24),
+        )
+        _assert(process_auto_renewal(db, yearly, today=date(2026, 10, 4)) is True, "stale yearly rolls")
+        _assert(yearly.purchase_date == date(2026, 2, 24) and yearly.renewal_date == date(2027, 2, 24), "yearly roll sets purchase/renewal")
+        _assert(calculate_renewal_status(yearly, None, today=date(2026, 10, 4))["status"] == STATUS_OK, "yearly future date is OK")
+        _assert(is_valid_renewal_type("YEARLY"), "YEARLY should be valid")
         print("PASS auto-renew lazy roll-forward")
 
         # 10. get_current_rate resolves the newest effective row and ignores

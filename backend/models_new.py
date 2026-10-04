@@ -887,8 +887,8 @@ class ITPortalToolCredential(Base):
     # other account on the same tool -- see utils/tool_renewal_service.py,
     # the single place that interprets them.
     credit_enabled = Column(Boolean, nullable=False, default=False, server_default=text("false"))
-    renewal_type = Column(String(20), nullable=False, default="MANUAL", server_default=text("'MANUAL'"), index=True)  # MANUAL | MONTHLY | CREDIT_CONSUMPTION
-    auto_renew = Column(Boolean, nullable=False, default=False, server_default=text("false"))  # only meaningful when renewal_type == MONTHLY
+    renewal_type = Column(String(20), nullable=False, default="MANUAL", server_default=text("'MANUAL'"), index=True)  # MANUAL | MONTHLY | YEARLY | CREDIT_CONSUMPTION
+    auto_renew = Column(Boolean, nullable=False, default=False, server_default=text("false"))  # only meaningful when renewal_type is MONTHLY or YEARLY
     purchase_date = Column(Date)
     # What this account costs, independent of the credit system -- the one
     # number a plain monthly/manual (non-credit) tool needs that ToolCreditRate

@@ -12,6 +12,7 @@ const RENEWAL_STATUS_META = {
 
 const RENEWAL_TYPE_LABELS = {
   MONTHLY: 'Monthly',
+  YEARLY: 'Yearly',
   CREDIT_CONSUMPTION: 'Credit consumption',
   MANUAL: 'Manual',
 };
@@ -138,7 +139,7 @@ export default function AdminToolRenewalsTab({ search }) {
     <div className="act-root">
       <p className="art-hint">
         Not every tool uses credits. Use the ⋮ menu on a row to turn its credit system on or off and pick how it
-        renews (monthly auto-renew, credit consumption, or manual) — credit usage still feeds the Consolidated
+        renews (monthly or yearly plan with optional auto-renew, credit consumption, or manual) — credit usage still feeds the Consolidated
         report&apos;s Client Usage and Department detail tables automatically.
       </p>
       {message && <div className="act-message" role="alert">{message}</div>}
@@ -169,7 +170,7 @@ export default function AdminToolRenewalsTab({ search }) {
                   <td>
                     <span className="act-name">{row.toolName}</span>
                     <div>
-                      <small className="art-muted">{RENEWAL_TYPE_LABELS[row.renewalType] || row.renewalType}{row.renewalType === 'MONTHLY' && row.autoRenew ? ' · Auto' : ''}</small>
+                      <small className="art-muted">{RENEWAL_TYPE_LABELS[row.renewalType] || row.renewalType}{(row.renewalType === 'MONTHLY' || row.renewalType === 'YEARLY') && row.autoRenew ? ' · Auto' : ''}</small>
                     </div>
                   </td>
                   <td>{row.account}</td>
