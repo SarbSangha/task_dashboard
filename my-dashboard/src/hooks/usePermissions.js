@@ -32,6 +32,10 @@ export const FEATURE_PERMISSIONS = {
   // which only gates whether the tab itself is visible. See
   // backend/services/feature_access_service.py's FEATURE_BUFFER_SHEET_EDIT.
   edit_buffer_sheet: 'buffer_sheet_edit',
+  // Testing Report -> Credit Report export (Credit Consumption Report).
+  view_credit_report: 'credit_report',
+  // The whole Sheets section (registered sheets + Sheet Activity log).
+  view_sheet_activity: 'sheet_activity',
 };
 
 export function normalizeRoles(user) {

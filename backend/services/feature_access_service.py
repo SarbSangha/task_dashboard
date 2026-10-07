@@ -37,7 +37,22 @@ FEATURE_BUFFER = "buffer"
 #: which is exactly what this table already answers.
 FEATURE_BUFFER_SHEET_EDIT = "buffer_sheet_edit"
 
-GATED_FEATURES: tuple[str, ...] = (FEATURE_RMW_DATA, FEATURE_BUFFER, FEATURE_BUFFER_SHEET_EDIT)
+#: Gates the Testing Report sidebar section (Credit Consumption Report
+#: export) and its endpoints in routers/credit_report_router.py.
+FEATURE_CREDIT_REPORT = "credit_report"
+#: Gates the whole Sheets sidebar section: registered sheets
+#: (routers/sheets_router.py, where per-sheet assignment then decides which
+#: sheets a person sees) and the raw Sheet Activity log
+#: (routers/sheet_activity_router.py).
+FEATURE_SHEET_ACTIVITY = "sheet_activity"
+
+GATED_FEATURES: tuple[str, ...] = (
+    FEATURE_RMW_DATA,
+    FEATURE_BUFFER,
+    FEATURE_BUFFER_SHEET_EDIT,
+    FEATURE_CREDIT_REPORT,
+    FEATURE_SHEET_ACTIVITY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +61,8 @@ FEATURE_LABELS = {
     FEATURE_RMW_DATA: "RMW Data",
     FEATURE_BUFFER: "Buffer",
     FEATURE_BUFFER_SHEET_EDIT: "Purpose Sheet Editing",
+    FEATURE_CREDIT_REPORT: "Credit Report",
+    FEATURE_SHEET_ACTIVITY: "Sheets",
 }
 
 

@@ -115,3 +115,5 @@ class FeatureChecker:
 
 require_rmw_data_access = FeatureChecker("rmw_data")
 require_buffer_access = FeatureChecker("buffer")
+require_credit_report_access = FeatureChecker("credit_report")
+require_sheet_activity_access = FeatureChecker("sheet_activity")

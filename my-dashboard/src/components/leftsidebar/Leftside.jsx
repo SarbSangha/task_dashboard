@@ -14,6 +14,9 @@ import TrendingsButton from './compofleftsidebar/trending/TrendingsButton';
 import BufferButton from './compofleftsidebar/buffer/BufferButton';
 import ReportsButton from './compofleftsidebar/ReportsButton';
 import TaskReportButton from './compofleftsidebar/TaskReportButton';
+import CreditReportButton from './compofleftsidebar/CreditReportButton';
+import SheetActivityButton from './compofleftsidebar/SheetActivityButton';
+import SheetsButton from './compofleftsidebar/SheetsButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
 import OutboxModal from './compofleftsidebar/outbox/OutboxModal';
 import WorkSpaceModal from './compofleftsidebar/workspace/WorkSpaceModal';
@@ -24,6 +27,10 @@ import TrendingsPanel from './compofleftsidebar/trending/TrendingsPanel';
 import BufferPanel from './compofleftsidebar/buffer/BufferPanel';
 import ReportsPanel from '../reports/ReportsPanel';
 import TaskReportPanel from '../reports/TaskReportPanel';
+import CreditReportPanel from '../reports/CreditReportPanel';
+import SheetActivityPanel from '../reports/SheetActivityPanel';
+import SheetsPanel from '../sheets/SheetsPanel';
+import { resumePendingOutput } from '../../utils/pendingOutput';
 import { usePermissions } from '../../hooks/usePermissions';
 import { useAuth } from '../../context/AuthContext';
 
@@ -38,6 +45,9 @@ const PANEL_TO_ACTIVE = {
   buffer: 'buffer',
   reports: 'reports',
   'task-report': 'task-report',
+  'credit-report': 'credit-report',
+  'sheet-activity': 'sheet-activity',
+  sheets: 'sheets',
   'create-task': 'create-task',
 };
 
@@ -55,6 +65,10 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
   const canViewRmwData = can('view_rmw_data');
   const canViewBuffer = can('view_buffer');
   const canViewAdminQueue = can('view_admin_queue');
+  // Testing Report section: granted per user in Admin Queue -> Section Access.
+  const canViewCreditReport = can('view_credit_report');
+  // Sheets section: granted per user in Admin Queue -> Section Access.
+  const canViewSheetActivity = can('view_sheet_activity');
   const hasAnyInsightItem = canViewRmwData || canViewBuffer || canViewAdminQueue;
   const navigate = useNavigate();
   const location = useLocation();
@@ -194,10 +208,15 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
   // the moment before /me comes back.
   useEffect(() => {
     if (authLoading || !authUser) return;
-    if ((panel === 'trendings' && !canViewRmwData) || (panel === 'buffer' && !canViewBuffer)) {
+    if (
+      (panel === 'trendings' && !canViewRmwData)
+      || (panel === 'buffer' && !canViewBuffer)
+      || (panel === 'credit-report' && !canViewCreditReport)
+      || ((panel === 'sheet-activity' || panel === 'sheets') && !canViewSheetActivity)
+    ) {
       navigate('/dashboard', { replace: true });
     }
-  }, [authLoading, authUser, panel, canViewRmwData, canViewBuffer, navigate]);
+  }, [authLoading, authUser, panel, canViewRmwData, canViewBuffer, canViewCreditReport, canViewSheetActivity, navigate]);
 
   const openAdminQueue = () => goTo('admin-queue');
   const closeAdminQueue = () => closePanel('admin-queue');
@@ -207,6 +226,21 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
 
   const openTaskReport = () => goTo('task-report');
   const closeTaskReport = () => closePanel('task-report');
+
+  // A Credit Report "Open output" link clicked while signed out is parked
+  // by OpenOutputPage; reopen it once the user is back on the dashboard.
+  useEffect(() => {
+    if (!authLoading && authUser) resumePendingOutput(navigate);
+  }, [authLoading, authUser, navigate]);
+
+  const openCreditReport = () => goTo('credit-report');
+  const closeCreditReport = () => closePanel('credit-report');
+
+  const openSheets = () => goTo('sheets');
+  const closeSheets = () => closePanel('sheets');
+
+  const openSheetActivity = () => goTo('sheet-activity');
+  const closeSheetActivity = () => closePanel('sheet-activity');
 
   useEffect(() => {
     if (isCreateTaskVisible) return;
@@ -386,6 +420,38 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
             </div>
           )}
 
+          {/* ── TESTING REPORT (Section Access grant) ── */}
+          {canViewCreditReport && (
+            <div className="nav-section">
+              <div className="nav-section-header">
+                <span className="nav-section-label">Testing Report</span>
+              </div>
+
+              <CreditReportButton
+                isActive={activeItem === 'credit-report'}
+                onClick={openCreditReport}
+              />
+            </div>
+          )}
+
+          {/* ── SHEETS (Section Access grant) ── */}
+          {canViewSheetActivity && (
+            <div className="nav-section">
+              <div className="nav-section-header">
+                <span className="nav-section-label">Sheets</span>
+              </div>
+
+              <SheetsButton
+                isActive={activeItem === 'sheets'}
+                onClick={openSheets}
+              />
+              <SheetActivityButton
+                isActive={activeItem === 'sheet-activity'}
+                onClick={openSheetActivity}
+              />
+            </div>
+          )}
+
         </nav>
       </aside>
 
@@ -473,6 +539,27 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
         onClose={closeTaskReport}
         onMinimizedChange={(isMinimized) => setPanelMinimized('task-report', isMinimized)}
         onActivate={() => activatePanel('task-report')}
+      />
+
+      <CreditReportPanel
+        isOpen={canViewCreditReport && isPanelVisible('credit-report')}
+        onClose={closeCreditReport}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('credit-report', isMinimized)}
+        onActivate={() => activatePanel('credit-report')}
+      />
+
+      <SheetsPanel
+        isOpen={canViewSheetActivity && isPanelVisible('sheets')}
+        onClose={closeSheets}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('sheets', isMinimized)}
+        onActivate={() => activatePanel('sheets')}
+      />
+
+      <SheetActivityPanel
+        isOpen={canViewSheetActivity && isPanelVisible('sheet-activity')}
+        onClose={closeSheetActivity}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('sheet-activity', isMinimized)}
+        onActivate={() => activatePanel('sheet-activity')}
       />
     </>
   );

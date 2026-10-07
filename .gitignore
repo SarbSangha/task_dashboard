@@ -1,15 +1,18 @@
-backend/.env
-backend/.env.*
-backend/.env.example
-backend/.env.production
-backend/.env.production.example
+# Env files - UNANCHORED, so a .env in any folder (root, backend/,
+# my-dashboard/, apps-script/, anything added later) is never committed.
+# backend/.env with real DB/R2 credentials was committed once already
+# (fe83838..ed29a36); these rules exist so that cannot happen again.
+.env
+.env.*
+*.env
+.dev.vars
+.dev.vars.*
 
-my-dashboard/.env
-my-dashboard/.env.* 
-my-dashboard/.env.example
-my-dashboard/.env.production
-my-dashboard/.env.production.example
-# ...except the production API origin, which is deliberately tracked. Vite
+# ...except placeholder templates, which document the required keys for a new
+# setup. They must only ever contain dummy values like "replace-me".
+!.env.example
+!.dev.vars.example
+# ...and the production API origin, which is deliberately tracked. Vite
 # inlines VITE_* vars into the bundle every visitor downloads, so this value is
 # public by construction and there is nothing to protect by hiding it. Keeping
 # it in the repo is what lets CI build the frontend: the runner only ever sees

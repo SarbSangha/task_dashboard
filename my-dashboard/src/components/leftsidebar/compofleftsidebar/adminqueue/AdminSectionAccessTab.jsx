@@ -29,6 +29,8 @@ const PAGE_SIZE = 50;
 const FALLBACK_FEATURES = [
   { key: 'rmw_data', label: 'RMW Data' },
   { key: 'buffer', label: 'Buffer' },
+  { key: 'credit_report', label: 'Credit Report' },
+  { key: 'sheet_activity', label: 'Sheets' },
 ];
 
 let _toastId = 0;

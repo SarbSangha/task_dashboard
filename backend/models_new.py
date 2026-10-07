@@ -1670,3 +1670,285 @@ class ReportAuditLog(Base):
             "detail": self.detail,
             "createdAt": serialize_utc_datetime(self.created_at),
         }
+
+
+class SheetActivity(Base):
+    """One edit or structural change captured in the shared Google Sheet by
+    apps-script/Code.gs (installable onEdit / onChange triggers) and POSTed
+    to routers/sheet_activity_router.py.
+
+    event_id is minted by the script, so a retry, a resend from the
+    _AuditLog backup tab or a backfill can never store the same change
+    twice. timestamp is when the change happened (UTC, from the script);
+    received_at is when the backend stored it. user_email is NULL when Apps
+    Script could not see the editor (outside the Workspace domain, consumer
+    accounts) - the dashboard shows that as "Unknown user".
+    """
+    __tablename__ = "sheet_activity"
+    __table_args__ = (
+        Index("ix_sheet_activity_sheet_timestamp", "sheet_name", "timestamp"),
+        Index("ix_sheet_activity_user_timestamp", "user_email", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(String(64), nullable=False, unique=True, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    received_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    user_email = Column(String(320), index=True)
+    spreadsheet_id = Column(String(128), nullable=False, index=True)
+    sheet_name = Column(String(255), index=True)
+    range_a1 = Column(String(64))
+    row = Column(Integer)
+    column = Column(Integer)
+    num_rows = Column(Integer)
+    num_columns = Column(Integer)
+    change_type = Column(String(24), nullable=False, index=True)
+    old_value = Column(Text)
+    new_value = Column(Text)        # single cell value, or a JSON grid of new values for multi-cell edits
+    formula = Column(Text)
+    is_multi_cell = Column(Boolean, nullable=False, default=False)
+    truncated = Column(Boolean, nullable=False, default=False)
+    source = Column(String(20), nullable=False, default="webhook")  # webhook | resend | backfill
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "eventId": self.event_id,
+            "timestamp": serialize_utc_datetime(self.timestamp),
+            "receivedAt": serialize_utc_datetime(self.received_at),
+            "userEmail": self.user_email,
+            "spreadsheetId": self.spreadsheet_id,
+            "sheetName": self.sheet_name,
+            "range": self.range_a1,
+            "row": self.row,
+            "column": self.column,
+            "numRows": self.num_rows,
+            "numColumns": self.num_columns,
+            "changeType": self.change_type,
+            "oldValue": self.old_value,
+            "newValue": self.new_value,
+            "formula": self.formula,
+            "isMultiCell": bool(self.is_multi_cell),
+            "truncated": bool(self.truncated),
+            "source": self.source,
+        }
+
+
+# ==================== CONTENT SHEETS (Sheets section) ====================
+class TrackedSheet(Base):
+    """A Google Sheet registered in the Sheets section (see
+    services/sheets/). Generic on purpose: columns are mapped by header name
+    in mapping_json, so any sheet with any columns can be added.
+
+    mapping_json: {"<header>": {"role": <role>, "side": "input"|"output"|"ignore"}}
+        roles: topic, input, structure, status, final_link, output, row_number, request_id, ignore
+    tabs_json:    [{"name": "<tab>", "tracked": bool}]
+    statuses_json: {"awaiting": "Awaiting Approval", "approved": "Approved",
+                    "in_progress": "In Progress", "delivered": "Delivered"}
+    config_json:  {"keyColumn": "<header>"|null, "headerRow": 1, "skipExampleRows": true,
+                   "stuckAwaitingHours": 48, "stuckInProgressHours": 24}
+    poll_lease_until stops two backend workers polling the same sheet at once.
+    """
+    __tablename__ = "tracked_sheets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    # content_workflow (rows are content requests) | keyword_ranking (rows
+    # are keywords, one Position / AI Overview column pair per check run).
+    sheet_type = Column(String(32), nullable=False, default="content_workflow",
+                        server_default="content_workflow", index=True)
+    spreadsheet_id = Column(String(128), nullable=False, unique=True, index=True)
+    url = Column(Text, nullable=False)
+    # Where people type the input when it is not this sheet (keyword_ranking:
+    # the "Keyword URL Source Sheet"). Its Sheet Activity edits name who added a keyword.
+    source_spreadsheet_id = Column(String(128), index=True)
+    source_url = Column(Text)
+    tabs_json = Column(JSON, nullable=False, default=list)
+    mapping_json = Column(JSON, nullable=False, default=dict)
+    statuses_json = Column(JSON, nullable=False, default=dict)
+    config_json = Column(JSON, nullable=False, default=dict)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    last_polled_at = Column(DateTime)
+    last_poll_status = Column(String(20))       # ok | error
+    last_poll_error = Column(Text)
+    poll_lease_until = Column(DateTime)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class TrackedSheetMember(Base):
+    """Which non-admin dashboard users may see a registered sheet."""
+    __tablename__ = "tracked_sheet_members"
+    __table_args__ = (UniqueConstraint("sheet_id", "user_id", name="uq_tracked_sheet_members_sheet_user"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    sheet_id = Column(Integer, ForeignKey("tracked_sheets.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    added_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SheetUserGoogleEmail(Base):
+    """A dashboard user's Google account email, when it differs from their
+    dashboard login email. Used to attribute sheet edits to people."""
+    __tablename__ = "sheet_user_google_emails"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    google_email = Column(String(320), nullable=False, unique=True, index=True)
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class ContentRequest(Base):
+    """One row of a tracked tab: a content request moving through
+    (blank) -> Awaiting Approval -> Approved -> In Progress -> Delivered.
+
+    Keyed by (sheet, tab, row_key) where row_key comes from the sheet's key
+    column ("Request ID" when the Apps Script added one, else "No."), so a
+    row that moves keeps its history. Stage timestamps are when the poller
+    first saw each stage (accurate to one poll interval).
+    """
+    __tablename__ = "content_requests"
+    __table_args__ = (
+        UniqueConstraint("sheet_id", "tab_name", "row_key", name="uq_content_requests_sheet_tab_key"),
+        Index("ix_content_requests_sheet_status", "sheet_id", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    sheet_id = Column(Integer, ForeignKey("tracked_sheets.id", ondelete="CASCADE"), nullable=False, index=True)
+    tab_name = Column(String(255), nullable=False, index=True)
+    row_key = Column(String(128), nullable=False)
+    row_number = Column(Integer)
+    values_json = Column(JSON, nullable=False, default=dict)    # {header: current value}
+    topic = Column(Text)
+    status = Column(String(80), index=True)
+    created_by_email = Column(String(320), index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    first_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    requested_at = Column(DateTime, index=True)                 # Topic first filled in
+    awaiting_at = Column(DateTime)
+    approved_at = Column(DateTime)
+    in_progress_at = Column(DateTime)
+    delivered_at = Column(DateTime, index=True)
+    error = Column(Text)
+    is_imported = Column(Boolean, nullable=False, default=False)  # already existed when the sheet was registered
+    last_changed_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    removed_at = Column(DateTime)
+
+
+class RequestEvent(Base):
+    """The timeline of a content request: user inputs and Claude responses."""
+    __tablename__ = "request_events"
+    __table_args__ = (Index("ix_request_events_request_occurred", "request_id", "occurred_at"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    # content_workflow events set request_id; keyword_ranking events set
+    # keyword_id; a ranking run event sets neither.
+    request_id = Column(Integer, ForeignKey("content_requests.id", ondelete="CASCADE"), index=True)
+    keyword_id = Column(Integer, ForeignKey("keywords.id", ondelete="CASCADE"), index=True)
+    sheet_id = Column(Integer, ForeignKey("tracked_sheets.id", ondelete="CASCADE"), nullable=False, index=True)
+    tab_name = Column(String(255), nullable=False)
+    actor_type = Column(String(20), nullable=False, index=True)     # user | claude | seo_api | unknown | system
+    actor_email = Column(String(320), index=True)
+    event_type = Column(String(40), nullable=False, index=True)
+    column_name = Column(String(255))
+    old_value = Column(Text)
+    new_value = Column(Text)
+    metadata_json = Column(JSON)
+    occurred_at = Column(DateTime, nullable=False, index=True)
+    source = Column(String(20), nullable=False, default="poller")   # poller | import | job
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# ==================== KEYWORD RANKING (Sheets section, keyword_ranking type) ====================
+class Keyword(Base):
+    """One keyword row on a keyword_ranking sheet's tab (one tab per site).
+
+    row_key = normalised keyword + occurrence number on the tab, so the
+    duplicate keywords the sheet does contain stay separate rows. A keyword
+    whose text changes in place keeps its id (KEYWORD_EDITED) and history.
+    """
+    __tablename__ = "keywords"
+    __table_args__ = (
+        UniqueConstraint("sheet_id", "tab_name", "row_key", name="uq_keywords_sheet_tab_key"),
+        Index("ix_keywords_sheet_tab_norm", "sheet_id", "tab_name", "keyword_norm"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    sheet_id = Column(Integer, ForeignKey("tracked_sheets.id", ondelete="CASCADE"), nullable=False, index=True)
+    tab_name = Column(String(255), nullable=False, index=True)
+    row_key = Column(String(600), nullable=False)
+    keyword = Column(Text, nullable=False)
+    keyword_norm = Column(String(500), nullable=False, index=True)
+    target_url = Column(Text)
+    s_no = Column(String(40))
+    row_number = Column(Integer)
+    added_by_email = Column(String(320), index=True)
+    added_at = Column(DateTime, index=True)          # NULL = already there when the sheet was registered
+    first_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    is_imported = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    removed_at = Column(DateTime)
+
+
+class RankingRun(Base):
+    """One ranking check run on one tab: a Position / AI Overview column pair
+    (importer) and/or the job's own report (POST /api/sheets/ranking-results)."""
+    __tablename__ = "ranking_runs"
+    __table_args__ = (
+        UniqueConstraint("sheet_id", "tab_name", "run_key", name="uq_ranking_runs_sheet_tab_key"),
+        Index("ix_ranking_runs_sheet_date", "sheet_id", "check_date"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    sheet_id = Column(Integer, ForeignKey("tracked_sheets.id", ondelete="CASCADE"), nullable=False, index=True)
+    tab_name = Column(String(255), nullable=False, index=True)
+    run_key = Column(String(40), nullable=False)          # check date ISO; "#2" for a second run that day
+    check_date = Column(Date, nullable=False, index=True)
+    label = Column(String(120))                           # header text, e.g. "21-Aug-2026 (Baseline)"
+    trigger = Column(String(20), nullable=False, default="manual")  # scheduled | manual | baseline
+    column_letter = Column(String(8))
+    keywords_checked = Column(Integer, nullable=False, default=0)
+    success_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    source = Column(String(20), nullable=False, default="importer")  # importer | job
+    external_run_id = Column(String(120), index=True)
+    api = Column(String(80))
+    location = Column(String(160))
+    gl = Column(String(20))
+    cost = Column(Float)
+    duration_seconds = Column(Float)
+    errors_json = Column(JSON)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    first_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class RankingCheck(Base):
+    """One keyword's result in one run, normalised from the wide sheet."""
+    __tablename__ = "ranking_checks"
+    __table_args__ = (
+        UniqueConstraint("keyword_id", "run_id", name="uq_ranking_checks_keyword_run"),
+        Index("ix_ranking_checks_run", "run_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    keyword_id = Column(Integer, ForeignKey("keywords.id", ondelete="CASCADE"), nullable=False, index=True)
+    run_id = Column(Integer, ForeignKey("ranking_runs.id", ondelete="CASCADE"), nullable=False)
+    check_date = Column(Date, nullable=False, index=True)
+    position = Column(Integer)                     # NULL unless ranked
+    bucket = Column(String(24), nullable=False)    # ranked | not_in_top_<N> | failed | unparsed
+    depth = Column(Integer)                        # N of "Not in Top N": how deep that run searched
+    ai_state = Column(String(16), nullable=False)  # cited | not_cited | none | failed | unparsed | blank
+    found_url = Column(Text)                       # from the job report only
+    raw_position = Column(String(120))
+    raw_ai = Column(String(120))
+    raw_response = Column(JSON)                    # from the job report only, trimmed
+    is_override = Column(Boolean, nullable=False, default=False)
+    source = Column(String(20), nullable=False, default="importer")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

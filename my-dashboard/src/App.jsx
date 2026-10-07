@@ -14,6 +14,7 @@ import { ForgotPassword } from './components/auth/ForgotPassword';
 // Protected Components
 import Dashboard from './pages/Dashboard';
 import ProtectedRoute from './components/ProtectedRoute';
+import OpenOutputPage from './components/reports/OpenOutputPage';
 
 // Context
 import { AuthProvider } from './context/AuthContext';
@@ -43,6 +44,8 @@ function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
+              {/* Credit Report "Open output" links; handles signed-out visitors itself */}
+              <Route path="/open-output" element={<OpenOutputPage />} />
               
               {/* Protected Routes */}
               <Route 

@@ -319,6 +319,18 @@ export const reportsAPI = {
   listAudit: async () => (await api.get('/api/reports/audit')).data,
 };
 
+// Credit Consumption Report (Testing Report section). Gated per user by the
+// "credit_report" Section Access grant; see backend/routers/credit_report_router.py.
+export const creditReportAPI = {
+  options: async () => (await api.get('/api/reports/credit/options', { timeout: REPORTS_TIMEOUT_MS })).data,
+  exportXlsx: async (params = {}) =>
+    api.get('/api/reports/credit/export.xlsx', { params, responseType: 'blob', timeout: 300000 }),
+  // Fresh URL for a Generation Log "Open output" link (any signed-in user).
+  outputUrl: async (tool, id) =>
+    (await api.get(`/api/reports/credit/output/${encodeURIComponent(tool)}/${encodeURIComponent(id)}`,
+      { timeout: REPORTS_TIMEOUT_MS })).data,
+};
+
 // Trigger a browser download from an axios blob response.
 export const downloadBlobResponse = (res, fallbackName = 'report') => {
   const disp = res.headers?.['content-disposition'] || '';

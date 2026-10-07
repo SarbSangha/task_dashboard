@@ -1,0 +1,160 @@
+/* Sheet Activity panel - window, header, filters and table come from
+   TaskReportPanel.css (trp-*); only what that panel lacks lives here. */
+
+.sha-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.sha-search input { min-width: 220px; }
+
+.sha-secondary-btn {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sha-secondary-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.sha-status {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+.sha-check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+.sha-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.sha-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  background: var(--color-surface-elevated);
+}
+.sha-card--wide { grid-column: span 2; }
+.sha-card-value { font-size: 22px; font-weight: 800; color: var(--color-text); }
+.sha-card-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--color-text-secondary); }
+.sha-card-last { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--color-text-muted); }
+
+.sha-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(320px, 1.6fr);
+  gap: 12px;
+}
+.sha-section {
+  padding: 14px 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  background: var(--color-surface-elevated);
+  min-width: 0;
+}
+.sha-section h3 { margin: 0 0 10px; font-size: 13px; font-weight: 800; color: var(--color-text); }
+.sha-muted { color: var(--color-text-muted); font-size: 12px; font-weight: 500; }
+.sha-chart { width: 100%; min-height: 240px; }
+
+.sha-user { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.sha-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+.sha-user-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--color-text); }
+.sha-user-name--unknown { font-style: italic; color: var(--color-text-muted); }
+
+.sha-people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow-y: auto; }
+.sha-person {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(40px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sha-person:hover { background: var(--color-surface-muted); }
+.sha-person--active { border-color: var(--color-button-primary-bg); background: var(--color-surface-muted); }
+.sha-person-bar { height: 6px; border-radius: 3px; background: var(--color-surface-muted); overflow: hidden; }
+.sha-person-bar span { display: block; height: 100%; border-radius: 3px; }
+.sha-person-count { font-weight: 800; font-size: 12.5px; color: var(--color-text); }
+.sha-person-last { font-size: 11px; color: var(--color-text-muted); white-space: nowrap; }
+
+.sha-table td { vertical-align: top; }
+.sha-nowrap { white-space: nowrap; }
+.sha-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.sha-change { max-width: 480px; }
+
+.sha-type {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+.sha-type--edit { background: var(--color-feedback-success-bg); color: var(--color-feedback-success-text); }
+.sha-type--remove_row, .sha-type--remove_column, .sha-type--remove_grid {
+  background: var(--color-feedback-error-bg);
+  color: var(--color-feedback-error-text);
+}
+
+.sha-diff, .sha-multi { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 12.5px; }
+.sha-old, .sha-new {
+  padding: 1px 6px;
+  border-radius: 6px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sha-old { background: var(--color-feedback-error-bg); color: var(--color-feedback-error-text); text-decoration: line-through; }
+.sha-new { background: var(--color-feedback-success-bg); color: var(--color-feedback-success-text); }
+.sha-old mark, .sha-new mark { background: rgba(0, 0, 0, 0.12); color: inherit; border-radius: 3px; font-weight: 800; }
+.sha-old em, .sha-new em { font-style: italic; opacity: 0.8; }
+.sha-arrow { color: var(--color-text-muted); }
+.sha-formula { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; color: var(--color-text-muted); }
+.sha-multi-tag { font-style: italic; color: var(--color-text-secondary); }
+.sha-structural { color: var(--color-text-secondary); font-style: italic; }
+.sha-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.sha-pager { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 10px; font-size: 12.5px; }
+
+@media (max-width: 900px) {
+  .sha-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .sha-card--wide { grid-column: span 1; }
+  .sha-actions { margin-left: 0; width: 100%; }
+  .sha-search input { min-width: 0; width: 100%; }
+}

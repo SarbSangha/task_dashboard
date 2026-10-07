@@ -1,0 +1,14 @@
+# Backend env files hold real secrets (DATABASE_URL, SECRET_KEY, R2 keys) and
+# must never be committed. The root .gitignore already covers these; this file
+# keeps the backend protected even if it is copied or split out on its own.
+.env
+.env.*
+*.env
+
+# Placeholder template documenting the required keys - dummy values only.
+!.env.example
+
+# Local virtualenvs
+venv/
+venv*/
+.venv/

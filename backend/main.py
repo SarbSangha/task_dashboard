@@ -68,6 +68,9 @@ from routers import reports_router
 from routers import credit_rates_router
 from routers import report_distribution_router
 from routers import usage_intelligence_router
+from routers import credit_report_router
+from routers import sheet_activity_router
+from routers import sheets_router
 from utils import cache as cache_utils
 
 # Import auth utilities for system status
@@ -288,6 +291,30 @@ def _run_elevenlabs_asset_mirror_cycle(limit: int) -> dict:
         raise
     finally:
         db.close()
+
+
+def _run_sheets_poll_cycle() -> list:
+    from services.sheets import poll_due_sheets
+
+    return poll_due_sheets(OperationalSessionLocal)
+
+
+async def _periodic_sheets_poll(interval_seconds: int = 90) -> None:
+    """Snapshot every registered Google Sheet and record what changed
+    (services/sheets/tracker.py). The scheduled Claude agent writes through
+    the Sheets API, which fires no Apps Script trigger, so this diff is the
+    only way its responses are seen. Each sheet carries a poll lease, so
+    several workers never poll the same sheet at once."""
+    while True:
+        await asyncio.sleep(max(60, interval_seconds))
+        try:
+            results = await asyncio.wait_for(asyncio.to_thread(_run_sheets_poll_cycle),
+                                             timeout=max(60, _int_env("SHEETS_POLL_TIMEOUT_SECONDS", 300)))
+            for r in results:
+                if r.get("error") or r.get("events"):
+                    _safe_print(f"Sheets poll sheet={r.get('sheetId')} events={r.get('events', 0)} error={r.get('error')}")
+        except Exception as exc:
+            _safe_print(f"Sheets poll failed: {exc}")
 
 
 async def _periodic_report_schedule_dispatch(interval_seconds: int = 300) -> None:
@@ -539,6 +566,10 @@ async def lifespan(app: FastAPI):
         _periodic_heygen_asset_mirror_dispatch(_int_env("HEYGEN_ASSET_MIRROR_INTERVAL_SECONDS", 300)),
         name="heygen-asset-mirror-dispatch",
     )
+    sheets_poll_task = asyncio.create_task(
+        _periodic_sheets_poll(_int_env("SHEETS_POLL_INTERVAL_SECONDS", 90)),
+        name="sheets-poll",
+    )
     # ElevenLabs' periodic asset-mirror sweep is intentionally NOT started
     # (unlike Freepik's/HeyGen's above). Confirmed 2026-08-13 (see
     # providers/elevenlabs/CAPTURE_CONTRACT.md's "Audio asset delivery"
@@ -567,9 +598,10 @@ async def lifespan(app: FastAPI):
         freepik_asset_mirror_task.cancel()
         heygen_asset_mirror_task.cancel()
         flow_asset_mirror_task.cancel()
+        sheets_poll_task.cancel()
         await asyncio.gather(
             auth_cleanup_task, notification_outbox_task, report_schedule_task,
-            freepik_asset_mirror_task, heygen_asset_mirror_task, flow_asset_mirror_task,
+            freepik_asset_mirror_task, heygen_asset_mirror_task, flow_asset_mirror_task, sheets_poll_task,
             return_exceptions=True,
         )
         await notification_dispatcher.stop()
@@ -758,6 +790,9 @@ app.include_router(reports_router.router)
 app.include_router(credit_rates_router.router)
 app.include_router(report_distribution_router.router)
 app.include_router(usage_intelligence_router.router)
+app.include_router(credit_report_router.router)
+app.include_router(sheet_activity_router.router)
+app.include_router(sheets_router.router)
 
 
 # ==================== ROOT ENDPOINTS ====================

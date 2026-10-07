@@ -1270,6 +1270,61 @@ def _ensure_postgres_schema(conn) -> None:
     )
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_report_audit_created_at ON report_audit_log(created_at)"))
 
+    # Google Sheet edit history (apps-script/Code.gs -> POST /api/sheet-activity).
+    # SQLite gets this table from create_all() off models_new.SheetActivity.
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS sheet_activity (
+                id SERIAL PRIMARY KEY,
+                event_id VARCHAR(64) NOT NULL UNIQUE,
+                timestamp TIMESTAMP NOT NULL,
+                received_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                user_email VARCHAR(320),
+                spreadsheet_id VARCHAR(128) NOT NULL,
+                sheet_name VARCHAR(255),
+                range_a1 VARCHAR(64),
+                "row" INTEGER,
+                "column" INTEGER,
+                num_rows INTEGER,
+                num_columns INTEGER,
+                change_type VARCHAR(24) NOT NULL,
+                old_value TEXT,
+                new_value TEXT,
+                formula TEXT,
+                is_multi_cell BOOLEAN NOT NULL DEFAULT FALSE,
+                truncated BOOLEAN NOT NULL DEFAULT FALSE,
+                source VARCHAR(20) NOT NULL DEFAULT 'webhook'
+            )
+            """
+        )
+    )
+    # Sheets section tables come from create_all() off models_new. These
+    # ALTERs only matter where tracked_sheets / request_events already existed
+    # before sheet types were added; on a fresh database they are no-ops.
+    if _table_exists(conn, "tracked_sheets"):
+        _pg_add_column_if_missing(conn, "tracked_sheets", "sheet_type",
+                                  "VARCHAR(32) NOT NULL DEFAULT 'content_workflow'")
+        _pg_add_column_if_missing(conn, "tracked_sheets", "source_spreadsheet_id", "VARCHAR(128)")
+        _pg_add_column_if_missing(conn, "tracked_sheets", "source_url", "TEXT")
+    if _table_exists(conn, "request_events") and _table_exists(conn, "keywords"):
+        _pg_add_column_if_missing(conn, "request_events", "keyword_id",
+                                  "INTEGER REFERENCES keywords(id) ON DELETE CASCADE")
+        conn.execute(text("ALTER TABLE request_events ALTER COLUMN request_id DROP NOT NULL"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_request_events_keyword_id ON request_events(keyword_id)"))
+
+    for index_sql in (
+        "CREATE INDEX IF NOT EXISTS ix_sheet_activity_timestamp ON sheet_activity(timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_sheet_activity_received_at ON sheet_activity(received_at)",
+        "CREATE INDEX IF NOT EXISTS ix_sheet_activity_user_email ON sheet_activity(user_email)",
+        "CREATE INDEX IF NOT EXISTS ix_sheet_activity_sheet_name ON sheet_activity(sheet_name)",
+        "CREATE INDEX IF NOT EXISTS ix_sheet_activity_change_type ON sheet_activity(change_type)",
+        "CREATE INDEX IF NOT EXISTS ix_sheet_activity_spreadsheet_id ON sheet_activity(spreadsheet_id)",
+        "CREATE INDEX IF NOT EXISTS ix_sheet_activity_sheet_timestamp ON sheet_activity(sheet_name, timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_sheet_activity_user_timestamp ON sheet_activity(user_email, timestamp)",
+    ):
+        conn.execute(text(index_sql))
+
     # Buffer self-upload tags - added after buffer_self_uploads first
     # shipped (create_all() only creates tables that don't exist yet, so an
     # already-existing table needs this explicit ALTER to pick up a column

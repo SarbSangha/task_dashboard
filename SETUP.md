@@ -8,6 +8,7 @@ Everything needed to reproduce this environment on another system. Three deploya
 | Frontend | `my-dashboard/` | Node + Vite + React 18 |
 | Edge worker | `my-dashboard/cloudflare/` | Cloudflare Workers (wrangler) |
 | Browser extension | `browser-extension/tool-hub-autologin/` | Chrome MV3, no build step |
+| Sheet capture | `apps-script/Code.gs` | Google Apps Script bound to the spreadsheet |
 
 ---
 
@@ -129,6 +130,22 @@ Both fall back to `SECRET_KEY` if unset, but set them explicitly.
 
 ### Optional — first-run admin bootstrap
 `DEFAULT_ADMIN_EMAIL`, `DEFAULT_ADMIN_BOOTSTRAP_PASSWORD`, `DEFAULT_ADMIN_ROLES` (`admin,root`)
+
+### Optional — Credit Consumption Report (Testing Report section)
+| Var | Purpose |
+|---|---|
+| `PUBLIC_DASHBOARD_URL` | Public dashboard address, e.g. `https://dashboard.ritzmediaworld.in`. The Generation Log's "Open output" links point here (`/open-output?ref=…`) so they work for colleagues on other machines. Falls back to `FRONTEND_URL`. |
+| `CREDIT_REPORT_EXCLUDED_ACCOUNTS` | Comma-separated emails or user ids of test accounts removed by the "Exclude test & admin accounts" export option. Admin accounts (is_admin flag or admin/root role) are always removed when the option is on. |
+
+### Optional — Sheet Activity (Google Sheet edit history)
+| Var | Purpose |
+|---|---|
+| `SHEET_ACTIVITY_WEBHOOK_SECRET` | Shared secret that `apps-script/Code.gs` sends in `X-Sheet-Activity-Secret`. At least 24 characters. When it's unset, the webhook refuses every request. |
+| `SHEET_ACTIVITY_SPREADSHEET_IDS` | Comma-separated spreadsheet IDs allowed to post events. |
+
+Deploying the script, installing the triggers, backfill and limitations are covered in [apps-script/README.md](apps-script/README.md).
+
+`SHEETS_POLL_INTERVAL_SECONDS` (default 90, minimum 60) sets how often registered sheets in the Sheets section are read. Sheets are read through their "Anyone with the link" export, so no Google credentials are needed. Adding a sheet is covered in the same README.
 
 ### Misc
 `LOAD_DOTENV`, `LOAD_DOTENV_OVERRIDE`, `RUN_STARTUP_SCHEMA_SYNC`, `INBOX_PROFILE_LOGGING`, `SLOW_REQUEST_LOG_MS`, `NOTIFICATION_QUEUE_MAX_SIZE`, `NOTIFICATION_QUEUE_WORKERS`, `WEB_CONCURRENCY`, `RENDER`
