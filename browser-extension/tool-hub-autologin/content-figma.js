@@ -27,6 +27,7 @@ const STATE = {
   launchAuthorized: false,
   launchExpiresAt: 0,
   launchActivatedAt: 0,
+  launchPrepared: false,
   passwordSavingInFlight: false,
   passwordSavingSuppressed: false,
   passwordSavingRestoreTimer: null,
@@ -711,6 +712,7 @@ async function loadLaunchState() {
       STATE.launchAuthorized = true;
       STATE.launchExpiresAt = Number(activation.expiresAt || 0);
       STATE.launchActivatedAt = Number(activation.activatedAt || 0);
+      STATE.launchPrepared = Boolean(activation.prepared);
       return;
     }
 
@@ -728,6 +730,7 @@ async function loadLaunchState() {
   STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
   STATE.launchActivatedAt = Number(response?.ok && response.authorized ? response.activatedAt || 0 : 0);
+  STATE.launchPrepared = Boolean(response?.ok && response.authorized && response.prepared);
 }
 
 async function clearToolSession(options = {}) {
@@ -773,6 +776,9 @@ async function ensureFreshLaunchSession() {
   }
 
   await clearToolSession({ preserveLaunch: true });
+  // Also record it on the launch itself (shared across tabs, and copied onto
+  // any tab that inherits this launch) - see attemptFill's prepared check.
+  await sendRuntimeMessage({ type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED', toolSlug: TOOL_SLUG });
   window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, launchKey);
   window.sessionStorage.removeItem(BLOCKED_NOTICE_KEY);
   setStatus('Preparing fresh Figma session');
@@ -1023,8 +1029,23 @@ function attemptFill() {
     return;
   }
   if (STATE.launchActivatedAt && window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) !== `${STATE.launchActivatedAt}`) {
-    scheduleAsyncStep(ensureFreshLaunchSession);
-    return;
+    // sessionStorage is per tab, and a tab Figma opens itself - "Present"
+    // opening /proto/... in a new tab - only gets a copy of it when the
+    // browser keeps the opener link. Without that copy this check used to
+    // treat the presentation tab as a brand-new launch: it wiped the Figma
+    // cookies (signing out the original tab too) and demanded a fresh login.
+    // It worked on some machines and not others depending on whether the copy
+    // happened (reported 2026-10-07). The launch record's own `prepared` flag
+    // lives in the background script and is inherited by such child tabs, so
+    // trust it and only prepare a fresh session when no tab of this launch has.
+    if (STATE.launchPrepared) {
+      try {
+        window.sessionStorage.setItem(PREPARED_LAUNCH_KEY, `${STATE.launchActivatedAt}`);
+      } catch {}
+    } else {
+      scheduleAsyncStep(ensureFreshLaunchSession);
+      return;
+    }
   }
 
   if (isVerificationPage()) {
@@ -1108,6 +1129,7 @@ function start() {
       STATE.launchAuthorized = false;
       STATE.launchExpiresAt = 0;
       STATE.launchActivatedAt = 0;
+      STATE.launchPrepared = false;
     })
     .finally(() => {
       STATE.settled = false;

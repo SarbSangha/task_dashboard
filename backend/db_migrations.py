@@ -1307,6 +1307,12 @@ def _ensure_postgres_schema(conn) -> None:
                                   "VARCHAR(32) NOT NULL DEFAULT 'content_workflow'")
         _pg_add_column_if_missing(conn, "tracked_sheets", "source_spreadsheet_id", "VARCHAR(128)")
         _pg_add_column_if_missing(conn, "tracked_sheets", "source_url", "TEXT")
+    if _table_exists(conn, "tracked_sheet_members"):
+        # Per-sheet button permissions (Admin Queue -> Sheet Access). Existing
+        # members keep what they had: open + Google link on, settings off.
+        _pg_add_column_if_missing(conn, "tracked_sheet_members", "can_open", "BOOLEAN NOT NULL DEFAULT TRUE")
+        _pg_add_column_if_missing(conn, "tracked_sheet_members", "can_open_google", "BOOLEAN NOT NULL DEFAULT TRUE")
+        _pg_add_column_if_missing(conn, "tracked_sheet_members", "can_edit_settings", "BOOLEAN NOT NULL DEFAULT FALSE")
     if _table_exists(conn, "request_events") and _table_exists(conn, "keywords"):
         _pg_add_column_if_missing(conn, "request_events", "keyword_id",
                                   "INTEGER REFERENCES keywords(id) ON DELETE CASCADE")
@@ -1400,6 +1406,17 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role ON user_roles(role)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_created_at ON user_roles(created_at)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_user_roles_role_user_id ON user_roles(role, user_id)"))
+
+        # SQLite twin of the tracked_sheet_members ALTERs in _ensure_postgres_schema().
+        if _table_exists(conn, "tracked_sheet_members"):
+            member_cols = _table_columns(conn, "tracked_sheet_members")
+            for col, ddl in (
+                ("can_open", "BOOLEAN NOT NULL DEFAULT 1"),
+                ("can_open_google", "BOOLEAN NOT NULL DEFAULT 1"),
+                ("can_edit_settings", "BOOLEAN NOT NULL DEFAULT 0"),
+            ):
+                if col not in member_cols:
+                    conn.execute(text(f"ALTER TABLE tracked_sheet_members ADD COLUMN {col} {ddl}"))
 
         # Per-user grants for deny-by-default sidebar sections -- SQLite twin
         # of the PostgreSQL block in _ensure_postgres_schema().

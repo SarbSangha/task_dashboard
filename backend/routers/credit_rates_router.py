@@ -213,3 +213,60 @@ def delete_credit_rate(
     db.delete(row)
     db.commit()
     return {"success": True, "deletedId": rate_id}
+
+
+# --------------------------------------------------------------------------- #
+# Fixed credits per generation (tools that never report a cost, e.g. Suno)
+# --------------------------------------------------------------------------- #
+class GenerationPricePayload(BaseModel):
+    tool: str
+    creditsPerGeneration: int
+    effectiveFrom: date
+    notes: Optional[str] = None
+
+
+@router.get("/generation-prices")
+def list_generation_prices(current_user: User = Depends(require_admin), db: Session = Depends(get_operational_db)):
+    """Each priced tool with its current price, price history and generation counts."""
+    from services import generation_pricing
+
+    return {"success": True, "tools": generation_pricing.summary(db)}
+
+
+@router.post("/generation-prices")
+def set_generation_price(
+    payload: GenerationPricePayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    """Add a price from a date (or correct the one starting that day). Every
+    generation from that date until the next price is re-stamped."""
+    from services import generation_pricing
+
+    try:
+        row, stamped = generation_pricing.set_price(db, payload.tool, payload.creditsPerGeneration,
+                                                    payload.effectiveFrom, (payload.notes or "").strip() or None,
+                                                    current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()
+    return {"success": True, "priceId": row.id, "generationsUpdated": stamped,
+            "tools": generation_pricing.summary(db)}
+
+
+@router.delete("/generation-prices/{price_id}")
+def delete_generation_price(
+    price_id: int,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    """Remove a price; the price before it covers those dates again."""
+    from services import generation_pricing
+
+    try:
+        tool, stamped = generation_pricing.delete_price(db, price_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Price not found")
+    db.commit()
+    return {"success": True, "deletedId": price_id, "tool": tool, "generationsUpdated": stamped,
+            "tools": generation_pricing.summary(db)}

@@ -212,9 +212,8 @@ def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) ->
         "prompt": _s(prompt),
         "prompt_length": len(prompt) if isinstance(prompt, str) else None,
         "prompt_hash": _prompt_hash(prompt if isinstance(prompt, str) else None),
-        # Permanently None - see constants.py's module docstring and
-        # SunoGeneration.credits_used's own comment for why no
-        # credits-computation function exists for this pass.
+        # Suno reports no per-song cost; the admin-set fixed price is stamped
+        # in normalize_capture_event (services/generation_pricing.py).
         "credits_used": None,
         # Only "streaming" is confirmed - see this module's own docstring
         # and constants.py's GENERATION_STATUS_* comment.
@@ -318,6 +317,9 @@ def normalize_capture_event(db: Session, event: SunoCaptureEvent) -> Optional[Su
 
     if is_new:
         db.add(generation)
+    # Fixed price per song (Reports -> Credit Rates), by the song's own date.
+    from services.generation_pricing import stamp_generation
+    stamp_generation(db, "Suno", generation)
     db.flush()
 
     _project_into_generation_record(db, generation)
@@ -370,6 +372,7 @@ def _project_into_generation_record(db: Session, generation: SunoGeneration) -> 
     if generation.linked_client_id is not None:
         record.linked_client_id = generation.linked_client_id
         record.linked_client_name = generation.linked_client_name
+    record.credits_burned = generation.credits_used
     record.metadata_json = {
         "sunoGenerationId": generation.id,
         "modelName": generation.model_name,

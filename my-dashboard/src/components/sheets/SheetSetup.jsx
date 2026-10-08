@@ -34,8 +34,13 @@ const errorText = (err, fallback) => {
   return typeof d === 'string' ? d : fallback;
 };
 
-export default function SheetSetup({ sheet, onSaved, onCancel, onDeleted }) {
+// isAdmin: who sees the sheet and removing it stay admin-only, so a member
+// with the "settings" permission (or the "Add Sheets" grant) gets the form
+// without those parts. Without "openInGoogle" the server leaves the links
+// out, so the source link field is hidden rather than saved back empty.
+export default function SheetSetup({ sheet, isAdmin, onSaved, onCancel, onDeleted }) {
   const editing = Boolean(sheet);
+  const canSeeLinks = !editing || sheet.permissions?.openInGoogle !== false;
   const [url, setUrl] = useState(sheet?.url || '');
   const [sheetType, setSheetType] = useState(sheet?.sheetType || 'content_workflow');
   const [sourceUrl, setSourceUrl] = useState(sheet?.sourceUrl || '');
@@ -55,8 +60,9 @@ export default function SheetSetup({ sheet, onSaved, onCancel, onDeleted }) {
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
+    if (!isAdmin) return;
     sheetsAPI.people().then((d) => setPeople(d?.people || [])).catch(() => {});
-  }, []);
+  }, [isAdmin]);
 
   const inspect = async () => {
     setBusy('inspect');
@@ -105,11 +111,11 @@ export default function SheetSetup({ sheet, onSaved, onCancel, onDeleted }) {
     setError('');
     setNotice('');
     try {
-      const payload = { name: name.trim(), tabs, mapping, statuses, config, sourceUrl };
+      const payload = { name: name.trim(), tabs, mapping, statuses, config, ...(canSeeLinks ? { sourceUrl } : {}) };
       let saved;
       if (editing) {
         saved = (await sheetsAPI.update(sheet.id, { ...payload, isActive })).sheet;
-        saved = { ...saved, members: (await sheetsAPI.setMembers(sheet.id, [...members])).members };
+        if (isAdmin) saved = { ...saved, members: (await sheetsAPI.setMembers(sheet.id, [...members])).members };
         // Re-read right away so a corrected setting shows its effect now,
         // not at the next scheduled poll.
         try {
@@ -119,7 +125,7 @@ export default function SheetSetup({ sheet, onSaved, onCancel, onDeleted }) {
           // The scheduled poll will pick it up.
         }
       } else {
-        const res = await sheetsAPI.create({ ...payload, sheetType, url, memberIds: [...members] });
+        const res = await sheetsAPI.create({ ...payload, sheetType, url, memberIds: isAdmin ? [...members] : [] });
         saved = res.sheet;
         const first = res.firstSync || {};
         let done = `Saved. Imported ${first.created ?? 0} existing request(s).`;
@@ -221,11 +227,13 @@ export default function SheetSetup({ sheet, onSaved, onCancel, onDeleted }) {
                   </table>
                 </div>
               )}
+              {canSeeLinks && (
               <label className="trp-field shs-grow">
                 <span>Keyword source sheet (optional)</span>
                 <input type="url" value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)}
                   placeholder="Leave empty if people type keywords into this sheet" />
               </label>
+              )}
               <p className="shs-muted shs-small">
                 Paste the link of the <strong>other</strong> spreadsheet where people type new keywords (the &quot;Keyword URL
                 Source Sheet&quot;), only if keywords are typed there and copied into this sheet. If people type keywords
@@ -329,6 +337,7 @@ export default function SheetSetup({ sheet, onSaved, onCancel, onDeleted }) {
           </>
           )}
 
+          {isAdmin ? (
           <section className="shs-block">
             <h4>Who can see this sheet <span className="shs-muted">(admins always can; people also need the Sheets grant in Section Access)</span></h4>
             <input className="shs-filter" type="search" placeholder="Filter people…" value={peopleFilter}
@@ -351,10 +360,20 @@ export default function SheetSetup({ sheet, onSaved, onCancel, onDeleted }) {
                 </tbody>
               </table>
             </div>
+            <p className="shs-muted shs-small">
+              What each person can do with it (Open, Open in Google Sheets, Settings) is set in Admin Queue &rarr; Sheet Access.
+            </p>
           </section>
+          ) : (
+            !editing && (
+              <p className="shs-muted shs-small">
+                You will be able to open and manage this sheet. An admin decides who else can see it.
+              </p>
+            )
+          )}
 
           <div className="shs-actions">
-            {editing && <button type="button" className="shs-danger-btn" onClick={remove} disabled={Boolean(busy)}>Remove sheet</button>}
+            {editing && isAdmin && <button type="button" className="shs-danger-btn" onClick={remove} disabled={Boolean(busy)}>Remove sheet</button>}
             <span className="shs-spacer" />
             <button type="button" className="shs-secondary-btn" onClick={onCancel} disabled={Boolean(busy)}>Cancel</button>
             <button type="button" className="trp-generate-btn" onClick={save}

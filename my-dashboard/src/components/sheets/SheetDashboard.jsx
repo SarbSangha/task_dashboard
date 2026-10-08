@@ -15,7 +15,7 @@ const EMPTY = { tab: '', status: '', user: '', start: '', end: '', q: '', stuck:
 const hours = (h) => (h == null ? '—' : h < 48 ? `${h} h` : `${Math.round(h / 24 * 10) / 10} days`);
 const errorText = (err, fallback) => (typeof err?.response?.data?.detail === 'string' ? err.response.data.detail : fallback);
 
-export default function SheetDashboard({ sheet, isAdmin, onOpenRequest, onSettings, active }) {
+export default function SheetDashboard({ sheet, onOpenRequest, onSettings, active }) {
   const [filters, setFilters] = useState(EMPTY);
   const q = useDebouncedValue(filters.q, 400);
   const [page, setPage] = useState(1);
@@ -102,9 +102,9 @@ export default function SheetDashboard({ sheet, isAdmin, onOpenRequest, onSettin
           </p>
         </div>
         <div className="shs-actions">
-          <a className="shs-secondary-btn" href={sheet.openUrl} target="_blank" rel="noopener noreferrer">Open in Google Sheets</a>
-          {isAdmin && <button type="button" className="shs-secondary-btn" onClick={syncNow} disabled={busy === 'sync'}>{busy === 'sync' ? 'Reading…' : 'Sync now'}</button>}
-          {isAdmin && <button type="button" className="shs-secondary-btn" onClick={onSettings}>Settings</button>}
+          {sheet.permissions?.openInGoogle && sheet.openUrl && <a className="shs-secondary-btn" href={sheet.openUrl} target="_blank" rel="noopener noreferrer">Open in Google Sheets</a>}
+          {sheet.permissions?.settings && <button type="button" className="shs-secondary-btn" onClick={syncNow} disabled={busy === 'sync'}>{busy === 'sync' ? 'Reading…' : 'Sync now'}</button>}
+          {sheet.permissions?.settings && <button type="button" className="shs-secondary-btn" onClick={onSettings}>Settings</button>}
         </div>
       </div>
 

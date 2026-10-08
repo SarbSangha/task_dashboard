@@ -19,6 +19,10 @@ export const sheetsAPI = {
   remove: async (id) => (await api.delete(`/api/sheets/${id}`, { timeout: TIMEOUT_MS })).data,
   setMembers: async (id, userIds) => (await api.put(`/api/sheets/${id}/members`, { userIds }, { timeout: TIMEOUT_MS })).data,
   sync: async (id) => (await api.post(`/api/sheets/${id}/sync`, {}, { timeout: 120000 })).data,
+  // Admin Queue -> Sheet Access: per-sheet, per-person permissions.
+  accessOverview: async () => (await api.get('/api/sheets/access', { timeout: TIMEOUT_MS })).data,
+  setAccess: async (id, userId, access) =>
+    (await api.put(`/api/sheets/${id}/access/${userId}`, access, { timeout: TIMEOUT_MS })).data,
   people: async () => (await api.get('/api/sheets/people', { timeout: TIMEOUT_MS })).data,
   setGoogleEmail: async (userId, googleEmail) =>
     (await api.put(`/api/sheets/people/${userId}/google-email`, { googleEmail }, { timeout: TIMEOUT_MS })).data,

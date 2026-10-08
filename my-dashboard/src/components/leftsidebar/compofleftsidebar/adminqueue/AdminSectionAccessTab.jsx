@@ -31,6 +31,7 @@ const FALLBACK_FEATURES = [
   { key: 'buffer', label: 'Buffer' },
   { key: 'credit_report', label: 'Credit Report' },
   { key: 'sheet_activity', label: 'Sheets' },
+  { key: 'sheets_add', label: 'Add Sheets' },
 ];
 
 let _toastId = 0;
@@ -337,7 +338,9 @@ function AdminSectionAccessTab({ users, setUsers, onViewInfo, loading }) {
       <p className="sap-intro">
         These sections are hidden by default. A user sees <strong>RMW Data</strong> or{' '}
         <strong>Buffer</strong> in their sidebar only while granted here — revoking also blocks
-        the section&apos;s data, not just the menu item. Admins always have access.
+        the section&apos;s data, not just the menu item. <strong>Add Sheets</strong> lets a person add new
+        sheets in the Sheets section (they also need <strong>Sheets</strong>); what they can do with each sheet is
+        set in Sheet Access. Admins always have access.
       </p>
 
       {/* ── Stat Cards ── */}

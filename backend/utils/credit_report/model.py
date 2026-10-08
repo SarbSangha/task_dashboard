@@ -141,7 +141,11 @@ class SummaryRow:
     name: str
     totals: Totals
     share: float
+    # Top user = every user, Unassigned included, by Charged credits then
+    # generations; top_named_user is the same without Unassigned (shown
+    # beside it when Unassigned comes out on top).
     top_user: Top = Top(())
+    top_named_user: Top = Top(())
     top_tool: Top = Top(())
     top_department: Top = Top(())
     cost_note: str = ""
@@ -173,6 +177,8 @@ class ReportModel:
     task_fill: float = 0.0          # share of all rows with a task
     model_fill: float = 0.0
     excluded: dict = field(default_factory=dict)
+    top_user: Top = Top(())          # company-wide, Unassigned included (see SummaryRow)
+    top_named_user: Top = Top(())
 
     @property
     def is_empty(self) -> bool:
@@ -287,7 +293,8 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
         rows = []
         for name, t in store.items():
             row = SummaryRow(name=name, totals=t, share=_share(t.credits, totals.credits),
-                             top_user=top_of(slice_(user_kind, name, people_only=True), name_of_user))
+                             top_user=top_of(slice_(user_kind, name), name_of_user),
+                             top_named_user=top_of(slice_(user_kind, name, people_only=True), name_of_user))
             for attr, kind in extra.items():
                 setattr(row, attr, top_of(slice_(kind, name)))
             rows.append(row)
@@ -333,6 +340,9 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
         task_fill=_share(task_filled, all_rows),
         model_fill=_share(model_filled, all_rows),
         excluded=excluded or {"accounts": 0, "generations": 0, "credits": 0.0},
+        top_user=top_of({uid: (t.credits, t.generations) for uid, t in by_user.items()}, name_of_user),
+        top_named_user=top_of({uid: (t.credits, t.generations) for uid, t in by_user.items()
+                               if uid != UNASSIGNED_USER_ID}, name_of_user),
     )
 
 

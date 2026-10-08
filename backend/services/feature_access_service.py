@@ -45,6 +45,11 @@ FEATURE_CREDIT_REPORT = "credit_report"
 #: sheets a person sees) and the raw Sheet Activity log
 #: (routers/sheet_activity_router.py).
 FEATURE_SHEET_ACTIVITY = "sheet_activity"
+#: Within the Sheets section: may register new sheets ("Add a sheet"). The
+#: person who adds a sheet is made its member with every per-sheet
+#: permission; anything else about who sees it stays with admins
+#: (routers/sheets_router.py, Admin Queue -> Sheet Access).
+FEATURE_SHEETS_ADD = "sheets_add"
 
 GATED_FEATURES: tuple[str, ...] = (
     FEATURE_RMW_DATA,
@@ -52,6 +57,7 @@ GATED_FEATURES: tuple[str, ...] = (
     FEATURE_BUFFER_SHEET_EDIT,
     FEATURE_CREDIT_REPORT,
     FEATURE_SHEET_ACTIVITY,
+    FEATURE_SHEETS_ADD,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +69,7 @@ FEATURE_LABELS = {
     FEATURE_BUFFER_SHEET_EDIT: "Purpose Sheet Editing",
     FEATURE_CREDIT_REPORT: "Credit Report",
     FEATURE_SHEET_ACTIVITY: "Sheets",
+    FEATURE_SHEETS_ADD: "Add Sheets",
 }
 
 

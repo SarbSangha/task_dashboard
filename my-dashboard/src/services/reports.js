@@ -268,6 +268,14 @@ export const reportsAPI = {
   creditRateDelete: async (rateId) =>
     (await api.delete(`/api/reports/credit-rates/${rateId}`, { timeout: REPORTS_TIMEOUT_MS })).data,
 
+  // ---- Fixed credits per generation (tools with no captured cost, e.g. Suno) ----
+  generationPrices: async (requestConfig = {}) =>
+    (await api.get('/api/reports/credit-rates/generation-prices', { timeout: REPORTS_TIMEOUT_MS, ...requestConfig })).data,
+  generationPriceSet: async (payload) =>
+    (await api.post('/api/reports/credit-rates/generation-prices', payload, { timeout: REPORTS_TIMEOUT_MS })).data,
+  generationPriceDelete: async (priceId) =>
+    (await api.delete(`/api/reports/credit-rates/generation-prices/${priceId}`, { timeout: REPORTS_TIMEOUT_MS })).data,
+
   // ---- Distribution layer ----
   emailSettings: async () => (await api.get('/api/reports/settings/email')).data,
   emailSettingsSave: async (payload) =>

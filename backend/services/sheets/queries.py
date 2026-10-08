@@ -52,6 +52,40 @@ def can_view(db: Session, user: User, sheet_id: int) -> bool:
     return ids is None or sheet_id in ids
 
 
+#: Per-sheet permission keys, as the API and frontend name them, mapped to
+#: the TrackedSheetMember column holding each.
+SHEET_PERMISSIONS = {
+    "open": "can_open",
+    "openInGoogle": "can_open_google",
+    "settings": "can_edit_settings",
+}
+ALL_SHEET_PERMISSIONS = {key: True for key in SHEET_PERMISSIONS}
+NO_SHEET_PERMISSIONS = {key: False for key in SHEET_PERMISSIONS}
+
+
+def member_permissions(member: Optional[TrackedSheetMember]) -> dict:
+    if member is None:
+        return dict(NO_SHEET_PERMISSIONS)
+    return {key: bool(getattr(member, col)) for key, col in SHEET_PERMISSIONS.items()}
+
+
+def sheet_permissions_for(db: Session, user: User) -> Optional[dict]:
+    """{sheet_id: permissions} for the sheets this user is a member of; None
+    for admins, who may do everything on every sheet."""
+    if is_sheet_admin(user):
+        return None
+    rows = db.query(TrackedSheetMember).filter(TrackedSheetMember.user_id == user.id)
+    return {m.sheet_id: member_permissions(m) for m in rows}
+
+
+def sheet_permissions(db: Session, user: User, sheet_id: int) -> dict:
+    if is_sheet_admin(user):
+        return dict(ALL_SHEET_PERMISSIONS)
+    member = (db.query(TrackedSheetMember)
+              .filter(TrackedSheetMember.sheet_id == sheet_id, TrackedSheetMember.user_id == user.id).first())
+    return member_permissions(member)
+
+
 def people_directory(db: Session) -> dict:
     """{google email (lower): {"userId", "name"}} from login emails plus overrides."""
     out = {}
@@ -71,16 +105,22 @@ def _person(directory: dict, email: Optional[str]) -> dict:
     return {"email": email, "name": hit.get("name"), "userId": hit.get("userId")}
 
 
-def serialize_sheet(sheet: TrackedSheet, *, members: Optional[list] = None, request_count: Optional[int] = None) -> dict:
+def serialize_sheet(sheet: TrackedSheet, *, members: Optional[list] = None, request_count: Optional[int] = None,
+                    permissions: Optional[dict] = None) -> dict:
+    """`permissions` is the viewer's per-sheet permissions (None = all, for
+    admins). Without openInGoogle the links are left out, so hiding the
+    button is not the only thing standing between them and the sheet."""
+    perms = permissions if permissions is not None else ALL_SHEET_PERMISSIONS
+    show_links = perms.get("openInGoogle", False)
     return {
         "id": sheet.id,
         "name": sheet.name,
         "sheetType": sheet.sheet_type or "content_workflow",
         "spreadsheetId": sheet.spreadsheet_id,
-        "sourceUrl": sheet.source_url,
+        "sourceUrl": sheet.source_url if show_links else None,
         "sourceSpreadsheetId": sheet.source_spreadsheet_id,
-        "url": sheet.url,
-        "openUrl": open_url(sheet.spreadsheet_id),
+        "url": sheet.url if show_links else None,
+        "openUrl": open_url(sheet.spreadsheet_id) if show_links else None,
         "tabs": sheet.tabs_json or [],
         "mapping": sheet.mapping_json or {},
         "statuses": M.validate_statuses(sheet.statuses_json),
@@ -92,6 +132,7 @@ def serialize_sheet(sheet: TrackedSheet, *, members: Optional[list] = None, requ
         "lastPollError": sheet.last_poll_error,
         "members": members,
         "requestCount": request_count,
+        "permissions": dict(perms),
     }
 
 

@@ -15,6 +15,15 @@ then checks:
     (Unassigned included), Charged + Pending + Failed = every log row, no
     Output link contains "localhost", and every internal hyperlink lands on
     an existing cell whose text matches the link label
+  * navigation: breadcrumbs on row 1 of every sheet; every link target has a
+    way back (breadcrumb or "⬅" back cell); every incoming link lands on the
+    back cell for its own source sheet; one-to-one links round-trip
+  * Generation Log readability: one-line rows, 120-character prompt
+    preview + full prompt column, headers wide enough
+  * By User / By Tool detail blocks: every "Generations (n) →" opens the
+    first log row of its (user, tool) or (user, tool, day) run, whose rows
+    and credits match the block; each block's tables add up to its list row;
+    every log back link returns to the row that links to it
   * edge cases: no data in range, formula-looking prompts stay text, long
     prompts are truncated, mostly-empty Task / Model columns are dropped
   * the API: Section Access gating, options, validation, output lookup
@@ -34,6 +43,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from openpyxl import load_workbook  # noqa: E402
+from openpyxl.utils import column_index_from_string  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
@@ -71,6 +81,7 @@ from utils.credit_report import (  # noqa: E402
     load_groups,
     resolve_excluded_accounts,
 )
+from utils.credit_report import navigation as N  # noqa: E402
 from utils.credit_report import workbook as W  # noqa: E402
 from utils.credit_report.facts import EXCLUDED_ACCOUNTS_ENV  # noqa: E402
 
@@ -193,8 +204,9 @@ def seed():
             HeygenGeneration(video_id="h4", owner_user_id=asha, credits_used=0, provider_created_at=at, status="draft"),
             HeygenGeneration(video_id="h5", owner_user_id=tester, credits_used=TESTER_CREDITS, provider_created_at=at,
                              status="completed"),
+            # TTS: blank status, the provider's state is in metadata_json.
             ElevenlabsGeneration(provider_creation_id="el1", owner_user_id=bob, credits_used=5, prompt=INJECTION,
-                                 provider_created_at=at),
+                                 provider_created_at=at, metadata_json={"state": "created"}),
             ElevenlabsGeneration(provider_creation_id="el2", owner_user_id=bob, credits_used=1500,
                                  provider_created_at=at, status="generating_music"),
             SunoGeneration(provider_creation_id="s1", owner_user_id=bob, credits_used=None, provider_created_at=at,
@@ -315,15 +327,23 @@ def test_model():
     _assert(ranks[UNASSIGNED] == ("—", "—"), "Unassigned is not ranked")
     _assert(model.users[-1].name == UNASSIGNED, "Unassigned listed last")
     video = next(d for d in model.departments if d.name == "Video")
-    _assert(video.top_user.keys == (IDS["Bob"],), "top user never Unassigned")
+    _assert(video.top_user.keys == (IDS["Bob"],), "Video's top user")
+    # One top-user rule: everyone counts, Unassigned included (credits, then
+    # generations); when Unassigned wins, the best named user is kept beside it.
     unassigned_dept = next(d for d in model.departments if d.name == UNASSIGNED)
-    _assert(unassigned_dept.top_user.keys == (IDS["Zed"],), "Unassigned dept's top user is a person")
+    _assert(unassigned_dept.top_user.keys == (UNASSIGNED_USER_ID,), "Unassigned (999 credits) tops its department")
+    _assert(unassigned_dept.top_named_user.keys == (IDS["Zed"],), "top named user beside it")
+    _assert(model.top_user.keys == (IDS["Bob"],) and model.top_named_user.keys == (IDS["Bob"],),
+            "company top user: Bob (1,035) beats Unassigned (999)")
+    freepik = next(t for t in model.tools if t.name == "Freepik")
+    _assert(freepik.top_user.keys == (UNASSIGNED_USER_ID,) and freepik.top_named_user.keys == (IDS["Bob"],),
+            "Freepik: Unassigned on top, Bob the top named user")
     bob = model.user(IDS["Bob"])
     _close(bob.client_rate, 0.5, "Bob: 2 of 4 charged generations have a client")
     _close(bob.totals.credits_per_generation, 1035 / 4, "credits per generation")
     _assert(bob.top_tool.keys == ("Epidemic Sound",) and bob.top_tool.generations == 1, "top tool with gens")
     suno = next(t for t in model.tools if t.name == "Suno")
-    _assert("Not captured" in suno.cost_note, "Suno marked as cost not captured")
+    _assert(suno.cost_note.startswith("Fixed price per song"), "Suno: priced by an admin setting")
     _assert(model.clients[-1].name == NO_CLIENT, "No client sorts last")
     clients_in_order = [r[2] for r in model.user_client_rows]
     _assert(clients_in_order == sorted(clients_in_order, key=[c.name for c in model.clients].index),
@@ -341,6 +361,31 @@ def test_duplicate_detection():
     _assert(flags == [True, True, False, False, False, False, False, False, True, True],
             f"dup flags: {flags}")
     print("ok  duplicate detection")
+
+
+def test_block_rules():
+    """"Most used" ties and free tools; > 60 active dates become weeks."""
+    from datetime import timedelta
+    from utils.credit_report.blocks import Agg, DayRow, date_rows, pick_most_used
+
+    tie = pick_most_used({"A": Agg(rows=5, gens=5, credits=10), "B": Agg(rows=9, gens=9, credits=10)},
+                         Agg(rows=14, gens=14, credits=20))
+    _assert(tie.name == "B" and "50% of credits" in tie.text(), f"credit tie broken by generations: {tie.text()}")
+    free = pick_most_used({"Flow": Agg(rows=3, gens=3), "Suno": Agg(rows=7, gens=7)}, Agg(rows=10, gens=10))
+    _assert(free.name == "Suno" and free.by_generations and "no credits recorded" in free.text(),
+            f"free tools ranked by generations, and it says so: {free.text()}")
+    client = pick_most_used({NO_CLIENT: Agg(gens=9, credits=90), "Acme": Agg(gens=1, credits=10)},
+                            Agg(gens=10, credits=100), skip=NO_CLIENT)
+    _assert(client.name == "Acme" and round(client.share, 2) == 0.10, "No client ignored unless it is the only one")
+    only = pick_most_used({NO_CLIENT: Agg(gens=2, credits=5)}, Agg(gens=2, credits=5), skip=NO_CLIENT)
+    _assert(only.name == NO_CLIENT, "No client kept when it is the only one")
+    days = {date(2026, 1, 1) + timedelta(days=i): DayRow(date(2026, 1, 1) + timedelta(days=i), total=1.0)
+            for i in range(61)}
+    rows, weekly = date_rows(days)
+    _assert(weekly and all(r.day.weekday() == 0 for r in rows) and sum(r.total for r in rows) == 61,
+            "more than 60 dates are grouped by Monday-start week, totals kept")
+    _assert(not date_rows(dict(list(days.items())[:60]))[1], "60 dates stay daily")
+    print("ok  block rules: most used, mostly works on client, weekly above 60 dates")
 
 
 def test_log_columns_dropped_when_empty():
@@ -380,11 +425,7 @@ def _display(value, fmt=None):
 
 
 def _normalize_label(label):
-    label = label.strip()
-    for prefix in ("⬅ Back to ", "⬅ "):
-        if label.startswith(prefix):
-            label = label[len(prefix):]
-    return label[:-2] if label.endswith(" →") else label
+    return N.strip_decoration(label)
 
 
 def _table(ws, name=None):
@@ -417,7 +458,25 @@ def _links(wb):
                     yield ws, cell, m.group("target").replace('""', '"'), m.group("label").replace('""', '"')
 
 
+def _internal(value):
+    """(sheet, coordinate) an internal link cell points at, else None."""
+    m = LINK_RE.match(value) if isinstance(value, str) else None
+    t = INTERNAL_RE.match(m.group("target").replace('""', '"')) if m else None
+    return (t.group("sheet"), f"{t.group('col')}{t.group('row')}") if t else None
+
+
+def _is_back_cell(cell):
+    return isinstance(cell.value, str) and cell.data_type == "f" and _display(cell.value).startswith("⬅")
+
+
 def _validate_links(wb):
+    """Every link lands on an existing cell that matches it:
+    * a back link ("⬅ ...") lands on its label's text, or on a link that
+      leads back to it (a round trip; checked in detail by
+      _validate_navigation and _validate_blocks);
+    * a link that lands on a back cell, or whose label names an action
+      ("Open block →", "Generations (48) →"), is checked by those too;
+    * any other link lands on its label's text."""
     internal = external = 0
     for ws, cell, target, label in _links(wb):
         where = f"{ws.title}!{cell.coordinate}"
@@ -434,9 +493,461 @@ def _validate_links(wb):
         _assert(row <= dest.max_row, f"{where} -> {target} past last row {dest.max_row}")
         target_cell = dest[f"{col}{row}"]
         shown = _display(target_cell.value, target_cell.number_format)
-        _assert(shown == _normalize_label(label), f"{where} '{label}' -> {target} shows '{shown}'")
+        want = _normalize_label(label)
         internal += 1
+        if label.startswith("⬅"):
+            if shown == want or (want.endswith("…") and shown.startswith(want[:-1])):
+                continue                      # (a back label cut to fit its narrow column ends with "…")
+            if label.endswith(N.LIST_SUFFIX) and (sheet, f"{col}{row}") == (sheet, f"A{N.list_row(sheet)}"):
+                continue                      # "(list)": back to the sheet's list header row
+            back = _internal(target_cell.value)
+            _assert(back is not None and back[0] == ws.title,
+                    f"{where} '{label}' -> {target} shows '{shown}' and does not link back")
+        elif N.is_action_label(label) or _is_back_cell(target_cell):
+            continue
+        else:
+            _assert(shown == want, f"{where} '{label}' -> {target} shows '{shown}'")
     return internal, external
+
+
+def _validate_navigation(wb, expect_links=True):
+    """A (breadcrumbs), B/C (back cells), and the round trip."""
+    for name in W.SHEET_ORDER[1:]:
+        ws = wb[name]
+        crumbs = [_display(c.value) for c in ws[1] if c.value is not None]
+        _assert(crumbs == W.crumb_labels(name), f"{name} breadcrumbs {crumbs}")
+        parent = W.SHEET_PARENT[name]
+        _assert(_internal(ws["A1"].value) == (parent, f"A{N.landing_row(parent)}"), f"{name} A1 goes to {parent}")
+        _assert(ws.freeze_panes and int(re.sub(r"[A-Z]", "", ws.freeze_panes)) >= 2, f"{name} row 1 frozen")
+    forward = round_trips = shared = 0
+    for ws, cell, target, label in _links(wb):
+        if not target.startswith("#") or label.startswith("⬅"):
+            continue
+        sheet, coord = _internal(cell.value)
+        if sheet == W.HOME or cell.row == 1:
+            continue                                      # Home is the root; row 1 is the breadcrumb itself
+        dest = wb[sheet]
+        landing = dest[coord]
+        where = f"{ws.title}!{cell.coordinate} -> {sheet}!{coord}"
+        forward += 1
+        if not _is_back_cell(landing):
+            # Plain sheet navigation may skip a back cell when it lands on the
+            # title (the breadcrumb is the way back) or on a row that links
+            # straight back to the source row (a block's "⬅ Back to ... list").
+            if landing.row <= N.TITLE_ROW and landing.column == 1 and _is_back_cell(dest["A1"]):
+                continue
+            returns = [_internal(c.value) for c in dest[landing.row] if _is_back_cell(c)]
+            if any(r and r[0] == ws.title and int(re.sub(r"[A-Z]", "", r[1])) == cell.row for r in returns):
+                continue
+            # The row's back slots are full: it lands on the item's name (column
+            # A) and returns through the title area's "⬅ <sheet> (list)" cell.
+            title_backs = [_internal(c.value) for r in (1, N.TITLE_ROW) for c in dest[r] if _is_back_cell(c)]
+            _assert(landing.column == 1 and any(b and b[0] == ws.title for b in title_backs),
+                    f"{where}: dead end (no back cell, no link back to the row, no list return)")
+            continue
+        back_sheet, back_coord = _internal(landing.value)
+        _assert(back_sheet == ws.title, f"{where}: lands on the back cell for {back_sheet}, not {ws.title}")
+        if _display(landing.value).endswith(N.LIST_SUFFIX):
+            shared += 1
+            _assert(back_coord == f"A{N.list_row(ws.title)}", f"{where}: list back link to {back_coord}")
+        elif sheet == W.LOG:
+            # The log's back cells return to the (user, tool) / (user, tool,
+            # day) table row that links in; _validate_blocks checks them.
+            round_trips += 1
+            _assert(int(re.sub(r"[A-Z]", "", back_coord)) == cell.row, f"{where}: log back link returns to {back_coord}")
+        else:
+            round_trips += 1
+            _assert(int(re.sub(r"[A-Z]", "", back_coord)) == cell.row, f"{where}: back link returns to {back_coord}")
+    _assert(not expect_links or (forward > 80 and round_trips > 40 and shared > 5),
+            f"navigation checked: {forward} links, {round_trips} round trips, {shared} list returns")
+    return forward, round_trips, shared
+
+
+def _log_rows(log):
+    """[(row number, values)] of the log's generation rows (not user header / separator rows)."""
+    headers = [c.value for c in log[W.HEADER_ROW]]
+    status = headers.index("Charge status")
+    return headers, [(i, r) for i, r in enumerate(log.iter_rows(min_row=W.FIRST_DATA_ROW, values_only=True),
+                                                  start=W.FIRST_DATA_ROW) if r[status] is not None]
+
+
+def _validate_log_layout(wb):
+    log = wb[W.LOG]
+    headers = [c.value for c in log[W.HEADER_ROW]]
+    _assert(headers[-1] == W.PROMPT_FULL, f"full prompt is the last column: {headers[-1]}")
+    for i, h in enumerate(headers, start=1):
+        width = log.column_dimensions[W.get_column_letter(i)].width
+        if h.startswith("⬅"):
+            _assert(width == N.BACK_COL_WIDTH, f"log back column '{h}' is narrow ({width})")
+        else:
+            _assert(width >= len(h) + 4, f"log header '{h}' fits ({width})")
+    preview_i = headers.index("Prompt") + 1
+    when = headers.index("Date / time (IST)")
+    for row in log.iter_rows(min_row=W.FIRST_DATA_ROW, max_row=log.max_row):
+        if not isinstance(row[when].value, datetime):
+            continue                                       # header / separator / total rows
+        for c in row:
+            _assert(not (c.alignment and c.alignment.wrap_text), f"{W.LOG}!{c.coordinate} wraps")
+        preview = row[preview_i - 1].value or ""
+        _assert(len(preview) <= W.PROMPT_PREVIEW_CHARS + 1 and "\n" not in preview, f"preview {preview[:30]!r}")
+        if len(preview) > W.PROMPT_PREVIEW_CHARS:
+            _assert(preview.endswith("…"), "a cut preview ends with …")
+    for r, dim in log.row_dimensions.items():
+        _assert(not dim.ht or dim.ht <= 15, f"log row {r} is {dim.ht}pt")
+
+
+GENS_RE = re.compile(r"^(?P<all>All )?[Gg]enerations \((?P<n>[\d,]+)(?: · (?P<p>[\d,]+) pending)?"
+                     r"(?: · (?P<f>[\d,]+) failed)?\)$")
+
+
+def _validate_blocks(wb):
+    """Detail blocks, their links into the log and the log's links back.
+
+    * every "Generations (n …) →" lands on the first log row of its run - the
+      user header (All generations), the (user, tool) separator, or the first
+      row of a (user, tool, day, client) - and the run has exactly n rows,
+      with the pending / failed counts the label names; where the block shows
+      credits for that exact run, they equal the run's Charged credits;
+    * each user block: Tools used = Clients = Date-wise = the list row;
+      each tool block: Users = Clients = Date-wise = Date › User › Client = the list row;
+    * every log back link (⬅ User, ⬅ Tool, ⬅ Date, ⬅ Tool date, ⬅ Client)
+      returns to the row that links into its run (⬅ Date / Tool date /
+      Client: into exactly that row);
+    * in-block links (Date-wise / Clients -> Tool › Date › Client, Date-wise
+      -> Date › User › Client) land on a "⬅" cell that returns to their row;
+    * every block has a link in (the list) and out (⬅ Back to ... list).
+    """
+    log = wb[W.LOG]
+    lh = [c.value for c in log[W.HEADER_ROW]]
+    li = {h: i for i, h in enumerate(lh)}
+    rows = {i: r for i, r in enumerate(log.iter_rows(min_row=W.FIRST_DATA_ROW, values_only=True),
+                                       start=W.FIRST_DATA_ROW)}
+
+    def is_data(r):
+        return r[li["Charge status"]] is not None
+
+    def key(r, kind):
+        k = (r[li["User"]], r[li["Tool"]])
+        return k + (r[li["Date"]], r[li["Client"]]) if kind == "run" else (k[0],) if kind == "user" else k
+
+    def run(start, kind):
+        i = start if kind == "run" else start + 1
+        first = None
+        out = []
+        while i in rows:
+            r = rows[i]
+            if not is_data(r):
+                if kind == "user" and r[li["Tool"]] is not None and r[li["User"]] == rows[start][li["User"]]:
+                    i += 1                                         # the user's next tool separator
+                    continue
+                break
+            first = first or key(r, kind)
+            if key(r, kind) != first:
+                break
+            out.append(r)
+            i += 1
+        return out
+
+    def counts(rs):
+        status = [r[li["Charge status"]] for r in rs]
+        return len(rs), status.count(PENDING), status.count(FAILED), \
+            sum(float(r[li["Credits"]] or 0) for r in rs if r[li["Charged"]] is True)
+
+    runs = 0
+    credit_cols = {(W.USER, "A"): "C", (W.USER, "C"): "E", (W.TOOL, "B"): "D", (W.TOOL, "D"): "E"}
+    for sheet_name in (W.USER, W.TOOL, W.USER_CLIENT):
+        ws = wb[sheet_name]
+        for row in ws.iter_rows(min_row=W.FIRST_DATA_ROW):
+            for cell in row:
+                if not (isinstance(cell.value, str) and cell.value.startswith("=HYPERLINK(")):
+                    continue
+                label = _display(cell.value)
+                m = GENS_RE.match(N.strip_decoration(label))
+                target = _internal(cell.value)
+                if not m or not target or target[0] != W.LOG:
+                    continue
+                where = f"{ws.title}!{cell.coordinate} '{label}'"
+                r0 = int(re.sub(r"[A-Z]", "", target[1]))
+                col = re.sub(r"\d", "", target[1])
+                if m.group("all"):
+                    _assert(not is_data(rows[r0]) and rows[r0][li["Tool"]] is None and col == "A", f"{where}: user header")
+                    rs = run(r0, "user")
+                elif col in ("A", "B"):
+                    _assert(not is_data(rows[r0]) and rows[r0][li["Tool"]], f"{where}: tool separator")
+                    rs = run(r0, "pair")
+                else:
+                    prev = rows.get(r0 - 1)
+                    _assert(is_data(rows[r0]) and (prev is None or not is_data(prev) or key(prev, "run") != key(rows[r0], "run")),
+                            f"{where}: first row of its (user, tool, day, client) run")
+                    rs = run(r0, "run")
+                n, pending, failed, charged = counts(rs)
+                _assert(n == int(m.group("n").replace(",", "")) and pending == int((m.group("p") or "0").replace(",", ""))
+                        and failed == int((m.group("f") or "0").replace(",", "")),
+                        f"{where}: run has {n} rows, {pending} pending, {failed} failed")
+                back = _internal(log[target[1]].value)
+                _assert(back and back[0] == ws.title and int(re.sub(r"[A-Z]", "", back[1])) == cell.row,
+                        f"{where}: the log's back link returns to {back}")
+                shown = credit_cols.get((sheet_name, col))
+                if shown and not m.group("all"):
+                    _close(charged, float(ws[f"{shown}{cell.row}"].value or 0), f"{where}: credits = log run")
+                runs += 1
+
+    for i, r in rows.items():
+        for name in W.LOG_BACK_COLUMNS:
+            cell = log.cell(i, li[name] + 1)
+            back = _internal(cell.value)
+            if not back:
+                continue
+            fwd = _internal(wb[back[0]][back[1]].value)
+            _assert(fwd and fwd[0] == W.LOG, f"{W.LOG}!{cell.coordinate} -> {back}: not a link into the log")
+            start = int(re.sub(r"[A-Z]", "", fwd[1]))
+            _assert(start <= i and rows[start][li["User"]] == r[li["User"]],
+                    f"{W.LOG}!{cell.coordinate}: back link returns to a row for another run")
+            if name in (W.LOG_BACK_DATE, W.LOG_BACK_TOOL_DATE, W.LOG_BACK_CLIENT):
+                _assert(start == i, f"{W.LOG}!{cell.coordinate}: {name} returns to the row that opens this run")
+
+    # In-block links: Date-wise / Clients rows open a "⬅" cell that returns to them.
+    inner = 0
+    for sheet_name in (W.USER, W.TOOL):
+        ws = wb[sheet_name]
+        for row in ws.iter_rows(min_row=W.FIRST_DATA_ROW):
+            for cell in row:
+                target = _internal(cell.value) if isinstance(cell.value, str) else None
+                if not target or target[0] != sheet_name or _display(cell.value).startswith("⬅"):
+                    continue
+                landing = ws[target[1]]
+                if not _is_back_cell(landing) or landing.column_letter not in ("G", "H"):
+                    continue
+                back = _internal(landing.value)
+                _assert(back[0] == sheet_name and int(re.sub(r"[A-Z]", "", back[1])) == cell.row,
+                        f"{sheet_name}!{cell.coordinate}: in-block link returns to {back}")
+                inner += 1
+
+    def tables_in(ws, first, last):
+        """{table title: (headers, [rows])} between two rows."""
+        out, r = {}, first
+        while r <= last:
+            a = ws.cell(r, 1).value
+            hdr = [c.value for c in ws[r + 1]] if r + 1 <= last else []
+            if isinstance(a, str) and hdr and hdr[0] in ("Tool", "Client", "Date", "Week", "User") and \
+                    ws.cell(r + 1, 1).fill.fgColor.rgb in ("001F3864", "FF1F3864"):
+                body, k = [], r + 2
+                while k <= last and ws.cell(k, 1).value not in (None, ""):
+                    body.append([c.value for c in ws[k]])
+                    k += 1
+                out[a] = (hdr, body)
+                r = k
+            r += 1
+        return out
+
+    def credits_of(table, header):
+        headers, body = table
+        i = headers.index(header)
+        return sum(float(b[i] or 0) for b in body if i < len(b))
+
+    blocks_seen = 0
+    for sheet_name, sections in ((W.USER, {"Tools used": "Credits", "Clients": "Credits", "Date-wise": "Total",
+                                           "Tool › Date › Client": "Credits"}),
+                                 (W.TOOL, {"Users": "Credits", "Clients": "Credits", "Date-wise": "Credits",
+                                           "Date › User › Client": "Credits"})):
+        ws = wb[sheet_name]
+        lh2, lrows = _table(ws)
+        list_credit = {_display(r[0]): float(r[lh2.index("Credits")] or 0) for r in lrows}
+        incoming = {}
+        for s2, c2, _t2, _l in _links(wb):
+            tgt = _internal(c2.value)
+            if tgt and tgt[0] == sheet_name:
+                incoming.setdefault(int(re.sub(r"[A-Z]", "", tgt[1])), []).append(f"{s2.title}!{c2.coordinate}")
+        heads = [r for r in range(W.FIRST_DATA_ROW + len(lrows), ws.max_row + 1)
+                 if ws.cell(r, 1).fill.fgColor.rgb in ("00BDD7EE", "FFBDD7EE") and ws.cell(r, 1).value]
+        _assert(len(heads) == len(lrows), f"{sheet_name}: one block per list row ({len(heads)} vs {len(lrows)})")
+        for k, h in enumerate(heads):
+            name = ws.cell(h, 1).value
+            end = (heads[k + 1] - 1) if k + 1 < len(heads) else ws.max_row
+            tables = tables_in(ws, h + 1, end)
+            got = {}
+            for title, table in tables.items():
+                for sec, header in sections.items():
+                    if title.startswith(sec):
+                        got[sec] = credits_of(table, header)
+            _assert(set(got) == set(sections), f"{sheet_name} {name}: sections {sorted(tables)}")
+            for sec, value in got.items():
+                _close(value, list_credit[name], f"{sheet_name} {name}: {sec} = list row")
+            _assert(h in incoming, f"{sheet_name} {name}: no link into the block")
+            _assert(any(_display(c.value).startswith("⬅ Back to") for c in ws[h]), f"{sheet_name} {name}: no way back")
+            _assert(ws.row_dimensions[h + 1].outlineLevel == 1, f"{sheet_name} {name}: block is collapsible")
+            blocks_seen += 1
+    _assert(runs > 0 and blocks_seen > 0 and inner > 0, "blocks checked")
+    print(f"ok  blocks: {blocks_seen} user/tool blocks, {runs} log runs, {inner} in-block links; "
+          "every back link round-trips")
+
+
+def _freeze_col(ws) -> int:
+    """How many columns the sheet freezes (0 = none)."""
+    if not ws.freeze_panes:
+        return 0
+    letters = re.sub(r"\d", "", ws.freeze_panes)
+    return max(0, column_index_from_string(letters) - 1)
+
+
+def _freeze_row(ws) -> int:
+    return int(re.sub(r"[A-Z]", "", ws.freeze_panes)) - 1 if ws.freeze_panes else 0
+
+
+def WP_TABLES_HEADER(model):
+    from utils.credit_report.workbook_periods import plan_explorer
+    return plan_explorer(model).tables_header
+
+
+def _audit_landings(wb):
+    """No link lands on an empty cell; a cross-sheet landing keeps its row's
+    name in view (column A frozen, or the cell within 120 characters of
+    width of column A)."""
+    checked = 0
+    for ws, cell, target, label in _links(wb):
+        t = _internal(cell.value)
+        if not t:
+            continue
+        dest = wb[t[0]]
+        landing = dest[t[1]]
+        _assert(landing.value not in (None, ""), f"{ws.title}!{cell.coordinate} '{label}' lands on empty {t}")
+        if t[0] == ws.title:
+            continue
+        offset = sum(dest.column_dimensions[W.get_column_letter(c)].width or 13
+                     for c in range(1, landing.column))
+        _assert(_freeze_col(dest) >= 1 or offset <= 120,
+                f"{ws.title}!{cell.coordinate} -> {t}: lands {offset:.0f} wide from column A, which is not frozen")
+        checked += 1
+    return checked
+
+
+def _audit_graph(wb):
+    """0 self-links; 0 back↔back pairs; 0 forward↔forward loops (two cells
+    not labelled "⬅" that link to each other's rows); at most 3 "⬅ Back"
+    columns per sheet."""
+    edges = []
+    for ws, cell, _target, label in _links(wb):
+        t = _internal(cell.value)
+        if not t:
+            continue
+        _assert((ws.title, cell.coordinate) != t, f"{ws.title}!{cell.coordinate} links to itself")
+        edges.append(((ws.title, cell.row), (t[0], int(re.sub(r"[A-Z]", "", t[1]))), label.startswith("⬅"),
+                      f"{ws.title}!{cell.coordinate}"))
+    by_kind = {}
+    for src, dst, back, where in edges:
+        by_kind.setdefault((back, src, dst), []).append(where)
+    loops, back_pairs = [], []
+    for (back, src, dst), where in by_kind.items():
+        if src == dst or (back, dst, src) not in by_kind or src > dst:
+            continue
+        (back_pairs if back else loops).append((where[0], by_kind[(back, dst, src)][0]))
+    _assert(not loops, f"forward↔forward loops: {loops[:10]}")
+    _assert(not back_pairs, f"back↔back pairs: {back_pairs[:10]}")
+    for ws in wb.worksheets:
+        slots = {c.column for row in ws.iter_rows(max_row=min(ws.max_row, 400)) for c in row
+                 if isinstance(c.value, str) and c.value.startswith("⬅ Back ") and c.value[7:].isdigit()}
+        _assert(len(slots) <= 3, f"{ws.title}: {len(slots)} back columns")
+    return len(edges)
+
+
+def _audit_labels(model, wb):
+    """Item links land on the item; back labels are never cut; one label
+    means one target within a row."""
+    items = ({u.label for u in model.users} | {t.name for t in model.tools} | {c.name for c in model.clients}
+             | {d.name for d in model.departments})
+    named = 0
+    by_row = {}
+    for ws, cell, target, label in _links(wb):
+        _assert("…" not in label, f"{ws.title}!{cell.coordinate}: cut label '{label}'")
+        key = (ws.title, cell.row, label)
+        by_row.setdefault(key, set()).add(target)
+        t = _internal(cell.value)
+        name = N.strip_decoration(label)
+        if not t or label.startswith(("⬅", "↔", "↓")) or name not in items or cell.row == 1:
+            continue
+        dest = wb[t[0]]
+        row = int(re.sub(r"[A-Z]", "", t[1]))
+        _assert(_display(dest.cell(row, 1).value, dest.cell(row, 1).number_format) == name,
+                f"{ws.title}!{cell.coordinate} '{label}' lands on {t}, whose column A is "
+                f"'{_display(dest.cell(row, 1).value)}'")
+        named += 1
+    # Two different items may share a name (the user "Unassigned" and the
+    # department "Unassigned"): allowed when each link opens its own kind of
+    # item - a user's block on By User, a department on By Department.
+    item_sheet = {W.USER, W.DEPT, W.TOOL, W.CLIENT}
+
+    def kinds(targets):
+        sheets = [INTERNAL_RE.match(t).group("sheet") if INTERNAL_RE.match(t) else t for t in targets]
+        return len(set(sheets)) == len(sheets) and set(sheets) <= item_sheet
+
+    dupes = {k: v for k, v in by_row.items()
+             if len(v) > 1 and not (N.strip_decoration(k[2]) in items and kinds(v))}
+    _assert(not dupes, f"same label, different targets in one row: {list(dupes.items())[:5]}")
+    return named
+
+
+def _reachability(wb, view=25, max_clicks=4):
+    """Follow links only, from Home: each landing shows its row + the next
+    `view` rows, frozen rows always visible. Every non-empty row of every
+    summary sheet (all but the Generation Log) must come into view."""
+    sheets = [ws.title for ws in wb.worksheets if ws.sheet_state == "visible"]
+    links_by_row = {}
+    for ws, cell, _target, _label in _links(wb):
+        t = _internal(cell.value)
+        if t:
+            links_by_row.setdefault((ws.title, cell.row), []).append((t[0], int(re.sub(r"[A-Z]", "", t[1]))))
+    # Breadth first: a landing at depth d shows its rows; a link among them is click d + 1.
+    seen, frontier, landed = {}, [(W.HOME, 1)], set()
+    for depth in range(max_clicks + 1):
+        nxt = []
+        for sheet, row in frontier:
+            if (sheet, row) in landed:
+                continue
+            landed.add((sheet, row))
+            ws = wb[sheet]
+            visible = set(range(1, _freeze_row(ws) + 1)) | set(range(row, row + view + 1))
+            seen.setdefault(sheet, set()).update(visible)
+            for r in visible:
+                nxt.extend(links_by_row.get((sheet, r), []))
+        frontier = nxt
+    missing = {}
+    for name in sheets:
+        if name == W.LOG:
+            continue
+        ws = wb[name]
+        rows = {c.row for row in ws.iter_rows() for c in row if c.value not in (None, "")}
+        gap = sorted(rows - seen.get(name, set()))
+        if gap:
+            missing[name] = gap
+    return missing
+
+
+def _validate_top_users(wb):
+    """One rule: everyone counts (Unassigned too) by Charged credits, then
+    generations; "Top named user" is filled exactly when Unassigned is on top."""
+    checked = 0
+    for name in (W.DEPT, W.TOOL, W.CLIENT):
+        headers, rows = _table(wb[name])
+        tu, nu = headers.index("Top user"), headers.index("Top named user")
+        for r in rows:
+            top, named = _display(r[tu]), _display(r[nu])
+            # Filled only when Unassigned is on top ("—" there means nobody named used it).
+            _assert(named == "—" or (top == UNASSIGNED and named != UNASSIGNED),
+                    f"{name} {_display(r[0])}: top {top}, named {named}")
+            checked += 1
+    # By Tool: the top user is the first active row of the tool's Users table.
+    ws = wb[W.TOOL]
+    headers, rows = _table(ws)
+    for r in rows:
+        tool = _display(r[0])
+        block = ws[_internal(r[0])[1]].row
+        k = block
+        while ws.cell(k, 1).value != "User":
+            k += 1
+        first = next(_display(ws.cell(j, 1).value) for j in range(k + 1, k + 200)
+                     if (ws.cell(j, 3).value or 0) > 0 or (ws.cell(j, 4).value or 0) > 0)
+        _assert(_display(r[headers.index("Top user")]) == first, f"{tool}: top user {first}")
+    return checked
 
 
 def test_workbook_end_to_end():
@@ -444,6 +955,7 @@ def test_workbook_end_to_end():
     os.close(fd)
     try:
         model = _build(path)
+        _assert(model.log_stats.plan_mismatches == 0, "every log row landed where the blocks planned it")
         wb = load_workbook(path)
         _assert(wb.sheetnames == list(W.SHEET_ORDER) + [W.LISTS], f"sheet order {wb.sheetnames}")
         _assert(wb[W.LISTS].sheet_state == "hidden", "Lists sheet is hidden")
@@ -451,25 +963,30 @@ def test_workbook_end_to_end():
         log_headers = [c.value for c in wb[W.LOG][W.HEADER_ROW]]
         _assert({"Date", "Month", "Week", "Quarter", "Charged"} <= set(log_headers), f"log date columns {log_headers}")
         log_ws = wb[W.LOG]
+        _lh, data_rows = _log_rows(log_ws)
+        first_data = data_rows[0][0]
         month_col = log_headers.index("Month") + 1
-        first_month = log_ws.cell(W.FIRST_DATA_ROW, month_col)
+        first_month = log_ws.cell(first_data, month_col)
         _assert(isinstance(first_month.value, datetime) and first_month.value.day == 1
                 and first_month.number_format == "mmm yyyy", "Month is a real date shown mmm yyyy")
-        week = log_ws.cell(W.FIRST_DATA_ROW, log_headers.index("Week") + 1).value
+        _assert(log_ws.cell(first_data, log_headers.index("Date") + 1).number_format == "dd mmm yyyy (ddd)",
+                "dates shown dd mmm yyyy (ddd)")
+        week = log_ws.cell(first_data, log_headers.index("Week") + 1).value
         _assert(isinstance(week, datetime) and week.weekday() == 0, "Week starts on Monday")
-        charged_vals = {log_ws.cell(r, log_headers.index("Charged") + 1).value
-                        for r in range(W.FIRST_DATA_ROW, W.FIRST_DATA_ROW + ALL_ROWS)}
+        charged_vals = {r[log_headers.index("Charged")] for _i, r in data_rows}
         _assert(charged_vals == {True, False}, f"Charged is TRUE/FALSE: {charged_vals}")
+        _assert(log_ws.freeze_panes == "F5", "log back columns frozen with the header")
         for ws in wb.worksheets:
             if ws.title == W.LISTS:          # hidden dropdown data, not a page
                 continue
-            if ws.title != W.HOME:
-                _assert(_display(ws["A1"].value) == "⬅ Back to Home", f"{ws.title} A1 back link")
-            if ws.title not in (W.HOME, W.PERIOD):
-                _assert(_display(ws["B1"].value) == f"{W.PERIOD} →", f"{ws.title} links to Period Explorer")
             _assert(ws.freeze_panes, f"{ws.title} has frozen panes")
-        for name in (W.DEPT, W.USER, W.TOOL, W.CLIENT, W.DEPT_TOOL, W.USER_TOOL, W.USER_CLIENT, W.QUALITY, W.LOG):
+        _validate_log_layout(wb)
+        for name in (W.DEPT, W.TOOL, W.CLIENT, W.DEPT_TOOL, W.USER_TOOL, W.USER_CLIENT, W.QUALITY, W.LOG):
             _assert(len(wb[name].tables) == 1, f"{name} has one Excel Table")
+        user_tables = list(wb[W.USER].tables)
+        _assert(user_tables[0] == "tblUsers" and len(user_tables) > 1
+                and all(t.startswith("tblUserTDC") for t in user_tables[1:]),
+                f"By User: the list, then one filterable Tool › Date › Client table per block: {user_tables}")
         _assert(len(wb[W.TREND].tables) == 9, f"Monthly Trend tables: {list(wb[W.TREND].tables)}")
         _assert(wb[W.DEPT]["B5"].number_format == W.CREDITS_FMT, "credits use thousands separators")
 
@@ -499,12 +1016,16 @@ def test_workbook_end_to_end():
 
         headers, rows = _table(log)
         status_i = headers.index("Charge status")
+        rows = [r for r in rows if r[status_i] is not None]      # generations, not header / separator rows
         counts = {s: sum(1 for r in rows if r[status_i] == s) for s in (CHARGED, PENDING, FAILED)}
         _assert(counts == {CHARGED: CHARGED_ROWS, PENDING: PENDING_ROWS, FAILED: FAILED_ROWS}, f"log statuses {counts}")
         _assert(sum(counts.values()) == len(rows) == ALL_ROWS, "Charged + Pending + Failed = every log row")
         raw_i = headers.index("Raw status")
-        _assert({"settled", "submitted", "reconciling", "generating_music", "draft", "streaming", "(none)"}
-                <= {r[raw_i] for r in rows}, "raw status kept in the log")
+        _assert({"settled", "submitted", "reconciling", "generating_music", "draft", "streaming", "created",
+                 W.NO_RAW_STATUS} <= {r[raw_i] for r in rows}, "raw status kept in the log")
+        el1 = next(r for r in rows if r[headers.index(W.PROMPT_FULL)] == INJECTION)
+        _assert(el1[raw_i] == "created" and el1[status_i] == CHARGED,
+                "ElevenLabs TTS raw status read from metadata; still Charged")
         unassigned_rows = [r for r in rows if r[headers.index("User")] == UNASSIGNED]
         _assert(len(unassigned_rows) == 1 and unassigned_rows[0][headers.index("Department")] == UNASSIGNED,
                 "Unassigned row in the log")
@@ -513,26 +1034,71 @@ def test_workbook_end_to_end():
         dup_i = headers.index(W.DUPLICATE_LABEL)
         _assert(sum(1 for r in rows if r[dup_i] == W.DUPLICATE_LABEL) == 2, "exactly one duplicate pair flagged")
         _assert("Task" not in headers and "Model / type" not in headers, f"empty Task/Model dropped: {headers}")
-        prompt_col = W.get_column_letter(headers.index("Prompt") + 1)
-        prompts = [log[f"{prompt_col}{r}"] for r in range(W.FIRST_DATA_ROW, W.FIRST_DATA_ROW + ALL_ROWS)]
-        injected = [c for c in prompts if c.value == INJECTION]
-        _assert(injected and injected[0].data_type == "s", "formula-looking prompt stays text")
-        longest = max((c.value or "" for c in prompts), key=len)
-        _assert(len(longest) <= 32_767 and longest.endswith(W.TRUNCATION_MARKER), "long prompt truncated")
-        _assert(any(isinstance(r[0], datetime) and (r[0].hour, r[0].minute) == (1, 30) for r in rows), "IST times")
+        for header in ("Prompt", W.PROMPT_FULL):
+            prompt_col = W.get_column_letter(headers.index(header) + 1)
+            prompts = [log[f"{prompt_col}{r}"] for r, _v in data_rows]
+            injected = [c for c in prompts if c.value == INJECTION]
+            _assert(injected and injected[0].data_type == "s", f"formula-looking prompt stays text in {header}")
+            longest = max((c.value or "" for c in prompts), key=len)
+            if header == "Prompt":
+                _assert(longest == "x" * W.PROMPT_PREVIEW_CHARS + "…", "long prompt previewed")
+            else:
+                _assert(len(longest) <= 32_767 and longest.endswith(W.TRUNCATION_MARKER), "long prompt truncated")
+        when = headers.index("Date / time (IST)")
+        _assert(any(isinstance(r[when], datetime) and (r[when].hour, r[when].minute) == (1, 30) for r in rows),
+                "IST times")
 
-        # Links: none local, every internal one lands on matching text.
+        # Links: none local, every internal one lands on matching text, and
+        # every jump has a way back.
         internal, external = _validate_links(wb)
         _assert(internal > 80 and external == 3, f"links checked: {internal} internal, {external} output")
+        forward, round_trips, shared = _validate_navigation(wb)
+        print(f"    navigation: {forward} links, {round_trips} round trips, {shared} list returns")
+        landings = _audit_landings(wb)
+        missing = _reachability(wb)
+        _assert(not missing, f"rows not reachable within 4 clicks: { {k: v[:12] for k, v in missing.items()} }")
+        edges = _audit_graph(wb)
+        named = _audit_labels(model, wb)
+        print(f"    labels: {named} item links land on their item's row; no cut labels; one label, one target per row")
+        print(f"    reachability: every summary row within 4 clicks of Home; {edges} links: no self-links, "
+              "no back↔back pairs, no forward↔forward loops, ≤ 3 back columns per sheet")
+        tops = _validate_top_users(wb)
+        print(f"    audit: {landings} cross-sheet landings keep column A in view, no link lands on an empty cell, "
+              f"{tops} top users follow one rule")
 
-        # Users' first log rows really are their first rows.
-        user_headers, user_rows = _table(wb[W.USER])
-        for (cell,) in wb[W.USER].iter_rows(min_row=5, max_row=4 + len(user_rows), max_col=1):
-            target = INTERNAL_RE.match(LINK_RE.match(cell.value).group("target"))
-            row = int(target.group("row"))
-            ucol = W.get_column_letter([c.value for c in log[W.HEADER_ROW]].index("User") + 1)
-            _assert(row == W.FIRST_DATA_ROW or log[f"{ucol}{row - 1}"].value != log[f"{ucol}{row}"].value,
-                    f"{_display(cell.value)} -> first log row")
+        _validate_blocks(wb)
+
+        # By Department: a department name opens its block, whose People are
+        # exactly its users and add up to its credits; Tools add up too.
+        dh, drows = _table(wb[W.DEPT])
+        uh, urows = _table(wb[W.USER])
+        dept_of = {_display(r[0]): _display(r[uh.index("Department")]) for r in urows}
+        dws = wb[W.DEPT]
+        for (cell,) in dws.iter_rows(min_row=W.FIRST_DATA_ROW, max_row=W.FIRST_DATA_ROW + len(drows) - 1, max_col=1):
+            dept = _display(cell.value)
+            sheet, coord = _internal(cell.value)
+            _assert(sheet == W.DEPT, f"{dept} opens its block on By Department, not {sheet}")
+            block = dws[coord].row
+            _assert(_display(dws.cell(block, 1).value) == dept, f"{dept} lands on its own block")
+            sections = {}
+            r = block + 1
+            while r <= dws.max_row and not (dws.cell(r, 1).fill.fgColor.rgb in ("00BDD7EE", "FFBDD7EE")):
+                title = dws.cell(r, 1).value
+                if title in ("People (most credits first)", "Tools"):
+                    rows, k = [], r + 2
+                    while dws.cell(k, 1).value not in (None, ""):
+                        rows.append(k)
+                        k += 1
+                    sections[title] = rows
+                    r = k
+                r += 1
+            people = [_display(dws.cell(k, 1).value) for k in sections["People (most credits first)"]]
+            _assert(sorted(people) == sorted(u for u, d in dept_of.items() if d == dept), f"{dept} people {people}")
+            dept_credits = next(float(row[1]) for row in drows if _display(row[0]) == dept)
+            _close(sum(float(dws.cell(k, 3).value or 0) for k in sections["People (most credits first)"]), dept_credits,
+                   f"{dept}: people add up to the department")
+            _close(sum(float(dws.cell(k, 2).value or 0) for k in sections["Tools"]), dept_credits,
+                   f"{dept}: tools add up to the department")
 
         # Data Quality and Home.
         dq_headers, dq_rows = _table(wb[W.QUALITY])
@@ -540,10 +1106,20 @@ def test_workbook_end_to_end():
         _assert(dq[UNASSIGNED][1] == 1 and abs(dq[UNASSIGNED][2] - 999) < 0.01, "DQ Unassigned")
         _assert(dq[PENDING][1] == PENDING_ROWS and abs(dq[PENDING][2] - PENDING_TOTAL) < 0.01, "DQ Pending")
         _assert(dq[W.DUPLICATE_LABEL][1] == 2 and abs(dq[W.DUPLICATE_LABEL][2] - 20) < 0.01, "DQ duplicates")
-        _assert(dq["Zero-credit generations"][1] == 3, "DQ zero-credit rows")
+        _assert(dq[W.ZERO_MISSED][1] == 1, "DQ: Kling's clamped row is charged with 0 credits")
+        _assert(dq[W.NOT_CAPTURED][1] == 2 and "Suno 1" in dq[W.NOT_CAPTURED][3] and "Flow 1" in dq[W.NOT_CAPTURED][3],
+                "DQ: Suno and Flow rows are 'cost not captured'")
+        if datetime.now() > datetime(2026, 10, 6):
+            _assert(dq[W.STALE_PENDING][1] == PENDING_ROWS, "DQ: every seeded pending row is over 24 h old")
         _assert(dq["Test & admin accounts excluded"][1] == 1, "DQ excluded (admin's one generation)")
+        dq_link = _internal(wb[W.QUALITY][f"{W.QUALITY_LINK_COL}{W.FIRST_DATA_ROW + W.QUALITY_ISSUES.index(W.EXCLUDED)}"].value)
+        _assert(dq_link == (W.HOME, "A5"), f"Data Quality 'Test & admin accounts' -> {dq_link}")
+        home_back = _internal(wb[W.HOME]["C5"].value)
+        _assert(_display(wb[W.HOME]["C5"].value).startswith("⬅") and home_back and home_back[0] == W.QUALITY
+                and int(re.sub(r"[A-Z]", "", home_back[1])) == W.FIRST_DATA_ROW + W.QUALITY_ISSUES.index(W.EXCLUDED),
+                f"Home row 5 has a back link to its Data Quality row: {home_back}")
         qa_headers, qa_rows = _table(home, "tblQuickAnswers")
-        _assert(len(qa_rows) <= 9 and not any("top user on" in (r[0] or "").lower() for r in qa_rows),
+        _assert(len(qa_rows) <= 11 and not any("top user on" in (r[0] or "").lower() for r in qa_rows),
                 f"{len(qa_rows)} quick answers, no per-tool rows")
         home_text = " ".join(str(c.value) for row in home.iter_rows() for c in row if c.value)
         _assert("Excluded: Admin, RoleAdmin" in home_text, "exclusion setting printed on Home")
@@ -553,9 +1129,10 @@ def test_workbook_end_to_end():
         tool_headers, tool_rows = _table(wb[W.TOOL])
         cost = {r[0]: r[tool_headers.index("Cost")] for r in tool_rows}
         tool_names = {_display(k): v for k, v in cost.items()}
-        _assert(tool_names["Suno"].startswith("Not captured") and tool_names["Flow"].startswith("Not captured"),
-                "Suno and Flow marked")
+        _assert(tool_names["Suno"].startswith("Fixed price per song") and tool_names["Flow"].startswith("Not captured"),
+                "Suno priced by an admin setting; Flow marked not captured")
         _assert(tool_names["Kling"] == "Recorded", "recorded tools say so")
+        user_headers, _user_rows = _table(wb[W.USER])
         _assert("Credits per generation" in tool_headers and "Credits per generation" in user_headers,
                 "credits per generation on By Tool and By User")
         _assert("% generations with a client" in user_headers, "client-tagging rate on By User")
@@ -564,7 +1141,9 @@ def test_workbook_end_to_end():
     print("ok  workbook end to end")
 
 
-BANNED = re.compile(r"\b(FILTER|UNIQUE|SORT|LET|LAMBDA)\s*\(", re.IGNORECASE)
+# Excel 365 / 2019-only functions: the file must work in Excel 2016, LibreOffice and Google Sheets.
+BANNED = re.compile(r"\b(FILTER|UNIQUE|SORT|SORTBY|LET|LAMBDA|XLOOKUP|XMATCH|MAXIFS|MINIFS|TEXTJOIN|IFS|SWITCH)\s*\(",
+                    re.IGNORECASE)
 
 
 def _assert_no_banned_functions(wb):
@@ -584,8 +1163,9 @@ def _assert_no_banned_functions(wb):
 def _assert_month_consistency(wb, model):
     """Month Drill-down total = Monthly Trend row = SUM of the month's Charged log rows."""
     headers, rows = _table(wb[W.TREND], "tblTrendSummary")
-    trend = {r[0].strftime("%Y-%m"): r[headers.index("Credits")] for r in rows}
-    trend_gens = {r[0].strftime("%Y-%m"): r[headers.index("Generations")] for r in rows}
+    month = lambda v: datetime.strptime(_display(v), "%b %Y").strftime("%Y-%m")  # noqa: E731  (a link to Drill-down)
+    trend = {month(r[0]): r[headers.index("Credits")] for r in rows}
+    trend_gens = {month(r[0]): r[headers.index("Generations")] for r in rows}
     drill = {}
     for row in wb["Month Drill-down"].iter_rows(values_only=True):
         if row and isinstance(row[0], str) and len(row) > 4 and row[1] == "Credits":
@@ -657,7 +1237,7 @@ def test_period_explorer_recalc(path, wb):
     _assert(isinstance(pe["B27"].value, str) and pe["B27"].value not in ("", "—"), f"top user: {pe['B27'].value}")
 
     headers, rows = _table(wb[W.TREND], "tblTrendSummary")
-    sept = next(r for r in rows if r[0] == datetime(2026, 9, 1))
+    sept = next(r for r in rows if _display(r[0]) == "Sep 2026")
     one_month = _recalc(_with_inputs(path, B5=datetime(2026, 9, 1), B6=datetime(2026, 9, 30)))
     _close(one_month[W.PERIOD]["B20"].value, sept[headers.index("Credits")], "From/To = Sep -> Sep's Monthly Trend total")
 
@@ -700,12 +1280,14 @@ def test_trend_filtered_and_empty_workbooks():
         _assert(model.months == ["2026-09", "2026-10"], f"months {model.months}")
         wb = load_workbook(path)
         headers, rows = _table(wb[W.TREND], "tblTrendToolCredits")
-        sept = next(r for r in rows if r[0] == datetime(2026, 9, 1))
+        sept = next(r for r in rows if _display(r[0]) == "Sep 2026")
         _close(sept[headers.index("Kling")], 70, "September Kling credits")
         _validate_links(wb)
+        _validate_navigation(wb)
         _assert_month_consistency(wb, model)
         _assert_no_banned_functions(wb)
         test_period_explorer_recalc(path, wb)
+        _validate_blocks(wb)
 
         _build(path, department="Design", client="Acme")
         wb = load_workbook(path)
@@ -713,6 +1295,7 @@ def test_trend_filtered_and_empty_workbooks():
         _assert("Department: Design" in text and "Client: Acme" in text, "applied filters printed")
         _close(wb[W.HOME]["A11"].value, 150, "Design + Acme charged total")
         _validate_links(wb)
+        _validate_navigation(wb, expect_links=False)
 
         _build(path, exclude_test_accounts=False)
         wb = load_workbook(path)
@@ -733,6 +1316,7 @@ def test_trend_filtered_and_empty_workbooks():
             _assert(wb[name]["A5"].value == W.EMPTY_MESSAGE or wb[name]["A4"].value == W.EMPTY_MESSAGE,
                     f"{name} empty message")
         _validate_links(wb)
+        _validate_navigation(wb, expect_links=False)
     finally:
         os.remove(path)
     print("ok  trend, filtered and empty workbooks")
@@ -812,6 +1396,7 @@ def main() -> int:
     test_model()
     test_duplicate_detection()
     test_log_columns_dropped_when_empty()
+    test_block_rules()
     test_workbook_end_to_end()
     test_trend_filtered_and_empty_workbooks()
     test_api()

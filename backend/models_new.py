@@ -1048,6 +1048,30 @@ class ToolCreditRate(Base):
         }
 
 
+class ToolGenerationPrice(Base):
+    """Fixed credits per generation for tools that never report a cost of
+    their own (Suno: one song = N credits).
+
+    Dated, so a price change only affects generations from its date on: a
+    row applies to generations whose IST date is within
+    [effective_from, effective_to] (effective_to NULL = still current).
+    services/generation_pricing.py stamps the price onto each generation's
+    credits field, so every report reads it like a captured cost.
+    """
+
+    __tablename__ = "tool_generation_prices"
+    __table_args__ = (Index("ix_tool_generation_prices_tool_effective", "tool", "effective_from"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    tool = Column(String(40), nullable=False, index=True)          # e.g. "Suno"
+    credits_per_generation = Column(Integer, nullable=False)
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date)                                     # NULL = still current
+    notes = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class GenerationProject(Base):
     __tablename__ = "generation_projects"
     __table_args__ = (
@@ -1778,13 +1802,24 @@ class TrackedSheet(Base):
 
 
 class TrackedSheetMember(Base):
-    """Which non-admin dashboard users may see a registered sheet."""
+    """Which non-admin dashboard users may see a registered sheet, and what
+    they may do with it. A row means the sheet's card is listed for them;
+    the flags gate the card's buttons (managed in Admin Queue -> Sheet Access):
+
+    can_open:         the in-dashboard view (requests / rankings / CSVs)
+    can_open_google:  the Google Sheets link
+    can_edit_settings: the sheet's Settings (tabs, columns, sync) - never
+                      member assignment or deletion, which stay admin-only
+    """
     __tablename__ = "tracked_sheet_members"
     __table_args__ = (UniqueConstraint("sheet_id", "user_id", name="uq_tracked_sheet_members_sheet_user"),)
 
     id = Column(Integer, primary_key=True, index=True)
     sheet_id = Column(Integer, ForeignKey("tracked_sheets.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    can_open = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+    can_open_google = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+    can_edit_settings = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     added_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

@@ -1,0 +1,11 @@
+/* Sheet Access tab - builds on AdminSectionAccessTab.css (sap-*). */
+
+.sap-intro.sha-error {
+  border-color: var(--color-feedback-error-border);
+  background: var(--color-feedback-error-bg);
+  color: var(--color-feedback-error-text);
+}
+
+.sha-muted {
+  opacity: 0.6;
+}

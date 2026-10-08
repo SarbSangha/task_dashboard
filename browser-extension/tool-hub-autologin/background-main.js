@@ -875,7 +875,8 @@ async function activatePendingLaunchForTab(tabId, toolSlug, hostname, pageUrl) {
   await clearGoogleSessionForFreshLaunch(launch.toolSlug);
   await setActiveLaunch(tabId, launch);
   await markRootSessionTab(tabId, launch.toolSlug);
-  return launch;
+  // Stored record carries activatedAt - see activateLaunchForTab.
+  return (await getActiveLaunch(tabId, toolSlug)) || launch;
 }
 
 async function setActiveLaunch(tabId, launch) {
@@ -1217,7 +1218,7 @@ async function activateLaunchForTab(tabId, toolSlug, hostname, extensionTicket) 
     await clearGoogleSessionForFreshLaunch(launch.toolSlug);
     await setActiveLaunch(tabId, launch);
     await markRootSessionTab(tabId, launch.toolSlug);
-    return launch;
+    return (await getActiveLaunch(tabId, toolSlug)) || launch;
   }
 
   const directTicketLaunch = buildLaunchFromExtensionTicket(toolSlug, hostname, extensionTicket);
@@ -1229,7 +1230,15 @@ async function activateLaunchForTab(tabId, toolSlug, hostname, extensionTicket) 
   await clearGoogleSessionForFreshLaunch(directTicketLaunch.toolSlug);
   await setActiveLaunch(tabId, directTicketLaunch);
   await markRootSessionTab(tabId, directTicketLaunch.toolSlug);
-  return directTicketLaunch;
+  // Return the STORED record, not the object passed in: only the stored one
+  // carries activatedAt (setActiveLaunch stamps it). Returning the input made
+  // TOOL_HUB_ACTIVATE_LAUNCH answer activatedAt: 0 on the very first page, so
+  // ensureFreshLaunchSession was skipped there and never recorded the launch.
+  // The first page load AFTER the user's manual login (e.g. semrush.com/home/)
+  // then got the real activatedAt from TOOL_HUB_GET_LAUNCH_STATE, took it for a
+  // brand-new launch, wiped the just-created session and bounced back to
+  // /login/ - forcing a second login every time (reported 2026-10-07).
+  return (await getActiveLaunch(tabId, toolSlug)) || directTicketLaunch;
 }
 
 function getToolSessionDomains(toolSlug, options = {}) {

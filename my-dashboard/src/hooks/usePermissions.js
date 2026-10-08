@@ -36,6 +36,9 @@ export const FEATURE_PERMISSIONS = {
   view_credit_report: 'credit_report',
   // The whole Sheets section (registered sheets + Sheet Activity log).
   view_sheet_activity: 'sheet_activity',
+  // Within Sheets: may add new sheets. Per-sheet Open / Open in Google
+  // Sheets / Settings come with each sheet from the API, not from here.
+  add_sheets: 'sheets_add',
 };
 
 export function normalizeRoles(user) {

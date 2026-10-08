@@ -14,6 +14,7 @@ import { isMobileViewport } from '../../../../utils/isMobileViewport';
 import WindowControls from '../../../common/WindowControls';
 import WorkplacePolicyPanel from './WorkplacePolicyPanel';
 import AdminSectionAccessTab from './AdminSectionAccessTab';
+import AdminSheetAccessTab from './AdminSheetAccessTab';
 import AdminLoginTab from './AdminLoginTab';
 import AdminPendingTab from './AdminPendingTab';
 import AdminPasswordTab from './AdminPasswordTab';
@@ -30,6 +31,7 @@ const TABS = [
   { id: 'passwords', label: 'Password Requests' },
   { id: 'policies',  label: 'Workplace Policies' },
   { id: 'sections',  label: 'Section Access' },
+  { id: 'sheets',    label: 'Sheet Access' },
   { id: 'clients',   label: 'Manage Clients' },
   { id: 'renewals',  label: 'Tool Renewals' },
 ];
@@ -335,6 +337,15 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
 
               {activeTab === 'sections' && (
                 <AdminSectionAccessTab
+                  users={users}
+                  setUsers={setUsers}
+                  onViewInfo={setDrawerUser}
+                  loading={loading}
+                />
+              )}
+
+              {activeTab === 'sheets' && (
+                <AdminSheetAccessTab
                   users={users}
                   setUsers={setUsers}
                   onViewInfo={setDrawerUser}

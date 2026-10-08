@@ -60,7 +60,7 @@ function SiteCard({ site }) {
   );
 }
 
-export default function RankingDashboard({ sheet, isAdmin, onOpenKeyword, onSettings, active }) {
+export default function RankingDashboard({ sheet, onOpenKeyword, onSettings, active }) {
   const [tab, setTab] = useState('');
   const [filters, setFilters] = useState(EMPTY);
   const q = useDebouncedValue(filters.q, 400);
@@ -149,10 +149,10 @@ export default function RankingDashboard({ sheet, isAdmin, onOpenKeyword, onSett
             {pollNote && <span className="shs-warn"> · {pollNote}</span>}</p>
         </div>
         <div className="shs-actions">
-          <a className="shs-secondary-btn" href={sheet.openUrl} target="_blank" rel="noopener noreferrer">Open in Google Sheets</a>
+          {sheet.permissions?.openInGoogle && sheet.openUrl && <a className="shs-secondary-btn" href={sheet.openUrl} target="_blank" rel="noopener noreferrer">Open in Google Sheets</a>}
           {sheet.sourceUrl && <a className="shs-secondary-btn" href={sheet.sourceUrl} target="_blank" rel="noopener noreferrer">Open source sheet</a>}
-          {isAdmin && <button type="button" className="shs-secondary-btn" onClick={syncNow} disabled={busy === 'sync'}>{busy === 'sync' ? 'Reading…' : 'Sync now'}</button>}
-          {isAdmin && <button type="button" className="shs-secondary-btn" onClick={onSettings}>Settings</button>}
+          {sheet.permissions?.settings && <button type="button" className="shs-secondary-btn" onClick={syncNow} disabled={busy === 'sync'}>{busy === 'sync' ? 'Reading…' : 'Sync now'}</button>}
+          {sheet.permissions?.settings && <button type="button" className="shs-secondary-btn" onClick={onSettings}>Settings</button>}
         </div>
       </div>
       {error && <div className="trp-error" role="alert">{error}</div>}

@@ -15,9 +15,8 @@ The confirmed real shape (`POST https://studio-api-prod.suno.com/api/feed/v3`
 response, `clips[]`) is documented in full in CAPTURE_CONTRACT.md. Unlike
 ElevenLabs (whose model file was written against an unconfirmed guess), every
 column below maps to a field that has actually been observed on a real clip
-object EXCEPT credits_used (kept nullable, always None - see constants.py's
-module docstring and CAPTURE_CONTRACT.md's known-gaps section for why no
-credits formula is implemented yet) and the terminal value of `status` (only
+object EXCEPT credits_used (not captured - it holds the admin-set fixed
+price per song, see services/generation_pricing.py) and the terminal value of `status` (only
 "streaming" has been observed - see constants.py's GENERATION_STATUS_*
 comment).
 
@@ -221,12 +220,10 @@ class SunoGeneration(Base):
     prompt_hash = Column(String(64), index=True)
 
     # ---- Credit burn ----
-    # Permanently null for this pass - the UI only shows a running
-    # per-SESSION total ("N credits used this session"), not a confirmed
-    # per-clip formula, and there isn't yet enough independent real data to
-    # reverse-engineer one (unlike ElevenLabs Music, where three independent
-    # confirmed data points made a formula safe to add). See
-    # CAPTURE_CONTRACT.md's known-gaps section.
+    # Not captured: Suno's UI only shows a running per-SESSION total, never
+    # a per-clip cost (CAPTURE_CONTRACT.md, known gaps). Holds the fixed
+    # price per song an admin sets in Reports -> Credit Rates, stamped by
+    # services/generation_pricing.py for the song's date; NULL = no price set.
     credits_used = Column(Integer)
 
     # ---- Status ----

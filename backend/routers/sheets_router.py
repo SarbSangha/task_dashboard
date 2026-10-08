@@ -11,7 +11,13 @@ Sheets section API: registered Google Sheets of two types.
   have it.
 * Which sheets a non-admin sees is the per-sheet assignment
   (tracked_sheet_members). Admins see every sheet.
-* Adding, changing, assigning and force-syncing sheets is admin-only.
+* What a member may do with a sheet is per sheet and per person
+  (tracked_sheet_members.can_*, Admin Queue -> Sheet Access): "open" (the
+  dashboard view and its CSVs), "openInGoogle" (the sheet's links) and
+  "settings" (edit tabs/columns/config and Sync now). Admins have all three.
+* Adding a sheet needs the "sheets_add" Section Access grant ("Add Sheets");
+  the person who adds one becomes its member with every permission.
+* Assigning people, setting their permissions and deleting sheets is admin-only.
 """
 
 from datetime import datetime
@@ -35,6 +41,9 @@ from services.sheets import queries as Q
 from services.sheets import ranking_queries as RQ
 from services.sheets.ranking_sync import ingest_job_report
 from routers.sheet_activity_router import require_webhook_secret
+from services.feature_access_service import (
+    FEATURE_SHEET_ACTIVITY, FEATURE_SHEETS_ADD, has_feature_access, notify_feature_access_changed, set_feature_access,
+)
 from utils.permissions import require_admin, require_sheet_activity_access
 
 router = APIRouter(prefix="/api/sheets", tags=["Sheets"])
@@ -75,6 +84,13 @@ class MembersIn(BaseModel):
     userIds: list[int]
 
 
+class MemberAccessIn(BaseModel):
+    member: bool
+    open: bool = True
+    openInGoogle: bool = True
+    settings: bool = False
+
+
 class GoogleEmailIn(BaseModel):
     googleEmail: Optional[str] = Field(None, max_length=320)
 
@@ -103,18 +119,46 @@ def _source(url: Optional[str]) -> tuple:
         raise HTTPException(status_code=400, detail=f"Source sheet: {exc}")
 
 
-def _get_visible_sheet(db: Session, user: User, sheet_id: int) -> TrackedSheet:
+_PERMISSION_DENIED = {
+    "open": "You do not have permission to open this sheet. Ask an administrator to grant it.",
+    "settings": "You do not have permission to change this sheet's settings. Ask an administrator to grant it.",
+}
+
+
+def _get_visible_sheet(db: Session, user: User, sheet_id: int, need: Optional[str] = None) -> TrackedSheet:
+    """The sheet, if the user may see it at all - and, with `need`, may also
+    do that one thing with it ("open" / "settings")."""
     sheet = db.get(TrackedSheet, sheet_id)
     if sheet is None or not Q.can_view(db, user, sheet_id):
         raise HTTPException(status_code=404, detail="Sheet not found")
+    if need and not Q.sheet_permissions(db, user, sheet_id).get(need):
+        raise HTTPException(status_code=403, detail=_PERMISSION_DENIED[need])
     return sheet
 
 
+def _can_add_sheets(user: User) -> bool:
+    return Q.is_sheet_admin(user) or has_feature_access(user, FEATURE_SHEETS_ADD)
+
+
+def require_sheet_adder(user: User = Depends(require_sheet_activity_access)) -> User:
+    if not _can_add_sheets(user):
+        raise HTTPException(status_code=403,
+                            detail="You do not have access to Add Sheets. Ask an administrator to grant it.")
+    return user
+
+
 def _members(db: Session, sheet_id: int) -> list:
-    rows = (db.query(User.id, User.name, User.email)
+    rows = (db.query(User.id, User.name, User.email, TrackedSheetMember)
             .join(TrackedSheetMember, TrackedSheetMember.user_id == User.id)
             .filter(TrackedSheetMember.sheet_id == sheet_id).order_by(User.name).all())
-    return [{"id": uid, "name": name, "email": email} for uid, name, email in rows]
+    return [{"id": uid, "name": name, "email": email, "permissions": Q.member_permissions(m)}
+            for uid, name, email, m in rows]
+
+
+def _serialize_for(db: Session, user: User, sheet: TrackedSheet, **extra) -> dict:
+    admin = Q.is_sheet_admin(user)
+    return Q.serialize_sheet(sheet, members=_members(db, sheet.id) if admin else None,
+                             permissions=None if admin else Q.sheet_permissions(db, user, sheet.id), **extra)
 
 
 def _set_members(db: Session, sheet: TrackedSheet, user_ids: list, actor: User) -> None:
@@ -147,7 +191,7 @@ def _validated(payload_tabs, mapping, statuses, sheet_type=S.CONTENT_WORKFLOW):
 # Registry (admin)
 # --------------------------------------------------------------------------- #
 @router.post("/inspect")
-def inspect_sheet(payload: InspectIn, _: User = Depends(require_admin)):
+def inspect_sheet(payload: InspectIn, _: User = Depends(require_sheet_adder)):
     try:
         return {"success": True, **S.inspect_sheet(payload.url)}
     except S.SheetAccessError as exc:
@@ -155,7 +199,7 @@ def inspect_sheet(payload: InspectIn, _: User = Depends(require_admin)):
 
 
 @router.post("", status_code=201)
-def create_sheet(payload: SheetIn, db: Session = Depends(get_operational_db), admin: User = Depends(require_admin)):
+def create_sheet(payload: SheetIn, db: Session = Depends(get_operational_db), actor: User = Depends(require_sheet_adder)):
     try:
         spreadsheet_id = S.parse_spreadsheet_id(payload.url)
     except S.SheetAccessError as exc:
@@ -167,28 +211,32 @@ def create_sheet(payload: SheetIn, db: Session = Depends(get_operational_db), ad
     sheet = TrackedSheet(name=payload.name.strip(), sheet_type=payload.sheetType, spreadsheet_id=spreadsheet_id,
                          url=payload.url.strip(), source_spreadsheet_id=source_id, source_url=source_url,
                          tabs_json=tabs, mapping_json=mapping, statuses_json=statuses,
-                         config_json=_clean_config(payload.config, payload.sheetType), created_by=admin.id)
+                         config_json=_clean_config(payload.config, payload.sheetType), created_by=actor.id)
     db.add(sheet)
     try:
         db.flush()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="This spreadsheet is already registered")
-    _set_members(db, sheet, payload.memberIds, admin)
+    if Q.is_sheet_admin(actor):
+        _set_members(db, sheet, payload.memberIds, actor)
+    else:
+        # Who else sees it is an admin's call; the adder gets the sheet they
+        # added with every permission.
+        db.add(TrackedSheetMember(sheet_id=sheet.id, user_id=actor.id, added_by=actor.id,
+                                  can_open=True, can_open_google=True, can_edit_settings=True))
     db.commit()
     # First poll right away: imports the rows already in the sheet (for a
     # ranking sheet that is the full history backfill).
     result = S.poll_sheet(db, sheet, force=True)
     db.refresh(sheet)
-    return {"success": True, "sheet": Q.serialize_sheet(sheet, members=_members(db, sheet.id)), "firstSync": result}
+    return {"success": True, "sheet": _serialize_for(db, actor, sheet), "firstSync": result}
 
 
 @router.patch("/{sheet_id}")
 def update_sheet(sheet_id: int, payload: SheetPatch, db: Session = Depends(get_operational_db),
-                 _: User = Depends(require_admin)):
-    sheet = db.get(TrackedSheet, sheet_id)
-    if sheet is None:
-        raise HTTPException(status_code=404, detail="Sheet not found")
+                 user: User = Depends(require_sheet_activity_access)):
+    sheet = _get_visible_sheet(db, user, sheet_id, need="settings")
     if payload.name is not None:
         sheet.name = payload.name.strip()
     if payload.tabs is not None or payload.mapping is not None or payload.statuses is not None:
@@ -201,13 +249,15 @@ def update_sheet(sheet_id: int, payload: SheetPatch, db: Session = Depends(get_o
         sheet.tabs_json, sheet.mapping_json, sheet.statuses_json = tabs, mapping, statuses
     if payload.config is not None:
         sheet.config_json = _clean_config(payload.config, sheet.sheet_type)
-    if payload.sourceUrl is not None:
+    # The link is withheld from people without "openInGoogle", so they can
+    # neither see nor replace it.
+    if payload.sourceUrl is not None and Q.sheet_permissions(db, user, sheet_id).get("openInGoogle"):
         sheet.source_spreadsheet_id, sheet.source_url = _source(payload.sourceUrl)
     if payload.isActive is not None:
         sheet.is_active = payload.isActive
     db.commit()
     db.refresh(sheet)
-    return {"success": True, "sheet": Q.serialize_sheet(sheet, members=_members(db, sheet.id))}
+    return {"success": True, "sheet": _serialize_for(db, user, sheet)}
 
 
 @router.delete("/{sheet_id}")
@@ -232,13 +282,59 @@ def set_members(sheet_id: int, payload: MembersIn, db: Session = Depends(get_ope
 
 
 @router.post("/{sheet_id}/sync")
-def sync_now(sheet_id: int, db: Session = Depends(get_operational_db), _: User = Depends(require_admin)):
-    sheet = db.get(TrackedSheet, sheet_id)
-    if sheet is None:
-        raise HTTPException(status_code=404, detail="Sheet not found")
+def sync_now(sheet_id: int, db: Session = Depends(get_operational_db),
+             user: User = Depends(require_sheet_activity_access)):
+    sheet = _get_visible_sheet(db, user, sheet_id, need="settings")
     result = S.poll_sheet(db, sheet)
     db.refresh(sheet)
-    return {"success": True, "result": result, "sheet": Q.serialize_sheet(sheet)}
+    return {"success": True, "result": result, "sheet": _serialize_for(db, user, sheet)}
+
+
+# --------------------------------------------------------------------------- #
+# Sheet Access (Admin Queue): who sees each sheet and what they may do with it
+# --------------------------------------------------------------------------- #
+@router.get("/access")
+def access_overview(db: Session = Depends(get_operational_db), _: User = Depends(require_admin)):
+    """Every sheet with its members' permissions, keyed by user id."""
+    grants = {}
+    for m in db.query(TrackedSheetMember):
+        grants.setdefault(m.sheet_id, {})[str(m.user_id)] = Q.member_permissions(m)
+    return {"success": True, "sheets": [
+        {"id": s.id, "name": s.name, "sheetType": s.sheet_type or S.CONTENT_WORKFLOW,
+         "isActive": bool(s.is_active), "members": grants.get(s.id, {})}
+        for s in db.query(TrackedSheet).order_by(TrackedSheet.name)]}
+
+
+@router.put("/{sheet_id}/access/{user_id}")
+def set_member_access(sheet_id: int, user_id: int, payload: MemberAccessIn,
+                      db: Session = Depends(get_operational_db), admin: User = Depends(require_admin)):
+    """Add/remove one person on one sheet and set their permissions."""
+    if db.get(TrackedSheet, sheet_id) is None:
+        raise HTTPException(status_code=404, detail="Sheet not found")
+    target = db.get(User, user_id)
+    if target is None or target.is_deleted:
+        raise HTTPException(status_code=404, detail="User not found")
+    row = (db.query(TrackedSheetMember)
+           .filter(TrackedSheetMember.sheet_id == sheet_id, TrackedSheetMember.user_id == user_id).first())
+    if not payload.member:
+        if row:
+            db.delete(row)
+            db.commit()
+        return {"success": True, "member": False, "permissions": dict(Q.NO_SHEET_PERMISSIONS)}
+    if row is None:
+        row = TrackedSheetMember(sheet_id=sheet_id, user_id=user_id, added_by=admin.id)
+        db.add(row)
+    row.can_open, row.can_open_google, row.can_edit_settings = payload.open, payload.openInGoogle, payload.settings
+    # A sheet is useless without the Sheets section to reach it from, so
+    # giving someone a sheet also grants the section (never revokes it).
+    section_granted = not has_feature_access(target, FEATURE_SHEET_ACTIVITY)
+    if section_granted:
+        set_feature_access(db, target, FEATURE_SHEET_ACTIVITY, True, granted_by=admin.id)
+    db.commit()
+    if section_granted:
+        notify_feature_access_changed([target.id], FEATURE_SHEET_ACTIVITY, True)
+    return {"success": True, "member": True, "permissions": Q.member_permissions(row),
+            "sectionGranted": section_granted}
 
 
 @router.get("/people")
@@ -289,21 +385,23 @@ def list_sheets(db: Session = Depends(get_operational_db), user: User = Depends(
     counts = dict(db.query(ContentRequest.sheet_id, func.count(ContentRequest.id))
                   .filter(ContentRequest.removed_at.is_(None)).group_by(ContentRequest.sheet_id))
     admin = Q.is_sheet_admin(user)
-    return {"success": True, "isAdmin": admin, "sheets": [
-        Q.serialize_sheet(s, members=_members(db, s.id) if admin else None, request_count=counts.get(s.id, 0))
+    perms = Q.sheet_permissions_for(db, user)
+    return {"success": True, "isAdmin": admin, "canAdd": _can_add_sheets(user), "sheets": [
+        Q.serialize_sheet(s, members=_members(db, s.id) if admin else None, request_count=counts.get(s.id, 0),
+                          permissions=None if perms is None else perms.get(s.id))
         for s in q.all()]}
 
 
 @router.get("/{sheet_id}")
 def get_sheet(sheet_id: int, db: Session = Depends(get_operational_db), user: User = Depends(require_sheet_activity_access)):
     sheet = _get_visible_sheet(db, user, sheet_id)
-    return {"success": True, "sheet": Q.serialize_sheet(sheet, members=_members(db, sheet_id) if Q.is_sheet_admin(user) else None)}
+    return {"success": True, "sheet": _serialize_for(db, user, sheet)}
 
 
 @router.get("/{sheet_id}/overview")
 def sheet_overview(sheet_id: int, tab: Optional[str] = Query(None), db: Session = Depends(get_operational_db),
                    user: User = Depends(require_sheet_activity_access)):
-    sheet = _get_visible_sheet(db, user, sheet_id)
+    sheet = _get_visible_sheet(db, user, sheet_id, need="open")
     return {"success": True, **Q.overview(db, sheet, tab=(tab or "").strip() or None)}
 
 
@@ -333,14 +431,14 @@ def sheet_requests(
     stuck: bool = Query(False), page: int = Query(1, ge=1), pageSize: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_operational_db), viewer: User = Depends(require_sheet_activity_access),
 ):
-    sheet = _get_visible_sheet(db, viewer, sheet_id)
+    sheet = _get_visible_sheet(db, viewer, sheet_id, need="open")
     return {"success": True, **Q.list_requests(db, sheet, _filters(tab, status, user, start, end, q, stuck), page, pageSize)}
 
 
 @router.get("/{sheet_id}/requests/{request_id}")
 def sheet_request_detail(sheet_id: int, request_id: int, db: Session = Depends(get_operational_db),
                          viewer: User = Depends(require_sheet_activity_access)):
-    sheet = _get_visible_sheet(db, viewer, sheet_id)
+    sheet = _get_visible_sheet(db, viewer, sheet_id, need="open")
     req = db.get(ContentRequest, request_id)
     if req is None or req.sheet_id != sheet.id:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -348,7 +446,7 @@ def sheet_request_detail(sheet_id: int, request_id: int, db: Session = Depends(g
 
 
 def _csv_response(sheet_id: int, viewer: User, db: Session, kind: str, f: Q.RequestFilters):
-    sheet = _get_visible_sheet(db, viewer, sheet_id)
+    sheet = _get_visible_sheet(db, viewer, sheet_id, need="open")
     name = f"{kind}_{sheet.name.replace(' ', '-').lower()}_{datetime.utcnow():%Y-%m-%d}.csv"
     db.close()
 
@@ -384,7 +482,7 @@ def sheet_events_csv(sheet_id: int, tab: Optional[str] = Query(None), status: Op
 # keyword_ranking sheets
 # --------------------------------------------------------------------------- #
 def _ranking_sheet(db: Session, user: User, sheet_id: int) -> TrackedSheet:
-    sheet = _get_visible_sheet(db, user, sheet_id)
+    sheet = _get_visible_sheet(db, user, sheet_id, need="open")
     if sheet.sheet_type != S.KEYWORD_RANKING:
         raise HTTPException(status_code=400, detail="This is not a keyword ranking sheet")
     return sheet

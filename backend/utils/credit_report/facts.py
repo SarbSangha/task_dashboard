@@ -75,8 +75,8 @@ FAILED_STATUSES = frozenset({
 # "not captured", not "free" - see TOOL_COST_NOTES.
 CREDITS_NOT_CAPTURED = frozenset({"Flow", "Suno"})
 TOOL_COST_NOTES = {
-    "Suno": "Not captured: Suno shows only a per-session credit total, never a per-clip cost "
-            "(providers/suno/CAPTURE_CONTRACT.md, Known gaps). Suno is not free.",
+    "Suno": "Fixed price per song, set by an admin (Reports → Credit Rates): Suno shows no per-song cost "
+            "of its own. Songs from before the first price show 0.",
     "Flow": "Not captured: Flow's capture payload has no cost or credit field.",
 }
 
@@ -97,6 +97,9 @@ class ToolSource:
     model_label: tuple = ()         # "Model / type" column, first non-blank wins
     mirrored_key: bool = True       # has mirrored_asset_key + asset_mirror_status
     has_provider_created_at: bool = True
+    # metadata_json key holding the provider's own state when the status
+    # column is blank (display only - the charge status still reads `status`).
+    raw_status_key: Optional[str] = None
 
 
 # Kling is not listed here: it reads usage events joined to generation
@@ -112,8 +115,10 @@ TOOL_SOURCES: tuple = (
                model_label=("avatar_name", "motion_engine")),
     ToolSource("Higgsfield", HiggsfieldGeneration, "credits_used", ("prompt_text",),
                ("video_url", "download_url", "preview_url", "thumbnail_url"), mirrored_key=False),
+    # TTS captures leave `status` blank; the history item's state ("created")
+    # is in metadata_json.
     ToolSource("ElevenLabs", ElevenlabsGeneration, "credits_used", ("prompt",), ("media_url", "thumbnail_url"),
-               model_label=("voice_name", "source")),
+               model_label=("voice_name", "source"), raw_status_key="state"),
     ToolSource("Flow", FlowGeneration, None, ("prompt",), ("media_url", "thumbnail_url")),
     ToolSource("Suno", SunoGeneration, "credits_used", ("prompt",), ("media_url", "thumbnail_url"),
                model_label=("model_name",)),
@@ -220,6 +225,13 @@ def _month_of_timestamp(col, dialect: str):
     return func.to_char(col + timedelta(minutes=IST_MINUTES), "YYYY-MM")
 
 
+def _day_of_timestamp(col, dialect: str):
+    """IST calendar day (YYYY-MM-DD) of a UTC timestamp - the log's Date column."""
+    if dialect == "sqlite":
+        return func.strftime("%Y-%m-%d", col, f"+{IST_MINUTES} minutes")
+    return func.to_char(col + timedelta(minutes=IST_MINUTES), "YYYY-MM-DD")
+
+
 def _month_of_date(col, dialect: str):
     if dialect == "sqlite":
         return func.strftime("%Y-%m", col)
@@ -237,6 +249,10 @@ def _source_select(src: ToolSource, utc_start, utc_end, dialect: str):
     else:
         credits = cast(literal(0.0), Float)
     model_col = _first_present(m, src.model_label) if src.model_label else _null_text()
+    status = m.status if hasattr(m, "status") else _null_text()
+    raw_status = status
+    if src.raw_status_key:
+        raw_status = func.coalesce(_blank_to_null(status), _blank_to_null(m.metadata_json[src.raw_status_key].as_string()))
     return select(
         literal(src.name, String).label("tool"),
         cast(m.id, String).label("record_id"),
@@ -248,8 +264,9 @@ def _source_select(src: ToolSource, utc_start, utc_end, dialect: str):
         credits.label("credits"),
         _first_present(m, src.prompt).label("prompt"),
         model_col.label("model"),
-        (m.status if hasattr(m, "status") else _null_text()).label("status"),
+        status.label("status"),
         case((has_output, 1), else_=0).label("has_output"),
+        cast(raw_status, String).label("raw_status"),
     ).where(when >= utc_start, when < utc_end)
 
 
@@ -273,6 +290,7 @@ def _kling_select(start: date, end: date, dialect: str):
             func.coalesce(_blank_to_null(e.model_label), _blank_to_null(g.model_label)).label("model"),
             e.status.label("status"),
             case((_blank_to_null(g.canonical_asset_url).isnot(None), 1), else_=0).label("has_output"),
+            cast(e.status, String).label("raw_status"),
         )
         .select_from(e)
         .outerjoin(g, g.source_usage_event_id == e.id)
@@ -413,6 +431,43 @@ def load_groups(db: Session, filters: ReportFilters) -> list:
     return out
 
 
+@dataclass(frozen=True)
+class DayGroup:
+    """One GROUP BY row: user x tool x client x IST day x charge status.
+
+    Same scope and user mapping as the Generation Log, so a key's row count
+    here is exactly how many log rows it gets (By User / By Tool blocks and
+    the log's back links are planned from these before the log is written).
+    """
+
+    user_id: int                    # UNASSIGNED_USER_ID for owner-less rows
+    tool: str
+    client: str
+    day: Optional[str]              # "YYYY-MM-DD" (IST), None if the row has no time
+    charge_status: str
+    rows: int
+    credits: float
+
+
+def load_day_groups(db: Session, filters: ReportFilters) -> list:
+    dialect = _dialect(db)
+    facts = facts_subquery(filters, dialect)
+    owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
+    client_expr = func.coalesce(facts.c.client, NO_CLIENT)
+    bucket = charge_status_expr(facts.c.status)
+    day = _day_of_timestamp(facts.c.occurred_at, dialect)
+    q = _scoped(
+        select(cast(owner_key, Integer).label("uid"), facts.c.tool, client_expr.label("client"), day.label("day"),
+               bucket.label("charge_status"), func.count().label("rows"),
+               func.coalesce(func.sum(facts.c.credits), 0.0).label("credits")),
+        facts,
+        filters,
+    ).group_by(owner_key, facts.c.tool, client_expr, day, bucket)
+    return [DayGroup(user_id=int(r.uid), tool=r.tool, client=r.client, day=r.day or None,
+                     charge_status=r.charge_status, rows=int(r.rows or 0), credits=float(r.credits or 0.0))
+            for r in db.execute(q)]
+
+
 def load_excluded_summary(db: Session, filters: ReportFilters) -> dict:
     """What the test & admin exclusion removed: generations and Charged credits."""
     ids = filters.excluded_ids
@@ -431,9 +486,14 @@ def load_excluded_summary(db: Session, filters: ReportFilters) -> dict:
 # --------------------------------------------------------------------------- #
 # Generation Log stream
 # --------------------------------------------------------------------------- #
-def stream_log(db: Session, filters: ReportFilters, user_order: list, batch_size: int = 1000) -> Iterator:
+def stream_log(db: Session, filters: ReportFilters, user_order: list, batch_size: int = 1000,
+               tool_order: Optional[dict] = None, client_order: Optional[dict] = None) -> Iterator:
     """Yield every generation (all charge statuses) with users contiguous in
-    ``user_order``, oldest first within a user.
+    ``user_order``. With ``tool_order`` ({(user id, tool): position}) and
+    ``client_order`` ({client: position}) each user's rows are grouped by
+    tool in that order, then IST day (newest first), then client, then time
+    (newest first) - so every (user, tool) and (user, tool, day, client) is
+    one contiguous run; without them, oldest first within a user.
 
     The order is pushed into SQL as a CASE over user ids instead of sorting
     by name in SQL, so the database and Python never disagree on collation
@@ -445,6 +505,16 @@ def stream_log(db: Session, filters: ReportFilters, user_order: list, batch_size
     facts = facts_subquery(filters, _dialect(db))
     owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
     position = case({uid: i for i, uid in enumerate(user_order)}, value=owner_key, else_=len(user_order))
+    if tool_order:
+        pair = case(*[(and_(owner_key == uid, facts.c.tool == tool), i) for (uid, tool), i in tool_order.items()],
+                    else_=len(tool_order))
+        client_pos = case({c: i for i, c in enumerate(client_order or {})},
+                          value=func.coalesce(facts.c.client, NO_CLIENT), else_=len(client_order or {}))
+        day = _day_of_timestamp(facts.c.occurred_at, _dialect(db))
+        ordering = (position, pair, day.desc().nulls_last(), client_pos, facts.c.occurred_at.desc().nulls_last(),
+                    facts.c.tool, facts.c.record_id)
+    else:
+        ordering = (position, facts.c.occurred_at, facts.c.tool, facts.c.record_id)
     q = _scoped(
         select(
             facts.c.tool,
@@ -457,12 +527,13 @@ def stream_log(db: Session, filters: ReportFilters, user_order: list, batch_size
             facts.c.prompt,
             facts.c.model,
             facts.c.status,
+            facts.c.raw_status,
             charge_status_expr(facts.c.status).label("charge_status"),
             facts.c.has_output,
         ),
         facts,
         filters,
-    ).order_by(position, facts.c.occurred_at, facts.c.tool, facts.c.record_id)
+    ).order_by(*ordering)
     result = db.execute(q.execution_options(stream_results=True, yield_per=batch_size))
     return iter(result)
 

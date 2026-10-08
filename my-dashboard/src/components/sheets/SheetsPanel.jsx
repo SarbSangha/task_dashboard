@@ -16,9 +16,12 @@ import './SheetsPanel.css';
 /**
  * Sheets -> Sheets: registered Google Sheets and the content requests in
  * them (user input vs Claude's response). Backend: routers/sheets_router.py.
- * The section needs the "Sheets" Section Access grant; which sheets show is
- * the per-sheet assignment an admin sets in each sheet's settings.
+ * The section needs the "Sheets" Section Access grant; which sheets show and
+ * what each person may do with them (Open / Open in Google Sheets / Settings)
+ * is set per sheet in Admin Queue -> Sheet Access. Adding a sheet needs the
+ * "Add Sheets" grant. The server enforces all of it; this only hides buttons.
  */
+const perms = (s) => s?.permissions || {};
 export default function SheetsPanel({ isOpen, onClose, onMinimizedChange, onActivate }) {
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(isMobileViewport);
@@ -26,6 +29,7 @@ export default function SheetsPanel({ isOpen, onClose, onMinimizedChange, onActi
 
   const [sheets, setSheets] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [canAdd, setCanAdd] = useState(false);
   const [view, setView] = useState({ mode: 'list' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -36,6 +40,7 @@ export default function SheetsPanel({ isOpen, onClose, onMinimizedChange, onActi
       const d = await sheetsAPI.list();
       setSheets(d.sheets || []);
       setIsAdmin(Boolean(d.isAdmin));
+      setCanAdd(Boolean(d.canAdd));
       setError('');
     } catch (err) {
       setError(err?.response?.data?.detail || 'Could not load sheets.');
@@ -66,23 +71,23 @@ export default function SheetsPanel({ isOpen, onClose, onMinimizedChange, onActi
   const current = sheets.find((s) => s.id === view.sheetId);
 
   let body;
-  if (view.mode === 'add') {
-    body = <SheetSetup onCancel={() => setView({ mode: 'list' })}
+  if (view.mode === 'add' && canAdd) {
+    body = <SheetSetup isAdmin={isAdmin} onCancel={() => setView({ mode: 'list' })}
       onSaved={async (s) => { await loadSheets(); setView({ mode: 'sheet', sheetId: s.id }); }} />;
-  } else if (view.mode === 'settings' && current) {
-    body = <SheetSetup sheet={current} onCancel={() => setView({ mode: 'sheet', sheetId: current.id })}
+  } else if (view.mode === 'settings' && current && perms(current).settings) {
+    body = <SheetSetup sheet={current} isAdmin={isAdmin} onCancel={() => setView({ mode: 'sheet', sheetId: current.id })}
       onSaved={async () => { await loadSheets(); setView({ mode: 'sheet', sheetId: current.id }); }}
       onDeleted={async () => { await loadSheets(); setView({ mode: 'list' }); }} />;
-  } else if (view.mode === 'keyword' && current) {
+  } else if (view.mode === 'keyword' && current && perms(current).open) {
     body = <KeywordDetail sheetId={current.id} keywordId={view.keywordId} onBack={() => setView({ mode: 'sheet', sheetId: current.id })} />;
-  } else if (view.mode === 'sheet' && current && current.sheetType === 'keyword_ranking') {
-    body = <RankingDashboard sheet={current} isAdmin={isAdmin} active={!isMinimized}
+  } else if (view.mode === 'sheet' && current && perms(current).open && current.sheetType === 'keyword_ranking') {
+    body = <RankingDashboard sheet={current} active={!isMinimized}
       onSettings={() => setView({ mode: 'settings', sheetId: current.id })}
       onOpenKeyword={(keywordId) => setView({ mode: 'keyword', sheetId: current.id, keywordId })} />;
-  } else if (view.mode === 'request' && current) {
+  } else if (view.mode === 'request' && current && perms(current).open) {
     body = <RequestDetail sheetId={current.id} requestId={view.requestId} onBack={() => setView({ mode: 'sheet', sheetId: current.id })} />;
-  } else if (view.mode === 'sheet' && current) {
-    body = <SheetDashboard sheet={current} isAdmin={isAdmin} active={!isMinimized}
+  } else if (view.mode === 'sheet' && current && perms(current).open) {
+    body = <SheetDashboard sheet={current} active={!isMinimized}
       onSettings={() => setView({ mode: 'settings', sheetId: current.id })}
       onOpenRequest={(requestId) => setView({ mode: 'request', sheetId: current.id, requestId })} />;
   } else {
@@ -93,11 +98,11 @@ export default function SheetsPanel({ isOpen, onClose, onMinimizedChange, onActi
             Registered Google Sheets. Content sheets show each request: what a person entered and what Claude sent
             back. Keyword ranking sheets show each keyword's position and AI Overview history, and who added it.
           </p>
-          {isAdmin && <button type="button" className="trp-generate-btn" onClick={() => setView({ mode: 'add' })}>Add a sheet</button>}
+          {canAdd && <button type="button" className="trp-generate-btn" onClick={() => setView({ mode: 'add' })}>Add a sheet</button>}
         </div>
         {error && <div className="trp-error" role="alert">{error}</div>}
         {!loading && sheets.length === 0 && (
-          <div className="trp-empty">{isAdmin ? 'No sheets yet. Add one with its Google Sheets link.' : 'No sheets have been shared with you yet. Ask an admin.'}</div>
+          <div className="trp-empty">{canAdd ? 'No sheets yet. Add one with its Google Sheets link.' : 'No sheets have been shared with you yet. Ask an admin.'}</div>
         )}
         <div className="shs-cards">
           {sheets.map((s) => (
@@ -115,9 +120,12 @@ export default function SheetsPanel({ isOpen, onClose, onMinimizedChange, onActi
               </p>
               {s.lastPollError && <p className="shs-warn">{s.lastPollError}</p>}
               <div className="shs-actions">
-                <button type="button" className="trp-generate-btn" onClick={() => setView({ mode: 'sheet', sheetId: s.id })}>Open</button>
-                <a className="shs-secondary-btn" href={s.openUrl} target="_blank" rel="noopener noreferrer">Open in Google Sheets</a>
-                {isAdmin && <button type="button" className="shs-secondary-btn" onClick={() => setView({ mode: 'settings', sheetId: s.id })}>Settings</button>}
+                {perms(s).open && <button type="button" className="trp-generate-btn" onClick={() => setView({ mode: 'sheet', sheetId: s.id })}>Open</button>}
+                {perms(s).openInGoogle && s.openUrl && <a className="shs-secondary-btn" href={s.openUrl} target="_blank" rel="noopener noreferrer">Open in Google Sheets</a>}
+                {perms(s).settings && <button type="button" className="shs-secondary-btn" onClick={() => setView({ mode: 'settings', sheetId: s.id })}>Settings</button>}
+                {!perms(s).open && !perms(s).openInGoogle && !perms(s).settings && (
+                  <span className="shs-muted">No actions allowed on this sheet. Ask an admin.</span>
+                )}
               </div>
             </article>
           ))}
