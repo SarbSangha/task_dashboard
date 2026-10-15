@@ -1,0 +1,57 @@
+{
+  "_help": [
+    "Display names and exclusions for the Credit Consumption Report.",
+    "Nothing here changes the database: the report maps names as it reads them.",
+    "Keys under 'rename' match case-insensitively and ignore surrounding spaces.",
+    "A client renamed to null is shown as 'No client' (a placeholder, not a real client).",
+    "Clients listed under 'internal' are our own work, shown apart from client work on the Summary.",
+    "Accounts under 'exclude' are left out of the management view (and of the full report when",
+    "'Exclude test & admin accounts' is on); admins are always excluded with them."
+  ],
+  "users": {
+    "rename": {}
+  },
+  "departments": {
+    "rename": {
+      "APPPLICANT": "Applicant (test)"
+    },
+    "keep_upper": ["SEO", "IT", "AI", "HR", "3D", "RMW", "MPF"]
+  },
+  "clients": {
+    "rename": {
+      "Applicant": null,
+      "BUFFER": "Unallocated",
+      "MISCELLANEOUS": "Miscellaneous",
+      "PITCH": "New-business pitches",
+      "RMW": "Internal (RMW)"
+    },
+    "internal": ["Internal (RMW)"]
+  },
+  "exclude": {
+    "user_ids": [],
+    "emails": [],
+    "departments": ["APPPLICANT"]
+  },
+  "accounts": {
+    "_help": "Optional labels for tool accounts, by account id, e.g. {\"288\": \"Design team\"}.",
+    "labels": {}
+  },
+  "free_preview_models": {
+    "ElevenLabs": ["eleven_v3_dpo", "eleven_v4_exp"]
+  },
+  "subscriptions": {
+    "_help": [
+      "billing: account id -> 'monthly' (default) or 'annual' (the fee is then a yearly fee).",
+      "billing_unconfirmed: account ids whose fee frequency is being checked (counted as monthly, flagged).",
+      "confirmed_billed: account ids whose renewal date has passed but which are confirmed still billed;",
+      "  until listed here, such an account's unused fee is left out of the totals and shown under 'To confirm'.",
+      "untracked_ai_tools: AI tools paid for whose usage the dashboard does not capture (tool names as in IT Tools);",
+      "  their fees appear as one Summary line, outside cost per item."
+    ],
+    "low_use_rupees_per_item": 40,
+    "billing": {},
+    "billing_unconfirmed": [241, 305],
+    "confirmed_billed": [],
+    "untracked_ai_tools": ["ChatGPT", "Claude", "Canva", "Grammarly", "Enhancor"]
+  }
+}

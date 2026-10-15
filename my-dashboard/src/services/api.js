@@ -2601,6 +2601,11 @@ export const itToolsAPI = {
     return response.data;
   },
 
+  getSingleSeatStatus: async (requestConfig = {}) => {
+    const response = await api.get('/api/it-tools/tools-single-seat-status', requestConfig);
+    return response.data;
+  },
+
   createTool: async (payload) => {
     const response = await api.post('/api/it-tools/tools', payload);
     return response.data;

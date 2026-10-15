@@ -11,7 +11,7 @@ and forwards the browser to the file. All endpoints are read-only.
 import logging
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -22,16 +22,24 @@ from starlette.background import BackgroundTask
 from database_config import OperationalSessionLocal, get_operational_db
 from models_new import User
 from utils.credit_report import (
+    MANAGEMENT,
+    PDF_MIMETYPE,
     TOOL_NAMES,
     UNASSIGNED_USER_ID,
+    VERSIONS,
     XLSX_MIMETYPE,
+    PdfUnavailable,
     ReportFilters,
     generate_report,
+    last_full_month,
     load_options,
     public_dashboard_url,
     report_filename,
     resolve_output_url,
+    to_pdf,
 )
+
+IST_OFFSET_MINUTES = 330
 from utils.permissions import require_credit_report_access, require_user
 
 logger = logging.getLogger(__name__)
@@ -48,6 +56,22 @@ def _parse_iso_date(value: Optional[str], name: str) -> Optional[str]:
         raise HTTPException(status_code=400, detail=f"{name} must be a date in YYYY-MM-DD format")
 
 
+REPORT_DB_ENV = "CREDIT_REPORT_DATABASE_URL"   # a SELECT-only role (report_ro); unset = the app's connection
+_report_engine = None
+
+
+def _report_bind():
+    """The export's own connection: the read-only report role when configured."""
+    global _report_engine
+    url = (os.getenv(REPORT_DB_ENV) or "").strip()
+    if not url:
+        return OperationalSessionLocal.kw["bind"]
+    if _report_engine is None:
+        from database_config import _create_engine
+        _report_engine = _create_engine(url)
+    return _report_engine
+
+
 def _snapshot_session() -> Session:
     """A read-only session whose every query sees one consistent snapshot,
     so the summary sheets and the streamed Generation Log can never disagree
@@ -60,9 +84,9 @@ def _snapshot_session() -> Session:
     transaction pooler) works. Instead: end the hook's transaction, then make
     SET TRANSACTION the first statement of the export's own transaction.
     """
-    bind = OperationalSessionLocal.kw["bind"]
+    bind = _report_bind()
     if bind.dialect.name != "postgresql":
-        return OperationalSessionLocal()
+        return Session(bind=bind, autoflush=False)
     conn = bind.connect()
     try:
         conn.connection.dbapi_connection.commit()
@@ -99,13 +123,18 @@ def credit_report_options(
 
 @router.get("/export.xlsx")
 def export_credit_report(
-    start: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to the 1st of this month"),
-    end: Optional[str] = Query(None, description="YYYY-MM-DD; defaults to today"),
+    start: Optional[str] = Query(None, description="YYYY-MM-DD; with no dates, the last full month"),
+    end: Optional[str] = Query(None, description="YYYY-MM-DD; with no dates, the last full month"),
     department: Optional[str] = Query(None),
-    user: Optional[int] = Query(None, description="0 = Unassigned (generations with no owner)"),
+    user: Optional[int] = Query(None, description="0 = Unknown user (generations with no owner)"),
     tool: Optional[str] = Query(None),
     client: Optional[str] = Query(None),
-    excludeTestAccounts: bool = Query(True, description="Leave out admin accounts and CREDIT_REPORT_EXCLUDED_ACCOUNTS"),
+    # On by default: the Summary is a management view, so test & admin
+    # accounts stay out unless asked for (excludeTestAccounts=false).
+    excludeTestAccounts: bool = Query(True, description="Leave out admin and test accounts (config + "
+                                                        "CREDIT_REPORT_EXCLUDED_ACCOUNTS)"),
+    version: str = Query("full", description="full = every sheet; management = Summary, Team & Clients, Glossary"),
+    format: str = Query("xlsx", description="xlsx, or pdf (management version only)"),
     db: Session = Depends(get_operational_db),
     _: User = Depends(require_credit_report_access),
 ):
@@ -115,12 +144,22 @@ def export_credit_report(
         raise HTTPException(status_code=400, detail="start must be on or before end")
     if tool and tool.strip() and tool.strip() not in TOOL_NAMES:
         raise HTTPException(status_code=400, detail=f"Unknown tool: {tool}")
+    if version not in VERSIONS:
+        raise HTTPException(status_code=400, detail=f"version must be one of {', '.join(VERSIONS)}")
+    if format not in ("xlsx", "pdf"):
+        raise HTTPException(status_code=400, detail="format must be xlsx or pdf")
+    if format == "pdf" and version != MANAGEMENT:
+        raise HTTPException(status_code=400, detail="PDF is available for the management version")
+    if not start_iso and not end_iso:
+        today = (datetime.utcnow() + timedelta(minutes=IST_OFFSET_MINUTES)).date()
+        first, last = last_full_month(today)
+        start_iso, end_iso = first.isoformat(), last.isoformat()
 
     filters = ReportFilters.build(start=start_iso, end=end_iso, department=department, user_id=user,
                                   tool=tool, client=client, exclude_test_accounts=excludeTestAccounts)
     if filters.user_id not in (None, UNASSIGNED_USER_ID):
         target = db.query(User.name).filter(User.id == filters.user_id).scalar()
-        filters.user_label = target or f"User #{filters.user_id}"
+        filters.user_label = filters.display.person_name(filters.user_id, target) if target else f"User #{filters.user_id}"
     # Release the auth session's connection before the long export; the
     # export opens its own snapshot connection.
     db.close()
@@ -129,17 +168,27 @@ def export_credit_report(
     os.close(fd)
     report_db = _snapshot_session()
     try:
-        generate_report(report_db, filters, path, dashboard_url=public_dashboard_url() or "")
+        generate_report(report_db, filters, path, dashboard_url=public_dashboard_url() or "", version=version)
     except Exception:
         _remove(path)
         raise
     finally:
         _close_snapshot(report_db)
 
+    if format == "pdf":
+        pdf_path = path[:-5] + ".pdf"
+        try:
+            to_pdf(path, pdf_path)
+        except PdfUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        finally:
+            _remove(path)
+        return FileResponse(pdf_path, media_type=PDF_MIMETYPE, filename=report_filename(filters, version, "pdf"),
+                            background=BackgroundTask(_remove, pdf_path))
     return FileResponse(
         path,
         media_type=XLSX_MIMETYPE,
-        filename=report_filename(filters),
+        filename=report_filename(filters, version),
         background=BackgroundTask(_remove, path),
     )
 

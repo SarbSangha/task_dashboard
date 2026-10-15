@@ -31,6 +31,7 @@ const STATE = {
   firstFilledAt: 0,
   launchChecked: false,
   launchAuthorized: false,
+  signedIn: false,
   launchExpiresAt: 0,
   launchActivatedAt: 0,
   passwordSavingInFlight: false,
@@ -256,6 +257,7 @@ function releasePasswordSavingSuppressed(delay = 0) {
 
 function markSignedIn(message) {
   STATE.settled = true;
+  STATE.signedIn = true;
   setStatus(message);
   window.setTimeout(() => hideStatusBadge(), 600);
   startSessionStatusPolling();
@@ -345,7 +347,9 @@ function startSessionStatusPolling() {
       { type: 'TOOL_HUB_CHECK_SESSION_STATUS', toolSlug: TOOL_SLUG, extensionTicket: ticket },
       (response) => {
         if (chrome.runtime.lastError) return;
-        if (response?.ok && response.data?.stillHolding === false) {
+        // Polling can start before sign-in purely as the lock's heartbeat
+        // (see start()) - only a signed-in tab acts on having lost the lock.
+        if (STATE.signedIn && response?.ok && response.data?.stillHolding === false) {
           showSessionRevokedBanner();
         }
       }
@@ -1182,6 +1186,15 @@ function start() {
     })
     .finally(() => {
       STATE.settled = false;
+      // Each poll is also the single-seat lock's heartbeat (backend
+      // SINGLE_SEAT_HEARTBEAT_TIMEOUT_SEC). Start it as soon as a
+      // dashboard-launched tab loads, not only after sign-in: if the whole
+      // browser is quit mid-login (Semrush's captcha step can take a while),
+      // no tab-close release ever reaches the backend, and without an early
+      // heartbeat the lock would fall back to the multi-hour safety net.
+      if (STATE.launchAuthorized || getHeldTicket()) {
+        startSessionStatusPolling();
+      }
       scheduleAttempt(0);
     });
 }

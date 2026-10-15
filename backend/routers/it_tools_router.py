@@ -17,14 +17,14 @@ from typing import Optional
 from urllib.parse import urlparse
 from xml.sax.saxutils import escape as xml_escape
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, or_, func, case
 from sqlalchemy.orm import Session
 
-from auth import get_request_session_token, resolve_session_user
-from database_config import get_operational_db
+from auth import get_request_session_token, resolve_session_user, verify_session_token
+from database_config import OperationalSessionLocal, get_operational_db
 from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, ITPortalToolUsageEvent, ToolCreditRate, User
 from utils.tool_renewal_service import (
     DEFAULT_RENEWAL_TYPE,
@@ -59,10 +59,34 @@ EXTENSION_AUTOFILL_TICKET_TTL_SEC = 20 * 60
 # Safety net only, not the primary release path: a single-seat tool's lock is
 # normally released by an explicit /session/release call (the extension's
 # tab-close hook, or the dashboard's manual "Release" button). This expiry
-# just reclaims a lock that was never released - crashed browser, lost
-# network, force-quit - after a generously long window so it never fires
-# during a real, still-in-progress session.
+# just reclaims a lock that was never released and whose tab never sent a
+# heartbeat (see below) - e.g. a tool with no polling content script - after
+# a generously long window so it never fires during a real session.
 SINGLE_SEAT_STALE_LOCK_SEC = 4 * 60 * 60
+# Once the holder's tab has heartbeated at least once (content-semrush.js
+# polls /extension/session/status every 30s while open, and background-main.js
+# repeats that from a 30s chrome.alarms tick that Chrome never throttles even
+# when the tab is hidden), the lock lives only
+# as long as those heartbeats keep coming. Reported bug: quitting the whole
+# Chrome window instead of closing the Semrush tab kills the extension's
+# service worker before its tab-close release request goes out, so the lock
+# stayed held for the full 4h safety net and every other user saw "In use by"
+# the person who had already left. 90s = three missed 30s heartbeats, enough
+# slack for a slow request or brief network blip without dropping a live
+# session. This is now the fallback: the extension's presence WebSocket (see
+# single_seat_presence_ws) catches a quit browser within seconds, and this
+# timeout only matters when that socket can't tell (e.g. network yanked).
+SINGLE_SEAT_HEARTBEAT_TIMEOUT_SEC = 90
+# When the holder's presence socket drops, the lock is left this long before
+# it frees - just enough for the extension to reconnect if only its service
+# worker restarted, rather than the whole browser going away.
+SINGLE_SEAT_DISCONNECT_GRACE_SEC = 8
+# The extension pings every 20s; a socket silent for longer than this is
+# treated as dead even if TCP never reported the close.
+SINGLE_SEAT_PRESENCE_RECEIVE_TIMEOUT_SEC = 45
+# Uvicorn's close code for "server restarting" - the socket dropping then
+# says nothing about the holder's browser, so it must not shorten the lock.
+WEBSOCKET_CLOSE_SERVICE_RESTART = 1012
 MAX_REASONABLE_KLING_CREDIT_BURN = 3000
 MAX_EXPECTED_LOCK_AUTO_BURN = 300
 HOSTNAME_EQUIVALENT_GROUPS = (
@@ -267,7 +291,13 @@ def _tool_supports_password_optional_credential(canonical_tool_slug: str) -> boo
 def _single_seat_lock_is_stale(tool) -> bool:
     if not tool.active_session_started_at:
         return True
-    age_seconds = (datetime.utcnow() - tool.active_session_started_at).total_seconds()
+    now = datetime.utcnow()
+    # launch_tool() resets heartbeat_at, so any value here belongs to the
+    # current session.
+    heartbeat_at = getattr(tool, "active_session_heartbeat_at", None)
+    if heartbeat_at:
+        return (now - heartbeat_at).total_seconds() > SINGLE_SEAT_HEARTBEAT_TIMEOUT_SEC
+    age_seconds = (now - tool.active_session_started_at).total_seconds()
     return age_seconds > SINGLE_SEAT_STALE_LOCK_SEC
 
 
@@ -2681,6 +2711,46 @@ def list_tools(
     return response
 
 
+@router.get("/tools-single-seat-status")
+def list_single_seat_status(
+    current_user: User = Depends(get_current_user_with_workplace_tools_access),
+    db: Session = Depends(get_operational_db),
+):
+    """Just the "in use by X" state of single-seat tools, for the Tools page's
+    frequent occupancy poll. That poll used to re-fetch the whole /tools
+    payload (per-tool credential lookups, plus every admin credential
+    summary) every few seconds; under any load those requests piled up and
+    the page both showed a long-released lock as still held and failed to
+    load at all. This touches only the single-seat rows."""
+    tools = (
+        db.query(ITPortalTool)
+        .filter(ITPortalTool.is_active == True, ITPortalTool.single_seat == True)
+        .all()
+    )
+    if not has_any_role(current_user, {"admin"}):
+        visible_ids = set(_resolve_tool_credentials_map(db, [tool.id for tool in tools], current_user.id))
+        tools = [tool for tool in tools if tool.id in visible_ids]
+
+    holder_ids = {_single_seat_lock_holder_id(tool) for tool in tools} - {None}
+    holders_by_id = {}
+    if holder_ids:
+        holders_by_id = {u.id: u for u in db.query(User).filter(User.id.in_(holder_ids)).all()}
+
+    statuses = []
+    for tool in tools:
+        holder = holders_by_id.get(_single_seat_lock_holder_id(tool))
+        statuses.append({
+            "toolId": tool.id,
+            "activeSession": {
+                "userId": holder.id,
+                "userName": holder.name or holder.email,
+                "userEmail": holder.email,
+                "startedAt": tool.active_session_started_at.isoformat() if tool.active_session_started_at else None,
+            } if holder else None,
+        })
+    return {"success": True, "tools": statuses}
+
+
 @router.post("/tools")
 def create_tool(
     payload: ToolCreatePayload,
@@ -2765,6 +2835,7 @@ def update_tool(
             # not leave a dangling lock nothing can ever check again.
             tool.active_session_user_id = None
             tool.active_session_started_at = None
+            tool.active_session_heartbeat_at = None
     _validate_extension_autofill_target(tool.launch_mode, tool.website_url, tool.login_url, tool.slug)
     tool.updated_by = current_user.id
     tool.updated_at = datetime.utcnow()
@@ -2924,7 +2995,15 @@ def get_extension_tool_session_status(
         # rather than false-alarming a real session over an auth hiccup.
         return {"success": True, "stillHolding": True}
 
-    return {"success": True, "stillHolding": tool.active_session_user_id == user.id}
+    still_holding = tool.active_session_user_id == user.id
+    if still_holding:
+        # This poll doubles as the lock's liveness heartbeat - see
+        # SINGLE_SEAT_HEARTBEAT_TIMEOUT_SEC. A holder whose lock went stale
+        # (laptop asleep) but that nobody else took in the meantime simply
+        # resumes holding it here.
+        tool.active_session_heartbeat_at = datetime.utcnow()
+        db.commit()
+    return {"success": True, "stillHolding": still_holding}
 
 
 @router.post("/extension/session/release")
@@ -2967,8 +3046,137 @@ def release_extension_tool_session(
 
     tool.active_session_user_id = None
     tool.active_session_started_at = None
+    tool.active_session_heartbeat_at = None
     db.commit()
     return {"success": True, "released": True}
+
+
+# (tool_id, user_id) -> live presence sockets in this process. Lets one of a
+# holder's sockets closing (a second browser profile, say) leave the lock
+# alone while another is still connected.
+_single_seat_presence_sockets: dict[tuple[int, int], set] = {}
+
+
+def _touch_single_seat_presence(tool_slug: str, user_id: int) -> Optional[int]:
+    """Records a presence ping as the lock's heartbeat when user_id holds it.
+    Returns the tool id, or None if tool_slug isn't a single-seat tool."""
+    db = OperationalSessionLocal()
+    try:
+        tool = _find_extension_tool(db, ExtensionCredentialPayload(tool_slug=tool_slug))
+        if not tool or not tool.single_seat:
+            return None
+        if tool.active_session_user_id == user_id:
+            tool.active_session_heartbeat_at = datetime.utcnow()
+            db.commit()
+        return tool.id
+    finally:
+        db.close()
+
+
+def _expire_single_seat_lock_soon(tool_id: int, user_id: int) -> None:
+    """Backdates the holder's heartbeat so the lock frees in
+    SINGLE_SEAT_DISCONNECT_GRACE_SEC unless a fresh heartbeat (a reconnected
+    socket, or the open tab's own status poll) arrives first."""
+    db = OperationalSessionLocal()
+    try:
+        tool = (
+            db.query(ITPortalTool)
+            .filter(ITPortalTool.id == tool_id, ITPortalTool.is_active == True)
+            .with_for_update()
+            .first()
+        )
+        if not tool or not tool.single_seat or tool.active_session_user_id != user_id:
+            return
+        tool.active_session_heartbeat_at = datetime.utcnow() - timedelta(
+            seconds=SINGLE_SEAT_HEARTBEAT_TIMEOUT_SEC - SINGLE_SEAT_DISCONNECT_GRACE_SEC
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _presence_log(message: str) -> None:
+    # One line per connect/disconnect (never per ping) - the only way to tell
+    # from the server console whether a holder's browser is actually holding
+    # this socket open, which decides whether a quit browser frees the lock
+    # in seconds or only after SINGLE_SEAT_HEARTBEAT_TIMEOUT_SEC.
+    print(f"SINGLE-SEAT PRESENCE {message}", flush=True)
+
+
+@router.websocket("/extension/session/presence")
+async def single_seat_presence_ws(websocket: WebSocket):
+    """Held open by the extension's service worker while a single-seat
+    tool's tab is open (see background-main.js's ensureSingleSeatPresence).
+    Reported bug: quitting the whole browser instead of closing the Semrush
+    tab never sends the tab-close release, so the lock outlived the session.
+    Quitting the browser does close this socket, though - so a drop frees
+    the lock within seconds instead of waiting out the heartbeat timeout."""
+    protocol_header = websocket.headers.get("sec-websocket-protocol") or ""
+    session_token = None
+    for protocol in (value.strip() for value in protocol_header.split(",")):
+        if protocol.startswith("rmw-token."):
+            session_token = protocol.removeprefix("rmw-token.").strip() or None
+    tool_slug = f"{websocket.query_params.get('tool_slug') or ''}".strip()
+    if not session_token or not tool_slug:
+        _presence_log(f"rejected tool={tool_slug or '-'} reason=missing-{'token' if not session_token else 'tool'}")
+        await websocket.close(code=1008)
+        return
+
+    def _resolve_user_id() -> Optional[int]:
+        db = OperationalSessionLocal()
+        try:
+            return verify_session_token(session_token, db)
+        except Exception:
+            return None
+        finally:
+            db.close()
+
+    user_id = await asyncio.to_thread(_resolve_user_id)
+    if not user_id:
+        _presence_log(f"rejected tool={tool_slug} reason=invalid-session")
+        await websocket.close(code=1008)
+        return
+    tool_id = await asyncio.to_thread(_touch_single_seat_presence, tool_slug, user_id)
+    if not tool_id:
+        _presence_log(f"rejected tool={tool_slug} user={user_id} reason=not-single-seat")
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept(subprotocol="rmw-session")
+    key = (tool_id, user_id)
+    _single_seat_presence_sockets.setdefault(key, set()).add(websocket)
+    _presence_log(f"connected tool={tool_slug} user={user_id}")
+    close_code = None
+    try:
+        while True:
+            await asyncio.wait_for(websocket.receive_text(), timeout=SINGLE_SEAT_PRESENCE_RECEIVE_TIMEOUT_SEC)
+            await asyncio.to_thread(_touch_single_seat_presence, tool_slug, user_id)
+    except WebSocketDisconnect as exc:
+        close_code = exc.code
+    except asyncio.TimeoutError:
+        close_code = "silent-timeout"
+        try:
+            await websocket.close(code=1001)
+        except Exception:
+            pass
+    except Exception:
+        LOGGER.debug("Single-seat presence socket failed", exc_info=True)
+    finally:
+        sockets = _single_seat_presence_sockets.get(key)
+        if sockets is not None:
+            sockets.discard(websocket)
+            if not sockets:
+                _single_seat_presence_sockets.pop(key, None)
+        expiring = close_code != WEBSOCKET_CLOSE_SERVICE_RESTART and key not in _single_seat_presence_sockets
+        _presence_log(
+            f"disconnected tool={tool_slug} user={user_id} code={close_code} "
+            + (f"-> lock frees in {SINGLE_SEAT_DISCONNECT_GRACE_SEC}s if user holds it" if expiring else "-> lock kept")
+        )
+        if expiring:
+            try:
+                await asyncio.to_thread(_expire_single_seat_lock_soon, tool_id, user_id)
+            except Exception:
+                LOGGER.warning("Could not expire single-seat lock after presence drop", exc_info=True)
 
 
 @router.post("/extension/usage-event")
@@ -4268,6 +4476,7 @@ def launch_tool(
             )
         tool.active_session_user_id = current_user.id
         tool.active_session_started_at = datetime.utcnow()
+        tool.active_session_heartbeat_at = None
 
     revealed = None
     canonical_tool_slug = _canonical_tool_slug_for_tool(tool)
@@ -4376,6 +4585,7 @@ def release_tool_session(
 
     tool.active_session_user_id = None
     tool.active_session_started_at = None
+    tool.active_session_heartbeat_at = None
     db.commit()
     return {"success": True, "released": True}
 

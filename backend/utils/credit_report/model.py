@@ -84,12 +84,16 @@ class Totals:
     all_generations: int = 0
     users: set = field(default_factory=set)
     with_client: int = 0            # Charged generations with a real client
+    rupees: float = 0.0             # ₹ of Charged generations (costing.py)
+    rupees_est: float = 0.0         # part of `rupees` that is an estimate
 
     def add(self, g: FactGroup) -> None:
         self.all_generations += g.generations
         if g.charge_status == CHARGED:
             self.credits += g.credits
             self.generations += g.generations
+            self.rupees += g.rupees
+            self.rupees_est += g.rupees_est
             self.zero_credit += g.zero_credit
             self.users.add(g.user_id)
             if g.client != NO_CLIENT:
@@ -165,10 +169,10 @@ class ReportModel:
     months: list                    # "YYYY-MM", ascending
     dept_tool: dict                 # {(department, tool): Charged credits}
     user_tool: dict                 # {(user_id, tool): Charged credits}
-    month_tool: dict                # {(month, tool): (credits, generations)}
-    month_dept: dict                # {(month, department): (credits, generations)}
-    month_user: dict                # {(month, user_id): (credits, generations)}
-    month_client: dict              # {(month, client): (credits, generations)}
+    month_tool: dict                # {(month, tool): (credits, generations, ₹)}
+    month_dept: dict                # {(month, department): (credits, generations, ₹)}
+    month_user: dict                # {(month, user_id): (credits, generations, ₹)}
+    month_client: dict              # {(month, client): (credits, generations, ₹)}
     month_totals: dict              # {month: Totals} - every charge status, per IST month
     user_client_rows: list          # [(user_id, department, client, tool, Totals)], ordered by client
     user_tool_order: list           # user ids, User x Tool order (department, then rank)
@@ -212,10 +216,10 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
     by_tool: dict = defaultdict(Totals)
     by_client: dict = defaultdict(Totals)
     pair: dict = defaultdict(lambda: defaultdict(lambda: [0.0, 0]))   # pair[kind][(a, b)] = [credits, gens]
-    month_tool: dict = defaultdict(lambda: [0.0, 0])
-    month_dept: dict = defaultdict(lambda: [0.0, 0])
-    month_user: dict = defaultdict(lambda: [0.0, 0])
-    month_client: dict = defaultdict(lambda: [0.0, 0])
+    month_tool: dict = defaultdict(lambda: [0.0, 0, 0.0])
+    month_dept: dict = defaultdict(lambda: [0.0, 0, 0.0])
+    month_user: dict = defaultdict(lambda: [0.0, 0, 0.0])
+    month_client: dict = defaultdict(lambda: [0.0, 0, 0.0])
     month_totals: dict = defaultdict(Totals)
     user_client: dict = defaultdict(Totals)
     task_filled = model_filled = 0
@@ -242,14 +246,12 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
         ):
             pair[kind][key][0] += g.credits
             pair[kind][key][1] += g.generations
-        month_tool[(g.month, g.tool)][0] += g.credits
-        month_tool[(g.month, g.tool)][1] += g.generations
-        month_dept[(g.month, g.department)][0] += g.credits
-        month_dept[(g.month, g.department)][1] += g.generations
-        month_user[(g.month, g.user_id)][0] += g.credits
-        month_user[(g.month, g.user_id)][1] += g.generations
-        month_client[(g.month, g.client)][0] += g.credits
-        month_client[(g.month, g.client)][1] += g.generations
+        for store, key in ((month_tool, g.tool), (month_dept, g.department), (month_user, g.user_id),
+                           (month_client, g.client)):
+            cell = store[(g.month, key)]
+            cell[0] += g.credits
+            cell[1] += g.generations
+            cell[2] += g.rupees
 
     def name_of_user(uid):
         return meta[uid].user_name

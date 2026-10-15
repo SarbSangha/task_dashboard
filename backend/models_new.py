@@ -860,6 +860,11 @@ class ITPortalTool(Base):
     single_seat = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     active_session_user_id = Column(Integer, ForeignKey("users.id"))
     active_session_started_at = Column(DateTime)
+    # Last time the holder's open tab checked in (content-semrush.js polls
+    # /extension/session/status). Lets a lock whose browser was quit outright
+    # - no tab-close release ever fires then - expire within minutes instead
+    # of waiting out the long safety net. See SINGLE_SEAT_HEARTBEAT_TIMEOUT_SEC.
+    active_session_heartbeat_at = Column(DateTime)
     created_by = Column(Integer, ForeignKey("users.id"))
     updated_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow, index=True)

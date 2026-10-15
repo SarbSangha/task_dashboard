@@ -320,6 +320,7 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tools", "single_seat", "BOOLEAN NOT NULL DEFAULT FALSE")
     _pg_add_column_if_missing(conn, "it_portal_tools", "active_session_user_id", "INTEGER")
     _pg_add_column_if_missing(conn, "it_portal_tools", "active_session_started_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "it_portal_tools", "active_session_heartbeat_at", "TIMESTAMP")
 
     # Tool Renew configuration (Admin Queue -> Tool Renew: credit system
     # on/off, renewal type, auto-renew, purchase date, cost -- see

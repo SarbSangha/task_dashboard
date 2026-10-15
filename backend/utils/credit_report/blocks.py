@@ -43,16 +43,18 @@ class Agg:
     rows: int = 0                 # log rows, every charge status
     gens: int = 0                 # Charged generations
     credits: float = 0.0          # Charged credits
+    rupees: float = 0.0           # ₹ of the Charged generations
     pending: int = 0              # Pending rows (in the log, not in any total)
     failed: int = 0               # Failed / refunded rows
     first: Optional[date] = None
     last: Optional[date] = None
 
-    def add(self, rows: int, status: str, credits: float, day: Optional[date]) -> None:
+    def add(self, rows: int, status: str, credits: float, day: Optional[date], rupees: float = 0.0) -> None:
         self.rows += rows
         if status == CHARGED:
             self.gens += rows
             self.credits += credits
+            self.rupees += rupees
         elif status == PENDING:
             self.pending += rows
         elif status == FAILED:
@@ -100,6 +102,7 @@ class DayRow:
     credits: dict = field(default_factory=dict)       # key (tool / -) -> Charged credits
     gens: int = 0
     total: float = 0.0
+    rupees: float = 0.0
     people: set = field(default_factory=set)
     clients: set = field(default_factory=set)
 
@@ -143,6 +146,19 @@ class ToolData:
 
 
 @dataclass
+class DateData:
+    """One IST day: who used what, for which clients (By Date blocks)."""
+    total: Agg = field(default_factory=Agg)
+    users: dict = field(default_factory=dict)          # user id -> Agg
+    clients: dict = field(default_factory=dict)        # client -> Agg
+    tools: dict = field(default_factory=dict)          # tool -> Agg
+    user_clients: dict = field(default_factory=dict)   # user id -> set of clients
+    user_tools: dict = field(default_factory=dict)     # user id -> set of tools
+    client_users: dict = field(default_factory=dict)   # client -> set of user ids
+    uct: dict = field(default_factory=dict)            # (user id, client, tool) -> Agg
+
+
+@dataclass
 class LogPlan:
     """Where everything sits in the Generation Log (rows decided up front)."""
     user_header: dict = field(default_factory=dict)    # user id -> its header row
@@ -160,6 +176,7 @@ class LogPlan:
 class BlockData:
     users: dict = field(default_factory=dict)          # user id -> UserData
     tools: dict = field(default_factory=dict)          # tool -> ToolData
+    dates: dict = field(default_factory=dict)          # date -> DateData
     log: LogPlan = field(default_factory=LogPlan)
 
 
@@ -169,6 +186,7 @@ def build_blocks(day_groups, log_user_order: list, first_log_row: int, client_or
     data = BlockData()
     users = defaultdict(UserData)
     tools = defaultdict(ToolData)
+    dates = defaultdict(DateData)
     quads = defaultdict(Agg)
     for g in day_groups:
         day = parse_day(g.day)
@@ -179,15 +197,23 @@ def build_blocks(day_groups, log_user_order: list, first_log_row: int, client_or
                     t.total, t.users.setdefault(g.user_id, Agg()), t.clients.setdefault(g.client, Agg()),
                     t.user_clients.setdefault(g.user_id, {}).setdefault(g.client, Agg()),
                     quads[(g.user_id, g.tool, day, g.client)]):
-            agg.add(g.rows, g.charge_status, g.credits, day)
+            agg.add(g.rows, g.charge_status, g.credits, day, g.rupees)
         u.client_tools.setdefault(g.client, set()).add(g.tool)
         t.client_users.setdefault(g.client, set()).add(g.user_id)
         u.pair_quads.setdefault(g.tool, {})
         u.pair_quads[g.tool][(day, g.client)] = u.pair_quads[g.tool].get((day, g.client), 0) + g.rows
         if day:
-            u.tdc.setdefault((g.tool, day), {}).setdefault(g.client, Agg()).add(g.rows, g.charge_status, g.credits, day)
+            dd = dates[day]
+            for agg in (dd.total, dd.users.setdefault(g.user_id, Agg()), dd.clients.setdefault(g.client, Agg()),
+                        dd.tools.setdefault(g.tool, Agg()), dd.uct.setdefault((g.user_id, g.client, g.tool), Agg())):
+                agg.add(g.rows, g.charge_status, g.credits, day, g.rupees)
+            dd.user_clients.setdefault(g.user_id, set()).add(g.client)
+            dd.user_tools.setdefault(g.user_id, set()).add(g.tool)
+            dd.client_users.setdefault(g.client, set()).add(g.user_id)
+            u.tdc.setdefault((g.tool, day), {}).setdefault(g.client, Agg()).add(g.rows, g.charge_status, g.credits, day,
+                                                                                g.rupees)
             t.duc.setdefault(day, {}).setdefault((g.user_id, g.client), Agg()).add(g.rows, g.charge_status, g.credits,
-                                                                                  day)
+                                                                                  day, g.rupees)
             for owner, key in ((u, g.tool), (t, None)):
                 row = owner.days.setdefault(day, DayRow(day))
                 row.clients.add(g.client)
@@ -195,9 +221,10 @@ def build_blocks(day_groups, log_user_order: list, first_log_row: int, client_or
                 if charged:
                     row.gens += g.rows
                     row.total += g.credits
+                    row.rupees += g.rupees
                     if key is not None:
                         row.credits[key] = row.credits.get(key, 0.0) + g.credits
-    data.users, data.tools = dict(users), dict(tools)
+    data.users, data.tools, data.dates = dict(users), dict(tools), dict(dates)
 
     plan, row, pos = data.log, first_log_row, 0
     known = list(client_order) + sorted({c for (_u, _t, _d, c) in quads} - set(client_order), key=str.lower)
@@ -243,6 +270,7 @@ def date_rows(days: dict) -> tuple:
             w.credits[k] = w.credits.get(k, 0.0) + v
         w.gens += r.gens
         w.total += r.total
+        w.rupees += r.rupees
         w.people |= r.people
         w.clients |= r.clients
     return sorted(weeks.values(), key=lambda r: r.day, reverse=True), True

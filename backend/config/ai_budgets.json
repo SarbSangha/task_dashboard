@@ -1,0 +1,12 @@
+{
+  "_help": [
+    "Optional monthly AI-tool budgets in rupees. Leave a section empty to show no budget.",
+    "departments: department display name -> monthly budget, e.g. {\"Gen AI\": 25000}",
+    "tools: tool name -> monthly budget, e.g. {\"Kling\": 30000}",
+    "total: one monthly budget for the whole company, or null.",
+    "A report period shorter or longer than a month compares against the budget pro-rated by days."
+  ],
+  "total": null,
+  "departments": {},
+  "tools": {}
+}

@@ -47,10 +47,11 @@ from openpyxl.worksheet.filters import AutoFilter
 from openpyxl.worksheet.table import Table, TableColumn, TableStyleInfo
 
 from . import navigation as N
-from .facts import CHARGED, CREDITS_NOT_CAPTURED, FAILED, NO_CLIENT, PENDING, UNASSIGNED, UNASSIGNED_USER_ID, ReportFilters
+from .facts import (CHARGED, CREDITS_NOT_CAPTURED, FAILED, NO_CLIENT, PENDING, UNASSIGNED, UNASSIGNED_USER_ID,
+                    ReportFilters, cost_note)
 from .model import ReportModel, Top
 from .navigation import (  # noqa: F401  (sheet names are part of this module's API)
-    CLIENT, DEPT, DEPT_TOOL, DRILL, HOME, LOG, PERIOD, QUALITY, SHEET_PARENT, TOOL, TREND, USER,
+    BY_DATE, CLIENT, DEPT, DEPT_TOOL, DRILL, HOME, LOG, PERIOD, QUALITY, SHEET_PARENT, TOOL, TREND, USER,
     USER_CLIENT, USER_TOOL,
 )
 
@@ -60,12 +61,13 @@ IST = timedelta(minutes=330)
 XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 LISTS = "Lists"            # hidden: dropdown values for Period Explorer
-SHEET_ORDER = (HOME, PERIOD, DEPT, USER, TOOL, CLIENT, DEPT_TOOL, USER_TOOL, USER_CLIENT, TREND, DRILL,
+SHEET_ORDER = (HOME, PERIOD, BY_DATE, DEPT, USER, TOOL, CLIENT, DEPT_TOOL, USER_TOOL, USER_CLIENT, TREND, DRILL,
                QUALITY, LOG)
 
 SHEET_PURPOSE = {
     HOME: "Headline numbers, quick answers and this index.",
     PERIOD: "Pick any From / To dates and filters; every total, table and top answer recalculates.",
+    BY_DATE: "Every date, then one block per date: who worked that day, for which clients, with which tools.",
     DRILL: "One block per month: departments, users, tools and clients for that month.",
     DEPT: "Departments, then one block per department: its people and the tools they use.",
     USER: "Ranked users, then one block per user: tools used, clients, date-wise use, tool › date › client.",
@@ -86,12 +88,13 @@ TRUNCATION_MARKER = "…(truncated)"
 MAX_LINK_TEXT = 250               # a formula string literal tops out at 255
 DUPLICATE_WINDOW_SECONDS = 5
 DROP_COLUMN_FILL_BELOW = 0.20     # drop Task / Model when more than 80% empty
-DUPLICATE_LABEL = "Possible duplicate"
+DUPLICATE_LABEL = "Possible double charge"
 UNASSIGNED_NOTE = "No owner: imported by a history sync and never claimed"
 PROMPT_PREVIEW_CHARS = 120
 PROMPT_NEWLINE = " ⏎ "
 NO_RAW_STATUS = "(not sent by tool)"
 STALE_PENDING_HOURS = 24
+LINK_LEGEND = "Links: → open details · ⬅ go back · ↔ same item in another view."
 
 # Data Quality issues, in row order (rows are fixed so the log can link back
 # to them while it streams, before the Data Quality sheet is written).
@@ -99,12 +102,28 @@ STALE_PENDING = f"Pending for over {STALE_PENDING_HOURS} hours"
 ZERO_MISSED = "Charged with 0 credits"
 NOT_CAPTURED = "Cost not captured"
 EXCLUDED = "Test & admin accounts excluded"
-QUALITY_ISSUES = (UNASSIGNED, NO_CLIENT, PENDING, STALE_PENDING, FAILED, DUPLICATE_LABEL, ZERO_MISSED, NOT_CAPTURED,
-                  EXCLUDED)
-QUALITY_LINK_COL = "E"
+RECORDED_TWICE = "Kling job recorded twice"
+OWNER_UNCERTAIN = "Owner uncertain"
+NO_JOB_ID = "Kling row with no job ID"
+RATE_ASSUMED = "Rate assumed"
+FREE_PREVIEW = "Free preview model"
+UPLOADS = "Uploads (not generations)"
+QUALITY_ISSUES = (UNASSIGNED, NO_CLIENT, PENDING, STALE_PENDING, FAILED, DUPLICATE_LABEL, RECORDED_TWICE,
+                  OWNER_UNCERTAIN, NO_JOB_ID, ZERO_MISSED, NOT_CAPTURED, RATE_ASSUMED, FREE_PREVIEW, UPLOADS, EXCLUDED)
+QUALITY_LINK_COL = "F"
 # Fixed short names for the log's "⬅ Data Quality" cells (they fit the column).
 QUALITY_SHORT = {PENDING: "Pending", STALE_PENDING: "Pending 24h+", FAILED: "Failed",
-                 DUPLICATE_LABEL: "Duplicates", ZERO_MISSED: "Zero credits", NOT_CAPTURED: "No cost"}
+                 DUPLICATE_LABEL: "Double charge", ZERO_MISSED: "Zero credits", NOT_CAPTURED: "No cost",
+                 OWNER_UNCERTAIN: "Owner uncertain", NO_JOB_ID: "No job ID", RATE_ASSUMED: "Rate assumed",
+                 FREE_PREVIEW: "Free preview"}
+
+# Plain names for the reader (Step 4): table headers as shown, outside the log.
+HUMAN_HEADERS = {"Generations": "Items generated", "Charged credits": "Credits used", "Credits": "Credits used",
+                 "Active users": "People", "Users": "People"}
+RUPEES = "₹ cost"
+# Indian digit grouping (₹1,09,095): lakh and crore groups by value.
+INR_FMT = '[>=10000000]"₹"##\\,##\\,##\\,##0;[>=100000]"₹"##\\,##\\,##0;"₹"#,##0'
+INR2_FMT = '"₹"#,##0.00'
 
 # Generation Log back columns (it is streamed, so they are fixed, not resolved).
 # The first three sit at the left, frozen with the header.
@@ -113,7 +132,8 @@ LOG_BACK_TOOL = "⬅ Tool"
 LOG_BACK_DATE = "⬅ Date"            # first row of a (user, tool, day, client) run -> Tool › Date › Client
 LOG_BACK_TOOL_DATE = "⬅ Tool date"  # same row -> the tool's Date › User › Client
 LOG_BACK_CLIENT = "⬅ Client"        # newest run of a (user, tool, client) -> User × Client
-LOG_BACK_COLUMNS = (LOG_BACK_USER, "⬅ Tool", LOG_BACK_DATE, LOG_BACK_TOOL_DATE, LOG_BACK_CLIENT)
+LOG_BACK_BYDATE = "⬅ By Date"       # first row of a run -> By Date's User › Client › Tool
+LOG_BACK_COLUMNS = (LOG_BACK_USER, "⬅ Tool", LOG_BACK_DATE, LOG_BACK_TOOL_DATE, LOG_BACK_CLIENT, LOG_BACK_BYDATE)
 LOG_BACK_QUALITY = "⬅ Data Quality"
 LOG_BACK_DRILL = "⬅ Drill-down"
 PROMPT_FULL = "Prompt (full)"
@@ -194,6 +214,25 @@ def ist(value) -> Optional[datetime]:
     if isinstance(value, datetime):
         return (value.replace(tzinfo=None) + IST).replace(microsecond=0)
     return None
+
+
+def human_header(label, sheet: str = "") -> str:
+    """A table header as the reader sees it ("Generations" -> "Items generated");
+    the Generation Log keeps its own column names."""
+    return label if sheet == LOG else HUMAN_HEADERS.get(label, label)
+
+
+def shown_headers(labels, sheet: str = "") -> list:
+    """human_header for a whole header row, keeping a label as written when
+    its plain name would repeat another column's (table names must be unique)."""
+    out, seen = [], set()
+    for label in labels:
+        name = human_header(label, sheet)
+        if str(name).lower() in seen:
+            name = label
+        seen.add(str(name).lower())
+        out.append(name)
+    return out
 
 
 def unique_headers(labels) -> list:
@@ -285,9 +324,13 @@ class Writer:
     def pct(self, value, **kw):
         return self.cell(value, fmt=PCT_FMT, **kw)
 
+    def rupees(self, value, **kw):
+        return self.cell(round(value or 0.0, 2), fmt=INR_FMT, **kw)
+
     def header(self, labels):
+        sheet = getattr(self.ws, "title", "")
         return [self.text(h, font=F_HEADER, fill=FILL_HEADER, align=Alignment(wrap_text=True, vertical="center"))
-                for h in labels]
+                for h in shown_headers(labels, sheet)]
 
     def total_cell(self, value=None, fmt=None):
         return self.cell(value, fmt=fmt, font=F_BOLD, border=TOP_BORDER)
@@ -345,7 +388,7 @@ def _preamble(ws, w: Writer, sheet_name: str, subtitle: str, title_extra=()):
     """Rows 1-3: breadcrumbs, title (= the sheet's name), subtitle."""
     _crumb_row(ws, w, sheet_name)
     ws.append([w.text(sheet_name, font=F_TITLE)] + list(title_extra))
-    ws.append([w.text(subtitle, font=F_SUBTITLE)])
+    ws.append([w.text(f"{subtitle}  {LINK_LEGEND}", font=F_SUBTITLE)])
 
 
 def _add_table(ws, headers, last_row: int, name: str, header_row: int = HEADER_ROW):
@@ -354,7 +397,10 @@ def _add_table(ws, headers, last_row: int, name: str, header_row: int = HEADER_R
         return
     ref = f"A{header_row}:{get_column_letter(len(headers))}{last_row}"
     table = Table(displayName=name, ref=ref)
-    table.tableColumns = [TableColumn(id=i, name=str(h)) for i, h in enumerate(headers, start=1)]
+    sheet = getattr(ws, "title", "")
+    # The column names must match the header cells, which Writer.header shows humanized.
+    table.tableColumns = [TableColumn(id=i, name=clean_text(h))
+                          for i, h in enumerate(shown_headers(headers, sheet), start=1)]
     table.autoFilter = AutoFilter(ref=ref)
     table.tableStyleInfo = TableStyleInfo(name=TABLE_STYLE, showRowStripes=True)
     # openpyxl warns that write-only tables need their columns set by hand;
@@ -380,6 +426,11 @@ class Layout:
     client_row: dict = field(default_factory=dict)
     dept_tool_row: dict = field(default_factory=dict)
     dept_block_row: dict = field(default_factory=dict)         # department -> its block's header row on By Department
+    date_order: list = field(default_factory=list)             # dates with activity, newest first (By Date)
+    date_row: dict = field(default_factory=dict)               # date -> row in By Date's list
+    date_block_row: dict = field(default_factory=dict)         # date -> its block's header row on By Date
+    date_block_end: dict = field(default_factory=dict)
+    date_uct_row: dict = field(default_factory=dict)           # (date, user id, client, tool) -> User › Client › Tool row
     block_sections: dict = field(default_factory=dict)         # (sheet, user / tool / department) -> [(section, title row)]
     dept_block_end: dict = field(default_factory=dict)
     tool_block_row: dict = field(default_factory=dict)         # tool -> its block's header row on By Tool
@@ -450,6 +501,7 @@ class Layout:
         lay.quality_row = {issue: FIRST_DATA_ROW + i for i, issue in enumerate(QUALITY_ISSUES)}
         if model.departments:
             WB.plan_dept_blocks(model, blocks, lay, FIRST_DATA_ROW + len(model.departments) + 3)
+        WB.plan_date_blocks(blocks, lay)
         # Detail blocks start below each list: list, blank, Total, blank.
         if model.users:
             WB.plan_user_blocks(model, blocks, lay, FIRST_DATA_ROW + len(model.users) + 3)
@@ -476,6 +528,9 @@ class LogStats:
     rows: int = 0                 # physical rows under the header (generations + header / separator rows)
     data_rows: int = 0            # generations only
     credits_by_status: dict = field(default_factory=dict)
+    rupees_by_status: dict = field(default_factory=dict)
+    rupees_by_tool: dict = field(default_factory=dict)    # Charged ₹ per tool (reconciliation)
+    issue_counts: dict = field(default_factory=dict)      # issue -> [rows, credits, ₹]
     plan_mismatches: int = 0      # rows that did not land where blocks.LogPlan said
 
     @property
@@ -484,14 +539,15 @@ class LogStats:
 
 
 def log_headers(model: ReportModel) -> list:
-    headers = [LOG_BACK_USER, LOG_BACK_TOOL, LOG_BACK_DATE, LOG_BACK_TOOL_DATE, LOG_BACK_CLIENT, "Date / time (IST)",
+    headers = [LOG_BACK_USER, LOG_BACK_TOOL, LOG_BACK_DATE, LOG_BACK_TOOL_DATE, LOG_BACK_CLIENT, LOG_BACK_BYDATE,
+               "Date / time (IST)",
                "Date", "Month", "Week", "Quarter", "User", "Employee ID", "Department", "Tool", "Client"]
     if model.task_fill >= DROP_COLUMN_FILL_BELOW:
         headers.append("Task")
     if model.model_fill >= DROP_COLUMN_FILL_BELOW:
         headers.append("Model / type")
-    headers += ["Prompt", "Output", "Credits", "Charge status", "Charged", "Raw status", DUPLICATE_LABEL,
-                LOG_BACK_QUALITY, LOG_BACK_DRILL, PROMPT_FULL]
+    headers += ["Prompt", "Output", "Credits", RUPEES, "Cost note", "Charge status", "Charged", "Raw status",
+                DUPLICATE_LABEL, LOG_BACK_QUALITY, LOG_BACK_DRILL, PROMPT_FULL]
     return headers
 
 
@@ -502,12 +558,17 @@ def prompt_preview(prompt: Optional[str]) -> str:
 
 
 def _is_duplicate_pair(a, b) -> bool:
-    """Same user, tool and prompt within DUPLICATE_WINDOW_SECONDS, both charged credits."""
+    """A possible double charge: same user, tool and prompt within
+    DUPLICATE_WINDOW_SECONDS, both charged credits, and the same output.
+    Different outputs are deliberate variations or a batch (each one is a
+    real charge); one job recorded twice is removed earlier (dedupe.py)."""
     if a["tool"] != b["tool"] or not a["prompt"] or a["prompt"] != b["prompt"]:
         return False
     if a["ts"] is None or b["ts"] is None:
         return False
     if a["charge"] != CHARGED or b["charge"] != CHARGED or a["credits"] <= 0 or b["credits"] <= 0:
+        return False
+    if not a["output"] or a["output"] != b["output"]:
         return False
     return abs((b["ts"] - a["ts"]).total_seconds()) <= DUPLICATE_WINDOW_SECONDS
 
@@ -527,6 +588,7 @@ def flag_duplicates(rows: Iterable) -> Iterable:
             "ts": ist(r.occurred_at),
             "charge": r.charge_status,
             "credits": float(r.credits or 0.0),
+            "output": (getattr(r, "output_key", None) or "").strip(),
             "dup": False,
         }
         while window and (
@@ -546,7 +608,17 @@ def duplicate_ids(rows: Iterable) -> set:
     """{(tool, record id)} of possible duplicates, from rows in time order
     (stream_log without a tool order): the log's own order can put the two
     rows of a pair apart, so it reads this set instead of a window."""
-    return {(e["row"].tool, str(e["row"].record_id)) for e in flag_duplicates(rows) if e["dup"]}
+    return duplicate_summary(rows)[0]
+
+
+def duplicate_summary(rows: Iterable) -> tuple:
+    """(ids as duplicate_ids returns them, rows, ₹ of those rows)."""
+    ids, rupees = set(), 0.0
+    for e in flag_duplicates(rows):
+        if e["dup"]:
+            ids.add((e["row"].tool, str(e["row"].record_id)))
+            rupees += float(getattr(e["row"], "rupees", 0.0) or 0.0)
+    return ids, len(ids), rupees
 
 
 def _entries(rows: Iterable, duplicates: set) -> Iterable:
@@ -559,7 +631,23 @@ HOME_KPI_LINK_ROW = 12        # Home's "Details →" row under the headline numb
 HOME_KPI_GENERATIONS_COL = "C"
 
 
-def _log_issues(r, e, credits: float, stale_before: datetime) -> list:
+@dataclass(frozen=True)
+class KlingMarks:
+    """Kling log rows to flag (record ids as text): the kept row of a job
+    whose owner is uncertain, and Charged rows with no job ID."""
+
+    uncertain: frozenset = frozenset()
+    no_job_id: frozenset = frozenset()
+
+    @classmethod
+    def of(cls, kling) -> "KlingMarks":
+        if kling is None:
+            return cls()
+        return cls(uncertain=frozenset(str(j.kept.id) for j in kling.uncertain),
+                   no_job_id=frozenset(str(r.id) for r in kling.no_job_id))
+
+
+def _log_issues(r, e, credits: float, stale_before: datetime, marks: KlingMarks = KlingMarks()) -> list:
     """Data Quality issues this log row belongs to (QUALITY_ISSUES names)."""
     issues = []
     if r.charge_status == PENDING:
@@ -570,18 +658,27 @@ def _log_issues(r, e, credits: float, stale_before: datetime) -> list:
         issues.append(FAILED)
     if e["dup"]:
         issues.append(DUPLICATE_LABEL)
+    if r.tool == "Kling" and str(r.record_id) in marks.uncertain:
+        issues.append(OWNER_UNCERTAIN)
+    if r.tool == "Kling" and str(r.record_id) in marks.no_job_id:
+        issues.append(NO_JOB_ID)
     if r.charge_status == CHARGED and credits == 0:
         issues.append(NOT_CAPTURED if r.tool in CREDITS_NOT_CAPTURED else ZERO_MISSED)
+    if r.charge_status == CHARGED and getattr(r, "rate_assumed", 0):
+        issues.append(RATE_ASSUMED)
+    if r.charge_status == CHARGED and getattr(r, "preview", 0):
+        issues.append(FREE_PREVIEW)
     return issues
 
 
 def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboard_url: str, period_label: str,
-               generated_at: datetime, blocks=None, duplicates: set = frozenset()) -> LogStats:
+               generated_at: datetime, blocks=None, duplicates: set = frozenset(),
+               marks: KlingMarks = KlingMarks()) -> LogStats:
     """Stream the log: user header row, then per tool a separator row and its
     generations newest first (blocks.LogPlan decided every row up front)."""
     from .blocks import BlockData
-    from .workbook_blocks import (TOOL_DUC_LINK_COL, TOOL_USERS_LINK_COL, USER_ALL_GENS_COL, USER_TDC_LINK_COL,
-                                  USER_TOOLS_LINK_COL)
+    from .workbook_blocks import (DATE_UCT_LINK_COL, TOOL_DUC_LINK_COL, TOOL_USERS_LINK_COL, USER_ALL_GENS_COL,
+                                  USER_TDC_LINK_COL, USER_TOOLS_LINK_COL)
 
     blocks = blocks or BlockData()
     plan = blocks.log
@@ -673,7 +770,7 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
         day_key = day.date() if day else None
         client = r.client or NO_CLIENT
         run = (uid, r.tool, day_key, client)
-        back_date = back_tool_date = back_client = w.cell()
+        back_date = back_tool_date = back_client = back_by_date = w.cell()
         if run != seen_run:
             # First row of a (user, tool, day, client) run: the user's Tool ›
             # Date › Client row ("⬅ Date"), the tool's Date › User › Client row
@@ -687,6 +784,9 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
             duc = lay.tool_duc_row.get((r.tool, day_key, uid, client))
             if duc:
                 back_tool_date = back(TOOL, duc, TOOL_DUC_LINK_COL, N.back_label(TOOL, f"{day_key:%d %b}"))
+            uct = lay.date_uct_row.get((day_key, uid, client, r.tool))
+            if uct:
+                back_by_date = back(BY_DATE, uct, DATE_UCT_LINK_COL, N.back_label(BY_DATE, f"{day_key:%d %b}"))
             uc = (uid, client, r.tool)
             if uc not in seen_uc and lay.uc_first_run.get((uid, r.tool, client)) == run and uc in lay.uc_row:
                 seen_uc.add(uc)
@@ -694,11 +794,20 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
 
         stats.first_by_status.setdefault(r.charge_status, current)
         credits = e["credits"]
+        rupees = float(getattr(r, "rupees", 0.0) or 0.0)
         stats.credits_by_status[r.charge_status] = stats.credits_by_status.get(r.charge_status, 0.0) + credits
+        stats.rupees_by_status[r.charge_status] = stats.rupees_by_status.get(r.charge_status, 0.0) + rupees
+        if r.charge_status == CHARGED:
+            stats.rupees_by_tool[r.tool] = stats.rupees_by_tool.get(r.tool, 0.0) + rupees
         if e["dup"]:
             stats.duplicates += 1
             stats.duplicate_credits += credits
-        issues = _log_issues(r, e, credits, stale_before)
+        issues = _log_issues(r, e, credits, stale_before, marks)
+        for issue in issues:
+            c = stats.issue_counts.setdefault(issue, [0, 0.0, 0.0])
+            c[0] += 1
+            c[1] += credits
+            c[2] += rupees
         if STALE_PENDING in issues:
             stats.stale_pending += 1
             stats.stale_pending_credits += credits
@@ -736,6 +845,7 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
             LOG_BACK_DATE: back_date,
             LOG_BACK_TOOL_DATE: back_tool_date,
             LOG_BACK_CLIENT: back_client,
+            LOG_BACK_BYDATE: back_by_date,
             "Date / time (IST)": w.cell(ts, fmt=DATETIME_FMT, align=TOP_ALIGN),
             "Date": w.cell(day, fmt=DATE_ONLY_FMT, align=TOP_ALIGN),
             "Month": w.cell(day.replace(day=1) if day else None, fmt=MONTH_FMT, align=TOP_ALIGN),
@@ -753,6 +863,8 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
             "Output": output,
             "Credits": w.credits(credits, align=TOP_ALIGN,
                                  fill=FILL_WARN if ZERO_MISSED in issues else None),
+            RUPEES: w.cell(round(rupees, 2), fmt=INR2_FMT, align=TOP_ALIGN),
+            "Cost note": w.text(cost_note(r), align=TOP_ALIGN),
             "Charge status": w.text(r.charge_status, align=TOP_ALIGN,
                                     fill=FILL_PENDING if r.charge_status == PENDING else (FILL_WARN if r.charge_status == FAILED else None)),
             "Charged": w.cell(r.charge_status == CHARGED, align=TOP_ALIGN),
@@ -775,7 +887,8 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
         credit_idx = headers.index("Credits")
         ws.append([w.text("Total (every charge status)", font=F_BOLD, border=TOP_BORDER)]
                   + [w.total_cell() for _ in range(credit_idx - 1)]
-                  + [w.total_cell(sum(stats.credits_by_status.values()), CREDITS_FMT)])
+                  + [w.total_cell(sum(stats.credits_by_status.values()), CREDITS_FMT),
+                     w.total_cell(round(sum(stats.rupees_by_status.values()), 2), INR2_FMT)])
     if stats.data_rows != sum(model.log_counts.values()) or (plan.last_row and plan.last_row != last):
         # Only possible if data changed between the summary queries and the
         # log stream, which the router's REPEATABLE READ snapshot prevents.
@@ -876,7 +989,7 @@ def _write_departments(sheets, model, lay, period_label, blocks):
     from . import workbook_blocks as WB
 
     ws, w = sheets[DEPT]
-    headers = ["Department", "Credits", "% of total", "Generations", "Pending credits", "Active users",
+    headers = ["Department", "Credits", RUPEES, "% of total", "Generations", "Pending credits", "Active users",
                "Top user", "Top user credits · gens", "Top named user", "Top tool", "Top tool credits · gens",
                "In User × Tool", "In Monthly Trend", "In Dept × Tool"]
     _preamble(ws, w, DEPT, f"{period_label} · Charged credits. A department name opens its block below (its people "
@@ -888,8 +1001,8 @@ def _write_departments(sheets, model, lay, period_label, blocks):
         block = lay.dept_block_row.get(d.name)
         ws.append([
             w.nav(internal_target(DEPT, block), d.name) if block else w.text(d.name),
-            w.credits(t.credits), w.pct(d.share), w.count(t.generations), w.credits(t.pending_credits),
-            w.count(d.users),
+            w.credits(t.credits), w.rupees(t.rupees), w.pct(d.share), w.count(t.generations),
+            w.credits(t.pending_credits), w.count(d.users),
             _top_user_link(w, model, lay, d.top_user), w.text(top_detail(d.top_user, _user_name(model))),
             _top_named_user_cell(w, model, lay, d),
             _top_link(w, TOOL, lay.tool_row, d.top_tool, lay), w.text(top_detail(d.top_tool)),
@@ -904,6 +1017,7 @@ def _write_departments(sheets, model, lay, period_label, blocks):
     ws.append([])
     t = model.totals
     ws.append([w.text("Total", font=F_BOLD, border=TOP_BORDER), w.total_cell(t.credits, CREDITS_FMT),
+               w.total_cell(round(t.rupees, 2), INR_FMT),
                w.total_cell(1.0 if t.credits else 0.0, PCT_FMT), w.total_cell(t.generations, COUNT_FMT),
                w.total_cell(t.pending_credits, CREDITS_FMT), w.total_cell(len(t.users), COUNT_FMT)])
     ws.append([])
@@ -927,7 +1041,7 @@ def _write_users(sheets, model, lay, period_label, blocks):
     from . import workbook_blocks as WB
 
     ws, w = sheets[USER]
-    headers = ["User", "Employee ID", "Department", "Credits", "% of company total", "Generations",
+    headers = ["User", "Employee ID", "Department", "Credits", RUPEES, "% of company total", "Generations",
                "Credits per generation", "Pending credits", "% generations with a client", "Rank in company",
                "Rank in department", "Most used tool", "Most used tool credits · gens", "Mostly works on client",
                "Client share", "In Monthly Trend", "Open"]
@@ -949,7 +1063,8 @@ def _write_users(sheets, model, lay, period_label, blocks):
             name_cell,
             w.text(u.employee_id),
             w.link(internal_target(DEPT, lay.dept_row[u.department]), u.department),
-            w.credits(t.credits), w.pct(u.share), w.count(t.generations), w.credits(t.credits_per_generation),
+            w.credits(t.credits), w.rupees(t.rupees), w.pct(u.share), w.count(t.generations),
+            w.credits(t.credits_per_generation),
             w.credits(t.pending_credits), w.pct(u.client_rate),
             w.count(u.company_rank) if isinstance(u.company_rank, int) else w.text(u.company_rank),
             w.count(u.department_rank) if isinstance(u.department_rank, int) else w.text(u.department_rank),
@@ -968,7 +1083,8 @@ def _write_users(sheets, model, lay, period_label, blocks):
     ws.append([])
     t = model.totals
     ws.append([w.text("Total", font=F_BOLD, border=TOP_BORDER), w.total_cell(), w.total_cell(),
-               w.total_cell(t.credits, CREDITS_FMT), w.total_cell(1.0 if t.credits else 0.0, PCT_FMT),
+               w.total_cell(t.credits, CREDITS_FMT), w.total_cell(round(t.rupees, 2), INR_FMT),
+               w.total_cell(1.0 if t.credits else 0.0, PCT_FMT),
                w.total_cell(t.generations, COUNT_FMT), w.total_cell(t.credits_per_generation, CREDITS_FMT),
                w.total_cell(t.pending_credits, CREDITS_FMT)])
     ws.append([])
@@ -979,7 +1095,8 @@ def _write_tools(sheets, model, lay, period_label, blocks):
     from . import workbook_blocks as WB
 
     ws, w = sheets[TOOL]
-    headers = ["Tool", "Credits", "% of total", "Generations", "Credits per generation", "Pending credits", "Users",
+    headers = ["Tool", "Credits", RUPEES, "% of total", "Generations", "Credits per generation", "Pending credits",
+               "Users",
                "Rank", "Top user", "Top user credits · gens", "Top named user", "Top client", "Top department",
                "Top department credits · gens", "Cost", "In Monthly Trend", "In User × Tool", "Open"]
     by_name = {t.name: t for t in model.tools}
@@ -996,7 +1113,8 @@ def _write_tools(sheets, model, lay, period_label, blocks):
         client = d.top_client() if d else None
         ws.append([
             w.nav(internal_target(TOOL, block), name) if block else w.text(name),
-            w.credits(t.credits), w.pct(r.share), w.count(t.generations), w.credits(t.credits_per_generation),
+            w.credits(t.credits), w.rupees(t.rupees), w.pct(r.share), w.count(t.generations),
+            w.credits(t.credits_per_generation),
             w.credits(t.pending_credits), w.count(r.users),
             w.text("1 ★ Most used" if i == 0 else str(i + 1), font=F_BOLD if i == 0 else None),
             _top_user_link(w, model, lay, r.top_user), w.text(top_detail(r.top_user, _user_name(model))),
@@ -1017,6 +1135,7 @@ def _write_tools(sheets, model, lay, period_label, blocks):
     ws.append([])
     t = model.totals
     ws.append([w.text("Total", font=F_BOLD, border=TOP_BORDER), w.total_cell(t.credits, CREDITS_FMT),
+               w.total_cell(round(t.rupees, 2), INR_FMT),
                w.total_cell(1.0 if t.credits else 0.0, PCT_FMT), w.total_cell(t.generations, COUNT_FMT),
                w.total_cell(t.credits_per_generation, CREDITS_FMT), w.total_cell(t.pending_credits, CREDITS_FMT)])
     ws.append([])
@@ -1025,7 +1144,7 @@ def _write_tools(sheets, model, lay, period_label, blocks):
 
 def _write_clients(sheets, model, lay, period_label):
     ws, w = sheets[CLIENT]
-    headers = ["Client", "Credits", "% of total", "Generations", "Pending credits", "Users",
+    headers = ["Client", "Credits", RUPEES, "% of total", "Generations", "Pending credits", "Users",
                "Top user", "Top user credits · gens", "Top named user", "Top tool", "Top tool credits · gens",
                "In Monthly Trend", "In User × Client"]
     _preamble(ws, w, CLIENT, f"{period_label} · Charged credits. ↔ cells open the same client in another sheet.")
@@ -1035,8 +1154,8 @@ def _write_clients(sheets, model, lay, period_label):
         first = lay.user_client_first_row.get(r.name)
         name = w.text(r.name, font=Font(italic=True) if r.name == NO_CLIENT else None)
         ws.append([
-            name, w.credits(t.credits), w.pct(r.share), w.count(t.generations), w.credits(t.pending_credits),
-            w.count(r.users),
+            name, w.credits(t.credits), w.rupees(t.rupees), w.pct(r.share), w.count(t.generations),
+            w.credits(t.pending_credits), w.count(r.users),
             _top_user_link(w, model, lay, r.top_user), w.text(top_detail(r.top_user, _user_name(model))),
             _top_named_user_cell(w, model, lay, r),
             _top_link(w, TOOL, lay.tool_row, r.top_tool, lay), w.text(top_detail(r.top_tool)),
@@ -1050,6 +1169,7 @@ def _write_clients(sheets, model, lay, period_label):
     ws.append([])
     t = model.totals
     ws.append([w.text("Total", font=F_BOLD, border=TOP_BORDER), w.total_cell(t.credits, CREDITS_FMT),
+               w.total_cell(round(t.rupees, 2), INR_FMT),
                w.total_cell(1.0 if t.credits else 0.0, PCT_FMT), w.total_cell(t.generations, COUNT_FMT),
                w.total_cell(t.pending_credits, CREDITS_FMT)])
 
@@ -1057,13 +1177,15 @@ def _write_clients(sheets, model, lay, period_label):
 def _write_dept_tool(sheets, model, lay, period_label):
     ws, w = sheets[DEPT_TOOL]
     tools = [t.name for t in model.tools]
-    headers = unique_headers(["Department"] + tools + ["Total", "Most used tool", "Most used tool credits · gens"])
-    _preamble(ws, w, DEPT_TOOL, f"{period_label} · Charged credits. Darker cells are heavier use.")
+    headers = unique_headers(["Department"] + tools + ["Total", RUPEES, "Most used tool",
+                                                       "Most used tool credits · gens"])
+    _preamble(ws, w, DEPT_TOOL, f"{period_label} · Charged credits (each tool counts in its own credits; "
+                                f"{RUPEES} is the same use in rupees). Darker cells are heavier use.")
     ws.append(w.header(headers))
     for d in model.departments:
         ws.append([w.text(d.name, font=F_BOLD)]
                   + [w.credits(model.dept_tool.get((d.name, t), 0.0)) for t in tools]
-                  + [w.credits(d.totals.credits, font=F_BOLD),
+                  + [w.credits(d.totals.credits, font=F_BOLD), w.rupees(d.totals.rupees, font=F_BOLD),
                      _top_link(w, TOOL, lay.tool_row, d.top_tool, lay), w.text(top_detail(d.top_tool))])
     if not model.departments:
         _empty_row(ws, w, len(headers))
@@ -1075,13 +1197,13 @@ def _write_dept_tool(sheets, model, lay, period_label):
     ws.append([])
     ws.append([w.text("Total", font=F_BOLD, border=TOP_BORDER)]
               + [w.total_cell(t.totals.credits, CREDITS_FMT) for t in model.tools]
-              + [w.total_cell(model.totals.credits, CREDITS_FMT)])
+              + [w.total_cell(model.totals.credits, CREDITS_FMT), w.total_cell(round(model.totals.rupees, 2), INR_FMT)])
 
 
 def _write_user_tool(sheets, model, lay, period_label):
     ws, w = sheets[USER_TOOL]
     tools = [t.name for t in model.tools]
-    headers = unique_headers(["User", "Department"] + tools + ["Total"])
+    headers = unique_headers(["User", "Department"] + tools + ["Total", RUPEES])
     _preamble(ws, w, USER_TOOL, f"{period_label} · Charged credits, sorted by department then credits. "
                                 "Filter the Department column for one team.")
     ws.append(w.header(headers))
@@ -1090,7 +1212,7 @@ def _write_user_tool(sheets, model, lay, period_label):
         ws.append([user_link(w, lay, uid, u.label),
                    w.text(u.department)]
                   + [w.credits(model.user_tool.get((uid, t), 0.0)) for t in tools]
-                  + [w.credits(u.totals.credits, font=F_BOLD)])
+                  + [w.credits(u.totals.credits, font=F_BOLD), w.rupees(u.totals.rupees, font=F_BOLD)])
     if not model.user_tool_order:
         _empty_row(ws, w, len(headers))
         return
@@ -1101,17 +1223,18 @@ def _write_user_tool(sheets, model, lay, period_label):
     ws.append([])
     ws.append([w.text("Total", font=F_BOLD, border=TOP_BORDER), w.total_cell()]
               + [w.total_cell(t.totals.credits, CREDITS_FMT) for t in model.tools]
-              + [w.total_cell(model.totals.credits, CREDITS_FMT)])
+              + [w.total_cell(model.totals.credits, CREDITS_FMT), w.total_cell(round(model.totals.rupees, 2), INR_FMT)])
 
 
-UC_LINK_COL = "H"                  # User × Client: "Generations (n) →" (the log's "⬅ Client" returns here)
+UC_LINK_COL = "I"                  # User × Client: "Generations (n) →" (the log's "⬅ Client" returns here)
 
 
 def _write_user_client(sheets, model, lay, period_label, blocks=None):
     ws, w = sheets[USER_CLIENT]
     from .workbook_blocks import gens_label
 
-    headers = ["User", "Department", "Client", "Tool", "Generations", "Credits", "Pending credits", "Log rows", "Note"]
+    headers = ["User", "Department", "Client", "Tool", "Generations", "Credits", RUPEES, "Pending credits", "Log rows",
+               "Note"]
     _preamble(ws, w, USER_CLIENT, f"{period_label} · Charged credits, sorted by client. "
                                   "For which client each user used each tool. Log rows opens the newest day's "
                                   "generations; filter the log's Client column for every day.")
@@ -1132,7 +1255,7 @@ def _write_user_client(sheets, model, lay, period_label, blocks=None):
             w.text(dept),
             w.text(client),
             tool_link(w, lay, tool),
-            w.count(t.generations), w.credits(t.credits), w.credits(t.pending_credits),
+            w.count(t.generations), w.credits(t.credits), w.rupees(t.rupees), w.credits(t.pending_credits),
             log_cell, w.text(note, font=F_ITALIC),
         ])
     if not model.user_client_rows:
@@ -1143,12 +1266,13 @@ def _write_user_client(sheets, model, lay, period_label, blocks=None):
     t = model.totals
     ws.append([w.text("Total", font=F_BOLD, border=TOP_BORDER)] + [w.total_cell() for _ in range(3)]
               + [w.total_cell(t.generations, COUNT_FMT), w.total_cell(t.credits, CREDITS_FMT),
-                 w.total_cell(t.pending_credits, CREDITS_FMT)])
+                 w.total_cell(round(t.rupees, 2), INR_FMT), w.total_cell(t.pending_credits, CREDITS_FMT)])
 
 
-def _write_quality(sheets, model, lay, stats: LogStats, period_label):
+def _write_quality(sheets, model, lay, stats: LogStats, period_label, kling: "KlingDedupView" = None,
+                   uploads: int = 0):
     ws, w = sheets[QUALITY]
-    headers = ["Issue", "Generations", "Credits", "What it means", "Go to rows"]
+    headers = ["Issue", "Generations", "Credits", RUPEES, "What it means", "Go to rows"]
     _preamble(ws, w, QUALITY, f"{period_label} · Links open the first matching row; filter that column to see them all.")
     ws.append(w.header(headers))
     t = model.totals
@@ -1167,50 +1291,164 @@ def _write_quality(sheets, model, lay, stats: LogStats, period_label):
     zero_missed = sum(stats.zero_missed_by_tool.values())
     not_captured = sum(stats.not_captured_by_tool.values())
     ex = model.excluded
+
+    def counted(issue):
+        rows, credits, rupees = stats.issue_counts.get(issue, (0, 0.0, 0.0))
+        return rows, credits, rupees
+
+    kling = kling or KlingDedupView()
+    unc = counted(OWNER_UNCERTAIN)
     issues = {
         UNASSIGNED: (unassigned.totals.generations if unassigned else 0, unassigned.totals.credits if unassigned else 0.0,
-                     f"{UNASSIGNED_NOTE}. Counted in every sheet as user and department \"Unassigned\". "
+                     unassigned.totals.rupees if unassigned else 0.0,
+                     f"{UNASSIGNED_NOTE}. Counted in every sheet as the user \"{UNASSIGNED}\". "
                      "An admin can claim them in Generation Recovery.",
                      w.go(USER, lay.user_block_row.get(UNASSIGNED_USER_ID, lay.user_row.get(UNASSIGNED_USER_ID)),
                           UNASSIGNED) if unassigned else w.text("—")),
         NO_CLIENT: (no_client.totals.generations if no_client else 0, no_client.totals.credits if no_client else 0.0,
-                    "Charged generations where nobody picked a client at generate time.",
+                    no_client.totals.rupees if no_client else 0.0,
+                    "Charged generations where nobody picked a client at generate time (or picked a placeholder "
+                    "such as \"Applicant\").",
                     w.go(CLIENT, lay.client_row[NO_CLIENT], NO_CLIENT) if no_client else w.text("—")),
-        PENDING: (t.pending_generations, t.pending_credits,
+        PENDING: (t.pending_generations, t.pending_credits, 0.0,
                   "Still in flight (submitted, queued, running, reconciling, streaming, draft…). Not in any total. "
                   "Filter Generation Log → Charge status = Pending.",
                   first_row_link(PENDING, PENDING)),
-        STALE_PENDING: (stats.stale_pending, stats.stale_pending_credits,
+        STALE_PENDING: (stats.stale_pending, stats.stale_pending_credits, 0.0,
                         f"Pending rows started more than {STALE_PENDING_HOURS} hours before this export: the capture "
                         "probably never saw them finish (e.g. ElevenLabs Music stuck at \"generating_music\"). "
                         "Check them in the tool; they are not in any total.",
                         first_row_link(STALE_PENDING, PENDING)),
-        FAILED: (t.failed_generations, t.failed_credits,
+        FAILED: (t.failed_generations, t.failed_credits, 0.0,
                  "Failed, cancelled or refunded. Not in any total. Filter Charge status = Failed / Refunded.",
                  first_row_link(FAILED, FAILED)),
-        DUPLICATE_LABEL: (stats.duplicates, stats.duplicate_credits,
-                          f"Same user, tool and prompt within {DUPLICATE_WINDOW_SECONDS} seconds, both charged credits. "
-                          f"Filter Generation Log → {DUPLICATE_LABEL}.",
+        DUPLICATE_LABEL: (stats.duplicates, stats.duplicate_credits, counted(DUPLICATE_LABEL)[2],
+                          f"Two charges for the same output: same user, tool and prompt within "
+                          f"{DUPLICATE_WINDOW_SECONDS} seconds, both charged, identical output. Raise with the vendor. "
+                          "(Different outputs are deliberate variations or a batch and are not flagged.)",
                           first_row_link(DUPLICATE_LABEL, DUPLICATE_LABEL)),
-        ZERO_MISSED: (zero_missed, 0.0,
-                      "Charged, but 0 credits recorded by a tool that normally records its cost - check whether the "
-                      "cost was missed (e.g. ElevenLabs TTS when the character counter did not move). "
+        RECORDED_TWICE: (kling.removed_rows, kling.removed_credits, kling.removed_rupees,
+                         f"One Kling job recorded more than once by our capture (the click and a later history scan). "
+                         f"The extra {kling.removed_rows:,} row(s) of {kling.jobs:,} job(s) are left out of every total, "
+                         "keeping the row of the person who started the job; each one is listed below.",
+                         w.go(QUALITY, kling.list_row, RECORDED_TWICE) if kling.list_row else w.text("—")),
+        OWNER_UNCERTAIN: (unc[0], unc[1], unc[2],
+                          "Kling jobs only found by a history scan: credited to the one person who started Kling jobs "
+                          f"on that account in the period, otherwise to \"{UNASSIGNED}\".",
+                          first_row_link(OWNER_UNCERTAIN, OWNER_UNCERTAIN)),
+        NO_JOB_ID: (*counted(NO_JOB_ID),
+                    "Charged Kling rows without a Kling job ID: they cannot be checked for double recording, so they "
+                    "stay in the totals; listed below.",
+                    first_row_link(NO_JOB_ID, NO_JOB_ID)),
+        ZERO_MISSED: (zero_missed, 0.0, counted(ZERO_MISSED)[2],
+                      "Charged, but 0 credits recorded: Freepik unlimited-plan items (their ₹ uses Freepik's own cost "
+                      "estimate) and ElevenLabs when the character counter did not move (₹ from the text length, est.). "
                       + (f"By tool: {per_tool(stats.zero_missed_by_tool)}. " if zero_missed else "")
                       + "Shaded in the log's Credits column.",
                       first_row_link(ZERO_MISSED, f"{0:,.2f}")),
-        NOT_CAPTURED: (not_captured, 0.0,
-                       "Charged rows with 0 credits from Flow (no cost captured) or Suno songs on dates with no "
-                       "fixed price set (Reports → Credit Rates; see By Tool → Cost). "
+        NOT_CAPTURED: (not_captured, 0.0, counted(NOT_CAPTURED)[2],
+                       "Charged rows from tools that record no cost (Higgsfield, Flow, Suno before a fixed price is "
+                       "set in Reports → Credit Rates). Their ₹ is an equal share of the subscription (est.). "
                        + (f"By tool: {per_tool(stats.not_captured_by_tool)}." if not_captured else ""),
                        first_row_link(NOT_CAPTURED, f"{0:,.2f}")),
-        EXCLUDED: (ex.get("generations", 0), ex.get("credits", 0.0),
+        RATE_ASSUMED: (*counted(RATE_ASSUMED),
+                       "Pay-per-use rows from a tool account with no rate of its own in Reports → Credit Rates: costed "
+                       "at the tool's latest rate (est.). Enter the account's rate to make it exact.",
+                       first_row_link(RATE_ASSUMED, RATE_ASSUMED)),
+        FREE_PREVIEW: (*counted(FREE_PREVIEW),
+                       "ElevenLabs preview models that are not charged (eleven_v3_dpo, eleven_v4_exp): ₹0.",
+                       first_row_link(FREE_PREVIEW, FREE_PREVIEW)),
+        UPLOADS: (uploads, 0.0, 0.0,
+                  "Freepik reference images people uploaded. They are not generations, cost nothing, and are left "
+                  "out of every count.", w.text("—")),
+        EXCLUDED: (ex.get("generations", 0), ex.get("credits", 0.0), 0.0,
                    f"{ex.get('accounts', 0)} account(s) left out by the export option. Not in any total.",
                    w.go(HOME, 5, "Test & admin accounts")),
     }
     for issue in QUALITY_ISSUES:
-        gens, credits, meaning, link = issues[issue]
-        ws.append([w.text(issue, font=F_BOLD), w.count(gens), w.credits(credits), w.text(meaning, align=WRAP), link])
+        gens, credits, rupees, meaning, link = issues[issue]
+        row = [w.text(issue, font=F_BOLD), w.count(gens), w.credits(credits), w.rupees(rupees),
+               w.text(meaning, align=WRAP), link]
+        if issue == NO_JOB_ID and kling.no_id_row:
+            # "Go to rows" opens the log; the list of these rows is just below.
+            row.append(w.link(internal_target(QUALITY, kling.no_id_row), "↓ List"))
+        ws.append(row)
     _add_table(ws, headers, FIRST_DATA_ROW + len(QUALITY_ISSUES) - 1, "tblDataQuality")
+    _write_kling_lists(ws, w, kling)
+
+
+@dataclass
+class KlingDedupView:
+    """The Kling double-recording check as Data Quality shows it (rows planned up front)."""
+
+    dedup: object = None             # dedupe.KlingDedup
+    rate_of: object = None           # (account, day) -> rupees per credit, for the removed ₹
+    list_row: int = 0                # title row of "recorded twice" list (0 = no list)
+    no_id_row: int = 0
+
+    @property
+    def jobs(self) -> int:
+        return len(self.dedup.jobs) if self.dedup else 0
+
+    @property
+    def removed_rows(self) -> int:
+        return self.dedup.removed_rows if self.dedup else 0
+
+    @property
+    def removed_credits(self) -> float:
+        return self.dedup.removed_credits if self.dedup else 0.0
+
+    @property
+    def removed_rupees(self) -> float:
+        if not self.dedup or not self.rate_of:
+            return 0.0
+        return sum(r.credits * self.rate_of(r.account, r.day) for j in self.dedup.jobs for r in j.removed)
+
+    def plan(self, first_free_row: int) -> None:
+        """Title rows of the two lists below the issues table (blank row, title, header, rows)."""
+        row = first_free_row + 1
+        if self.dedup and self.dedup.jobs:
+            self.list_row = row
+            row += 2 + len(self.dedup.jobs) + 1
+        if self.dedup and self.dedup.no_job_id:
+            self.no_id_row = row
+
+
+def _write_kling_lists(ws, w: Writer, kling: KlingDedupView) -> None:
+    d = kling.dedup
+    if not d:
+        return
+
+    def who(uid):
+        return d.names.get(uid, f"User {uid}") if uid else UNASSIGNED
+
+    if d.jobs:
+        ws.append([])
+        ws.append([w.text(RECORDED_TWICE, font=F_SECTION),
+                   w.text("Removed from every total; the kept row is in the Generation Log.", font=F_ITALIC)])
+        headers = ["Date", "Kling job ID", "Kept row", "Kept row recorded by", "Credited to", "How the kept row was found",
+                   "Removed row(s)", "Removed rows recorded by", "Credits removed", "Owner uncertain"]
+        ws.append(w.header(headers))
+        first = kling.list_row + 2
+        for j in d.jobs:
+            ws.append([w.cell(as_datetime(j.day), fmt=DATE_ONLY_FMT), w.text(j.job), w.text(str(j.kept.id)),
+                       w.text(who(j.kept.user_id)), w.text(who(j.owner_id)),
+                       w.text("Started in the dashboard" if not j.owner_uncertain else "History scan only"),
+                       w.text(", ".join(str(r.id) for r in j.removed)),
+                       w.text(", ".join(sorted({who(r.user_id) for r in j.removed}))),
+                       w.credits(j.removed_credits), w.text("Yes" if j.owner_uncertain else "No")])
+        _add_table(ws, headers, first + len(d.jobs) - 1, "tblKlingRecordedTwice", header_row=first - 1)
+    if d.no_job_id:
+        ws.append([])
+        ws.append([w.text(NO_JOB_ID, font=F_SECTION),
+                   w.text("Kept in the totals: without a job ID they cannot be checked.", font=F_ITALIC)])
+        headers = ["Date", "Row", "User", "Credits"]
+        ws.append(w.header(headers))
+        first = kling.no_id_row + 2
+        for r in d.no_job_id:
+            ws.append([w.cell(as_datetime(r.day), fmt=DATE_ONLY_FMT), w.text(str(r.id)), w.text(who(r.user_id)),
+                       w.credits(r.credits)])
+        _add_table(ws, headers, first + len(d.no_job_id) - 1, "tblKlingNoJobId", header_row=first - 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -1271,6 +1509,9 @@ def quick_answers(model: ReportModel, lay: Layout) -> list:
                    (CLIENT, lay.client_row[top_client.first], top_client.first, "A")))
     qa.append(("How many credits are still pending (not yet charged)?", figures(t.pending_credits, t.pending_generations),
                (QUALITY, lay.quality_row[PENDING], PENDING, "A")))
+    qa.append(("Who worked on a given date, and for which clients?",
+               f"{BY_DATE}: every date, its users, and each user's generations per client and tool",
+               (BY_DATE, 2, BY_DATE, "A")))
     qa.append(("What happened in a specific period?",
                "Pick From / To dates (and any filters) in Period Explorer; every total recalculates",
                (PERIOD, 2, PERIOD, "A")))
@@ -1307,7 +1548,7 @@ def _answer(top: Top, name_of) -> str:
     return text
 
 
-def _write_home(sheets, model, lay, filters, generated_at, dashboard_url):
+def _write_home(sheets, model, lay, filters, generated_at, dashboard_url, front_sheets=()):
     ws, w = sheets[HOME]
     t = model.totals
     ws.append([w.text("Home", font=F_HOME_TAG, fill=FILL_HEADER)])                                       # 1
@@ -1321,9 +1562,11 @@ def _write_home(sheets, model, lay, filters, generated_at, dashboard_url):
     ws.append([w.text("Output links open on", font=F_BOLD), w.text(dashboard_url or "Not configured")])  # 7
     ws.append([w.text("How credits are counted", font=F_BOLD),
                w.text("Every total counts Charged generations only. Pending and Failed / Refunded rows are listed "
-                      "in the Generation Log and Data Quality but never added to a total.", align=WRAP)])  # 8
-    ws.append([w.text("Explore any period", font=F_SECTION), w.nav(internal_target(PERIOD, 2), f"{PERIOD} →", font=Font(
-        color="0563C1", underline="single", bold=True, size=12))])                                      # 9
+                      "in the Generation Log and Data Quality but never added to a total. Each tool counts in its "
+                      f"own credits, so compare tools in {RUPEES} (see the Glossary).", align=WRAP)])  # 8
+    big_link = Font(color="0563C1", underline="single", bold=True, size=12)
+    ws.append([w.text("Explore any period", font=F_SECTION), w.nav(internal_target(PERIOD, 2), f"{PERIOD} →", font=big_link)]
+              + [w.nav(internal_target(name, 2), f"{name} →", font=big_link) for name in front_sheets])  # 9
 
     if model.is_empty:
         ws.append([w.text("No credit activity was found for this period and these filters. "
@@ -1355,6 +1598,8 @@ def _write_home(sheets, model, lay, filters, generated_at, dashboard_url):
                   leaders[0].label) if leaders else w.text("")),
             ("TOP DEPARTMENT", w.text(", ".join(top_dept.keys) or "—", font=F_KPI_VALUE, fill=FILL_KPI),
              w.go(DEPT, lay.dept_row[top_dept.first], top_dept.first) if top_dept else w.text("")),
+            (f"{RUPEES.upper()} (CHARGED ITEMS)", w.rupees(t.rupees, font=F_KPI_VALUE, fill=FILL_KPI),
+             w.go(DEPT, lay.dept_total_row, "Total")),
         ]
         ws.append([w.text(label, font=F_KPI_LABEL, fill=FILL_KPI) for label, _v, _l in kpis])           # 10
         ws.append([value for _l, value, _x in kpis])                                                   # 11
@@ -1370,8 +1615,8 @@ def _write_home(sheets, model, lay, filters, generated_at, dashboard_url):
         _add_table(ws, headers, qa_last, "tblQuickAnswers", header_row=15)
         ws.append([])
 
-        _add_bar_chart(ws, sheets[DEPT][0], len(model.departments), "Credits by department", "E14")
-        _add_bar_chart(ws, sheets[TOOL][0], len(model.tools), "Credits by tool", "E31")
+        _add_bar_chart(ws, sheets[DEPT][0], len(model.departments), f"{RUPEES} by department", "E14", col=3)
+        _add_bar_chart(ws, sheets[TOOL][0], len(model.tools), f"{RUPEES} by tool", "E31", col=3)
         _add_trend_chart(ws, sheets[TREND][0], model, lay, "E48")
 
     ws.append([w.text("Sheets in this report", font=F_SECTION)])
@@ -1386,7 +1631,7 @@ def home_section(row: int) -> str:
     return "Headlines" if row <= HOME_KPI_LINK_ROW else "Quick answers"
 
 
-def _add_bar_chart(ws, source_ws, count: int, title: str, anchor: str):
+def _add_bar_chart(ws, source_ws, count: int, title: str, anchor: str, col: int = 2):
     if count <= 0:
         return
     shown = min(count, 15)
@@ -1398,7 +1643,8 @@ def _add_bar_chart(ws, source_ws, count: int, title: str, anchor: str):
     chart.height = 8
     chart.width = 16
     chart.y_axis.numFmt = "#,##0"
-    chart.add_data(Reference(source_ws, min_col=2, min_row=HEADER_ROW, max_row=HEADER_ROW + shown), titles_from_data=True)
+    chart.add_data(Reference(source_ws, min_col=col, min_row=HEADER_ROW, max_row=HEADER_ROW + shown),
+                   titles_from_data=True)
     chart.set_categories(Reference(source_ws, min_col=1, min_row=FIRST_DATA_ROW, max_row=HEADER_ROW + shown))
     chart.x_axis.scaling.orientation = "maxMin"  # largest at the top
     ws.add_chart(chart, anchor)
@@ -1425,18 +1671,23 @@ def _add_trend_chart(ws, trend_ws, model, lay, anchor: str):
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
-def report_filename(filters: ReportFilters) -> str:
-    return f"credit-report_{filters.start.isoformat()}_to_{filters.end.isoformat()}.xlsx"
+def report_filename(filters: ReportFilters, version: str = "full", ext: str = "xlsx") -> str:
+    stem = "ai-tools-management" if version == "management" else "credit-report"
+    return f"{stem}_{filters.start.isoformat()}_to_{filters.end.isoformat()}.{ext}"
 
 
 def write_workbook(path: str, model: ReportModel, filters: ReportFilters, log_rows: Iterable,
                    *, dashboard_url: str = "", generated_at: Optional[datetime] = None, blocks=None,
-                   duplicates: Optional[set] = None) -> LogStats:
+                   duplicates: Optional[set] = None, management=None, uploads: int = 0) -> LogStats:
     """Render the report to ``path``. ``log_rows`` is consumed once, in order:
     the order blocks.log planned (see generate_report), so every link into the
-    log lands on the row the blocks point at."""
+    log lands on the row the blocks point at. With ``management`` (a
+    management.ManagementView) the Summary, Team & Clients, Glossary and a
+    Details divider come first."""
     from .blocks import BlockData
+    from . import workbook_blocks as WB
     from . import workbook_periods as WP
+    from . import workbook_summary as WS
 
     generated_at = generated_at or (datetime.utcnow() + IST)
     period_label = filters.period.get("label") or f"{filters.start} – {filters.end}"
@@ -1448,11 +1699,13 @@ def write_workbook(path: str, model: ReportModel, filters: ReportFilters, log_ro
     ntools, ndepts, nmonths = len(model.tools), len(model.departments), len(model.months)
     log_widths = {LOG_BACK_USER: N.BACK_COL_WIDTH, LOG_BACK_TOOL: N.BACK_COL_WIDTH, LOG_BACK_DATE: N.BACK_COL_WIDTH,
                   LOG_BACK_TOOL_DATE: N.BACK_COL_WIDTH, LOG_BACK_CLIENT: N.BACK_COL_WIDTH,
+                  LOG_BACK_BYDATE: N.BACK_COL_WIDTH,
                   "Date / time (IST)": 26, "Date": 18,
                   "Month": 10, "Week": 12, "Quarter": 9, "Charged": 9, "User": 26, "Employee ID": 13,
                   "Department": 22, "Tool": 14, "Client": 26, "Task": 26, "Model / type": 20, "Prompt": 70,
-                  "Output": 14, "Credits": 12, "Charge status": 16, "Raw status": 18, DUPLICATE_LABEL: 18,
-                  LOG_BACK_QUALITY: N.BACK_COL_WIDTH, LOG_BACK_DRILL: N.BACK_COL_WIDTH, PROMPT_FULL: 80}
+                  "Output": 14, "Credits": 12, RUPEES: 12, "Cost note": 26, "Charge status": 16, "Raw status": 18,
+                  DUPLICATE_LABEL: 18, LOG_BACK_QUALITY: N.BACK_COL_WIDTH, LOG_BACK_DRILL: N.BACK_COL_WIDTH,
+                  PROMPT_FULL: 80}
 
     def log_width(header: str) -> float:
         # Wide enough for the header text plus the filter dropdown button;
@@ -1464,34 +1717,49 @@ def write_workbook(path: str, model: ReportModel, filters: ReportFilters, log_ro
     wb = Workbook(write_only=True)
     # Period Explorer formulas carry no cached values: make every app compute on open.
     wb.calculation.fullCalcOnLoad = True
+    # The management sheets lead (Summary is the tab that opens), then the details.
+    front = {name: wb.create_sheet(name) for name in (WS.SUMMARY, WS.TEAM, WS.GLOSSARY, WS.DETAILS)} if management else {}
     sheets = {
-        HOME: _new_sheet(wb, HOME, [44, 56, 20, 20, 20, 20, 20, 20], freeze="B2"),
-        PERIOD: _new_sheet(wb, PERIOD, [22, 16, 16, 12, 10, 8, 14, 4, 20, 14] + [16, 12, 12, 10, 8, 8, 12, 4] * 3,
+        HOME: _new_sheet(wb, HOME, [44, 56, 20, 20, 20, 20, 20, 20, 22], freeze="B2"),
+        # Inputs and helpers in A-J; then Name | Credits | ₹ | Generations | % | Rank | Tie | Prev, four times.
+        PERIOD: _new_sheet(wb, PERIOD, [22, 16, 16, 13, 12, 10, 8, 14, 20] + [16, 12, 13, 12, 10, 8, 8, 12, 4] * 3,
                            freeze="B4"),
+        # The list starts a row lower: row 4 is the "Jump to:" row.
+        BY_DATE: _new_sheet(wb, BY_DATE, [24, 20, 22, 14, 14, 26, 22, 24, 18, 16, 12], freeze="B6"),
         # Column A (the names) stays in view when a link lands on a "⬅" column far right.
-        DEPT: _new_sheet(wb, DEPT, [28, 14, 10, 12, 14, 11, 26, 34, 22, 16, 32, 24, 24, 24], freeze="B5"),
+        DEPT: _new_sheet(wb, DEPT, [28, 14, 13, 10, 12, 14, 11, 26, 34, 22, 16, 32, 24, 24, 24], freeze="B5"),
         # B and F also hold block dates ("dd mmm yyyy (ddd)").
-        USER: _new_sheet(wb, USER, [30, 19, 22, 14, 12, 19, 13, 13, 13, 11, 12, 18, 32, 24, 18, 24, 16],
+        USER: _new_sheet(wb, USER, [30, 19, 22, 14, 13, 12, 19, 13, 13, 13, 11, 12, 18, 32, 24, 18, 24, 16],
                          freeze="B5"),
-        TOOL: _new_sheet(wb, TOOL, [18, 14, 10, 12, 13, 13, 9, 14, 26, 34, 22, 22, 22, 32, 48, 18, 22, 16],
+        TOOL: _new_sheet(wb, TOOL, [18, 14, 13, 10, 12, 13, 13, 9, 14, 26, 34, 22, 22, 22, 32, 48, 18, 22, 16],
                          freeze="B5"),
-        CLIENT: _new_sheet(wb, CLIENT, [30, 14, 10, 12, 13, 9, 26, 34, 22, 18, 32, 24, 24], freeze="B5"),
-        DEPT_TOOL: _new_sheet(wb, DEPT_TOOL, [28] + [14] * ntools + [14, 18, 32], freeze="B5"),
-        USER_TOOL: _new_sheet(wb, USER_TOOL, [30, 22] + [14] * ntools + [14], freeze="C5"),
-        USER_CLIENT: _new_sheet(wb, USER_CLIENT, [30, 22, 30, 16, 12, 14, 14, 24, 44], freeze="B5"),
+        CLIENT: _new_sheet(wb, CLIENT, [30, 14, 13, 10, 12, 13, 9, 26, 34, 22, 18, 32, 24, 24], freeze="B5"),
+        DEPT_TOOL: _new_sheet(wb, DEPT_TOOL, [28] + [14] * ntools + [14, 13, 18, 32], freeze="B5"),
+        USER_TOOL: _new_sheet(wb, USER_TOOL, [30, 22] + [14] * ntools + [14, 13], freeze="C5"),
+        USER_CLIENT: _new_sheet(wb, USER_CLIENT, [30, 22, 30, 16, 12, 14, 13, 14, 24, 44], freeze="B5"),
         # Column A fits the block titles, whose row holds the column back cells from B on.
         TREND: _new_sheet(wb, TREND, [40] + [14] * max(ntools, ndepts, nmonths, 10) + [14, 12], freeze="B4"),
-        DRILL: _new_sheet(wb, DRILL, [22, 14, 12, 12, 4, 28, 12, 12, 12, 4, 16, 12, 12, 10, 4, 28, 12, 12, 10],
+        DRILL: _new_sheet(wb, DRILL, [22, 14, 13, 12, 10, 4, 28, 14, 13, 12, 10, 4, 16, 14, 13, 12, 10, 4,
+                                      28, 14, 13, 12, 10],
                           freeze="B4"),
-        QUALITY: _new_sheet(wb, QUALITY, [30, 13, 14, 80, 24], freeze="B5"),   # its back cells sit right of a wide column
+        # Its back cells sit right of a wide column; the Kling lists below use B-J.
+        QUALITY: _new_sheet(wb, QUALITY, [30, 16, 14, 13, 80, 24, 26, 26, 14, 14], freeze="B5"),
         # The three back columns stay in view with the header.
-        LOG: _new_sheet(wb, LOG, [log_width(h) for h in log_headers(model)], freeze="F5", buffered=False),
+        LOG: _new_sheet(wb, LOG, [log_width(h) for h in log_headers(model)], freeze="G5", buffered=False),
         LISTS: _new_sheet(wb, LISTS, [28, 30, 18, 30, 16], freeze=None, buffered=False),
     }
     sheets[LISTS][0].sheet_state = "hidden"
+    chart_data = None
+    if management:
+        chart_data = wb.create_sheet(WS.CHART_DATA)
+        chart_data.sheet_state = "hidden"
 
+    kling = KlingDedupView(dedup=filters.kling,
+                           rate_of=(lambda acc, day: filters.cost.rate_on("Kling", acc, day)[0]) if filters.cost else None)
+    kling.plan(FIRST_DATA_ROW + len(QUALITY_ISSUES))
     stats = _write_log(sheets, model, lay, log_rows, dashboard_url, period_label, generated_at, blocks,
-                       duplicates if duplicates is not None else set())
+                       duplicates if duplicates is not None else set(), KlingMarks.of(filters.kling))
+    WB.write_by_date(sheets, model, blocks, lay, period_label)
     _write_departments(sheets, model, lay, period_label, blocks)
     _write_users(sheets, model, lay, period_label, blocks)
     _write_tools(sheets, model, lay, period_label, blocks)
@@ -1502,14 +1770,21 @@ def write_workbook(path: str, model: ReportModel, filters: ReportFilters, log_ro
     WP.write_trend(sheets, model, lay, lay.trend, lay.drill, period_label)
     WP.write_drill(sheets, model, lay, lay.trend, lay.drill, stats.month_first, lay.log_cols[LOG_BACK_DRILL],
                    period_label)
-    _write_quality(sheets, model, lay, stats, period_label)
+    _write_quality(sheets, model, lay, stats, period_label, kling, uploads)
     list_refs = WP.write_lists(sheets, model)
     WP.write_explorer(sheets, model, lay, filters, lay.log_cols, FIRST_DATA_ROW + stats.rows - 1, list_refs, period_label)
-    _write_home(sheets, model, lay, filters, generated_at, dashboard_url)
+    _write_home(sheets, model, lay, filters, generated_at, dashboard_url, front_sheets=tuple(front))
+    if management:
+        back = (WS.SUMMARY, "A2", f"⬅ Back to {WS.SUMMARY}")
+        WS.write_summary(front[WS.SUMMARY], chart_data, management, back_to=(HOME, "A1", f"⬅ Back to {HOME}"))
+        WS.write_team(front[WS.TEAM], management, back_to=back)
+        WS.write_glossary(front[WS.GLOSSARY], back_to=back)
+        WS.write_details(front[WS.DETAILS], list(SHEET_ORDER), SHEET_PURPOSE, back_to=back)
 
     buffers = {name: ws for name, (ws, _w) in sheets.items() if isinstance(ws, N.BufferedSheet)}
     # Trend and Drill-down hold several tables: label the back columns on each table's header row.
-    header_rows = {TREND: [HEADER_ROW] + [h for _k, _t, h in lay.trend.blocks],
+    header_rows = {BY_DATE: [WB.DATE_HEADER_ROW],
+                   TREND: [HEADER_ROW] + [h for _k, _t, h in lay.trend.blocks],
                    DRILL: [HEADER_ROW] + [r + 2 for r in lay.drill.block_row.values()]}
     N.resolve(buffers, {name: sheets[name][1] for name in buffers}, SHEET_ORDER, link_formula, internal_target,
               home_section=home_section, header_rows=header_rows)

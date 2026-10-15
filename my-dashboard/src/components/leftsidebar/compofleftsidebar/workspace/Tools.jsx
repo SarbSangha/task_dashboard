@@ -1433,17 +1433,33 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
     };
   }, [activeView, loadTools, toolsAccess.canAccess, toolsAccess.loading]);
 
-  // Lightweight re-fetch (no loading spinner, no admin user/credential
-  // fetches) that just keeps single-seat occupancy ("in use by X") current
-  // for anyone looking at the tools catalog, not only the person who holds
-  // the lock.
-  const refreshToolsQuietly = useCallback(async (signal) => {
+  // Lightweight poll that just keeps single-seat occupancy ("in use by X")
+  // current for anyone looking at the tools catalog, not only the person who
+  // holds the lock. It used to re-fetch the full /tools payload (with every
+  // admin credential summary) every few seconds without waiting for the last
+  // one; once the server slowed, those piled up, the page failed to load,
+  // and a slow, older response could land last and paint a released lock
+  // as still held. Now: only the single-seat status, one request at a time,
+  // and an out-of-order response is dropped.
+  const singleSeatPollInFlightRef = useRef(false);
+  const singleSeatPollSeqRef = useRef(0);
+  const refreshToolsQuietly = useCallback(async () => {
+    if (singleSeatPollInFlightRef.current) return;
+    singleSeatPollInFlightRef.current = true;
+    const seq = ++singleSeatPollSeqRef.current;
     try {
-      const response = await itToolsAPI.listTools({ signal });
-      if (signal?.aborted) return;
-      setTools(response.tools || []);
+      const response = await itToolsAPI.getSingleSeatStatus();
+      if (seq !== singleSeatPollSeqRef.current || !Array.isArray(response?.tools)) return;
+      const statusByToolId = new Map(response.tools.map((item) => [item.toolId, item.activeSession || null]));
+      setTools((current) => current.map((tool) => (
+        statusByToolId.has(tool.id)
+          ? { ...tool, activeSession: statusByToolId.get(tool.id) }
+          : tool
+      )));
     } catch (err) {
-      if (isRequestCanceled(err) || signal?.aborted) return;
+      if (isRequestCanceled(err)) return;
+    } finally {
+      singleSeatPollInFlightRef.current = false;
     }
   }, []);
 
@@ -1452,6 +1468,7 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
       return undefined;
     }
     const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
       void refreshToolsQuietly();
     }, SINGLE_SEAT_STATUS_POLL_MS);
 

@@ -1849,6 +1849,129 @@ async function fetchCredential(message, senderTabId = 0, openerTabId = 0) {
   return data;
 }
 
+// Single-seat lock heartbeat. content-semrush.js's own 30s status poll
+// already doubles as the backend's lock heartbeat, but Chrome throttles a
+// hidden tab's timers down to once a minute, which forced the backend's
+// heartbeat timeout up to several minutes - i.e. after someone quit the whole
+// browser with Semrush open, the next user waited that long for the lock.
+// chrome.alarms are not tab-throttled, so this keeps the heartbeat steady at
+// 30s while any Semrush tab is open, letting the backend use a much shorter
+// timeout (SINGLE_SEAT_HEARTBEAT_TIMEOUT_SEC). The alarm only ever runs while
+// such a tab exists: the tab's first status poll arms it, and it clears
+// itself once no tab is left - and it dies with the browser, which is the
+// point.
+const SINGLE_SEAT_HEARTBEAT_ALARM = 'singleSeatToolHeartbeat';
+const SINGLE_SEAT_HEARTBEAT_TAB_PATTERNS = {
+  semrush: ['https://semrush.com/*', 'https://*.semrush.com/*'],
+};
+
+async function armSingleSeatHeartbeat() {
+  const existing = await chrome.alarms.get(SINGLE_SEAT_HEARTBEAT_ALARM);
+  if (!existing) {
+    await chrome.alarms.create(SINGLE_SEAT_HEARTBEAT_ALARM, { periodInMinutes: 0.5 });
+  }
+}
+
+async function runSingleSeatHeartbeat() {
+  let anyOpen = false;
+  for (const [toolSlug, patterns] of Object.entries(SINGLE_SEAT_HEARTBEAT_TAB_PATTERNS)) {
+    const tabs = await chrome.tabs.query({ url: patterns });
+    if (!tabs.length) continue;
+    anyOpen = true;
+    // Response ignored on purpose: acting on a lost lock (banner + close) is
+    // the tab's own job - this is purely the liveness signal.
+    await checkSingleSeatSessionStatus({ toolSlug }).catch(() => {});
+  }
+  if (!anyOpen) {
+    await chrome.alarms.clear(SINGLE_SEAT_HEARTBEAT_ALARM);
+  }
+  await ensureSingleSeatPresence();
+}
+
+// Presence socket: the fast path for freeing a single-seat lock when the
+// whole browser is quit. The backend (single_seat_presence_ws) frees the lock
+// a few seconds after this socket drops, and quitting Chrome always drops it
+// - unlike the tab-close release fetch, which never gets sent then. One
+// socket per tool, open only while one of that tool's tabs is. Pinging well
+// inside 30s also keeps this MV3 service worker alive (Chrome 116+), so the
+// socket isn't cut by an idle shutdown; if the worker restarts anyway, the
+// top-level ensureSingleSeatPresence() call below reconnects it before the
+// backend's grace period runs out.
+const SINGLE_SEAT_PRESENCE_PING_MS = 20000;
+const SINGLE_SEAT_PRESENCE_RECONNECT_MS = 3000;
+const singleSeatPresenceSockets = new Map();
+
+async function getOpenSingleSeatToolSlugs() {
+  const slugs = [];
+  for (const [toolSlug, patterns] of Object.entries(SINGLE_SEAT_HEARTBEAT_TAB_PATTERNS)) {
+    const tabs = await chrome.tabs.query({ url: patterns });
+    if (tabs.length) slugs.push(toolSlug);
+  }
+  return slugs;
+}
+
+function closeSingleSeatPresence(toolSlug) {
+  const entry = singleSeatPresenceSockets.get(toolSlug);
+  if (!entry) return;
+  singleSeatPresenceSockets.delete(toolSlug);
+  clearInterval(entry.pingTimer);
+  try {
+    entry.socket.close(1000);
+  } catch {
+    // already closed
+  }
+}
+
+async function openSingleSeatPresence(toolSlug) {
+  const settings = await getSettings();
+  if (!settings.sessionToken) {
+    console.warn('[RMW Tool Hub Auto Login] Single-seat presence socket skipped: no dashboard session token - open the dashboard once so the extension can sync it.', toolSlug);
+    return;
+  }
+  // Re-checked after the await: two callers racing here must not open two.
+  if (singleSeatPresenceSockets.has(toolSlug)) return;
+
+  const wsBase = settings.apiBase.replace(/^http/i, 'ws');
+  const url = `${wsBase}/api/it-tools/extension/session/presence?tool_slug=${encodeURIComponent(toolSlug)}`;
+  const socket = new WebSocket(url, ['rmw-session', `rmw-token.${settings.sessionToken}`]);
+  const entry = { socket, pingTimer: null, opened: false };
+  singleSeatPresenceSockets.set(toolSlug, entry);
+
+  socket.addEventListener('open', () => {
+    entry.opened = true;
+    console.debug('[RMW Tool Hub Auto Login] Single-seat presence socket open', toolSlug, url);
+    entry.pingTimer = setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send('ping');
+    }, SINGLE_SEAT_PRESENCE_PING_MS);
+  });
+  socket.addEventListener('close', (event) => {
+    console.debug('[RMW Tool Hub Auto Login] Single-seat presence socket closed', toolSlug, event?.code);
+    clearInterval(entry.pingTimer);
+    if (singleSeatPresenceSockets.get(toolSlug) !== entry) return; // closed on purpose
+    singleSeatPresenceSockets.delete(toolSlug);
+    // Fast reconnect only for a socket that was actually up (network blip,
+    // server restart). One that was refused outright (signed-out dashboard
+    // session) is retried by the 30s heartbeat alarm instead of hammering.
+    if (entry.opened) {
+      setTimeout(() => runSafeStartupTask(ensureSingleSeatPresence), SINGLE_SEAT_PRESENCE_RECONNECT_MS);
+    }
+  });
+}
+
+async function ensureSingleSeatPresence() {
+  const openSlugs = new Set(await getOpenSingleSeatToolSlugs());
+  for (const toolSlug of [...singleSeatPresenceSockets.keys()]) {
+    if (!openSlugs.has(toolSlug)) closeSingleSeatPresence(toolSlug);
+  }
+  for (const toolSlug of openSlugs) {
+    if (!singleSeatPresenceSockets.has(toolSlug)) {
+      await openSingleSeatPresence(toolSlug);
+    }
+  }
+}
+
+runSafeStartupTask(ensureSingleSeatPresence);
+
 async function checkSingleSeatSessionStatus(message) {
   // Polled by content-semrush.js after a successful sign-in so a tab that
   // lost its single-seat lock (admin "Force release", or the stale-lock
@@ -3420,6 +3543,8 @@ function handleRuntimeMessage(message, sender, sendResponse) {
   }
 
   if (message?.type === 'TOOL_HUB_CHECK_SESSION_STATUS') {
+    runSafeStartupTask(armSingleSeatHeartbeat);
+    runSafeStartupTask(ensureSingleSeatPresence);
     checkSingleSeatSessionStatus(message)
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
@@ -3577,6 +3702,9 @@ if (chrome?.alarms?.onAlarm) {
     if (alarm?.name === GRAMMARLY_DOCS_CAPTURE_RETRY_ALARM) {
       runSafeStartupTask(runGrammarlyDocsCaptureFlush);
     }
+    if (alarm?.name === SINGLE_SEAT_HEARTBEAT_ALARM) {
+      runSafeStartupTask(runSingleSeatHeartbeat);
+    }
   });
 }
 
@@ -3584,5 +3712,9 @@ if (chrome?.tabs?.onRemoved) {
   chrome.tabs.onRemoved.addListener((tabId) => {
     runSafeStartupTask(() => setPasswordSavingSuppressedForTab(tabId, false));
     runSafeStartupTask(() => cleanupToolSessionForClosedTab(tabId));
+    // Last single-seat tab gone -> drop its presence socket. (The tab-close
+    // release above has normally freed the lock already; this just stops
+    // the socket from outliving the tab.)
+    runSafeStartupTask(ensureSingleSeatPresence);
   });
 }

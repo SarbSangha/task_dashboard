@@ -15,10 +15,15 @@ Rules:
 * Every row gets a charge status from its raw provider status (see
   CHARGED_STATUSES / FAILED_STATUSES). Report totals use Charged rows only;
   Pending and Failed / Refunded are reported separately.
+* Every Charged row also gets a rupee cost (costing.py): credits x rate for
+  pay-per-use tools, a share of the account's subscription otherwise.
+* A Kling job recorded twice counts once (dedupe.py); Freepik uploads are
+  not generations and are left out.
 * A generation with no owner (history-sync imports land unowned on purpose,
   see providers/*/normalization.py's freshness rule) is reported under the
-  user "Unassigned", department "Unassigned".
-* A blank department is "Unassigned"; a blank client picker is "No client".
+  user "Unknown user (imported history)", department "No department".
+* A blank department is "No department"; a blank client picker is
+  "No client". Names are shown cleaned (display.py).
 * Test & admin accounts can be excluded (see resolve_excluded_accounts).
 """
 
@@ -43,10 +48,15 @@ from providers.higgsfield.models import HiggsfieldGeneration
 from providers.suno.models import SunoGeneration
 from utils.usage_intelligence.service import KLING_TOOL_SLUGS, MAX_SANE_KLING_CREDITS, resolve_period
 
-UNASSIGNED = "Unassigned"
-UNASSIGNED_DEPARTMENT = UNASSIGNED
+from .costing import PAY_PER_USE, PAY_PER_USE_TOOLS, SUBSCRIPTION, CostSetup, load_cost_setup
+from .dedupe import KlingDedup, find_recorded_twice
+from .display import DisplayConfig
+
+UNASSIGNED = "Unknown user (imported history)"
+UNASSIGNED_DEPARTMENT = "No department"
 UNASSIGNED_USER_ID = 0          # sentinel for "no owner" in the report model and the user filter
 NO_CLIENT = "No client"
+FREEPIK_UPLOAD_TOOLS = ("upload", "upload-reference")   # reference images people upload: not generations
 
 CHARGED = "Charged"
 PENDING = "Pending"
@@ -73,11 +83,13 @@ FAILED_STATUSES = frozenset({
 
 # Tools whose captures carry no per-generation cost at all. Their 0 is
 # "not captured", not "free" - see TOOL_COST_NOTES.
-CREDITS_NOT_CAPTURED = frozenset({"Flow", "Suno"})
+CREDITS_NOT_CAPTURED = frozenset({"Flow", "Suno", "Higgsfield"})
 TOOL_COST_NOTES = {
     "Suno": "Fixed price per song, set by an admin (Reports → Credit Rates): Suno shows no per-song cost "
-            "of its own. Songs from before the first price show 0.",
+            "of its own. Songs from before the first price show 0. ₹ is an equal share of the subscription (est.).",
     "Flow": "Not captured: Flow's capture payload has no cost or credit field.",
+    "Higgsfield": "Not captured: Higgsfield's captures carry no credits (empty credit history). "
+                  "₹ is an equal share of the subscription (est.).",
 }
 
 EXCLUDED_ACCOUNTS_ENV = "CREDIT_REPORT_EXCLUDED_ACCOUNTS"
@@ -148,15 +160,21 @@ class ReportFilters:
     user_id: Optional[int] = None           # UNASSIGNED_USER_ID selects the owner-less rows
     tool: Optional[str] = None
     client: Optional[str] = None
-    exclude_test_accounts: bool = True
+    exclude_test_accounts: bool = False     # opt-in: by default every account with usage is reported
     excluded_accounts: list = field(default_factory=list)   # [(user_id, name)], filled by resolve_excluded_accounts
     # Display-only, for the Home sheet.
     user_label: Optional[str] = None
     period: dict = field(default_factory=dict)
+    # Report context, loaded once by prepare() (defaults keep a bare filter usable).
+    display: DisplayConfig = field(default_factory=DisplayConfig)
+    cost: Optional[CostSetup] = None
+    kling: KlingDedup = field(default_factory=KlingDedup)
+    department_raws: list = field(default_factory=list)     # departments as stored, for the display CASE
+    prepared: bool = False
 
     @classmethod
     def build(cls, *, start=None, end=None, department=None, user_id=None, tool=None, client=None,
-              exclude_test_accounts: bool = True, today: Optional[date] = None) -> "ReportFilters":
+              exclude_test_accounts: bool = False, today: Optional[date] = None) -> "ReportFilters":
         """The date range defaults to the current month to date."""
         if start or end:
             period = resolve_period(start=start, end=end, today=today)
@@ -171,11 +189,38 @@ class ReportFilters:
             client=_clean(client),
             exclude_test_accounts=bool(exclude_test_accounts),
             period=period,
+            display=DisplayConfig.load(),
         )
 
     @property
     def excluded_ids(self) -> list:
         return [uid for uid, _name in self.excluded_accounts] if self.exclude_test_accounts else []
+
+    def shifted(self, start: date, end: date) -> "ReportFilters":
+        """The same filters over another period (its own costs and Kling check)."""
+        period = resolve_period(start=start.isoformat(), end=end.isoformat())
+        return ReportFilters(start=period["start"], end=period["end"], department=self.department,
+                             user_id=self.user_id, tool=self.tool, client=self.client,
+                             exclude_test_accounts=self.exclude_test_accounts,
+                             excluded_accounts=list(self.excluded_accounts), user_label=self.user_label,
+                             period=period, display=self.display)
+
+
+def prepare(db: Session, filters: ReportFilters) -> ReportFilters:
+    """Load what the queries need once: display names, the period's costs,
+    the Kling jobs recorded twice, and (when asked) the excluded accounts."""
+    if filters.prepared:
+        return filters
+    if filters.exclude_test_accounts and not filters.excluded_accounts:
+        filters.excluded_accounts = resolve_excluded_accounts(db, filters.display)
+    filters.department_raws = [d for (d,) in db.query(User.department).distinct().all() if (d or "").strip()]
+    filters.cost = load_cost_setup(db, filters.start, filters.end, filters.display)
+    filters.kling = find_recorded_twice(db, filters.start, filters.end, kling_slugs=KLING_TOOL_SLUGS,
+                                        sane_max=MAX_SANE_KLING_CREDITS,
+                                        is_charged=lambda s: charge_status(s) == CHARGED,
+                                        name_of=filters.display.person_name, ignore_users=filters.excluded_ids)
+    filters.prepared = True
+    return filters
 
 
 def configured_test_accounts() -> list:
@@ -184,22 +229,26 @@ def configured_test_accounts() -> list:
     return [part.strip().lower() for part in raw.split(",") if part.strip()]
 
 
-def resolve_excluded_accounts(db: Session) -> list:
+def resolve_excluded_accounts(db: Session, display: Optional[DisplayConfig] = None) -> list:
     """[(user_id, name)] of accounts the "Exclude test & admin accounts"
     option removes: every admin (is_admin flag or an admin/root role row,
-    the same signals utils/permissions.resolve_roles reads) plus each entry
-    in CREDIT_REPORT_EXCLUDED_ACCOUNTS."""
+    the same signals utils/permissions.resolve_roles reads), each entry in
+    CREDIT_REPORT_EXCLUDED_ACCOUNTS, and the test accounts, emails and
+    departments listed in config/credit_report_display.json."""
+    display = display or DisplayConfig.load()
     configured = configured_test_accounts()
-    ids = {int(x) for x in configured if x.isdigit()}
-    emails = {x for x in configured if not x.isdigit()}
+    ids = {int(x) for x in configured if x.isdigit()} | set(display.exclude_user_ids)
+    emails = {x for x in configured if not x.isdigit()} | set(display.exclude_emails)
     admin_role_ids = select(UserRole.user_id).where(func.lower(UserRole.role).in_(ADMIN_ROLES))
     conditions = [User.is_admin.is_(True), User.id.in_(admin_role_ids)]
     if ids:
         conditions.append(User.id.in_(ids))
     if emails:
         conditions.append(func.lower(User.email).in_(emails))
+    if display.exclude_departments:
+        conditions.append(func.lower(func.trim(User.department)).in_(display.exclude_departments))
     rows = db.query(User.id, User.name).filter(or_(*conditions)).order_by(User.name).all()
-    return [(int(uid), (name or "").strip() or f"User {uid}") for uid, name in rows]
+    return [(int(uid), display.person_name(uid, name) or f"User {uid}") for uid, name in rows]
 
 
 # --------------------------------------------------------------------------- #
@@ -238,10 +287,43 @@ def _month_of_date(col, dialect: str):
     return func.to_char(col, "YYYY-MM")
 
 
-def _source_select(src: ToolSource, utc_start, utc_end, dialect: str):
+def _num(col):
+    return func.coalesce(col, 0.0)
+
+
+def _size(src: ToolSource, m, display: DisplayConfig) -> tuple:
+    """(size, size estimated 0/1, free preview 0/1): how a subscription's fee
+    is shared across the account's generations (see costing.py)."""
+    zero, one = literal(0.0, Float), literal(1.0, Float)
+    if src.name == "Freepik":
+        # 0 charged on an unlimited-plan generation; Freepik still records its cost estimate.
+        size = case((_num(m.credits_charged) > 0, m.credits_charged),
+                    (_num(m.credits_estimated) > 0, m.credits_estimated), else_=zero)
+        return cast(size, Float), literal(0, Integer), literal(0, Integer)
+    if src.name == "ElevenLabs":
+        previews = display.free_preview_models.get(src.name) or []
+        model_id = m.metadata_json["model_id"].as_string()
+        preview = case((model_id.in_(previews), 1), else_=0) if previews else literal(0, Integer)
+        counted = _num(m.credits_used) > 0
+        # The counter did not move: 1 credit per character (what it charges when it does move).
+        size = case((preview == 1, zero), (counted, cast(m.credits_used, Float)),
+                    else_=cast(func.coalesce(m.prompt_length, func.length(m.prompt), 0), Float))
+        return size, case((preview == 1, 0), (counted, 0), else_=1), preview
+    if src.name in ("Suno", "Higgsfield"):
+        # No per-item cost of their own (Suno only once a fixed price is set).
+        return one, case((_num(getattr(m, src.credits)) > 0, 0), else_=1), literal(0, Integer)
+    if src.credits is None:                      # Flow: nothing captured at all
+        return one, literal(1, Integer), literal(0, Integer)
+    if src.name == "HeyGen":                     # pay-per-use: size unused
+        return cast(_num(getattr(m, src.credits)), Float), literal(0, Integer), literal(0, Integer)
+    return one, literal(0, Integer), literal(0, Integer)
+
+
+def _source_select(src: ToolSource, utc_start, utc_end, dialect: str, display: DisplayConfig):
     m = src.model
     when = func.coalesce(m.provider_created_at, m.created_at) if src.has_provider_created_at else m.created_at
-    has_output = _first_present(m, src.output).isnot(None)
+    output_key = _first_present(m, src.output)
+    has_output = output_key.isnot(None)
     if src.mirrored_key:
         has_output = or_(has_output, and_(m.asset_mirror_status == "mirrored", m.mirrored_asset_key.isnot(None)))
     if src.credits:
@@ -253,13 +335,14 @@ def _source_select(src: ToolSource, utc_start, utc_end, dialect: str):
     raw_status = status
     if src.raw_status_key:
         raw_status = func.coalesce(_blank_to_null(status), _blank_to_null(m.metadata_json[src.raw_status_key].as_string()))
-    return select(
+    size, size_est, preview = _size(src, m, display)
+    q = select(
         literal(src.name, String).label("tool"),
         cast(m.id, String).label("record_id"),
         m.owner_user_id.label("user_id"),
         when.label("occurred_at"),
         _month_of_timestamp(when, dialect).label("month"),
-        _blank_to_null(m.linked_client_name).label("client"),
+        display.client_sql(m.linked_client_name).label("client"),
         _blank_to_null(m.linked_task_name).label("task"),
         credits.label("credits"),
         _first_present(m, src.prompt).label("prompt"),
@@ -267,23 +350,35 @@ def _source_select(src: ToolSource, utc_start, utc_end, dialect: str):
         status.label("status"),
         case((has_output, 1), else_=0).label("has_output"),
         cast(raw_status, String).label("raw_status"),
+        cast(m.credential_id, Integer).label("account"),
+        size.label("size"),
+        cast(size_est, Integer).label("size_est"),
+        cast(preview, Integer).label("preview"),
+        cast(output_key, String).label("output_key"),
     ).where(when >= utc_start, when < utc_end)
+    if src.name == "Freepik":
+        q = q.where(func.lower(func.coalesce(m.tool_name, m.tool, "")).notin_(FREEPIK_UPLOAD_TOOLS))
+    return q
 
 
-def _kling_select(start: date, end: date, dialect: str):
+def _kling_select(start: date, end: date, dialect: str, display: DisplayConfig, kling: KlingDedup):
     e, g = ITPortalToolUsageEvent, GenerationRecord
     kling_tool_ids = select(ITPortalTool.id).where(
         func.lower(func.coalesce(ITPortalTool.slug, "")).in_(KLING_TOOL_SLUGS)
     )
     sane = case((e.credits_burned.between(0, MAX_SANE_KLING_CREDITS), e.credits_burned), else_=0.0)
-    return (
+    # A job recorded twice keeps one row, credited to the person who started it (dedupe.py).
+    overrides = kling.owner_override
+    owner = (case(*[(e.id == kept, literal(uid, Integer) if uid is not None else cast(literal(None), Integer))
+                    for kept, uid in sorted(overrides.items())], else_=e.user_id) if overrides else e.user_id)
+    q = (
         select(
             literal(KLING, String).label("tool"),
             cast(e.id, String).label("record_id"),
-            e.user_id.label("user_id"),
+            cast(owner, Integer).label("user_id"),
             e.created_at.label("occurred_at"),
             _month_of_date(e.event_date, dialect).label("month"),
-            _blank_to_null(e.linked_client_name).label("client"),
+            display.client_sql(e.linked_client_name).label("client"),
             _blank_to_null(e.linked_task_name).label("task"),
             cast(func.coalesce(sane, 0.0), Float).label("credits"),
             func.coalesce(_blank_to_null(e.prompt_text), _blank_to_null(g.prompt_text)).label("prompt"),
@@ -291,6 +386,11 @@ def _kling_select(start: date, end: date, dialect: str):
             e.status.label("status"),
             case((_blank_to_null(g.canonical_asset_url).isnot(None), 1), else_=0).label("has_output"),
             cast(e.status, String).label("raw_status"),
+            cast(e.credential_id, Integer).label("account"),
+            cast(func.coalesce(sane, 0.0), Float).label("size"),
+            literal(0, Integer).label("size_est"),
+            literal(0, Integer).label("preview"),
+            cast(_blank_to_null(g.canonical_asset_url), String).label("output_key"),
         )
         .select_from(e)
         .outerjoin(g, g.source_usage_event_id == e.id)
@@ -298,27 +398,78 @@ def _kling_select(start: date, end: date, dialect: str):
         # the Usage Intelligence report applies to Kling.
         .where(e.tool_id.in_(kling_tool_ids), e.event_date >= start, e.event_date <= end)
     )
+    drop = kling.drop_ids
+    if drop:
+        q = q.where(e.id.notin_(sorted(drop)))
+    return q
+
+
+def _costed(raw, filters: ReportFilters, dialect: str):
+    """Add the rupee columns (see costing.py) on top of the raw union.
+
+    Layer 1 settles each row's account and its share weight, and sums the
+    weights per subscription account over the period (a window, so a
+    department or user filter applied later never changes a share). Layer 2
+    turns that into rupees."""
+    cost = filters.cost or CostSetup(start=filters.start, end=filters.end)
+    charged = charge_status_expr(raw.c.status) == CHARGED
+    pay_per_use = raw.c.tool.in_(PAY_PER_USE_TOOLS)
+    account = cost.account_sql(raw.c.tool, raw.c.account)
+    counted = and_(charged, ~pay_per_use)
+    if filters.excluded_ids:
+        # Test & admin accounts take no share: the fee is shared among the people reported.
+        counted = and_(counted, or_(raw.c.user_id.is_(None), raw.c.user_id.notin_(filters.excluded_ids)))
+    weight = case((counted, raw.c.size), else_=literal(0.0, Float))
+    keep = [c for c in raw.c if c.name != "account"]
+    l1 = select(
+        *keep,
+        cast(account, Integer).label("account"),
+        weight.label("weight"),
+        func.sum(weight).over(partition_by=[raw.c.tool, account]).label("weight_total"),
+        _day_of_timestamp(raw.c.occurred_at, dialect).label("day"),
+    ).subquery("costing")
+    rate, assumed = cost.rate_sql(l1.c.tool, l1.c.account, l1.c.day)
+    l1_charged = charge_status_expr(l1.c.status) == CHARGED
+    l1_ppu = l1.c.tool.in_(PAY_PER_USE_TOOLS)
+    rupees = case(
+        (~l1_charged, literal(0.0, Float)),
+        (l1_ppu, l1.c.credits * rate),
+        (l1.c.weight_total > 0, cost.fee_sql(l1.c.account) * l1.c.weight / l1.c.weight_total),
+        else_=literal(0.0, Float),
+    )
+    rate_assumed = case((and_(l1_charged, l1_ppu), assumed), else_=0)
+    estimated = case((rate_assumed == 1, 1), (and_(l1_charged, ~l1_ppu, l1.c.size_est == 1), 1), else_=0)
+    out = [c for c in l1.c if c.name not in ("weight", "weight_total")]
+    return select(
+        *out,
+        cast(rupees, Float).label("rupees"),
+        cast(estimated, Integer).label("estimated"),
+        cast(rate_assumed, Integer).label("rate_assumed"),
+        case((l1_ppu, PAY_PER_USE), else_=SUBSCRIPTION).label("basis"),
+    ).subquery("facts")
 
 
 def facts_subquery(filters: ReportFilters, dialect: str = "postgresql"):
     period = filters.period or resolve_period(start=filters.start.isoformat(), end=filters.end.isoformat())
     utc_s, utc_e = period["utc_start"], period["utc_end"]
+    display, kling = filters.display, filters.kling
     selects = []
     if filters.tool in (None, KLING):
-        selects.append(_kling_select(filters.start, filters.end, dialect))
+        selects.append(_kling_select(filters.start, filters.end, dialect, display, kling))
     for src in TOOL_SOURCES:
         if filters.tool in (None, src.name):
-            selects.append(_source_select(src, utc_s, utc_e, dialect))
+            selects.append(_source_select(src, utc_s, utc_e, dialect, display))
     if not selects:  # unknown tool name: empty, but still a valid query
-        selects.append(_kling_select(filters.start, filters.end, dialect).where(literal(False)))
-    if len(selects) == 1:
-        return selects[0].subquery("facts")
-    return union_all(*selects).subquery("facts")
+        selects.append(_kling_select(filters.start, filters.end, dialect, display, kling).where(literal(False)))
+    raw = selects[0].subquery("raw") if len(selects) == 1 else union_all(*selects).subquery("raw")
+    return _costed(raw, filters, dialect)
 
 
-def department_expr():
-    # An owner-less row has no joined user, so it falls to "Unassigned" too.
-    return func.coalesce(_blank_to_null(User.department), UNASSIGNED_DEPARTMENT)
+def department_expr(filters: Optional[ReportFilters] = None):
+    # An owner-less row has no joined user, so it falls to "No department" too.
+    display = filters.display if filters else DisplayConfig()
+    raws = filters.department_raws if filters else []
+    return display.department_sql(User.department, raws, blank=UNASSIGNED_DEPARTMENT)
 
 
 def charge_status_expr(status_col):
@@ -344,7 +495,7 @@ def _scoped(query, facts, filters: ReportFilters):
     client_expr = func.coalesce(facts.c.client, NO_CLIENT)
     query = query.select_from(facts).outerjoin(User, User.id == facts.c.user_id)
     if filters.department:
-        query = query.where(department_expr() == filters.department)
+        query = query.where(department_expr(filters) == filters.department)
     if filters.user_id == UNASSIGNED_USER_ID:
         query = query.where(User.id.is_(None))
     elif filters.user_id is not None:
@@ -381,11 +532,19 @@ class FactGroup:
     zero_credit: int = 0            # rows in this group with 0 credits
     task_filled: int = 0
     model_filled: int = 0
+    rupees: float = 0.0             # ₹ of the group (Charged rows only carry rupees)
+    rupees_est: float = 0.0         # part of `rupees` that is an estimate
+
+
+def _rupee_sums(facts) -> list:
+    return [func.coalesce(func.sum(facts.c.rupees), 0.0).label("rupees"),
+            func.coalesce(func.sum(case((facts.c.estimated == 1, facts.c.rupees), else_=0.0)), 0.0).label("rupees_est")]
 
 
 def load_groups(db: Session, filters: ReportFilters) -> list:
+    prepare(db, filters)
     facts = facts_subquery(filters, _dialect(db))
-    dept = department_expr()
+    dept = department_expr(filters)
     client_expr = func.coalesce(facts.c.client, NO_CLIENT)
     bucket = charge_status_expr(facts.c.status)
     q = _scoped(
@@ -404,17 +563,19 @@ def load_groups(db: Session, filters: ReportFilters) -> list:
             func.coalesce(func.sum(case((facts.c.credits == 0, 1), else_=0)), 0).label("zero_credit"),
             func.coalesce(func.sum(case((facts.c.task.isnot(None), 1), else_=0)), 0).label("task_filled"),
             func.coalesce(func.sum(case((facts.c.model.isnot(None), 1), else_=0)), 0).label("model_filled"),
+            *_rupee_sums(facts),
         ),
         facts,
         filters,
     ).group_by(User.id, User.name, User.employee_id, User.is_deleted, dept, facts.c.tool, client_expr, bucket,
                facts.c.month)
     out = []
+    person = filters.display.person_name
     for row in db.execute(q):
         owned = row.uid is not None
         out.append(FactGroup(
             user_id=int(row.uid) if owned else UNASSIGNED_USER_ID,
-            user_name=((row.name or "").strip() or f"User {row.uid}") if owned else UNASSIGNED,
+            user_name=(person(row.uid, row.name) or f"User {row.uid}") if owned else UNASSIGNED,
             employee_id=((row.employee_id or "").strip() or f"U{row.uid}") if owned else "—",
             user_deleted=bool(row.is_deleted) if owned else False,
             department=row.department,
@@ -427,7 +588,82 @@ def load_groups(db: Session, filters: ReportFilters) -> list:
             zero_credit=int(row.zero_credit or 0),
             task_filled=int(row.task_filled or 0),
             model_filled=int(row.model_filled or 0),
+            rupees=float(row.rupees or 0.0),
+            rupees_est=float(row.rupees_est or 0.0),
         ))
+    return out
+
+
+@dataclass(frozen=True)
+class AccountGroup:
+    """Charged generations of one tool account in the period (Subscriptions table)."""
+
+    tool: str
+    account: Optional[int]
+    items: int
+    credits: float
+    rupees: float
+    rupees_est: float
+    last_at: object                 # latest generation time (UTC) in the period
+
+
+def load_account_groups(db: Session, filters: ReportFilters) -> list:
+    prepare(db, filters)
+    facts = facts_subquery(filters, _dialect(db))
+    q = _scoped(
+        select(facts.c.tool, facts.c.account, func.count().label("items"),
+               func.coalesce(func.sum(facts.c.credits), 0.0).label("credits"), *_rupee_sums(facts),
+               func.max(facts.c.occurred_at).label("last_at")),
+        facts, filters,
+    ).where(charge_status_expr(facts.c.status) == CHARGED).group_by(facts.c.tool, facts.c.account)
+    return [AccountGroup(tool=r.tool, account=int(r.account) if r.account is not None else None,
+                         items=int(r.items or 0), credits=float(r.credits or 0.0), rupees=float(r.rupees or 0.0),
+                         rupees_est=float(r.rupees_est or 0.0), last_at=r.last_at)
+            for r in db.execute(q)]
+
+
+def load_issue_counts(db: Session, filters: ReportFilters) -> dict:
+    """Charged rows and rupees behind the cost notes: {issue: (rows, rupees)}
+    for "rate assumed", "estimated" and "free preview model"."""
+    prepare(db, filters)
+    facts = facts_subquery(filters, _dialect(db))
+    charged = charge_status_expr(facts.c.status) == CHARGED
+
+    def pair(cond):
+        return (func.coalesce(func.sum(case((and_(charged, cond), 1), else_=0)), 0),
+                func.coalesce(func.sum(case((and_(charged, cond), facts.c.rupees), else_=0.0)), 0.0))
+
+    cols = [*pair(facts.c.rate_assumed == 1), *pair(facts.c.estimated == 1), *pair(facts.c.preview == 1)]
+    r = db.execute(_scoped(select(*cols), facts, filters)).one()
+    return {"rate_assumed": (int(r[0]), float(r[1])), "estimated": (int(r[2]), float(r[3])),
+            "free_preview": (int(r[4]), float(r[5]))}
+
+
+def load_upload_count(db: Session, filters: ReportFilters) -> int:
+    """Freepik uploads in the period (left out of every count; Data Quality shows how many)."""
+    if filters.tool not in (None, "Freepik"):
+        return 0
+    period = filters.period or resolve_period(start=filters.start.isoformat(), end=filters.end.isoformat())
+    m = FreepikGeneration
+    when = func.coalesce(m.provider_created_at, m.created_at)
+    q = db.query(func.count(m.id)).filter(when >= period["utc_start"], when < period["utc_end"],
+                                         func.lower(func.coalesce(m.tool_name, m.tool, "")).in_(FREEPIK_UPLOAD_TOOLS))
+    if filters.excluded_ids:
+        q = q.filter(or_(m.owner_user_id.is_(None), m.owner_user_id.notin_(filters.excluded_ids)))
+    return int(q.scalar() or 0)
+
+
+def load_last_used(db: Session, cost: CostSetup) -> dict:
+    """Latest generation time ever (UTC) per subscription account, any status."""
+    out = {}
+    for src in TOOL_SOURCES:
+        m = src.model
+        when = func.coalesce(m.provider_created_at, m.created_at) if src.has_provider_created_at else m.created_at
+        account = cost.account_sql(literal(src.name, String), m.credential_id)
+        for acc, last in db.query(account, func.max(when)).group_by(account).all():
+            if acc is not None and last is not None:
+                key = int(acc)
+                out[key] = max(out.get(key, last), last)
     return out
 
 
@@ -447,9 +683,12 @@ class DayGroup:
     charge_status: str
     rows: int
     credits: float
+    rupees: float = 0.0
+    rupees_est: float = 0.0
 
 
 def load_day_groups(db: Session, filters: ReportFilters) -> list:
+    prepare(db, filters)
     dialect = _dialect(db)
     facts = facts_subquery(filters, dialect)
     owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
@@ -459,17 +698,19 @@ def load_day_groups(db: Session, filters: ReportFilters) -> list:
     q = _scoped(
         select(cast(owner_key, Integer).label("uid"), facts.c.tool, client_expr.label("client"), day.label("day"),
                bucket.label("charge_status"), func.count().label("rows"),
-               func.coalesce(func.sum(facts.c.credits), 0.0).label("credits")),
+               func.coalesce(func.sum(facts.c.credits), 0.0).label("credits"), *_rupee_sums(facts)),
         facts,
         filters,
     ).group_by(owner_key, facts.c.tool, client_expr, day, bucket)
     return [DayGroup(user_id=int(r.uid), tool=r.tool, client=r.client, day=r.day or None,
-                     charge_status=r.charge_status, rows=int(r.rows or 0), credits=float(r.credits or 0.0))
+                     charge_status=r.charge_status, rows=int(r.rows or 0), credits=float(r.credits or 0.0),
+                     rupees=float(r.rupees or 0.0), rupees_est=float(r.rupees_est or 0.0))
             for r in db.execute(q)]
 
 
 def load_excluded_summary(db: Session, filters: ReportFilters) -> dict:
     """What the test & admin exclusion removed: generations and Charged credits."""
+    prepare(db, filters)
     ids = filters.excluded_ids
     if not ids:
         return {"accounts": 0, "generations": 0, "credits": 0.0}
@@ -502,6 +743,7 @@ def stream_log(db: Session, filters: ReportFilters, user_order: list, batch_size
     """
     if not user_order:
         return iter(())
+    prepare(db, filters)
     facts = facts_subquery(filters, _dialect(db))
     owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
     position = case({uid: i for i, uid in enumerate(user_order)}, value=owner_key, else_=len(user_order))
@@ -530,6 +772,13 @@ def stream_log(db: Session, filters: ReportFilters, user_order: list, batch_size
             facts.c.raw_status,
             charge_status_expr(facts.c.status).label("charge_status"),
             facts.c.has_output,
+            facts.c.rupees,
+            facts.c.estimated,
+            facts.c.rate_assumed,
+            facts.c.preview,
+            facts.c.size_est,
+            facts.c.basis,
+            facts.c.output_key,
         ),
         facts,
         filters,
@@ -538,30 +787,49 @@ def stream_log(db: Session, filters: ReportFilters, user_order: list, batch_size
     return iter(result)
 
 
+def cost_note(row) -> str:
+    """Why a log row's ₹ is what it is, in plain words (blank = exact)."""
+    if row.charge_status != CHARGED:
+        return ""
+    if getattr(row, "preview", 0):
+        return "Free preview model"
+    if getattr(row, "rate_assumed", 0):
+        return "est. · rate assumed"
+    if getattr(row, "size_est", 0):
+        return "est. · no per-item cost recorded" if row.tool != "ElevenLabs" else "est. · from text length"
+    return ""
+
+
 # --------------------------------------------------------------------------- #
 # Filter options and output links
 # --------------------------------------------------------------------------- #
 def load_options(db: Session) -> dict:
+    display = DisplayConfig.load()
     users = (
         db.query(User.id, User.name, User.department)
         .filter(User.is_deleted.is_(False))
         .order_by(User.name)
         .all()
     )
-    departments = {(d or "").strip() for _i, _n, d in users if (d or "").strip()}
+    departments = {display.department_name(d) for _i, _n, d in users if (d or "").strip()}
     departments.add(UNASSIGNED_DEPARTMENT)
-    clients = [n for (n,) in db.query(GenerationClient.name).order_by(GenerationClient.name).all() if (n or "").strip()]
-    user_rows = [{"id": UNASSIGNED_USER_ID, "name": f"{UNASSIGNED} (no owner)", "department": UNASSIGNED_DEPARTMENT}]
-    user_rows += [
-        {"id": i, "name": n, "department": (d or "").strip() or UNASSIGNED_DEPARTMENT}
-        for i, n, d in users
-    ]
+    clients = []
+    for (n,) in db.query(GenerationClient.name).order_by(GenerationClient.name).all():
+        shown = display.client_name(n)
+        if shown and shown not in clients:
+            clients.append(shown)
+    user_rows = [{"id": UNASSIGNED_USER_ID, "name": UNASSIGNED, "department": UNASSIGNED_DEPARTMENT}]
+    user_rows += sorted(
+        ({"id": i, "name": display.person_name(i, n), "department": display.department_name(d) or UNASSIGNED_DEPARTMENT}
+         for i, n, d in users),
+        key=lambda u: u["name"].lower(),
+    )
     return {
         "departments": sorted(departments, key=str.lower),
         "users": user_rows,
         "tools": list(TOOL_NAMES),
-        "clients": clients + [NO_CLIENT],
-        "excludedAccounts": [{"id": uid, "name": name} for uid, name in resolve_excluded_accounts(db)],
+        "clients": sorted(clients, key=str.lower) + [NO_CLIENT],
+        "excludedAccounts": [{"id": uid, "name": name} for uid, name in resolve_excluded_accounts(db, display)],
     }
 
 

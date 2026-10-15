@@ -30,7 +30,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from .facts import NO_CLIENT, UNASSIGNED_USER_ID
+from .facts import NO_CLIENT, UNASSIGNED, UNASSIGNED_USER_ID
 from .model import ReportModel, top_of
 from . import navigation as N
 from . import workbook as W
@@ -100,23 +100,27 @@ def plan_trend(model: ReportModel) -> TrendLayout:
     lay.summary_row = {m: lay.summary_header + 1 + i for i, m in enumerate(months)}
     lay.tool_credits_header = block("tool_credits", "Credits by month and tool", len(months))
     lay.tool_col = {t: get_column_letter(2 + i) for i, t in enumerate(tools)}
+    block("tool_rupees", f"{W.RUPEES} by month and tool", len(months))
     block("tool_generations", "Generations by month and tool", len(months))
     lay.dept_credits_header = block("dept_credits", "Credits by month and department", len(months))
     lay.dept_col = {d: get_column_letter(2 + i) for i, d in enumerate(depts)}
+    block("dept_rupees", f"{W.RUPEES} by month and department", len(months))
     block("dept_generations", "Generations by month and department", len(months))
     user_header = block("user_credits", "Credits by user and month", max(1, len(model.users)))
     lay.user_row = {u.user_id: user_header + 1 + i for i, u in enumerate(model.users)}
+    block("user_rupees", f"{W.RUPEES} by user and month", max(1, len(model.users)))
     block("user_generations", "Generations by user and month", max(1, len(model.users)))
     client_header = block("client_credits", "Credits by client and month", max(1, len(model.clients)))
     lay.client_row = {c.name: client_header + 1 + i for i, c in enumerate(model.clients)}
+    block("client_rupees", f"{W.RUPEES} by client and month", max(1, len(model.clients)))
     block("client_generations", "Generations by client and month", max(1, len(model.clients)))
     return lay
 
 
 def month_breakdown(model: ReportModel, month: str) -> dict:
-    """Charged rows of one month: {kind: [(key, credits, generations)]}, heaviest first."""
+    """Charged rows of one month: {kind: [(key, credits, generations, ₹)]}, heaviest first."""
     def rows(store):
-        items = [(k[1], v[0], v[1]) for k, v in store.items() if k[0] == month and (v[0] or v[1])]
+        items = [(k[1], v[0], v[1], v[2]) for k, v in store.items() if k[0] == month and (v[0] or v[1])]
         return sorted(items, key=lambda r: (-round(r[1], 4), -r[2], str(r[0]).lower()))
     return {"dept": rows(model.month_dept), "user": rows(model.month_user), "tool": rows(model.month_tool),
             "client": rows(model.month_client)}
@@ -138,6 +142,24 @@ def plan_drill(model: ReportModel) -> DrillLayout:
         parts = month_breakdown(model, m)
         row += 3 + max(1, *(len(v) for v in parts.values())) + 1
     return lay
+
+
+TREND_TABLES = {
+    "tool_credits": "tblTrendToolCredits", "tool_rupees": "tblTrendToolRupees", "tool_generations": "tblTrendToolGenerations",
+    "dept_credits": "tblTrendDeptCredits", "dept_rupees": "tblTrendDeptRupees", "dept_generations": "tblTrendDeptGenerations",
+    "user_credits": "tblTrendUserCredits", "user_rupees": "tblTrendUserRupees", "user_generations": "tblTrendUserGenerations",
+    "client_credits": "tblTrendClientCredits", "client_rupees": "tblTrendClientRupees",
+    "client_generations": "tblTrendClientGenerations",
+}
+
+
+def _value_of(key: str) -> tuple:
+    """(index in the month tuple, number format) of a trend block: credits, ₹ or generations."""
+    if key.endswith("credits"):
+        return 0, W.CREDITS_FMT
+    if key.endswith("rupees"):
+        return 2, W.INR_FMT
+    return 1, W.COUNT_FMT
 
 
 def _summary_top(top, name_of=str) -> str:
@@ -182,7 +204,7 @@ def write_trend(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, period
     for key, title, header in tlay.blocks:
         ws.append([w.text(title, font=W.F_SECTION)])
         if key == "summary":
-            headers = ["Month", "Credits", "Generations", "Active users", "Top user", "Top tool", "Top department",
+            headers = ["Month", "Credits", W.RUPEES, "Generations", "Active users", "Top user", "Top tool", "Top department",
                        "Top client", "Change vs previous month", "Change %", "Drill-down"]
             ws.append(w.header(headers))
             prev = None
@@ -190,12 +212,12 @@ def write_trend(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, period
                 t = model.month_totals.get(m)
                 credits, gens = (t.credits, t.generations) if t else (0.0, 0)
                 active = len([u for u in (t.users if t else set()) if u != UNASSIGNED_USER_ID])
-                parts = {k: {key2: (c, g) for key2, c, g in v} for k, v in month_breakdown(model, m).items()}
+                parts = {k: {key2: (c, g) for key2, c, g, _r in v} for k, v in month_breakdown(model, m).items()}
                 change = credits - prev if prev is not None else None
                 ws.append([
                     month_cell(m),
                     w.cell(credits, fmt=ZERO_CHARGED_FMT if (t and t.all_generations) else W.CREDITS_FMT),
-                    w.count(gens), w.count(active),
+                    w.rupees(t.rupees if t else 0.0), w.count(gens), w.count(active),
                     w.text(top_user_text(parts["user"])),
                     w.text(_summary_top(top_of(parts["tool"]))),
                     w.text(_summary_top(top_of(parts["dept"]))),
@@ -206,25 +228,24 @@ def write_trend(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, period
                 ])
                 prev = credits
             W._add_table(ws, headers, header + len(months), "tblTrendSummary", header_row=header)
-        elif key in ("tool_credits", "tool_generations", "dept_credits", "dept_generations"):
+        elif key.startswith(("tool_", "dept_")):
             columns = tools if key.startswith("tool") else depts
             store = model.month_tool if key.startswith("tool") else model.month_dept
-            idx, fmt = (0, W.CREDITS_FMT) if key.endswith("credits") else (1, W.COUNT_FMT)
+            idx, fmt = _value_of(key)
             headers = W.unique_headers(["Month"] + columns + ["Total", "Drill-down"])
             ws.append(w.header(headers))
             for m in months:
-                values = [store.get((m, c), (0.0, 0))[idx] for c in columns]
+                values = [store.get((m, c), (0.0, 0, 0.0))[idx] for c in columns]
                 ws.append([month_cell(m)] + [w.cell(v, fmt=fmt) for v in values]
                           + [w.cell(sum(values), fmt=fmt, font=W.F_BOLD), drill_link(m)])
             last = header + len(months)
-            name = {"tool_credits": "tblTrendToolCredits", "tool_generations": "tblTrendToolGenerations",
-                    "dept_credits": "tblTrendDeptCredits", "dept_generations": "tblTrendDeptGenerations"}[key]
+            name = TREND_TABLES[key]
             W._add_table(ws, headers, last, name, header_row=header)
             if columns:
                 ws.conditional_formatting.add(f"B{header + 1}:{get_column_letter(1 + len(columns))}{last}", W.COLOR_SCALE)
         else:
             is_user = key.startswith("user")
-            idx, fmt = (0, W.CREDITS_FMT) if key.endswith("credits") else (1, W.COUNT_FMT)
+            idx, fmt = _value_of(key)
             entities = model.users if is_user else model.clients
             first_header = "User" if is_user else "Client"
             headers = W.unique_headers([first_header] + [month_label(m) for m in months] + ["Total"])
@@ -232,15 +253,14 @@ def write_trend(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, period
             for e in entities:
                 if is_user:
                     label = W.user_link(w, lay, e.user_id, e.label)
-                    values = [model.month_user.get((m, e.user_id), (0.0, 0))[idx] for m in months]
+                    values = [model.month_user.get((m, e.user_id), (0.0, 0, 0.0))[idx] for m in months]
                 else:
                     label = w.text(e.name)          # By Client's "↔ … in Monthly Trend" lands here; ⬅ returns
-                    values = [model.month_client.get((m, e.name), (0.0, 0))[idx] for m in months]
+                    values = [model.month_client.get((m, e.name), (0.0, 0, 0.0))[idx] for m in months]
                 ws.append([label] + [w.cell(v, fmt=fmt) for v in values] + [w.cell(sum(values), fmt=fmt, font=W.F_BOLD)])
             last = header + len(entities)
             if entities:
-                name = {"user_credits": "tblTrendUserCredits", "user_generations": "tblTrendUserGenerations",
-                        "client_credits": "tblTrendClientCredits", "client_generations": "tblTrendClientGenerations"}[key]
+                name = TREND_TABLES[key]
                 W._add_table(ws, headers, last, name, header_row=header)
                 ws.conditional_formatting.add(f"B{header + 1}:{get_column_letter(1 + len(months))}{last}", W.COLOR_SCALE)
             else:
@@ -251,7 +271,8 @@ def write_trend(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, period
 # --------------------------------------------------------------------------- #
 # Month Drill-down
 # --------------------------------------------------------------------------- #
-DRILL_TABLES = (("dept", "Department", 1), ("user", "User", 6), ("tool", "Tool", 11), ("client", "Client", 16))
+DRILL_TABLES = (("dept", "Department", 1), ("user", "User", 7), ("tool", "Tool", 13), ("client", "Client", 19))
+DRILL_WIDTH = 5                                  # Name | Credits | ₹ | Generations | % of month
 
 
 def write_drill(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, month_first_row: dict, log_back_col: str,
@@ -268,7 +289,7 @@ def write_drill(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, month_
     for m in dlay.order:
         t = model.month_totals.get(m)
         ws.append([w.go(DRILL, dlay.block_row[m], month_label(m)),
-                   w.text(W.figures(t.credits, t.generations) if t else "—")])
+                   w.text(f"{W.figures(t.credits, t.generations)} · ₹{t.rupees:,.0f}" if t else "—")])
     ws.append([])
 
     for m in dlay.order:
@@ -280,7 +301,8 @@ def write_drill(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, month_
                    w.cell(credits, fmt=ZERO_CHARGED_FMT if (t and t.all_generations) else W.CREDITS_FMT, font=W.F_BOLD),
                    w.text("Generations", font=W.F_BOLD), w.count(gens, font=W.F_BOLD),
                    w.text("Active users", font=W.F_BOLD), w.count(active, font=W.F_BOLD), w.cell(),
-                   w.link(W.internal_target(TREND, tlay.summary_row[m]), f"⬅ Back to {label}")])
+                   w.link(W.internal_target(TREND, tlay.summary_row[m]), f"⬅ Back to {label}"),
+                   w.text(W.RUPEES, font=W.F_BOLD), w.rupees(t.rupees if t else 0.0, font=W.F_BOLD)])
         first = month_first_row.get(m)
         ws.append([w.text("First log row of this month:", font=W.F_ITALIC),
                    w.link(W.internal_target(W.LOG, first, log_back_col), f"{label} →") if first else w.text("—"),
@@ -291,7 +313,7 @@ def write_drill(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, month_
         header_cells = []
         for kind, title, start in DRILL_TABLES:
             pad = [w.cell() for _ in range(start - 1 - len(header_cells))]
-            header_cells += pad + w.header([title, "Credits", "Generations", "% of month"])
+            header_cells += pad + w.header([title, "Credits", W.RUPEES, "Generations", "% of month"])
         ws.append(header_cells)
         height = max(1, *(len(v) for v in parts.values()))
         for i in range(height):
@@ -300,9 +322,9 @@ def write_drill(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, month_
                 cells += [w.cell() for _ in range(start - 1 - len(cells))]
                 items = parts[kind]
                 if i >= len(items):
-                    cells += [w.cell() for _ in range(4)]
+                    cells += [w.cell() for _ in range(DRILL_WIDTH)]
                     continue
-                key, c, g = items[i]
+                key, c, g, rs = items[i]
                 if kind == "dept":
                     name = w.link(W.internal_target(W.DEPT, lay.dept_row[key]), key)
                 elif kind == "user":
@@ -311,7 +333,7 @@ def write_drill(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, month_
                     name = W.tool_link(w, lay, key)
                 else:
                     name = w.link(W.internal_target(W.CLIENT, lay.client_row[key]), key)
-                cells += [name, w.credits(c), w.count(g), w.pct(c / credits if credits else 0.0)]
+                cells += [name, w.credits(c), w.rupees(rs), w.count(g), w.pct(c / credits if credits else 0.0)]
             ws.append(cells)
         ws.append([])
 
@@ -329,6 +351,7 @@ class ExplorerRanges:
     client: str
     credits: str
     month: str
+    rupees: str
 
 
 def log_ranges(log_cols: dict, last_row: int) -> ExplorerRanges:
@@ -336,7 +359,8 @@ def log_ranges(log_cols: dict, last_row: int) -> ExplorerRanges:
         col = log_cols[header]
         return f"'{W.LOG}'!${col}${W.FIRST_DATA_ROW}:${col}${last_row}"
     return ExplorerRanges(date=rng("Date"), status=rng("Charge status"), dept=rng("Department"), user=rng("User"),
-                          tool=rng("Tool"), client=rng("Client"), credits=rng("Credits"), month=rng("Month"))
+                          tool=rng("Tool"), client=rng("Client"), credits=rng("Credits"), month=rng("Month"),
+                          rupees=rng(W.RUPEES))
 
 
 def list_values(model: ReportModel) -> dict:
@@ -365,11 +389,15 @@ IN_FROM, IN_TO, IN_DEPT, IN_USER, IN_TOOL, IN_CLIENT, IN_PENDING = (f"$B${r}" fo
 H_FROM, H_TO = "$J$5", "$J$6"               # previous period dates
 H_DEPT, H_USER, H_TOOL, H_CLIENT, H_STATUS = (f"$J${r}" for r in range(7, 12))
 KPI_HEADER = 19
-KPI_ROWS = {"credits": 20, "generations": 21, "active": 22, "per_gen": 23}
+KPI_ROWS = {"credits": 20, "generations": 21, "active": 22, "rupees": 23}
 TOP_HEADER = 26
 TOP_ROWS = {"user": 27, "tool": 28, "dept": 29, "client": 30}
 MATRIX_TITLE = 32
 JUMP_BACK_COL = 10                           # "⬅ Jump row" on each section title (column J)
+# Entity tables (Department, User, Tool, Client side by side): column offsets within a table.
+E_CREDITS, E_RUPEES, E_GENS, E_PCT, E_RANK, E_TIE, E_PREV = 1, 2, 3, 4, 5, 6, 7
+ENTITY_WIDTH = 8
+ENTITY_STARTS = (("dept", 1), ("user", 10), ("tool", 19), ("client", 28))
 
 
 @dataclass
@@ -388,7 +416,7 @@ def plan_explorer(model: ReportModel) -> ExplorerLayout:
     lay.tables_header = lay.matrix_header + len(model.months) + 3
     counts = {"dept": len(model.departments), "user": len(model.users), "tool": len(model.tools),
               "client": len(model.clients)}
-    for kind, start in (("dept", 1), ("user", 9), ("tool", 17), ("client", 25)):
+    for kind, start in ENTITY_STARTS:
         first, last = lay.tables_header + 1, lay.tables_header + max(1, counts[kind])
         lay.tables[kind] = (start, first, last)
         bucket_last = (kind == "user" and model.users and model.users[-1].user_id == UNASSIGNED_USER_ID) or \
@@ -488,16 +516,18 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
     if any(u.user_id == UNASSIGNED_USER_ID for u in model.users):
         idx = next(i for i, u in enumerate(model.users) if u.user_id == UNASSIGNED_USER_ID)
         start_col, first, _last = elay.tables["user"]
-        unassigned_gens = f"{get_column_letter(start_col + 2)}{first + idx}"
-        unassigned_prev = f"{get_column_letter(start_col + 6)}{first + idx}"
-    gens_rng, prev_gens_rng = table_range("user", 2), table_range("user", 6)
+        unassigned_gens = f"{get_column_letter(start_col + E_GENS)}{first + idx}"
+        unassigned_prev = f"{get_column_letter(start_col + E_PREV)}{first + idx}"
+        unassigned_cr = f"{get_column_letter(start_col + E_CREDITS)}{first + idx}"
+    gens_rng, prev_gens_rng = table_range("user", E_GENS), table_range("user", E_PREV)
     active_now = f"COUNTIF({gens_rng},\">0\")" + (f"-IF({unassigned_gens}>0,1,0)" if unassigned_gens else "")
     active_prev = f"COUNTIF({prev_gens_rng},\">0\")" + (f"-IF({unassigned_prev}>0,1,0)" if unassigned_gens else "")
     kpis = [
         ("Credits", f"=SUMIFS({r.credits},{_criteria(r)})", f"=SUMIFS({r.credits},{_criteria(r, prev=True)})", W.CREDITS_FMT),
         ("Generations", f"=COUNTIFS({_criteria(r)})", f"=COUNTIFS({_criteria(r, prev=True)})", W.COUNT_FMT),
         ("Active users", f"={active_now}", f"={active_prev}", W.COUNT_FMT),
-        ("Credits per generation", f"=IF(B21=0,0,B20/B21)", f"=IF(C21=0,0,C20/C21)", W.CREDITS_FMT),
+        # Credits per generation would add different tools' credits together; rupees compare.
+        (W.RUPEES, f"=SUMIFS({r.rupees},{_criteria(r)})", f"=SUMIFS({r.rupees},{_criteria(r, prev=True)})", W.INR_FMT),
     ]
     for label, now_f, prev_f, fmt in kpis:                                                                 # 20-23
         row = 20 + kpis.index((label, now_f, prev_f, fmt))
@@ -505,9 +535,9 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
                    w.cell(prev_f, fmt=fmt), w.cell(f'=IF(C{row}=0,"—",(B{row}-C{row})/C{row})', fmt=CHANGE_PCT_FMT)])
     ws.append([])                                                                                          # 24
     ws.append([w.text("Top in the selected period", font=W.F_SECTION)] + pad + [jump_back(0)])             # 25
-    ws.append(w.header(["What", "Top", "Credits", "Top named user"]))                                       # 26
+    ws.append(w.header(["What", "Top", "Credits", "Top named user", W.RUPEES]))                             # 26
     for kind, label in (("user", "Top user"), ("tool", "Top tool"), ("dept", "Top department"), ("client", "Top client")):
-        names, credits, tie = (table_range(kind, k, top=True) for k in (0, 1, 5))
+        names, credits, tie = (table_range(kind, k, top=True) for k in (0, E_CREDITS, E_TIE))
         first = f"INDEX({names},MATCH(1,{tie},0))"
         second = f"INDEX({names},MATCH(2,{tie},0))"
         n = f"COUNTIF({credits},MAX({credits}))"
@@ -515,15 +545,19 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
         if kind == "user" and unassigned_gens:
             # One top-user rule: Unassigned counts; it wins only with more
             # credits than every named user, and the best named user shows beside it.
-            unassigned_cr = unassigned_gens.replace(get_column_letter(elay.tables["user"][0] + 2),
-                                                    get_column_letter(elay.tables["user"][0] + 1))
-            formula = (f'=IF(MAX({table_range(kind, 1)})<=0,"—",IF({unassigned_cr}>MAX({credits}),"Unassigned",'
+            everyone = table_range(kind, E_CREDITS)
+            formula = (f'=IF(MAX({everyone})<=0,"—",IF({unassigned_cr}>MAX({credits}),{_q(UNASSIGNED)},'
                        f'{named}))')
-            cells = [w.cell(f"=MAX({table_range(kind, 1)})", fmt=W.CREDITS_FMT),
-                     w.cell(f'=IF(B{TOP_ROWS["user"]}="Unassigned",IF(MAX({credits})<=0,"—",{first}),"")')]
+            rupees = (f'=IF(MAX({everyone})<=0,"",INDEX({table_range(kind, E_RUPEES)},'
+                      f'MATCH(MAX({everyone}),{everyone},0)))')
+            cells = [w.cell(f"=MAX({everyone})", fmt=W.CREDITS_FMT),
+                     w.cell(f'=IF(B{TOP_ROWS["user"]}={_q(UNASSIGNED)},IF(MAX({credits})<=0,"—",{first}),"")'),
+                     w.cell(rupees, fmt=W.INR_FMT)]
         else:
             formula = f'=IF(MAX({credits})<=0,"—",{named})'
-            cells = [w.cell(f"=MAX({credits})", fmt=W.CREDITS_FMT)]
+            rupees = (f'=IF(MAX({credits})<=0,"",INDEX({table_range(kind, E_RUPEES, top=True)},'
+                      f'MATCH(MAX({credits}),{credits},0)))')
+            cells = [w.cell(f"=MAX({credits})", fmt=W.CREDITS_FMT), w.cell(), w.cell(rupees, fmt=W.INR_FMT)]
         ws.append([w.text(label, font=W.F_BOLD), w.cell(formula, font=W.F_BOLD)] + cells)                  # 27-30
     ws.append([])                                                                                          # 31
 
@@ -531,7 +565,7 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
     ws.append([w.text("Credits by month and tool (selected range and filters)", font=W.F_SECTION)]
               + pad + [jump_back(1)])                                                                      # 32
     tools = [t.name for t in model.tools]
-    headers = W.unique_headers(["Month"] + tools + ["Total"])
+    headers = W.unique_headers(["Month"] + tools + ["Total", W.RUPEES])
     ws.append(w.header(headers))                                                                           # 33
     for i, m in enumerate(model.months):
         row = elay.matrix_header + 1 + i
@@ -543,6 +577,8 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
         last_tool_col = get_column_letter(1 + len(tools))
         cells.append(w.cell(f"=SUM(B{row}:{last_tool_col}{row})", fmt=W.CREDITS_FMT, font=W.F_BOLD) if tools
                      else w.cell(0, fmt=W.CREDITS_FMT))
+        cells.append(w.cell(f"=SUMIFS({r.rupees},{_criteria(r, extra=((r.month, f'$A{row}'),))})", fmt=W.INR_FMT,
+                            font=W.F_BOLD))
         ws.append(cells)
     matrix_last = elay.matrix_header + len(model.months)
     if model.months:
@@ -554,7 +590,7 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
     ws.append([w.text("By department, user, tool and client (selected range and filters)", font=W.F_SECTION)]
               + pad + [jump_back(2)])
 
-    # Entity tables side by side: Name | Credits | Generations | % | Rank | Tie # | Prev generations
+    # Entity tables side by side: Name | Credits | ₹ | Generations | % | Rank | Tie # | Prev generations
     entities = {
         "dept": [(d.name, d.name, r.dept) for d in model.departments],
         "user": [(u.label, u.label, r.user) for u in model.users],
@@ -566,8 +602,8 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
     for kind in ("dept", "user", "tool", "client"):
         start_col = elay.tables[kind][0]
         header_cells += [w.cell() for _ in range(start_col - 1 - len(header_cells))]
-        header_cells += w.header([titles[kind], "Credits", "Generations", "% of selected total", "Rank", "Tie #",
-                                  "Previous period generations"])
+        header_cells += w.header([titles[kind], "Credits", W.RUPEES, "Generations", "% of selected total", "Rank",
+                                  "Tie #", "Previous period generations"])
     ws.append(header_cells)                                                                                # tables_header
     height = max(1, *(len(v) for v in entities.values()))
     link_rows = {"dept": lay.dept_row, "tool": lay.tool_row, "client": lay.client_row}
@@ -578,7 +614,7 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
             start_col, first, last = elay.tables[kind]
             cells += [w.cell() for _ in range(start_col - 1 - len(cells))]
             if i >= len(entities[kind]):
-                cells += [w.cell() for _ in range(7)]
+                cells += [w.cell() for _ in range(ENTITY_WIDTH)]
                 continue
             label, key, rng = entities[kind][i]
             col = lambda k: get_column_letter(start_col + k)  # noqa: E731
@@ -591,17 +627,19 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
                                                 link_rows[kind][key]), label)
             crit = _criteria(r, extra=((rng, _crit_literal(key)),))
             crit_prev = _criteria(r, prev=True, extra=((rng, _crit_literal(key)),))
-            credits_rng = f"${col(1)}${first}:${col(1)}${last}"
-            top_rng = f"${col(1)}${first}:${col(1)}${elay.top_last[kind]}"
+            cr = col(E_CREDITS)
+            credits_rng = f"${cr}${first}:${cr}${last}"
+            top_rng = f"${cr}${first}:${cr}${elay.top_last[kind]}"
             in_top = row <= elay.top_last[kind]
             cells += [
                 name,
                 w.cell(f"=SUMIFS({r.credits},{crit})", fmt=W.CREDITS_FMT),
+                w.cell(f"=SUMIFS({r.rupees},{crit})", fmt=W.INR_FMT),
                 w.cell(f"=COUNTIFS({crit})", fmt=W.COUNT_FMT),
-                w.cell(f"=IF($B$20=0,0,{col(1)}{row}/$B$20)", fmt=W.PCT_FMT),
-                w.cell(f'=IF({col(1)}{row}<=0,"",RANK.EQ({col(1)}{row},{credits_rng}))'),
-                (w.cell(f'=IF(AND({col(1)}{row}>0,{col(1)}{row}=MAX({top_rng})),'
-                        f'COUNTIF(${col(1)}${first}:{col(1)}{row},MAX({top_rng})),"")', font=F_HELPER)
+                w.cell(f"=IF($B$20=0,0,{cr}{row}/$B$20)", fmt=W.PCT_FMT),
+                w.cell(f'=IF({cr}{row}<=0,"",RANK.EQ({cr}{row},{credits_rng}))'),
+                (w.cell(f'=IF(AND({cr}{row}>0,{cr}{row}=MAX({top_rng})),'
+                        f'COUNTIF(${cr}${first}:{cr}{row},MAX({top_rng})),"")', font=F_HELPER)
                  if in_top else w.text("not ranked", font=F_HELPER)),
                 w.cell(f"=COUNTIFS({crit_prev})", fmt=W.COUNT_FMT),
             ]
@@ -622,8 +660,8 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
         start_col, first, last = elay.tables[kind]
         if last < first:
             continue
-        a, b = get_column_letter(start_col), get_column_letter(start_col + 6)
-        c_cr, c_gen, c_rank = (get_column_letter(start_col + k) for k in (1, 2, 4))
+        a, b = get_column_letter(start_col), get_column_letter(start_col + ENTITY_WIDTH - 1)
+        c_cr, c_gen, c_rank = (get_column_letter(start_col + k) for k in (E_CREDITS, E_GENS, E_RANK))
         ws.conditional_formatting.add(f"{a}{first}:{b}{last}",
                                       FormulaRule(formula=[f"AND(${c_cr}{first}>0,${c_rank}{first}<=3)"], fill=FILL_TOP3))
         ws.conditional_formatting.add(f"{a}{first}:{b}{last}",

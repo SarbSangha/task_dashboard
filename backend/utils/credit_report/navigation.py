@@ -45,6 +45,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 
 HOME = "Home"
 PERIOD = "Period Explorer"
+BY_DATE = "By Date"
 DEPT = "By Department"
 USER = "By User"
 TOOL = "By Tool"
@@ -59,7 +60,7 @@ LOG = "Generation Log"
 
 #: The one place a sheet's parent is defined (breadcrumbs and "⬅ Back to").
 SHEET_PARENT = {
-    PERIOD: HOME, DEPT: HOME, USER: HOME, TOOL: HOME, CLIENT: HOME, TREND: HOME, QUALITY: HOME,
+    PERIOD: HOME, BY_DATE: HOME, DEPT: HOME, USER: HOME, TOOL: HOME, CLIENT: HOME, TREND: HOME, QUALITY: HOME,
     DEPT_TOOL: DEPT, USER_TOOL: DEPT_TOOL,
     USER_CLIENT: USER, LOG: USER_CLIENT,
     DRILL: TREND,
@@ -68,7 +69,7 @@ SHEET_PARENT = {
 #: Fixed short names for back-link labels ("⬅ U×Tool (list)"): they always
 #: fit the back columns, so no label is ever cut.
 SHORT_NAME = {
-    HOME: "Home", PERIOD: "Explorer", DEPT: "Dept", USER: "User", TOOL: "Tool", CLIENT: "Client",
+    HOME: "Home", PERIOD: "Explorer", BY_DATE: "Date", DEPT: "Dept", USER: "User", TOOL: "Tool", CLIENT: "Client",
     DEPT_TOOL: "Dept×Tool", USER_TOOL: "U×Tool", USER_CLIENT: "U×Client", TREND: "Trend",
     DRILL: "Drill-down", QUALITY: "Data Quality", LOG: "Log",
 }

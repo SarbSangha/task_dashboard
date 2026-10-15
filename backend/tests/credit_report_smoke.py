@@ -53,7 +53,9 @@ from models_new import (  # noqa: E402
     GenerationClient,
     GenerationRecord,
     ITPortalTool,
+    ITPortalToolCredential,
     ITPortalToolUsageEvent,
+    ToolCreditRate,
     User,
     UserFeatureAccess,
     UserRole,
@@ -72,6 +74,7 @@ from utils.credit_report import (  # noqa: E402
     NO_CLIENT,
     PENDING,
     UNASSIGNED,
+    UNASSIGNED_DEPARTMENT,
     UNASSIGNED_USER_ID,
     ReportFilters,
     build_model,
@@ -83,12 +86,15 @@ from utils.credit_report import (  # noqa: E402
 )
 from utils.credit_report import navigation as N  # noqa: E402
 from utils.credit_report import workbook as W  # noqa: E402
+from utils.credit_report import workbook_summary as WS  # noqa: E402
+from utils.credit_report import workbook_blocks as WBK  # noqa: E402
 from utils.credit_report.facts import EXCLUDED_ACCOUNTS_ENV  # noqa: E402
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 TABLES = [
-    User, UserRole, UserFeatureAccess, GenerationClient, ITPortalTool, ITPortalToolUsageEvent, GenerationRecord,
+    User, UserRole, UserFeatureAccess, GenerationClient, ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent,
+    ToolCreditRate, GenerationRecord,
     FreepikGeneration, EnvatoGeneration, HeygenGeneration, HiggsfieldGeneration, ElevenlabsGeneration,
     FlowGeneration, SunoGeneration, EpidemicAdaptation,
 ]
@@ -226,6 +232,9 @@ def seed():
 
 
 def _filters(db, **kw):
+    # These tests exercise the "Exclude test & admin accounts" option unless
+    # told otherwise; the export's own default is everyone (see test_api).
+    kw.setdefault("exclude_test_accounts", True)
     f = ReportFilters.build(start=kw.pop("start", OCT1), end=kw.pop("end", OCT7), **kw)
     if f.exclude_test_accounts:
         f.excluded_accounts = resolve_excluded_accounts(db)
@@ -275,7 +284,7 @@ def test_group_queries():
         for name, expected in EXPECTED_USER_CHARGED.items():
             _close(by_user.get(name, 0), expected, f"{name} charged credits")
         unassigned = [g for g in groups if g.user_id == UNASSIGNED_USER_ID]
-        _assert(unassigned and all(g.department == UNASSIGNED for g in unassigned), "no owner -> Unassigned/Unassigned")
+        _assert(unassigned and all(g.department == UNASSIGNED_DEPARTMENT for g in unassigned), "no owner -> unknown user / No department")
         _close(_charged(groups, "tool")["Kling"], 180, "Kling: clamp 5000 -> 0, September excluded")
         flow = [g for g in groups if g.tool == "Flow"]
         _assert(sum(g.generations for g in flow) == 1, "Flow: IST boundaries keep 1 of 2 rows")
@@ -291,7 +300,7 @@ def test_filters_and_exclusion():
     with SessionLocal() as db:
         design = load_groups(db, _filters(db, department="Design"))
         _assert({g.user_name for g in design} == {"Ravi", "Asha"}, "department filter")
-        un = load_groups(db, _filters(db, department=UNASSIGNED))
+        un = load_groups(db, _filters(db, department=UNASSIGNED_DEPARTMENT))
         _assert({g.user_name for g in un} == {"Zed", UNASSIGNED}, "Unassigned department = blank dept + no owner")
         owner_less = load_groups(db, _filters(db, user_id=UNASSIGNED_USER_ID))
         _assert({g.user_name for g in owner_less} == {UNASSIGNED}, "user filter 0 = owner-less rows")
@@ -330,7 +339,7 @@ def test_model():
     _assert(video.top_user.keys == (IDS["Bob"],), "Video's top user")
     # One top-user rule: everyone counts, Unassigned included (credits, then
     # generations); when Unassigned wins, the best named user is kept beside it.
-    unassigned_dept = next(d for d in model.departments if d.name == UNASSIGNED)
+    unassigned_dept = next(d for d in model.departments if d.name == UNASSIGNED_DEPARTMENT)
     _assert(unassigned_dept.top_user.keys == (UNASSIGNED_USER_ID,), "Unassigned (999 credits) tops its department")
     _assert(unassigned_dept.top_named_user.keys == (IDS["Zed"],), "top named user beside it")
     _assert(model.top_user.keys == (IDS["Bob"],) and model.top_named_user.keys == (IDS["Bob"],),
@@ -352,15 +361,19 @@ def test_model():
 
 
 def test_duplicate_detection():
-    def row(sec, prompt="p", tool="Kling", credits=10.0, status=CHARGED, user=1):
+    """A possible double charge needs the same output too: two charges with
+    different outputs are deliberate variations (or a batch) and stay unflagged."""
+    def row(sec, prompt="p", tool="Kling", credits=10.0, status=CHARGED, user=1, output="out-1"):
         return SimpleNamespace(user_id=user, tool=tool, prompt=prompt, credits=credits, charge_status=status,
-                               occurred_at=datetime(2026, 10, 1, 6, 0, sec))
+                               occurred_at=datetime(2026, 10, 1, 6, 0, sec), output_key=output)
     rows = [row(0), row(3), row(9), row(14, credits=0), row(15, tool="Freepik"), row(16, prompt="q"),
-            row(17, status=PENDING), row(18, user=2), row(30), row(35)]
+            row(17, status=PENDING), row(18, user=2), row(30, output="out-2"), row(35, output="out-2"),
+            row(50, output="v-1"), row(52, output="v-2"), row(54, output=None), row(56, output=None)]
     flags = [e["dup"] for e in W.flag_duplicates(rows)]
-    _assert(flags == [True, True, False, False, False, False, False, False, True, True],
+    _assert(flags == [True, True, False, False, False, False, False, False, True, True,
+                      False, False, False, False],
             f"dup flags: {flags}")
-    print("ok  duplicate detection")
+    print("ok  duplicate detection (same output only)")
 
 
 def test_block_rules():
@@ -654,8 +667,9 @@ def _validate_blocks(wb):
             sum(float(r[li["Credits"]] or 0) for r in rs if r[li["Charged"]] is True)
 
     runs = 0
-    credit_cols = {(W.USER, "A"): "C", (W.USER, "C"): "E", (W.TOOL, "B"): "D", (W.TOOL, "D"): "E"}
-    for sheet_name in (W.USER, W.TOOL, W.USER_CLIENT):
+    credit_cols = {(W.USER, "A"): "C", (W.USER, "C"): "E", (W.TOOL, "B"): "D", (W.TOOL, "D"): "E",
+                   (W.BY_DATE, "F"): "E"}
+    for sheet_name in (W.USER, W.TOOL, W.USER_CLIENT, W.BY_DATE):
         ws = wb[sheet_name]
         for row in ws.iter_rows(min_row=W.FIRST_DATA_ROW):
             for cell in row:
@@ -703,7 +717,7 @@ def _validate_blocks(wb):
             start = int(re.sub(r"[A-Z]", "", fwd[1]))
             _assert(start <= i and rows[start][li["User"]] == r[li["User"]],
                     f"{W.LOG}!{cell.coordinate}: back link returns to a row for another run")
-            if name in (W.LOG_BACK_DATE, W.LOG_BACK_TOOL_DATE, W.LOG_BACK_CLIENT):
+            if name in (W.LOG_BACK_DATE, W.LOG_BACK_TOOL_DATE, W.LOG_BACK_CLIENT, W.LOG_BACK_BYDATE):
                 _assert(start == i, f"{W.LOG}!{cell.coordinate}: {name} returns to the row that opens this run")
 
     # In-block links: Date-wise / Clients rows open a "⬅" cell that returns to them.
@@ -716,7 +730,8 @@ def _validate_blocks(wb):
                 if not target or target[0] != sheet_name or _display(cell.value).startswith("⬅"):
                     continue
                 landing = ws[target[1]]
-                if not _is_back_cell(landing) or landing.column_letter not in ("G", "H"):
+                if not _is_back_cell(landing) or landing.column_letter not in (WBK.TDC_DATE_BACK_COL, WBK.TDC_CLIENT_BACK_COL,
+                                                                             WBK.DUC_DATE_BACK_COL):
                     continue
                 back = _internal(landing.value)
                 _assert(back[0] == sheet_name and int(re.sub(r"[A-Z]", "", back[1])) == cell.row,
@@ -742,17 +757,19 @@ def _validate_blocks(wb):
 
     def credits_of(table, header):
         headers, body = table
-        i = headers.index(header)
+        i = headers.index(header if header in headers else W.human_header(header))
         return sum(float(b[i] or 0) for b in body if i < len(b))
 
     blocks_seen = 0
     for sheet_name, sections in ((W.USER, {"Tools used": "Credits", "Clients": "Credits", "Date-wise": "Total",
                                            "Tool › Date › Client": "Credits"}),
                                  (W.TOOL, {"Users": "Credits", "Clients": "Credits", "Date-wise": "Credits",
-                                           "Date › User › Client": "Credits"})):
+                                           "Date › User › Client": "Credits"}),
+                                 (W.BY_DATE, {"Users": "Credits", "Clients": "Credits",
+                                              "User › Client › Tool": "Credits"})):
         ws = wb[sheet_name]
         lh2, lrows = _table(ws)
-        list_credit = {_display(r[0]): float(r[lh2.index("Credits")] or 0) for r in lrows}
+        list_credit = {_display(r[0]): float(r[lh2.index("Credits used")] or 0) for r in lrows}
         incoming = {}
         for s2, c2, _t2, _l in _links(wb):
             tgt = _internal(c2.value)
@@ -778,7 +795,7 @@ def _validate_blocks(wb):
             _assert(ws.row_dimensions[h + 1].outlineLevel == 1, f"{sheet_name} {name}: block is collapsible")
             blocks_seen += 1
     _assert(runs > 0 and blocks_seen > 0 and inner > 0, "blocks checked")
-    print(f"ok  blocks: {blocks_seen} user/tool blocks, {runs} log runs, {inner} in-block links; "
+    print(f"ok  blocks: {blocks_seen} user/tool/date blocks, {runs} log runs, {inner} in-block links; "
           "every back link round-trips")
 
 
@@ -957,7 +974,9 @@ def test_workbook_end_to_end():
         model = _build(path)
         _assert(model.log_stats.plan_mismatches == 0, "every log row landed where the blocks planned it")
         wb = load_workbook(path)
-        _assert(wb.sheetnames == list(W.SHEET_ORDER) + [W.LISTS], f"sheet order {wb.sheetnames}")
+        _assert(wb.sheetnames == [WS.SUMMARY, WS.TEAM, WS.GLOSSARY, WS.DETAILS] + list(W.SHEET_ORDER) + [W.LISTS, WS.CHART_DATA],
+                f"sheet order {wb.sheetnames}")
+        _assert(wb[WS.CHART_DATA].sheet_state == "hidden", "chart data is hidden")
         _assert(wb[W.LISTS].sheet_state == "hidden", "Lists sheet is hidden")
         _assert_no_banned_functions(wb)
         log_headers = [c.value for c in wb[W.LOG][W.HEADER_ROW]]
@@ -975,19 +994,19 @@ def test_workbook_end_to_end():
         _assert(isinstance(week, datetime) and week.weekday() == 0, "Week starts on Monday")
         charged_vals = {r[log_headers.index("Charged")] for _i, r in data_rows}
         _assert(charged_vals == {True, False}, f"Charged is TRUE/FALSE: {charged_vals}")
-        _assert(log_ws.freeze_panes == "F5", "log back columns frozen with the header")
+        _assert(log_ws.freeze_panes == "G5", "log back columns frozen with the header")
         for ws in wb.worksheets:
-            if ws.title == W.LISTS:          # hidden dropdown data, not a page
+            if ws.title in (W.LISTS, WS.CHART_DATA):          # hidden data, not a page
                 continue
             _assert(ws.freeze_panes, f"{ws.title} has frozen panes")
         _validate_log_layout(wb)
-        for name in (W.DEPT, W.TOOL, W.CLIENT, W.DEPT_TOOL, W.USER_TOOL, W.USER_CLIENT, W.QUALITY, W.LOG):
+        for name in (W.BY_DATE, W.DEPT, W.TOOL, W.CLIENT, W.DEPT_TOOL, W.USER_TOOL, W.USER_CLIENT, W.LOG):
             _assert(len(wb[name].tables) == 1, f"{name} has one Excel Table")
         user_tables = list(wb[W.USER].tables)
         _assert(user_tables[0] == "tblUsers" and len(user_tables) > 1
                 and all(t.startswith("tblUserTDC") for t in user_tables[1:]),
                 f"By User: the list, then one filterable Tool › Date › Client table per block: {user_tables}")
-        _assert(len(wb[W.TREND].tables) == 9, f"Monthly Trend tables: {list(wb[W.TREND].tables)}")
+        _assert(len(wb[W.TREND].tables) == 13, f"Monthly Trend tables: {list(wb[W.TREND].tables)}")
         _assert(wb[W.DEPT]["B5"].number_format == W.CREDITS_FMT, "credits use thousands separators")
 
         # Charged totals reconcile everywhere, Unassigned included.
@@ -995,13 +1014,13 @@ def test_workbook_end_to_end():
         log = wb[W.LOG]
         totals = {
             "Home KPI": home["A11"].value,
-            "By Department": _col_sum(wb[W.DEPT], "Credits"),
-            "By User": _col_sum(wb[W.USER], "Credits"),
-            "By Tool": _col_sum(wb[W.TOOL], "Credits"),
-            "By Client": _col_sum(wb[W.CLIENT], "Credits"),
+            "By Department": _col_sum(wb[W.DEPT], "Credits used"),
+            "By User": _col_sum(wb[W.USER], "Credits used"),
+            "By Tool": _col_sum(wb[W.TOOL], "Credits used"),
+            "By Client": _col_sum(wb[W.CLIENT], "Credits used"),
             "Dept × Tool": _col_sum(wb[W.DEPT_TOOL], "Total"),
             "User × Tool": _col_sum(wb[W.USER_TOOL], "Total"),
-            "User × Client": _col_sum(wb[W.USER_CLIENT], "Credits"),
+            "User × Client": _col_sum(wb[W.USER_CLIENT], "Credits used"),
             "Trend by tool": _col_sum(wb[W.TREND], "Total", "tblTrendToolCredits"),
             "Trend by department": _col_sum(wb[W.TREND], "Total", "tblTrendDeptCredits"),
             "Generation Log (Charged)": _col_sum(log, "Credits", where=("Charge status", CHARGED)),
@@ -1027,12 +1046,13 @@ def test_workbook_end_to_end():
         _assert(el1[raw_i] == "created" and el1[status_i] == CHARGED,
                 "ElevenLabs TTS raw status read from metadata; still Charged")
         unassigned_rows = [r for r in rows if r[headers.index("User")] == UNASSIGNED]
-        _assert(len(unassigned_rows) == 1 and unassigned_rows[0][headers.index("Department")] == UNASSIGNED,
+        _assert(len(unassigned_rows) == 1 and unassigned_rows[0][headers.index("Department")] == UNASSIGNED_DEPARTMENT,
                 "Unassigned row in the log")
 
         # Duplicates, dropped columns, injection, truncation, IST.
         dup_i = headers.index(W.DUPLICATE_LABEL)
-        _assert(sum(1 for r in rows if r[dup_i] == W.DUPLICATE_LABEL) == 2, "exactly one duplicate pair flagged")
+        _assert(sum(1 for r in rows if r[dup_i] == W.DUPLICATE_LABEL) == 0,
+                "the same-prompt pair has no shared output: not a double charge")
         _assert("Task" not in headers and "Model / type" not in headers, f"empty Task/Model dropped: {headers}")
         for header in ("Prompt", W.PROMPT_FULL):
             prompt_col = W.get_column_letter(headers.index(header) + 1)
@@ -1105,9 +1125,10 @@ def test_workbook_end_to_end():
         dq = {r[0]: r for r in dq_rows}
         _assert(dq[UNASSIGNED][1] == 1 and abs(dq[UNASSIGNED][2] - 999) < 0.01, "DQ Unassigned")
         _assert(dq[PENDING][1] == PENDING_ROWS and abs(dq[PENDING][2] - PENDING_TOTAL) < 0.01, "DQ Pending")
-        _assert(dq[W.DUPLICATE_LABEL][1] == 2 and abs(dq[W.DUPLICATE_LABEL][2] - 20) < 0.01, "DQ duplicates")
+        _assert(dq[W.DUPLICATE_LABEL][1] == 0, "DQ: no double charges (no shared output)")
+        _assert(list(wb[W.QUALITY].tables)[0] == "tblDataQuality", "Data Quality issues table first")
         _assert(dq[W.ZERO_MISSED][1] == 1, "DQ: Kling's clamped row is charged with 0 credits")
-        _assert(dq[W.NOT_CAPTURED][1] == 2 and "Suno 1" in dq[W.NOT_CAPTURED][3] and "Flow 1" in dq[W.NOT_CAPTURED][3],
+        _assert(dq[W.NOT_CAPTURED][1] == 2 and "Suno 1" in dq[W.NOT_CAPTURED][4] and "Flow 1" in dq[W.NOT_CAPTURED][4],
                 "DQ: Suno and Flow rows are 'cost not captured'")
         if datetime.now() > datetime(2026, 10, 6):
             _assert(dq[W.STALE_PENDING][1] == PENDING_ROWS, "DQ: every seeded pending row is over 24 h old")
@@ -1164,8 +1185,8 @@ def _assert_month_consistency(wb, model):
     """Month Drill-down total = Monthly Trend row = SUM of the month's Charged log rows."""
     headers, rows = _table(wb[W.TREND], "tblTrendSummary")
     month = lambda v: datetime.strptime(_display(v), "%b %Y").strftime("%Y-%m")  # noqa: E731  (a link to Drill-down)
-    trend = {month(r[0]): r[headers.index("Credits")] for r in rows}
-    trend_gens = {month(r[0]): r[headers.index("Generations")] for r in rows}
+    trend = {month(r[0]): r[headers.index("Credits used")] for r in rows}
+    trend_gens = {month(r[0]): r[headers.index("Items generated")] for r in rows}
     drill = {}
     for row in wb["Month Drill-down"].iter_rows(values_only=True):
         if row and isinstance(row[0], str) and len(row) > 4 and row[1] == "Credits":
@@ -1239,12 +1260,12 @@ def test_period_explorer_recalc(path, wb):
     headers, rows = _table(wb[W.TREND], "tblTrendSummary")
     sept = next(r for r in rows if _display(r[0]) == "Sep 2026")
     one_month = _recalc(_with_inputs(path, B5=datetime(2026, 9, 1), B6=datetime(2026, 9, 30)))
-    _close(one_month[W.PERIOD]["B20"].value, sept[headers.index("Credits")], "From/To = Sep -> Sep's Monthly Trend total")
+    _close(one_month[W.PERIOD]["B20"].value, sept[headers.index("Credits used")], "From/To = Sep -> Sep's Monthly Trend total")
 
     dh, drows = _table(wb[W.DEPT])
     design = next(r for r in drows if _display(r[0]) == "Design")
     dept = _recalc(_with_inputs(path, B7="Design"))
-    _close(dept[W.PERIOD]["B20"].value, design[dh.index("Credits")], "Department = Design -> By Department row")
+    _close(dept[W.PERIOD]["B20"].value, design[dh.index("Credits used")], "Department = Design -> By Department row")
 
     pending = _recalc(_with_inputs(path, B11="Yes"))
     _assert(pending[W.PERIOD]["B20"].value > home_total, "Include Pending adds pending credits")
@@ -1260,7 +1281,7 @@ def test_period_explorer_recalc(path, wb):
             continue
         log.cell(r, ci).value = 0
         user = log.cell(r, ui).value
-        if log.cell(r, si).value is True and user not in chosen and user not in ("Unassigned",) and len(chosen) < 2:
+        if log.cell(r, si).value is True and user not in chosen and user not in (UNASSIGNED,) and len(chosen) < 2:
             chosen[user] = r
     for r in chosen.values():
         log.cell(r, ci).value = 5
@@ -1375,9 +1396,41 @@ def test_api():
     _assert('filename="credit-report_2026-10-01_to_2026-10-07.xlsx"' in r.headers["content-disposition"],
             r.headers["content-disposition"])
     _assert(b"localhost" not in r.content, "no localhost anywhere in the file")
-    r = client.get("/api/reports/credit/export.xlsx", params={"excludeTestAccounts": "false"})
-    _assert(r.status_code == 200, "exclusion can be turned off")
-    for params in ({"start": "07-10-2026"}, {"start": OCT7, "end": OCT1}, {"tool": "Nope"}):
+    from io import BytesIO
+    # Default export: the Summary is a management view, so admin and test
+    # accounts are left out unless asked for.
+    _uh, urows = _table(load_workbook(BytesIO(r.content))[W.USER])
+    _assert("Admin" not in {_display(row[0]) for row in urows}, "by default admin accounts are left out")
+    # With the option off, everyone who used a tool is there - admins too -
+    # on By User, in the log and in the totals.
+    r = client.get("/api/reports/credit/export.xlsx", params={"start": OCT1, "end": OCT7, "excludeTestAccounts": "false"})
+    _assert(r.status_code == 200, "the exclusion can be turned off")
+    everyone = load_workbook(BytesIO(r.content))
+    _uh, urows = _table(everyone[W.USER])
+    plain = lambda name: name.replace(" (deleted)", "")  # noqa: E731  (deleted users stay listed, marked)
+    listed = {plain(_display(row[0])) for row in urows}
+    with SessionLocal() as db:
+        f_all = _filters(db, exclude_test_accounts=False)
+        used = {g.user_name for g in load_groups(db, f_all)}
+    _assert(listed == used and "Admin" in listed, f"default export lists every account with usage: {sorted(used - listed)}")
+    _lh, log_rows = _log_rows(everyone[W.LOG])
+    _assert({plain(v[_lh.index("User")]) for _i, v in log_rows} == used,
+            "and every one of them is in the Generation Log")
+    _close(everyone[W.HOME]["A11"].value, CHARGED_TOTAL + ADMIN_CREDITS, "totals include admin usage when asked")
+    # Management version: three sheets (+ hidden chart data), no prompts, no log.
+    r = client.get("/api/reports/credit/export.xlsx", params={"start": OCT1, "end": OCT7, "version": "management"})
+    _assert(r.status_code == 200 and 'filename="ai-tools-management_2026-10-01_to_2026-10-07.xlsx"'
+            in r.headers["content-disposition"], f"management version: {r.status_code}")
+    mgmt = load_workbook(BytesIO(r.content))
+    _assert([ws.title for ws in mgmt.worksheets if ws.sheet_state == "visible"] == list(WS.MANAGEMENT_SHEETS),
+            f"management sheets {mgmt.sheetnames}")
+    _assert(INJECTION.encode() not in r.content and b"a cat on the moon" not in r.content, "no prompts in it")
+    if not __import__("utils.credit_report", fromlist=["soffice_path"]).soffice_path():
+        _assert(client.get("/api/reports/credit/export.xlsx",
+                           params={"start": OCT1, "end": OCT7, "version": "management", "format": "pdf"}).status_code == 503,
+                "PDF without LibreOffice: 503")
+    for params in ({"start": "07-10-2026"}, {"start": OCT7, "end": OCT1}, {"tool": "Nope"}, {"version": "x"},
+                   {"format": "pdf"}, {"format": "doc", "version": "management"}):
         _assert(client.get("/api/reports/credit/export.xlsx", params=params).status_code == 400, f"rejects {params}")
     opts = client.get("/api/reports/credit/options").json()
     _assert(opts["dashboardUrl"] == DASHBOARD, "options report the link base")
