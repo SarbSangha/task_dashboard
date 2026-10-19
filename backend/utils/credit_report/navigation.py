@@ -50,6 +50,7 @@ DEPT = "By Department"
 USER = "By User"
 TOOL = "By Tool"
 CLIENT = "By Client"
+TOOL_MIX = "Tool Mix"
 DEPT_TOOL = "Dept × Tool"
 USER_TOOL = "User × Tool"
 USER_CLIENT = "User × Client"
@@ -60,7 +61,8 @@ LOG = "Generation Log"
 
 #: The one place a sheet's parent is defined (breadcrumbs and "⬅ Back to").
 SHEET_PARENT = {
-    PERIOD: HOME, BY_DATE: HOME, DEPT: HOME, USER: HOME, TOOL: HOME, CLIENT: HOME, TREND: HOME, QUALITY: HOME,
+    PERIOD: HOME, BY_DATE: HOME, DEPT: HOME, USER: HOME, TOOL: HOME, CLIENT: HOME, TOOL_MIX: HOME, TREND: HOME,
+    QUALITY: HOME,
     DEPT_TOOL: DEPT, USER_TOOL: DEPT_TOOL,
     USER_CLIENT: USER, LOG: USER_CLIENT,
     DRILL: TREND,
@@ -70,6 +72,7 @@ SHEET_PARENT = {
 #: fit the back columns, so no label is ever cut.
 SHORT_NAME = {
     HOME: "Home", PERIOD: "Explorer", BY_DATE: "Date", DEPT: "Dept", USER: "User", TOOL: "Tool", CLIENT: "Client",
+    TOOL_MIX: "Mix",
     DEPT_TOOL: "Dept×Tool", USER_TOOL: "U×Tool", USER_CLIENT: "U×Client", TREND: "Trend",
     DRILL: "Drill-down", QUALITY: "Data Quality", LOG: "Log",
 }
@@ -78,7 +81,9 @@ TITLE_ROW = 2
 HEADER_ROW_FOR_BACK = 4           # back-column headers sit in the sheets' table header row
 TITLE_BACK_FIRST_COL = 3          # title-row back cells start at C2 (the title overflows into B)
 BACK_COL_WIDTH = 17
-MAX_BACK_LABEL = 21                # longest fixed label: "⬅ Data Quality (list)" (fits width 17 at size 9)
+# Longest back label that keeps its item ("⬅ Dept: New-business pitches"); columns are widened to fit
+# (fit.py), so two long items in one row never collapse into the same bare "⬅ Dept".
+MAX_BACK_LABEL = 45
 LIST_SUFFIX = " (list)"
 #: Link labels that name an action rather than the cell they land on
 #: ("Open block →", "Generations (48) →"); a back link to one is named after

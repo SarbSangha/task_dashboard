@@ -331,6 +331,10 @@ export const reportsAPI = {
 // "credit_report" Section Access grant; see backend/routers/credit_report_router.py.
 export const creditReportAPI = {
   options: async () => (await api.get('/api/reports/credit/options', { timeout: REPORTS_TIMEOUT_MS })).data,
+  liveSheet: async (params = {}, requestConfig = {}) =>
+    (await api.get('/api/reports/credit/live-sheet', withParams(params, requestConfig))).data,
+  seedDemo: async () =>
+    (await api.post('/api/reports/credit/seed-demo', {}, { timeout: REPORTS_TIMEOUT_MS })).data,
   exportXlsx: async (params = {}) =>
     api.get('/api/reports/credit/export.xlsx', { params, responseType: 'blob', timeout: 300000 }),
   // Fresh URL for a Generation Log "Open output" link (any signed-in user).

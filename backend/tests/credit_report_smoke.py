@@ -350,7 +350,9 @@ def test_model():
     bob = model.user(IDS["Bob"])
     _close(bob.client_rate, 0.5, "Bob: 2 of 4 charged generations have a client")
     _close(bob.totals.credits_per_generation, 1035 / 4, "credits per generation")
-    _assert(bob.top_tool.keys == ("Epidemic Sound",) and bob.top_tool.generations == 1, "top tool with gens")
+    # Most used tool = most items (never credits): one item each with four tools is a four-way tie.
+    _assert(bob.top_tool.keys == ("ElevenLabs", "Epidemic Sound", "Freepik", "Suno") and bob.top_tool.generations == 1,
+            f"top tool by items, ties together: {bob.top_tool}")
     suno = next(t for t in model.tools if t.name == "Suno")
     _assert(suno.cost_note.startswith("Fixed price per song"), "Suno: priced by an admin setting")
     _assert(model.clients[-1].name == NO_CLIENT, "No client sorts last")
@@ -399,6 +401,82 @@ def test_block_rules():
             "more than 60 dates are grouped by Monday-start week, totals kept")
     _assert(not date_rows(dict(list(days.items())[:60]))[1], "60 dates stay daily")
     print("ok  block rules: most used, mostly works on client, weekly above 60 dates")
+
+
+def test_mix_rules():
+    """Tool mix wording: most / least by items, ties together, a single tool, whole % adding to 100,
+    one sentence per month."""
+    from types import SimpleNamespace as NS
+    from utils.credit_report import mix as M
+    from utils.credit_report import workbook_blocks as WB
+    from utils.credit_report import workbook_mix as WM
+    from utils.credit_report.blocks import Agg, DayRow
+
+    for counts in ({"a": 1, "b": 1, "c": 1}, {"a": 2, "b": 1}, {"a": 399, "b": 12, "c": 8}, {"a": 7}):
+        pcts = M.whole_percents(counts)
+        _assert(sum(pcts.values()) == 100 and all(isinstance(v, int) for v in pcts.values()), f"% add to 100: {pcts}")
+    _assert(M.whole_percents({"a": 1, "b": 1, "c": 1}) == {"a": 34, "b": 33, "c": 33}, "largest remainder, stable")
+    _assert(M.whole_percents({"a": 0, "b": 0}) == {"a": 0, "b": 0}, "nothing generated: 0%")
+    tiny = M.split({"ElevenLabs": 920, "Suno": 1})
+    _assert(M.chain(tiny) == "ElevenLabs 100% · Suno <1%", f"a used tool is never 0%: {M.chain(tiny)}")
+    _assert(M.most_least(tiny) == "Most used tool: ElevenLabs (100%); least used: Suno (<1%)", M.most_least(tiny))
+    _assert(M.pct_text(0, 0) == "0%" and M.pct_text(0, 3) == "<1%" and M.pct_text(7, 3) == "7%", "pct_text")
+    from utils.credit_report.blocks import Agg as _Agg
+    run = _Agg(rows=32, gens=1, pending=31)
+    _assert(WM.day_cell_label(1, "Suno", run) == "1 Suno (+31 pending) →", WM.day_cell_label(1, "Suno", run))
+    _assert(WM.day_cell_label(25, "Kling", _Agg(rows=27, gens=25, pending=1, failed=1)) ==
+            "25 Kling (+1 pending · +1 failed) →", "pending and failed named")
+    _assert(WM.day_cell_label(4, "Kling", _Agg(rows=4, gens=4)) == "4 Kling →", "charged only")
+
+    mix = M.split({"Kling": 241, "Freepik": 157, "HeyGen": 4}, {"Kling": 12900.0, "Freepik": 5100.0, "HeyGen": 240.0})
+    _assert(M.most_least(mix) == "Most used tool: Kling (60%); least used: HeyGen (1%)", M.most_least(mix))
+    _assert(M.chain(mix) == "Kling 60% · Freepik 39% · HeyGen 1%", M.chain(mix))
+    _assert([M.label(s, mix) for s in mix] == ["Most used", "", "Least used"], "row labels")
+    # Credits never rank: fewer credits but more items wins.
+    by_items = M.split({"Kling": 5, "Freepik": 9}, {"Kling": 900.0, "Freepik": 50.0})
+    _assert(M.most(by_items)[0].name == "Freepik", "most used = most items, not most ₹ or credits")
+
+    single = M.split({"Kling": 30})
+    _assert(M.most_least(single) == "Only tool used: Kling (100%)" and M.least(single) == [], M.most_least(single))
+    _assert(M.label(single[0], single) == "Only tool used" and WB.least_text(single) == M.ONLY_TOOL, "single tool")
+    _assert(M.used_most_then(single) == "Used only Kling (100%).", M.used_most_then(single))
+
+    tie = M.split({"Kling": 10, "Freepik": 10, "HeyGen": 2})
+    # Tied items stay together even when whole % (adding to 100) differ by one point.
+    _assert(M.most_least(tie) == "Most used tool: Freepik and Kling (46%, 45%); least used: HeyGen (9%)",
+            M.most_least(tie))
+    even = M.split({"Kling": 2, "Freepik": 2})
+    _assert(M.with_pct(even) == "Freepik and Kling (50% each)", M.with_pct(even))
+    _assert(WB.count_pct(tie).startswith("Freepik and Kling (10 each"), WB.count_pct(tie))
+    low_tie = M.split({"Kling": 10, "Freepik": 1, "HeyGen": 1})
+    _assert(M.most_least(low_tie).endswith("least used: Freepik and HeyGen (9%, 8%)"), M.most_least(low_tie))
+    all_tied = M.split({"Kling": 3, "Freepik": 3})
+    _assert(M.least(all_tied) == [] and "(all 2 tied)" in M.most_least(all_tied) and
+            WB.least_text(all_tied) == "— (all tied)", M.most_least(all_tied))
+
+    three = M.split({"Kling": 379, "Freepik": 12, "HeyGen": 8})
+    _assert(M.used_most_then(three) == "Used Kling most (95%), then Freepik (3%) and HeyGen (2%). Least used: HeyGen.",
+            M.used_most_then(three))
+
+    # One sentence per month, each with that month's own split.
+    def agg(n, rs):
+        a = Agg()
+        a.add(n, CHARGED, 0.0, None, rs)
+        return a
+    d = NS(month_total={"2026-09": agg(4, 40.0), "2026-10": agg(10, 100.0)},
+           month_tools={("2026-09", "Freepik"): agg(4, 40.0), ("2026-10", "Kling"): agg(9, 90.0),
+                        ("2026-10", "HeyGen"): agg(1, 10.0)})
+    user = NS(label="Kushi Saini", department="Internal Brands")
+    model = NS(user=lambda _uid: user)
+    sep, oct_ = WM.month_sentence(model, 1, d, "2026-09"), WM.month_sentence(model, 1, d, "2026-10")
+    _assert(sep == "Sep 2026 — Kushi Saini (Internal Brands): 4 items, ₹40. Used only Freepik (100%).", sep)
+    _assert(oct_ == "Oct 2026 — Kushi Saini (Internal Brands): 10 items, ₹100. Used Kling most (90%), then HeyGen "
+                    "(10%). Least used: HeyGen.", oct_)
+    days = {date(2026, 10, 7): DayRow(date(2026, 10, 7), gens=52, items={"Kling": 47, "Freepik": 5}),
+            date(2026, 10, 6): DayRow(date(2026, 10, 6), gens=30, items={"Kling": 30})}
+    note = WM.busiest_note(NS(days=days), list(days))
+    _assert(note == "Busiest day: 07 Oct (52 items, mostly Kling)", note)
+    print("ok  tool mix rules: most / least by items, ties, single tool, % = 100, one sentence per month")
 
 
 def test_log_columns_dropped_when_empty():
@@ -641,10 +719,14 @@ def _validate_blocks(wb):
 
     def key(r, kind):
         k = (r[li["User"]], r[li["Tool"]])
+        if kind == "month":
+            return k + (r[li["Month"]],)
+        if kind == "day":
+            return k + (r[li["Date"]],)
         return k + (r[li["Date"]], r[li["Client"]]) if kind == "run" else (k[0],) if kind == "user" else k
 
     def run(start, kind):
-        i = start if kind == "run" else start + 1
+        i = start if kind in ("run", "month", "day") else start + 1
         first = None
         out = []
         while i in rows:
@@ -666,10 +748,46 @@ def _validate_blocks(wb):
         return len(rs), status.count(PENDING), status.count(FAILED), \
             sum(float(r[li["Credits"]] or 0) for r in rs if r[li["Charged"]] is True)
 
-    runs = 0
+    def first_of_run(r0, kind):
+        prev = rows.get(r0 - 1)
+        return is_data(rows[r0]) and (prev is None or not is_data(prev) or key(prev, kind) != key(rows[r0], kind))
+
+    letter = {h: W.get_column_letter(i + 1) for h, i in li.items()}
+    month_col, day_col = letter[W.LOG_BACK_MIX_MONTH], letter[W.LOG_BACK_MIX_DAY]
+    # Items shown beside a link: charged rows of its run (By Client's Date › Person › Tool, Tool Mix's split).
+    item_cols = {(W.CLIENT, letter[W.LOG_BACK_CLIENT_DAY]): "D", (W.TOOL_MIX, month_col): "B"}
+    runs = months_checked = day_cells = 0
     credit_cols = {(W.USER, "A"): "C", (W.USER, "C"): "E", (W.TOOL, "B"): "D", (W.TOOL, "D"): "E",
                    (W.BY_DATE, "F"): "E"}
-    for sheet_name in (W.USER, W.TOOL, W.USER_CLIENT, W.BY_DATE):
+    mix_cell_re = re.compile(r"^(?P<n>[\d,]+) (?P<tool>.+?)(?: \((?:\+(?P<p>[\d,]+) pending)?(?: · )?"
+                             r"(?:\+(?P<f>[\d,]+) failed)?\))? →$")
+    for ws in (wb[W.TOOL_MIX],):
+        # Tool Mix day cells: "<n> <tool> →" opens that person's (user, tool, day) run: n charged rows of that tool.
+        for row in ws.iter_rows(min_row=W.FIRST_DATA_ROW):
+            for cell in row:
+                target = _internal(cell.value) if isinstance(cell.value, str) else None
+                if not target or target[0] != W.LOG:
+                    continue
+                m = mix_cell_re.match(_display(cell.value))
+                if not m:
+                    continue
+                where = f"{ws.title}!{cell.coordinate} '{_display(cell.value)}'"
+                r0 = int(re.sub(r"[A-Z]", "", target[1]))
+                _assert(re.sub(r"\d", "", target[1]) == day_col and first_of_run(r0, "day"),
+                        f"{where}: first row of its (user, tool, day) run")
+                rs = run(r0, "day")
+                charged = [r for r in rs if r[li["Charged"]] is True]
+                num = lambda g: int((m.group(g) or "0").replace(",", ""))  # noqa: E731
+                _n, n_p, n_f, _cr = counts(rs)
+                _assert(len(charged) == num("n") and rs[0][li["Tool"]] == m.group("tool"),
+                        f"{where}: run has {len(charged)} charged {rs[0][li['Tool']]} rows")
+                # The label names every row the link opens: charged + pending + failed.
+                _assert(len(rs) == num("n") + num("p") + num("f") and n_p == num("p") and n_f == num("f"),
+                        f"{where}: opens {len(rs)} rows ({n_p} pending, {n_f} failed)")
+                back = _internal(log[target[1]].value)
+                _assert(back == (W.TOOL_MIX, cell.coordinate), f"{where}: the log's back link returns to {back}")
+                day_cells += 1
+    for sheet_name in (W.USER, W.TOOL, W.USER_CLIENT, W.BY_DATE, W.CLIENT, W.TOOL_MIX):
         ws = wb[sheet_name]
         for row in ws.iter_rows(min_row=W.FIRST_DATA_ROW):
             for cell in row:
@@ -689,6 +807,15 @@ def _validate_blocks(wb):
                 elif col in ("A", "B"):
                     _assert(not is_data(rows[r0]) and rows[r0][li["Tool"]], f"{where}: tool separator")
                     rs = run(r0, "pair")
+                elif col == month_col:
+                    # Tool Mix: that person's (user, tool, month) run - that month's rows only.
+                    _assert(first_of_run(r0, "month"), f"{where}: first row of its (user, tool, month) run")
+                    rs = run(r0, "month")
+                    nxt = rows.get(r0 + len(rs))
+                    _assert(nxt is None or not is_data(nxt) or key(nxt, "month") != key(rs[0], "month"),
+                            f"{where}: the run stops at the month's end")
+                    _assert(len({r[li["Month"]] for r in rs}) == 1, f"{where}: rows of one month only")
+                    months_checked += 1
                 else:
                     prev = rows.get(r0 - 1)
                     _assert(is_data(rows[r0]) and (prev is None or not is_data(prev) or key(prev, "run") != key(rows[r0], "run")),
@@ -704,10 +831,15 @@ def _validate_blocks(wb):
                 shown = credit_cols.get((sheet_name, col))
                 if shown and not m.group("all"):
                     _close(charged, float(ws[f"{shown}{cell.row}"].value or 0), f"{where}: credits = log run")
+                items_at = item_cols.get((sheet_name, col))
+                if items_at:
+                    n_charged = sum(1 for r in rs if r[li["Charged"]] is True)
+                    _assert(n_charged == int(ws[f"{items_at}{cell.row}"].value or 0),
+                            f"{where}: items shown = {n_charged} charged rows in the run")
                 runs += 1
 
     for i, r in rows.items():
-        for name in W.LOG_BACK_COLUMNS:
+        for name in W.LOG_BACK_COLUMNS + (W.LOG_BACK_CLIENT_DAY, W.LOG_BACK_MIX_MONTH, W.LOG_BACK_MIX_DAY):
             cell = log.cell(i, li[name] + 1)
             back = _internal(cell.value)
             if not back:
@@ -717,12 +849,13 @@ def _validate_blocks(wb):
             start = int(re.sub(r"[A-Z]", "", fwd[1]))
             _assert(start <= i and rows[start][li["User"]] == r[li["User"]],
                     f"{W.LOG}!{cell.coordinate}: back link returns to a row for another run")
-            if name in (W.LOG_BACK_DATE, W.LOG_BACK_TOOL_DATE, W.LOG_BACK_CLIENT, W.LOG_BACK_BYDATE):
+            if name in (W.LOG_BACK_DATE, W.LOG_BACK_TOOL_DATE, W.LOG_BACK_CLIENT, W.LOG_BACK_BYDATE,
+                        W.LOG_BACK_CLIENT_DAY, W.LOG_BACK_MIX_MONTH, W.LOG_BACK_MIX_DAY):
                 _assert(start == i, f"{W.LOG}!{cell.coordinate}: {name} returns to the row that opens this run")
 
     # In-block links: Date-wise / Clients rows open a "⬅" cell that returns to them.
     inner = 0
-    for sheet_name in (W.USER, W.TOOL):
+    for sheet_name in (W.USER, W.TOOL, W.CLIENT):
         ws = wb[sheet_name]
         for row in ws.iter_rows(min_row=W.FIRST_DATA_ROW):
             for cell in row:
@@ -731,7 +864,8 @@ def _validate_blocks(wb):
                     continue
                 landing = ws[target[1]]
                 if not _is_back_cell(landing) or landing.column_letter not in (WBK.TDC_DATE_BACK_COL, WBK.TDC_CLIENT_BACK_COL,
-                                                                             WBK.DUC_DATE_BACK_COL):
+                                                                             WBK.DUC_DATE_BACK_COL,
+                                                                             WBK.CLIENT_DPT_BACK_COL):
                     continue
                 back = _internal(landing.value)
                 _assert(back[0] == sheet_name and int(re.sub(r"[A-Z]", "", back[1])) == cell.row,
@@ -744,7 +878,7 @@ def _validate_blocks(wb):
         while r <= last:
             a = ws.cell(r, 1).value
             hdr = [c.value for c in ws[r + 1]] if r + 1 <= last else []
-            if isinstance(a, str) and hdr and hdr[0] in ("Tool", "Client", "Date", "Week", "User") and \
+            if isinstance(a, str) and hdr and hdr[0] in ("Tool", "Client", "Date", "Week", "User", "Person") and \
                     ws.cell(r + 1, 1).fill.fgColor.rgb in ("001F3864", "FF1F3864"):
                 body, k = [], r + 2
                 while k <= last and ws.cell(k, 1).value not in (None, ""):
@@ -760,16 +894,43 @@ def _validate_blocks(wb):
         i = headers.index(header if header in headers else W.human_header(header))
         return sum(float(b[i] or 0) for b in body if i < len(b))
 
-    blocks_seen = 0
-    for sheet_name, sections in ((W.USER, {"Tools used": "Credits", "Clients": "Credits", "Date-wise": "Total",
-                                           "Tool › Date › Client": "Credits"}),
-                                 (W.TOOL, {"Users": "Credits", "Clients": "Credits", "Date-wise": "Credits",
-                                           "Date › User › Client": "Credits"}),
-                                 (W.BY_DATE, {"Users": "Credits", "Clients": "Credits",
-                                              "User › Client › Tool": "Credits"})):
+    def pct_sum(table, header):
+        headers, body = table
+        i = headers.index(header)
+        return sum(0 if str(b[i]) == "<1%" else int(str(b[i]).rstrip("%"))
+                   for b in body if i < len(b) and b[i] not in (None, ""))
+
+    # Charged log rows per date, for By Date's per-date totals.
+    log_day_items, log_day_rupees = {}, {}
+    for _i, r in rows.items():
+        if is_data(r) and r[li["Charged"]] is True and r[li["Date"]]:
+            d = r[li["Date"]].date()
+            log_day_items[d] = log_day_items.get(d, 0) + 1
+            log_day_rupees[d] = log_day_rupees.get(d, 0.0) + float(r[li[W.RUPEES]] or 0)
+
+    ITEMS, RUP = "Items", W.RUPEES
+    blocks_seen = pct_tables = 0
+    # {section: [(table column, list column)]}: each sums to the block's list row.
+    for sheet_name, sections in ((W.USER, {"Tools used": [("Credits", "Credits used")],
+                                           "Clients": [("Credits", "Credits used")],
+                                           "Date-wise": [("Total", "Credits used")],
+                                           "Tool › Date › Client": [("Credits", "Credits used")]}),
+                                 (W.TOOL, {"Users": [("Credits", "Credits used")], "Clients": [("Credits", "Credits used")],
+                                           "Date-wise": [("Credits", "Credits used")],
+                                           "Date › User › Client": [("Credits", "Credits used")]}),
+                                 (W.BY_DATE, {"Tools that day": [(ITEMS, "Items generated"), (RUP, RUP)],
+                                              "Users": [(ITEMS, "Items generated"), (RUP, RUP)],
+                                              "Clients": [(ITEMS, "Items generated"), (RUP, RUP)],
+                                              "User › Client › Tool": [("Credits", "Credits used"),
+                                                                       ("Generations", "Items generated")]}),
+                                 (W.CLIENT, {"Tools": [(ITEMS, "Items generated"), (RUP, RUP)],
+                                             "People": [(ITEMS, "Items generated"), (RUP, RUP)],
+                                             "Date-wise": [(ITEMS, "Items generated"), (RUP, RUP)],
+                                             "Date › Person › Tool": [(ITEMS, "Items generated"), (RUP, RUP)]})):
         ws = wb[sheet_name]
         lh2, lrows = _table(ws)
-        list_credit = {_display(r[0]): float(r[lh2.index("Credits used")] or 0) for r in lrows}
+        list_value = {col: {_display(r[0]): float(r[lh2.index(col)] or 0) for r in lrows}
+                      for col in {lc for specs in sections.values() for _tc, lc in specs}}
         incoming = {}
         for s2, c2, _t2, _l in _links(wb):
             tgt = _internal(c2.value)
@@ -784,19 +945,181 @@ def _validate_blocks(wb):
             tables = tables_in(ws, h + 1, end)
             got = {}
             for title, table in tables.items():
-                for sec, header in sections.items():
+                for sec, specs in sections.items():
                     if title.startswith(sec):
-                        got[sec] = credits_of(table, header)
+                        got[sec] = [(credits_of(table, tc), lc, len(table[1])) for tc, lc in specs]
+                        pct_cols = [hd for hd in table[0] if isinstance(hd, str) and hd.startswith("% of") and
+                                    table[1] and isinstance(table[1][0][table[0].index(hd)], str)]
+                        for hd in pct_cols:
+                            # Whole-number % (largest remainder) of a non-empty split add up to exactly 100.
+                            total = pct_sum(table, hd)
+                            _assert(total in (100, 0), f"{sheet_name} {name} {sec}: {hd} adds up to {total}")
+                            pct_tables += 1
+                        if sheet_name == W.BY_DATE and sec != "User › Client › Tool":
+                            day = datetime.strptime(name, "%d %b %Y (%a)").date()
+                            _assert(round(credits_of(table, ITEMS)) == log_day_items.get(day, 0),
+                                    f"By Date {name} {sec}: items = that date's charged log rows")
+                            # The log shows each row's ₹ to the paisa: its sum may differ by half a paisa a row.
+                            gap = abs(credits_of(table, RUP) - log_day_rupees.get(day, 0.0))
+                            _assert(gap <= 0.005 * log_day_items.get(day, 0) + 0.01,
+                                    f"By Date {name} {sec}: ₹ = that date's log rows (off by {gap:.2f})")
             _assert(set(got) == set(sections), f"{sheet_name} {name}: sections {sorted(tables)}")
-            for sec, value in got.items():
-                _close(value, list_credit[name], f"{sheet_name} {name}: {sec} = list row")
+            for sec, values in got.items():
+                for value, lc, n_rows in values:
+                    if lc == RUP:
+                        # Each ₹ cell is rounded to the paisa: a sum may differ by half a paisa a row.
+                        gap = abs(value - list_value[lc][name])
+                        _assert(gap <= 0.005 * n_rows + 0.005, f"{sheet_name} {name}: {sec} ₹ = list row (off {gap:.3f})")
+                    else:
+                        _close(value, list_value[lc][name], f"{sheet_name} {name}: {sec} {lc} = list row")
             _assert(h in incoming, f"{sheet_name} {name}: no link into the block")
             _assert(any(_display(c.value).startswith("⬅ Back to") for c in ws[h]), f"{sheet_name} {name}: no way back")
             _assert(ws.row_dimensions[h + 1].outlineLevel == 1, f"{sheet_name} {name}: block is collapsible")
             blocks_seen += 1
-    _assert(runs > 0 and blocks_seen > 0 and inner > 0, "blocks checked")
-    print(f"ok  blocks: {blocks_seen} user/tool/date blocks, {runs} log runs, {inner} in-block links; "
-          "every back link round-trips")
+    _assert(runs > 0 and blocks_seen > 0 and inner > 0 and months_checked > 0 and day_cells > 0 and pct_tables > 0,
+            "blocks checked")
+    print(f"ok  blocks: {blocks_seen} user/tool/date/client blocks, {runs} log runs ({months_checked} Tool Mix month "
+          f"runs, {day_cells} day cells), {inner} in-block links, {pct_tables} % columns = 100; every back link "
+          "round-trips")
+    return months_checked
+
+
+def _sheet_tables(ws, first, last, starts=("Tool", "Date", "Person", "Client")):
+    """{title: (headers, rows)} of the titled tables between two rows."""
+    out, r = {}, first
+    while r <= last:
+        a = ws.cell(r, 1).value
+        hdr = [c.value for c in ws[r + 1]] if r + 1 <= last else []
+        if isinstance(a, str) and hdr and hdr[0] in starts and ws.cell(r + 1, 1).fill.fgColor.rgb in ("001F3864",
+                                                                                                    "FF1F3864"):
+            body, k = [], r + 2
+            while k <= last and ws.cell(k, 1).value not in (None, ""):
+                body.append([c.value for c in ws[k]])
+                k += 1
+            out[a] = (hdr, body)
+            r = k
+        r += 1
+    return out
+
+
+def _validate_tool_mix(wb, model):
+    """Tool Mix: each person-month tool split sums to that person's month on By User (model.month_user);
+    its % and % of ₹ add up to 100; every day row = the sum of its tool cells; the days add up to the
+    split; the Clients rows match By Client's list."""
+    ws = wb[W.TOOL_MIX]
+    by_label = {u.label: u.user_id for u in model.users}
+    heads = [r for r in range(W.FIRST_DATA_ROW, ws.max_row + 1)
+             if ws.cell(r, 1).fill.fgColor.rgb in ("00BDD7EE", "FFBDD7EE") and ws.cell(r, 1).value]
+    _assert(heads, "Tool Mix has person blocks")
+    months_seen = multi = 0
+    pair_months = {}
+    for k, h in enumerate(heads):
+        uid = by_label[ws.cell(h, 1).value]
+        end = (heads[k + 1] - 1) if k + 1 < len(heads) else ws.max_row
+        tables = _sheet_tables(ws, h + 1, end)
+        splits = {t.split(" tool split")[0]: v for t, v in tables.items() if " tool split" in t}
+        days = {t.split(" day by day")[0]: v for t, v in tables.items() if " day by day" in t}
+        _assert(set(splits) == set(days) and splits, f"Tool Mix {ws.cell(h, 1).value}: a split and days per month")
+        multi += len(splits) > 1
+        for month_name, (hdr, body) in splits.items():
+            month = datetime.strptime(month_name, "%b %Y").strftime("%Y-%m")
+            _c, gens, rupees = model.month_user.get((month, uid), (0.0, 0, 0.0))
+            items = sum(int(b[hdr.index("Items")]) for b in body)
+            _assert(items == gens, f"Tool Mix {uid} {month}: split {items} items = By User month {gens}")
+            gap = abs(sum(float(b[hdr.index(W.RUPEES)] or 0) for b in body) - rupees)
+            _assert(gap <= 0.005 * len(body) + 0.005, f"Tool Mix {uid} {month}: ₹ off by {gap:.3f}")
+            for col in ("%", "% of ₹"):
+                total = sum(0 if b[hdr.index(col)] == "<1%" else int(str(b[hdr.index(col)]).rstrip("%"))
+                            for b in body if b[hdr.index(col)] != "—")
+                _assert(total == 100 or (col == "% of ₹" and total == 0), f"Tool Mix {uid} {month}: {col} = {total}")
+            dh, dbody = days[month_name]
+            tools = [_display(b[0]) for b in body]
+            for t in tools:
+                pair_months.setdefault((uid, t), set()).add(month)
+            for b in dbody:
+                cells = [b[dh.index(t)] for t in tools]
+                n = sum(int(_display(c).split(" ")[0].replace(",", "")) if isinstance(c, str) else int(c or 0)
+                        for c in cells)
+                _assert(n == int(b[dh.index("Items")]), f"Tool Mix {uid} {month} {b[0]}: day = sum of tool cells")
+            _assert(sum(int(b[dh.index("Items")]) for b in dbody) == items, f"Tool Mix {uid} {month}: days = split")
+            months_seen += 1
+    clients = {_display(r[0]): r for r in _table(wb[W.CLIENT])[1]}
+    mh, mrows = _table(ws, "tblMixClients")
+    ch = _table(wb[W.CLIENT])[0]
+    for r in mrows:
+        _assert(int(r[mh.index("Items")]) == int(clients[r[0]][ch.index("Items generated")]),
+                f"Tool Mix client {r[0]}: items = By Client")
+    both = sum(1 for v in pair_months.values() if len(v) > 1)
+    print(f"ok  tool mix: {len(heads)} people, {months_seen} person-months ({multi} people with several months, "
+          f"{both} person-tools in several months) reconcile with By User; % = 100; days = tool cells = split")
+    return both
+
+
+def _assert_number_formats_applied(path):
+    """Every cell style with a number format (dates, ₹, counts) tells Excel to apply it:
+    without applyNumberFormat="1" some Excel versions show 46294 for a date and 1.52 for ₹1.52."""
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        xml = z.read("xl/styles.xml").decode("utf-8")
+    body = re.search(r"<cellXfs\b[^>]*>(.*?)</cellXfs>", xml, re.S).group(1)
+    xfs = re.findall(r"<xf\b[^>]*>", body)
+    missing = [x for x in xfs if not re.search(r'numFmtId="0"', x) and 'applyNumberFormat="1"' not in x]
+    for attr, flag in (("fontId", "applyFont"), ("fillId", "applyFill"), ("borderId", "applyBorder")):
+        missing += [x for x in xfs if re.search(rf'{attr}="[1-9]\d*"', x) and f'{flag}="1"' not in x]
+    _assert(xfs and not missing, f"{len(missing)} of {len(xfs)} cell styles lack an apply flag: {missing[:3]}")
+    return len(xfs)
+
+
+def _assert_no_cut_labels(wb, skip=(W.LOG,)):
+    """No visible text (a value or a link's label) is longer than the room it has: its column plus the empty
+    cells it spills into. Wrapped, shrink-to-fit and merged cells are exempt. The Generation Log's prompt / model previews
+    are cut by design."""
+    cut = []
+    for ws in wb.worksheets:
+        if ws.title in skip or ws.sheet_state != "visible":
+            continue
+        merged = {c for rng in ws.merged_cells.ranges for row in ws.iter_rows(min_row=rng.min_row, max_row=rng.max_row,
+                  min_col=rng.min_col, max_col=rng.max_col) for c in [x.coordinate for x in row]}
+        widths = {}
+
+        def width(col):
+            if col not in widths:
+                widths[col] = ws.column_dimensions[W.get_column_letter(col)].width or 8.43
+            return widths[col]
+
+        for row in ws.iter_rows():
+            values = [c.value for c in row]
+            for i, cell in enumerate(row):
+                if not isinstance(cell.value, str) or cell.coordinate in merged or \
+                        (cell.alignment and (cell.alignment.wrap_text or cell.alignment.shrink_to_fit)):
+                    continue
+                if cell.value.startswith("=") and not cell.value.startswith("=HYPERLINK("):
+                    continue
+                text = _display(cell.value)
+                rest = values[i + 1:]
+                if not any(v not in (None, "") for v in rest):
+                    continue                                   # nothing to its right: shows in full
+                room, j = width(i + 1), i + 1
+                while j < len(values) and values[j] in (None, ""):
+                    room += width(j + 1)
+                    j += 1
+                if len(text) > room:
+                    cut.append(f"{ws.title}!{cell.coordinate} '{text[:40]}' ({len(text)} > {room:.0f})")
+    _assert(not cut, f"{len(cut)} cut-off labels: {cut[:8]}")
+
+
+def _assert_no_zero_pct_for_used(wb):
+    """A share that was used never reads 0%: '<1%' instead ('ElevenLabs 100% · Suno <1%')."""
+    bad = []
+    zero = re.compile(r"(?:^|· |\()\D[^·()]*? 0%|\(0%\)| 0% each")
+    for ws in wb.worksheets:
+        if ws.title == W.LOG:
+            continue
+        for row in ws.iter_rows(values_only=True):
+            for v in row:
+                if isinstance(v, str) and not v.startswith("=") and zero.search(v):
+                    bad.append(f"{ws.title}: {v[:60]}")
+    _assert(not bad, f"{len(bad)} used shares shown as 0%: {bad[:5]}")
 
 
 def _freeze_col(ws) -> int:
@@ -1087,6 +1410,11 @@ def test_workbook_end_to_end():
               f"{tops} top users follow one rule")
 
         _validate_blocks(wb)
+        _validate_tool_mix(wb, model)
+        styles = _assert_number_formats_applied(path)
+        _assert_no_cut_labels(wb)
+        _assert_no_zero_pct_for_used(wb)
+        print(f"    display: {styles} cell styles apply their formats; no cut-off labels; no used share shown as 0%")
 
         # By Department: a department name opens its block, whose People are
         # exactly its users and add up to its credits; Tools add up too.
@@ -1140,8 +1468,12 @@ def test_workbook_end_to_end():
                 and int(re.sub(r"[A-Z]", "", home_back[1])) == W.FIRST_DATA_ROW + W.QUALITY_ISSUES.index(W.EXCLUDED),
                 f"Home row 5 has a back link to its Data Quality row: {home_back}")
         qa_headers, qa_rows = _table(home, "tblQuickAnswers")
-        _assert(len(qa_rows) <= 11 and not any("top user on" in (r[0] or "").lower() for r in qa_rows),
+        _assert(len(qa_rows) <= 13 and not any("top user on" in (r[0] or "").lower() for r in qa_rows),
                 f"{len(qa_rows)} quick answers, no per-tool rows")
+        questions = {r[0] for r in qa_rows}
+        for q in ("Which tool did a person use most this month?", "Which tools were used for a client?",
+                  "What happened on a particular date?"):
+            _assert(q in questions, f"Home quick answer: {q}")
         home_text = " ".join(str(c.value) for row in home.iter_rows() for c in row if c.value)
         _assert("Excluded: Admin, RoleAdmin" in home_text, "exclusion setting printed on Home")
         _assert(f"Output links open on {DASHBOARD}" in home_text.replace("  ", " ") or DASHBOARD in home_text,
@@ -1309,6 +1641,12 @@ def test_trend_filtered_and_empty_workbooks():
         _assert_no_banned_functions(wb)
         test_period_explorer_recalc(path, wb)
         _validate_blocks(wb)
+        # Two months: a person who used one tool in both gets a "Generations (n) →" per month, each opening
+        # only that month's rows (checked run by run in _validate_blocks).
+        _assert(_validate_tool_mix(wb, model) > 0, "a person used the same tool in both September and October")
+        _assert_number_formats_applied(path)
+        _assert_no_cut_labels(wb)
+        _assert_no_zero_pct_for_used(wb)
 
         _build(path, department="Design", client="Acme")
         wb = load_workbook(path)
@@ -1450,6 +1788,7 @@ def main() -> int:
     test_duplicate_detection()
     test_log_columns_dropped_when_empty()
     test_block_rules()
+    test_mix_rules()
     test_workbook_end_to_end()
     test_trend_filtered_and_empty_workbooks()
     test_api()

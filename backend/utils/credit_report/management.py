@@ -69,14 +69,16 @@ def pct(part: float, whole: float) -> int:
 
 
 def change_text(cur: float, prev: Optional[float]) -> str:
-    """'▲ 12%', '▼ 5%', '— no change', or 'new' (nothing before)."""
+    """'▲ 12%', '▼ 5%', '▲ <1%' (a real change that rounds to 0), '— no change' (equal), or 'new'."""
     if prev is None:
         return "—"
     if not prev:
         return "new" if cur else "—"
     change = (cur - prev) / prev * 100.0
     if round(change) == 0:
-        return "— no change"
+        if round(cur - prev, 2) == 0:
+            return "— no change"
+        return f"{'▲' if change > 0 else '▼'} <1%"
     return f"{'▲' if change > 0 else '▼'} {abs(round(change))}%"
 
 

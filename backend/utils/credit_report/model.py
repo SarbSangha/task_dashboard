@@ -9,8 +9,10 @@ the trend sheet and the Generation Log reconcile exactly.
 * "Credits" and "Generations" everywhere mean Charged rows only. Pending
   credits are a separate figure; Failed / Refunded only appear in Data
   Quality and the log.
-* "Top" answers rank by credits, then generations. Anything still level on
-  both is a tie and every tied name is reported.
+* "Top" users, departments and clients rank by credits, then generations.
+  A "top / most used tool" ranks by items generated (credits of different
+  tools are different units), with its ₹ beside it. Anything still level is
+  a tie and every tied name is reported.
 * The owner-less "Unassigned" user is a bucket, not a person: it is listed
   and counted everywhere but never ranked or named as a "top user".
 """
@@ -36,6 +38,7 @@ class Top:
     keys: tuple
     credits: float = 0.0
     generations: int = 0
+    rupees: float = 0.0
 
     def __bool__(self) -> bool:
         return bool(self.keys)
@@ -54,6 +57,16 @@ def top_of(stats: dict, name_of=lambda k: str(k)) -> Top:
     keys = sorted((k for k, v in stats.items() if _key(*v) == best), key=lambda k: name_of(k).lower())
     credits, gens = stats[keys[0]]
     return Top(tuple(keys), credits, gens)
+
+
+def top_by_items(stats: dict, name_of=lambda k: str(k)) -> Top:
+    """Keys tied for the most items generated: {key: (items, rupees)}."""
+    stats = {k: v for k, v in stats.items() if v[0] > 0}
+    if not stats:
+        return Top(())
+    best = max(v[0] for v in stats.values())
+    keys = sorted((k for k, v in stats.items() if v[0] == best), key=lambda k: name_of(k).lower())
+    return Top(tuple(keys), 0.0, best, stats[keys[0]][1])
 
 
 def top_keys(stats: dict, name_of=lambda k: str(k)) -> list:
@@ -215,7 +228,7 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
     by_dept: dict = defaultdict(Totals)
     by_tool: dict = defaultdict(Totals)
     by_client: dict = defaultdict(Totals)
-    pair: dict = defaultdict(lambda: defaultdict(lambda: [0.0, 0]))   # pair[kind][(a, b)] = [credits, gens]
+    pair: dict = defaultdict(lambda: defaultdict(lambda: [0.0, 0, 0.0]))   # pair[kind][(a, b)] = [credits, gens, ₹]
     month_tool: dict = defaultdict(lambda: [0.0, 0, 0.0])
     month_dept: dict = defaultdict(lambda: [0.0, 0, 0.0])
     month_user: dict = defaultdict(lambda: [0.0, 0, 0.0])
@@ -246,6 +259,7 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
         ):
             pair[kind][key][0] += g.credits
             pair[kind][key][1] += g.generations
+            pair[kind][key][2] += g.rupees
         for store, key in ((month_tool, g.tool), (month_dept, g.department), (month_user, g.user_id),
                            (month_client, g.client)):
             cell = store[(g.month, key)]
@@ -253,11 +267,15 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
             cell[1] += g.generations
             cell[2] += g.rupees
 
+    def tools_of(kind, first):
+        """A "most used tool" answer: by items, ₹ beside it."""
+        return top_by_items({k[1]: (v[1], v[2]) for k, v in pair[kind].items() if k[0] == first})
+
     def name_of_user(uid):
         return meta[uid].user_name
 
     def slice_(kind, first, *, people_only=False):
-        out = {k[1]: tuple(v) for k, v in pair[kind].items() if k[0] == first}
+        out = {k[1]: (v[0], v[1]) for k, v in pair[kind].items() if k[0] == first}
         if people_only:
             out.pop(UNASSIGNED_USER_ID, None)
         return out
@@ -283,7 +301,7 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
             share=0.0,
             company_rank=company_ranks.get(uid, "—"),
             department_rank=dept_ranks.get(uid, "—"),
-            top_tool=top_of(slice_("user_tool", uid)),
+            top_tool=tools_of("user_tool", uid),
             top_client=top_of(named) or top_of(clients),
         ))
     for u in users:
@@ -298,7 +316,7 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
                              top_user=top_of(slice_(user_kind, name), name_of_user),
                              top_named_user=top_of(slice_(user_kind, name, people_only=True), name_of_user))
             for attr, kind in extra.items():
-                setattr(row, attr, top_of(slice_(kind, name)))
+                setattr(row, attr, tools_of(kind, name) if attr == "top_tool" else top_of(slice_(kind, name)))
             rows.append(row)
         rows.sort(key=lambda r: (-round(r.totals.credits, 4), -r.totals.generations, r.name.lower()))
         return rows
@@ -348,4 +366,5 @@ def build_model(groups: Iterable[FactGroup], excluded: dict = None) -> ReportMod
     )
 
 
-__all__ = ["CHARGED", "PENDING", "FAILED", "ReportModel", "build_model", "top_of", "top_keys", "competition_ranks"]
+__all__ = ["CHARGED", "PENDING", "FAILED", "ReportModel", "build_model", "top_of", "top_by_items", "top_keys",
+           "competition_ranks"]

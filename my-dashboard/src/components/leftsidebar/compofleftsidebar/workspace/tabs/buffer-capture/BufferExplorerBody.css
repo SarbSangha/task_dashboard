@@ -22,12 +22,12 @@
 }
 
 .buffer-section-tab:hover {
-  color: var(--color-text-primary, #0f172a);
+  color: var(--color-text-primary, #131316);
 }
 
 .buffer-section-tab.active {
-  color: var(--color-primary-strong, #2563eb);
-  border-bottom-color: var(--color-primary-strong, #2563eb);
+  color: var(--color-primary-strong, #059669);
+  border-bottom-color: var(--color-primary-strong, #059669);
 }
 
 .buffer-filter-row {
@@ -58,8 +58,8 @@
 }
 
 .buffer-filter-chip.active {
-  background: var(--color-primary-strong, #2563eb);
-  border-color: var(--color-primary-strong, #2563eb);
+  background: var(--color-primary-strong, #059669);
+  border-color: var(--color-primary-strong, #059669);
   color: #fff;
 }
 

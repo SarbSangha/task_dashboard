@@ -13,8 +13,6 @@ import AdminQueueButton from './compofleftsidebar/adminqueue/AdminQueueButton';
 import TrendingsButton from './compofleftsidebar/trending/TrendingsButton';
 import BufferButton from './compofleftsidebar/buffer/BufferButton';
 import ReportsButton from './compofleftsidebar/ReportsButton';
-import TaskReportButton from './compofleftsidebar/TaskReportButton';
-import CreditReportButton from './compofleftsidebar/CreditReportButton';
 import SheetActivityButton from './compofleftsidebar/SheetActivityButton';
 import SheetsButton from './compofleftsidebar/SheetsButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
@@ -402,34 +400,16 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
           </div>
           )}
 
-          {/* ── ANALYTICS (admin only) ── */}
-          {isAdmin && (
+          {/* ── REPORTS (Unified 1-Click Section) ── */}
+          {(isAdmin || canViewCreditReport) && (
             <div className="nav-section">
               <div className="nav-section-header">
-                <span className="nav-section-label">Analytics</span>
+                <span className="nav-section-label">Reports</span>
               </div>
 
               <ReportsButton
-                isActive={activeItem === 'reports'}
-                onClick={openReports}
-              />
-              <TaskReportButton
-                isActive={activeItem === 'task-report'}
-                onClick={openTaskReport}
-              />
-            </div>
-          )}
-
-          {/* ── TESTING REPORT (Section Access grant) ── */}
-          {canViewCreditReport && (
-            <div className="nav-section">
-              <div className="nav-section-header">
-                <span className="nav-section-label">Testing Report</span>
-              </div>
-
-              <CreditReportButton
-                isActive={activeItem === 'credit-report'}
-                onClick={openCreditReport}
+                isActive={activeItem === 'reports' || activeItem === 'credit-report' || activeItem === 'task-report'}
+                onClick={isAdmin ? openReports : openCreditReport}
               />
             </div>
           )}

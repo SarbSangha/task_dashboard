@@ -15,9 +15,9 @@ into and out of it - be decided before a single row is written:
     client) is one contiguous run of rows.
 
 Definitions used everywhere:
-* "Most used" = most Charged credits, ties broken by generations; when
-  every candidate has 0 credits (free tools), by generations - and the
-  text says so.
+* "Most used tool" = most items generated (Charged); ₹ only orders a tie
+  (see mix.py). Credits of different tools are never compared; users
+  within one tool are still ranked by that tool's credits.
 * "Mostly works on client" = the client with the most Charged credits,
   ignoring "No client" unless it is the only one, with its share.
 """
@@ -65,8 +65,17 @@ class Agg:
 
 
 def usage_key(name: str, agg: Agg):
-    """Sort key for "most used": credits, then generations, then rows."""
+    """Sort key within one tool's units: credits, then generations, then rows."""
     return (-round(agg.credits, 4), -agg.gens, -agg.rows, str(name).lower())
+
+
+def items_key(name: str, agg: Agg):
+    """Sort key for "most used" across tools: items, then ₹, then rows."""
+    return (-agg.gens, -round(agg.rupees, 2), -agg.rows, str(name).lower())
+
+
+def month_of(day: Optional[date]) -> Optional[str]:
+    return f"{day:%Y-%m}" if day else None
 
 
 @dataclass
@@ -76,10 +85,14 @@ class Pick:
     agg: Optional[Agg]
     share: float = 0.0
     by_generations: bool = False
+    by_items: bool = False
 
     def text(self) -> str:
         if not self.name:
             return "—"
+        if self.by_items:
+            a = self.agg
+            return f"{self.name} ({self.share:.0%} of items; {a.gens:,} item{'' if a.gens == 1 else 's'} · ₹{a.rupees:,.0f})"
         basis = "of generations, no credits recorded" if self.by_generations else "of credits"
         return (f"{self.name} ({self.share:.0%} {basis}; {self.agg.credits:,.2f} credits · "
                 f"{self.agg.gens:,} gen{'' if self.agg.gens == 1 else 's'})")
@@ -96,6 +109,16 @@ def pick_most_used(items: dict, total: Agg, *, skip: str = None) -> Pick:
     return Pick(name, agg, (agg.gens / total.gens) if total.gens else 0.0, by_generations=True)
 
 
+def pick_by_items(items: dict, total: Agg, *, skip: str = None) -> Pick:
+    """The tool (or client) with the most items generated."""
+    candidates = {k: v for k, v in items.items() if k != skip} or dict(items)
+    candidates = {k: v for k, v in candidates.items() if v.gens}
+    if not candidates:
+        return Pick(None, None)
+    name, agg = min(candidates.items(), key=lambda kv: items_key(kv[0], kv[1]))
+    return Pick(name, agg, (agg.gens / total.gens) if total.gens else 0.0, by_items=True)
+
+
 @dataclass
 class DayRow:
     day: date                     # the day, or the Monday of a week when grouped weekly
@@ -105,6 +128,10 @@ class DayRow:
     rupees: float = 0.0
     people: set = field(default_factory=set)
     clients: set = field(default_factory=set)
+    items: dict = field(default_factory=dict)          # tool -> Charged items (user / client days)
+    item_rupees: dict = field(default_factory=dict)    # tool -> ₹ of those items
+    people_items: dict = field(default_factory=dict)   # user id -> Charged items (tool / client days)
+    people_rupees: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -117,12 +144,20 @@ class UserData:
     days: dict = field(default_factory=dict)           # date -> DayRow (tool credits)
     tdc: dict = field(default_factory=dict)            # (tool, day) -> {client: Agg}
     pair_quads: dict = field(default_factory=dict)     # tool -> {(day or None, client): log rows}
+    month_tools: dict = field(default_factory=dict)    # (month, tool) -> Agg
+    month_tool_days: dict = field(default_factory=dict)     # (month, tool) -> set of days with Charged items
+    month_tool_clients: dict = field(default_factory=dict)  # (month, tool) -> {client: Agg}
+    month_total: dict = field(default_factory=dict)    # month -> Agg
 
     def tool_order(self) -> list:
-        return sorted(self.tools, key=lambda t: usage_key(t, self.tools[t]))
+        """Most items first (the log's tool order too)."""
+        return sorted(self.tools, key=lambda t: items_key(t, self.tools[t]))
+
+    def months(self) -> list:
+        return sorted(self.month_total)
 
     def most_used_tool(self) -> Pick:
-        return pick_most_used(self.tools, self.total)
+        return pick_by_items(self.tools, self.total)
 
     def top_client(self) -> Pick:
         return pick_most_used(self.clients, self.total, skip=NO_CLIENT)
@@ -146,6 +181,19 @@ class ToolData:
 
 
 @dataclass
+class ClientData:
+    """One client: its tools, people and days (By Client blocks)."""
+    total: Agg = field(default_factory=Agg)
+    tools: dict = field(default_factory=dict)          # tool -> Agg
+    users: dict = field(default_factory=dict)          # user id -> Agg
+    user_tools: dict = field(default_factory=dict)     # user id -> {tool: Agg}
+    tool_users: dict = field(default_factory=dict)     # tool -> set of user ids with Charged items
+    days: dict = field(default_factory=dict)           # date -> DayRow (items per tool, per person)
+    dpt: dict = field(default_factory=dict)            # (day, user id, tool) -> Agg
+    month_tools: dict = field(default_factory=dict)    # (month, tool) -> Agg
+
+
+@dataclass
 class DateData:
     """One IST day: who used what, for which clients (By Date blocks)."""
     total: Agg = field(default_factory=Agg)
@@ -166,6 +214,10 @@ class LogPlan:
     pair_rows: dict = field(default_factory=dict)      # (user id, tool) -> log rows in the run
     quad_row: dict = field(default_factory=dict)       # (user id, tool, day, client) -> first row of that run
     quad: dict = field(default_factory=dict)           # (user id, tool, day, client) -> Agg of the run
+    day_run_row: dict = field(default_factory=dict)    # (user id, tool, day) -> first row of that run
+    day_run: dict = field(default_factory=dict)        # (user id, tool, day) -> Agg of the run
+    month_run_row: dict = field(default_factory=dict)  # (user id, tool, "YYYY-MM") -> first row of that run
+    month_run: dict = field(default_factory=dict)      # (user id, tool, "YYYY-MM") -> Agg of the run
     tool_order: dict = field(default_factory=dict)     # (user id, tool) -> position, for stream_log
     client_order: dict = field(default_factory=dict)   # client -> position, for stream_log
     user_rows: dict = field(default_factory=dict)      # user id -> log rows (every status)
@@ -177,6 +229,7 @@ class BlockData:
     users: dict = field(default_factory=dict)          # user id -> UserData
     tools: dict = field(default_factory=dict)          # tool -> ToolData
     dates: dict = field(default_factory=dict)          # date -> DateData
+    clients: dict = field(default_factory=dict)        # client -> ClientData
     log: LogPlan = field(default_factory=LogPlan)
 
 
@@ -187,6 +240,7 @@ def build_blocks(day_groups, log_user_order: list, first_log_row: int, client_or
     users = defaultdict(UserData)
     tools = defaultdict(ToolData)
     dates = defaultdict(DateData)
+    clients = defaultdict(ClientData)
     quads = defaultdict(Agg)
     for g in day_groups:
         day = parse_day(g.day)
@@ -198,11 +252,25 @@ def build_blocks(day_groups, log_user_order: list, first_log_row: int, client_or
                     t.user_clients.setdefault(g.user_id, {}).setdefault(g.client, Agg()),
                     quads[(g.user_id, g.tool, day, g.client)]):
             agg.add(g.rows, g.charge_status, g.credits, day, g.rupees)
+        c = clients[g.client]
+        for agg in (c.total, c.tools.setdefault(g.tool, Agg()), c.users.setdefault(g.user_id, Agg()),
+                    c.user_tools.setdefault(g.user_id, {}).setdefault(g.tool, Agg())):
+            agg.add(g.rows, g.charge_status, g.credits, day, g.rupees)
+        if charged:
+            c.tool_users.setdefault(g.tool, set()).add(g.user_id)
         u.client_tools.setdefault(g.client, set()).add(g.tool)
         t.client_users.setdefault(g.client, set()).add(g.user_id)
         u.pair_quads.setdefault(g.tool, {})
         u.pair_quads[g.tool][(day, g.client)] = u.pair_quads[g.tool].get((day, g.client), 0) + g.rows
         if day:
+            month = month_of(day)
+            for agg in (u.month_tools.setdefault((month, g.tool), Agg()), u.month_total.setdefault(month, Agg()),
+                        u.month_tool_clients.setdefault((month, g.tool), {}).setdefault(g.client, Agg()),
+                        c.dpt.setdefault((day, g.user_id, g.tool), Agg()),
+                        c.month_tools.setdefault((month, g.tool), Agg())):
+                agg.add(g.rows, g.charge_status, g.credits, day, g.rupees)
+            if charged:
+                u.month_tool_days.setdefault((month, g.tool), set()).add(day)
             dd = dates[day]
             for agg in (dd.total, dd.users.setdefault(g.user_id, Agg()), dd.clients.setdefault(g.client, Agg()),
                         dd.tools.setdefault(g.tool, Agg()), dd.uct.setdefault((g.user_id, g.client, g.tool), Agg())):
@@ -214,7 +282,7 @@ def build_blocks(day_groups, log_user_order: list, first_log_row: int, client_or
                                                                                 g.rupees)
             t.duc.setdefault(day, {}).setdefault((g.user_id, g.client), Agg()).add(g.rows, g.charge_status, g.credits,
                                                                                   day, g.rupees)
-            for owner, key in ((u, g.tool), (t, None)):
+            for owner, key in ((u, g.tool), (t, None), (c, g.tool)):
                 row = owner.days.setdefault(day, DayRow(day))
                 row.clients.add(g.client)
                 row.people.add(g.user_id)
@@ -224,7 +292,12 @@ def build_blocks(day_groups, log_user_order: list, first_log_row: int, client_or
                     row.rupees += g.rupees
                     if key is not None:
                         row.credits[key] = row.credits.get(key, 0.0) + g.credits
-    data.users, data.tools, data.dates = dict(users), dict(tools), dict(dates)
+                        row.items[key] = row.items.get(key, 0) + g.rows
+                        row.item_rupees[key] = row.item_rupees.get(key, 0.0) + g.rupees
+                    if owner is not u:
+                        row.people_items[g.user_id] = row.people_items.get(g.user_id, 0) + g.rows
+                        row.people_rupees[g.user_id] = row.people_rupees.get(g.user_id, 0.0) + g.rupees
+    data.users, data.tools, data.dates, data.clients = dict(users), dict(tools), dict(dates), dict(clients)
 
     plan, row, pos = data.log, first_log_row, 0
     known = list(client_order) + sorted({c for (_u, _t, _d, c) in quads} - set(client_order), key=str.lower)
@@ -246,10 +319,30 @@ def build_blocks(day_groups, log_user_order: list, first_log_row: int, client_or
             # Day newest first (rows without a time last), then By Client order.
             for day, client in sorted(runs, key=lambda k: day_client_key(k[0], k[1], plan.client_order)):
                 plan.quad_row[(uid, tool, day, client)] = row
+                if day:
+                    # Days run newest first, so each (user, tool, day) and each
+                    # (user, tool, month) is one contiguous run starting at its first quad.
+                    for rows_at, aggs, key in ((plan.day_run_row, plan.day_run, (uid, tool, day)),
+                                               (plan.month_run_row, plan.month_run, (uid, tool, month_of(day)))):
+                        rows_at.setdefault(key, row)
+                        merge(aggs.setdefault(key, Agg()), quads[(uid, tool, day, client)])
                 row += runs[(day, client)]
         plan.user_rows[uid] = u.total.rows
     plan.last_row = row - 1
     return data
+
+
+def merge(into: Agg, a: Agg) -> None:
+    into.rows += a.rows
+    into.gens += a.gens
+    into.credits += a.credits
+    into.rupees += a.rupees
+    into.pending += a.pending
+    into.failed += a.failed
+    for d in (a.first, a.last):
+        if d:
+            into.first = d if into.first is None else min(into.first, d)
+            into.last = d if into.last is None else max(into.last, d)
 
 
 def day_client_key(day: Optional[date], client: str, client_order: dict) -> tuple:
@@ -266,8 +359,10 @@ def date_rows(days: dict) -> tuple:
     for r in ordered:
         monday = r.day - timedelta(days=r.day.weekday())
         w = weeks.setdefault(monday, DayRow(monday))
-        for k, v in r.credits.items():
-            w.credits[k] = w.credits.get(k, 0.0) + v
+        for store in ("credits", "items", "item_rupees", "people_items", "people_rupees"):
+            into = getattr(w, store)
+            for k, v in getattr(r, store).items():
+                into[k] = into.get(k, 0) + v
         w.gens += r.gens
         w.total += r.total
         w.rupees += r.rupees

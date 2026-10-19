@@ -31,9 +31,11 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from .facts import NO_CLIENT, UNASSIGNED, UNASSIGNED_USER_ID
-from .model import ReportModel, top_of
+from .model import ReportModel, top_by_items, top_of
 from . import navigation as N
 from . import workbook as W
+
+JUMP_STEP = 20                      # rows per "↓" step down a long table (a landing shows about 25)
 
 TREND, DRILL, PERIOD, LISTS = W.TREND, "Month Drill-down", "Period Explorer", "Lists"
 MONTH_FMT = "mmm yyyy"
@@ -201,10 +203,47 @@ def write_trend(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, period
             text += f" (top named: {name_of(named.first)})"
         return text
 
+    # Jumps: the first title row lists every table; a long user / client table also gets a step every
+    # JUMP_STEP rows in its own title row. Each landing row holds a "⬅ Jumps" cell back to its jump.
+    lengths = {"user": len(model.users), "client": len(model.clients)}
+    back_col = 2 + max([len(tools) + 2, len(depts) + 2, len(months) + 1, 11])
+    jumps_at = {}                                       # landing row -> (jump row, jump column)
+    steps = {}                                          # block title row -> [(label, landing row)]
+    first_title = tlay.blocks[0][2] - 1
+    for i, (key, title, header) in enumerate(tlay.blocks[1:]):
+        jumps_at[header - 1] = (first_title, get_column_letter(2 + i))
     for key, title, header in tlay.blocks:
-        ws.append([w.text(title, font=W.F_SECTION)])
+        n = lengths.get(key.split("_")[0], 0)
+        names = ([u.label for u in model.users] if key.startswith("user") else [c.name for c in model.clients]) if n else []
+        steps[header - 1] = [(names[i], header + 1 + i) for i in range(JUMP_STEP, n, JUMP_STEP)]
+        for j, (_label, landing) in enumerate(steps[header - 1]):
+            jumps_at[landing] = (header - 1, get_column_letter(2 + j))
+    step_font = Font(color="0563C1", underline="single", size=9)
+
+    def title_row(title, row):
+        cells = [w.text(title, font=W.F_SECTION)]
+        if row == first_title:
+            cells += [w.nav(W.internal_target(TREND, h - 1), f"↓ {t}", font=step_font) for _k, t, h in tlay.blocks[1:]]
+        else:
+            cells += [w.nav(W.internal_target(TREND, landing), f"↓ {label}", font=step_font)
+                      for label, landing in steps.get(row, ())]
+        if row in jumps_at:
+            cells += [w.cell() for _ in range(back_col - 1 - len(cells))] + [jump_back_cell(row)]
+        return cells
+
+    def jump_back_cell(row):
+        at_row, at_col = jumps_at[row]
+        return w.link(W.internal_target(TREND, at_row, at_col), "⬅ Jumps", font=N.F_BACK, fill=N.FILL_BACK)
+
+    def with_back(cells, row):
+        if row in jumps_at:
+            cells = cells + [w.cell() for _ in range(back_col - 1 - len(cells))] + [jump_back_cell(row)]
+        return cells
+
+    for key, title, header in tlay.blocks:
+        ws.append(title_row(title, header - 1))
         if key == "summary":
-            headers = ["Month", "Credits", W.RUPEES, "Generations", "Active users", "Top user", "Top tool", "Top department",
+            headers = ["Month", "Credits", W.RUPEES, "Generations", "Active users", "Top user", "Most used tool", "Top department",
                        "Top client", "Change vs previous month", "Change %", "Drill-down"]
             ws.append(w.header(headers))
             prev = None
@@ -212,14 +251,16 @@ def write_trend(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, period
                 t = model.month_totals.get(m)
                 credits, gens = (t.credits, t.generations) if t else (0.0, 0)
                 active = len([u for u in (t.users if t else set()) if u != UNASSIGNED_USER_ID])
-                parts = {k: {key2: (c, g) for key2, c, g, _r in v} for k, v in month_breakdown(model, m).items()}
+                breakdown = month_breakdown(model, m)
+                parts = {k: {key2: (c, g) for key2, c, g, _r in v} for k, v in breakdown.items()}
+                tool_parts = breakdown["tool"]
                 change = credits - prev if prev is not None else None
                 ws.append([
                     month_cell(m),
                     w.cell(credits, fmt=ZERO_CHARGED_FMT if (t and t.all_generations) else W.CREDITS_FMT),
                     w.rupees(t.rupees if t else 0.0), w.count(gens), w.count(active),
                     w.text(top_user_text(parts["user"])),
-                    w.text(_summary_top(top_of(parts["tool"]))),
+                    w.text(_summary_top(top_by_items({k2: (g, rs) for k2, _c, g, rs in tool_parts}))),
                     w.text(_summary_top(top_of(parts["dept"]))),
                     w.text(_summary_top(top_of({k: v for k, v in parts["client"].items() if k != NO_CLIENT}))),
                     w.cell(change, fmt=CHANGE_FMT) if change is not None else w.text("—"),
@@ -257,7 +298,8 @@ def write_trend(sheets, model, lay, tlay: TrendLayout, dlay: DrillLayout, period
                 else:
                     label = w.text(e.name)          # By Client's "↔ … in Monthly Trend" lands here; ⬅ returns
                     values = [model.month_client.get((m, e.name), (0.0, 0, 0.0))[idx] for m in months]
-                ws.append([label] + [w.cell(v, fmt=fmt) for v in values] + [w.cell(sum(values), fmt=fmt, font=W.F_BOLD)])
+                ws.append(with_back([label] + [w.cell(v, fmt=fmt) for v in values]
+                                    + [w.cell(sum(values), fmt=fmt, font=W.F_BOLD)], len(ws.rows) + 1))
             last = header + len(entities)
             if entities:
                 name = TREND_TABLES[key]
@@ -536,8 +578,11 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
     ws.append([])                                                                                          # 24
     ws.append([w.text("Top in the selected period", font=W.F_SECTION)] + pad + [jump_back(0)])             # 25
     ws.append(w.header(["What", "Top", "Credits", "Top named user", W.RUPEES]))                             # 26
-    for kind, label in (("user", "Top user"), ("tool", "Top tool"), ("dept", "Top department"), ("client", "Top client")):
-        names, credits, tie = (table_range(kind, k, top=True) for k in (0, E_CREDITS, E_TIE))
+    for kind, label in (("user", "Top user"), ("tool", "Most used tool (items)"), ("dept", "Top department"),
+                        ("client", "Top client")):
+        # A tool ranks by items generated: credits of different tools are different units.
+        names, credits, tie = (table_range(kind, k, top=True) for k in (0, E_GENS if kind == "tool" else E_CREDITS,
+                                                                         E_TIE))
         first = f"INDEX({names},MATCH(1,{tie},0))"
         second = f"INDEX({names},MATCH(2,{tie},0))"
         n = f"COUNTIF({credits},MAX({credits}))"
@@ -557,7 +602,9 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
             formula = f'=IF(MAX({credits})<=0,"—",{named})'
             rupees = (f'=IF(MAX({credits})<=0,"",INDEX({table_range(kind, E_RUPEES, top=True)},'
                       f'MATCH(MAX({credits}),{credits},0)))')
-            cells = [w.cell(f"=MAX({credits})", fmt=W.CREDITS_FMT), w.cell(), w.cell(rupees, fmt=W.INR_FMT)]
+            figure = (w.cell(f'=MAX({credits})&" items"') if kind == "tool"
+                      else w.cell(f"=MAX({credits})", fmt=W.CREDITS_FMT))
+            cells = [figure, w.cell(), w.cell(rupees, fmt=W.INR_FMT)]
         ws.append([w.text(label, font=W.F_BOLD), w.cell(formula, font=W.F_BOLD)] + cells)                  # 27-30
     ws.append([])                                                                                          # 31
 
@@ -628,8 +675,9 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
             crit = _criteria(r, extra=((rng, _crit_literal(key)),))
             crit_prev = _criteria(r, prev=True, extra=((rng, _crit_literal(key)),))
             cr = col(E_CREDITS)
-            credits_rng = f"${cr}${first}:${cr}${last}"
-            top_rng = f"${cr}${first}:${cr}${elay.top_last[kind]}"
+            rk = col(E_GENS if kind == "tool" else E_CREDITS)      # tools rank by items generated
+            credits_rng = f"${rk}${first}:${rk}${last}"
+            top_rng = f"${rk}${first}:${rk}${elay.top_last[kind]}"
             in_top = row <= elay.top_last[kind]
             cells += [
                 name,
@@ -637,9 +685,9 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
                 w.cell(f"=SUMIFS({r.rupees},{crit})", fmt=W.INR_FMT),
                 w.cell(f"=COUNTIFS({crit})", fmt=W.COUNT_FMT),
                 w.cell(f"=IF($B$20=0,0,{cr}{row}/$B$20)", fmt=W.PCT_FMT),
-                w.cell(f'=IF({cr}{row}<=0,"",RANK.EQ({cr}{row},{credits_rng}))'),
-                (w.cell(f'=IF(AND({cr}{row}>0,{cr}{row}=MAX({top_rng})),'
-                        f'COUNTIF(${cr}${first}:{cr}{row},MAX({top_rng})),"")', font=F_HELPER)
+                w.cell(f'=IF({rk}{row}<=0,"",RANK.EQ({rk}{row},{credits_rng}))'),
+                (w.cell(f'=IF(AND({rk}{row}>0,{rk}{row}=MAX({top_rng})),'
+                        f'COUNTIF(${rk}${first}:{rk}{row},MAX({top_rng})),"")', font=F_HELPER)
                  if in_top else w.text("not ranked", font=F_HELPER)),
                 w.cell(f"=COUNTIFS({crit_prev})", fmt=W.COUNT_FMT),
             ]
@@ -661,7 +709,8 @@ def write_explorer(sheets, model, lay, filters, log_cols: dict, log_last_row: in
         if last < first:
             continue
         a, b = get_column_letter(start_col), get_column_letter(start_col + ENTITY_WIDTH - 1)
-        c_cr, c_gen, c_rank = (get_column_letter(start_col + k) for k in (E_CREDITS, E_GENS, E_RANK))
+        c_cr, c_gen, c_rank = (get_column_letter(start_col + k)
+                               for k in (E_GENS if kind == "tool" else E_CREDITS, E_GENS, E_RANK))
         ws.conditional_formatting.add(f"{a}{first}:{b}{last}",
                                       FormulaRule(formula=[f"AND(${c_cr}{first}>0,${c_rank}{first}<=3)"], fill=FILL_TOP3))
         ws.conditional_formatting.add(f"{a}{first}:{b}{last}",

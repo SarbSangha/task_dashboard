@@ -284,6 +284,10 @@ def _independent_previous(db) -> tuple:
 
 
 def test_previous_period():
+    # September 4,787 items vs August 4,765 is +0.46%: a real change, never "no change".
+    for cur, prev, want in ((4787, 4765, "▲ <1%"), (4765, 4787, "▼ <1%"), (4787, 4787, "— no change"),
+                            (112, 100, "▲ 12%"), (5, 0, "new"), (0, 0, "—")):
+        _assert(M.change_text(cur, prev) == want, f"change_text({cur}, {prev}) = {M.change_text(cur, prev)}")
     with SessionLocal() as db:
         f = _filters(db)
         view = M.build_management(db, f, load_groups(db, f))
@@ -536,6 +540,12 @@ def test_management_version_and_print():
         wb = load_workbook(path)
         visible = [ws.title for ws in wb.worksheets if ws.sheet_state == "visible"]
         _assert(visible == list(WS.MANAGEMENT_SHEETS), f"management sheets {wb.sheetnames}")
+        # Excel applies a cell's number format (₹, dates) only when its style says so.
+        with zipfile.ZipFile(path) as z:
+            styles = z.read("xl/styles.xml").decode("utf-8")
+        xfs = re.findall(r"<xf\b[^>]*>", re.search(r"<cellXfs\b[^>]*>(.*?)</cellXfs>", styles, re.S).group(1))
+        unflagged = [x for x in xfs if 'numFmtId="0"' not in x and 'applyNumberFormat="1"' not in x]
+        _assert(xfs and not unflagged, f"management version: {len(unflagged)} styles without applyNumberFormat")
         text = _sheet_text(path)
         for secret in (SECRET_PROMPT, SECRET_OUTPUT, "j1 prompt", "tester prompt", "Tester", "Admin"):
             _assert(secret not in text, f"management version leaks '{secret}'")

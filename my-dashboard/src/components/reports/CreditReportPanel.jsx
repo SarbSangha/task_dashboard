@@ -3,6 +3,7 @@ import WindowControls from '../common/WindowControls';
 import { useMinimizedWindowStack } from '../../hooks/useMinimizedWindowStack';
 import { isMobileViewport } from '../../utils/isMobileViewport';
 import { creditReportAPI, downloadBlobResponse } from '../../services/reports';
+import ZomatoExcelReportStudio from './ZomatoExcelReportStudio';
 import './TaskReportPanel.css';
 import './CreditReportPanel.css';
 
@@ -62,7 +63,8 @@ const readError = async (err, fallback) => {
 
 export default function CreditReportPanel({ isOpen, onClose, onMinimizedChange, onActivate }) {
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
+  const [isMaximized, setIsMaximized] = useState(true);
+  const [panelMode, setPanelMode] = useState('live-excel');
   const minimizedWindowStyle = useMinimizedWindowStack('credit-report-panel', isOpen && isMinimized);
 
   const [options, setOptions] = useState({ departments: [], users: [], tools: [], clients: [], excludedAccounts: [] });
@@ -204,9 +206,31 @@ export default function CreditReportPanel({ isOpen, onClose, onMinimizedChange, 
                 <line x1="8" y1="17" x2="8" y2="11" /><line x1="12" y1="17" x2="12" y2="7" /><line x1="16" y1="17" x2="16" y2="13" />
               </svg>
             </span>
-            <h2 className="trp-title">Credit Consumption Report</h2>
+            <h2 className="trp-title">AI Usage, Spend &amp; Live Excel Report</h2>
           </div>
           <div className="trp-header-spacer" />
+          {!isMinimized && (
+            <div className="rpt-mode-switch" role="tablist" aria-label="Report mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={panelMode === 'live-excel'}
+                className={panelMode === 'live-excel' ? 'active' : ''}
+                onClick={() => setPanelMode('live-excel')}
+              >
+                Live Excel
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={panelMode === 'classic'}
+                className={panelMode === 'classic' ? 'active' : ''}
+                onClick={() => setPanelMode('classic')}
+              >
+                Custom Workbook
+              </button>
+            </div>
+          )}
           <WindowControls
             isMinimized={isMinimized}
             isMaximized={isMaximized}
@@ -216,7 +240,13 @@ export default function CreditReportPanel({ isOpen, onClose, onMinimizedChange, 
           />
         </div>
 
-        {!isMinimized && (
+        {!isMinimized && panelMode === 'live-excel' && (
+          <div className="trp-body" style={{ padding: '12px 16px', overflowY: 'auto' }}>
+            <ZomatoExcelReportStudio />
+          </div>
+        )}
+
+        {!isMinimized && panelMode === 'classic' && (
           <div className="trp-body">
             <p className="trp-hint">
               Choose a date range (required, last full month by default) and any filters, then export. The report

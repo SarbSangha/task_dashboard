@@ -1,27 +1,33 @@
 import React, { useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import './Topnav.css';
 import SettingsSidebar from '../../settingss/SettingSidebar';
 import { useAuth } from '../../../context/AuthContext';
+import { usePermissions } from '../../../hooks/usePermissions';
 import { UserAvatar } from '../../common/UserAvatar';
 
 const Topnavbar = ({ onHamburgerClick, isMobileMenuOpen }) => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-
-  const toggleSettings = () => {
-    setIsSettingsOpen(!isSettingsOpen);
-  };
-
-  const closeSettings = () => {
-    setIsSettingsOpen(false);
-  };
+  const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
+  const { can, isAdmin } = usePermissions();
+
+  const canViewCreditReport = can('view_credit_report');
+  const pathname = location.pathname || '';
+
+  const toggleSettings = () => setIsSettingsOpen(!isSettingsOpen);
+  const closeSettings = () => setIsSettingsOpen(false);
+
+  const openReportsHub = () => {
+    navigate(isAdmin ? '/dashboard/reports' : '/dashboard/credit-report');
+  };
 
   return (
     <>
       <nav className="topnav">
-        {/* Left Section - Hamburger (mobile only) + Logo */}
+        {/* Left Section - Hamburger (mobile only) + Brand Logo */}
         <div className="topnav-left">
-          {/* Mobile hamburger — only visible on small screens via CSS */}
           <button
             className={`topnav-hamburger${isMobileMenuOpen ? ' is-open' : ''}`}
             onClick={onHamburgerClick}
@@ -40,14 +46,63 @@ const Topnavbar = ({ onHamburgerClick, isMobileMenuOpen }) => {
             )}
           </button>
 
-          <div className="logo-container">
+          <div className="logo-container" onClick={() => navigate('/dashboard')} role="button" tabIndex={0}>
             <div className="logo-icon">
               <svg viewBox="0 0 24 24" className="eye-icon" aria-hidden="true">
                 <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
               </svg>
             </div>
-            <span className="logo-text">RMW eye</span>
+            <div className="logo-copy">
+              <span className="logo-text">RMW eye</span>
+              <span className="logo-subtag">AI TOOL &amp; SPEND HUB</span>
+            </div>
           </div>
+        </div>
+
+        {/* Center 1-Click Command Pills */}
+        <div className="topnav-quick-nav" role="navigation" aria-label="Quick 1-click access">
+          <button
+            type="button"
+            className={`topnav-quick-pill ${pathname === '/dashboard' ? 'active' : ''}`}
+            onClick={() => navigate('/dashboard')}
+          >
+            <span>Home</span>
+          </button>
+
+          {(isAdmin || canViewCreditReport) && (
+            <button
+              type="button"
+              className={`topnav-quick-pill highlight ${pathname.includes('/reports') || pathname.includes('/credit-report') ? 'active' : ''}`}
+              onClick={openReportsHub}
+            >
+              <span>Reports &amp; Spend</span>
+              <span className="topnav-pill-badge">Excel</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            className={`topnav-quick-pill ${pathname.includes('/workspace') ? 'active' : ''}`}
+            onClick={() => navigate('/dashboard/workspace?tab=Tools')}
+          >
+            <span>AI Tools</span>
+          </button>
+
+          <button
+            type="button"
+            className={`topnav-quick-pill ${pathname.includes('/inbox') ? 'active' : ''}`}
+            onClick={() => navigate('/dashboard/inbox')}
+          >
+            <span>Inbox</span>
+          </button>
+
+          <button
+            type="button"
+            className={`topnav-quick-pill ${pathname.includes('/create-task') ? 'active' : ''}`}
+            onClick={() => navigate('/dashboard/create-task')}
+          >
+            <span>+ Assign Task</span>
+          </button>
         </div>
 
         {/* Right Section - User Profile & Icons */}
@@ -58,18 +113,16 @@ const Topnavbar = ({ onHamburgerClick, isMobileMenuOpen }) => {
             </div>
             <div className="user-info">
               <span className="user-name">{user?.name}</span>
-              <span className="user-badge">{user?.position}</span>
+              <span className="user-badge">{user?.position || user?.department || 'Member'}</span>
             </div>
           </div>
 
-          {/* WiFi Icon */}
-          <div className="icon-button topnav-wifi-btn" aria-label="Connection status">
+          <div className="icon-button topnav-wifi-btn" aria-label="Connection status" title="Live System Online">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/>
             </svg>
           </div>
 
-          {/* Settings Icon */}
           <div
             className={`icon-button${isSettingsOpen ? ' active' : ''}`}
             onClick={toggleSettings}
@@ -86,7 +139,6 @@ const Topnavbar = ({ onHamburgerClick, isMobileMenuOpen }) => {
         </div>
       </nav>
 
-      {/* Settings Sidebar Component */}
       <SettingsSidebar isOpen={isSettingsOpen} onClose={closeSettings} />
     </>
   );

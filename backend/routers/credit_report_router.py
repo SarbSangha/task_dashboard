@@ -38,6 +38,7 @@ from utils.credit_report import (
     resolve_output_url,
     to_pdf,
 )
+from utils.credit_report.live_sheet import build_live_sheet, seed_demo_ai_usage
 
 IST_OFFSET_MINUTES = 330
 from utils.permissions import require_credit_report_access, require_user
@@ -119,6 +120,61 @@ def credit_report_options(
     _: User = Depends(require_credit_report_access),
 ):
     return {"success": True, "dashboardUrl": public_dashboard_url(), **load_options(db)}
+
+
+@router.get("/live-sheet")
+def credit_report_live_sheet(
+    start: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None, description="0 = Unknown user"),
+    tool: Optional[str] = Query(None),
+    client: Optional[str] = Query(None),
+    outputType: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    excludeTestAccounts: bool = Query(False),
+    limit: int = Query(800, ge=50, le=3000),
+    db: Session = Depends(get_operational_db),
+    _: User = Depends(require_credit_report_access),
+):
+    """Live JSON representation of the multi-sheet Excel workbook (KPIs,
+    averages, spend in ₹, and all sheets) for in-app viewing and 1-2 click
+    filtering inside RMW Eye."""
+    start_iso = _parse_iso_date(start, "start")
+    end_iso = _parse_iso_date(end, "end")
+    if start_iso and end_iso and start_iso > end_iso:
+        raise HTTPException(status_code=400, detail="start must be on or before end")
+    return build_live_sheet(
+        db,
+        start=start_iso,
+        end=end_iso,
+        department=department,
+        user_id=user,
+        tool=tool,
+        client=client,
+        output_type=outputType,
+        search=search,
+        exclude_test_accounts=excludeTestAccounts,
+        log_limit=limit,
+    )
+
+
+@router.post("/seed-demo")
+def seed_credit_report_demo(
+    db: Session = Depends(get_operational_db),
+    _: User = Depends(require_credit_report_access),
+):
+    """Populate realistic RMW AI tool usage, users, tools, and ₹ costs when
+    running on a fresh local database."""
+    # The production database can also sit on localhost, so the host check
+    # alone is not enough: seeding must be switched on explicitly.
+    if os.getenv("ENABLE_DEMO_SEED", "").strip().lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=403, detail="Sample data loading is disabled on this server.")
+    url = db.get_bind().url
+    if (url.host or "").lower() not in {"localhost", "127.0.0.1", "::1"} or not (url.database or "").startswith("task_dashboard"):
+        raise HTTPException(status_code=403, detail="Sample data can only be loaded into a local database.")
+    result = seed_demo_ai_usage(db)
+    return {"success": True, **result}
 
 
 @router.get("/export.xlsx")

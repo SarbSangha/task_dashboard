@@ -393,13 +393,14 @@ body.theme-ready * {
     box-shadow var(--theme-transition-fast);
 }
 
-/* Shared button states */
+/* Shared button states — never fade; disabled stays readable */
 button:hover:not(:disabled) {
-  opacity: 0.9;
+  filter: brightness(1.06);
 }
 
 button:disabled {
-  opacity: 0.6;
+  opacity: 0.85;
+  filter: saturate(0.6);
   cursor: not-allowed;
 }
 
@@ -536,4 +537,292 @@ video {
   :root:root {
     --leftbar-popup-top-offset: 74px;
   }
+}
+
+/* ================================================================
+   MODERN AI-HUB PALETTE (2026-10)
+   Neutral graphite surfaces + a single emerald accent (amber for
+   highlights). Solid surfaces and high-contrast text so nothing
+   looks washed-out. Declared last so it wins over the legacy tokens.
+================================================================ */
+:root {
+  --color-page: #0b0b0e;
+  --color-page-accent: rgba(16, 185, 129, 0.08);
+  --color-page-accent-strong: rgba(245, 158, 11, 0.06);
+  --color-surface: #131316;
+  --color-surface-muted: #1a1a1f;
+  --color-surface-elevated: #17171b;
+  --color-surface-overlay: rgba(0, 0, 0, 0.28);
+  --color-surface-modal: #141418;
+  --color-surface-modal-solid: #141418;
+  --color-surface-drawer: #131316;
+  --color-surface-popover: #18181c;
+  --color-card: #141418;
+  --color-card-hover: #1b1b20;
+  --color-border: #26262c;
+  --color-border-subtle: #1f1f24;
+  --color-border-strong: #3a3a42;
+  --color-text: #fafafa;
+  --color-text-secondary: #e4e4e7;
+  --color-text-muted: #b4b4bd;
+  --color-text-soft: #d4d4d8;
+  --color-text-disabled: #8e8e98;
+  --color-placeholder: #8a8a94;
+  --color-primary: #10b981;
+  --color-primary-hover: #059669;
+  --color-primary-strong: #34d399;
+  --color-primary-soft: rgba(16, 185, 129, 0.14);
+  --color-link: #34d399;
+  --color-secondary: #1f1f24;
+  --color-secondary-hover: #2a2a31;
+  --color-info: #2dd4bf;
+  --color-focus-ring: rgba(16, 185, 129, 0.28);
+  --color-input-bg: #101013;
+  --color-input-border: #2e2e35;
+  --color-input-text: #fafafa;
+  --color-input-disabled-bg: #17171b;
+  --color-input-disabled-border: #26262c;
+  --color-input-disabled-text: #a1a1aa;
+  --color-checkbox-bg: #101013;
+  --color-checkbox-border: #3f3f46;
+  --color-radio-bg: #101013;
+  --color-radio-border: #3f3f46;
+  --color-toggle-track: #3f3f46;
+  --color-toggle-active-bg: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  --color-overlay: rgba(0, 0, 0, 0.4);
+  --color-divider: #26262c;
+  --color-icon: #f4f4f5;
+  --color-icon-muted: #b4b4bd;
+  --color-hover-surface: rgba(255, 255, 255, 0.06);
+  --color-active-surface: rgba(255, 255, 255, 0.1);
+  --color-pressed-surface: rgba(255, 255, 255, 0.14);
+  --color-selected-surface: rgba(16, 185, 129, 0.14);
+  --color-disabled-surface: #1a1a1f;
+  --color-disabled-border: #2a2a31;
+  --color-navbar-surface: #111114;
+  --color-navbar-border: #232329;
+  --color-sidebar-surface: #111114;
+  --color-sidebar-border: #232329;
+  --color-nav-text: #e4e4e7;
+  --color-nav-text-muted: #b4b4bd;
+  --color-nav-icon: #f4f4f5;
+  --color-nav-hover: rgba(255, 255, 255, 0.06);
+  --color-nav-active: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  --color-nav-selected: rgba(16, 185, 129, 0.14);
+  --color-nav-selected-border: #10b981;
+  --color-nav-highlight: rgba(16, 185, 129, 0.16);
+  --color-scrollbar-track: transparent;
+  --color-scrollbar-thumb: #34343b;
+  --color-scrollbar-thumb-hover: #4a4a52;
+  --color-button-primary-bg: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  --color-button-primary-bg-hover: linear-gradient(135deg, #047857 0%, #059669 100%);
+  --color-button-secondary-bg: #1f1f24;
+  --color-button-secondary-bg-hover: #2a2a31;
+  --color-button-ghost-bg-hover: rgba(255, 255, 255, 0.06);
+  --color-button-outline-border: #3a3a42;
+  --color-feedback-info-bg: rgba(45, 212, 191, 0.12);
+  --color-feedback-info-border: rgba(45, 212, 191, 0.3);
+  --color-feedback-info-text: #5eead4;
+  --color-validation-info: #2dd4bf;
+  --color-table-header: #1a1a1f;
+  --color-table-row: #131316;
+  --color-table-row-zebra: #16161a;
+  --color-table-row-hover: rgba(16, 185, 129, 0.08);
+  --color-chart-surface: #131316;
+  --color-tooltip-surface: #1c1c21;
+  --color-badge-text: #0b0b0e;
+  --color-code-surface: #101013;
+  --shadow-soft: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --shadow-card: 0 18px 50px rgba(0, 0, 0, 0.45);
+  --shadow-popover: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --shadow-card-hover: 0 14px 34px rgba(0, 0, 0, 0.45);
+  --shadow-navbar: 0 8px 28px rgba(0, 0, 0, 0.35);
+  --shadow-sidebar: 0 8px 28px rgba(0, 0, 0, 0.3);
+  --shadow-focus: 0 0 0 3px rgba(16, 185, 129, 0.28);
+  --shadow-nav-active: 0 8px 20px rgba(16, 185, 129, 0.25);
+  --shadow-nav-glow-soft: 0 0 0 1px rgba(16, 185, 129, 0.25);
+  --shadow-nav-glow-strong: 0 0 0 1px rgba(16, 185, 129, 0.4), 0 0 18px rgba(16, 185, 129, 0.18);
+  --shadow-button-primary: 0 8px 22px rgba(16, 185, 129, 0.25);
+  --auth-page-background:
+    radial-gradient(circle at top left, rgba(16, 185, 129, 0.14), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(245, 158, 11, 0.1), transparent 34%),
+    linear-gradient(135deg, #0b0b0e 0%, #111114 50%, #16161a 100%);
+  --auth-page-orb-a: rgba(16, 185, 129, 0.16);
+  --auth-page-orb-b: rgba(245, 158, 11, 0.12);
+  --color-accent-2: #f59e0b;
+}
+
+:root[data-theme='light'] {
+  --color-page: #f5f5f4;
+  --color-page-accent: rgba(16, 185, 129, 0.08);
+  --color-page-accent-strong: rgba(245, 158, 11, 0.06);
+  --color-surface: #ffffff;
+  --color-surface-muted: #f4f4f5;
+  --color-surface-elevated: #ffffff;
+  --color-surface-overlay: rgba(24, 24, 27, 0.12);
+  --color-surface-modal: #ffffff;
+  --color-surface-drawer: #ffffff;
+  --color-surface-popover: #ffffff;
+  --color-card: #ffffff;
+  --color-card-hover: #fafafa;
+  --color-border: #e4e4e7;
+  --color-border-subtle: #efeff1;
+  --color-border-strong: #d4d4d8;
+  --color-text: #0b0b0e;
+  --color-text-secondary: #27272a;
+  --color-text-muted: #52525b;
+  --color-text-soft: #3f3f46;
+  --color-text-disabled: #71717a;
+  --color-placeholder: #8a8a94;
+  --color-primary: #059669;
+  --color-primary-hover: #047857;
+  --color-primary-strong: #10b981;
+  --color-primary-soft: rgba(5, 150, 105, 0.1);
+  --color-link: #047857;
+  --color-secondary: #f4f4f5;
+  --color-secondary-hover: #e4e4e7;
+  --color-info: #0d9488;
+  --color-feedback-info-bg: rgba(13, 148, 136, 0.1);
+  --color-feedback-info-border: rgba(13, 148, 136, 0.3);
+  --color-feedback-info-text: #0f766e;
+  --color-validation-info: #0d9488;
+  --color-focus-ring: rgba(5, 150, 105, 0.22);
+  --color-input-bg: #ffffff;
+  --color-input-border: #d4d4d8;
+  --color-input-text: #0b0b0e;
+  --color-input-disabled-bg: #f4f4f5;
+  --color-input-disabled-border: #e4e4e7;
+  --color-input-disabled-text: #52525b;
+  --color-checkbox-border: #a1a1aa;
+  --color-radio-border: #a1a1aa;
+  --color-toggle-track: #d4d4d8;
+  --color-toggle-active-bg: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  --color-overlay: rgba(24, 24, 27, 0.2);
+  --color-divider: #e4e4e7;
+  --color-icon: #18181b;
+  --color-icon-muted: #52525b;
+  --color-hover-surface: rgba(24, 24, 27, 0.05);
+  --color-active-surface: rgba(24, 24, 27, 0.08);
+  --color-pressed-surface: rgba(24, 24, 27, 0.12);
+  --color-selected-surface: rgba(5, 150, 105, 0.1);
+  --color-disabled-surface: #f4f4f5;
+  --color-disabled-border: #e4e4e7;
+  --color-navbar-surface: #ffffff;
+  --color-navbar-border: #e4e4e7;
+  --color-sidebar-surface: #ffffff;
+  --color-sidebar-border: #e4e4e7;
+  --color-nav-text: #18181b;
+  --color-nav-text-muted: #52525b;
+  --color-nav-icon: #18181b;
+  --color-nav-hover: rgba(24, 24, 27, 0.05);
+  --color-nav-active: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  --color-nav-selected: rgba(5, 150, 105, 0.1);
+  --color-nav-selected-border: #059669;
+  --color-nav-highlight: rgba(5, 150, 105, 0.12);
+  --color-scrollbar-thumb: #d4d4d8;
+  --color-scrollbar-thumb-hover: #a1a1aa;
+  --color-button-primary-bg: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  --color-button-primary-bg-hover: linear-gradient(135deg, #047857 0%, #059669 100%);
+  --color-button-secondary-bg: #f4f4f5;
+  --color-button-secondary-bg-hover: #e4e4e7;
+  --color-button-secondary-text: #18181b;
+  --color-button-ghost-bg-hover: rgba(24, 24, 27, 0.05);
+  --color-button-ghost-text: #18181b;
+  --color-button-outline-border: #d4d4d8;
+  --color-button-outline-text: #18181b;
+  --color-table-header: #f4f4f5;
+  --color-table-row: #ffffff;
+  --color-table-row-zebra: #fafafa;
+  --color-table-row-hover: rgba(5, 150, 105, 0.06);
+  --color-chart-surface: #ffffff;
+  --color-tooltip-surface: #ffffff;
+  --color-tooltip-text: #0b0b0e;
+  --color-badge-text: #0b0b0e;
+  --color-code-surface: #f4f4f5;
+  --color-code-text: #18181b;
+  --shadow-soft: 0 6px 20px rgba(24, 24, 27, 0.06);
+  --shadow-card: 0 12px 36px rgba(24, 24, 27, 0.08);
+  --shadow-popover: 0 14px 36px rgba(24, 24, 27, 0.12);
+  --shadow-card-hover: 0 12px 28px rgba(24, 24, 27, 0.1);
+  --shadow-navbar: 0 4px 18px rgba(24, 24, 27, 0.06);
+  --shadow-sidebar: 0 4px 18px rgba(24, 24, 27, 0.06);
+  --shadow-focus: 0 0 0 3px rgba(5, 150, 105, 0.22);
+  --shadow-nav-active: 0 8px 18px rgba(5, 150, 105, 0.22);
+  --shadow-nav-glow-soft: 0 0 0 1px rgba(5, 150, 105, 0.22);
+  --shadow-nav-glow-strong: 0 0 0 1px rgba(5, 150, 105, 0.35), 0 0 16px rgba(5, 150, 105, 0.15);
+  --shadow-button-primary: 0 8px 20px rgba(5, 150, 105, 0.22);
+  --auth-page-background:
+    radial-gradient(circle at top left, rgba(16, 185, 129, 0.12), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(245, 158, 11, 0.1), transparent 34%),
+    linear-gradient(135deg, #fafafa 0%, #f5f5f4 50%, #ececec 100%);
+  --auth-page-orb-a: rgba(16, 185, 129, 0.14);
+  --auth-page-orb-b: rgba(245, 158, 11, 0.12);
+  --color-accent-2: #d97706;
+}
+
+:root {
+  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-display: 'Plus Jakarta Sans', 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, monospace;
+}
+
+body,
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+b,
+strong {
+  font-weight: 600;
+}
+
+body {
+  font-weight: 400;
+  line-height: 1.5;
+  background:
+    radial-gradient(1200px 600px at 100% -10%, var(--color-page-accent), transparent 60%),
+    var(--color-page);
+  background-attachment: fixed;
+}
+
+/* Side panels open next to the dashboard; never dim/blur what's behind */
+.rpt-overlay,
+.udd-overlay {
+  background: transparent !important;
+  backdrop-filter: none !important;
+}
+
+/* Real AI tool logos (favicons) with initial fallback */
+.tool-logo {
+  display: inline-block;
+  flex-shrink: 0;
+  border-radius: 5px;
+  object-fit: contain;
+  background: #ffffff;
+  padding: 1px;
+  vertical-align: middle;
+}
+
+.tool-logo--fallback {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  background: color-mix(in srgb, var(--logo-color) 22%, transparent);
+  color: var(--logo-color);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
 }

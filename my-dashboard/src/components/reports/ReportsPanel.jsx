@@ -38,9 +38,11 @@ import ChatGptUsersDrill from './sections/ChatGptUsersDrill';
 import ComingSoon from './sections/ComingSoon';
 import UsageIntelligence from './sections/UsageIntelligence';
 import ToolLogins from './sections/ToolLogins';
+import ZomatoExcelReportStudio from './ZomatoExcelReportStudio';
 import './ReportsPanel.css';
 
 const SECTION_LABELS = {
+  'excel-studio': 'Usage & spend',
   'usage-intelligence': 'Usage Intelligence',
   'tool-logins': 'Tool Logins',
   executive: 'Executive Overview',
@@ -79,10 +81,10 @@ const PLACEHOLDER = {
 
 const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(isMobileViewport);
+  const [isMaximized, setIsMaximized] = useState(true);
   const minimizedWindowStyle = useMinimizedWindowStack('reports-panel', isOpen && isMinimized);
 
-  const [section, setSection] = useState('usage-intelligence');
+  const [section, setSection] = useState('excel-studio');
   const [drill, setDrill] = useState(null); // { userId, userName }
   const [treeOpen, setTreeOpen] = useState(false);
   const [canvasQueue, setCanvasQueue] = useState([]);
@@ -268,6 +270,9 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
         />
       );
     }
+    if (section === 'excel-studio') {
+      return <ZomatoExcelReportStudio onSwitchToAdvanced={() => selectSection('usage-intelligence')} />;
+    }
     if (section === 'executive') return <ExecutiveDashboard filters={queryFilters} onDrill={(view) => setDrill({ view })} onAddToCanvas={addToCanvas} />;
     if (section === 'usage-intelligence') {
       return (
@@ -415,6 +420,28 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
           </div>
           <div className="rpt-header-spacer" />
           {!isMinimized && (
+            <div className="rpt-mode-switch" role="tablist" aria-label="Report mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={section === 'excel-studio'}
+                className={section === 'excel-studio' ? 'active' : ''}
+                onClick={() => selectSection('excel-studio')}
+              >
+                Excel &amp; Spend
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={section !== 'excel-studio'}
+                className={section !== 'excel-studio' ? 'active' : ''}
+                onClick={() => selectSection(section === 'excel-studio' ? 'usage-intelligence' : section)}
+              >
+                Deep Analytics
+              </button>
+            </div>
+          )}
+          {!isMinimized && section !== 'excel-studio' && (
             <div className="rpt-workbook-wrap">
               <button
                 className="rpt-workbook-btn"
@@ -474,15 +501,17 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
           />
         </div>
 
-        {!isMinimized && (
+        {!isMinimized && section !== 'excel-studio' && (
           <GlobalFilters filters={filters} preset={preset} onChange={updateFilters} departments={departments} tools={tools} toolScopes={toolScopes} klingAccounts={klingAccounts} klingUsers={klingUsers} />
         )}
 
         {!isMinimized && (
-          <div className="rpt-body">
-            <nav className={`rpt-tree ${treeOpen ? 'open' : ''}`} aria-label="Report navigation">
-              <ReportsSidebarTree active={section} onSelect={selectSection} />
-            </nav>
+          <div className={`rpt-body${section === 'excel-studio' ? ' rpt-body--full' : ''}`}>
+            {section !== 'excel-studio' && (
+              <nav className={`rpt-tree ${treeOpen ? 'open' : ''}`} aria-label="Report navigation">
+                <ReportsSidebarTree active={section} onSelect={selectSection} />
+              </nav>
+            )}
             <div className="rpt-content">
               {renderContent()}
             </div>

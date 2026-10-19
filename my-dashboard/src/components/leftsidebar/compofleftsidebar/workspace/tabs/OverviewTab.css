@@ -73,7 +73,7 @@
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--color-button-primary-bg, #6366f1);
+  color: var(--color-button-primary-bg, #10b981);
   opacity: 0.9;
 }
 
@@ -222,10 +222,10 @@
   border-radius: 14px 14px 0 0;
 }
 
-.ov-kpi-primary::before { background: var(--color-button-primary-bg, #6366f1); }
+.ov-kpi-primary::before { background: var(--color-button-primary-bg, #10b981); }
 .ov-kpi-success::before { background: var(--color-feedback-success-text, #22c55e); }
 .ov-kpi-purple::before  { background: #a855f7; }
-.ov-kpi-blue::before    { background: #3b82f6; }
+.ov-kpi-blue::before    { background: #10b981; }
 
 .ov-kpi-card:hover {
   transform: translateY(-3px);
@@ -411,9 +411,9 @@
 }
 
 .ov-dot-warning { background: #f59e0b; }
-.ov-dot-info    { background: #3b82f6; }
+.ov-dot-info    { background: #10b981; }
 .ov-dot-success { background: var(--color-feedback-success-text, #22c55e); }
-.ov-dot-primary { background: var(--color-button-primary-bg, #6366f1); }
+.ov-dot-primary { background: var(--color-button-primary-bg, #10b981); }
 .ov-dot-error   { background: var(--color-feedback-error-text, #ef4444); }
 .ov-dot-default { background: var(--color-text-muted); }
 
@@ -450,9 +450,9 @@
 }
 
 .ov-badge-warning { background: color-mix(in srgb, #f59e0b 14%, transparent); color: #92400e; border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent); }
-.ov-badge-info    { background: color-mix(in srgb, #3b82f6 14%, transparent); color: #1e40af; border: 1px solid color-mix(in srgb, #3b82f6 30%, transparent); }
+.ov-badge-info    { background: color-mix(in srgb, #10b981 14%, transparent); color: #1e40af; border: 1px solid color-mix(in srgb, #10b981 30%, transparent); }
 .ov-badge-success { background: color-mix(in srgb, #22c55e 14%, transparent); color: #14532d; border: 1px solid color-mix(in srgb, #22c55e 30%, transparent); }
-.ov-badge-primary { background: color-mix(in srgb, var(--color-button-primary-bg, #6366f1) 14%, transparent); color: var(--color-button-primary-bg, #6366f1); border: 1px solid color-mix(in srgb, var(--color-button-primary-bg, #6366f1) 30%, transparent); }
+.ov-badge-primary { background: color-mix(in srgb, var(--color-button-primary-bg, #10b981) 14%, transparent); color: var(--color-button-primary-bg, #10b981); border: 1px solid color-mix(in srgb, var(--color-button-primary-bg, #10b981) 30%, transparent); }
 .ov-badge-error   { background: color-mix(in srgb, #ef4444 14%, transparent); color: #991b1b; border: 1px solid color-mix(in srgb, #ef4444 30%, transparent); }
 .ov-badge-default { background: var(--color-surface-muted); color: var(--color-text-secondary); border: 1px solid var(--color-border-subtle); }
 
@@ -528,8 +528,8 @@
 /* Timeline dot colour variants */
 .ov-timeline-dot.ov-dot-success { background: color-mix(in srgb, #22c55e 16%, var(--color-surface-muted)); color: #15803d; border-color: color-mix(in srgb, #22c55e 30%, transparent); }
 .ov-timeline-dot.ov-dot-warning { background: color-mix(in srgb, #f59e0b 16%, var(--color-surface-muted)); color: #92400e; border-color: color-mix(in srgb, #f59e0b 30%, transparent); }
-.ov-timeline-dot.ov-dot-info    { background: color-mix(in srgb, #3b82f6 16%, var(--color-surface-muted)); color: #1e40af; border-color: color-mix(in srgb, #3b82f6 30%, transparent); }
-.ov-timeline-dot.ov-dot-primary { background: color-mix(in srgb, var(--color-button-primary-bg, #6366f1) 16%, var(--color-surface-muted)); color: var(--color-button-primary-bg, #6366f1); border-color: color-mix(in srgb, var(--color-button-primary-bg, #6366f1) 30%, transparent); }
+.ov-timeline-dot.ov-dot-info    { background: color-mix(in srgb, #10b981 16%, var(--color-surface-muted)); color: #1e40af; border-color: color-mix(in srgb, #10b981 30%, transparent); }
+.ov-timeline-dot.ov-dot-primary { background: color-mix(in srgb, var(--color-button-primary-bg, #10b981) 16%, var(--color-surface-muted)); color: var(--color-button-primary-bg, #10b981); border-color: color-mix(in srgb, var(--color-button-primary-bg, #10b981) 30%, transparent); }
 .ov-timeline-dot.ov-dot-error   { background: color-mix(in srgb, #ef4444 16%, var(--color-surface-muted)); color: #991b1b; border-color: color-mix(in srgb, #ef4444 30%, transparent); }
 .ov-timeline-dot.ov-dot-default { background: var(--color-surface-muted); color: var(--color-text-muted); }
 
@@ -664,7 +664,7 @@
   flex-shrink: 0;
 }
 
-.ov-status-active    { background: color-mix(in srgb, #3b82f6 15%, transparent); color: #1e40af; border: 1px solid color-mix(in srgb, #3b82f6 30%, transparent); }
+.ov-status-active    { background: color-mix(in srgb, #10b981 15%, transparent); color: #1e40af; border: 1px solid color-mix(in srgb, #10b981 30%, transparent); }
 .ov-status-completed { background: color-mix(in srgb, #22c55e 15%, transparent); color: #14532d; border: 1px solid color-mix(in srgb, #22c55e 30%, transparent); }
 
 @media (prefers-color-scheme: dark) {
@@ -683,8 +683,8 @@
   height: 100%;
   background: linear-gradient(
     90deg,
-    var(--color-button-primary-bg, #6366f1),
-    color-mix(in srgb, var(--color-button-primary-bg, #6366f1) 65%, #a855f7)
+    var(--color-button-primary-bg, #10b981),
+    color-mix(in srgb, var(--color-button-primary-bg, #10b981) 65%, #a855f7)
   );
   border-radius: 999px;
   transition: width 0.5s ease;
@@ -841,7 +841,7 @@
 .ov-analytics-cta:hover {
   opacity: 0.9;
   transform: translateY(-1px);
-  box-shadow: var(--shadow-button-primary), 0 4px 14px color-mix(in srgb, var(--color-button-primary-bg, #6366f1) 28%, transparent);
+  box-shadow: var(--shadow-button-primary), 0 4px 14px color-mix(in srgb, var(--color-button-primary-bg, #10b981) 28%, transparent);
 }
 
 /* ── Focus visible ───────────────────────────────────────── */
@@ -853,7 +853,7 @@
 .ov-empty-cta:focus-visible,
 .ov-panel-footer-btn:focus-visible,
 .ov-section-action:focus-visible {
-  outline: 2px solid var(--color-primary-strong, #6366f1);
+  outline: 2px solid var(--color-primary-strong, #10b981);
   outline-offset: 2px;
 }
 

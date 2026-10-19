@@ -1356,7 +1356,7 @@
   padding: 1.25rem;
   border: 1px solid rgba(71, 85, 105, 0.45);
   border-radius: 18px;
-  background: rgba(15, 23, 42, 0.72);
+  background: rgba(19, 19, 22, 0.72);
 }
 
 .it-usage-card--charts {
@@ -1477,9 +1477,9 @@
   height: 44px;
   padding: 0 2.75rem 0 0.95rem;
   border-radius: 14px;
-  border: 1px solid rgba(96, 165, 250, 0.22);
+  border: 1px solid rgba(16, 185, 129, 0.22);
   background:
-    linear-gradient(180deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.96));
+    linear-gradient(180deg, rgba(28, 28, 33, 0.98), rgba(19, 19, 22, 0.96));
   color: #e2e8f0;
   font: inherit;
   font-size: 0.92rem;
@@ -1519,9 +1519,9 @@
 
 .it-usage-filter-control:focus {
   outline: none;
-  border-color: rgba(96, 165, 250, 0.78);
+  border-color: rgba(16, 185, 129, 0.78);
   box-shadow:
-    0 0 0 4px rgba(59, 130, 246, 0.16),
+    0 0 0 4px rgba(16, 185, 129, 0.16),
     0 14px 28px rgba(2, 8, 23, 0.2);
 }
 
@@ -1612,8 +1612,8 @@
 }
 
 .it-usage-export-btn.is-secondary {
-  border-color: rgba(96, 165, 250, 0.34);
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.95), rgba(29, 78, 216, 0.95));
+  border-color: rgba(16, 185, 129, 0.34);
+  background: linear-gradient(180deg, rgba(5, 150, 105, 0.95), rgba(4, 120, 87, 0.95));
   color: #eff6ff;
   box-shadow: 0 12px 24px rgba(30, 64, 175, 0.22);
 }
@@ -1663,7 +1663,7 @@
   padding: 1rem;
   border-radius: 16px;
   border: 1px solid rgba(71, 85, 105, 0.3);
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.58), rgba(15, 23, 42, 0.38));
+  background: linear-gradient(180deg, rgba(19, 19, 22, 0.58), rgba(19, 19, 22, 0.38));
 }
 
 .it-usage-panel-head {
@@ -1692,15 +1692,15 @@
   padding: 0.35rem 0.7rem;
   border-radius: 999px;
   text-align: center;
-  background: rgba(59, 130, 246, 0.14);
+  background: rgba(16, 185, 129, 0.14);
   color: #bfdbfe;
 }
 
 .it-usage-summary-pill {
   padding: 0.9rem 1rem;
-  border: 1px solid rgba(96, 165, 250, 0.18);
+  border: 1px solid rgba(16, 185, 129, 0.18);
   border-radius: 14px;
-  background: rgba(30, 41, 59, 0.72);
+  background: rgba(28, 28, 33, 0.72);
 }
 
 .it-usage-summary-pill span {
@@ -1750,7 +1750,7 @@
 .it-usage-launch-history {
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 0.75rem;
-  background: rgba(15, 23, 42, 0.38);
+  background: rgba(19, 19, 22, 0.38);
   padding: 1rem;
 }
 
@@ -1758,7 +1758,7 @@
   border: 1px solid rgba(52, 211, 153, 0.22);
   border-radius: 0.75rem;
   background:
-    linear-gradient(180deg, rgba(20, 83, 45, 0.18), rgba(15, 23, 42, 0.42));
+    linear-gradient(180deg, rgba(20, 83, 45, 0.18), rgba(19, 19, 22, 0.42));
   padding: 1rem;
 }
 
@@ -1817,9 +1817,9 @@
 
 .it-usage-launch-stats span,
 .it-usage-launch-empty {
-  border: 1px solid rgba(96, 165, 250, 0.24);
+  border: 1px solid rgba(16, 185, 129, 0.24);
   border-radius: 999px;
-  background: rgba(59, 130, 246, 0.12);
+  background: rgba(16, 185, 129, 0.12);
   color: #bfdbfe;
   font-size: 0.72rem;
   font-weight: 700;
@@ -1848,7 +1848,7 @@
   align-items: center;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 0.65rem;
-  background: rgba(15, 23, 42, 0.5);
+  background: rgba(19, 19, 22, 0.5);
   padding: 0.75rem;
 }
 
@@ -1919,7 +1919,7 @@
 .it-usage-kling-metrics > div {
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 0.65rem;
-  background: rgba(15, 23, 42, 0.52);
+  background: rgba(19, 19, 22, 0.52);
   padding: 0.8rem;
 }
 
@@ -2287,22 +2287,22 @@
 .it-tool-launch-row:hover,
 .it-tool-launch-row:focus-visible,
 .it-tool-launch-row.is-expanded {
-  background: rgba(30, 41, 59, 0.46);
+  background: rgba(28, 28, 33, 0.46);
   outline: none;
 }
 
 .it-tool-launch-detail-row td {
   padding: 0 0.75rem 1rem;
-  background: rgba(15, 23, 42, 0.36);
+  background: rgba(19, 19, 22, 0.36);
 }
 
 .it-tool-launch-detail {
   display: grid;
   gap: 0.9rem;
   padding: 1rem;
-  border: 1px solid rgba(96, 165, 250, 0.18);
+  border: 1px solid rgba(16, 185, 129, 0.18);
   border-radius: 14px;
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.86), rgba(15, 23, 42, 0.58));
+  background: linear-gradient(180deg, rgba(19, 19, 22, 0.86), rgba(19, 19, 22, 0.58));
 }
 
 .it-tool-launch-detail-grid {
@@ -2343,7 +2343,7 @@
 .it-tool-launch-empty-detail {
   padding: 0.75rem 0.85rem;
   border-radius: 12px;
-  background: rgba(30, 41, 59, 0.52);
+  background: rgba(28, 28, 33, 0.52);
   border: 1px solid rgba(71, 85, 105, 0.26);
 }
 
@@ -2395,9 +2395,9 @@
   display: grid;
   gap: 0.15rem;
   padding: 0.45rem 0.55rem;
-  border: 1px solid rgba(96, 165, 250, 0.22);
+  border: 1px solid rgba(16, 185, 129, 0.22);
   border-radius: 10px;
-  background: rgba(15, 23, 42, 0.52);
+  background: rgba(19, 19, 22, 0.52);
   color: #bfdbfe;
   text-decoration: none;
 }
@@ -2418,9 +2418,9 @@
   display: grid;
   gap: 0.15rem;
   padding: 0.45rem 0.55rem;
-  border: 1px solid rgba(96, 165, 250, 0.22);
+  border: 1px solid rgba(16, 185, 129, 0.22);
   border-radius: 10px;
-  background: rgba(15, 23, 42, 0.52);
+  background: rgba(19, 19, 22, 0.52);
   color: #bfdbfe;
   text-decoration: none;
 }
@@ -2488,8 +2488,8 @@
   min-height: 24px;
   padding: 0.2rem 0.5rem;
   border-radius: 999px;
-  border: 1px solid rgba(96, 165, 250, 0.22);
-  background: rgba(30, 41, 59, 0.54);
+  border: 1px solid rgba(16, 185, 129, 0.22);
+  background: rgba(28, 28, 33, 0.54);
   color: #bfdbfe;
   font-size: 0.72rem;
   line-height: 1.2;
@@ -2508,7 +2508,7 @@
 .it-usage-detail-item {
   padding: 0.55rem 0.7rem;
   border-radius: 12px;
-  background: rgba(30, 41, 59, 0.62);
+  background: rgba(28, 28, 33, 0.62);
   border: 1px solid rgba(71, 85, 105, 0.22);
 }
 
@@ -2580,8 +2580,8 @@
   min-width: 120px;
   padding: 0.55rem 0.75rem;
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.7);
-  border: 1px solid rgba(96, 165, 250, 0.18);
+  background: rgba(19, 19, 22, 0.7);
+  border: 1px solid rgba(16, 185, 129, 0.18);
   text-align: right;
 }
 
@@ -2617,7 +2617,7 @@
   gap: 0.2rem;
   padding: 0.7rem 0.8rem;
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.42);
+  background: rgba(19, 19, 22, 0.42);
   border: 1px solid rgba(71, 85, 105, 0.24);
 }
 
@@ -2655,7 +2655,7 @@
 .it-usage-prompt {
   padding: 0.75rem 0.85rem;
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.44);
+  background: rgba(19, 19, 22, 0.44);
   border: 1px solid rgba(71, 85, 105, 0.26);
 }
 
@@ -2703,8 +2703,8 @@
   max-width: 100%;
   padding: 0.38rem 0.55rem;
   border-radius: 999px;
-  background: rgba(96, 165, 250, 0.12);
-  border: 1px solid rgba(96, 165, 250, 0.2);
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.2);
   color: #dbeafe;
   font-size: 0.78rem;
   font-weight: 700;

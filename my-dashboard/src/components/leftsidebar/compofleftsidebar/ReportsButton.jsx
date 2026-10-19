@@ -6,8 +6,8 @@ const ReportsButton = ({ isActive, onClick }) => {
     <button
       className={`menu-button${isActive ? ' active' : ''}`}
       onClick={onClick}
-      data-label="Reports"
-      aria-label="Reports"
+      data-label="Reports & Excel"
+      aria-label="Reports & Excel"
       aria-current={isActive ? 'page' : undefined}
     >
       <span className="menu-button-icon" aria-hidden="true">
@@ -19,7 +19,7 @@ const ReportsButton = ({ isActive, onClick }) => {
           <rect x="17" y="13" width="3" height="4" />
         </svg>
       </span>
-      <span className="menu-button-label">Reports</span>
+      <span className="menu-button-label">Reports &amp; Spend</span>
     </button>
   );
 };

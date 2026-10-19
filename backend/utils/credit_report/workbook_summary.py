@@ -38,10 +38,11 @@ from openpyxl.worksheet.properties import PageSetupProperties
 
 from .facts import NO_CLIENT, UNASSIGNED, UNASSIGNED_USER_ID
 from .management import (LOW_USE, NO_FEE, NOT_USED, RENEWAL_PASSED, ManagementView, change_text, inr, pct)
+from .xlsx_styles import apply_style_flags
 
 OTHER_AI_LINE = "Other AI subscriptions (usage not tracked)"
 # Team & Clients columns A-L: names, departments / accounts, then figures; G holds clients and tools.
-TEAM_WIDTHS = (24, 21, 13, 12, 13, 15, 22, 13, 12, 12, 12, 12)
+TEAM_WIDTHS = (24, 21, 13, 12, 13, 22, 22, 13, 12, 12, 12, 12)   # F, G: client names ("New-business pitches")
 
 SUMMARY = "Summary"
 TEAM = "Team & Clients"
@@ -113,6 +114,11 @@ GLOSSARY_TERMS = (
     ("To confirm", "A fee being checked with accounts: a renewal date that has passed (its unused fee is left out "
                    "of the totals until confirmed still billed) or a fee that may be monthly or annual."),
     ("Item generated", "One image, video, voice clip or song made with an AI tool and charged by it."),
+    ("Most used tool", "The tool with the most items generated (charged items only), with its ₹ beside it. Never "
+                       "decided by credits, which differ from tool to tool. Equal counts are shown together; a "
+                       "single tool is the \"only tool used\"."),
+    ("Tool mix", "How a person's (or a client's) items split across tools, most → least, in whole % that add up "
+                 "to 100. The Tool Mix sheet shows it per month and day by day."),
     ("Credit / Credits used", "Each tool's own unit of use. A Kling credit is not a Freepik credit, so credits are "
                               "never added across tools: compare tools in ₹."),
     ("Charged", "The tool finished the item and took its cost. Only charged items count in totals."),
@@ -267,7 +273,9 @@ def _top_rows(p: Page, sheet: str, back_to: Optional[tuple], jumps: list):
         p.put(1, 1, "AI tools report", font=F_SMALL)
     p.put(2, 1, sheet, font=F_TAG, fill=FILL_HEADER)
     for i, (label, row) in enumerate(jumps, start=2):
-        p.link(2, i, sheet, f"A{row}", f"↓ {label}", font=F_BACK)
+        # The page layout is fixed (one A4 page): a long jump shrinks to its cell rather than being cut.
+        p.link(2, i, sheet, f"A{row}", f"↓ {label}", font=F_BACK).alignment = Alignment(shrink_to_fit=True,
+                                                                                         vertical="center")
 
 
 def _section(p: Page, row: int, sheet: str, title: str, jumped: bool = True, col=1):
@@ -837,6 +845,7 @@ def write_management_workbook(path: str, v: ManagementView) -> None:
     write_team(team, v, back_to=back)
     write_glossary(glossary, back_to=back)
     wb.save(path)
+    apply_style_flags(path)
 
 
 __all__ = ["SUMMARY", "TEAM", "GLOSSARY", "DETAILS", "CHART_DATA", "MANAGEMENT_SHEETS", "THEME", "GLOSSARY_TERMS",

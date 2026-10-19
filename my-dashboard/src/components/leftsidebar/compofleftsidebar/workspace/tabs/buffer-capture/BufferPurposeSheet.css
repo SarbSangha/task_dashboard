@@ -26,7 +26,7 @@
   font-size: 0.85rem;
   min-width: 220px;
   background: var(--color-surface-elevated, #fff);
-  color: var(--color-text-primary, #0f172a);
+  color: var(--color-text-primary, #131316);
 }
 
 .bps-loading {
@@ -70,7 +70,7 @@
   font-weight: 800;
   letter-spacing: 0.03em;
   font-size: 0.9rem;
-  color: #0f172a;
+  color: #131316;
   cursor: pointer;
   text-align: left;
   flex: 1;
@@ -85,14 +85,14 @@
   font-weight: 800;
   letter-spacing: 0.03em;
   font-size: 0.9rem;
-  color: #0f172a;
+  color: #131316;
   flex: 1;
 }
 
 .bps-group-delete {
   border: none;
   background: transparent;
-  color: #0f172a;
+  color: #131316;
   opacity: 0.65;
   cursor: pointer;
   padding: 6px 8px;
@@ -102,7 +102,7 @@
 
 .bps-group-delete:hover {
   opacity: 1;
-  background: rgba(15, 23, 42, 0.1);
+  background: rgba(19, 19, 22, 0.1);
 }
 
 .bps-row {
@@ -135,7 +135,7 @@
   padding: 7px 8px;
   font-size: 0.85rem;
   border-radius: 6px;
-  color: var(--color-text-primary, #0f172a);
+  color: var(--color-text-primary, #131316);
 }
 
 .bps-cell input:hover {
@@ -144,7 +144,7 @@
 
 .bps-cell input:focus {
   outline: none;
-  border-color: var(--color-primary-strong, #2563eb);
+  border-color: var(--color-primary-strong, #059669);
   background: var(--color-surface-elevated, #fff);
 }
 
@@ -197,7 +197,7 @@
 .bps-export-toggle-all {
   border: none;
   background: transparent;
-  color: var(--color-primary-strong, #2563eb);
+  color: var(--color-primary-strong, #059669);
   font-size: 0.78rem;
   font-weight: 600;
   cursor: pointer;
@@ -219,7 +219,7 @@
   align-items: center;
   gap: 8px;
   font-size: 0.85rem;
-  color: var(--color-text-primary, #0f172a);
+  color: var(--color-text-primary, #131316);
   padding: 3px 0;
 }
 

@@ -47,11 +47,12 @@ from openpyxl.worksheet.filters import AutoFilter
 from openpyxl.worksheet.table import Table, TableColumn, TableStyleInfo
 
 from . import navigation as N
+from .xlsx_styles import apply_style_flags
 from .facts import (CHARGED, CREDITS_NOT_CAPTURED, FAILED, NO_CLIENT, PENDING, UNASSIGNED, UNASSIGNED_USER_ID,
                     ReportFilters, cost_note)
 from .model import ReportModel, Top
 from .navigation import (  # noqa: F401  (sheet names are part of this module's API)
-    BY_DATE, CLIENT, DEPT, DEPT_TOOL, DRILL, HOME, LOG, PERIOD, QUALITY, SHEET_PARENT, TOOL, TREND, USER,
+    BY_DATE, CLIENT, DEPT, DEPT_TOOL, DRILL, HOME, LOG, PERIOD, QUALITY, SHEET_PARENT, TOOL, TOOL_MIX, TREND, USER,
     USER_CLIENT, USER_TOOL,
 )
 
@@ -61,18 +62,20 @@ IST = timedelta(minutes=330)
 XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 LISTS = "Lists"            # hidden: dropdown values for Period Explorer
-SHEET_ORDER = (HOME, PERIOD, BY_DATE, DEPT, USER, TOOL, CLIENT, DEPT_TOOL, USER_TOOL, USER_CLIENT, TREND, DRILL,
-               QUALITY, LOG)
+SHEET_ORDER = (HOME, PERIOD, BY_DATE, DEPT, USER, TOOL, CLIENT, TOOL_MIX, DEPT_TOOL, USER_TOOL, USER_CLIENT, TREND,
+               DRILL, QUALITY, LOG)
 
 SHEET_PURPOSE = {
     HOME: "Headline numbers, quick answers and this index.",
     PERIOD: "Pick any From / To dates and filters; every total, table and top answer recalculates.",
-    BY_DATE: "Every date, then one block per date: who worked that day, for which clients, with which tools.",
+    BY_DATE: "Every date, then one block per date: the tools used that day (most → least), who worked, for which "
+             "clients - down to each generation.",
     DRILL: "One block per month: departments, users, tools and clients for that month.",
     DEPT: "Departments, then one block per department: its people and the tools they use.",
     USER: "Ranked users, then one block per user: tools used, clients, date-wise use, tool › date › client.",
     TOOL: "Ranked tools (most used first), then one block per tool: users, clients, date-wise use.",
-    CLIENT: "Credits, users, top user and top tool for each client.",
+    CLIENT: "Every client, then one block per client: tools used (most → least), people, dates, generations.",
+    TOOL_MIX: "Which tool each person used most each month (and each day), and which tools each client got.",
     DEPT_TOOL: "Which tool each department uses most (credits).",
     USER_TOOL: "Each user's credits per tool, sorted by department. Filterable.",
     USER_CLIENT: "For which clients each user used each tool, sorted by client.",
@@ -136,6 +139,10 @@ LOG_BACK_BYDATE = "⬅ By Date"       # first row of a run -> By Date's User ›
 LOG_BACK_COLUMNS = (LOG_BACK_USER, "⬅ Tool", LOG_BACK_DATE, LOG_BACK_TOOL_DATE, LOG_BACK_CLIENT, LOG_BACK_BYDATE)
 LOG_BACK_QUALITY = "⬅ Data Quality"
 LOG_BACK_DRILL = "⬅ Drill-down"
+LOG_BACK_CLIENT_DAY = "⬅ Client day"  # first row of a (user, tool, day, client) run -> By Client's Date › Person › Tool
+LOG_BACK_MIX_MONTH = "⬅ Mix month"    # first row of a (user, tool, month) run -> Tool Mix's monthly tool split
+LOG_BACK_MIX_DAY = "⬅ Mix day"        # first row of a (user, tool, day) run -> Tool Mix's day-by-day cell
+LOG_BACK_RIGHT = (LOG_BACK_QUALITY, LOG_BACK_DRILL, LOG_BACK_CLIENT_DAY, LOG_BACK_MIX_MONTH, LOG_BACK_MIX_DAY)
 PROMPT_FULL = "Prompt (full)"
 LOG_NOTE = "Use filters, don't re-sort: links point to fixed rows."
 FILL_LOG_USER = PatternFill("solid", fgColor="BDD7EE")
@@ -250,6 +257,20 @@ def unique_headers(labels) -> list:
 
 def figures(credits: float, generations: int) -> str:
     return f"{credits:,.2f} credits · {generations:,} gen{'' if generations == 1 else 's'}"
+
+
+def item_figures(items: int, rupees: float) -> str:
+    return f"{items:,} item{'' if items == 1 else 's'} · ₹{rupees:,.0f}"
+
+
+def items_detail(top: Top, name_of=str) -> str:
+    """Items and ₹ of a "most used tool" answer, plus any tied names."""
+    if not top:
+        return "—"
+    text = item_figures(top.generations, top.rupees)
+    if len(top.keys) > 1:
+        text += " · tied with " + ", ".join(name_of(k) for k in top.keys[1:])
+    return text
 
 
 def top_detail(top: Top, name_of=str) -> str:
@@ -449,6 +470,14 @@ class Layout:
     tool_duc_date_row: dict = field(default_factory=dict)      # (tool, day or week) -> its first D›U›C row
     tool_date_row: dict = field(default_factory=dict)          # (tool, day or week) -> row in the tool's Date-wise
     tool_weekly: dict = field(default_factory=dict)
+    client_block_row: dict = field(default_factory=dict)       # client -> its block's header row on By Client
+    client_block_end: dict = field(default_factory=dict)
+    client_date_row: dict = field(default_factory=dict)        # (client, day or week) -> row in its Date-wise
+    client_dpt_row: dict = field(default_factory=dict)         # (client, day, user id, tool) -> Date › Person › Tool row
+    client_dpt_date_row: dict = field(default_factory=dict)    # (client, day or week) -> its first D›P›T row
+    client_weekly: dict = field(default_factory=dict)
+    user_mix_row: dict = field(default_factory=dict)           # user id -> its block's "↔ Tool mix" row on By User
+    mix: object = None                                         # workbook_mix.MixLayout
     uc_row: dict = field(default_factory=dict)                 # (user id, client, tool) -> User × Client row
     uc_first_run: dict = field(default_factory=dict)           # (user id, tool, client) -> its newest log run key
     tool_list_order: list = field(default_factory=list)        # tools, most used first (By Tool list order)
@@ -507,6 +536,10 @@ class Layout:
             WB.plan_user_blocks(model, blocks, lay, FIRST_DATA_ROW + len(model.users) + 3)
         if model.tools:
             WB.plan_tool_blocks(lay.tool_list_order, blocks, lay, FIRST_DATA_ROW + len(model.tools) + 3)
+        if model.clients:
+            WB.plan_client_blocks(model, blocks, lay, FIRST_DATA_ROW + len(model.clients) + 3)
+        from . import workbook_mix as WM
+        lay.mix = WM.plan_mix(model, blocks, lay)
         return lay
 
 
@@ -547,7 +580,7 @@ def log_headers(model: ReportModel) -> list:
     if model.model_fill >= DROP_COLUMN_FILL_BELOW:
         headers.append("Model / type")
     headers += ["Prompt", "Output", "Credits", RUPEES, "Cost note", "Charge status", "Charged", "Raw status",
-                DUPLICATE_LABEL, LOG_BACK_QUALITY, LOG_BACK_DRILL, PROMPT_FULL]
+                DUPLICATE_LABEL, *LOG_BACK_RIGHT, PROMPT_FULL]
     return headers
 
 
@@ -677,8 +710,10 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
     """Stream the log: user header row, then per tool a separator row and its
     generations newest first (blocks.LogPlan decided every row up front)."""
     from .blocks import BlockData
-    from .workbook_blocks import (DATE_UCT_LINK_COL, TOOL_DUC_LINK_COL, TOOL_USERS_LINK_COL, USER_ALL_GENS_COL,
-                                  USER_TDC_LINK_COL, USER_TOOLS_LINK_COL)
+    from .blocks import month_of
+    from .workbook_blocks import (CLIENT_DPT_LINK_COL, DATE_UCT_LINK_COL, TOOL_DUC_LINK_COL, TOOL_USERS_LINK_COL,
+                                  USER_ALL_GENS_COL, USER_TDC_LINK_COL, USER_TOOLS_LINK_COL)
+    from .workbook_mix import MIX_SPLIT_LINK_COL
 
     blocks = blocks or BlockData()
     plan = blocks.log
@@ -728,7 +763,8 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
         return out
 
     seen_user, seen_pair, seen_run = None, None, None
-    seen_uc = set()
+    seen_uc, seen_day_run, seen_month_run = set(), None, None
+    mix = lay.mix
     for e in _entries(rows, duplicates):
         r = e["row"]
         uid = e["user"]
@@ -771,6 +807,21 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
         client = r.client or NO_CLIENT
         run = (uid, r.tool, day_key, client)
         back_date = back_tool_date = back_client = back_by_date = w.cell()
+        back_client_day = back_mix_month = back_mix_day = w.cell()
+        if day_key and (uid, r.tool, day_key) != seen_day_run:
+            # First row of a (user, tool, day) run: Tool Mix's day cell links here;
+            # of a (user, tool, month) run: its monthly tool split row.
+            seen_day_run = (uid, r.tool, day_key)
+            at = mix.day_cell.get(seen_day_run) if mix else None
+            if at:
+                back_mix_day = back(TOOL_MIX, at[0], at[1], N.back_label(TOOL_MIX, f"{day_key:%d %b}"))
+            month_run = (uid, r.tool, month_of(day_key))
+            if month_run != seen_month_run:
+                seen_month_run = month_run
+                split = mix.split_row.get((uid, month_run[2], r.tool)) if mix else None
+                if split:
+                    back_mix_month = back(TOOL_MIX, split, MIX_SPLIT_LINK_COL,
+                                          N.back_label(TOOL_MIX, f"{day_key:%b %Y}"))
         if run != seen_run:
             # First row of a (user, tool, day, client) run: the user's Tool ›
             # Date › Client row ("⬅ Date"), the tool's Date › User › Client row
@@ -787,6 +838,9 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
             uct = lay.date_uct_row.get((day_key, uid, client, r.tool))
             if uct:
                 back_by_date = back(BY_DATE, uct, DATE_UCT_LINK_COL, N.back_label(BY_DATE, f"{day_key:%d %b}"))
+            dpt = lay.client_dpt_row.get((client, day_key, uid, r.tool))
+            if dpt:
+                back_client_day = back(CLIENT, dpt, CLIENT_DPT_LINK_COL, N.back_label(CLIENT, f"{day_key:%d %b}"))
             uc = (uid, client, r.tool)
             if uc not in seen_uc and lay.uc_first_run.get((uid, r.tool, client)) == run and uc in lay.uc_row:
                 seen_uc.add(uc)
@@ -872,6 +926,9 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
             DUPLICATE_LABEL: w.text(DUPLICATE_LABEL if e["dup"] else "", align=TOP_ALIGN, fill=FILL_WARN if e["dup"] else None),
             LOG_BACK_QUALITY: back_quality,
             LOG_BACK_DRILL: back_drill,
+            LOG_BACK_CLIENT_DAY: back_client_day,
+            LOG_BACK_MIX_MONTH: back_mix_month,
+            LOG_BACK_MIX_DAY: back_mix_day,
             PROMPT_FULL: w.text(r.prompt or "", align=TOP_ALIGN),
         }
         ws.append([values[h] for h in headers])
@@ -990,7 +1047,7 @@ def _write_departments(sheets, model, lay, period_label, blocks):
 
     ws, w = sheets[DEPT]
     headers = ["Department", "Credits", RUPEES, "% of total", "Generations", "Pending credits", "Active users",
-               "Top user", "Top user credits · gens", "Top named user", "Top tool", "Top tool credits · gens",
+               "Top user", "Top user credits · gens", "Top named user", "Most used tool", "Most used tool items · ₹",
                "In User × Tool", "In Monthly Trend", "In Dept × Tool"]
     _preamble(ws, w, DEPT, f"{period_label} · Charged credits. A department name opens its block below (its people "
                            "and the tools they use; collapse it with the − button). ↔ cells open the same department "
@@ -1005,7 +1062,7 @@ def _write_departments(sheets, model, lay, period_label, blocks):
             w.credits(t.pending_credits), w.count(d.users),
             _top_user_link(w, model, lay, d.top_user), w.text(top_detail(d.top_user, _user_name(model))),
             _top_named_user_cell(w, model, lay, d),
-            _top_link(w, TOOL, lay.tool_row, d.top_tool, lay), w.text(top_detail(d.top_tool)),
+            _top_link(w, TOOL, lay.tool_row, d.top_tool, lay), w.text(items_detail(d.top_tool)),
             w.link(internal_target(USER_TOOL, lay.user_tool_first_dept_row[d.name], "B"), sideways(d.name, USER_TOOL)),
             _trend_link(w, lay, "dept", d.name, d.name),
             w.link(internal_target(DEPT_TOOL, lay.dept_tool_row[d.name]), sideways(d.name, DEPT_TOOL)),
@@ -1033,6 +1090,8 @@ def _pick_detail(pick) -> str:
     if not pick.name:
         return "—"
     a = pick.agg
+    if pick.by_items:
+        return f"{item_figures(a.gens, a.rupees)} ({pick.share:.0%} of items)"
     text = f"{a.credits:,.2f} credits · {a.gens:,} gen{'' if a.gens == 1 else 's'}"
     return text + " (by generations: no credits recorded)" if pick.by_generations else text
 
@@ -1043,7 +1102,7 @@ def _write_users(sheets, model, lay, period_label, blocks):
     ws, w = sheets[USER]
     headers = ["User", "Employee ID", "Department", "Credits", RUPEES, "% of company total", "Generations",
                "Credits per generation", "Pending credits", "% generations with a client", "Rank in company",
-               "Rank in department", "Most used tool", "Most used tool credits · gens", "Mostly works on client",
+               "Rank in department", "Most used tool", "Most used tool items · ₹", "Mostly works on client",
                "Client share", "In Monthly Trend", "Open"]
     _preamble(ws, w, USER, f"{period_label} · Charged credits. A name or \"Open block →\" opens that user's block "
                            "below (tools, clients, date-wise, tool › date › client; collapse it with the − button). "
@@ -1116,7 +1175,7 @@ def _write_tools(sheets, model, lay, period_label, blocks):
             w.credits(t.credits), w.rupees(t.rupees), w.pct(r.share), w.count(t.generations),
             w.credits(t.credits_per_generation),
             w.credits(t.pending_credits), w.count(r.users),
-            w.text("1 ★ Most used" if i == 0 else str(i + 1), font=F_BOLD if i == 0 else None),
+            w.text(str(i + 1), font=F_BOLD if i == 0 else None),
             _top_user_link(w, model, lay, r.top_user), w.text(top_detail(r.top_user, _user_name(model))),
             _top_named_user_cell(w, model, lay, r),
             client_link(w, lay, client.name) if client and client.name else w.text("—"),
@@ -1142,25 +1201,34 @@ def _write_tools(sheets, model, lay, period_label, blocks):
     WB.write_tool_blocks(sheets, model, blocks, lay, lay.tool_list_order)
 
 
-def _write_clients(sheets, model, lay, period_label):
+def _write_clients(sheets, model, lay, period_label, blocks=None):
+    from . import workbook_blocks as WB
+
     ws, w = sheets[CLIENT]
     headers = ["Client", "Credits", RUPEES, "% of total", "Generations", "Pending credits", "Users",
-               "Top user", "Top user credits · gens", "Top named user", "Top tool", "Top tool credits · gens",
-               "In Monthly Trend", "In User × Client"]
-    _preamble(ws, w, CLIENT, f"{period_label} · Charged credits. ↔ cells open the same client in another sheet.")
+               "Top user", "Top user credits · gens", "Top named user", "Most used tool", "Most used tool items · ₹",
+               "In Monthly Trend", "In User × Client", "Open"]
+    _preamble(ws, w, CLIENT, f"{period_label} · Charged credits. A name or \"Open block →\" opens that client's "
+                             "block below (tools used most → least, people, dates and each generation). ↔ cells open "
+                             "the same client in another sheet.")
     ws.append(w.header(headers))
     for r in model.clients:
         t = r.totals
         first = lay.user_client_first_row.get(r.name)
-        name = w.text(r.name, font=Font(italic=True) if r.name == NO_CLIENT else None)
+        block = lay.client_block_row.get(r.name)
+        # Down to the block is plain navigation: its header links straight back here.
+        name = w.nav(internal_target(CLIENT, block), r.name) if block else w.text(r.name)
+        if r.name == NO_CLIENT:
+            name.font = Font(color="0563C1", underline="single", italic=True) if block else Font(italic=True)
         ws.append([
             name, w.credits(t.credits), w.rupees(t.rupees), w.pct(r.share), w.count(t.generations),
             w.credits(t.pending_credits), w.count(r.users),
             _top_user_link(w, model, lay, r.top_user), w.text(top_detail(r.top_user, _user_name(model))),
             _top_named_user_cell(w, model, lay, r),
-            _top_link(w, TOOL, lay.tool_row, r.top_tool, lay), w.text(top_detail(r.top_tool)),
+            _top_link(w, TOOL, lay.tool_row, r.top_tool, lay), w.text(items_detail(r.top_tool)),
             _trend_link(w, lay, "client", r.name, r.name),
             w.link(internal_target(USER_CLIENT, first, "C"), sideways(r.name, USER_CLIENT)) if first else w.text("—"),
+            w.nav(internal_target(CLIENT, block), "Open block →") if block else w.text("—"),
         ])
     if not model.clients:
         _empty_row(ws, w, len(headers))
@@ -1172,13 +1240,16 @@ def _write_clients(sheets, model, lay, period_label):
                w.total_cell(round(t.rupees, 2), INR_FMT),
                w.total_cell(1.0 if t.credits else 0.0, PCT_FMT), w.total_cell(t.generations, COUNT_FMT),
                w.total_cell(t.pending_credits, CREDITS_FMT)])
+    ws.append([])
+    if blocks is not None:
+        WB.write_client_blocks(sheets, model, blocks, lay)
 
 
 def _write_dept_tool(sheets, model, lay, period_label):
     ws, w = sheets[DEPT_TOOL]
     tools = [t.name for t in model.tools]
     headers = unique_headers(["Department"] + tools + ["Total", RUPEES, "Most used tool",
-                                                       "Most used tool credits · gens"])
+                                                       "Most used tool items · ₹"])
     _preamble(ws, w, DEPT_TOOL, f"{period_label} · Charged credits (each tool counts in its own credits; "
                                 f"{RUPEES} is the same use in rupees). Darker cells are heavier use.")
     ws.append(w.header(headers))
@@ -1414,6 +1485,10 @@ class KlingDedupView:
             self.no_id_row = row
 
 
+KLING_JUMP_STEP = 20
+KLING_JUMP_COL = 12                 # the list's "↓" steps start at L, right of its ten columns
+
+
 def _write_kling_lists(ws, w: Writer, kling: KlingDedupView) -> None:
     d = kling.dedup
     if not d:
@@ -1424,30 +1499,48 @@ def _write_kling_lists(ws, w: Writer, kling: KlingDedupView) -> None:
 
     if d.jobs:
         ws.append([])
+        # A long list gets "↓" steps every KLING_JUMP_STEP rows (right of the table), each landing row a
+        # "⬅ Jumps" cell back, so every row is a few clicks from Home.
+        steps = list(range(KLING_JUMP_STEP, len(d.jobs), KLING_JUMP_STEP))
+        first = kling.list_row + 2
+        step_font = Font(color="0563C1", underline="single", size=9)
         ws.append([w.text(RECORDED_TWICE, font=F_SECTION),
-                   w.text("Removed from every total; the kept row is in the Generation Log.", font=F_ITALIC)])
+                   w.text("Removed from every total; the kept row is in the Generation Log.", font=F_ITALIC)]
+                  + [w.cell() for _ in range(KLING_JUMP_COL - 3)]
+                  + [w.nav(internal_target(QUALITY, first + i), f"↓ {d.jobs[i].day:%d %b} ({i + 1:,}+)", font=step_font)
+                     for i in steps])
         headers = ["Date", "Kling job ID", "Kept row", "Kept row recorded by", "Credited to", "How the kept row was found",
                    "Removed row(s)", "Removed rows recorded by", "Credits removed", "Owner uncertain"]
         ws.append(w.header(headers))
-        first = kling.list_row + 2
-        for j in d.jobs:
+        for k, j in enumerate(d.jobs):
+            back = ([w.cell(), w.link(internal_target(QUALITY, kling.list_row,
+                                                      get_column_letter(KLING_JUMP_COL + steps.index(k))),
+                                      "⬅ Jumps", font=N.F_BACK, fill=N.FILL_BACK)] if k in steps else [])
             ws.append([w.cell(as_datetime(j.day), fmt=DATE_ONLY_FMT), w.text(j.job), w.text(str(j.kept.id)),
                        w.text(who(j.kept.user_id)), w.text(who(j.owner_id)),
                        w.text("Started in the dashboard" if not j.owner_uncertain else "History scan only"),
                        w.text(", ".join(str(r.id) for r in j.removed)),
                        w.text(", ".join(sorted({who(r.user_id) for r in j.removed}))),
-                       w.credits(j.removed_credits), w.text("Yes" if j.owner_uncertain else "No")])
+                       w.credits(j.removed_credits), w.text("Yes" if j.owner_uncertain else "No")] + back)
         _add_table(ws, headers, first + len(d.jobs) - 1, "tblKlingRecordedTwice", header_row=first - 1)
     if d.no_job_id:
         ws.append([])
+        steps = list(range(KLING_JUMP_STEP, len(d.no_job_id), KLING_JUMP_STEP))
+        first = kling.no_id_row + 2
+        step_font = Font(color="0563C1", underline="single", size=9)
         ws.append([w.text(NO_JOB_ID, font=F_SECTION),
-                   w.text("Kept in the totals: without a job ID they cannot be checked.", font=F_ITALIC)])
+                   w.text("Kept in the totals: without a job ID they cannot be checked.", font=F_ITALIC)]
+                  + [w.cell() for _ in range(KLING_JUMP_COL - 3)]
+                  + [w.nav(internal_target(QUALITY, first + i), f"↓ {d.no_job_id[i].day:%d %b} ({i + 1:,}+)",
+                           font=step_font) for i in steps])
         headers = ["Date", "Row", "User", "Credits"]
         ws.append(w.header(headers))
-        first = kling.no_id_row + 2
-        for r in d.no_job_id:
+        for k, r in enumerate(d.no_job_id):
+            back = ([w.cell(), w.link(internal_target(QUALITY, kling.no_id_row,
+                                                      get_column_letter(KLING_JUMP_COL + steps.index(k))),
+                                      "⬅ Jumps", font=N.F_BACK, fill=N.FILL_BACK)] if k in steps else [])
             ws.append([w.cell(as_datetime(r.day), fmt=DATE_ONLY_FMT), w.text(str(r.id)), w.text(who(r.user_id)),
-                       w.credits(r.credits)])
+                       w.credits(r.credits)] + back)
         _add_table(ws, headers, first + len(d.no_job_id) - 1, "tblKlingNoJobId", header_row=first - 1)
 
 
@@ -1486,9 +1579,9 @@ def quick_answers(model: ReportModel, lay: Layout) -> list:
     people = [u for u in model.users if not u.is_unassigned]
     qa.append(("How many credits were charged in total?",
                f"{figures(t.credits, t.generations)} across {len(t.users):,} users", (DEPT, lay.dept_total_row, "Total", "A")))
-    top_tool = _top_from_rows(model.tools)
+    top_tool = _top_tool_from_rows(model.tools)
     if top_tool:
-        qa.append(("Which tool is used the most?", _answer(top_tool, str), (TOOL, lay.tool_block_row.get(top_tool.first, lay.tool_row[top_tool.first]), top_tool.first, "A")))
+        qa.append(("Which tool is used the most (items generated)?", _items_answer(top_tool), (TOOL, lay.tool_block_row.get(top_tool.first, lay.tool_row[top_tool.first]), top_tool.first, "A")))
     if model.top_user:
         lead = model.user(model.top_user.first)
         qa.append(("Who is the top user in the company?",
@@ -1500,7 +1593,7 @@ def quick_answers(model: ReportModel, lay: Layout) -> list:
                    (DEPT, lay.dept_row[top_dept.first], top_dept.first, "A")))
         d = next(x for x in model.departments if x.name == top_dept.first)
         if d.top_tool:
-            qa.append((f"Which tool does {d.name} use most?", _answer(d.top_tool, str),
+            qa.append((f"Which tool does {d.name} use most?", _items_answer(d.top_tool),
                        (DEPT_TOOL, lay.dept_tool_row[d.name], d.name, "A")))
     real_clients = [c for c in model.clients if c.name != NO_CLIENT]
     top_client = _top_from_rows(real_clients)
@@ -1509,9 +1602,18 @@ def quick_answers(model: ReportModel, lay: Layout) -> list:
                    (CLIENT, lay.client_row[top_client.first], top_client.first, "A")))
     qa.append(("How many credits are still pending (not yet charged)?", figures(t.pending_credits, t.pending_generations),
                (QUALITY, lay.quality_row[PENDING], PENDING, "A")))
-    qa.append(("Who worked on a given date, and for which clients?",
-               f"{BY_DATE}: every date, its users, and each user's generations per client and tool",
+    qa.append(("What happened on a particular date?",
+               f"{BY_DATE}: pick a date - its tools (most → least, %), people and clients, down to each generation",
                (BY_DATE, 2, BY_DATE, "A")))
+    mix = lay.mix
+    if mix and mix.people:
+        qa.append(("Which tool did a person use most this month?",
+                   f"{TOOL_MIX}: each person's tools per month and per day, most → least with %. "
+                   f"E.g. {mix.example}", (TOOL_MIX, 2, TOOL_MIX, "A")))
+    if lay.client_block_row:
+        qa.append(("Which tools were used for a client?",
+                   f"{CLIENT}: open a client's block - tools most → least with %, by whom, on which dates, "
+                   "and each generation", (CLIENT, 2, CLIENT, "A")))
     qa.append(("What happened in a specific period?",
                "Pick From / To dates (and any filters) in Period Explorer; every total recalculates",
                (PERIOD, 2, PERIOD, "A")))
@@ -1533,6 +1635,19 @@ def _named_note(model) -> str:
     if top.first == UNASSIGNED_USER_ID and model.top_named_user:
         named = model.user(model.top_named_user.first)
         text += f" · top named user: {named.label} ({figures(named.totals.credits, named.totals.generations)})"
+    return text
+
+
+def _top_tool_from_rows(rows) -> Top:
+    """The tool(s) with the most items generated (credits of different tools never compared)."""
+    from .model import top_by_items
+    return top_by_items({r.name: (r.totals.generations, r.totals.rupees) for r in rows})
+
+
+def _items_answer(top: Top) -> str:
+    text = f"{top.first} — {item_figures(top.generations, top.rupees)}"
+    if len(top.keys) > 1:
+        text += " · tied with " + ", ".join(str(k) for k in top.keys[1:])
     return text
 
 
@@ -1572,7 +1687,7 @@ def _write_home(sheets, model, lay, filters, generated_at, dashboard_url, front_
         ws.append([w.text("No credit activity was found for this period and these filters. "
                           "Try a wider date range or remove a filter.", font=F_SECTION, fill=FILL_EMPTY)])
     else:
-        top_tool = _top_from_rows(model.tools)
+        top_tool = _top_tool_from_rows(model.tools)
         top_dept = _top_from_rows(model.departments)
         leaders = [model.user(k) for k in model.top_user.keys]
         top_user_text = ", ".join(u.label for u in leaders) or "—"
@@ -1688,6 +1803,7 @@ def write_workbook(path: str, model: ReportModel, filters: ReportFilters, log_ro
     from . import workbook_blocks as WB
     from . import workbook_periods as WP
     from . import workbook_summary as WS
+    from . import workbook_mix as WM
 
     generated_at = generated_at or (datetime.utcnow() + IST)
     period_label = filters.period.get("label") or f"{filters.start} – {filters.end}"
@@ -1733,7 +1849,9 @@ def write_workbook(path: str, model: ReportModel, filters: ReportFilters, log_ro
                          freeze="B5"),
         TOOL: _new_sheet(wb, TOOL, [18, 14, 13, 10, 12, 13, 13, 9, 14, 26, 34, 22, 22, 22, 32, 48, 18, 22, 16],
                          freeze="B5"),
-        CLIENT: _new_sheet(wb, CLIENT, [30, 14, 13, 10, 12, 13, 9, 26, 34, 22, 18, 32, 24, 24], freeze="B5"),
+        # The blocks below the list reuse A-I (dates, tool splits).
+        CLIENT: _new_sheet(wb, CLIENT, [30, 14, 13, 10, 12, 13, 9, 26, 34, 22, 18, 32, 24, 24, 16], freeze="B5"),
+        TOOL_MIX: _new_sheet(wb, TOOL_MIX, WM.WIDTHS, freeze="B6"),
         DEPT_TOOL: _new_sheet(wb, DEPT_TOOL, [28] + [14] * ntools + [14, 13, 18, 32], freeze="B5"),
         USER_TOOL: _new_sheet(wb, USER_TOOL, [30, 22] + [14] * ntools + [14, 13], freeze="C5"),
         USER_CLIENT: _new_sheet(wb, USER_CLIENT, [30, 22, 30, 16, 12, 14, 13, 14, 24, 44], freeze="B5"),
@@ -1763,7 +1881,8 @@ def write_workbook(path: str, model: ReportModel, filters: ReportFilters, log_ro
     _write_departments(sheets, model, lay, period_label, blocks)
     _write_users(sheets, model, lay, period_label, blocks)
     _write_tools(sheets, model, lay, period_label, blocks)
-    _write_clients(sheets, model, lay, period_label)
+    _write_clients(sheets, model, lay, period_label, blocks)
+    WM.write_mix(sheets, model, blocks, lay, period_label)
     _write_dept_tool(sheets, model, lay, period_label)
     _write_user_tool(sheets, model, lay, period_label)
     _write_user_client(sheets, model, lay, period_label, blocks)
@@ -1783,12 +1902,15 @@ def write_workbook(path: str, model: ReportModel, filters: ReportFilters, log_ro
 
     buffers = {name: ws for name, (ws, _w) in sheets.items() if isinstance(ws, N.BufferedSheet)}
     # Trend and Drill-down hold several tables: label the back columns on each table's header row.
-    header_rows = {BY_DATE: [WB.DATE_HEADER_ROW],
+    header_rows = {BY_DATE: [WB.DATE_HEADER_ROW], TOOL_MIX: lay.mix.header_rows,
                    TREND: [HEADER_ROW] + [h for _k, _t, h in lay.trend.blocks],
                    DRILL: [HEADER_ROW] + [r + 2 for r in lay.drill.block_row.values()]}
     N.resolve(buffers, {name: sheets[name][1] for name in buffers}, SHEET_ORDER, link_formula, internal_target,
               home_section=home_section, header_rows=header_rows)
+    from .fit import fit_columns
     for buf in buffers.values():
+        fit_columns(buf)
         buf.flush()
     wb.save(path)
+    apply_style_flags(path)
     return stats
