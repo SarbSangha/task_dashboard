@@ -341,6 +341,14 @@ export const creditReportAPI = {
   outputUrl: async (tool, id) =>
     (await api.get(`/api/reports/credit/output/${encodeURIComponent(tool)}/${encodeURIComponent(id)}`,
       { timeout: REPORTS_TIMEOUT_MS })).data,
+  // Claude / ChatGPT row: the whole captured conversation.
+  chatTranscript: async (tool, id) =>
+    (await api.get(`/api/reports/credit/output/${encodeURIComponent(tool)}/${encodeURIComponent(id)}/chat`,
+      { timeout: REPORTS_TIMEOUT_MS })).data,
+  // The output file itself, streamed through the backend as an attachment.
+  downloadOutput: async (tool, id) =>
+    api.get(`/api/reports/credit/output/${encodeURIComponent(tool)}/${encodeURIComponent(id)}/download`,
+      { responseType: 'blob', timeout: 300000 }),
 };
 
 // Trigger a browser download from an axios blob response.

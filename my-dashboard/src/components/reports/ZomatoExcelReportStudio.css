@@ -1067,3 +1067,48 @@
     max-width: none;
   }
 }
+
+/* ── Live data indicator (auto-refresh every 2 minutes) ── */
+.zrs-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 10px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.zrs-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5);
+  animation: zrs-live-pulse 2s ease-out infinite;
+}
+
+.zrs-live.error .zrs-live-dot {
+  background: #ef4444;
+  animation: none;
+}
+
+@keyframes zrs-live-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zrs-live-dot {
+    animation: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .zrs-live {
+    display: none;
+  }
+}

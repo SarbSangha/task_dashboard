@@ -1,0 +1,272 @@
+/* Calendar range picker - Usage & Spend report. Uses the app's theme tokens,
+   so it follows light/dark mode with the rest of the dashboard. */
+.drp {
+  position: relative;
+  display: inline-flex;
+}
+
+.drp-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.drp-trigger:hover,
+.drp-trigger.open {
+  border-color: var(--color-border-strong);
+  background: var(--color-card-hover);
+}
+
+.drp-trigger-dates {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.drp-caret {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  opacity: 0.6;
+}
+
+.drp-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  z-index: 40;
+  display: flex;
+  border-radius: 14px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-popover);
+  box-shadow: var(--shadow-popover);
+  overflow: hidden;
+}
+
+.drp-align-right {
+  right: 0;
+}
+
+.drp-align-left {
+  left: 0;
+}
+
+.drp-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+}
+
+.drp-presets button {
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.drp-presets button:hover {
+  background: var(--color-card-hover);
+}
+
+.drp-presets button.active {
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+.drp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.drp-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drp-nav button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-card);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.drp-nav button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.drp-hint {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.drp-months {
+  display: flex;
+  gap: 18px;
+}
+
+.drp-month {
+  width: 238px;
+}
+
+.drp-month-title {
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.drp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 34px);
+  row-gap: 2px;
+}
+
+.drp-weekdays span {
+  padding: 4px 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  text-align: center;
+}
+
+.drp-day {
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.drp-day.blank {
+  cursor: default;
+}
+
+.drp-day:not(.disabled):not(.start):not(.end):hover {
+  border-radius: 8px;
+  background: var(--color-card-hover);
+}
+
+.drp-day.today {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.drp-day.in-range {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+}
+
+.drp-day.start,
+.drp-day.end {
+  border-radius: 8px;
+  background: var(--color-primary);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.drp-day.disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.drp-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.drp-summary {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.drp-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.drp-btn {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.drp-btn.primary {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+.drp-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Narrow screens: presets on top, one month at a time. */
+@media (max-width: 760px) {
+  .drp-pop {
+    position: fixed;
+    top: 72px;
+    left: 12px;
+    right: 12px;
+    flex-direction: column;
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+  }
+
+  .drp-presets {
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .drp-months .drp-month + .drp-month {
+    display: none;
+  }
+
+  .drp-month {
+    width: 100%;
+  }
+
+  .drp-grid {
+    grid-template-columns: repeat(7, 1fr);
+  }
+}

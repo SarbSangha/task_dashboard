@@ -2522,7 +2522,7 @@ async function runFreepikTaskGate(target, { reopenTrigger } = {}) {
     // Read before the modal opens - see runFreepikDownloadTaskGate's own
     // comment on why a menu item's text has to be captured this early.
     const pickedItemText = reopenTrigger ? freepikMenuItemDescriptorText(target) : null;
-    const selection = await openFreepikTaskSelectionModal();
+    const selection = await openFreepikTaskSelectionModal(reopenTrigger || target);
     if (!selection) return; // cancelled/ESC/no active tasks - click stays blocked
     freepikPendingTaskSelection = selection;
     freepikTaskGateBypassTarget = target;
@@ -3120,7 +3120,7 @@ async function runFreepikDownloadTaskGate(target, { reopenTrigger } = {}) {
     // Read before the modal opens - a menu item's text needs to survive
     // the menu closing underneath our modal (see reopenFreepikMenuAndClick).
     const pickedItemText = reopenTrigger ? freepikMenuItemDescriptorText(target) : null;
-    const selection = await openFreepikTaskSelectionModal();
+    const selection = await openFreepikTaskSelectionModal(reopenTrigger || target);
     if (!selection) return; // cancelled/ESC/no active tasks - click stays blocked
     const assetInfo = collectFreepikDownloadAssetInfo(target);
     freepikDownloadTaskGateBypassTarget = target;

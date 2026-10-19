@@ -505,7 +505,39 @@
     return items;
   }
 
+  // Kling 4.0 (/api/creation/assets/creation-materials) nests each generation
+  // as { materialType, work: { taskId, createTime, type, resource, cover,
+  // firstFrame, taskInfo: { inputs: [...] } } }. The finished output lives only
+  // in work.resource/cover/firstFrame; taskInfo.inputs are the user's
+  // reference uploads and must not be mistaken for outputs.
+  function getKlingCreationMaterialWork(item) {
+    return isObject(item?.work) && (isObject(item.work.resource) || isObject(item.work.taskInfo))
+      ? item.work
+      : null;
+  }
+
+  function stripKlingCreationMaterialInputs(item) {
+    const work = getKlingCreationMaterialWork(item);
+    if (!work || !isObject(work.taskInfo)) return item;
+    const { inputs: _inputs, ...taskInfoWithoutInputs } = work.taskInfo;
+    return { ...item, work: { ...work, taskInfo: taskInfoWithoutInputs } };
+  }
+
   function collectKlingWorksOutputAssets(item) {
+    const creationWork = getKlingCreationMaterialWork(item);
+    if (creationWork) {
+      const outputs = ['resource', 'cover', 'firstFrame']
+        .map((key) => creationWork[key])
+        .filter(isObject);
+      return collectMediaAssetsFromPayload(...outputs).map((asset) => ({
+        ...asset,
+        assetType: creationWork.contentType === 'video' && asset.url === creationWork.resource?.resource
+          ? 'video'
+          : asset.assetType,
+        assetRole: 'output',
+        source: asset.source === 'json' ? 'asset_history_works' : asset.source,
+      }));
+    }
     const roots = [];
     if (Array.isArray(item?.works)) roots.push(...item.works);
     if (Array.isArray(item?.workList)) roots.push(...item.workList);
@@ -668,10 +700,13 @@
         const parsed = parseEmbeddedJsonObject(item[embeddedKey]);
         if (parsed) embeddedRoots.push(parsed);
       }
-      const roots = [item, ...embeddedRoots];
+      const creationWork = getKlingCreationMaterialWork(item);
+      const roots = [stripKlingCreationMaterialInputs(item), ...embeddedRoots];
       const mediaAssets = mergeMediaAssetLists(
         collectKlingWorksOutputAssets(item),
-        collectMediaAssetsFromPayload(...roots).filter((asset) => asset.assetRole !== 'input')
+        creationWork
+          ? []
+          : collectMediaAssetsFromPayload(...roots).filter((asset) => asset.assetRole !== 'input')
       );
       const prompt = pickNamedValue(item, [
         'prompt',
@@ -693,9 +728,10 @@
         'input_prompt',
       ])).find(Boolean) || '';
       const taskId = pickNestedTaskId(item);
-      const workId = pickNestedWorkId(item);
+      const workId = pickNestedWorkId(item)
+        || normalizeIdentifierValue(pickOwnText(creationWork, ['workId', 'workItemId', 'materialId']));
       const creativeId = pickNestedCreativeId(item);
-      const createTimeText = pickNamedValue(item, [
+      const createTimeText = pickOwnText(creationWork, ['createTime', 'submitTime']) || pickNamedValue(item, [
         'createTime',
         'create_time',
         'createdAt',
@@ -709,7 +745,9 @@
         'finish_time',
       ]);
       const showPriceText = pickNamedValue(item, ['showPrice', 'show_price', 'price', 'credits', 'amount', 'cost']);
-      const taskType = pickNamedValue(item, ['taskType', 'task_type', 'type', 'scene', 'mode']);
+      const taskType = pickOwnText(creationWork, ['type'])
+        || pickOwnText(creationWork?.taskInfo, ['type'])
+        || pickNamedValue(item, ['taskType', 'task_type', 'type', 'scene', 'mode']);
       if (taskId || workId || creativeId || prompt || mediaAssets.length || createTimeText || showPriceText) {
         objectsWithAnySignal += 1;
       }

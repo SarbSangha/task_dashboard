@@ -24,6 +24,9 @@ generation gets a rupee figure instead, by how the company pays for the tool:
       others     one equal share per generation (no per-item cost, est.)
   An account with no generations in the period is "Paid, not used": its
   fee counts in total spend but belongs to no person or client.
+* Every other company tool with an active fee (Semrush, Figma, Canva...) is
+  "Paid, not tracked": the dashboard captures no usage for it, but its fee
+  still counts in total spend, so the total is what the company pays.
 
 The facts query (facts.facts_subquery) applies these rules in SQL through
 rate_sql / fee_sql / account_sql below, so every sheet sums the same figure.
@@ -44,15 +47,20 @@ from models_new import ITPortalTool, ITPortalToolCredential, ToolCreditRate
 PAY_PER_USE = "Pay-per-use"
 SUBSCRIPTION = "Subscription"
 PAY_PER_USE_TOOLS = ("Kling", "HeyGen", "Splice")
-SUBSCRIPTION_TOOLS = ("Freepik", "ElevenLabs", "Higgsfield", "Suno", "Envato", "Epidemic Sound", "Flow")
+SUBSCRIPTION_TOOLS = ("Freepik", "ElevenLabs", "Higgsfield", "Suno", "Envato", "Epidemic Sound", "Flow",
+                      "ChatGPT", "Claude", "Grammarly")
 
 # it_portal_tools name / slug (lower case) -> the report's tool name.
 TOOL_ALIASES = {
     "kling": "Kling", "kling-ai": "Kling", "klingai": "Kling",
     "heygen": "HeyGen", "splice": "Splice",
-    "freepik": "Freepik", "elevenlabs": "ElevenLabs", "eleven labs": "ElevenLabs", "higgsfield": "Higgsfield",
+    "freepik": "Freepik", "magnific": "Freepik", "elevenlabs": "ElevenLabs", "eleven labs": "ElevenLabs",
+    "higgsfield": "Higgsfield",
     "suno": "Suno", "envato": "Envato", "envato elements": "Envato", "epidemic sound": "Epidemic Sound",
     "epidemicsound": "Epidemic Sound", "epidemic-sound": "Epidemic Sound", "flow": "Flow",
+    "chatgpt": "ChatGPT", "chat gpt": "ChatGPT", "openai": "ChatGPT",
+    "claude": "Claude", "claude ai": "Claude", "claude.ai": "Claude",
+    "grammarly": "Grammarly", "grammarly-docs": "Grammarly", "grammarly docs": "Grammarly",
 }
 
 
@@ -203,9 +211,16 @@ def load_cost_setup(db: Session, start: date, end: date, display) -> CostSetup:
         tool_of_cred[cred.id] = name
         if (cred.scope or "company") != "company":
             continue
-        other = untracked.get(_key(cred.name)) or untracked.get(_key(cred.slug))
-        if name not in SUBSCRIPTION_TOOLS and not other:
+        if name in PAY_PER_USE_TOOLS:
             continue
+        # Every other company tool the company pays for (Semrush, Figma, Canva...)
+        # is "Paid, not tracked": its fee counts in total spend even though
+        # the dashboard captures no usage for it, so total spend is what the
+        # company actually pays.
+        other = None
+        if name not in SUBSCRIPTION_TOOLS:
+            other = (untracked.get(_key(cred.name)) or untracked.get(_key(cred.slug))
+                     or (cred.name or cred.slug or "").strip() or f"Tool {cred.id}")
         name = name if name in SUBSCRIPTION_TOOLS else other
         billing = display.billing.get(cred.id, "monthly")
         fee = float(cred.tool_cost) if cred.tool_cost is not None else None

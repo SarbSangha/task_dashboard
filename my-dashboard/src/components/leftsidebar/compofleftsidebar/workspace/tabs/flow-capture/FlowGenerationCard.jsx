@@ -19,16 +19,35 @@ import { formatRelativeTime, getOwnershipStatusMeta, truncate } from './flowCapt
 // expired). Falls back to mediaUrl for anything not mirrored yet, same
 // "our mirrored copy first, provider's original as fallback" idiom every
 // other provider's card here already uses for its own mirroredAssetUrl.
+//
+// A video generation (mediaKind "video") keeps the clip as its asset and the
+// poster frame as its thumbnail, so the card shows the poster when there is
+// one and only falls back to the clip's first frame otherwise.
 const FlowCardPreview = React.memo(function FlowCardPreview({ generation }) {
   const [previewRef, isNearViewport] = useNearViewport();
   const [imageFailed, setImageFailed] = useState(false);
-  const primaryImageUrl = generation.mirroredAssetUrl || generation.mediaUrl;
+  const isVideo = generation.mediaKind === 'video';
+  const assetUrl = generation.mirroredAssetUrl || generation.mediaUrl;
+  const posterUrl = generation.mirroredThumbnailUrl || generation.thumbnailUrl;
+  const primaryImageUrl = isVideo ? posterUrl : assetUrl;
 
   useEffect(() => {
     setImageFailed(false);
   }, [primaryImageUrl]);
 
   const imageUrl = !imageFailed ? primaryImageUrl : null;
+
+  if (isVideo && !imageUrl && assetUrl) {
+    return (
+      <div ref={previewRef} className="kling-card-lazy-frame">
+        {isNearViewport ? (
+          <video src={assetUrl} className="kling-card-image" muted playsInline preload="metadata" />
+        ) : (
+          <div className="kling-card-fallback">Video Preview</div>
+        )}
+      </div>
+    );
+  }
 
   if (!imageUrl) {
     return <div ref={previewRef} className="kling-card-fallback">No preview</div>;

@@ -24,13 +24,15 @@ const FREEPIK_PICKER_SEARCH_THRESHOLD = 10;
 
 let freepikTaskModalOpenPromise = null;
 
-function openFreepikTaskSelectionModal() {
+// anchorElement: the gated Generate/Download control, used to mount the
+// picker inside whatever page dialog contains it (see mountFreepikTaskModal).
+function openFreepikTaskSelectionModal(anchorElement = null) {
   // Guards "double-click Generate while the modal is already open" and
   // "popup opened twice" - both collapse to the one in-flight picker.
   if (freepikTaskModalOpenPromise) return freepikTaskModalOpenPromise;
 
   freepikTaskModalOpenPromise = new Promise((resolve) => {
-    mountFreepikTaskModal(resolve);
+    mountFreepikTaskModal(resolve, anchorElement);
   }).finally(() => {
     freepikTaskModalOpenPromise = null;
   });
@@ -364,7 +366,61 @@ function createFreepikPickerSection(container, { key, title, radioGroupName, fet
   };
 }
 
-function mountFreepikTaskModal(resolve) {
+// Magnific's image Edit view is a modal dialog (reka-ui) that dismisses
+// itself on any pointer-down or focus OUTSIDE its own DOM subtree. Reported
+// 2026-10-19: type an edit prompt, press Generate, pick a client in this
+// picker -> the Edit view closed back to /app/tools/image, taking the gated
+// Generate button with it, so the replayed click had nothing to land on and
+// no edit was generated. Mounting the picker inside that dialog makes every
+// interaction with it count as "inside", so the Edit view stays open.
+//
+// The Edit view is NOT marked role="dialog" (a 0.1.71 field test still
+// closed): it is a route-level overlay (/app/creation/<id>) whose "clicked
+// outside" check looks at whether the event path contains its white panel,
+// in a window capture listener that runs before anything here can stop the
+// event. So the picker has to live inside that panel: when the anchor sits
+// in a fixed-position layer, use its largest ancestor that does not cover the
+// whole viewport (the panel, not the full-screen backdrop around it).
+const FREEPIK_MODAL_MIN_PARENT_WIDTH = 480;
+const FREEPIK_MODAL_MIN_PARENT_HEIGHT = 420;
+
+function isInsideFixedLayer(element) {
+  let current = element;
+  while (current && current !== document.body && current !== document.documentElement) {
+    try {
+      if (getComputedStyle(current).position === 'fixed') return true;
+    } catch {}
+    current = current.parentElement;
+  }
+  return false;
+}
+
+function findFreepikModalMountParent(anchorElement) {
+  const fallback = document.body || document.documentElement;
+  if (!anchorElement?.isConnected) return fallback;
+  const pageDialog = anchorElement.closest?.('[role="dialog"], [role="alertdialog"], dialog[open]');
+  if (pageDialog) return pageDialog;
+  if (!isInsideFixedLayer(anchorElement)) return fallback;
+
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  let panel = null;
+  let current = anchorElement.parentElement;
+  while (current && current !== document.body && current !== document.documentElement) {
+    const rect = current.getBoundingClientRect();
+    if (rect.width >= viewportWidth * 0.98 && rect.height >= viewportHeight * 0.98) break;
+    panel = current;
+    current = current.parentElement;
+  }
+  if (!panel) return fallback;
+  const panelRect = panel.getBoundingClientRect();
+  if (panelRect.width < FREEPIK_MODAL_MIN_PARENT_WIDTH || panelRect.height < FREEPIK_MODAL_MIN_PARENT_HEIGHT) {
+    return fallback;
+  }
+  return panel;
+}
+
+function mountFreepikTaskModal(resolve, anchorElement = null) {
   document.getElementById(FREEPIK_TASK_MODAL_HOST_ID)?.remove();
 
   const host = document.createElement('div');
@@ -400,7 +456,11 @@ function mountFreepikTaskModal(resolve) {
   `;
 
   shadow.appendChild(overlay);
-  (document.body || document.documentElement).appendChild(host);
+  const mountParent = findFreepikModalMountParent(anchorElement);
+  mountParent.appendChild(host);
+  console.debug('[RMW Freepik] task picker mounted in', mountParent === document.body
+    ? 'document.body'
+    : `${mountParent.tagName.toLowerCase()}.${`${mountParent.className || ''}`.trim().split(/\s+/).slice(0, 3).join('.')}`);
 
   const bodyEl = shadow.querySelector('.rmw-body');
   const validationEl = shadow.querySelector('.rmw-validation');
@@ -485,13 +545,18 @@ function mountFreepikTaskModal(resolve) {
   });
 
   function onKeyDown(event) {
+    // Stopped here (document capture) so the page never also sees them:
+    // Escape would close the page's own dialog underneath, Enter would
+    // submit its prompt.
     if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       close(null);
       return;
     }
     if (event.key === 'Enter' && !continueBtn.disabled) {
       event.preventDefault();
+      event.stopPropagation();
       confirmAndClose();
       return;
     }
@@ -536,7 +601,12 @@ function mountFreepikTaskModal(resolve) {
   // modal is a full-screen overlay covering the whole page while open, so
   // the underlying page has no legitimate reason to see any of these
   // events at all.
-  ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach((type) => {
+  // focusin/focusout and keys too: a dialog's "focus moved outside me" and
+  // Escape handlers dismiss it just like an outside click does.
+  [
+    'click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup',
+    'touchstart', 'touchend', 'focusin', 'focusout', 'keydown', 'keyup',
+  ].forEach((type) => {
     overlay.addEventListener(type, (event) => event.stopPropagation());
   });
 

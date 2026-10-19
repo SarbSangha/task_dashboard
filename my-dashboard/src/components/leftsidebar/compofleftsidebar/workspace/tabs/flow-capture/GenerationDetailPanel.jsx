@@ -74,6 +74,9 @@ export default function GenerationDetailPanel({ generationId }) {
   // 403 once their Expires token passes.
   const heroImage = generation.mirroredAssetUrl || generation.mediaUrl
     || generation.mirroredThumbnailUrl || generation.thumbnailUrl;
+  // Video generations: the asset is the clip itself, the thumbnail its poster.
+  const isVideo = generation.mediaKind === 'video' && Boolean(generation.mirroredAssetUrl || generation.mediaUrl);
+  const posterImage = generation.mirroredThumbnailUrl || generation.thumbnailUrl || undefined;
   const ownerLabel = generation.ownerName || (generation.ownerUserId ? `User #${generation.ownerUserId}` : 'Unclaimed — not yet attributed');
 
   const copyPrompt = async () => {
@@ -84,7 +87,9 @@ export default function GenerationDetailPanel({ generationId }) {
   return (
     <>
       <div className="kling-drawer-preview">
-        {heroImage ? (
+        {isVideo ? (
+          <video src={heroImage} poster={posterImage} controls playsInline preload="metadata" className="kling-drawer-preview-media" />
+        ) : heroImage ? (
           <img src={heroImage} alt={generation.prompt || 'Flow generation'} className="kling-drawer-preview-media" />
         ) : (
           <div className="kling-drawer-preview-empty">
@@ -131,7 +136,7 @@ export default function GenerationDetailPanel({ generationId }) {
         <MetaField label="Project ID" value={generation.projectId} />
         <MetaField label="Batch ID" value={generation.batchId} />
         <MetaField label="Primary Media ID" value={generation.primaryMediaId} />
-        <MetaField label="Image Backup Status" value={ASSET_MIRROR_STATUS_LABEL[generation.assetMirrorStatus] || generation.assetMirrorStatus} />
+        <MetaField label={isVideo ? 'Video Backup Status' : 'Image Backup Status'} value={ASSET_MIRROR_STATUS_LABEL[generation.assetMirrorStatus] || generation.assetMirrorStatus} />
         <MetaField label="Ownership" value={ownershipMeta.label} />
         <MetaField label="Attribution Source" value={generation.ownershipSource} />
         <MetaField label="Generated" value={formatAbsoluteTime(generation.providerCreatedAt)} />

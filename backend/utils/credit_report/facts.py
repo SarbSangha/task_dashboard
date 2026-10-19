@@ -38,13 +38,17 @@ from sqlalchemy import Float, Integer, String, and_, case, cast, func, literal, 
 from sqlalchemy.orm import Session
 
 from models_new import GenerationClient, GenerationRecord, ITPortalTool, ITPortalToolUsageEvent, User, UserRole
+from providers.chatgpt.models import ConversationPrompt, ConversationRecord
+from providers.conversation_links import chat_web_url
 from providers.elevenlabs.models import ElevenlabsGeneration
 from providers.envato.models import EnvatoGeneration
 from providers.epidemicsound.models import EpidemicAdaptation
 from providers.flow.models import FlowGeneration
 from providers.freepik.models import FreepikGeneration
+from providers.grammarly_docs.models import GrammarlyDocSession
 from providers.heygen.models import HeygenGeneration
 from providers.higgsfield.models import HiggsfieldGeneration
+from providers.splice.models import SpliceDownload
 from providers.suno.models import SunoGeneration
 from utils.usage_intelligence.service import KLING_TOOL_SLUGS, MAX_SANE_KLING_CREDITS, resolve_period
 
@@ -83,8 +87,14 @@ FAILED_STATUSES = frozenset({
 
 # Tools whose captures carry no per-generation cost at all. Their 0 is
 # "not captured", not "free" - see TOOL_COST_NOTES.
-CREDITS_NOT_CAPTURED = frozenset({"Flow", "Suno", "Higgsfield"})
+CREDITS_NOT_CAPTURED = frozenset({"Flow", "Suno", "Higgsfield", "ChatGPT", "Claude", "Grammarly"})
 TOOL_COST_NOTES = {
+    "ChatGPT": "One row per prompt sent. ChatGPT has no per-prompt cost: ₹ is an equal share of the "
+               "subscription (est.).",
+    "Claude": "One row per prompt sent. Claude has no per-prompt cost: ₹ is an equal share of the "
+              "subscription (est.).",
+    "Grammarly": "One row per document worked on. ₹ is an equal share of the subscription (est.).",
+    "Splice": "One row per sample downloaded, 1 Splice credit each, × the account's credit rate.",
     "Suno": "Fixed price per song, set by an admin (Reports → Credit Rates): Suno shows no per-song cost "
             "of its own. Songs from before the first price show 0. ₹ is an equal share of the subscription (est.).",
     "Flow": "Not captured: Flow's capture payload has no cost or credit field.",
@@ -112,6 +122,14 @@ class ToolSource:
     # metadata_json key holding the provider's own state when the status
     # column is blank (display only - the charge status still reads `status`).
     raw_status_key: Optional[str] = None
+    # Credits per row when the table has no credit column but the tool's
+    # price per item is fixed (a Splice sample download is always 1 credit).
+    fixed_credits: Optional[float] = None
+    # True when `status` is not a billing state (a Grammarly session is
+    # "open"/"closed"): the row is Charged once it exists.
+    status_is_lifecycle: bool = False
+    # Column holding when the usage happened, when not created_at.
+    occurred_at: Optional[str] = None
 
 
 # Kling is not listed here: it reads usage events joined to generation
@@ -136,9 +154,18 @@ TOOL_SOURCES: tuple = (
                model_label=("model_name",)),
     ToolSource("Epidemic Sound", EpidemicAdaptation, "credits_used", ("prompt",), ("media_url",),
                has_provider_created_at=False),
+    # Pay-per-use: every sample download costs 1 Splice credit.
+    ToolSource("Splice", SpliceDownload, None, ("asset_title",), ("asset_source_url", "preview_mp3_url"),
+               has_provider_created_at=False, fixed_credits=1.0, occurred_at="downloaded_at"),
+    ToolSource("Grammarly", GrammarlyDocSession, None, ("doc_title", "page_name"), ("doc_url", "page_url"),
+               mirrored_key=False, has_provider_created_at=False, status_is_lifecycle=True,
+               occurred_at="started_at"),
 )
 KLING = "Kling"
-TOOL_NAMES: tuple = (KLING,) + tuple(s.name for s in TOOL_SOURCES)
+# ChatGPT and Claude share the conversation tables, one row per prompt sent
+# (see _conversation_select).
+CONVERSATION_TOOLS = (("ChatGPT", "chatgpt"), ("Claude", "claude"))
+TOOL_NAMES: tuple = (KLING,) + tuple(s.name for s in TOOL_SOURCES) + tuple(n for n, _p in CONVERSATION_TOOLS)
 SOURCES_BY_NAME = {s.name: s for s in TOOL_SOURCES}
 
 
@@ -319,9 +346,19 @@ def _size(src: ToolSource, m, display: DisplayConfig) -> tuple:
     return one, literal(0, Integer), literal(0, Integer)
 
 
+def _source_when(src: ToolSource):
+    """When the usage happened (UTC)."""
+    m = src.model
+    if src.occurred_at:
+        return func.coalesce(getattr(m, src.occurred_at), m.created_at)
+    if src.has_provider_created_at:
+        return func.coalesce(m.provider_created_at, m.created_at)
+    return m.created_at
+
+
 def _source_select(src: ToolSource, utc_start, utc_end, dialect: str, display: DisplayConfig):
     m = src.model
-    when = func.coalesce(m.provider_created_at, m.created_at) if src.has_provider_created_at else m.created_at
+    when = _source_when(src)
     output_key = _first_present(m, src.output)
     has_output = output_key.isnot(None)
     if src.mirrored_key:
@@ -329,9 +366,9 @@ def _source_select(src: ToolSource, utc_start, utc_end, dialect: str, display: D
     if src.credits:
         credits = cast(func.coalesce(getattr(m, src.credits), 0.0), Float)
     else:
-        credits = cast(literal(0.0), Float)
+        credits = cast(literal(float(src.fixed_credits or 0.0)), Float)
     model_col = _first_present(m, src.model_label) if src.model_label else _null_text()
-    status = m.status if hasattr(m, "status") else _null_text()
+    status = m.status if hasattr(m, "status") and not src.status_is_lifecycle else _null_text()
     raw_status = status
     if src.raw_status_key:
         raw_status = func.coalesce(_blank_to_null(status), _blank_to_null(m.metadata_json[src.raw_status_key].as_string()))
@@ -359,6 +396,43 @@ def _source_select(src: ToolSource, utc_start, utc_end, dialect: str, display: D
     if src.name == "Freepik":
         q = q.where(func.lower(func.coalesce(m.tool_name, m.tool, "")).notin_(FREEPIK_UPLOAD_TOOLS))
     return q
+
+
+def _conversation_select(tool: str, provider: str, utc_start, utc_end, dialect: str, display: DisplayConfig):
+    """ChatGPT / Claude: one row per prompt the person sent, from the shared
+    conversation tables. No per-prompt cost and no client picker exist, so
+    each prompt takes an equal share of the subscription (see costing.py)
+    and has no client. Account is left blank: costing.account_sql gives the
+    row the tool's only company account."""
+    p, r = ConversationPrompt, ConversationRecord
+    when = func.coalesce(p.prompt_timestamp, p.created_at)
+    return (
+        select(
+            literal(tool, String).label("tool"),
+            cast(p.id, String).label("record_id"),
+            r.owner_user_id.label("user_id"),
+            when.label("occurred_at"),
+            _month_of_timestamp(when, dialect).label("month"),
+            display.client_sql(_null_text()).label("client"),
+            _null_text().label("task"),
+            cast(literal(0.0), Float).label("credits"),
+            func.coalesce(_blank_to_null(p.prompt_text), _blank_to_null(r.title)).label("prompt"),
+            _blank_to_null(r.model_label).label("model"),
+            _null_text().label("status"),
+            # The chat itself is the output; its page is addressable by its id.
+            case((or_(_blank_to_null(r.conversation_url).isnot(None),
+                      _blank_to_null(r.provider_conversation_id).isnot(None)), 1), else_=0).label("has_output"),
+            _null_text().label("raw_status"),
+            cast(literal(None), Integer).label("account"),
+            literal(1.0, Float).label("size"),
+            literal(1, Integer).label("size_est"),
+            literal(0, Integer).label("preview"),
+            _null_text().label("output_key"),
+        )
+        .select_from(p)
+        .join(r, r.id == p.conversation_id)
+        .where(r.provider == provider, when >= utc_start, when < utc_end)
+    )
 
 
 def _kling_select(start: date, end: date, dialect: str, display: DisplayConfig, kling: KlingDedup):
@@ -459,6 +533,9 @@ def facts_subquery(filters: ReportFilters, dialect: str = "postgresql"):
     for src in TOOL_SOURCES:
         if filters.tool in (None, src.name):
             selects.append(_source_select(src, utc_s, utc_e, dialect, display))
+    for tool_name, provider in CONVERSATION_TOOLS:
+        if filters.tool in (None, tool_name):
+            selects.append(_conversation_select(tool_name, provider, utc_s, utc_e, dialect, display))
     if not selects:  # unknown tool name: empty, but still a valid query
         selects.append(_kling_select(filters.start, filters.end, dialect, display, kling).where(literal(False)))
     raw = selects[0].subquery("raw") if len(selects) == 1 else union_all(*selects).subquery("raw")
@@ -656,14 +733,27 @@ def load_upload_count(db: Session, filters: ReportFilters) -> int:
 def load_last_used(db: Session, cost: CostSetup) -> dict:
     """Latest generation time ever (UTC) per subscription account, any status."""
     out = {}
+
+    def note(acc, last):
+        if acc is not None and last is not None:
+            key = int(acc)
+            out[key] = max(out.get(key, last), last)
+
     for src in TOOL_SOURCES:
         m = src.model
-        when = func.coalesce(m.provider_created_at, m.created_at) if src.has_provider_created_at else m.created_at
+        when = _source_when(src)
         account = cost.account_sql(literal(src.name, String), m.credential_id)
         for acc, last in db.query(account, func.max(when)).group_by(account).all():
-            if acc is not None and last is not None:
-                key = int(acc)
-                out[key] = max(out.get(key, last), last)
+            note(acc, last)
+    # Conversation prompts carry no account: they belong to the tool's only one.
+    for tool_name, provider in CONVERSATION_TOOLS:
+        acc = cost.default_account.get(tool_name)
+        if acc is None:
+            continue
+        last = (db.query(func.max(func.coalesce(ConversationPrompt.prompt_timestamp, ConversationPrompt.created_at)))
+                .join(ConversationRecord, ConversationRecord.id == ConversationPrompt.conversation_id)
+                .filter(ConversationRecord.provider == provider).scalar())
+        note(acc, last)
     return out
 
 
@@ -847,6 +937,15 @@ def resolve_output_url(db: Session, tool: str, record_id: int) -> Optional[str]:
             .scalar()
         )
         return (url or "").strip() or None
+    if tool in dict(CONVERSATION_TOOLS):
+        row = (
+            db.query(ConversationRecord.provider, ConversationRecord.provider_conversation_id,
+                     ConversationRecord.conversation_url)
+            .join(ConversationPrompt, ConversationPrompt.conversation_id == ConversationRecord.id)
+            .filter(ConversationPrompt.id == record_id)
+            .first()
+        )
+        return chat_web_url(*row) if row else None
     src = SOURCES_BY_NAME.get(tool)
     if not src:
         return None

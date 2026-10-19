@@ -9,6 +9,8 @@ capture is entirely dependent on a browser tab being open through the
 launcher.
 """
 
+from urllib.parse import urlparse
+
 PROVIDER = "flow"
 PROVIDER_DISPLAY = "Google Flow"
 
@@ -94,3 +96,20 @@ GENERATION_STATUS_PROCESSING = "processing"
 # own timestamp falls within this many seconds of when the server received
 # it, regardless of what confidence the client claimed.
 OWNERSHIP_FRESHNESS_WINDOW_SECONDS = 15 * 60
+
+
+# ---- Media kind ----
+# Flow serves both stills and clips from flow-content.google under the SAME
+# media id: .../image/<id> (for a video generation, that is only its poster
+# frame) and .../video/<id> (the clip itself). Which one a row's media_url
+# holds decides what gets mirrored and how the dashboard renders it.
+MEDIA_KIND_IMAGE = "image"
+MEDIA_KIND_VIDEO = "video"
+
+
+def flow_media_kind(url) -> str:
+    try:
+        path = urlparse(f"{url or ''}").path.lower()
+    except ValueError:
+        path = ""
+    return MEDIA_KIND_VIDEO if path.startswith("/video/") or path.endswith((".mp4", ".webm", ".mov")) else MEDIA_KIND_IMAGE

@@ -34,6 +34,7 @@ from sqlalchemy import (
 )
 
 from database_config import Base
+from providers.flow.constants import flow_media_kind
 from utils.datetime_utils import serialize_utc_datetime
 from utils import r2_storage
 
@@ -291,6 +292,7 @@ class FlowGeneration(Base):
             "status": self.status,
             "providerCreatedAt": serialize_utc_datetime(self.provider_created_at),
             "providerUpdatedAt": serialize_utc_datetime(self.provider_updated_at),
+            "mediaKind": flow_media_kind(self.media_url),
             "mediaUrl": self.media_url,
             "thumbnailUrl": self.thumbnail_url,
             "mirroredAssetUrl": _presigned_mirror_url(self.mirrored_asset_key, client=r2_client),

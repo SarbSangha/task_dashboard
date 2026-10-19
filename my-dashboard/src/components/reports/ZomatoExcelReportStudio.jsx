@@ -16,227 +16,153 @@ import {
   YAxis,
 } from 'recharts';
 import { creditReportAPI, downloadBlobResponse } from '../../services/reports';
-import ToolLogo, { toolColor } from '../common/ToolLogo';
+import ToolLogo from '../common/ToolLogo';
+import DateRangePicker from './DateRangePicker';
+import { computePresetDates, toIso } from './dateRanges';
+import Dropdown from './usageSpend/Dropdown';
+import ComparePanel, { COMPARE_MODES } from './usageSpend/ComparePanel';
+import ChatTranscriptModal from './usageSpend/ChatTranscriptModal';
+import OutputPreviewModal from './usageSpend/OutputPreviewModal';
+import PeopleReportModal from './usageSpend/PeopleReportModal';
+import { buildColumns, ROW_KEYS } from './usageSpend/sheetColumns';
+import {
+  Avatar,
+  CHART_PALETTE,
+  CHAT_TOOLS,
+  ChartSkeleton,
+  ChartTooltip,
+  Icon,
+  ICONS,
+  Skel,
+  SkeletonRows,
+  SortTh,
+  fmtCompactINR,
+  fmtINR,
+  fmtNum,
+  shortDate,
+  sortOptions,
+  sortRows,
+  useOutsideClose,
+} from './usageSpend/shared';
 import './ZomatoExcelReportStudio.css';
-
-const DATE_PRESETS = [
-  { key: '7d', label: 'Last 7 days' },
-  { key: '30d', label: 'Last 30 days' },
-  { key: 'month', label: 'This month' },
-  { key: 'prev_month', label: 'Last month' },
-  { key: '90d', label: 'Last 3 months' },
-  { key: 'custom', label: 'Custom range' },
-];
+import './usageSpend/usageSpend.css';
 
 const SHEETS = [
   { key: 'log', label: 'Activity', icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm1 5v5.4l3.7 2.2-.8 1.3L11 13V7h2z' },
-  { key: 'users', label: 'People', icon: 'M12 12a4 4 0 100-8 4 4 0 000 8zm-7 8c0-3.3 3.1-6 7-6s7 2.7 7 6H5z' },
+  { key: 'users', label: 'People', icon: ICONS.person },
   { key: 'tools', label: 'Tools', icon: 'M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z' },
-  { key: 'daily', label: 'Daily', icon: 'M7 2v2H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2h-2V2h-2v2H9V2H7zm-2 8h14v10H5V10z' },
-  { key: 'monthly', label: 'Monthly', icon: 'M5 20V10h3v10H5zm5.5 0V4h3v16h-3zM16 20v-7h3v7h-3z' },
+  { key: 'clients', label: 'Clients', icon: ICONS.briefcase },
+  { key: 'daily', label: 'Daily', icon: ICONS.calendar },
+  { key: 'monthly', label: 'Monthly', icon: ICONS.bars },
   { key: 'departments', label: 'Departments', icon: 'M3 21V7l6-4 6 4v2h6v12H3zm2-2h4v-3H5v3zm0-5h4v-3H5v3zm6 5h4v-3h-4v3zm0-5h4v-3h-4v3zm6 5h2v-8h-2v8z' },
+  { key: 'compare', label: 'Compare', icon: ICONS.compare },
 ];
 
-const LOG_COLUMNS = [
-  { key: 'when', label: 'When' },
-  { key: 'person', label: 'Person' },
-  { key: 'tool', label: 'Tool' },
-  { key: 'output', label: 'Output' },
-  { key: 'prompt', label: 'Prompt' },
-  { key: 'client', label: 'Client / Project' },
-  { key: 'department', label: 'Department' },
-  { key: 'credits', label: 'Credits', num: true },
-  { key: 'cost', label: 'Cost (₹)', num: true },
-  { key: 'actions', label: 'Actions' },
+const TREND_MODES = [
+  { value: 'daily', label: 'Daily' },
+  { value: 'monthly', label: 'Monthly' },
+];
+const TOOL_MODES = [
+  { value: 'outputs', label: 'By outputs' },
+  { value: 'spend', label: 'By spend' },
+  { value: 'credits', label: 'By credits' },
+];
+const DEPT_MODES = [
+  { value: 'spend', label: 'By spend' },
+  { value: 'outputs', label: 'By outputs' },
+  { value: 'credits', label: 'By credits' },
 ];
 
-const SHEET_COLS = { log: 10, users: 9, tools: 10, daily: 7, monthly: 8, departments: 8 };
-const CHART_PALETTE = ['#10b981', '#8b5cf6', '#38bdf8', '#f59e0b', '#ec4899', '#14b8a6', '#f97316', '#a3e635'];
-const DEPT_HUES = [160, 262, 330, 38, 200, 20, 290, 85];
-
-const pad = (n) => String(n).padStart(2, '0');
-const toIso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-
-function computePresetDates(presetKey) {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const back = (days) => {
-    const s = new Date(today);
-    s.setDate(s.getDate() - (days - 1));
-    return { start: toIso(s), end: toIso(today) };
-  };
-  if (presetKey === '7d') return back(7);
-  if (presetKey === '90d') return back(90);
-  if (presetKey === 'month') {
-    return { start: toIso(new Date(today.getFullYear(), today.getMonth(), 1)), end: toIso(today) };
-  }
-  if (presetKey === 'prev_month') {
-    return {
-      start: toIso(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
-      end: toIso(new Date(today.getFullYear(), today.getMonth(), 0)),
-    };
-  }
-  return back(30);
-}
-
-const fmtINR = (val) => {
-  const n = Number(val || 0);
-  return `₹${n.toLocaleString('en-IN', { maximumFractionDigits: n >= 1000 ? 0 : 2 })}`;
-};
-const fmtCompactINR = (val) => {
-  const n = Number(val || 0);
-  if (n >= 100000) return `₹${(n / 100000).toFixed(1)}L`;
-  if (n >= 1000) return `₹${(n / 1000).toFixed(1)}K`;
-  return `₹${Math.round(n)}`;
-};
-const fmtNum = (val) => Number(val || 0).toLocaleString('en-IN', { maximumFractionDigits: 1 });
-const shortDate = (iso) => {
-  const d = new Date(`${iso}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+const DEFAULT_COMPARE = {
+  mode: 'tools',
+  tools: [],
+  people: [],
+  metric: 'generations',
+  entitySort: 'desc',
+  dimension: 'tools',
+  rankSort: 'desc',
+  topN: 10,
 };
 
-const hashHue = (text, hues) => hues[[...String(text || '')].reduce((s, c) => s + c.charCodeAt(0), 0) % hues.length];
-
-/* ---------- small building blocks ---------- */
-
-const Icon = ({ d, size = 16 }) => (
-  <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
-    <path d={d} fill="currentColor" />
-  </svg>
-);
-
-const ICONS = {
-  rupee: 'M7 4h10v2h-3.2c.5.6.9 1.3 1.1 2H17v2h-2.1c-.4 2.3-2.4 4-4.9 4h-.6l5.3 6h-2.7l-5.3-6H6v-2h4c1.4 0 2.6-.8 3-2H6V8h6.9c-.4-1.2-1.6-2-2.9-2H7V4z',
-  bars: 'M5 20V10h3v10H5zm5.5 0V4h3v16h-3zM16 20v-7h3v7h-3z',
-  doc: 'M6 2h8l6 6v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2zm7 1.5V9h5.5L13 3.5zM8 13h8v2H8v-2zm0 4h8v2H8v-2z',
-  people: 'M9 11a4 4 0 100-8 4 4 0 000 8zm7 0a3 3 0 100-6 3 3 0 000 6zM2 20c0-3.3 3.1-6 7-6s7 2.7 7 6H2zm15.5 0c0-1.9-.8-3.6-2.1-4.8 3 .3 5.6 2.2 5.6 4.8h-3.5z',
-  info: 'M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z',
-  calendar: 'M7 2v2H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2h-2V2h-2v2H9V2H7zm-2 8h14v10H5V10z',
-  refresh: 'M17.7 6.3A8 8 0 1020 12h-2a6 6 0 11-1.8-4.2L13 11h7V4l-2.3 2.3z',
-  download: 'M11 3h2v9.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3V3zM5 19h14v2H5v-2z',
-  search: 'M10 4a6 6 0 104.47 10.03l4.75 4.75 1.06-1.06-4.75-4.75A6 6 0 0010 4zm0 1.5a4.5 4.5 0 110 9 4.5 4.5 0 010-9z',
-  columns: 'M3 5h18v14H3V5zm2 2v10h4V7H5zm6 0v10h2V7h-2zm4 0v10h4V7h-4z',
-  chart: 'M4 19h16v2H2V3h2v16zm3-3l4-5 3 3 5-7 1.6 1.2-6.4 9-3-3-2.6 3.3L7 16z',
-};
-
-const Avatar = ({ name }) => {
-  const label = String(name || '?').trim();
-  const initials = label.split(/\s+/).slice(0, 2).map((p) => p.charAt(0).toUpperCase()).join('');
+const Kpi = ({ tone, icon, label, value, unit, foot, hint, loading, onClick, action }) => {
+  const clickable = Boolean(onClick);
   return (
-    <span className="zrs-avatar" style={{ '--hue': hashHue(label, DEPT_HUES) }} aria-hidden="true">
-      {initials || '?'}
-    </span>
+    <article
+      className={`zrs-kpi tone-${tone}${loading ? ' is-loading' : ''}${clickable ? ' is-clickable' : ''}`}
+      onClick={onClick}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={clickable ? (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onClick()) : undefined}
+    >
+      <span className="zrs-kpi-icon">
+        <Icon d={icon} size={22} />
+      </span>
+      <div className="zrs-kpi-body">
+        <span className="zrs-kpi-label">{label}</span>
+        <strong>
+          {value}
+          {unit ? <small>{unit}</small> : null}
+        </strong>
+        {loading ? (
+          <span className="zrs-kpi-foot">
+            <Skel w="85%" h={9} />
+            <Skel w="60%" h={9} />
+          </span>
+        ) : (
+          <span className="zrs-kpi-foot">{foot}</span>
+        )}
+        {clickable && !loading && <span className="zrs-kpi-action">{action} →</span>}
+      </div>
+      <span className="zrs-kpi-info" title={hint}>
+        <Icon d={ICONS.info} size={15} />
+      </span>
+    </article>
   );
 };
 
-const ToolTag = ({ name, onClick }) => (
-  <button
-    type="button"
-    className="zrs-tool-tag"
-    style={{ '--tool': toolColor(name) }}
-    onClick={onClick}
-    disabled={!onClick}
-    title={onClick ? `Show only ${name}` : name}
-  >
-    <ToolLogo name={name} size={16} />
-    {name}
-  </button>
-);
+const AUTO_REFRESH_MS = 2 * 60 * 1000;
 
-const DeptPill = ({ name }) =>
-  name ? (
-    <span className="zrs-dept" style={{ '--hue': hashHue(name, DEPT_HUES) }}>
-      {name}
-    </span>
-  ) : (
-    <span className="zrs-muted">—</span>
-  );
-
-const ShareBar = ({ pct }) => (
-  <div className="zrs-share">
-    <span className="zrs-share-track">
-      <span style={{ width: `${Math.min(100, Number(pct || 0))}%` }} />
-    </span>
-    <span className="zrs-share-val">{fmtNum(pct)}%</span>
-  </div>
-);
-
-const SkeletonRows = ({ cols, rows = 8 }) => (
-  <tbody className="zrs-skeleton">
-    {Array.from({ length: rows }).map((_, r) => (
-      <tr key={r}>
-        {Array.from({ length: cols }).map((__, c) => (
-          <td key={c}>
-            <span style={{ width: `${45 + ((r * 7 + c * 13) % 45)}%` }} />
-          </td>
-        ))}
-      </tr>
-    ))}
-  </tbody>
-);
-
-const Kpi = ({ tone, icon, label, value, unit, foot, hint, loading }) => (
-  <article className={`zrs-kpi tone-${tone}${loading ? ' is-loading' : ''}`}>
-    <span className="zrs-kpi-icon">
-      <Icon d={icon} size={22} />
-    </span>
-    <div className="zrs-kpi-body">
-      <span className="zrs-kpi-label">{label}</span>
-      <strong>
-        {value}
-        {unit ? <small>{unit}</small> : null}
-      </strong>
-      <span className="zrs-kpi-foot">{foot}</span>
-    </div>
-    <span className="zrs-kpi-info" title={hint}>
-      <Icon d={ICONS.info} size={15} />
-    </span>
-  </article>
-);
-
-const ChartTooltip = ({ active, payload, label, money = true }) => {
-  if (!active || !payload?.length) return null;
-  const p = payload[0];
-  return (
-    <div className="zrs-tip">
-      <span>{label || p.payload?.name}</span>
-      <b>{money ? fmtINR(p.value) : fmtNum(p.value)}</b>
-    </div>
-  );
-};
-
-function useOutsideClose(open, setOpen) {
-  const ref = useRef(null);
+// "just now" / "3m ago" for the last successful load, re-rendered every 15s.
+function useUpdatedAgo(timestamp) {
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!open) return undefined;
-    const onDown = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [open, setOpen]);
-  return ref;
+    const id = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(id);
+  }, []);
+  if (!timestamp) return '';
+  const seconds = Math.max(0, Math.round((now - timestamp) / 1000));
+  if (seconds < 45) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  return minutes < 60 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`;
 }
 
 /* ---------- main ---------- */
 
 export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
   const queryClient = useQueryClient();
+  const sheetRef = useRef(null);
 
   const [preset, setPreset] = useState('30d');
   const [dateRange, setDateRange] = useState(() => computePresetDates('30d'));
   const [tool, setTool] = useState('all');
   const [department, setDepartment] = useState('all');
   const [userId, setUserId] = useState('all');
+  const [client, setClient] = useState('all');
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [sheet, setSheet] = useState('log');
+  const [sorts, setSorts] = useState({});
   const [trendMode, setTrendMode] = useState('daily');
   const [toolMode, setToolMode] = useState('outputs');
   const [deptMode, setDeptMode] = useState('spend');
   const [hiddenCols, setHiddenCols] = useState(() => new Set());
   const [exportOpen, setExportOpen] = useState(false);
   const [colsOpen, setColsOpen] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [chat, setChat] = useState(null);
+  const [compare, setCompare] = useState(DEFAULT_COMPARE);
+  const [manualRefresh, setManualRefresh] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState('');
 
@@ -253,9 +179,9 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     setTimeout(() => setToast(''), 3200);
   };
 
-  const pickPreset = (key) => {
+  const changeRange = (range, key) => {
     setPreset(key);
-    if (key !== 'custom') setDateRange(computePresetDates(key));
+    setDateRange(range);
   };
 
   const params = useMemo(() => {
@@ -263,32 +189,85 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     if (department !== 'all') p.department = department;
     if (userId !== 'all') p.user = userId;
     if (tool !== 'all') p.tool = tool;
+    if (client !== 'all') p.client = client;
     if (debouncedSearch) p.search = debouncedSearch;
     return p;
-  }, [dateRange, department, userId, tool, debouncedSearch]);
+  }, [dateRange, department, userId, tool, client, debouncedSearch]);
 
   const query = useQuery({
     queryKey: ['credit-report', 'live-sheet', params],
     queryFn: () => creditReportAPI.liveSheet(params),
     staleTime: 30_000,
     placeholderData: (prev) => prev,
+    // Live: re-read the backend every 2 minutes while this tab is visible
+    // (paused in the background), and again whenever the window regains focus.
+    refetchInterval: AUTO_REFRESH_MS,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
+  const updatedAgo = useUpdatedAgo(query.dataUpdatedAt);
 
   const typing = search.trim() !== debouncedSearch;
-  const refreshing = typing || (query.isFetching && !query.isLoading);
-  const loading = query.isLoading || refreshing;
+  // Skeletons whenever what's on screen doesn't match the selection yet:
+  // first load, a filter change (old data shown as placeholder), typing in
+  // search, or a manual refresh. The silent 2-minute auto refresh keeps the
+  // current numbers on screen and only flips the "Updating…" pill.
+  const loading =
+    query.isLoading || typing || (query.isFetching && (query.isPlaceholderData || manualRefresh));
+  const refreshing = loading && !query.isLoading;
+
+  const refreshNow = async () => {
+    setManualRefresh(true);
+    try {
+      await query.refetch();
+    } finally {
+      setManualRefresh(false);
+    }
+  };
 
   const data = query.data;
   const kpis = data?.kpis || {};
   const avgs = kpis.averages || {};
   const period = data?.period || {};
-  const options = data?.options || { departments: [], users: [], tools: [] };
+  const options = data?.options || { departments: [], users: [], tools: [], clients: [] };
   const sheets = data?.sheets || {};
 
+  /* dropdown options */
+  const toolOptions = useMemo(
+    () => [
+      { value: 'all', label: 'All tools' },
+      ...(options.tools || []).map((t) => ({ value: t, label: t, icon: <ToolLogo name={t} size={16} /> })),
+    ],
+    [options.tools]
+  );
+  const deptOptions = useMemo(
+    () => [{ value: 'all', label: 'All departments' }, ...(options.departments || []).map((d) => ({ value: d, label: d }))],
+    [options.departments]
+  );
   const userOptions = useMemo(() => {
     const all = options.users || [];
-    return department === 'all' ? all : all.filter((u) => u.department === department);
+    const list = department === 'all' ? all : all.filter((u) => u.department === department);
+    return [
+      { value: 'all', label: 'Everyone' },
+      ...list.map((u) => ({
+        value: String(u.id),
+        label: u.name,
+        hint: u.department,
+        icon: <Avatar name={u.name} size={20} />,
+      })),
+    ];
   }, [options.users, department]);
+  const clientOptions = useMemo(() => {
+    const spendByClient = new Map((sheets.clients || []).map((c) => [c.client, c.generations]));
+    return [
+      { value: 'all', label: 'All clients' },
+      ...(options.clients || []).map((c) => ({
+        value: c,
+        label: c,
+        meta: spendByClient.has(c) ? fmtNum(spendByClient.get(c)) : undefined,
+      })),
+    ];
+  }, [options.clients, sheets.clients]);
 
   /* chart data */
   const trendData = useMemo(() => {
@@ -307,12 +286,10 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     return out;
   }, [sheets.daily, sheets.monthly, trendMode, dateRange]);
 
+  const toolField = { outputs: 'generations', spend: 'totalSpendRupees', credits: 'credits' }[toolMode];
   const toolData = useMemo(() => {
     const rows = (sheets.tools || [])
-      .map((t) => ({
-        name: t.tool,
-        value: Number(toolMode === 'outputs' ? t.generations : t.totalSpendRupees) || 0,
-      }))
+      .map((t) => ({ name: t.tool, value: Number(t[toolField]) || 0 }))
       .filter((r) => r.value > 0)
       .sort((a, b) => b.value - a.value);
     const top = rows.slice(0, 5);
@@ -320,30 +297,32 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     if (rest > 0) top.push({ name: 'Others', value: rest });
     const total = top.reduce((s, r) => s + r.value, 0) || 1;
     return top.map((r, i) => ({ ...r, pct: (r.value / total) * 100, color: CHART_PALETTE[i % CHART_PALETTE.length] }));
-  }, [sheets.tools, toolMode]);
+  }, [sheets.tools, toolField]);
 
   const toolTotal = toolData.reduce((s, r) => s + r.value, 0);
 
+  const deptField = { spend: 'spendRupees', outputs: 'generations', credits: 'credits' }[deptMode];
   const deptData = useMemo(
     () =>
       (sheets.departments || [])
-        .map((d) => ({
-          name: d.department,
-          value: Number(deptMode === 'spend' ? d.spendRupees : d.generations) || 0,
-        }))
+        .map((d) => ({ name: d.department, value: Number(d[deptField]) || 0 }))
         .filter((d) => d.value > 0)
         .sort((a, b) => b.value - a.value)
         .slice(0, 6)
         .map((d, i) => ({ ...d, color: CHART_PALETTE[i % CHART_PALETTE.length] })),
-    [sheets.departments, deptMode]
+    [sheets.departments, deptField]
   );
+  const deptTotal = deptMode === 'spend' ? kpis.itemSpendRupees : deptMode === 'credits' ? kpis.totalCredits : kpis.totalGenerations;
+  const fmtDept = (v) => (deptMode === 'spend' ? fmtCompactINR(v) : fmtNum(v));
 
   /* actions */
   const resetFilters = () => {
-    pickPreset('30d');
+    setPreset('30d');
+    setDateRange(computePresetDates('30d'));
     setTool('all');
     setDepartment('all');
     setUserId('all');
+    setClient('all');
     setSearch('');
   };
 
@@ -358,6 +337,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
         department: params.department,
         user: params.user,
         tool: params.tool === 'ChatGPT' ? undefined : params.tool,
+        client: params.client,
         version,
         format: 'xlsx',
       });
@@ -381,9 +361,9 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     const headers = Object.keys(rows[0]).filter((k) => rows[0][k] === null || typeof rows[0][k] !== 'object');
     const lines = [
       headers.join(','),
-      ...rows.map((r) => headers.map((h) => `"${r[h] == null ? '' : String(r[h]).replace(/"/g, '""')}"`).join(',')),
+      ...sortedRows.map((r) => headers.map((h) => `"${r[h] == null ? '' : String(r[h]).replace(/"/g, '""')}"`).join(',')),
     ];
-    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -394,16 +374,8 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     URL.revokeObjectURL(url);
   };
 
-  const openOutput = async (ref) => {
-    if (!ref) return;
-    const [toolName, recId] = ref.split(':');
-    try {
-      const res = await creditReportAPI.outputUrl(toolName, recId);
-      if (res?.url) window.open(res.url, '_blank', 'noopener,noreferrer');
-    } catch {
-      notify('Output link unavailable.');
-    }
-  };
+  // Link button: a chat opens its transcript, anything else plays here.
+  const openLink = (row) => (CHAT_TOOLS.has(row.tool) ? setChat(row) : setPreview(row));
 
   const seedDemo = async () => {
     setBusy(true);
@@ -418,15 +390,28 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     }
   };
 
+  const scrollToSheet = () =>
+    setTimeout(() => sheetRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 30);
+
   const drill = (next) => {
     if (next.user !== undefined) setUserId(String(next.user));
     if (next.tool !== undefined) setTool(next.tool);
     if (next.department !== undefined) setDepartment(next.department);
+    if (next.client !== undefined) setClient(next.client);
     if (next.date) {
       setPreset('custom');
       setDateRange({ start: next.date, end: next.date });
     }
+    setPeopleOpen(false);
     setSheet('log');
+    scrollToSheet();
+  };
+
+  const openCompare = (mode, patch = {}) => {
+    setCompare((s) => ({ ...s, mode, ...patch }));
+    setPeopleOpen(false);
+    setSheet('compare');
+    scrollToSheet();
   };
 
   const toggleCol = (key) =>
@@ -437,28 +422,40 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
       return next;
     });
 
-  const visibleLogCols = LOG_COLUMNS.filter((c) => !hiddenCols.has(c.key));
-  const show = (key) => !hiddenCols.has(key);
+  /* tables */
+  const columns = useMemo(() => buildColumns({ drill, openOutput: openLink }), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const isTable = sheet !== 'compare';
+  const sheetCols = isTable ? columns[sheet].filter((c) => sheet !== 'log' || !hiddenCols.has(c.key)) : [];
+  const sort = sorts[sheet] || null;
+  const setSort = (next) => setSorts((s) => ({ ...s, [sheet]: next }));
+  const sortedRows = useMemo(
+    () => (isTable ? sortRows(sheets[sheet] || [], columns[sheet], sort) : []),
+    [isTable, sheets, sheet, columns, sort]
+  );
+  const sortChoices = useMemo(() => (isTable ? sortOptions(columns[sheet]) : []), [isTable, columns, sheet]);
+  // What ← / → steps through in the player: playable outputs, in the order the Activity tab shows them.
+  const previewRows = useMemo(
+    () =>
+      (sheet === 'log' ? sortedRows : sheets.log || []).filter(
+        (r) => r.hasOutput && r.outputRef && !CHAT_TOOLS.has(r.tool)
+      ),
+    [sheet, sortedRows, sheets.log]
+  );
 
   const counts = {
     log: sheets.log?.length,
     users: sheets.users?.length,
     tools: sheets.tools?.length,
+    clients: sheets.clients?.length,
     daily: sheets.daily?.length,
     monthly: sheets.monthly?.length,
     departments: sheets.departments?.length,
   };
 
-  const empty = (cols) => (
-    <tr>
-      <td colSpan={cols} className="zrs-empty">
-        No data for this selection.
-      </td>
-    </tr>
-  );
-
   const changeText = kpis.spendChangeText;
   const changeUp = changeText && !String(changeText).trim().startsWith('▼') && !String(changeText).includes('-');
+
+  const activeFilters = [tool, department, userId, client].filter((v) => v !== 'all').length + (search ? 1 : 0);
 
   return (
     <div className="zrs">
@@ -470,52 +467,38 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
           </span>
           <div>
             <h3>Usage &amp; Spend</h3>
-            <p>Who generated what, with which tool, and what it cost</p>
+            <p>Who generated what, with which tool, for which client, and what it cost</p>
           </div>
         </div>
 
         <div className="zrs-top-actions">
-          {preset === 'custom' ? (
-            <div className="zrs-date-edit">
-              <Icon d={ICONS.calendar} size={15} />
-              <input
-                type="date"
-                value={dateRange.start}
-                max={dateRange.end}
-                onChange={(e) => setDateRange((d) => ({ ...d, start: e.target.value }))}
-              />
-              <span>–</span>
-              <input
-                type="date"
-                value={dateRange.end}
-                min={dateRange.start}
-                onChange={(e) => setDateRange((d) => ({ ...d, end: e.target.value }))}
-              />
-            </div>
-          ) : (
-            <span className="zrs-date-chip">
-              <Icon d={ICONS.calendar} size={15} />
-              {period.label || `${dateRange.start} – ${dateRange.end}`}
-            </span>
-          )}
-          <button
-            type="button"
-            className={`zrs-btn ${preset === 'custom' ? 'primary' : ''}`}
-            onClick={() => pickPreset(preset === 'custom' ? '30d' : 'custom')}
+          <DateRangePicker start={dateRange.start} end={dateRange.end} presetKey={preset} onChange={changeRange} />
+          <span
+            className={`zrs-live ${query.isError ? 'error' : ''}`}
+            title={query.dataUpdatedAt ? `Last updated ${new Date(query.dataUpdatedAt).toLocaleTimeString('en-IN')} · refreshes every 2 minutes` : 'Loading…'}
           >
-            Custom
-          </button>
-          <button
-            type="button"
-            className="zrs-icon-btn"
-            onClick={() => query.refetch()}
-            title="Refresh"
-            aria-label="Refresh"
-          >
+            <span className="zrs-live-dot" />
+            {query.isError ? 'Update failed' : query.isFetching ? 'Updating…' : updatedAgo ? `Live · ${updatedAgo}` : 'Live'}
+          </span>
+          <button type="button" className="zrs-icon-btn" onClick={refreshNow} title="Refresh" aria-label="Refresh">
             <span className={query.isFetching ? 'spin' : ''}>
               <Icon d={ICONS.refresh} />
             </span>
           </button>
+          <Dropdown
+            value={null}
+            options={COMPARE_MODES.map((m) => ({ ...m, icon: <Icon d={m.iconD} size={16} /> }))}
+            onChange={(m) => openCompare(m)}
+            label="Compare"
+            align="right"
+            menuWidth={300}
+            trigger={
+              <>
+                <Icon d={ICONS.compare} size={15} />
+                Compare
+              </>
+            }
+          />
           <div className="zrs-menu-wrap" ref={exportRef}>
             <button type="button" className="zrs-btn" onClick={() => setExportOpen((v) => !v)} disabled={busy}>
               <Icon d={ICONS.download} size={15} />
@@ -530,7 +513,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
                 <button type="button" onClick={() => downloadWorkbook('management')}>
                   Management summary (.xlsx)
                 </button>
-                <button type="button" onClick={downloadCsv}>
+                <button type="button" onClick={downloadCsv} disabled={!isTable}>
                   Current tab as CSV
                 </button>
               </div>
@@ -581,7 +564,9 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
           value={fmtNum(kpis.totalGenerations)}
           loading={loading}
           hint="Every image, video, audio, chat or asset generated through the AI tools."
-          foot={`${fmtNum(avgs.generationsPerDay)} / day · ${fmtINR(avgs.spendPerOutput)} each`}
+          foot={`${fmtNum(avgs.generationsPerDay)} / day · ${fmtINR(avgs.spendPerOutput)} each · ${fmtNum(kpis.totalCredits)} credits`}
+          onClick={() => openCompare('generations')}
+          action="Compare generations"
         />
         <Kpi
           tone="pink"
@@ -596,62 +581,39 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
             </>
           }
           loading={loading}
-          hint="People and AI tools with at least one generation in the period."
+          hint="People and AI tools with at least one generation in the period. Click for the full people report."
           foot={`${fmtINR(avgs.spendPerUser)} per person (avg)`}
+          onClick={() => setPeopleOpen(true)}
+          action="Open people report"
         />
       </section>
 
       {/* ── Filters ── */}
       <section className="zrs-filters">
-        <label className="zrs-field">
-          <span>Time range</span>
-          <select value={preset} onChange={(e) => pickPreset(e.target.value)}>
-            {DATE_PRESETS.map((p) => (
-              <option key={p.key} value={p.key}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="zrs-field">
+        <div className="zrs-field">
           <span>Tool</span>
-          <select value={tool} onChange={(e) => setTool(e.target.value)}>
-            <option value="all">All tools</option>
-            {(options.tools || []).map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="zrs-field">
+          <Dropdown value={tool} options={toolOptions} onChange={setTool} label="Tool" searchable />
+        </div>
+        <div className="zrs-field">
           <span>Department</span>
-          <select
+          <Dropdown
             value={department}
-            onChange={(e) => {
-              setDepartment(e.target.value);
+            options={deptOptions}
+            onChange={(v) => {
+              setDepartment(v);
               setUserId('all');
             }}
-          >
-            <option value="all">All departments</option>
-            {(options.departments || []).map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="zrs-field">
+            label="Department"
+          />
+        </div>
+        <div className="zrs-field">
           <span>Person</span>
-          <select value={userId} onChange={(e) => setUserId(e.target.value)}>
-            <option value="all">Everyone</option>
-            {userOptions.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
-            ))}
-          </select>
-        </label>
+          <Dropdown value={String(userId)} options={userOptions} onChange={setUserId} label="Person" searchable menuWidth={260} />
+        </div>
+        <div className="zrs-field">
+          <span>Client / Project</span>
+          <Dropdown value={client} options={clientOptions} onChange={setClient} label="Client" searchable menuWidth={260} />
+        </div>
         <label className="zrs-search">
           <Icon d={ICONS.search} size={16} />
           <input
@@ -668,7 +630,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
           )}
         </label>
         <button type="button" className="zrs-reset" onClick={resetFilters}>
-          Reset
+          Reset{activeFilters ? ` (${activeFilters})` : ''}
         </button>
       </section>
 
@@ -679,17 +641,22 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
             <div>
               <h4>Spend trend</h4>
               <div className="zrs-card-value">
-                {fmtINR(kpis.totalSpendRupees)}
-                {changeText ? <em className={changeUp ? 'up' : 'down'}>{changeText}</em> : null}
+                {loading ? (
+                  <Skel w={120} h={22} r={7} />
+                ) : (
+                  <>
+                    {fmtINR(kpis.totalSpendRupees)}
+                    {changeText ? <em className={changeUp ? 'up' : 'down'}>{changeText}</em> : null}
+                  </>
+                )}
               </div>
             </div>
-            <select className="zrs-mini-select" value={trendMode} onChange={(e) => setTrendMode(e.target.value)}>
-              <option value="daily">Daily</option>
-              <option value="monthly">Monthly</option>
-            </select>
+            <Dropdown value={trendMode} options={TREND_MODES} onChange={setTrendMode} size="sm" align="right" label="Trend period" />
           </header>
           <div className="zrs-chart">
-            {trendData.length ? (
+            {loading ? (
+              <ChartSkeleton kind="area" />
+            ) : trendData.length ? (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={trendData} margin={{ top: 8, right: 6, left: -12, bottom: 0 }}>
                   <defs>
@@ -733,74 +700,86 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
         <article className="zrs-card">
           <header className="zrs-card-head">
             <h4>Usage by tool</h4>
-            <select className="zrs-mini-select" value={toolMode} onChange={(e) => setToolMode(e.target.value)}>
-              <option value="outputs">By outputs</option>
-              <option value="spend">By spend</option>
-            </select>
-          </header>
-          <div className="zrs-donut-wrap">
-            <div className="zrs-donut">
-              {toolData.length ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={toolData}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius="62%"
-                      outerRadius="95%"
-                      paddingAngle={2}
-                      stroke="none"
-                      isAnimationActive={false}
-                    >
-                      {toolData.map((d) => (
-                        <Cell key={d.name} fill={d.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip content={<ChartTooltip money={toolMode === 'spend'} />} />
-                  </PieChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="zrs-chart-empty">No usage</div>
-              )}
-              {toolData.length > 0 && (
-                <div className="zrs-donut-center">
-                  <b>{toolMode === 'spend' ? fmtCompactINR(toolTotal) : fmtNum(toolTotal)}</b>
-                  <span>{toolMode === 'spend' ? 'spent' : 'outputs'}</span>
-                </div>
-              )}
+            <div className="zrs-card-tools">
+              <button type="button" className="zrs-card-link" onClick={() => openCompare('tools')} title="Compare tools side by side">
+                <Icon d={ICONS.compare} size={13} />
+                Compare
+              </button>
+              <Dropdown value={toolMode} options={TOOL_MODES} onChange={setToolMode} size="sm" align="right" label="Measure" />
             </div>
-            <ul className="zrs-legend">
-              {toolData.map((d) => (
-                <li key={d.name}>
-                  <i style={{ background: d.color }} />
-                  {d.name !== 'Others' ? <ToolLogo name={d.name} size={14} /> : null}
-                  <span className="zrs-legend-name">{d.name}</span>
-                  <span className="zrs-legend-pct">{Math.round(d.pct)}%</span>
-                  <span className="zrs-legend-val">
-                    {toolMode === 'spend' ? fmtCompactINR(d.value) : fmtNum(d.value)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
+          </header>
+          {loading ? (
+            <ChartSkeleton kind="donut" />
+          ) : (
+            <div className="zrs-donut-wrap">
+              <div className="zrs-donut">
+                {toolData.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={toolData}
+                        dataKey="value"
+                        nameKey="name"
+                        innerRadius="62%"
+                        outerRadius="95%"
+                        paddingAngle={2}
+                        stroke="none"
+                        isAnimationActive={false}
+                      >
+                        {toolData.map((d) => (
+                          <Cell key={d.name} fill={d.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip content={<ChartTooltip money={toolMode === 'spend'} />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="zrs-chart-empty">No usage</div>
+                )}
+                {toolData.length > 0 && (
+                  <div className="zrs-donut-center">
+                    <b>{toolMode === 'spend' ? fmtCompactINR(toolTotal) : fmtNum(toolTotal)}</b>
+                    <span>{toolMode === 'spend' ? 'spent' : toolMode === 'credits' ? 'credits' : 'outputs'}</span>
+                  </div>
+                )}
+              </div>
+              <ul className="zrs-legend">
+                {toolData.map((d) => (
+                  <li key={d.name}>
+                    <i style={{ background: d.color }} />
+                    {d.name !== 'Others' ? <ToolLogo name={d.name} size={14} /> : null}
+                    {d.name !== 'Others' ? (
+                      <button type="button" className="zrs-legend-name zrs-cell-btn" onClick={() => drill({ tool: d.name })}>
+                        {d.name}
+                      </button>
+                    ) : (
+                      <span className="zrs-legend-name">{d.name}</span>
+                    )}
+                    <span className="zrs-legend-pct">{Math.round(d.pct)}%</span>
+                    <span className="zrs-legend-val">
+                      {toolMode === 'spend' ? fmtCompactINR(d.value) : fmtNum(d.value)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </article>
 
         <article className="zrs-card">
           <header className="zrs-card-head">
             <div>
-              <h4>Department-wise {deptMode === 'spend' ? 'spend' : 'outputs'}</h4>
+              <h4>Department-wise {deptMode}</h4>
               <div className="zrs-card-value">
-                {deptMode === 'spend' ? fmtINR(kpis.itemSpendRupees) : fmtNum(kpis.totalGenerations)}
+                {loading ? <Skel w={100} h={22} r={7} /> : deptMode === 'spend' ? fmtINR(deptTotal) : fmtNum(deptTotal)}
               </div>
             </div>
-            <select className="zrs-mini-select" value={deptMode} onChange={(e) => setDeptMode(e.target.value)}>
-              <option value="spend">By spend</option>
-              <option value="outputs">By outputs</option>
-            </select>
+            <Dropdown value={deptMode} options={DEPT_MODES} onChange={setDeptMode} size="sm" align="right" label="Measure" />
           </header>
           <div className="zrs-chart">
-            {deptData.length ? (
+            {loading ? (
+              <ChartSkeleton kind="bars" />
+            ) : deptData.length ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={deptData} margin={{ top: 22, right: 4, left: 4, bottom: 0 }}>
                   <XAxis
@@ -815,14 +794,21 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
                     content={<ChartTooltip money={deptMode === 'spend'} />}
                     cursor={{ fill: 'var(--color-hover-surface)' }}
                   />
-                  <Bar dataKey="value" radius={[6, 6, 0, 0]} maxBarSize={48} isAnimationActive={false}>
+                  <Bar
+                    dataKey="value"
+                    radius={[6, 6, 0, 0]}
+                    maxBarSize={48}
+                    isAnimationActive={false}
+                    cursor="pointer"
+                    onClick={(d) => d?.name && drill({ department: d.name })}
+                  >
                     {deptData.map((d) => (
                       <Cell key={d.name} fill={d.color} />
                     ))}
                     <LabelList
                       dataKey="value"
                       position="top"
-                      formatter={(v) => (deptMode === 'spend' ? fmtCompactINR(v) : fmtNum(v))}
+                      formatter={fmtDept}
                       style={{ fill: 'var(--color-text-secondary)', fontSize: 11 }}
                     />
                   </Bar>
@@ -836,7 +822,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
       </section>
 
       {/* ── Table ── */}
-      <section className="zrs-sheet">
+      <section className="zrs-sheet" ref={sheetRef}>
         <div className="zrs-sheet-head">
           <nav className="zrs-tabs" role="tablist">
             {SHEETS.map((s) => (
@@ -845,343 +831,150 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
                 type="button"
                 role="tab"
                 aria-selected={sheet === s.key}
-                className={sheet === s.key ? 'on' : ''}
+                className={`${sheet === s.key ? 'on' : ''}${s.key === 'compare' ? ' zrs-tab-compare' : ''}`}
                 onClick={() => setSheet(s.key)}
               >
                 <Icon d={s.icon} size={15} />
                 {s.label}
-                {counts[s.key] != null && <span>{counts[s.key]}</span>}
+                {s.key !== 'compare' &&
+                  (loading ? <i className="zrs-tab-skel" aria-hidden="true" /> : counts[s.key] != null && <span>{counts[s.key]}</span>)}
               </button>
             ))}
           </nav>
-          {sheet === 'log' && (
-            <div className="zrs-menu-wrap" ref={colsRef}>
-              <button type="button" className="zrs-btn" onClick={() => setColsOpen((v) => !v)}>
-                <Icon d={ICONS.columns} size={15} />
-                Columns
-                <span className="zrs-caret" />
-              </button>
-              {colsOpen && (
-                <div className="zrs-menu right" role="menu">
-                  {LOG_COLUMNS.map((c) => (
-                    <label key={c.key} className="zrs-check">
-                      <input type="checkbox" checked={show(c.key)} onChange={() => toggleCol(c.key)} />
-                      {c.label}
-                    </label>
-                  ))}
+          {isTable && (
+            <div className="zrs-sheet-actions">
+              <Dropdown
+                value={sort ? `${sort.key}:${sort.dir}` : ''}
+                options={sortChoices}
+                onChange={(v) => {
+                  if (!v) return setSort(null);
+                  const [key, dir] = v.split(':');
+                  return setSort({ key, dir });
+                }}
+                label="Sort rows"
+                align="right"
+                menuWidth={250}
+                searchable
+                triggerClassName={`zrs-btn${sort ? ' is-active' : ''}`}
+                trigger={
+                  <>
+                    <Icon d={ICONS.sort} size={15} />
+                    {sort ? sortChoices.find((o) => o.value === `${sort.key}:${sort.dir}`)?.label || 'Sort' : 'Sort'}
+                  </>
+                }
+              />
+              {sheet === 'log' && (
+                <div className="zrs-menu-wrap" ref={colsRef}>
+                  <button type="button" className="zrs-btn" onClick={() => setColsOpen((v) => !v)}>
+                    <Icon d={ICONS.columns} size={15} />
+                    Columns
+                    <span className="zrs-caret" />
+                  </button>
+                  {colsOpen && (
+                    <div className="zrs-menu right" role="menu">
+                      {columns.log.map((c) => (
+                        <label key={c.key} className="zrs-check">
+                          <input type="checkbox" checked={!hiddenCols.has(c.key)} onChange={() => toggleCol(c.key)} />
+                          {c.label}
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           )}
         </div>
 
-        <div className="zrs-table-wrap">
-          {loading ? (
-            <div className="zrs-loading" role="status" aria-live="polite">
-              <div className="zrs-loading-bar" />
-              <div className="zrs-loading-label">
-                <span className="zrs-spinner" />
-                {search.trim() ? (
-                  <>
-                    Searching for <b>“{search.trim()}”</b>…
-                  </>
-                ) : query.isLoading ? (
-                  'Loading report…'
-                ) : (
-                  'Updating report…'
-                )}
+        {sheet === 'compare' ? (
+          <ComparePanel sheets={sheets} loading={loading} state={compare} setState={setCompare} onDrill={drill} />
+        ) : (
+          <div className="zrs-table-wrap">
+            {loading ? (
+              <div className="zrs-loading" role="status" aria-live="polite">
+                <div className="zrs-loading-bar" />
+                <div className="zrs-loading-label">
+                  <span className="zrs-spinner" />
+                  {search.trim() ? (
+                    <>
+                      Searching for <b>“{search.trim()}”</b>…
+                    </>
+                  ) : query.isLoading ? (
+                    'Loading report…'
+                  ) : (
+                    'Syncing latest data…'
+                  )}
+                </div>
+                <table className="zrs-table">
+                  <SkeletonRows cols={sheetCols.length + 1 || 8} />
+                </table>
               </div>
+            ) : (
               <table className="zrs-table">
-                <SkeletonRows cols={SHEET_COLS[sheet] || 8} />
-              </table>
-            </div>
-          ) : (
-            <>
-              {sheet === 'log' && (
-                <table className="zrs-table">
-                  <thead>
+                <thead>
+                  <tr>
+                    <th className="num zrs-sno">S.No</th>
+                    {sheetCols.map((c) => (
+                      <SortTh key={c.key} col={c} sort={sort} onSort={setSort} />
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedRows.length === 0 ? (
                     <tr>
-                      {visibleLogCols.map((c) => (
-                        <th key={c.key} className={c.num ? 'num' : ''}>
-                          {c.label}
-                        </th>
-                      ))}
+                      <td colSpan={sheetCols.length + 1} className="zrs-empty">
+                        {sheet === 'log' ? 'No generations for this selection.' : 'No data for this selection.'}
+                        {sheet === 'log' && import.meta.env.DEV && (
+                          <button type="button" className="zrs-link" onClick={seedDemo} disabled={busy}>
+                            Load sample data (local only)
+                          </button>
+                        )}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {(sheets.log || []).length === 0 ? (
-                      <tr>
-                        <td colSpan={visibleLogCols.length} className="zrs-empty">
-                          No generations for this selection.
-                          {import.meta.env.DEV && (
-                            <button type="button" className="zrs-link" onClick={seedDemo} disabled={busy}>
-                              Load sample data (local only)
-                            </button>
-                          )}
-                        </td>
+                  ) : (
+                    sortedRows.map((r, i) => (
+                      <tr key={ROW_KEYS[sheet](r)}>
+                        <td className="num zrs-sno">{i + 1}</td>
+                        {sheetCols.map((c) => (
+                          <td
+                            key={c.key}
+                            className={[c.num ? 'num' : '', c.td || ''].join(' ').trim() || undefined}
+                            title={c.title ? c.title(r) : undefined}
+                          >
+                            {c.cell(r)}
+                          </td>
+                        ))}
                       </tr>
-                    ) : (
-                      sheets.log.map((r) => (
-                        <tr key={`${r.tool}-${r.recordId}-${r.rowNum}`}>
-                          {show('when') && (
-                            <td className="nowrap">
-                              {r.date}
-                              <span className="sub">{r.time}</span>
-                            </td>
-                          )}
-                          {show('person') && (
-                            <td>
-                              <div className="zrs-person">
-                                <Avatar name={r.userName} />
-                                <button type="button" className="zrs-cell-btn" onClick={() => drill({ user: r.userId })}>
-                                  {r.userName}
-                                </button>
-                              </div>
-                            </td>
-                          )}
-                          {show('tool') && (
-                            <td>
-                              <ToolTag name={r.tool} onClick={() => drill({ tool: r.tool })} />
-                            </td>
-                          )}
-                          {show('output') && (
-                            <td className="zrs-out">
-                              {r.outputType}
-                              <span className="sub">{r.whatGenerated}</span>
-                            </td>
-                          )}
-                          {show('prompt') && (
-                            <td className="zrs-prompt" title={r.prompt}>
-                              {r.prompt}
-                            </td>
-                          )}
-                          {show('client') && <td className="nowrap">{r.client}</td>}
-                          {show('department') && (
-                            <td>
-                              <DeptPill name={r.department} />
-                            </td>
-                          )}
-                          {show('credits') && <td className="num">{fmtNum(r.credits)}</td>}
-                          {show('cost') && <td className="num money">{fmtINR(r.spendRupees)}</td>}
-                          {show('actions') && (
-                            <td>
-                              {r.hasOutput && r.outputRef ? (
-                                <button type="button" className="zrs-open" onClick={() => openOutput(r.outputRef)}>
-                                  Open
-                                </button>
-                              ) : (
-                                <span className="zrs-muted">—</span>
-                              )}
-                            </td>
-                          )}
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              )}
-
-              {sheet === 'users' && (
-                <table className="zrs-table">
-                  <thead>
-                    <tr>
-                      <th>Person</th>
-                      <th>Department</th>
-                      <th>Tools used</th>
-                      <th className="num">Outputs</th>
-                      <th className="num">Active days</th>
-                      <th className="num">Credits</th>
-                      <th className="num">Spent</th>
-                      <th className="num">Per output</th>
-                      <th>Share</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(sheets.users || []).length === 0
-                      ? empty(9)
-                      : sheets.users.map((u) => (
-                          <tr key={u.userId ?? u.userName}>
-                            <td>
-                              <div className="zrs-person">
-                                <Avatar name={u.userName} />
-                                <button type="button" className="zrs-cell-btn" onClick={() => drill({ user: u.userId })}>
-                                  {u.userName}
-                                </button>
-                              </div>
-                            </td>
-                            <td>
-                              <DeptPill name={u.department} />
-                            </td>
-                            <td className="zrs-wrap">{u.toolsUsedText}</td>
-                            <td className="num">{fmtNum(u.generations)}</td>
-                            <td className="num">{u.activeDays}</td>
-                            <td className="num">{fmtNum(u.credits)}</td>
-                            <td className="num money">{fmtINR(u.spendRupees)}</td>
-                            <td className="num">{fmtINR(u.avgSpendPerOutput)}</td>
-                            <td>
-                              <ShareBar pct={u.sharePct} />
-                            </td>
-                          </tr>
-                        ))}
-                  </tbody>
-                </table>
-              )}
-
-              {sheet === 'tools' && (
-                <table className="zrs-table">
-                  <thead>
-                    <tr>
-                      <th>Tool</th>
-                      <th>Category</th>
-                      <th className="num">People</th>
-                      <th>Top user</th>
-                      <th className="num">Outputs</th>
-                      <th className="num">Usage</th>
-                      <th className="num">Plan fee</th>
-                      <th className="num">Total</th>
-                      <th className="num">Per output</th>
-                      <th>Share</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(sheets.tools || []).length === 0
-                      ? empty(10)
-                      : sheets.tools.map((t) => (
-                          <tr key={t.tool}>
-                            <td>
-                              <ToolTag name={t.tool} onClick={() => drill({ tool: t.tool })} />
-                            </td>
-                            <td className="zrs-muted">{t.outputCategory}</td>
-                            <td className="num">{t.users}</td>
-                            <td className="nowrap">{t.topUser}</td>
-                            <td className="num">{fmtNum(t.generations)}</td>
-                            <td className="num">{fmtINR(t.itemSpendRupees)}</td>
-                            <td className="num">{fmtINR(t.subscriptionFeeRupees)}</td>
-                            <td className="num money">{fmtINR(t.totalSpendRupees)}</td>
-                            <td className="num">{fmtINR(t.avgSpendPerOutput)}</td>
-                            <td>
-                              <ShareBar pct={t.sharePct} />
-                            </td>
-                          </tr>
-                        ))}
-                  </tbody>
-                </table>
-              )}
-
-              {sheet === 'daily' && (
-                <table className="zrs-table">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th className="num">People</th>
-                      <th className="num">Outputs</th>
-                      <th>Top tool</th>
-                      <th className="num">Credits</th>
-                      <th className="num">Spent</th>
-                      <th className="num">Per output</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(sheets.daily || []).length === 0
-                      ? empty(7)
-                      : sheets.daily.map((d) => (
-                          <tr key={d.date}>
-                            <td>
-                              <button type="button" className="zrs-cell-btn" onClick={() => drill({ date: d.date })}>
-                                {d.date}
-                              </button>
-                            </td>
-                            <td className="num">{d.activeUsers}</td>
-                            <td className="num">{fmtNum(d.generations)}</td>
-                            <td>{d.topTool ? <ToolTag name={d.topTool} /> : '—'}</td>
-                            <td className="num">{fmtNum(d.credits)}</td>
-                            <td className="num money">{fmtINR(d.spendRupees)}</td>
-                            <td className="num">{fmtINR(d.avgSpendPerOutput)}</td>
-                          </tr>
-                        ))}
-                  </tbody>
-                </table>
-              )}
-
-              {sheet === 'monthly' && (
-                <table className="zrs-table">
-                  <thead>
-                    <tr>
-                      <th>Month</th>
-                      <th className="num">Active days</th>
-                      <th className="num">People</th>
-                      <th className="num">Outputs</th>
-                      <th>Top tool</th>
-                      <th className="num">Credits</th>
-                      <th className="num">Spent</th>
-                      <th className="num">Per active day</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(sheets.monthly || []).length === 0
-                      ? empty(8)
-                      : sheets.monthly.map((m) => (
-                          <tr key={m.month}>
-                            <td>{m.monthLabel}</td>
-                            <td className="num">{m.activeDays}</td>
-                            <td className="num">{m.activeUsers}</td>
-                            <td className="num">{fmtNum(m.generations)}</td>
-                            <td>{m.topTool ? <ToolTag name={m.topTool} /> : '—'}</td>
-                            <td className="num">{fmtNum(m.credits)}</td>
-                            <td className="num money">{fmtINR(m.spendRupees)}</td>
-                            <td className="num">{fmtINR(m.avgSpendPerActiveDay)}</td>
-                          </tr>
-                        ))}
-                  </tbody>
-                </table>
-              )}
-
-              {sheet === 'departments' && (
-                <table className="zrs-table">
-                  <thead>
-                    <tr>
-                      <th>Department</th>
-                      <th className="num">People</th>
-                      <th>Top user</th>
-                      <th>Top tool</th>
-                      <th className="num">Outputs</th>
-                      <th className="num">Spent</th>
-                      <th className="num">Per person</th>
-                      <th>Share</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(sheets.departments || []).length === 0
-                      ? empty(8)
-                      : sheets.departments.map((d) => (
-                          <tr key={d.department}>
-                            <td>
-                              <button
-                                type="button"
-                                className="zrs-cell-btn"
-                                onClick={() => drill({ department: d.department })}
-                              >
-                                <DeptPill name={d.department} />
-                              </button>
-                            </td>
-                            <td className="num">{d.users}</td>
-                            <td className="nowrap">{d.topUser}</td>
-                            <td>{d.topTool ? <ToolTag name={d.topTool} /> : '—'}</td>
-                            <td className="num">{fmtNum(d.generations)}</td>
-                            <td className="num money">{fmtINR(d.spendRupees)}</td>
-                            <td className="num">{fmtINR(d.avgSpendPerUser)}</td>
-                            <td>
-                              <ShareBar pct={d.sharePct} />
-                            </td>
-                          </tr>
-                        ))}
-                  </tbody>
-                </table>
-              )}
-            </>
-          )}
-        </div>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
       </section>
+
+      <PeopleReportModal
+        open={peopleOpen}
+        onClose={() => setPeopleOpen(false)}
+        users={sheets.users}
+        log={sheets.log}
+        period={period}
+        loading={loading}
+        onDrill={drill}
+        onOpenOutput={openLink}
+        onCompare={(ids) => openCompare('people', { people: ids })}
+      />
+
+      <OutputPreviewModal
+        row={preview}
+        rows={previewRows}
+        onNavigate={setPreview}
+        onClose={() => setPreview(null)}
+        notify={notify}
+      />
+
+      <ChatTranscriptModal row={chat} onClose={() => setChat(null)} notify={notify} />
 
       {toast && <div className="zrs-toast">{toast}</div>}
     </div>

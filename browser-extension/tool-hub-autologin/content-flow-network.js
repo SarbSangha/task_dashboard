@@ -515,7 +515,15 @@
   // flowMedia: pattern is kept as a harmless OR in case any surface still
   // uses it.
   const GENERATE_ENDPOINT_RE = /flowMedia:batchGenerate\w*/i;
-  const BATCHEXECUTE_GENERATE_RPCIDS = ['as29s'];
+  // Empty on purpose (2026-10-19). as29s used to be listed here, but on the
+  // boq_labs-ai-sandbox-frontend_20261016 build it fires with no generate at
+  // all - on every project page load, after an image upload/drag-in, and again
+  // each time Flow retries a call the picker's Cancel rejected - so every one
+  // opened the client picker (seen live: picker on page load, back again right
+  // after Cancel). Real generations are still held via the DOM-armed window
+  // below (pointerdown on the aria-label="Start generation" button, or Enter in
+  // the prompt), which also catches as29s when it IS part of a generate.
+  const BATCHEXECUTE_GENERATE_RPCIDS = [];
   const RPCIDS_RE = /[?&]rpcids=([^&]*)/i;
   const FLOW_MEDIA_METHOD_RE = /flowMedia:\w+/i;
   const loggedUnmatchedMethods = new Set();

@@ -45,7 +45,9 @@ from utils import r2_storage
 
 logger = logging.getLogger(__name__)
 
-FETCH_TIMEOUT_SECONDS = 20.0
+# Sized for a video clip, not just a still: a 1080p Flow clip is tens of MB,
+# which 20s (the old, image-only value) could not reliably download.
+FETCH_TIMEOUT_SECONDS = 120.0
 MIRROR_KEY_PREFIX = "flow-mirror"
 # Same pacing precaution as Freepik's identical constant - see that file's
 # own comment for the 2026-08-05 incident this guards against (a sweep

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -488,6 +488,69 @@ def _find_generation_record_for_candidate(
     return None
 
 
+HISTORY_DISCOVERY_SOURCE = "asset_history_discovered"
+# How far before Kling's own createTime a Generate click may sit and still be
+# the same job, and how much clock skew after it to tolerate.
+STARTER_MATCH_BEFORE = timedelta(minutes=30)
+STARTER_MATCH_AFTER = timedelta(minutes=2)
+WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _is_history_discovery_event(usage_event: ITPortalToolUsageEvent) -> bool:
+    return _normalize_text(usage_event.source).lower() == HISTORY_DISCOVERY_SOURCE
+
+
+def _prompt_match_key(value: object) -> str:
+    return WHITESPACE_RE.sub(" ", _normalize_text(value)).lower()[:500]
+
+
+def _find_starter_record_for_history_discovery(
+    session: Session,
+    usage_event: ITPortalToolUsageEvent,
+    candidate: BackfillCandidate,
+) -> Optional[GenerationRecord]:
+    """The record created when someone clicked Generate for this same job.
+
+    A history scan reports a Kling job from whichever browser happened to list
+    it - on a shared Kling account that is often not the person who ran it.
+    When the clicker's own extension never learned the Kling task id, the two
+    reports share no id and would become two cards (one per person). Pair them
+    by prompt + click time + Kling account instead, and only when exactly one
+    unlinked click record fits.
+    """
+    prompt_key = _prompt_match_key(candidate.prompt_text)
+    if not prompt_key or not candidate.created_at:
+        return None
+    rows = (
+        session.query(GenerationRecord, ITPortalToolUsageEvent)
+        .outerjoin(ITPortalToolUsageEvent, ITPortalToolUsageEvent.id == GenerationRecord.source_usage_event_id)
+        .filter(
+            GenerationRecord.provider == "kling",
+            GenerationRecord.provider_task_id.is_(None),
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.created_at >= candidate.created_at - STARTER_MATCH_BEFORE,
+            GenerationRecord.created_at <= candidate.created_at + STARTER_MATCH_AFTER,
+        )
+        .limit(200)
+        .all()
+    )
+    matches = []
+    for record, starter_event in rows:
+        if _prompt_match_key(record.prompt_text) != prompt_key:
+            continue
+        if starter_event is not None and _is_history_discovery_event(starter_event):
+            continue
+        if (
+            starter_event is not None
+            and starter_event.credential_id
+            and usage_event.credential_id
+            and starter_event.credential_id != usage_event.credential_id
+        ):
+            continue
+        matches.append(record)
+    return matches[0] if len(matches) == 1 else None
+
+
 def _merge_generation_record_metadata(
     existing_metadata: object,
     candidate_metadata: dict,
@@ -621,11 +684,21 @@ def sync_generation_record_from_usage_event(
         result.skip_reason = "missing_identity"
         return result
 
+    # A history scan only proves someone's browser *listed* this job, not who
+    # ran it, so it never makes the viewer the owner: it either joins the
+    # Generate-click record of the person who did run it, or stays unclaimed.
+    is_history_discovery = _is_history_discovery_event(usage_event)
+    if is_history_discovery:
+        assign_owner = False
     existing = _find_generation_record_for_candidate(session, candidate)
+    action = "update"
+    if not existing and is_history_discovery:
+        existing = _find_starter_record_for_history_discovery(session, usage_event, candidate)
+        action = "update_history_matched_starter"
     if existing:
         try:
             with session.begin_nested():
-                _apply_candidate_to_generation_record(existing, candidate, action="update", assign_owner=assign_owner)
+                _apply_candidate_to_generation_record(existing, candidate, action=action, assign_owner=assign_owner)
                 session.add(existing)
                 session.flush()
             result.updated = True

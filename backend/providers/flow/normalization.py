@@ -38,10 +38,13 @@ from providers.flow.constants import (
     INGEST_COMMIT_CHUNK_SIZE,
     INGESTION_SOURCE_CAPTURED,
     INGESTION_SOURCE_RECOVERED,
+    MEDIA_KIND_IMAGE,
+    MEDIA_KIND_VIDEO,
     OWNERSHIP_FRESHNESS_WINDOW_SECONDS,
     OWNERSHIP_STATUS_RESOLVED,
     OWNERSHIP_STATUS_UNKNOWN,
     PROVIDER,
+    flow_media_kind,
 )
 from providers.flow.models import FlowCaptureEvent, FlowGeneration
 
@@ -211,14 +214,37 @@ def _normalize_media_url_event(db: Session, event: FlowCaptureEvent) -> Optional
         )
         return None
 
+    # A video generation resolves two URLs under the same media id: its
+    # poster (.../image/<id>) and the clip (.../video/<id>). The clip is the
+    # real asset; the poster is only its thumbnail - so a poster never
+    # displaces an already-known clip, and a clip arriving after the poster
+    # takes over media_url. Before this, the poster was the only URL ever
+    # kept, so every Flow video was mirrored as a still JPG.
+    incoming_kind = flow_media_kind(url)
+    current_kind = flow_media_kind(generation.media_url) if generation.media_url else None
+    if incoming_kind == MEDIA_KIND_IMAGE and current_kind == MEDIA_KIND_VIDEO:
+        if generation.thumbnail_url != url:
+            generation.thumbnail_url = url
+            db.flush()
+        return generation
+
+    upgraded_to_video = incoming_kind == MEDIA_KIND_VIDEO and current_kind == MEDIA_KIND_IMAGE
+    if upgraded_to_video and not generation.thumbnail_url:
+        generation.thumbnail_url = generation.media_url
+
     # A row whose PREVIOUS media_url already died (asset_mirror_status=
     # "failed" - terminal, per asset_mirror.py's own docstring) deserves a
     # fresh shot once a genuinely different URL shows up here, rather than
     # staying permanently un-mirrored just because an earlier, now-irrelevant
-    # token had already expired by the time the sweep got to it.
+    # token had already expired by the time the sweep got to it. A row that
+    # was mirrored from the poster alone is re-queued too, so the sweep
+    # replaces that still with the actual clip.
     url_changed = generation.media_url != url
     generation.media_url = url
-    if url_changed and generation.asset_mirror_status == "failed":
+    if url_changed and (
+        generation.asset_mirror_status == "failed"
+        or (upgraded_to_video and generation.asset_mirror_status in {"mirrored", "skipped"})
+    ):
         generation.asset_mirror_status = "pending"
         generation.asset_mirror_error = None
     db.flush()

@@ -2525,10 +2525,46 @@ function scanFlowComposerText() {
   return best.slice(0, 2000);
 }
 
+// A video generation's poster (.../image/<id>) and clip (.../video/<id>)
+// share one media id, and the poster usually loads first - so the id-level
+// dedupe below used to keep the poster and drop the clip, and every Flow
+// video was captured (and mirrored) as a still. Clip URLs are now always
+// forwarded; the backend makes the clip the row's asset and the poster its
+// thumbnail (providers/flow/normalization.py's _normalize_media_url_event).
+const FLOW_VIDEO_ASSET_RE = /flow-content\.google\/video\//i;
+const flowVideoUrlByMediaId = new Map(); // mediaId -> clip URL, held until its row is reported
+const flowReportedVideoKeys = new Set();  // mediaId|Expires already forwarded
+
+function reportFlowVideoUrlOnce(mediaId, url) {
+  let expires = 'unknown';
+  try { expires = new URL(url).searchParams.get('Expires') || 'unknown'; } catch {}
+  const key = `${mediaId}|${expires}`;
+  if (flowReportedVideoKeys.has(key)) return;
+  flowReportedVideoKeys.add(key);
+  console.debug('[RMW Flow Capture] reporting video clip URL', { mediaId });
+  reportFlowMediaUrl(mediaId, url);
+}
+
+function noteFlowVideoAsset(mediaId, url) {
+  flowVideoUrlByMediaId.set(mediaId, `${url}`);
+  // Still waiting to be flushed as a new row this cycle: the backend can
+  // only attach a URL to a row that already exists, so the flush sends it
+  // right after the row. Anything else (an earlier cycle's row, or an older
+  // video opened from the gallery) already exists - send it now.
+  if (flowPendingSynthMedia.has(mediaId)) return;
+  reportFlowVideoUrlOnce(mediaId, url);
+}
+
 function noteFlowMediaAsset(url) {
   const mediaId = extractFlowMediaId(url);
   if (!mediaId) return;
+  trackFlowMediaAssetForCapture(mediaId, url);
+  // After tracking, so a brand-new clip is already queued for this cycle's
+  // flush and is held until its row exists, not sent ahead of it.
+  if (FLOW_VIDEO_ASSET_RE.test(`${url}`)) noteFlowVideoAsset(mediaId, url);
+}
 
+function trackFlowMediaAssetForCapture(mediaId, url) {
   // Not armed: this is pre-existing gallery content. Record it so it can
   // never later be mistaken for fresh output, and stop.
   if (!isFlowGenerationArmed()) {
@@ -2540,7 +2576,9 @@ function noteFlowMediaAsset(url) {
 
   if (flowPendingSynthMedia.size >= FLOW_MEDIA_MAX_PER_CYCLE) return;
   flowPendingSynthMedia.set(mediaId, `${url}`);
-  console.debug('[RMW Flow Capture] observed new generated asset', { mediaId });
+  console.debug('[RMW Flow Capture] observed new generated asset', {
+    mediaId, kind: FLOW_VIDEO_ASSET_RE.test(`${url}`) ? 'video' : 'image',
+  });
   setFlowCaptureStatus('Generation detected — capturing…');
   scheduleFlowArmQuietReset(); // real activity: keep the arm window open
 
@@ -2587,6 +2625,11 @@ function flushFlowSynthesizedRows() {
     console.debug('[RMW Flow Capture] network path already captured this cycle - skipping asset-built rows', {
       networkRows: flowNetworkRowsThisCycle, skipped: pending.size,
     });
+    // Those rows exist now, so any clip held back for them can go.
+    for (const mediaId of pending.keys()) {
+      const videoUrl = flowVideoUrlByMediaId.get(mediaId);
+      if (videoUrl) reportFlowVideoUrlOnce(mediaId, videoUrl);
+    }
     return;
   }
 
@@ -2602,7 +2645,13 @@ function flushFlowSynthesizedRows() {
     reportFlowGenerationRow(row, { isReconciliation: false });
     // Separate, already-supported event: _normalize_media_url_event binds it
     // to the row above by primary_media_id, which is this same id.
-    reportFlowMediaUrl(mediaId, url);
+    if (FLOW_VIDEO_ASSET_RE.test(url)) {
+      reportFlowVideoUrlOnce(mediaId, url);
+    } else {
+      reportFlowMediaUrl(mediaId, url);
+      const videoUrl = flowVideoUrlByMediaId.get(mediaId);
+      if (videoUrl) reportFlowVideoUrlOnce(mediaId, videoUrl);
+    }
   }
   persistFlowLastLiveCapturedAt(Date.now());
   scheduleFlowArmQuietReset();

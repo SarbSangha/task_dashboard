@@ -2,7 +2,7 @@
 Live In-App Excel & Zomato-Style Quick Report Engine for RMW Eye.
 
 Builds a unified JSON payload directly from the Credit Report facts +
-management rupee model (plus ChatGPT conversation activity) so the frontend
+management rupee model (every tracked tool, ChatGPT and Claude included) so the frontend
 can render an interactive, multi-sheet Excel workbook right inside RMW Eye
 in 1-2 clicks — with filters for Days, Months, Averages, and ₹ Spending.
 """
@@ -42,7 +42,6 @@ from .facts import (
     KLING,
     NO_CLIENT,
     PENDING,
-    TOOL_NAMES,
     UNASSIGNED,
     UNASSIGNED_DEPARTMENT,
     UNASSIGNED_USER_ID,
@@ -71,6 +70,9 @@ TOOL_OUTPUT_CATEGORY = {
     "Envato": "Creative Asset",
     "Epidemic Sound": "Soundtrack",
     "ChatGPT": "Chat / Copy",
+    "Claude": "Chat / Copy",
+    "Grammarly": "Writing",
+    "Splice": "Music Samples",
 }
 
 
@@ -114,9 +116,15 @@ def classify_generation(tool: str, model_label: Optional[str], prompt: Optional[
     elif tool == "Epidemic Sound":
         out_type = "Soundtrack"
         label = f"Soundtrack ({m})" if m else "Music Adaptation · Epidemic"
-    elif tool == "ChatGPT":
+    elif tool in ("ChatGPT", "Claude"):
         out_type = "Chat / Copy"
-        label = f"AI Chat ({m})" if m else "Prompt & Copy · ChatGPT"
+        label = f"AI Chat ({m})" if m else f"Prompt · {tool}"
+    elif tool == "Grammarly":
+        out_type = "Writing"
+        label = f"Document · {p_short}" if p_short else "Document · Grammarly"
+    elif tool == "Splice":
+        out_type = "Music Samples"
+        label = f"Sample · {p_short}" if p_short else "Sample download · Splice"
     else:
         out_type = TOOL_OUTPUT_CATEGORY.get(tool, "AI Output")
         label = f"{out_type} ({m})" if m else out_type
@@ -161,9 +169,9 @@ def build_live_sheet(
         clean_out_type = None
     search_q = (search or "").strip().lower()
 
-    # If filtering specifically for ChatGPT, facts_subquery has no rows (handled below),
-    # otherwise pass clean_tool if it's in TOOL_NAMES.
-    facts_tool = clean_tool if (clean_tool in TOOL_NAMES) else None
+    # A tool the report does not track (e.g. a "Paid, not tracked" one) has
+    # no rows: facts_subquery returns an empty result for an unknown name.
+    facts_tool = clean_tool
     filters = ReportFilters.build(
         start=start,
         end=end,
@@ -175,11 +183,11 @@ def build_live_sheet(
     )
     prepare(db, filters)
 
-    groups = [] if (clean_tool == "ChatGPT") else load_groups(db, filters)
+    groups = load_groups(db, filters)
     excluded_info = load_excluded_summary(db, filters)
     model = build_model(groups, excluded_info)
     mgmt = build_management(db, filters, groups)
-    day_groups = [] if (clean_tool == "ChatGPT") else load_day_groups(db, filters)
+    day_groups = load_day_groups(db, filters)
 
     # User metadata lookup
     user_meta: dict[int, dict] = {
@@ -230,7 +238,7 @@ def build_live_sheet(
             bucket["failed"] += dg.rows
 
     # Pull individual generation log rows
-    if clean_tool != "ChatGPT" and model.log_user_order:
+    if model.log_user_order:
         for raw_row in stream_log(db, filters, model.log_user_order):
             u_info = user_meta.get(raw_row.user_id, user_meta[UNASSIGNED_USER_ID])
             out_type, what_gen = classify_generation(raw_row.tool, raw_row.model, raw_row.prompt)
@@ -296,82 +304,6 @@ def build_live_sheet(
                     "outputRef": f"{raw_row.tool}:{raw_row.record_id}" if raw_row.has_output else None,
                 })
 
-    # Also include ChatGPT conversation rows if tool is None or "ChatGPT"
-    chatgpt_user_counts: dict[int, int] = defaultdict(int)
-    chatgpt_total_prompts = 0
-    if clean_tool in (None, "ChatGPT") and clean_client in (None, NO_CLIENT):
-        utc_s = filters.period["utc_start"]
-        utc_e = filters.period["utc_end"]
-        cg_q = db.query(ConversationRecord).filter(
-            ConversationRecord.created_at >= utc_s,
-            ConversationRecord.created_at < utc_e,
-        )
-        if filters.user_id is not None:
-            if filters.user_id == UNASSIGNED_USER_ID:
-                cg_q = cg_q.filter(ConversationRecord.owner_user_id.is_(None))
-            else:
-                cg_q = cg_q.filter(ConversationRecord.owner_user_id == filters.user_id)
-        if filters.excluded_ids:
-            cg_q = cg_q.filter(
-                (ConversationRecord.owner_user_id.is_(None))
-                | (~ConversationRecord.owner_user_id.in_(filters.excluded_ids))
-            )
-
-        for conv in cg_q.order_by(ConversationRecord.created_at.desc()).limit(300).all():
-            uid = int(conv.owner_user_id) if conv.owner_user_id is not None else UNASSIGNED_USER_ID
-            u_info = user_meta.get(uid, user_meta[UNASSIGNED_USER_ID])
-            if clean_dept and u_info["department"] != clean_dept:
-                continue
-            out_type, what_gen = classify_generation("ChatGPT", conv.model_label, conv.title)
-            if clean_out_type and out_type.lower() != clean_out_type.lower():
-                continue
-            p_count = max(int(conv.prompt_count or 1), 1)
-            chatgpt_user_counts[uid] += p_count
-            chatgpt_total_prompts += p_count
-            user_output_types[uid][out_type] += p_count
-
-            occ = conv.created_at
-            ist_dt = (occ + IST_DELTA) if occ else datetime.now()
-            date_str = ist_dt.strftime("%Y-%m-%d")
-            time_str = ist_dt.strftime("%H:%M")
-            month_str = ist_dt.strftime("%Y-%m")
-            user_active_days[uid].add(date_str)
-            day_tools_map[date_str]["ChatGPT"] += p_count
-            day_users_map[date_str].add(uid)
-            day_agg_map[date_str]["generations"] += p_count
-
-            title_text = (conv.title or "ChatGPT Conversation").strip()
-            if search_q:
-                haystack = f"{u_info['name']} {u_info['department']} chatgpt {out_type} {what_gen} {title_text}".lower()
-                if search_q not in haystack:
-                    continue
-            if len(log_rows) < log_limit:
-                log_rows.append({
-                    "rowNum": len(log_rows) + 1,
-                    "tool": "ChatGPT",
-                    "recordId": str(conv.id),
-                    "date": date_str,
-                    "time": time_str,
-                    "month": month_str,
-                    "userId": uid,
-                    "userName": u_info["name"],
-                    "employeeId": u_info["employeeId"],
-                    "department": u_info["department"],
-                    "outputType": out_type,
-                    "whatGenerated": f"{what_gen} ({p_count} prompts)",
-                    "model": (conv.model_label or "GPT-4o").strip(),
-                    "prompt": title_text,
-                    "client": NO_CLIENT,
-                    "task": "—",
-                    "credits": 0.0,
-                    "spendRupees": 0.0,
-                    "chargeStatus": CHARGED,
-                    "basis": "Subscription",
-                    "costNote": "Workspace Chat",
-                    "hasOutput": False,
-                    "outputRef": None,
-                })
-
     # Sort log_rows newest first and re-number
     log_rows.sort(key=lambda r: (r["date"], r["time"]), reverse=True)
     for idx, r in enumerate(log_rows, start=1):
@@ -390,7 +322,7 @@ def build_live_sheet(
     unused_sub_rs = round(float(cur_view.not_used or 0.0), 2)
     prev_spend_rs = round(float(prev_view.total_spend or 0.0), 2)
 
-    total_gens = int(model.totals.generations) + chatgpt_total_prompts
+    total_gens = int(model.totals.generations)
     total_credits = round(float(model.totals.credits or 0.0), 2)
 
     # Build Sheet 2: Users
@@ -399,12 +331,10 @@ def build_live_sheet(
     for g in groups:
         if g.charge_status == CHARGED and g.generations > 0:
             user_tools_map[g.user_id][g.tool] += g.generations
-    for uid, cnt in chatgpt_user_counts.items():
-        user_tools_map[uid]["ChatGPT"] += cnt
 
     for u in model.users:
         uid = u.user_id
-        u_gens = int(u.totals.generations) + chatgpt_user_counts.get(uid, 0)
+        u_gens = int(u.totals.generations)
         u_credits = round(float(u.totals.credits or 0.0), 2)
         u_rupees = round(float(u.totals.rupees or 0.0), 2)
         u_days = max(len(user_active_days.get(uid, set())), 1 if u_gens > 0 else 0)
@@ -431,7 +361,7 @@ def build_live_sheet(
             "department": u.department,
             "toolsUsed": tools_list,
             "toolsUsedText": ", ".join(tools_list) if tools_list else "—",
-            "topTool": u.top_tool.first or ("ChatGPT" if chatgpt_user_counts.get(uid) else "—"),
+            "topTool": u.top_tool.first or "—",
             "whatGeneratedSummary": what_summary,
             "topClient": u.top_client.first or NO_CLIENT,
             "generations": u_gens,
@@ -483,29 +413,48 @@ def build_live_sheet(
             "costNote": t.cost_note or "",
         })
 
-    if chatgpt_total_prompts > 0 and clean_tool in (None, "ChatGPT"):
-        cg_users = len([u for u, c in chatgpt_user_counts.items() if c > 0])
-        top_cg_uid = max(chatgpt_user_counts.items(), key=lambda kv: kv[1])[0] if chatgpt_user_counts else None
-        top_cg_name = user_meta.get(top_cg_uid, {}).get("name", "—") if top_cg_uid is not None else "—"
-        tools_sheet.append({
-            "tool": "ChatGPT",
-            "outputCategory": "Chat / Copy",
-            "users": cg_users,
-            "topUser": top_cg_name,
-            "topDepartment": "—",
-            "generations": chatgpt_total_prompts,
-            "avgGenerationsPerDay": round(chatgpt_total_prompts / period_days, 2),
-            "avgGenerationsPerMonth": round(chatgpt_total_prompts / months_equiv, 1),
-            "credits": 0.0,
-            "itemSpendRupees": 0.0,
-            "subscriptionFeeRupees": 0.0,
-            "unusedFeeRupees": 0.0,
-            "totalSpendRupees": 0.0,
-            "avgSpendPerDay": 0.0,
-            "avgSpendPerOutput": 0.0,
-            "sharePct": 0.0,
-            "costNote": "Workspace prompt count",
-        })
+    # Every paid tool appears on the Tools sheet, even with no usage in the
+    # period: a tracked tool nobody used ("Paid, not used") and a tool whose
+    # usage the dashboard cannot capture ("Paid, not tracked", e.g. Semrush).
+    # Their fees are already inside total spend; listing them makes the
+    # Tools sheet add up to it. Left out when a department / user / client
+    # filter is on, since a fee belongs to no one person or team.
+    if not cur_view.filtered:
+        listed = {t["tool"] for t in tools_sheet}
+        paid_rows: dict[str, dict] = {}
+        for s in list(cur_view.subscriptions) + list(cur_view.other_subscriptions):
+            if s.tool in listed or s.to_confirm:
+                continue
+            fee = float(s.period_fee or 0.0)
+            if fee <= 0:
+                continue
+            row = paid_rows.setdefault(s.tool, {"fee": 0.0, "tracked": bool(s.tracked)})
+            row["fee"] += fee
+        for name, info in sorted(paid_rows.items(), key=lambda kv: -kv[1]["fee"]):
+            if clean_tool and name != clean_tool:
+                continue
+            fee = round(info["fee"], 2)
+            tools_sheet.append({
+                "tool": name,
+                "outputCategory": TOOL_OUTPUT_CATEGORY.get(name, "Subscription"),
+                "users": 0,
+                "topUser": "—",
+                "topDepartment": "—",
+                "generations": 0,
+                "avgGenerationsPerDay": 0.0,
+                "avgGenerationsPerMonth": 0.0,
+                "credits": 0.0,
+                "itemSpendRupees": 0.0,
+                "subscriptionFeeRupees": fee,
+                "unusedFeeRupees": fee,
+                "totalSpendRupees": fee,
+                "avgSpendPerDay": round(fee / period_days, 2),
+                "avgSpendPerOutput": 0.0,
+                "sharePct": round(fee / total_spend_rs * 100.0, 1) if total_spend_rs > 0 else 0.0,
+                "costNote": "Paid, not used in this period" if info["tracked"]
+                            else "Paid, not tracked: the dashboard captures no usage for this tool",
+                "tracked": info["tracked"],
+            })
 
     # Build Sheet 4A: Daily breakdown
     daily_sheet = []
@@ -609,8 +558,6 @@ def build_live_sheet(
     active_tools_cnt = len([t for t in tools_sheet if t["generations"] > 0])
 
     opts = load_options(db)
-    if "ChatGPT" not in opts["tools"]:
-        opts["tools"].append("ChatGPT")
 
     return {
         "success": True,
@@ -667,6 +614,8 @@ def build_live_sheet(
                 "Creative Asset",
                 "Soundtrack",
                 "Chat / Copy",
+                "Writing",
+                "Music Samples",
             ],
         },
         "insights": {

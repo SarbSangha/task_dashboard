@@ -15,7 +15,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+import httpx
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
@@ -39,6 +40,15 @@ from utils.credit_report import (
     to_pdf,
 )
 from utils.credit_report.live_sheet import build_live_sheet, seed_demo_ai_usage
+from utils.credit_report.output_media import (
+    TOOL_KIND,
+    OutputFetchError,
+    chat_transcript,
+    iter_and_close,
+    open_output_stream,
+    output_filename,
+    output_kind,
+)
 
 IST_OFFSET_MINUTES = 330
 from utils.permissions import require_credit_report_access, require_user
@@ -263,4 +273,54 @@ def generation_output_url(
     url = resolve_output_url(db, tool, record_id)
     if not url:
         raise HTTPException(status_code=404, detail="This generation has no stored output")
-    return {"success": True, "url": url}
+    return {
+        "success": True,
+        "url": url,
+        "kind": output_kind(url, tool),
+        # What the tool makes, so a Suno song stored only as its cover art
+        # can say so instead of passing the picture off as the song.
+        "expected": TOOL_KIND.get(tool),
+        "filename": output_filename(url, tool, record_id),
+    }
+
+
+@router.get("/output/{tool}/{record_id}/chat")
+def generation_chat_transcript(
+    tool: str,
+    record_id: int,
+    db: Session = Depends(get_operational_db),
+    _: User = Depends(require_credit_report_access),
+):
+    """A Claude / ChatGPT log row's whole conversation, to read in the
+    dashboard (the shared company account's chat page needs its login)."""
+    data = chat_transcript(db, tool, record_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"success": True, **data}
+
+
+@router.get("/output/{tool}/{record_id}/download")
+def generation_output_download(
+    tool: str,
+    record_id: int,
+    db: Session = Depends(get_operational_db),
+    _: User = Depends(require_user),
+):
+    """Stream a generation's output back as an attachment, so the dashboard
+    can save provider / R2 files the browser would otherwise only open."""
+    if tool not in TOOL_NAMES or output_kind("", tool) == "chat":
+        raise HTTPException(status_code=404, detail="This generation has no downloadable output")
+    url = resolve_output_url(db, tool, record_id)
+    if not url:
+        raise HTTPException(status_code=404, detail="This generation has no stored output")
+    try:
+        resp, client = open_output_stream(url)
+    except OutputFetchError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Could not reach the output source")
+    content_type = resp.headers.get("content-type") or "application/octet-stream"
+    headers = {"Content-Disposition": f'attachment; filename="{output_filename(url, tool, record_id, content_type)}"'}
+    if resp.headers.get("content-length"):
+        headers["Content-Length"] = resp.headers["content-length"]
+    return StreamingResponse(iter_and_close(resp, client), media_type=content_type, headers=headers)

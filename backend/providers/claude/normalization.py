@@ -42,6 +42,7 @@ from typing import Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from providers.conversation_links import chat_web_url
 from providers.chatgpt.models import (
     ConversationCaptureEvent,
     ConversationPrompt,
@@ -263,7 +264,8 @@ def _handle_conversation_snapshot_metadata(db: Session, record: ConversationReco
     if payload.get("model"):
         record.model_label = payload["model"]
     if payload.get("url"):
-        record.conversation_url = payload["url"]
+        # The capture sends the intercepted API URL; keep the chat page instead.
+        record.conversation_url = chat_web_url(PROVIDER, record.provider_conversation_id, payload["url"]) or payload["url"]
     provider_created_at = _parse_iso_datetime(payload.get("providerCreatedAt"))
     if provider_created_at and not record.provider_created_time:
         record.provider_created_time = provider_created_at

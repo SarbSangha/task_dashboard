@@ -60,6 +60,9 @@ from models_new import (  # noqa: E402
     UserFeatureAccess,
     UserRole,
 )
+from providers.chatgpt.models import ConversationPrompt, ConversationRecord  # noqa: E402
+from providers.grammarly_docs.models import GrammarlyDocSession  # noqa: E402
+from providers.splice.models import SpliceDownload  # noqa: E402
 from providers.elevenlabs.models import ElevenlabsGeneration  # noqa: E402
 from providers.envato.models import EnvatoGeneration  # noqa: E402
 from providers.epidemicsound.models import EpidemicAdaptation  # noqa: E402
@@ -97,6 +100,7 @@ TABLES = [
     ToolCreditRate, GenerationRecord,
     FreepikGeneration, EnvatoGeneration, HeygenGeneration, HiggsfieldGeneration, ElevenlabsGeneration,
     FlowGeneration, SunoGeneration, EpidemicAdaptation,
+    SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt,
 ]
 Base.metadata.create_all(bind=engine, tables=[m.__table__ for m in TABLES])
 

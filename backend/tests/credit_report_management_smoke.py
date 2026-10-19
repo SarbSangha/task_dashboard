@@ -45,6 +45,9 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from models_new import (Base, GenerationClient, GenerationRecord, ITPortalTool, ITPortalToolCredential,  # noqa: E402
                         ITPortalToolUsageEvent, ToolCreditRate, User, UserFeatureAccess, UserRole)
+from providers.chatgpt.models import ConversationPrompt, ConversationRecord  # noqa: E402
+from providers.grammarly_docs.models import GrammarlyDocSession  # noqa: E402
+from providers.splice.models import SpliceDownload  # noqa: E402
 from providers.elevenlabs.models import ElevenlabsGeneration  # noqa: E402
 from providers.envato.models import EnvatoGeneration  # noqa: E402
 from providers.epidemicsound.models import EpidemicAdaptation  # noqa: E402
@@ -68,7 +71,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 TABLES = [User, UserRole, UserFeatureAccess, GenerationClient, ITPortalTool, ITPortalToolCredential,
           ITPortalToolUsageEvent, ToolCreditRate, GenerationRecord, FreepikGeneration, EnvatoGeneration,
           HeygenGeneration, HiggsfieldGeneration, ElevenlabsGeneration, FlowGeneration, SunoGeneration,
-          EpidemicAdaptation]
+          EpidemicAdaptation, SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt]
 Base.metadata.create_all(bind=engine, tables=[m.__table__ for m in TABLES])
 
 START, END = "2026-10-01", "2026-10-14"
@@ -81,7 +84,7 @@ IDS: dict = {}
 OCT = 14 / 31
 SEP = 14 / 30                     # previous period: 17-30 Sep
 FEE = {"F1": 3100.0, "F2": None, "E": 3100.0, "S": 62.0, "H": 3100.0, "V": 3100.0}
-OTHER_FEE = 3100.0               # ChatGPT: an AI subscription whose usage is not tracked
+OTHER_FEE = 3100.0               # Canva: a paid tool whose usage is not tracked
 LAPSED_FEE = 3100.0              # Higgsfield P: unused, renewal date passed -> to confirm, never counted
 RATE = 0.5                        # Kling account KA; KB has none and borrows it
 # Kling (pay-per-use): J1 100 cr (Asha) + J2 200 cr (Bob, rate assumed) + J3 60 cr (credited to Asha)
@@ -151,7 +154,7 @@ def seed():
         h = cred("H", higgs, FEE["H"], renewal=date(2026, 10, 10))
         v = cred("V", envato, FEE["V"])
         cred("P", higgs, LAPSED_FEE, renewal=date(2026, 9, 1))
-        cred("G", tool("CHAT GPT", "chat-gpt"), OTHER_FEE, renewal=date(2026, 11, 5))
+        cred("G", tool("CANVA", "canva"), OTHER_FEE, renewal=date(2026, 11, 5))
         db.add_all([
             ToolCreditRate(credential_id=ka, package_credits=1000, package_rupees=500, rate_per_credit=RATE,
                            effective_from=date(2026, 9, 1), currency="INR"),
@@ -302,8 +305,8 @@ def test_previous_period():
         _close(view.cur.not_used, NOT_USED, "current paid, not used")
         _close(view.cur.other_total, OTHER, "other AI subscriptions (usage not tracked)")
         _close(view.cur.to_confirm, TO_CONFIRM, "renewal passed and unused: to confirm, not counted")
-        _assert([s.tool for s in view.cur.other_subscriptions] == ["ChatGPT"], "ChatGPT matched from CHAT GPT")
-        _assert("ChatGPT" not in view.cur.tools and view.cur.cost_per_item("ChatGPT") is None,
+        _assert([s.tool for s in view.cur.other_subscriptions] == ["Canva"], "Canva matched from CANVA")
+        _assert("Canva" not in view.cur.tools and view.cur.cost_per_item("Canva") is None,
                 "untracked tools stay out of tools and cost per item")
         _assert(M.previous_period(date(2026, 9, 1), date(2026, 9, 30)) == (date(2026, 8, 1), date(2026, 8, 31)),
                 "a whole month compares with the month before")
