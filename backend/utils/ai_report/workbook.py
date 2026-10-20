@@ -108,7 +108,9 @@ def render_ai_workbook(ds) -> tuple[bytes, str, str]:
     buf = io.BytesIO()
     wb.save(buf)
     filename = f"AI-Usage-Report_{ds.period.end:%Y-%m-%d}.xlsx"
-    return buf.getvalue(), XLSX_MIMETYPE, filename
+    from utils.xlsx_compat import excel_safe
+
+    return excel_safe(buf.getvalue()), XLSX_MIMETYPE, filename
 
 
 def build_ai_workbook(

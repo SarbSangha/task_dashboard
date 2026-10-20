@@ -2,7 +2,7 @@
 import axios from 'axios';
 import { buildUploadFormData, getFileRelativePath } from '../utils/fileUploads';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const SESSION_TOKEN_STORAGE_KEY = 'rmw_session_token_v1';
 const SESSION_TOKEN_REMEMBER_KEY = 'rmw_session_token_remember_v1';
 const REQUEST_TIMEOUT_MS = 15000;

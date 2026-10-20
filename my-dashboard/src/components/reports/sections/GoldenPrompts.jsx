@@ -9,6 +9,55 @@ import { ToCanvasButton } from './ExecutiveDashboard';
 
 const plain = (v, unit) => ({ value: v, unit, deltaPct: null, direction: 'flat' });
 
+const SHOWN_NAMES = 3;
+const isWebUrl = (u) => /^https?:\/\//i.test(u || '');
+
+// "Ritika (12), Pranay (4) +3 more" - most uses first, full list on hover.
+const NameList = ({ label, list }) => {
+  if (!list?.length) return null;
+  const shown = list.slice(0, SHOWN_NAMES).map((x) => `${x.name} (${formatNumber(x.uses)})`).join(', ');
+  const rest = list.length - SHOWN_NAMES;
+  return (
+    <div className="rpt-golden-who" title={list.map((x) => `${x.name}: ${formatNumber(x.uses)} uses`).join('\n')}>
+      <span className="rpt-golden-lab">{label}</span>
+      <span className="rpt-golden-names">{shown}{rest > 0 ? ` +${rest} more` : ''}</span>
+    </div>
+  );
+};
+
+// Who used a prompt, for which clients, and links to its newest outputs.
+// Chat prompts (ChatGPT / Claude) produce answers, not media, so the backend
+// sends no outputs or people for them and this renders nothing.
+const PromptExtras = ({ item }) => {
+  const outputs = (item.assets || []).filter(isWebUrl);
+  if (!outputs.length && !item.usedBy?.length && !item.clients?.length) return null;
+  return (
+    <div className="rpt-golden-extras">
+      <NameList label="Used by" list={item.usedBy} />
+      <NameList label="Clients" list={item.clients} />
+      {outputs.length > 0 && (
+        <div className="rpt-golden-outputs">
+          {outputs.map((u, i) => (
+            <a
+              key={u}
+              href={u}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rpt-golden-output"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              View output{outputs.length > 1 ? ` ${i + 1}` : ''}
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const extrasText = (item) => [...(item.usedBy || []), ...(item.clients || [])].map((x) => x.name).join(' ');
+
 // A card for any prompt (not just golden ones): the text, how often it was
 // reused, how well it performed and how many people leaned on it.
 const PromptCard = ({ p, onOpen }) => {
@@ -32,6 +81,7 @@ const PromptCard = ({ p, onOpen }) => {
         <div><span className="rpt-golden-stat">{formatNumber(p.people)}</span><span className="rpt-golden-lab">users</span></div>
         <div><span className="rpt-golden-stat">{formatFull(p.credits)}</span><span className="rpt-golden-lab">credits</span></div>
       </div>
+      <PromptExtras item={p} />
     </div>
   );
 };
@@ -66,6 +116,7 @@ const GoldenCard = ({ g, onOpen }) => {
         <div><span className="rpt-golden-stat">{formatNumber(g.uniqueUsers)}</span><span className="rpt-golden-lab">users</span></div>
         <div><span className="rpt-golden-stat" title="Department that uses it most">{g.recommendedFor}</span><span className="rpt-golden-lab">recommended for</span></div>
       </div>
+      <PromptExtras item={g} />
     </div>
   );
 };
@@ -98,7 +149,7 @@ const GoldenPrompts = ({ filters, onAddToCanvas }) => {
   const golden = useMemo(() => {
     let list = data?.golden || [];
     const q = query.trim().toLowerCase();
-    if (q) list = list.filter((g) => `${g.prompt} ${g.creator?.name} ${g.category} ${g.recommendedFor}`.toLowerCase().includes(q));
+    if (q) list = list.filter((g) => `${g.prompt} ${g.creator?.name} ${g.category} ${g.recommendedFor} ${extrasText(g)}`.toLowerCase().includes(q));
     if (sort === 'uses') list = [...list].sort((a, b) => b.uses - a.uses);
     else if (sort === 'success') list = [...list].sort((a, b) => b.successRate - a.successRate);
     return list;
@@ -107,7 +158,7 @@ const GoldenPrompts = ({ filters, onAddToCanvas }) => {
   const allPrompts = useMemo(() => {
     let list = allQ.data?.prompts || [];
     const q = query.trim().toLowerCase();
-    if (q) list = list.filter((p) => (p.prompt || '').toLowerCase().includes(q));
+    if (q) list = list.filter((p) => `${p.prompt || ''} ${extrasText(p)}`.toLowerCase().includes(q));
     if (sort === 'success') list = [...list].sort((a, b) => b.successPct - a.successPct);
     else list = [...list].sort((a, b) => b.uses - a.uses); // 'rank' and 'uses' both mean most-used here
     return list;
@@ -170,7 +221,7 @@ const GoldenPrompts = ({ filters, onAddToCanvas }) => {
           <div className="rpt-golden-controls">
             <label className="rpt-golden-search">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search prompts, creators, categories…" />
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search prompts, people, clients, categories…" />
             </label>
             <div className="rpt-date-presets">
               {SCOPES.map((sc) => (

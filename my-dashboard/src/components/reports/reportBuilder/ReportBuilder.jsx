@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { reportsAPI, downloadBlobResponse } from '../../../services/reports';
 import SectionHeader from '../primitives/SectionHeader';
 import { REPORT_QUESTIONS, QUESTION_CATEGORIES, READINESS_META, ANSWER_BINDINGS, resolveAnswerItems, resolveAnswerTable, answerApiFor } from './reportQuestions';
-import { buildReportHtml, liveSnapshotItems } from './reportTemplate';
+import { blockExportTables, buildReportHtml, liveSnapshotItems } from './reportTemplate';
 import './ReportBuilder.css';
 
 const uid = () => `b${Math.random().toString(36).slice(2, 9)}`;
@@ -218,7 +218,12 @@ const ReportBuilder = ({ filters, incoming, onIncomingConsumed }) => {
   // Fetch live data (for live-data blocks AND question answer-bindings), bake
   // snapshots into a self-contained definition, render HTML with real numbers.
   const buildAll = async () => {
-    const p = { start: filters?.start, end: filters?.end, department: filters?.department, account: filters?.account };
+    // The full page-wide scope, Tool and User included — leaving those out made a
+    // Freepik-filtered report pull in every tool's prompts.
+    const p = {
+      start: filters?.start, end: filters?.end, department: filters?.department,
+      tool: filters?.tool, account: filters?.account, user: filters?.user,
+    };
     const fetchers = {
       executive: () => reportsAPI.executive(p),
       klingSummary: () => reportsAPI.klingSummary(p),
@@ -232,7 +237,8 @@ const ReportBuilder = ({ filters, incoming, onIncomingConsumed }) => {
       klingAccountsByUser: () => reportsAPI.klingAccounts({ ...p, by: 'user-account' }),
       usersRetention: () => reportsAPI.usersRetention(),
       usersPowerUsers: () => reportsAPI.usersPowerUsers({ ...p, limit: 50 }),
-      promptsGolden: () => reportsAPI.promptsGolden(p),
+      // Same limit as the Golden Prompts screen, so the report shows what was moved.
+      promptsGolden: () => reportsAPI.promptsGolden({ ...p, limit: 90 }),
       promptsEngineers: () => reportsAPI.promptsEngineers({ ...p, limit: 50 }),
       tasksAiImpact: () => reportsAPI.tasksAiImpact(p),
       klingTrends: () => reportsAPI.klingTrends(p),
@@ -311,7 +317,7 @@ const ReportBuilder = ({ filters, incoming, onIncomingConsumed }) => {
       'live-task-contributors': (b) => reportsAPI.tasksContributors({ ...p, date: b.date, priority: b.priority, limit: 200 }),
       'live-prompt-contributors': () => reportsAPI.promptsContributors({ ...p, limit: 200 }),
       'live-prompt-timeline': (b) => reportsAPI.promptsUserTimeline({ ...p, userId: b.userId }),
-      'live-prompt-list': (b) => reportsAPI.promptsList({ ...p, userId: b.userId, date: b.date, repeatedOnly: b.repeatedOnly, limit: 200 }),
+      'live-prompt-list': (b) => reportsAPI.promptsList({ ...p, userId: b.userId, date: b.date, repeatedOnly: b.repeatedOnly, limit: 300 }),
       'live-prompt-detail': (b) => reportsAPI.promptDetail({ ...p, hash: b.promptHash, limit: 120 }),
       'live-chat-timeline': (b) => reportsAPI.chatgptUserTimeline({ ...p, userId: b.userId }),
       'live-chat-day': (b) => reportsAPI.chatgptConversations({ userId: b.userId, date: b.date, limit: 200 }),
@@ -340,6 +346,11 @@ const ReportBuilder = ({ filters, incoming, onIncomingConsumed }) => {
         }
       }
       return b;
+    }).map((b) => {
+      // The Excel/CSV export is built server-side from this definition, not the
+      // HTML, so table blocks carry their rows (and output links) as plain data.
+      const exportTables = blockExportTables(b, live);
+      return exportTables.length ? { ...b, exportTables } : b;
     });
     const readiness = computeReadiness(blocks);
     const meta = { kind: readiness.state === 'spec-only' ? 'specification' : 'report', coverage: readiness.coverage };

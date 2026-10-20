@@ -61,11 +61,17 @@ const readError = async (err, fallback) => {
   return data?.detail || fallback;
 };
 
-export default function CreditReportPanel({ isOpen, onClose, onMinimizedChange, onActivate }) {
+// variant "original" is the Credit Consumption Report on its own (its own
+// sidebar entry): the export form only, without the Live Excel studio.
+export default function CreditReportPanel({ isOpen, onClose, onMinimizedChange, onActivate, variant = 'studio' }) {
+  const isOriginal = variant === 'original';
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(true);
-  const [panelMode, setPanelMode] = useState('live-excel');
-  const minimizedWindowStyle = useMinimizedWindowStack('credit-report-panel', isOpen && isMinimized);
+  const [panelMode, setPanelMode] = useState(isOriginal ? 'classic' : 'live-excel');
+  const minimizedWindowStyle = useMinimizedWindowStack(
+    isOriginal ? 'credit-consumption-panel' : 'credit-report-panel',
+    isOpen && isMinimized,
+  );
 
   const [options, setOptions] = useState({ departments: [], users: [], tools: [], clients: [], excludedAccounts: [] });
   const [optionsError, setOptionsError] = useState('');
@@ -196,7 +202,7 @@ export default function CreditReportPanel({ isOpen, onClose, onMinimizedChange, 
         onClick={isMinimized ? handleToggleMinimize : undefined}
         role="dialog"
         aria-modal="true"
-        aria-label="Credit Report"
+        aria-label={isOriginal ? 'Credit Consumption Report' : 'Credit Report'}
       >
         <div className="trp-header">
           <div className="trp-brand">
@@ -206,10 +212,10 @@ export default function CreditReportPanel({ isOpen, onClose, onMinimizedChange, 
                 <line x1="8" y1="17" x2="8" y2="11" /><line x1="12" y1="17" x2="12" y2="7" /><line x1="16" y1="17" x2="16" y2="13" />
               </svg>
             </span>
-            <h2 className="trp-title">AI Usage, Spend &amp; Live Excel Report</h2>
+            <h2 className="trp-title">{isOriginal ? 'Credit Consumption Report' : 'AI Usage, Spend & Live Excel Report'}</h2>
           </div>
           <div className="trp-header-spacer" />
-          {!isMinimized && (
+          {!isMinimized && !isOriginal && (
             <div className="rpt-mode-switch" role="tablist" aria-label="Report mode">
               <button
                 type="button"

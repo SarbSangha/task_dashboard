@@ -4991,6 +4991,8 @@ def export_kling_usage_report(
     from_label = parsed_date_from.isoformat() if parsed_date_from else "all"
     to_label = parsed_date_to.isoformat() if parsed_date_to else from_label
     filename = f"kling-usage-{from_label}-to-{to_label}.xlsx"
+    # The workbook is already built; don't keep the connection while it streams.
+    db.close()
     return StreamingResponse(
         io.BytesIO(workbook),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -5152,6 +5154,8 @@ def export_kling_raw_usage_report(
     from_label = parsed_date_from.isoformat() if parsed_date_from else "all"
     to_label = parsed_date_to.isoformat() if parsed_date_to else from_label
     filename = f"kling-raw-usage-{from_label}-to-{to_label}.xlsx"
+    # The workbook is already built; don't keep the connection while it streams.
+    db.close()
     return StreamingResponse(
         io.BytesIO(workbook),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

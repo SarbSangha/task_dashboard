@@ -3,6 +3,7 @@
 // Returns a complete HTML document string suitable for an <iframe srcdoc> or a new tab.
 
 import { questionFor } from './blockQuestions';
+import { API_URL } from '../../../services/api';
 
 
 // The RMWeye dashboard mark, inlined so the generated report stays a single
@@ -172,7 +173,24 @@ const barsHtml = (items, labelWidth = 84) => {
 };
 const simpleTableHtml = (columns, rows) => `<table class="tbl">
   <thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead>
-  <tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  <tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c && typeof c === 'object' && 'html' in c ? c.html : esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+
+// A pre-built table cell of clickable output links. The backend hands out
+// permanent /api/reports/asset links (our stored copy, freshly signed per
+// click); they're made absolute so they still open from a downloaded PDF.
+// Only http(s) URLs are linked so a stored value can never become a
+// javascript: href in the report.
+const absUrl = (u) => (String(u || '').startsWith('/') ? `${API_URL.replace(/\/+$/, '')}${u}` : String(u || ''));
+const isWebUrl = (u) => /^https?:\/\//i.test(u);
+const assetLinksCell = (urls) => {
+  const ok = (urls || []).map(absUrl).filter(isWebUrl);
+  return {
+    links: ok, // carried into the Excel/CSV export as real hyperlinks (blockExportTables)
+    html: ok.length
+      ? ok.map((u, i) => `<a class="out-link" href="${esc(u)}" target="_blank" rel="noopener">View output${ok.length > 1 ? ` ${i + 1}` : ''}</a>`).join('<br>')
+      : '<span class="muted">—</span>',
+  };
+};
 
 // ---- Kling sub-section extractors (mirror the Kling Analytics dashboard) ----
 const hourLabel = (h) => { const n = Number(h); if (n === 0) return '12a'; if (n === 12) return '12p'; return n < 12 ? `${n}a` : `${n - 12}p`; };
@@ -227,8 +245,11 @@ const promptVolumeItems = (d) => (d?.daily || []).slice(-30).map((x) => ({ label
 const promptSuccessItems = (d) => (d?.daily || []).slice(-30).map((x) => ({ label: x.date, value: x.successRate }));
 const promptThemeItems = (d) => (d?.topThemes || []).map((x) => ({ label: x.theme || x.label || '—', value: x.count ?? x.prompts }));
 const promptModelRows = (d) => (d?.successByModel || []).map((x) => [x.model || '—', num(x.prompts), `${num(x.successRate)}%`]);
-const goldenRows = (d) => (d?.golden || []).slice(0, 20).map((g) => [
-  `${(g.prompt || '').slice(0, 70)}${(g.prompt || '').length > 70 ? '…' : ''}`,
+// Every golden prompt, in full — this table is the library itself, so trimming
+// rows or text loses the very content the reader came for.
+const goldenRows = (d) => (d?.golden || []).map((g) => [
+  g.prompt || '(no prompt text)',
+  assetLinksCell(g.assets),
   num(g.uses), `${num(g.successRate)}%`, num(g.uniqueUsers), num(g.credits), g.creator?.name || '—',
 ]);
 const engineerRows = (d) => (d?.engineers || []).slice(0, 25).map((e) => [
@@ -315,8 +336,12 @@ const chatTimelineRows = (d) => (d?.timeline || []).map((r) => [
   num(r.avgDepth), `${clock(r.firstAt)} – ${clock(r.lastAt)}`,
 ]);
 const promptUserRows = (d) => (d?.users || []).map((u) => [
-  num(u.rank), esc(u.name), esc(u.department || '—'),
+  num(u.rank), u.name || '—', u.department || '—',
   num(u.uses), `${num(u.successPct)}%`, num(u.credits), dayStamp(u.lastAt),
+]);
+const promptGenerationRows = (d) => (d?.generations || []).map((g) => [
+  `${dayStamp(g.time)} ${clock(g.time)}`, g.userName || '—', g.model || '—',
+  g.success ? 'Success' : (g.status || 'Failed'), assetLinksCell([g.reportUrl].filter(Boolean)),
 ]);
 const promptAuthorRows = (d) => (d?.users || []).slice(0, 60).map((u) => [
   num(u.rank), esc(u.name), esc(u.department || '—'),
@@ -326,8 +351,9 @@ const promptTimelineRows = (d) => (d?.timeline || []).map((r) => [
   dayStamp(r.date), num(r.prompts), num(r.uniquePrompts), num(r.reusedPrompts),
   `${num(r.reuseRate)}%`, num(r.avgLength),
 ]);
-const promptListRows = (d) => (d?.prompts || []).slice(0, 60).map((p) => [
-  `${num(p.uses)}x`, esc((p.prompt || '').slice(0, 220)), num(p.credits), `${num(p.successPct)}%`,
+// simpleTableHtml escapes cells itself, so the prompt goes in raw and whole.
+const promptListRows = (d) => (d?.prompts || []).map((p) => [
+  `${num(p.uses)}x`, p.prompt || '(no prompt text)', assetLinksCell(p.assets), num(p.credits), `${num(p.successPct)}%`,
 ]);
 const taskLoadRows = (d) => (d?.users || []).slice(0, 60).map((u) => [
   num(u.rank), esc(u.name), esc(u.department || '—'),
@@ -536,8 +562,9 @@ function blockBody(block, idx, live) {
       const d = block.drill;
       const t = d?.totals || {};
       const rows = promptUserRows(d);
-      return `<section class="block">${sectionHead(n, 'Prompt Detail')}
-        <p class="lead">${esc((block.promptText || d?.prompt || '').slice(0, 400))}</p>
+      const gens = promptGenerationRows(d);
+      return `<section class="block block-long">${sectionHead(n, 'Prompt Detail')}
+        <p class="lead prompt-text">${esc(block.promptText || d?.prompt || '')}</p>
         ${d ? kpiCardsHtml([
           { value: num(t.uses), label: 'Uses' },
           { value: num(t.people), label: 'People' },
@@ -545,7 +572,9 @@ function blockBody(block, idx, live) {
           { value: num(t.credits), label: 'Credits' },
         ]) : ''}
         <h3 class="subsec">Who used it</h3>
-        ${rows.length ? simpleTableHtml(['#', 'User', 'Department', 'Uses', 'Success', 'Credits', 'Last used'], rows) : '<p class="muted">No usage in this period.</p>'}</section>`;
+        ${rows.length ? simpleTableHtml(['#', 'User', 'Department', 'Uses', 'Success', 'Credits', 'Last used'], rows) : '<p class="muted">No usage in this period.</p>'}
+        <h3 class="subsec">Generations</h3>
+        ${gens.length ? simpleTableHtml(['When', 'User', 'Model', 'Status', 'Generation'], gens) : '<p class="muted">No generations in this period.</p>'}</section>`;
     }
     case 'live-prompt-contributors': {
       const d = block.drill;
@@ -571,14 +600,18 @@ function blockBody(block, idx, live) {
     case 'live-prompt-list': {
       const d = block.drill;
       const rows = promptListRows(d);
-      const who = esc(block.userName || 'User');
-      const head = block.repeatedOnly ? `Reused Prompts — ${who}` : `Prompts — ${who}${block.date ? `, ${dayStamp(block.date)}` : ''}`;
+      // No userId means it came from the Golden Prompt library (team-wide), not a person's drill.
+      const who = block.userId ? esc(block.userName || 'User') : null;
+      const when = block.date ? `, ${dayStamp(block.date)}` : '';
+      const head = block.repeatedOnly
+        ? (who ? `Reused Prompts — ${who}` : 'Reused Prompts')
+        : (who ? `Prompts — ${who}${when}` : `All Prompts${when}`);
       const t = d?.totals || {};
-      return `<section class="block">${sectionHead(n, head)}
-        <p class="lead">${block.repeatedOnly ? 'Prompts this person used more than once' : 'The prompts written'}${
+      return `<section class="block block-long">${sectionHead(n, head)}
+        <p class="lead">${block.repeatedOnly ? (who ? 'Prompts this person used more than once' : 'Prompts used more than once') : 'The prompts written'}${
           d ? ` — ${num(t.distinct)} distinct across ${num(t.uses)} uses` : ''
         }.</p>
-        ${rows.length ? simpleTableHtml(['Uses', 'Prompt', 'Credits', 'Success'], rows) : '<p class="muted">No prompts in this scope.</p>'}</section>`;
+        ${rows.length ? simpleTableHtml(['Uses', 'Prompt', 'Generation', 'Credits', 'Success'], rows) : '<p class="muted">No prompts in this scope.</p>'}</section>`;
     }
     case 'live-task-contributors': {
       const d = block.drill;
@@ -694,7 +727,7 @@ function blockBody(block, idx, live) {
     case 'live-prompt-models':
       return `<section class="block">${sectionHead(n, 'Prompt Success by Model')}${live.promptsTrends ? simpleTableHtml(['Model', 'Prompts', 'Success Rate'], promptModelRows(live.promptsTrends)) : '<p class="muted">No data available.</p>'}</section>`;
     case 'live-golden-table':
-      return `<section class="block">${sectionHead(n, 'Golden Prompt Library')}${live.golden ? simpleTableHtml(['Prompt', 'Uses', 'Success', 'Users', 'Credits', 'Creator'], goldenRows(live.golden)) : '<p class="muted">No data available.</p>'}</section>`;
+      return `<section class="block block-long">${sectionHead(n, 'Golden Prompt Library')}${live.golden ? simpleTableHtml(['Prompt', 'Generation', 'Uses', 'Success', 'Users', 'Credits', 'Creator'], goldenRows(live.golden)) : '<p class="muted">No data available.</p>'}</section>`;
     case 'live-engineers-table':
       return `<section class="block">${sectionHead(n, 'Prompt Engineers')}${live.engineers ? simpleTableHtml(['Engineer', 'Department', 'Prompts', 'Unique', 'Success', 'Credits', 'Score'], engineerRows(live.engineers)) : '<p class="muted">No data available.</p>'}</section>`;
     // ---- Cost Intelligence ----
@@ -723,6 +756,46 @@ function blockBody(block, idx, live) {
       return '';
   }
 }
+
+// The table blocks as plain data for the server-side Excel/CSV export, which
+// can't read the HTML. Same rows as the PDF; a links cell becomes {links}.
+const exportCell = (c) => (c && typeof c === 'object' ? { links: c.links || [] } : c ?? '');
+const exportTable = (title, columns, rows) => ({ title, columns, rows: rows.map((r) => r.map(exportCell)) });
+// "Name (uses)" one per line, for the Used by / Client columns.
+const namesCell = (list) => (list || []).map((x) => `${x.name} (${num(x.uses)})`).join('\n') || '—';
+const withPeople = (rows, items) => rows.map((r, i) => [...r, namesCell(items[i]?.usedBy), namesCell(items[i]?.clients)]);
+export const blockExportTables = (block, live = {}) => {
+  switch (block.kind) {
+    case 'live-golden-table':
+      return live.golden
+        ? [exportTable(
+          'Golden Prompt Library',
+          ['Prompt', 'Generation', 'Uses', 'Success', 'Users', 'Credits', 'Creator', 'Used by', 'Client'],
+          withPeople(goldenRows(live.golden), live.golden.golden || []),
+        )]
+        : [];
+    case 'live-prompt-list': {
+      const who = block.userId ? ` — ${block.userName || 'User'}` : '';
+      const title = `${block.repeatedOnly ? 'Reused Prompts' : 'All Prompts'}${who}`;
+      return block.drill
+        ? [exportTable(
+          title,
+          ['Uses', 'Prompt', 'Generation', 'Credits', 'Success', 'Used by', 'Client'],
+          withPeople(promptListRows(block.drill), block.drill.prompts || []),
+        )]
+        : [];
+    }
+    case 'live-prompt-detail':
+      return block.drill
+        ? [
+          exportTable('Prompt Detail — Who used it', ['#', 'User', 'Department', 'Uses', 'Success', 'Credits', 'Last used'], promptUserRows(block.drill)),
+          exportTable('Prompt Detail — Generations', ['When', 'User', 'Model', 'Status', 'Generation'], promptGenerationRows(block.drill)),
+        ]
+        : [];
+    default:
+      return [];
+  }
+};
 
 export function buildReportHtml({ branding = {}, blocks = [], live = {}, meta = {} }) {
   const isSpec = meta.kind === 'specification';
@@ -787,6 +860,7 @@ export function buildReportHtml({ branding = {}, blocks = [], live = {}, meta = 
   h2.sec{ font-size:20px; color:var(--navy); margin:0 0 8px; padding-bottom:8px; border-bottom:2px solid var(--gold); }
   h2.sec .sec-n{ color:var(--gold); }
   .block{ margin:0 0 22px; break-inside:avoid; }
+  .block.block-long{ break-inside:auto; }
   p.lead{ background:var(--grey); border-left:4px solid var(--gold); padding:12px 14px; font-size:13.5px; color:#2b3646; margin:12px 0; border-radius:0 6px 6px 0; }
   p.body{ font-size:13.5px; line-height:1.6; color:#2b3646; }
   p.muted{ font-size:13px; color:#8a95a4; }
@@ -813,7 +887,9 @@ export function buildReportHtml({ branding = {}, blocks = [], live = {}, meta = 
   /* Table */
   table.tbl{ width:100%; border-collapse:collapse; font-size:13px; }
   table.tbl th{ background:var(--navy); color:#fff; text-align:left; padding:11px 14px; font-weight:600; }
-  table.tbl td{ padding:11px 14px; color:#2b3646; border-bottom:1px solid #e6eaf0; }
+  table.tbl td{ padding:11px 14px; color:#2b3646; border-bottom:1px solid #e6eaf0; white-space:pre-wrap; overflow-wrap:anywhere; vertical-align:top; }
+  p.lead.prompt-text{ white-space:pre-wrap; overflow-wrap:anywhere; }
+  a.out-link{ color:#2f6fdb; font-weight:600; text-decoration:underline; white-space:nowrap; }
   table.tbl tbody tr:nth-child(even){ background:var(--grey); }
 
   /* Faint tiled brand watermark behind the report body. Sits on .content so the
@@ -846,6 +922,8 @@ export function buildReportHtml({ branding = {}, blocks = [], live = {}, meta = 
     .cover-hero{ padding:34mm 18mm 30mm; }
     /* Don't split a section or a table row across sheets. */
     .block{ break-inside:avoid; page-break-inside:avoid; }
+    /* Prompt lists run for pages — let them flow row by row instead. */
+    .block.block-long{ break-inside:auto; page-break-inside:auto; }
     h2.sec{ break-after:avoid; page-break-after:avoid; }
     table.tbl{ break-inside:auto; }
     table.tbl tr{ break-inside:avoid; page-break-inside:avoid; }

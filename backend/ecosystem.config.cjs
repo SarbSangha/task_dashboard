@@ -22,8 +22,12 @@ module.exports = {
       merge_logs: true,
       env: {
         PYTHONUNBUFFERED: '1',
-        DB_POOL_SIZE: '20',
-        DB_MAX_OVERFLOW: '20',
+        // Per worker. Postgres allows 100 connections in total (3 reserved):
+        // 2 workers x 25 = 50 leaves room for local dev backends on the SSH
+        // tunnel, scripts and psql. 20 + 20 (80) plus one dev backend (30)
+        // went over the limit.
+        DB_POOL_SIZE: '15',
+        DB_MAX_OVERFLOW: '10',
         DB_POOL_TIMEOUT: '5',
         DB_POOL_RECYCLE: '1800',
         SLOW_REQUEST_LOG_MS: '3000',

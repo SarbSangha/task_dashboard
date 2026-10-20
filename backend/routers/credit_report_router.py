@@ -311,6 +311,9 @@ def generation_output_download(
     if tool not in TOOL_NAMES or output_kind("", tool) == "chat":
         raise HTTPException(status_code=404, detail="This generation has no downloadable output")
     url = resolve_output_url(db, tool, record_id)
+    # The fetch and the whole streamed download happen after this, and the
+    # request's session would otherwise stay checked out until the stream ends.
+    db.close()
     if not url:
         raise HTTPException(status_code=404, detail="This generation has no stored output")
     try:

@@ -296,6 +296,11 @@ export const reportsAPI = {
   aiWorkbook: async (params = {}, requestConfig = {}) =>
     api.get('/api/reports/ai-workbook.xlsx', { params, responseType: 'blob', timeout: 120000, ...requestConfig }),
 
+  // Who used each ChatGPT account (login) and how much, for the page's dates /
+  // account / department / user filters (.xlsx blob, like aiWorkbook).
+  chatgptAccountUsageWorkbook: async (params = {}, requestConfig = {}) =>
+    api.get('/api/reports/chatgpt/account-usage.xlsx', { params, responseType: 'blob', timeout: 120000, ...requestConfig }),
+
   usageDirectory: async (requestConfig = {}) =>
     (await api.get('/api/reports/usage/directory', { timeout: REPORTS_TIMEOUT_MS, ...requestConfig })).data,
   usageOverview: async (params = {}, requestConfig = {}) =>

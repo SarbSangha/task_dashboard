@@ -13,6 +13,8 @@ import AdminQueueButton from './compofleftsidebar/adminqueue/AdminQueueButton';
 import TrendingsButton from './compofleftsidebar/trending/TrendingsButton';
 import BufferButton from './compofleftsidebar/buffer/BufferButton';
 import ReportsButton from './compofleftsidebar/ReportsButton';
+import TaskReportButton from './compofleftsidebar/TaskReportButton';
+import CreditReportButton from './compofleftsidebar/CreditReportButton';
 import SheetActivityButton from './compofleftsidebar/SheetActivityButton';
 import SheetsButton from './compofleftsidebar/SheetsButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
@@ -44,6 +46,7 @@ const PANEL_TO_ACTIVE = {
   reports: 'reports',
   'task-report': 'task-report',
   'credit-report': 'credit-report',
+  'credit-consumption': 'credit-consumption',
   'sheet-activity': 'sheet-activity',
   sheets: 'sheets',
   'create-task': 'create-task',
@@ -209,7 +212,7 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
     if (
       (panel === 'trendings' && !canViewRmwData)
       || (panel === 'buffer' && !canViewBuffer)
-      || (panel === 'credit-report' && !canViewCreditReport)
+      || ((panel === 'credit-report' || panel === 'credit-consumption') && !canViewCreditReport)
       || ((panel === 'sheet-activity' || panel === 'sheets') && !canViewSheetActivity)
     ) {
       navigate('/dashboard', { replace: true });
@@ -233,6 +236,10 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
 
   const openCreditReport = () => goTo('credit-report');
   const closeCreditReport = () => closePanel('credit-report');
+
+  // The original Credit Consumption Report, on its own.
+  const openCreditConsumption = () => goTo('credit-consumption');
+  const closeCreditConsumption = () => closePanel('credit-consumption');
 
   const openSheets = () => goTo('sheets');
   const closeSheets = () => closePanel('sheets');
@@ -400,16 +407,39 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
           </div>
           )}
 
-          {/* ── REPORTS (Unified 1-Click Section) ── */}
-          {(isAdmin || canViewCreditReport) && (
+          {/* ── ANALYTICS (admin only) ── */}
+          {isAdmin && (
             <div className="nav-section">
               <div className="nav-section-header">
-                <span className="nav-section-label">Reports</span>
+                <span className="nav-section-label">Analytics</span>
               </div>
 
               <ReportsButton
-                isActive={activeItem === 'reports' || activeItem === 'credit-report' || activeItem === 'task-report'}
-                onClick={isAdmin ? openReports : openCreditReport}
+                isActive={activeItem === 'reports'}
+                onClick={openReports}
+              />
+              <TaskReportButton
+                isActive={activeItem === 'task-report'}
+                onClick={openTaskReport}
+              />
+            </div>
+          )}
+
+          {/* ── TESTING REPORT (Section Access grant) ── */}
+          {canViewCreditReport && (
+            <div className="nav-section">
+              <div className="nav-section-header">
+                <span className="nav-section-label">Testing Report</span>
+              </div>
+
+              <CreditReportButton
+                isActive={activeItem === 'credit-report'}
+                onClick={openCreditReport}
+              />
+              <CreditReportButton
+                label="Credit Consumption"
+                isActive={activeItem === 'credit-consumption'}
+                onClick={openCreditConsumption}
               />
             </div>
           )}
@@ -526,6 +556,14 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
         onClose={closeCreditReport}
         onMinimizedChange={(isMinimized) => setPanelMinimized('credit-report', isMinimized)}
         onActivate={() => activatePanel('credit-report')}
+      />
+
+      <CreditReportPanel
+        variant="original"
+        isOpen={canViewCreditReport && isPanelVisible('credit-consumption')}
+        onClose={closeCreditConsumption}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('credit-consumption', isMinimized)}
+        onActivate={() => activatePanel('credit-consumption')}
       />
 
       <SheetsPanel

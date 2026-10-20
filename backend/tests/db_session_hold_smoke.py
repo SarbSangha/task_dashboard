@@ -46,9 +46,18 @@ BLOCKING_CALLS = {
     "_upload_bytes_to_r2",
     # outbound HTTP
     "urlopen", "fetch_remote_media_bytes",
+    "open_output_stream",                                   # credit report output download
+    "fetch_workbook_bytes", "read_sheet", "inspect_sheet",  # Google Sheets export fetch
+    # A streamed body is sent AFTER the handler returns, and the request's
+    # session dependency only closes once the stream ends - so returning one
+    # while holding the session parks the connection for the whole download.
+    "StreamingResponse",
+    # slow local subprocesses (LibreOffice, ffmpeg)
+    "to_pdf", "_generate_video_thumbnail_bytes",
     # mail
     "IMAP4", "IMAP4_SSL", "SMTP", "SMTP_SSL",
     "fetch_otp_from_gmail", "latest_otp_uid_from_gmail", "fetch_auth_link_from_gmail",
+    "_send_password_reset_email",
     "send_report_email", "_test_mailbox_entry",
     # push
     "webpush", "_send_single_web_push",

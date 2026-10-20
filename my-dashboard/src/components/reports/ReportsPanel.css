@@ -310,6 +310,12 @@ table.rpt-heatmap { border-collapse: separate; border-spacing: 3px; font-size: 1
 .rpt-golden-stats > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .rpt-golden-stat { font-size: 14px; font-weight: 750; color: var(--color-text, #f8fafc); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rpt-golden-lab { font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-muted, #94a3b8); font-weight: 600; }
+.rpt-golden-extras { display: flex; flex-direction: column; gap: 7px; border-top: 1px solid var(--color-border-subtle, rgba(148,163,184,.1)); padding-top: 10px; }
+.rpt-golden-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rpt-golden-names { font-size: 12px; color: var(--color-text-secondary, #cbd5e1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rpt-golden-outputs { display: flex; flex-wrap: wrap; gap: 6px; }
+.rpt-golden-output { font-size: 11.5px; font-weight: 650; color: var(--color-primary, #2563eb); border: 1px solid currentColor; border-radius: 999px; padding: 2px 9px; text-decoration: none; }
+.rpt-golden-output:hover, .rpt-golden-output:focus-visible { background: color-mix(in srgb, currentColor 14%, transparent); }
 
 /* ---- AI Recommendations ---- */
 .rpt-rec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }

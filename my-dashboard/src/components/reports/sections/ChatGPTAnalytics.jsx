@@ -1,10 +1,10 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
-import { reportsAPI } from '../../../services/reports';
+import { reportsAPI, downloadBlobResponse } from '../../../services/reports';
 import { useChartTheme } from '../hooks/useChartTheme';
 import SectionHeader from '../primitives/SectionHeader';
 import KpiCard from '../primitives/KpiCard';
@@ -28,6 +28,29 @@ const ChatGPTAnalytics = ({ filters, onOpenUser, onAddToCanvas }) => {
   const summaryQ = useQuery({ queryKey: ['reports', 'chatgpt', 'summary', filters], queryFn: () => reportsAPI.chatgptSummary(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
   const trendsQ = useQuery({ queryKey: ['reports', 'chatgpt', 'trends', filters], queryFn: () => reportsAPI.chatgptTrends(filters), placeholderData: keepPreviousData, staleTime: 60_000 });
   const usersQ = useQuery({ queryKey: ['reports', 'chatgpt', 'users', filters], queryFn: () => reportsAPI.chatgptUsers({ ...filters, limit: 100 }), placeholderData: keepPreviousData, staleTime: 60_000 });
+
+  const [accountUsageBusy, setAccountUsageBusy] = useState(false);
+  const [accountUsageError, setAccountUsageError] = useState('');
+  const downloadAccountUsage = async () => {
+    if (accountUsageBusy) return;
+    setAccountUsageBusy(true);
+    setAccountUsageError('');
+    try {
+      const { start, end, account, department, user } = filters || {};
+      const res = await reportsAPI.chatgptAccountUsageWorkbook({ start, end, account, department, user });
+      const span = start && end && start !== end ? `${start}_to_${end}` : (start || end || 'today');
+      downloadBlobResponse(res, `ChatGPT-Account-Usage_${span}.xlsx`);
+    } catch (err) {
+      // A blob request's error body is a Blob too - read the server's message out of it.
+      let detail = '';
+      try { detail = JSON.parse(await err?.response?.data?.text?.())?.detail || ''; } catch { /* not JSON */ }
+      setAccountUsageError(detail || (err?.response?.status === 403
+        ? 'You need admin access to download this report.'
+        : 'Could not generate the report. Please try again.'));
+    } finally {
+      setAccountUsageBusy(false);
+    }
+  };
 
   const k = summaryQ.data?.kpis || {};
   const trends = trendsQ.data || {};
@@ -55,7 +78,23 @@ const ChatGPTAnalytics = ({ filters, onOpenUser, onAddToCanvas }) => {
       <SectionHeader
         title="ChatGPT Intelligence"
         subtitle="Conversational-AI adoption, model mix and prompt activity from captured ChatGPT usage. Billed tokens are not metered by the capture layer — volume metrics reflect conversations, prompts and responses."
-      />
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+          <button
+            type="button"
+            className="rpt-workbook-btn"
+            onClick={downloadAccountUsage}
+            disabled={accountUsageBusy}
+            title="Excel: which people used each ChatGPT account, and how much — for the Date, Account, Department and User filters above"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            {accountUsageBusy ? 'Generating…' : 'Download account usage'}
+          </button>
+          {accountUsageError && <span className="rpt-error" style={{ margin: 0, fontSize: 12 }}>{accountUsageError}</span>}
+        </div>
+      </SectionHeader>
 
       {summaryQ.isError ? (
         <div className="rpt-error">Failed to load ChatGPT summary: {summaryQ.error?.response?.data?.detail || summaryQ.error?.message}</div>

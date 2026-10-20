@@ -116,7 +116,13 @@ def upload_bytes(key: str, data: bytes, *, content_type: str = "application/octe
     return build_public_url(key)
 
 
-def generate_presigned_url(key: str, *, expires_in: int = DEFAULT_PRESIGNED_URL_TTL_SECONDS, client=None) -> str:
+_INLINE_TYPES = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif",
+    "mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime", "mp3": "audio/mpeg", "wav": "audio/wav",
+}
+
+
+def generate_presigned_url(key: str, *, expires_in: int = DEFAULT_PRESIGNED_URL_TTL_SECONDS, client=None, inline: bool = False) -> str:
     """Mints a short-lived, browser-loadable GET URL for a private-bucket
     object - the correct way to serve a permanently-stored R2 key back to
     the browser (mirrors routers/upload.py's own /api/files/open). Callers
@@ -124,8 +130,12 @@ def generate_presigned_url(key: str, *, expires_in: int = DEFAULT_PRESIGNED_URL_
     expires in `expires_in` seconds regardless of how long the underlying
     object itself lives."""
     active_client = client or build_client()
-    return active_client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": _env("R2_BUCKET"), "Key": key},
-        ExpiresIn=expires_in,
-    )
+    params = {"Bucket": _env("R2_BUCKET"), "Key": key}
+    if inline:
+        # Show the file in the browser tab rather than downloading it, even
+        # when it was stored as application/octet-stream.
+        params["ResponseContentDisposition"] = "inline"
+        media_type = _INLINE_TYPES.get(key.rsplit(".", 1)[-1].lower()) if "." in key else None
+        if media_type:
+            params["ResponseContentType"] = media_type
+    return active_client.generate_presigned_url("get_object", Params=params, ExpiresIn=expires_in)

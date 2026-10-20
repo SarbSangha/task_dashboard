@@ -1,12 +1,12 @@
 import './MenuButton.css';
 
-const CreditReportButton = ({ isActive, onClick }) => {
+const CreditReportButton = ({ isActive, onClick, label = 'Credit Report' }) => {
   return (
     <button
       className={`menu-button${isActive ? ' active' : ''}`}
       onClick={onClick}
-      data-label="Credit Report"
-      aria-label="Credit Report"
+      data-label={label}
+      aria-label={label}
       aria-current={isActive ? 'page' : undefined}
     >
       <span className="menu-button-icon" aria-hidden="true">
@@ -18,7 +18,7 @@ const CreditReportButton = ({ isActive, onClick }) => {
           <line x1="16" y1="17" x2="16" y2="13" />
         </svg>
       </span>
-      <span className="menu-button-label">Credit Report</span>
+      <span className="menu-button-label">{label}</span>
     </button>
   );
 };

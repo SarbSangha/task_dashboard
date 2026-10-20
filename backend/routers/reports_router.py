@@ -11,16 +11,20 @@ require an external baseline (productivity lift, ROI) are returned as null with
 fabricating a value.
 """
 
+import hashlib
+import hmac
 import io
 import json
 import math
+import os
 import re
+import time
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import String, and_, case, func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
@@ -28,7 +32,12 @@ from database_config import get_operational_db
 from models_new import ActivityStatus, GenerationRecord, GenerationTag, ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent, ParticipantRole, Task, TaskParticipant, TaskStatus, TaskStatusHistory, ToolCreditRate, User, UserActivity
 from providers.chatgpt.models import ConversationCaptureEvent, ConversationPrompt, ConversationRecord, ConversationResponse
 from utils.credential_crypto import decrypt_secret
+from providers.elevenlabs.models import ElevenlabsGeneration
+from providers.flow.models import FlowGeneration
 from providers.freepik.models import FreepikGeneration
+from providers.heygen.models import HeygenGeneration
+from providers.suno.models import SunoGeneration
+from utils import r2_storage
 from utils.permissions import require_admin
 
 router = APIRouter(prefix="/api/reports", tags=["Reports"])
@@ -3680,13 +3689,17 @@ def prompts_list(
         .all()
     )
 
+    links = _prompt_asset_links(q, [r[0] for r in rows])
+    who = _prompt_people_clients(q, [r[0] for r in rows])
     prompts = []
-    for rank, (_n, text, n_uses, success, credits, first_at, last_at, people) in enumerate(rows, start=1):
+    for rank, (n_key, text, n_uses, success, credits, first_at, last_at, people) in enumerate(rows, start=1):
         n_uses = int(n_uses or 0)
         prompts.append({
             "rank": rank,
             "prompt": (text or "").strip(),
             "promptHash": _prompt_hash(text),
+            "assets": links.get(n_key, []),
+            **who.get(n_key, {"usedBy": [], "clients": []}),
             "uses": n_uses,
             "successPct": round((int(success or 0) / n_uses) * 100, 1) if n_uses else 0.0,
             "credits": round(float(credits or 0), 2),
@@ -3735,6 +3748,7 @@ def _chat_prompts_list(db: Session, start_dt, end_exclusive, department, provide
             "rank": rank,
             "prompt": text_value,
             "promptHash": _prompt_hash(text_value),
+            "assets": [],  # chat prompts produce answers, not media
             "uses": a["uses"],
             "successPct": round((a["success"] / a["uses"]) * 100, 1) if a["uses"] else 0.0,
             "credits": 0.0,
@@ -3891,6 +3905,189 @@ def _asset_urls(record) -> dict:
     return {"assetUrl": url, "thumbnailUrl": thumb}
 
 
+PROMPT_ASSET_LINKS = 3
+
+# Providers whose outputs a sweep copies into our own R2 bucket (each
+# providers/<name>/asset_mirror.py). Their source CDN links are signed and
+# expire - Pikaso's `exp=` token being the one reports kept hitting.
+_MIRRORED_GENERATION_MODELS = (FreepikGeneration, FlowGeneration, HeygenGeneration, ElevenlabsGeneration, SunoGeneration)
+
+
+def _mirrored_asset_keys(db: Session, record_ids) -> dict:
+    """generation_record_id -> our own R2 object key, for records already mirrored."""
+    ids = list({rid for rid in record_ids if rid is not None})
+    keys: dict[int, str] = {}
+    if not ids:
+        return keys
+    for model in _MIRRORED_GENERATION_MODELS:
+        for rid, key in (
+            db.query(model.generation_record_id, model.mirrored_asset_key)
+            .filter(model.generation_record_id.in_(ids), model.mirrored_asset_key.isnot(None))
+            .all()
+        ):
+            keys.setdefault(rid, key)
+    return keys
+
+
+def _asset_link_sig(record_id: int) -> str:
+    secret = (os.getenv("SECRET_KEY") or "").strip()
+    return hmac.new(f"report-asset:{secret}".encode(), str(record_id).encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _asset_link(record_id: int) -> str:
+    """A permanent link to one generation's output, served by /asset below.
+
+    Reports are PDFs that get shared and opened weeks later, so they can't
+    carry a provider's expiring CDN link or a 10-minute R2 presigned URL. This
+    path never expires; each click mints a fresh link at that moment. The
+    signature stops record ids from being enumerated - it grants viewing that
+    one output only, which is exactly what printing it in a report shares.
+
+    The link is absolute on the live site (PUBLIC_DASHBOARD_URL, the same base
+    the credit report's "Open output" links use), never the API address the
+    report happened to be generated from - a report built on a dev machine
+    otherwise carried localhost links nobody else could open.
+    """
+    from utils.credit_report import public_dashboard_url
+
+    path = f"/api/reports/asset/{record_id}?sig={_asset_link_sig(record_id)}"
+    return f"{public_dashboard_url() or ''}{path}"
+
+
+@router.get("/asset/{record_id}")
+def report_asset(record_id: int, sig: str = Query(..., min_length=8, max_length=64), db: Session = Depends(get_operational_db)):
+    """Opens a generation's output from a report link: our R2 copy when one
+    exists, otherwise the provider's own URL. No login - see _asset_link."""
+    if not hmac.compare_digest(sig, _asset_link_sig(record_id)):
+        raise HTTPException(status_code=403, detail="Invalid link")
+    key = _mirrored_asset_keys(db, [record_id]).get(record_id)
+    rec = db.query(GenerationRecord).filter(GenerationRecord.id == record_id).first()
+    url = _asset_urls(rec)["assetUrl"] if rec else None
+    # Never hold a pooled connection across the R2 call.
+    db.close()
+    if key and r2_storage.is_configured():
+        try:
+            return RedirectResponse(r2_storage.generate_presigned_url(key))
+        except Exception:  # noqa: BLE001 - fall back to the provider URL below
+            pass
+    if not url or not re.match(r"^https?://", url, re.I):
+        raise HTTPException(status_code=404, detail="This output is not available")
+    return RedirectResponse(url)
+
+
+def _prompt_asset_links(base_q, norms, per_prompt: int = PROMPT_ASSET_LINKS) -> dict:
+    """Newest output links for each prompt, keyed by normalised prompt text.
+
+    ``base_q`` is the endpoint's already-filtered GenerationRecord query, so the
+    links come from the same window / department / tool / user scope as the
+    counts beside them. Only the few newest successful generations per prompt
+    are loaded (row_number per prompt), not every use of a heavily reused one.
+    Links are our own permanent /asset links (see _asset_link), preferring
+    records already copied into our storage.
+    """
+    norms = [n for n in norms if n]
+    if not norms:
+        return {}
+    norm = _prompt_norm()
+    rn = func.row_number().over(partition_by=norm, order_by=GenerationRecord.created_at.desc()).label("rn")
+    sub = (
+        base_q.filter(norm.in_(norms), GenerationRecord.capture_status.in_(SUCCESS_STATUSES))
+        .with_entities(GenerationRecord.id.label("id"), norm.label("norm"), rn)
+        .subquery()
+    )
+    # Over-fetch a little: a successful record can still lack a viewable URL.
+    picked = base_q.session.query(sub.c.id, sub.c.norm).filter(sub.c.rn <= per_prompt * 2).all()
+    if not picked:
+        return {}
+    norm_by_id = {rid: n for rid, n in picked}
+    records = (
+        base_q.session.query(GenerationRecord)
+        .filter(GenerationRecord.id.in_(list(norm_by_id)))
+        .order_by(GenerationRecord.created_at.desc())
+        .all()
+    )
+    mirrored = _mirrored_asset_keys(base_q.session, norm_by_id)
+    # Our own stored copies first, then the newest of the rest.
+    records.sort(key=lambda rec: rec.id not in mirrored)
+    r2_client = r2_storage.build_client() if mirrored and r2_storage.is_configured() else None
+    links: dict[str, list[str]] = {}
+    for rec in records:
+        bucket = links.setdefault(norm_by_id[rec.id], [])
+        if len(bucket) >= per_prompt:
+            continue
+        url = _direct_asset_url(rec, mirrored.get(rec.id), r2_client)
+        if url:
+            bucket.append(url)
+    return links
+
+
+PROMPT_PEOPLE_LIMIT = 15
+
+
+def _prompt_people_clients(base_q, norms) -> dict:
+    """Who used each prompt and for which clients, keyed by normalised text.
+
+    Each entry is {"usedBy": [{"name", "uses"}], "clients": [{"name", "uses"}]},
+    most uses first, capped at PROMPT_PEOPLE_LIMIT. Client is the generation's
+    linked client tag; untagged uses are left out of "clients".
+    """
+    norms = [n for n in norms if n]
+    if not norms:
+        return {}
+    norm = _prompt_norm()
+    rows = (
+        base_q.filter(norm.in_(norms))
+        .with_entities(norm, GenerationRecord.owner_user_id, GenerationRecord.linked_client_name, func.count(GenerationRecord.id))
+        .group_by(norm, GenerationRecord.owner_user_id, GenerationRecord.linked_client_name)
+        .all()
+    )
+    user_ids = {uid for _n, uid, _c, _k in rows if uid is not None}
+    names = dict(base_q.session.query(User.id, User.name).filter(User.id.in_(user_ids)).all()) if user_ids else {}
+    people: dict[str, Counter] = defaultdict(Counter)
+    clients: dict[str, Counter] = defaultdict(Counter)
+    for n_key, uid, client, count in rows:
+        people[n_key][names.get(uid) or "Unattributed"] += int(count or 0)
+        if (client or "").strip():
+            clients[n_key][client.strip()] += int(count or 0)
+
+    def ranked(counter):
+        return [{"name": name, "uses": uses} for name, uses in counter.most_common(PROMPT_PEOPLE_LIMIT)]
+
+    return {n: {"usedBy": ranked(people[n]), "clients": ranked(clients[n])} for n in norms}
+
+
+# The longest an R2 (S3 SigV4) presigned URL may live.
+REPORT_LINK_TTL_SECONDS = 7 * 24 * 3600
+_SIGNED_EXPIRY = re.compile(r"[?&~]exp=(\d{9,11})")
+
+
+def _direct_asset_url(rec, mirrored_key, r2_client) -> Optional[str]:
+    """A link that opens one output from any machine with no login and no
+    deploy: our own R2 copy, presigned for 7 days, else the provider's URL.
+
+    Used instead of _asset_link while that route isn't live. A provider URL
+    whose own `exp=` token (Pikaso's) has already passed is dropped - it would
+    only open an error page.
+    """
+    if mirrored_key and r2_client is not None:
+        try:
+            return r2_storage.generate_presigned_url(mirrored_key, expires_in=REPORT_LINK_TTL_SECONDS, client=r2_client, inline=True)
+        except Exception:  # noqa: BLE001 - fall back to the provider URL
+            pass
+    # Freepik's own (Pikaso "private") links 403 for anyone outside the
+    # capturing session even before their exp= passes - tested 0 of 8
+    # unexpired ones opening - so an un-mirrored Freepik output gets no link.
+    if rec.provider == "freepik":
+        return None
+    url = _asset_urls(rec)["assetUrl"]
+    if not url or not re.match(r"^https?://", url, re.I):
+        return None
+    exp = _SIGNED_EXPIRY.search(url)
+    if exp and int(exp.group(1)) < time.time():
+        return None
+    return url
+
+
 @router.get("/prompts/detail")
 def prompt_detail(
     hash: str = Query(..., min_length=8, max_length=64),
@@ -3947,6 +4144,8 @@ def prompt_detail(
     generations = []
     total_credits = 0.0
     success_total = 0
+    mirrored = _mirrored_asset_keys(db, [rec.id for rec, _u in matches])
+    r2_client = r2_storage.build_client() if mirrored and r2_storage.is_configured() else None
 
     for rec, usr in matches:
         ok = rec.capture_status in SUCCESS_STATUSES
@@ -3981,6 +4180,7 @@ def prompt_detail(
             "status": rec.capture_status,
             "success": ok,
             **_asset_urls(rec),
+            "reportUrl": _direct_asset_url(rec, mirrored.get(rec.id), r2_client),
         })
 
     users = []
@@ -4293,7 +4493,7 @@ def prompts_golden(
             a = {
                 "uses": 0, "success": 0, "owners": set(), "credits": 0.0,
                 "creator": {"name": name or "Unknown", "avatar": avatar, "userId": owner_id},
-                "model": model_label, "depts": Counter(), "sample": (prompt_text or "")[:280],
+                "model": model_label, "depts": Counter(), "sample": (prompt_text or "").strip(),
                 "hash": _prompt_hash(prompt_text),
             }
             agg[norm] = a
@@ -4320,6 +4520,7 @@ def prompts_golden(
         golden.append({
             "prompt": a["sample"],
             "promptHash": a["hash"],
+            "norm": norm,
             "uses": a["uses"],
             "successRate": success_rate,
             "uniqueUsers": len(a["owners"]),
@@ -4332,8 +4533,15 @@ def prompts_golden(
 
     golden.sort(key=lambda g: g["rankScore"], reverse=True)
     golden = golden[:limit]
+    # Chat prompts produce answers, not media, so only generation tools get links.
+    is_chat = provider in CHAT_PROMPT_PROVIDERS
+    links = {} if is_chat else _prompt_asset_links(q, [g["norm"] for g in golden])
+    who = {} if is_chat else _prompt_people_clients(q, [g["norm"] for g in golden])
     for i, g in enumerate(golden, start=1):
         g["id"] = i
+        n_key = g.pop("norm")
+        g["assets"] = links.get(n_key, [])
+        g.update(who.get(n_key, {"usedBy": [], "clients": []}))
 
     return {
         "success": True,
@@ -5573,6 +5781,46 @@ def recommendations(
 # ---------------------------------------------------------------------------
 # Downloadable executive workbook (multi-sheet .xlsx)
 # ---------------------------------------------------------------------------
+@router.get("/chatgpt/account-usage.xlsx")
+def chatgpt_account_usage_xlsx(
+    start: Optional[str] = Query(None, description="First day (YYYY-MM-DD, IST)."),
+    end: Optional[str] = Query(None, description="Last day (YYYY-MM-DD, IST). Defaults to start."),
+    account: Optional[str] = Query(None, description="ChatGPT tool credential id, or 'all'."),
+    department: Optional[str] = Query(None),
+    user: Optional[int] = Query(None),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Which people used each ChatGPT account (login) in a period, and how much:
+    a Summary (account -> person), a Daily breakdown, and every prompt."""
+    from utils.ai_report.chatgpt_accounts import build_account_usage, render_account_usage
+
+    end_date = _parse_date(end) or _parse_date(start) or date.today()
+    start_date = _parse_date(start) or end_date
+    account_id = _report_account_id(account)
+    if account_id:
+        tool_slug = (
+            db.query(ITPortalTool.slug)
+            .join(ITPortalToolCredential, ITPortalToolCredential.tool_id == ITPortalTool.id)
+            .filter(ITPortalToolCredential.id == account_id)
+            .scalar()
+        )
+        if (tool_slug or "").lower() not in ("chat-gpt", "chatgpt", "gpt"):
+            raise HTTPException(status_code=400, detail="The selected account is not a ChatGPT account. Pick a ChatGPT account (or All accounts).")
+
+    data = build_account_usage(
+        db, start=start_date, end=end_date, account_id=account_id,
+        department=department, user_id=user,
+    )
+    db.close()
+    content, mimetype, filename = render_account_usage(data)
+    return Response(
+        content=content,
+        media_type=mimetype,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/ai-workbook.xlsx")
 def ai_workbook_xlsx(
     start: Optional[str] = Query(None, description="Window start date (YYYY-MM-DD)."),
