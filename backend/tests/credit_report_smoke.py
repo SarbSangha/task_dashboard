@@ -1776,7 +1776,7 @@ def test_api():
         _assert(client.get("/api/reports/credit/export.xlsx", params=params).status_code == 400, f"rejects {params}")
     opts = client.get("/api/reports/credit/options").json()
     _assert(opts["dashboardUrl"] == DASHBOARD, "options report the link base")
-    _assert(opts["users"][0]["id"] == UNASSIGNED_USER_ID, "Unassigned is a user option")
+    _assert(all(u["id"] != UNASSIGNED_USER_ID for u in opts["users"]), "Unassigned is not a user option")
     _assert({a["name"] for a in opts["excludedAccounts"]} == {"Admin", "RoleAdmin"}, "excluded accounts listed")
     who["id"] = IDS["Admin"]
     _assert(client.get("/api/reports/credit/options").status_code == 200, "admins bypass the grant")

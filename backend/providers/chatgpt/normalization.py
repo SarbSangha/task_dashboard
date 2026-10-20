@@ -85,7 +85,7 @@ def _is_attributable(event: ConversationCaptureEvent) -> bool:
     return bool(payload.get("isNewConversation"))
 
 
-def _get_or_create_conversation_record(db: Session, event: ConversationCaptureEvent) -> ConversationRecord:
+def _get_or_create_conversation_record(db: Session, event: ConversationCaptureEvent) -> Optional[ConversationRecord]:
     record = (
         db.query(ConversationRecord)
         .filter(
@@ -104,21 +104,19 @@ def _get_or_create_conversation_record(db: Session, event: ConversationCaptureEv
         # thread, never for a later one).
         return record
 
+    if not _is_attributable(event):
+        # A pre-existing conversation surfacing for the first time can't be
+        # credited to whoever's session happened to touch it first, so it is
+        # not stored at all rather than shown as "Unknown user".
+        return None
     record = ConversationRecord(
         provider=PROVIDER,
         provider_conversation_id=event.provider_conversation_id,
         ingestion_source=INGESTION_SOURCE_CAPTURED,
+        owner_user_id=event.user_id,
+        ownership_status=OWNERSHIP_STATUS_RESOLVED,
+        ownership_source="capture_event_user",
     )
-    if _is_attributable(event):
-        record.owner_user_id = event.user_id
-        record.ownership_status = OWNERSHIP_STATUS_RESOLVED
-        record.ownership_source = "capture_event_user"
-    else:
-        # Lands unclaimed by design, exactly like Freepik's stale/
-        # reconciliation branch - a pre-existing conversation surfacing for
-        # the first time should never be silently attributed to whoever's
-        # session happened to touch it first.
-        record.ownership_status = OWNERSHIP_STATUS_UNKNOWN
     db.add(record)
     db.flush()
     return record
@@ -660,6 +658,8 @@ def normalize_capture_event(db: Session, event: ConversationCaptureEvent) -> Opt
     if handler is None:
         return None
     record = _get_or_create_conversation_record(db, event)
+    if record is None:
+        return None
     _reconcile_orphaned_prompt(db, record, event)
     handler(db, record, event)
     return record

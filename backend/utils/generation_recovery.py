@@ -713,6 +713,9 @@ def import_generation_recovery_audit(
             if sync_result.skipped:
                 if sync_result.skip_reason == "missing_identity":
                     summary.invalid_identity_count += 1
+                elif sync_result.skip_reason == "no_owner":
+                    # New owner-less records are no longer stored.
+                    summary.non_importable_count += 1
                 else:
                     summary.malformed_count += 1
                 continue

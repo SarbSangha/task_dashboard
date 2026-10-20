@@ -97,7 +97,12 @@ def _listing_row(*, creation_id=None, identifier=None, status, updated_at, credi
 
 
 def _capture(db, payload: dict, *, event_type: str = "generation_listing_row", linked_task_id=None, linked_client_id=None) -> FreepikCaptureEvent:
+    # Received right when the creation was made, so it is attributable (an
+    # owner-less creation is not stored at all).
+    created = (payload.get("creation") or {}).get("created_at")
+    received_at = _parse_dt(created) if created else None
     event = FreepikCaptureEvent(
+        created_at=received_at or datetime.utcnow(),
         tool_id=TOOL_ID,
         user_id=USER_ID,
         provider="freepik",
@@ -379,8 +384,9 @@ def test_capture_batch_commits_and_isolates_duplicates() -> None:
                 event_type="generation_listing_row",
                 client_event_id=f"batch-{i}",
                 payload=_listing_row(
+                    # Made just now, so the live capture can credit it.
                     creation_id=f"batch-c{i}", status="completed",
-                    updated_at="2026-07-05T10:00:00+00:00", credits=1.0,
+                    updated_at=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00"), credits=1.0,
                 ),
             )
             for i in range(5)

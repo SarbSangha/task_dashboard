@@ -12,6 +12,7 @@ Run: python tests/elevenlabs_capture_smoke.py
 """
 import os
 import sys
+import time
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -67,7 +68,10 @@ def _history_row(*, history_item_id: str, text: str = "hello world", source: str
     """A synthetic best-guess-shape ElevenLabs `history` row - see
     CAPTURE_CONTRACT.md: the real response body has never been observed, so
     this is deliberately just one of several plausible shapes."""
-    return {"history_item_id": history_item_id, "text": text, "source": source, "voice_id": "v1", "date_unix": 1700000000}
+    # Made just now, so the live capture can credit it (an owner-less item is
+    # not stored at all).
+    now_unix = int(time.time())
+    return {"history_item_id": history_item_id, "text": text, "source": source, "voice_id": "v1", "date_unix": now_unix}
 
 
 def _install_fakes(user, tool):

@@ -28,7 +28,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from models_new import Base, GenerationRecord, ITPortalTool, User  # noqa: E402
 from providers.elevenlabs.models import ElevenlabsCaptureEvent, ElevenlabsGeneration  # noqa: E402
-from providers.elevenlabs.normalization import normalize_capture_event  # noqa: E402
+from providers.elevenlabs.normalization import _extract_fields, normalize_capture_event  # noqa: E402
 
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -63,7 +63,10 @@ USER_ID, TOOL_ID = _seed_actor()
 
 
 def _capture(db, payload: dict, *, client_event_id: str, ownership_confidence: str = "ticket") -> ElevenlabsCaptureEvent:
+    # Received right when the item was made, so it is attributable (an
+    # owner-less item is not stored at all).
     event = ElevenlabsCaptureEvent(
+        created_at=_extract_fields(payload)["provider_created_at"] or datetime.utcnow(),
         tool_id=TOOL_ID,
         user_id=USER_ID,
         provider="elevenlabs",
@@ -128,16 +131,16 @@ def test_row_with_only_one_identity_key_normalizes_without_raising() -> None:
     key - must still normalize without raising, proving the defensive
     multi-candidate extraction degrades gracefully rather than assuming any
     particular field is present."""
+    fields = _extract_fields({"id": "xyz"})
+    _assert(fields["provider_creation_id"] == "xyz", f"identity not extracted from fallback key 'id': {fields['provider_creation_id']!r}")
+    _assert(fields["prompt"] is None, f"no prompt candidate was present, expected None, got {fields['prompt']!r}")
+    _assert(fields["source"] is None, f"no source candidate was present, expected None, got {fields['source']!r}")
+    _assert(fields["media_url"] is None, f"no asset URL candidate was present, expected None, got {fields['media_url']!r}")
+    _assert(fields["provider_created_at"] is None, f"no timestamp candidate was present, expected None, got {fields['provider_created_at']!r}")
     with SessionLocal() as db:
+        # No timestamp, so nobody can be credited with it: skipped, not raised.
         gen = normalize_capture_event(db, _capture(db, {"id": "xyz"}, client_event_id="evt-minimal"))
-        db.flush()
-
-        _assert(gen is not None, "a row with a bare 'id' field should still normalize")
-        _assert(gen.provider_creation_id == "xyz", f"identity not extracted from fallback key 'id': {gen.provider_creation_id!r}")
-        _assert(gen.prompt is None, f"no prompt candidate was present, expected None, got {gen.prompt!r}")
-        _assert(gen.source is None, f"no source candidate was present, expected None, got {gen.source!r}")
-        _assert(gen.media_url is None, f"no asset URL candidate was present, expected None, got {gen.media_url!r}")
-        _assert(gen.provider_created_at is None, f"no timestamp candidate was present, expected None, got {gen.provider_created_at!r}")
+        _assert(gen is None, "an unattributable row is not stored")
         db.rollback()
     print("ok  a row with only one identity-like field normalizes without raising (defensive extraction)")
 

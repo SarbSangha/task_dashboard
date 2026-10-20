@@ -908,8 +908,9 @@ def load_options(db: Session) -> dict:
         shown = display.client_name(n)
         if shown and shown not in clients:
             clients.append(shown)
-    user_rows = [{"id": UNASSIGNED_USER_ID, "name": UNASSIGNED, "department": UNASSIGNED_DEPARTMENT}]
-    user_rows += sorted(
+    # Owner-less history is not offered as a person to filter by; it still
+    # counts in the report totals as UNASSIGNED.
+    user_rows = sorted(
         ({"id": i, "name": display.person_name(i, n), "department": display.department_name(d) or UNASSIGNED_DEPARTMENT}
          for i, n, d in users),
         key=lambda u: u["name"].lower(),

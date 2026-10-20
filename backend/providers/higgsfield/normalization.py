@@ -59,7 +59,6 @@ from providers.higgsfield.constants import (
     INGESTION_SOURCE_RECOVERED,
     OWNERSHIP_FRESHNESS_WINDOW_SECONDS,
     OWNERSHIP_STATUS_RESOLVED,
-    OWNERSHIP_STATUS_UNKNOWN,
     PROVIDER,
 )
 from providers.higgsfield.models import HiggsfieldCaptureEvent, HiggsfieldGeneration
@@ -1096,7 +1095,11 @@ def normalize_capture_event(db: Session, event: HiggsfieldCaptureEvent) -> Optio
             generation.ownership_status = OWNERSHIP_STATUS_RESOLVED
             generation.ownership_source = event.ownership_confidence or "session"
     elif is_new:
-        generation.ownership_status = OWNERSHIP_STATUS_UNKNOWN
+        # Never seen before and nobody can be credited with it (history
+        # scan, or too old to be this user's) - not stored at all, so it can
+        # never show up as "Unknown user". A fresh live capture of the same
+        # item still creates it, owned.
+        return None
 
     if is_new:
         db.add(generation)

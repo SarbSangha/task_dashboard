@@ -43,7 +43,6 @@ from providers.freepik.constants import (
     INGESTION_SOURCE_RECOVERED,
     OWNERSHIP_FRESHNESS_WINDOW_SECONDS,
     OWNERSHIP_STATUS_RESOLVED,
-    OWNERSHIP_STATUS_UNKNOWN,
     PROVIDER,
 )
 from providers.freepik.models import FreepikCaptureEvent, FreepikDownload, FreepikGeneration, FreepikSearchQuery
@@ -499,10 +498,11 @@ def normalize_capture_event(db: Session, event: FreepikCaptureEvent) -> Optional
             generation.ownership_status = OWNERSHIP_STATUS_RESOLVED
             generation.ownership_source = event.ownership_confidence or "session"
     elif is_new:
-        # Stale or reconciliation-sourced and never previously seen - lands
-        # unclaimed by design, exactly like a recovery import (see
-        # CAPTURE_CONTRACT.md's ownership decision table).
-        generation.ownership_status = OWNERSHIP_STATUS_UNKNOWN
+        # Never seen before and nobody can be credited with it (history
+        # scan, or too old to be this user's) - not stored at all, so it can
+        # never show up as "Unknown user". A fresh live capture of the same
+        # item still creates it, owned.
+        return None
 
     if is_new:
         db.add(generation)

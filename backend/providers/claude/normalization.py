@@ -93,7 +93,7 @@ def _is_attributable(event: ConversationCaptureEvent) -> bool:
     return timedelta(0) <= age <= timedelta(seconds=NEW_CONVERSATION_AGE_THRESHOLD_SECONDS)
 
 
-def _get_or_create_conversation_record(db: Session, event: ConversationCaptureEvent) -> ConversationRecord:
+def _get_or_create_conversation_record(db: Session, event: ConversationCaptureEvent) -> Optional[ConversationRecord]:
     record = (
         db.query(ConversationRecord)
         .filter(
@@ -105,23 +105,25 @@ def _get_or_create_conversation_record(db: Session, event: ConversationCaptureEv
     if record:
         return record
 
+    if _is_attributable(event):
+        ownership_source = "capture_event_user"
+    elif _is_typed_prompt_claim(event):
+        ownership_source = "typed_prompt_capture"
+    else:
+        # A pre-existing conversation surfacing for the first time (e.g. the
+        # extension only just got installed on this machine) can't be credited
+        # to whoever's session happened to touch it first, so it is not stored
+        # at all rather than shown as "Unknown user". See
+        # providers/chatgpt/normalization.py's identical branch.
+        return None
     record = ConversationRecord(
         provider=PROVIDER,
         provider_conversation_id=event.provider_conversation_id,
         ingestion_source=INGESTION_SOURCE_CAPTURED,
+        owner_user_id=event.user_id,
+        ownership_status=OWNERSHIP_STATUS_RESOLVED,
+        ownership_source=ownership_source,
     )
-    if _is_attributable(event):
-        record.owner_user_id = event.user_id
-        record.ownership_status = OWNERSHIP_STATUS_RESOLVED
-        record.ownership_source = "capture_event_user"
-    else:
-        # Lands unclaimed by design - a pre-existing conversation surfacing
-        # for the first time (e.g. this backend was only just deployed, or
-        # the extension only just got installed on this machine) should
-        # never be silently attributed to whoever's session happened to
-        # touch it first. See providers/chatgpt/normalization.py's identical
-        # branch.
-        record.ownership_status = OWNERSHIP_STATUS_UNKNOWN
     db.add(record)
     db.flush()
     return record
@@ -304,6 +306,8 @@ def normalize_capture_event(db: Session, event: ConversationCaptureEvent) -> Opt
     if handler is None:
         return None
     record = _get_or_create_conversation_record(db, event)
+    if record is None:
+        return None
     _maybe_claim_by_typed_prompt(record, event)
     handler(db, record, event)
     return record
@@ -324,13 +328,21 @@ def _maybe_claim_by_typed_prompt(record: ConversationRecord, event: Conversation
     reassigned."""
     if record.owner_user_id is not None or record.ownership_status == OWNERSHIP_STATUS_RESOLVED:
         return
-    if event.event_type != EVENT_TYPE_PROMPT_CAPTURED or not event.user_id:
-        return
-    if (event.payload_json or {}).get("typedInThisBrowser") is not True:
+    if not _is_typed_prompt_claim(event):
         return
     record.owner_user_id = event.user_id
     record.ownership_status = OWNERSHIP_STATUS_RESOLVED
     record.ownership_source = "typed_prompt_capture"
+
+
+def _is_typed_prompt_claim(event: ConversationCaptureEvent) -> bool:
+    """A prompt the extension saw leave this user's own browser - see
+    _maybe_claim_by_typed_prompt."""
+    return (
+        event.event_type == EVENT_TYPE_PROMPT_CAPTURED
+        and bool(event.user_id)
+        and (event.payload_json or {}).get("typedInThisBrowser") is True
+    )
 
 
 def _find_unnormalized_message_events(db: Session, events: list) -> list:
@@ -370,7 +382,8 @@ def _find_unnormalized_message_events(db: Session, events: list) -> list:
             .first()
         )
         if record is None:
-            missing.append(event)
+            # Deliberately not stored: nobody could be credited with it (see
+            # _get_or_create_conversation_record) - nothing to retry.
             continue
         model = ConversationPrompt if event.event_type == EVENT_TYPE_PROMPT_CAPTURED else ConversationResponse
         exists = (
@@ -420,7 +433,8 @@ def _find_unapplied_conversation_metadata_events(db: Session, events: list) -> l
             .first()
         )
         if record is None:
-            missing.append(event)
+            # Deliberately not stored: nobody could be credited with it (see
+            # _get_or_create_conversation_record) - nothing to retry.
             continue
         if has_title and not record.title:
             missing.append(event)

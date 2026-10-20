@@ -42,7 +42,6 @@ from providers.flow.constants import (
     MEDIA_KIND_VIDEO,
     OWNERSHIP_FRESHNESS_WINDOW_SECONDS,
     OWNERSHIP_STATUS_RESOLVED,
-    OWNERSHIP_STATUS_UNKNOWN,
     PROVIDER,
     flow_media_kind,
 )
@@ -334,7 +333,11 @@ def normalize_capture_event(db: Session, event: FlowCaptureEvent) -> Optional[Fl
             generation.ownership_status = OWNERSHIP_STATUS_RESOLVED
             generation.ownership_source = event.ownership_confidence or "session"
     elif is_new:
-        generation.ownership_status = OWNERSHIP_STATUS_UNKNOWN
+        # Never seen before and nobody can be credited with it (history
+        # scan, or too old to be this user's) - not stored at all, so it can
+        # never show up as "Unknown user". A fresh live capture of the same
+        # item still creates it, owned.
+        return None
 
     if is_new:
         db.add(generation)

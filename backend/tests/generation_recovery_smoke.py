@@ -357,51 +357,40 @@ def main() -> int:
     reconcile_for_import = _call_reconcile(admin_id, "2026-06-20")
     import_audit_id = reconcile_for_import["data"]["audit_id"]
     import_response = _call_import(admin_id, import_audit_id)
-    _assert(import_response["data"]["imported_count"] == 1, "Import should create one recovered generation record")
+    # The missing job has nobody to credit (recovery never auto-assigns an
+    # owner), so it is skipped instead of being stored as "Unknown user".
+    _assert(import_response["data"]["imported_count"] == 0, "Import must not create an owner-less generation record")
+    _assert(import_response["data"]["non_importable_count"] == 1, "The owner-less candidate should be counted as not importable")
     _assert(import_response["data"]["duplicate_count"] == 0, "Initial import should not report duplicates")
-    _assert(import_response["audit"]["imported_count"] == 1, "Audit should report one imported record after import")
+    _assert(import_response["audit"]["imported_count"] == 0, "Audit should report nothing imported")
     with SessionLocal() as db:
-        imported_record = (
-            db.query(GenerationRecord)
-            .filter(GenerationRecord.provider_task_id == "1000000002")
-            .first()
+        _assert(
+            db.query(GenerationRecord).filter(GenerationRecord.provider_task_id == "1000000002").first() is None,
+            "No GenerationRecord may be created for an owner-less job",
         )
-        _assert(imported_record is not None, "Import should create a GenerationRecord for the missing task")
-        _assert(imported_record.ingestion_source == "recovered", "Imported generation should be marked as recovered")
-        _assert(imported_record.owner_user_id is None, "Recovered generation should not auto-assign an owner")
-        _assert(imported_record.project_id is None, "Recovered generation should remain ungrouped")
-        _assert(imported_record.ownership_status == "unknown", "Recovered generation should enter with unknown ownership")
-        _assert(imported_record.recovery_audit_id == import_audit_id, "Imported generation should link back to the audit")
-        _assert(imported_record.recovered_by_admin_id == admin_id, "Imported generation should record the importing admin")
-        _assert(imported_record.metadata_json.get("recovery_source") == "local_capture_reconciliation", "Recovered metadata should record the recovery source")
-    print("PASS recovery import success")
+        _assert(
+            db.query(GenerationRecord).filter(GenerationRecord.owner_user_id.is_(None)).count() == 0,
+            "No owner-less GenerationRecord may exist",
+        )
+    print("PASS recovery import skips owner-less jobs")
 
     duplicate_import_response = _call_import(admin_id, import_audit_id)
-    _assert(duplicate_import_response["data"]["imported_count"] == 0, "Re-import should not create duplicate generation records")
-    # This audit's snapshot holds TWO candidates, and on a re-run both are
-    # already satisfied, from different code paths:
-    #   - the "no_generation_record" one was created by the first import, so
-    #     sync_generation_record_from_usage_event now reports it as updated;
-    #   - the "incomplete_generation_record" one was repaired by the first
-    #     import, so _fill_missing_generation_record_fields finds nothing left
-    #     to fill and takes its "nothing to do" branch.
-    # Both increment duplicate_count. The old expectation of 1 predates the
-    # repair path existing at all (see the comment on that branch in
-    # utils/generation_recovery.py) and was never re-checked, because this
-    # suite could not run.
+    _assert(duplicate_import_response["data"]["imported_count"] == 0, "Re-import should not create generation records")
+    # The snapshot holds two candidates: the owner-less one is skipped again,
+    # and the "incomplete_generation_record" one was repaired by the first
+    # import, so it finds nothing left to fill (counted as a duplicate).
     _assert(
-        duplicate_import_response["data"]["updated_count"] == 1,
-        f"Re-import should update the previously imported record, got {duplicate_import_response['data']['updated_count']}",
+        duplicate_import_response["data"]["non_importable_count"] == 1,
+        f"Re-import should skip the owner-less job again, got {duplicate_import_response['data']['non_importable_count']}",
     )
     _assert(
         duplicate_import_response["data"]["repaired_count"] == 0,
         f"Re-import should find nothing left to repair, got {duplicate_import_response['data']['repaired_count']}",
     )
     _assert(
-        duplicate_import_response["data"]["duplicate_count"] == 2,
-        f"Re-import should report both candidates as duplicates, got {duplicate_import_response['data']['duplicate_count']}",
+        duplicate_import_response["data"]["duplicate_count"] == 1,
+        f"Re-import should report the repaired candidate as a duplicate, got {duplicate_import_response['data']['duplicate_count']}",
     )
-    _assert(duplicate_import_response["audit"]["imported_count"] == 1, "Audit imported_count should remain cumulative across reruns")
     print("PASS recovery import idempotency")
 
     invalid_identity_event_id = _create_usage_event(

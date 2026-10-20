@@ -59,7 +59,6 @@ from providers.elevenlabs.constants import (
     MUSIC_CREDITS_PER_SECOND,
     OWNERSHIP_FRESHNESS_WINDOW_SECONDS,
     OWNERSHIP_STATUS_RESOLVED,
-    OWNERSHIP_STATUS_UNKNOWN,
     PROVIDER,
 )
 from providers.elevenlabs.models import ElevenlabsCaptureEvent, ElevenlabsGeneration
@@ -460,7 +459,11 @@ def normalize_capture_event(db: Session, event: ElevenlabsCaptureEvent) -> Optio
             generation.ownership_status = OWNERSHIP_STATUS_RESOLVED
             generation.ownership_source = event.ownership_confidence or "session"
     elif is_new:
-        generation.ownership_status = OWNERSHIP_STATUS_UNKNOWN
+        # Never seen before and nobody can be credited with it (history
+        # scan, or too old to be this user's) - not stored at all, so it can
+        # never show up as "Unknown user". A fresh live capture of the same
+        # item still creates it, owned.
+        return None
 
     if is_new:
         db.add(generation)

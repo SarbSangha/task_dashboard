@@ -2,7 +2,7 @@
 
 On a shared Kling account every teammate's extension lists everyone's jobs and
 reports them (source "asset_history_discovered"). Those reports must either
-join the Generate-click card of the person who ran the job, or stay unclaimed -
+join the Generate-click card of the person who ran the job, or not be stored at all -
 never create a duplicate owned by the viewer.
 """
 
@@ -142,15 +142,14 @@ def test_unmatched_scan_is_unclaimed_not_the_viewers():
         users, tool = setup(db)
         report(db, tool, users["divya"], source="asset_history_discovered", prompt="A job nobody here clicked",
                at=T0, generation_id="900000000002", metadata=discovery_metadata("900000000002", "b"))
-        card = cards(db)[0]
-        check(card.owner_user_id is None, "a scan must not make the viewer the owner")
-        check(card.ownership_status == "unknown", f"expected unclaimed, got {card.ownership_status}")
+        # Nobody can be credited with it, so no owner-less card is stored -
+        # and the viewer is not made the owner.
+        check(cards(db) == [], "an unmatched scan must not create a card")
         # A second viewer re-scanning the same job must not claim it either.
         report(db, tool, users["rhyna"], source="asset_history_discovered", prompt="A job nobody here clicked",
                at=T0, generation_id="900000000002", metadata=discovery_metadata("900000000002", "b"))
-        rows = cards(db)
-        check(len(rows) == 1 and rows[0].owner_user_id is None, "re-scan must not claim or duplicate")
-    print("ok  an unmatched scan stays unclaimed and is not duplicated by re-scans")
+        check(cards(db) == [], "re-scan must not claim or create a card")
+    print("ok  an unmatched scan is not stored and not claimed by re-scans")
 
 
 def test_ambiguous_prompt_is_left_alone():
@@ -164,9 +163,8 @@ def test_ambiguous_prompt_is_left_alone():
                at=T0 + timedelta(seconds=30), generation_id="900000000003",
                metadata=discovery_metadata("900000000003", "c"))
         rows = cards(db)
-        check(len(rows) == 3, f"two clicks + one unpaired scan expected, got {len(rows)}")
-        check([r.owner_user_id for r in rows[:2]] == [users["rhyna"].id, users["devraj"].id], "click owners unchanged")
-        check(rows[2].owner_user_id is None, "an ambiguous scan must stay unclaimed")
+        check(len(rows) == 2, f"two clicks and no owner-less scan card expected, got {len(rows)}")
+        check([r.owner_user_id for r in rows] == [users["rhyna"].id, users["devraj"].id], "click owners unchanged")
     print("ok  two clicks with the same prompt are never guessed between")
 
 
@@ -180,7 +178,8 @@ def test_scan_outside_the_window_is_not_paired():
                at=T0 + timedelta(hours=3), generation_id="900000000004",
                metadata=discovery_metadata("900000000004", "d"))
         rows = cards(db)
-        check(len(rows) == 2 and rows[1].owner_user_id is None, "a re-run hours later is a different job")
+        check(len(rows) == 1 and rows[0].owner_user_id == users["devraj"].id,
+              "a re-run hours later is a different job, not merged and not stored owner-less")
     print("ok  a same-prompt job hours later is not merged into an old click")
 
 

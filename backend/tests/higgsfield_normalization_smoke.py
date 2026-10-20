@@ -50,7 +50,7 @@ from models_new import (  # noqa: E402
     User,
 )
 from providers.higgsfield.models import HiggsfieldCaptureEvent, HiggsfieldGeneration  # noqa: E402
-from providers.higgsfield.normalization import _parse_dt, backfill_all, normalize_capture_event  # noqa: E402
+from providers.higgsfield.normalization import _extract_fields, _parse_dt, backfill_all, normalize_capture_event  # noqa: E402
 from providers.higgsfield.queries import GenerationFilters, list_generations  # noqa: E402
 
 
@@ -103,8 +103,12 @@ def _snapshot(*, generation_id=None, job_id=None, status, updated_at, credits_us
     return payload
 
 
-def _capture(db, payload: dict) -> HiggsfieldCaptureEvent:
+def _capture(db, payload: dict, *, fresh: bool = True) -> HiggsfieldCaptureEvent:
+    # fresh: received right when the generation was made, so it is
+    # attributable (an owner-less generation is not stored at all).
+    received_at = (_extract_fields(payload)["provider_created_at"] if fresh else None) or datetime.utcnow()
     event = HiggsfieldCaptureEvent(
+        created_at=received_at,
         tool_id=TOOL_ID,
         user_id=USER_ID,
         provider="higgsfield",
@@ -455,7 +459,7 @@ def test_reconciliation_listing_row_never_gets_live_ownership() -> None:
     must leave ownership unresolved, and generation_source/ingestion_source
     must reflect reconciliation, not live capture."""
     with SessionLocal() as db:
-        old_event = _capture(db, {
+        old_event = _capture(db, fresh=False, payload={
             "generationId": "old-historical-generation",
             "status": "completed",
             "createdAt": 1700000000,  # long before this test run - definitely outside the freshness window
@@ -466,11 +470,12 @@ def test_reconciliation_listing_row_never_gets_live_ownership() -> None:
 
         gen = normalize_capture_event(db, old_event)
         db.flush()
-        _assert(gen.ownership_status != "resolved", f"an old reconciled row must not be auto-attributed, got {gen.ownership_status!r}")
-        _assert(gen.generation_source == "reconciliation", f"expected reconciliation source, got {gen.generation_source!r}")
-        _assert(gen.ingestion_source == "recovered", f"expected recovered ingestion_source, got {gen.ingestion_source!r}")
+        # Nobody can be credited with it, so it is not stored at all.
+        _assert(gen is None, "an old reconciled row must not be stored")
+        _assert(db.query(HiggsfieldGeneration).filter(HiggsfieldGeneration.generation_id == "old-historical-generation").count() == 0, "no owner-less row stored")
+        _assert(db.query(GenerationRecord).filter(GenerationRecord.provider_generation_id == "old-historical-generation").count() == 0, "no owner-less report record")
         db.rollback()
-    print("ok  a reconciliation listing row never receives live-capture ownership")
+    print("ok  a reconciliation listing row is never stored or attributed")
 
 
 def test_thin_credit_ledger_event_merges_without_erasing_metadata() -> None:
@@ -1054,7 +1059,8 @@ def test_capture_batch_commits_and_isolates_duplicates() -> None:
                 client_event_id=f"batch-{i}",
                 payload=_snapshot(
                     generation_id=f"batch-g{i}", status="completed",
-                    updated_at="2026-08-07T10:00:00+00:00", credits_used=1.0,
+                    # Made just now, so the live capture can credit it.
+                    updated_at=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00"), credits_used=1.0,
                 ),
             )
             for i in range(5)

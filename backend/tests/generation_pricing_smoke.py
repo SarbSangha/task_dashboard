@@ -128,7 +128,8 @@ db.commit()
 db.add(User(id=1, email="u@x.com", name="U", hashed_password="x", is_active=True, position="employee"))
 db.add(ITPortalTool(id=1, name="Suno", slug="suno", website_url="https://suno.com"))
 db.commit()
-event = SunoCaptureEvent(tool_id=1, user_id=1, event_type="generation_completed", client_event_id="e1",
+# Received as it was made, so the capture can credit it.
+event = SunoCaptureEvent(tool_id=1, user_id=1, created_at=at(AUG31), event_type="generation_completed", client_event_id="e1",
                          provider_creation_id="new1", ownership_confidence="session", event_date=AUG31,
                          payload_json={"id": "new1", "created_at": at(AUG31).isoformat() + "Z", "status": "complete"})
 db.add(event)

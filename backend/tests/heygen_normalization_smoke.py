@@ -43,7 +43,7 @@ from models_new import (  # noqa: E402
     User,
 )
 from providers.heygen.models import HeygenCaptureEvent, HeygenGeneration  # noqa: E402
-from providers.heygen.normalization import _parse_dt, backfill_all, normalize_capture_event  # noqa: E402
+from providers.heygen.normalization import _extract_fields, _parse_dt, backfill_all, normalize_capture_event  # noqa: E402
 
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -95,8 +95,12 @@ def _snapshot(*, video_id=None, job_id=None, status, updated_at, credits_used=No
     return payload
 
 
-def _capture(db, payload: dict) -> HeygenCaptureEvent:
+def _capture(db, payload: dict, *, fresh: bool = True) -> HeygenCaptureEvent:
+    # fresh: received right when the generation was made, so it is
+    # attributable (an owner-less generation is not stored at all).
+    received_at = (_extract_fields(payload)["provider_created_at"] if fresh else None) or datetime.utcnow()
     event = HeygenCaptureEvent(
+        created_at=received_at,
         tool_id=TOOL_ID,
         user_id=USER_ID,
         provider="heygen",
@@ -277,7 +281,7 @@ def test_reconciliation_listing_row_never_gets_live_ownership() -> None:
     unresolved, and generation_source/ingestion_source must reflect
     reconciliation, not live capture."""
     with SessionLocal() as db:
-        old_event = _capture(db, {
+        old_event = _capture(db, fresh=False, payload={
             "video_id": "old-historical-video",
             "status": "completed",
             "created_ts": 1700000000,  # long before this test run - definitely outside the freshness window
@@ -288,11 +292,12 @@ def test_reconciliation_listing_row_never_gets_live_ownership() -> None:
 
         gen = normalize_capture_event(db, old_event)
         db.flush()
-        _assert(gen.ownership_status != "resolved", f"an old reconciled row must not be auto-attributed, got {gen.ownership_status!r}")
-        _assert(gen.generation_source == "reconciliation", f"expected reconciliation source, got {gen.generation_source!r}")
-        _assert(gen.ingestion_source == "recovered", f"expected recovered ingestion_source, got {gen.ingestion_source!r}")
+        # Nobody can be credited with it, so it is not stored at all.
+        _assert(gen is None, "an old reconciled row must not be stored")
+        _assert(db.query(HeygenGeneration).filter(HeygenGeneration.video_id == "old-historical-video").count() == 0, "no owner-less row stored")
+        _assert(db.query(GenerationRecord).filter(GenerationRecord.provider_generation_id == "old-historical-video").count() == 0, "no owner-less report record")
         db.rollback()
-    print("ok  a reconciliation listing row never receives live-capture ownership")
+    print("ok  a reconciliation listing row is never stored or attributed")
 
 
 def test_thin_credit_ledger_row_cannot_reattribute_an_old_generation() -> None:
@@ -314,7 +319,7 @@ def test_thin_credit_ledger_row_cannot_reattribute_an_old_generation() -> None:
     on a missing timestamp, AND the gate falls back to the timestamp already
     stored on the row rather than judging a thin event on its own silence."""
     with SessionLocal() as db:
-        listing_event = _capture(db, {
+        listing_event = _capture(db, fresh=False, payload={
             "video_id": "old-video-then-billed",
             "status": "completed",
             "created_ts": 1700000000,  # far outside the freshness window
@@ -324,7 +329,7 @@ def test_thin_credit_ledger_row_cannot_reattribute_an_old_generation() -> None:
         db.flush()
         gen = normalize_capture_event(db, listing_event)
         db.flush()
-        _assert(gen.ownership_status != "resolved", "precondition: the old listing row must land unclaimed")
+        _assert(gen is None, "precondition: the old listing row is not stored")
 
         ledger_event = _capture(db, {"videoId": "old-video-then-billed", "credits": {"used": 4}})
         ledger_event.ownership_confidence = "reconciliation"
@@ -332,14 +337,14 @@ def test_thin_credit_ledger_row_cannot_reattribute_an_old_generation() -> None:
         gen = normalize_capture_event(db, ledger_event)
         db.flush()
 
+        # A thin row with no timestamp fails closed: it can't attribute the
+        # month-old video, so nothing owner-less is created from it either.
+        _assert(gen is None, "a thin credit-ledger row must not create or attribute an old video")
         _assert(
-            gen.ownership_status != "resolved",
-            f"a thin credit-ledger row must not attribute a month-old video, got {gen.ownership_status!r}",
+            db.query(HeygenGeneration).filter(HeygenGeneration.video_id == "old-video-then-billed").count() == 0,
+            "no owner-less row stored",
         )
-        _assert(gen.owner_user_id is None, f"owner must stay unset, got {gen.owner_user_id!r}")
-        # The credits themselves must still land - failing the ownership gate
-        # may never cost us the data the event was captured for.
-        _assert(gen.credits_used == 4, f"credits_used must still merge, got {gen.credits_used!r}")
+        db.rollback()
     print("ok  a thin credit-ledger row cannot re-attribute an old generation")
 
 
@@ -647,7 +652,7 @@ def test_capture_batch_commits_and_isolates_duplicates() -> None:
                 client_event_id=f"batch-{i}",
                 payload=_snapshot(
                     video_id=f"batch-v{i}", status="completed",
-                    updated_at="2026-07-05T10:00:00+00:00", credits_used=1.0,
+                    updated_at=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00"), credits_used=1.0,  # made just now
                 ),
             )
             for i in range(5)

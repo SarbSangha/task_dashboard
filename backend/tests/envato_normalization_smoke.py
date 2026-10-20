@@ -170,11 +170,11 @@ def test_ownership_freshness_gate() -> None:
             ownership_confidence="reconciliation",
         ))
         db.flush()
-        _assert(gen.ownership_status == "unknown", f"a stale/reconciliation row must stay unattributed, got {gen.ownership_status!r}")
-        _assert(gen.owner_user_id is None, f"owner must not be set for a stale row, got {gen.owner_user_id!r}")
-        _assert(gen.generation_source == "reconciliation", f"generation_source should be reconciliation, got {gen.generation_source!r}")
+        # Nobody can be credited with it, so it is not stored at all.
+        _assert(gen is None, "a stale/reconciliation row must not be stored")
+        _assert(db.query(EnvatoGeneration).filter(EnvatoGeneration.owner_user_id.is_(None)).count() == 0, "no owner-less row stored")
         db.rollback()
-    print("ok  ownership freshness gate refuses to attribute an old/reconciliation-imported row")
+    print("ok  ownership freshness gate refuses to store an old/reconciliation-imported row")
 
 
 def test_none_never_overwrites_stored_value() -> None:

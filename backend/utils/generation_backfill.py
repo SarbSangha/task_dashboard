@@ -65,6 +65,7 @@ class BackfillSummary:
     candidate_confidence_medium: int = 0
     skipped_non_generation: int = 0
     skipped_no_identity: int = 0
+    skipped_no_owner: int = 0
     malformed_rows: int = 0
     duplicate_source_usage_event: int = 0
     duplicate_identity: int = 0
@@ -87,6 +88,7 @@ class BackfillSummary:
             "candidateConfidenceMedium": self.candidate_confidence_medium,
             "skippedNonGeneration": self.skipped_non_generation,
             "skippedNoIdentity": self.skipped_no_identity,
+            "skippedNoOwner": self.skipped_no_owner,
             "malformedRows": self.malformed_rows,
             "duplicateSourceUsageEvent": self.duplicate_source_usage_event,
             "duplicateIdentity": self.duplicate_identity,
@@ -716,6 +718,12 @@ def sync_generation_record_from_usage_event(
             return result
 
     record_owner_user_id = candidate.owner_user_id if assign_owner else None
+    if not record_owner_user_id:
+        # Nobody can be credited with it - not stored, so it can never show
+        # up as "Unknown user".
+        result.skipped = True
+        result.skip_reason = "no_owner"
+        return result
     record = GenerationRecord(
         provider="kling",
         provider_task_id=candidate.provider_task_id,
@@ -897,6 +905,10 @@ def run_generation_records_backfill(
                 or (asset_key and asset_key in seen_asset_keys)
             ):
                 summary.duplicate_identity += 1
+                continue
+
+            if not candidate.owner_user_id:
+                summary.skipped_no_owner += 1
                 continue
 
             if not apply:
