@@ -36,6 +36,8 @@ const TASK_TAG_OPTIONS = [
   'Content',
   'Banner',
   'Thumbnail',
+  'Digital',
+  'SEO',
   'Others',
 ];
 
