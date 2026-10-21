@@ -1770,6 +1770,31 @@ export const generationRecordsAPI = {
     const response = await api.delete(`/api/generations/${generationId}/claim`, requestConfig);
     return response.data;
   },
+
+  // Admin only: upload or replace the card's video.
+  uploadVideo: async (generationId, file, { onProgress, ...requestConfig } = {}) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.put(`/api/generations/${generationId}/video`, formData, {
+      ...requestConfig,
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0,
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) onProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
+      },
+    });
+    return response.data;
+  },
+
+  removeVideo: async (generationId, requestConfig = {}) => {
+    const response = await api.delete(`/api/generations/${generationId}/video`, requestConfig);
+    return response.data;
+  },
+
+  deleteGeneration: async (generationId, requestConfig = {}) => {
+    const response = await api.delete(`/api/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
 };
 
 export const generationRecoveryAPI = {

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { generationCollectionsAPI, generationRecordsAPI } from '../../../../../services/api';
 import { UserAvatar } from '../../../../common/UserAvatar';
@@ -7,13 +7,26 @@ import { getGenerationMediaKind, formatGenerationDate } from './klingMedia';
 import KlingTagInput from './KlingTagInput';
 import './KlingGenerationDrawer.css';
 
-export default function KlingGenerationDrawer({ generation, onClose, onToggleFavorite, isFavoritePending, canDownload }) {
-  const { isFaculty } = usePermissions();
+export default function KlingGenerationDrawer({
+  generation,
+  onClose,
+  onToggleFavorite,
+  isFavoritePending,
+  canDownload,
+  onGenerationUpdated,
+  onGenerationDeleted,
+}) {
+  const { isAdmin, isFaculty } = usePermissions();
   const [detail, setDetail] = useState(generation);
   const [tagActionPending, setTagActionPending] = useState(false);
   const [tagError, setTagError] = useState('');
   const [ownershipActionPending, setOwnershipActionPending] = useState(false);
   const [ownershipError, setOwnershipError] = useState('');
+
+  const videoInputRef = useRef(null);
+  const [adminActionPending, setAdminActionPending] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [adminError, setAdminError] = useState('');
 
   const [collections, setCollections] = useState([]);
   const [selectedCollectionId, setSelectedCollectionId] = useState('');
@@ -150,6 +163,63 @@ export default function KlingGenerationDrawer({ generation, onClose, onToggleFav
     }
   };
 
+  const applyAdminUpdate = (updated) => {
+    if (!updated) return;
+    setDetail((prev) => ({ ...prev, ...updated }));
+    onGenerationUpdated?.(updated);
+  };
+
+  const handleVideoSelected = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !detail?.id) return;
+    if (file.size > 90 * 1024 * 1024) {
+      setAdminError('Video is larger than 90 MB.');
+      return;
+    }
+    setAdminActionPending('upload');
+    setUploadProgress(0);
+    setAdminError('');
+    try {
+      const response = await generationRecordsAPI.uploadVideo(detail.id, file, { onProgress: setUploadProgress });
+      applyAdminUpdate(response?.data);
+    } catch (error) {
+      setAdminError(error?.response?.data?.detail || 'Could not upload the video.');
+    } finally {
+      setAdminActionPending('');
+    }
+  };
+
+  const handleRemoveVideo = async () => {
+    if (!detail?.id || !window.confirm('Remove the uploaded video? The card goes back to the captured video, if there is one.')) return;
+    setAdminActionPending('remove');
+    setAdminError('');
+    try {
+      const response = await generationRecordsAPI.removeVideo(detail.id);
+      applyAdminUpdate(response?.data);
+    } catch (error) {
+      setAdminError(error?.response?.data?.detail || 'Could not remove the video.');
+    } finally {
+      setAdminActionPending('');
+    }
+  };
+
+  const handleDeleteCard = async () => {
+    if (!detail?.id || !window.confirm('Delete this card? It will disappear from Kling for everyone.')) return;
+    setAdminActionPending('delete');
+    setAdminError('');
+    try {
+      await generationRecordsAPI.deleteGeneration(detail.id);
+      onGenerationDeleted?.(detail.id);
+      onClose?.();
+    } catch (error) {
+      setAdminError(error?.response?.data?.detail || 'Could not delete the card.');
+      setAdminActionPending('');
+    }
+  };
+
+  const adminVideo = detail.metadata?.adminVideo;
+
   const copyPrompt = async () => {
     if (!detail.promptText) return;
     try {
@@ -209,6 +279,57 @@ export default function KlingGenerationDrawer({ generation, onClose, onToggleFav
               {detail.isFavorite ? '★ Favorited' : '☆ Favorite'}
             </button>
           </div>
+
+          {isAdmin && (
+            <div className="kling-drawer-section kling-drawer-admin">
+              <h4>Admin</h4>
+              {adminVideo && (
+                <p className="kling-drawer-inline-note">
+                  Showing uploaded video{adminVideo.fileName ? ` "${adminVideo.fileName}"` : ''}.
+                </p>
+              )}
+              <input
+                ref={videoInputRef}
+                type="file"
+                accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
+                hidden
+                onChange={handleVideoSelected}
+              />
+              <div className="kling-drawer-actions">
+                <button
+                  type="button"
+                  className="kling-drawer-action-btn"
+                  onClick={() => videoInputRef.current?.click()}
+                  disabled={Boolean(adminActionPending)}
+                >
+                  {adminActionPending === 'upload'
+                    ? `Uploading... ${uploadProgress}%`
+                    : adminVideo || detail.canonicalAssetUrl
+                      ? 'Replace Video'
+                      : 'Upload Video'}
+                </button>
+                {adminVideo && (
+                  <button
+                    type="button"
+                    className="kling-drawer-action-btn"
+                    onClick={handleRemoveVideo}
+                    disabled={Boolean(adminActionPending)}
+                  >
+                    {adminActionPending === 'remove' ? 'Removing...' : 'Remove Uploaded Video'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="kling-drawer-action-btn kling-drawer-danger-btn"
+                  onClick={handleDeleteCard}
+                  disabled={Boolean(adminActionPending)}
+                >
+                  {adminActionPending === 'delete' ? 'Deleting...' : 'Delete Card'}
+                </button>
+              </div>
+              {adminError && <p className="kling-drawer-inline-error">{adminError}</p>}
+            </div>
+          )}
 
           <div className="kling-drawer-section">
             <div className="kling-drawer-owner-row">

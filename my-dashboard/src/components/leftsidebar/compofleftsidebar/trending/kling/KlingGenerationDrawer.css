@@ -208,6 +208,14 @@
   margin-top: 2px;
 }
 
+.kling-drawer-action-btn.kling-drawer-danger-btn {
+  color: var(--color-feedback-error-text);
+}
+
+.kling-drawer-admin .kling-drawer-inline-note {
+  margin: 0 0 8px;
+}
+
 .kling-drawer-inline-error {
   margin: 8px 0 0;
   font-size: 12px;

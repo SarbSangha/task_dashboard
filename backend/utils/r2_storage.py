@@ -106,6 +106,36 @@ def put_object(key: str, data: bytes, *, content_type: str = "application/octet-
     )
 
 
+def put_fileobj(key: str, fileobj, *, content_type: str = "application/octet-stream", client=None) -> None:
+    """put_object for a file-like source (e.g. an UploadFile's spooled file):
+    boto3 streams it in multipart chunks instead of holding it all in memory."""
+    active_client = client or build_client()
+    active_client.upload_fileobj(
+        fileobj,
+        _env("R2_BUCKET"),
+        key,
+        ExtraArgs={"ContentType": content_type or "application/octet-stream"},
+    )
+
+
+def delete_object(key: str, *, client=None) -> None:
+    active_client = client or build_client()
+    active_client.delete_object(Bucket=_env("R2_BUCKET"), Key=key)
+
+
+_shared_client = None
+
+
+def shared_client():
+    """One process-wide client for presigning at serialization time, where a
+    list response would otherwise build a fresh boto3 client per row. boto3
+    clients are thread-safe."""
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = build_client()
+    return _shared_client
+
+
 def upload_bytes(key: str, data: bytes, *, content_type: str = "application/octet-stream", client=None) -> str:
     """Uploads `data` to `key` and returns build_public_url(key) - only ever
     actually browser-loadable if the bucket is genuinely public (see that

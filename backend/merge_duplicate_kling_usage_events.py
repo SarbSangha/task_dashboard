@@ -32,6 +32,7 @@ from merge_duplicate_generation_records import (
     _repoint_child_rows as _repoint_generation_record_child_rows,
 )
 from models_new import GenerationRecord, ITPortalTool, ITPortalToolUsageEvent, User
+from routers.it_tools_router import KLING_HISTORY_DISCOVERY_SOURCE, _kling_job_ids
 
 KLING_SLUGS = {"kling", "kling-ai", "klingai"}
 
@@ -165,6 +166,7 @@ def _repair_generation_record_owner(
     *,
     keep_event: ITPortalToolUsageEvent,
     users_by_id: dict[int, User],
+    take_from_viewer: bool = False,
 ) -> list[str]:
     changed = []
     keep_user = users_by_id.get(keep_event.user_id)
@@ -173,7 +175,8 @@ def _repair_generation_record_owner(
         keep_event.user_id
         and keep_user is not None
         and not _is_admin_user(keep_user)
-        and (record.owner_user_id is None or _is_admin_user(current_owner))
+        and record.owner_user_id != keep_event.user_id
+        and (take_from_viewer or record.owner_user_id is None or _is_admin_user(current_owner))
     ):
         record.owner_user_id = keep_event.user_id
         record.ownership_status = "resolved"
@@ -191,6 +194,7 @@ def _merge_generation_record_cluster(
     generation_records_by_source_event_id: dict[int, GenerationRecord],
     users_by_id: dict[int, User],
     apply: bool,
+    take_from_viewer: bool = False,
 ) -> dict:
     keep_record = generation_records_by_source_event_id.get(keep_event.id)
     dup_record = generation_records_by_source_event_id.get(dup_event.id)
@@ -207,7 +211,8 @@ def _merge_generation_record_cluster(
             keep_record.source_usage_event_id = keep_event.id
             summary["changedFields"].append("source_usage_event_id")
         summary["changedFields"].extend(
-            _repair_generation_record_owner(keep_record, keep_event=keep_event, users_by_id=users_by_id)
+            _repair_generation_record_owner(keep_record, keep_event=keep_event, users_by_id=users_by_id,
+                                            take_from_viewer=take_from_viewer)
         )
 
     if dup_record is None:
@@ -220,7 +225,8 @@ def _merge_generation_record_cluster(
         summary["adoptedDuplicateRecord"] = True
         summary["changedFields"].append("source_usage_event_id")
         summary["changedFields"].extend(
-            _repair_generation_record_owner(dup_record, keep_event=keep_event, users_by_id=users_by_id)
+            _repair_generation_record_owner(dup_record, keep_event=keep_event, users_by_id=users_by_id,
+                                            take_from_viewer=take_from_viewer)
         )
         generation_records_by_source_event_id.pop(dup_event.id, None)
         generation_records_by_source_event_id[keep_event.id] = dup_record
@@ -280,15 +286,54 @@ def run(session, apply: bool, logger: logging.Logger) -> dict:
     rows_deleted = 0
     generation_records_deleted = 0
     details = []
+    ambiguous = []
+    removed_event_ids: set[int] = set()
 
+    clusters = []
     for (tool_id, credential_id, identity), group_events in groups.items():
         distinct_users = {e.user_id for e in group_events}
         if len(distinct_users) < 2:
             continue
-        clusters_found += 1
         keep = _choose_keep(group_events, users_by_id)
         dup_events = [e for e in group_events if e.id != keep.id]
+        removed_event_ids.update(d.id for d in dup_events)
+        clusters.append(("same_identity", tool_id, credential_id, identity, keep, dup_events))
 
+    # A history scan that knew only the job's work id was recorded as its own
+    # event next to the click's event keyed by the task id (see
+    # _find_usage_event_by_kling_ids in routers/it_tools_router.py). Fold each
+    # such copy into the one click event that shares any Kling id with it.
+    starter_ids_by_scope: dict[tuple, dict[str, list[ITPortalToolUsageEvent]]] = {}
+    for event in events:
+        if event.id in removed_event_ids or (event.source or "") == KLING_HISTORY_DISCOVERY_SOURCE:
+            continue
+        metadata = dict(event.metadata_json) if isinstance(event.metadata_json, dict) else {}
+        metadata.pop("discoveredTaskIds", None)
+        by_id = starter_ids_by_scope.setdefault((event.tool_id, event.credential_id), {})
+        for job_id in _kling_job_ids(event.generation_id, metadata):
+            by_id.setdefault(job_id, []).append(event)
+
+    history_dups_by_keep: dict[int, tuple] = {}
+    for event in events:
+        if event.id in removed_event_ids or (event.source or "") != KLING_HISTORY_DISCOVERY_SOURCE:
+            continue
+        by_id = starter_ids_by_scope.get((event.tool_id, event.credential_id), {})
+        job_ids = _kling_job_ids(event.generation_id, event.metadata_json)
+        starters = {s.id: s for job_id in job_ids for s in by_id.get(job_id, []) if s.id not in removed_event_ids}
+        if len(starters) > 1:
+            ambiguous.append({"historyEventId": event.id, "candidateEventIds": sorted(starters)})
+            continue
+        if not starters:
+            continue
+        keep = next(iter(starters.values()))
+        removed_event_ids.add(event.id)
+        entry = history_dups_by_keep.setdefault(keep.id, (keep, [], sorted(job_ids)))
+        entry[1].append(event)
+    for keep, dup_events, job_ids in history_dups_by_keep.values():
+        clusters.append(("linked_kling_id", keep.tool_id, keep.credential_id, ",".join(job_ids), keep, dup_events))
+
+    for match, tool_id, credential_id, identity, keep, dup_events in clusters:
+        clusters_found += 1
         changed_fields = []
         generation_record_merges = []
         for dup in dup_events:
@@ -301,6 +346,7 @@ def run(session, apply: bool, logger: logging.Logger) -> dict:
                 generation_records_by_source_event_id=generation_records_by_source_event_id,
                 users_by_id=users_by_id,
                 apply=apply,
+                take_from_viewer=(match == "linked_kling_id"),
             )
             generation_record_merges.append(generation_summary)
             if (
@@ -312,6 +358,7 @@ def run(session, apply: bool, logger: logging.Logger) -> dict:
 
         cluster_detail = {
             "status": "merged" if apply else "would_merge",
+            "match": match,
             "toolId": tool_id,
             "credentialId": credential_id,
             "identity": identity,
@@ -343,6 +390,7 @@ def run(session, apply: bool, logger: logging.Logger) -> dict:
         "clustersMerged": clusters_merged,
         "rowsDeleted": rows_deleted,
         "generationRecordsDeleted": generation_records_deleted,
+        "ambiguousHistoryEvents": ambiguous,
         "details": details,
     }
     logger.info(

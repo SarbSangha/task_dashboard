@@ -1,8 +1,10 @@
+import os
 import re
 from datetime import date, datetime, timedelta
 from typing import Optional
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, or_
 from sqlalchemy.exc import IntegrityError
@@ -12,7 +14,8 @@ from database_config import get_operational_db
 from models_new import GenerationCollectionMember, GenerationProject, GenerationRecord, GenerationTag, User
 from utils.datetime_utils import serialize_utc_datetime
 from utils.generation_events import record_generation_project_event
-from utils.permissions import require_faculty, require_user
+from utils import r2_storage
+from utils.permissions import require_admin, require_faculty, require_user
 
 
 IST_OFFSET = timedelta(minutes=330)  # India Standard Time, UTC+05:30
@@ -38,6 +41,10 @@ SEARCH_SORT_OPTIONS = {"latest", "oldest", "credits"}
 OWNERSHIP_STATUS_OPTIONS = {"unknown", "resolved"}
 
 _WHITESPACE_RE = re.compile(r"\s+")
+
+ADMIN_VIDEO_MAX_BYTES = 90 * 1024 * 1024  # requests pass the proxy only under ~100 MB; same cap as the frontend's LEGACY_UPLOAD_FALLBACK_MAX_BYTES
+ADMIN_VIDEO_EXTENSIONS = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}
+ADMIN_VIDEO_KEY_PREFIX = "kling-admin-uploads"
 
 
 class GenerationTagCreatePayload(BaseModel):
@@ -567,12 +574,7 @@ def get_generation_analytics(
     }
 
 
-@router.get("/{generation_id}")
-def get_generation_detail(
-    generation_id: int,
-    db: Session = Depends(get_operational_db),
-    current_user: User = Depends(require_user),
-):
+def _generation_detail_payload(db: Session, generation_id: int) -> dict:
     row = (
         db.query(GenerationRecord, User, GenerationProject)
         .outerjoin(User, GenerationRecord.owner_user_id == User.id)
@@ -585,6 +587,15 @@ def get_generation_detail(
     generation, owner, project = row
     tags_map = _tags_by_generation_id(db, [generation.id])
     return {"success": True, "data": _serialize_generation_row(generation, owner, project, tags_map.get(generation.id))}
+
+
+@router.get("/{generation_id}")
+def get_generation_detail(
+    generation_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_user),
+):
+    return _generation_detail_payload(db, generation_id)
 
 
 @router.post("/{generation_id}/favorite")
@@ -848,5 +859,148 @@ def remove_generation_tag(
             event_type="generation_untagged",
             description=removed_tag_label,
         )
+    db.commit()
+    return {"success": True}
+
+
+def _active_kling_generation(db: Session, generation_id: int) -> GenerationRecord:
+    generation = (
+        db.query(GenerationRecord)
+        .filter(
+            GenerationRecord.id == generation_id,
+            GenerationRecord.provider == KLING_PROVIDER,
+            GenerationRecord.archived_at.is_(None),
+        )
+        .first()
+    )
+    if not generation:
+        raise HTTPException(status_code=404, detail="Generation not found")
+    return generation
+
+
+def _record_admin_edit(generation: GenerationRecord, admin_id: int, action: str, **details) -> dict:
+    """Copy of the card's metadata with an audit entry appended; assigned back
+    whole so SQLAlchemy sees the JSON change."""
+    metadata_json = dict(generation.metadata_json or {})
+    admin_edits = list(metadata_json.get("adminEdits") or [])
+    admin_edits.append({"action": action, "byAdminId": admin_id, "at": datetime.utcnow().isoformat(), **details})
+    metadata_json["adminEdits"] = admin_edits[-50:]
+    return metadata_json
+
+
+def _delete_r2_object_quietly(key: Optional[str]) -> None:
+    # The card no longer points at it either way, so a failed cleanup only
+    # leaves an orphaned object in the bucket.
+    if not key:
+        return
+    try:
+        r2_storage.delete_object(key)
+    except Exception:
+        pass
+
+
+@router.put("/{generation_id}/video")
+def upload_generation_video(
+    generation_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Admin upload (or replacement) of a card's video - for jobs the capture
+    never got a video for, or got the wrong one. Stored under
+    metadata.adminVideo and served in place of the captured URL; the captured
+    canonical_asset_url is left as it was, so removing the upload restores it."""
+    extension = os.path.splitext(file.filename or "")[1].lower()
+    content_type = ADMIN_VIDEO_EXTENSIONS.get(extension)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="Upload an .mp4, .webm or .mov video")
+    file.file.seek(0, os.SEEK_END)
+    size_bytes = file.file.tell()
+    file.file.seek(0)
+    if size_bytes <= 0:
+        raise HTTPException(status_code=400, detail="The video file is empty")
+    if size_bytes > ADMIN_VIDEO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Video is larger than 90 MB")
+    if not r2_storage.is_configured():
+        raise HTTPException(status_code=503, detail="File storage is not configured")
+
+    _active_kling_generation(db, generation_id)
+    admin_id = current_user.id
+    key = f"{ADMIN_VIDEO_KEY_PREFIX}/{generation_id}/{uuid4().hex[:12]}{extension}"
+
+    # Don't hold a pooled connection idle-in-transaction across an upload of
+    # up to ADMIN_VIDEO_MAX_BYTES (same reasoning as the Envato media mirror);
+    # the card is re-read afterwards.
+    db.close()
+    try:
+        r2_storage.put_fileobj(key, file.file, content_type=content_type)
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not store the video. Try again.")
+
+    try:
+        generation = _active_kling_generation(db, generation_id)
+    except HTTPException:
+        _delete_r2_object_quietly(key)
+        raise
+
+    previous = (generation.metadata_json or {}).get("adminVideo") or {}
+    metadata_json = _record_admin_edit(
+        generation,
+        admin_id,
+        "video_replaced" if previous.get("key") else "video_uploaded",
+        fileName=file.filename,
+    )
+    metadata_json["adminVideo"] = {
+        "key": key,
+        "fileName": file.filename,
+        "contentType": content_type,
+        "sizeBytes": size_bytes,
+        "uploadedByAdminId": admin_id,
+        "uploadedAt": datetime.utcnow().isoformat(),
+    }
+    generation.metadata_json = metadata_json
+    generation.updated_at = datetime.utcnow()
+    db.commit()
+
+    _delete_r2_object_quietly(previous.get("key"))
+    return _generation_detail_payload(db, generation_id)
+
+
+@router.delete("/{generation_id}/video")
+def remove_generation_video(
+    generation_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Drops the admin-uploaded video; the card falls back to whatever video
+    capture recorded (if any)."""
+    generation = _active_kling_generation(db, generation_id)
+    previous = (generation.metadata_json or {}).get("adminVideo") or {}
+    if not previous.get("key"):
+        raise HTTPException(status_code=400, detail="This card has no uploaded video")
+    metadata_json = _record_admin_edit(generation, current_user.id, "video_removed", fileName=previous.get("fileName"))
+    metadata_json.pop("adminVideo", None)
+    generation.metadata_json = metadata_json
+    generation.updated_at = datetime.utcnow()
+    db.commit()
+
+    _delete_r2_object_quietly(previous.get("key"))
+    return _generation_detail_payload(db, generation_id)
+
+
+@router.delete("/{generation_id}")
+def delete_generation(
+    generation_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Admin removal of a card. Archived rather than deleted: capture sync
+    finds a card by its usage event / Kling task id and would re-create a
+    hard-deleted one on the next report of the same job, while an archived
+    one stays matched and hidden. Every Kling list already skips archived rows."""
+    generation = _active_kling_generation(db, generation_id)
+    generation.metadata_json = _record_admin_edit(generation, current_user.id, "card_deleted")
+    generation.archived_at = datetime.utcnow()
+    generation.updated_at = datetime.utcnow()
     db.commit()
     return {"success": True}

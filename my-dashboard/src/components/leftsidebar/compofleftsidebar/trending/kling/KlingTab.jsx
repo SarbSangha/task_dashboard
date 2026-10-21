@@ -282,6 +282,14 @@ export default function KlingTab({ isActive, searchInput = '' }) {
     []
   );
 
+  const handleGenerationUpdated = useCallback((updated) => {
+    setGenerations((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)));
+  }, []);
+
+  const handleGenerationDeleted = useCallback((generationId) => {
+    setGenerations((prev) => prev.filter((item) => item.id !== generationId));
+  }, []);
+
   const handleMoveToProject = useCallback(async (generation, project) => {
     const previousProjectId = generation.projectId;
     const previousProjectName = generation.projectName;
@@ -494,6 +502,8 @@ export default function KlingTab({ isActive, searchInput = '' }) {
           onToggleFavorite={handleToggleFavorite}
           isFavoritePending={favoritePendingIds.has(selectedGeneration.id)}
           canDownload={canDownload}
+          onGenerationUpdated={handleGenerationUpdated}
+          onGenerationDeleted={handleGenerationDeleted}
         />
       )}
 

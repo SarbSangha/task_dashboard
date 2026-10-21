@@ -4,6 +4,8 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from database_config import Base, ArchiveBase
 import enum
+from typing import Optional
+from utils import r2_storage
 from utils.datetime_utils import serialize_utc_datetime
 
 
@@ -1170,6 +1172,28 @@ class GenerationRecoveryAudit(Base):
         }
 
 
+ADMIN_VIDEO_URL_TTL_SECONDS = 6 * 60 * 60
+
+
+def _admin_video_url(metadata_json) -> Optional[str]:
+    """Fresh presigned URL for a video an admin uploaded onto a card (see
+    routers/generation_records_router.py's upload endpoint). Kept in metadata,
+    not canonical_asset_url, because capture sync rewrites that column. The
+    bucket is private, so the URL is minted per response, never stored."""
+    admin_video = metadata_json.get("adminVideo") if isinstance(metadata_json, dict) else None
+    key = admin_video.get("key") if isinstance(admin_video, dict) else None
+    if not key:
+        return None
+    try:
+        if not r2_storage.is_configured():
+            return None
+        return r2_storage.generate_presigned_url(
+            key, expires_in=ADMIN_VIDEO_URL_TTL_SECONDS, client=r2_storage.shared_client(), inline=True,
+        )
+    except Exception:
+        return None
+
+
 class GenerationRecord(Base):
     __tablename__ = "generation_records"
     __table_args__ = (
@@ -1263,7 +1287,8 @@ class GenerationRecord(Base):
             "provider": self.provider,
             "providerTaskId": self.provider_task_id,
             "providerGenerationId": self.provider_generation_id,
-            "canonicalAssetUrl": self.canonical_asset_url,
+            "canonicalAssetUrl": _admin_video_url(self.metadata_json) or self.canonical_asset_url,
+            "capturedAssetUrl": self.canonical_asset_url,
             "canonicalAssetKey": self.canonical_asset_key,
             "promptText": self.prompt_text,
             "modelLabel": self.model_label,

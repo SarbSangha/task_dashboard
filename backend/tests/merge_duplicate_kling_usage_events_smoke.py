@@ -78,6 +78,7 @@ def _create_usage_event(
     request_id: str | None,
     created_at: datetime,
     metadata_json: dict,
+    source: str | None = None,
 ) -> int:
     with SessionLocal() as db:
         event = ITPortalToolUsageEvent(
@@ -91,6 +92,7 @@ def _create_usage_event(
             generation_id=generation_id,
             request_id=request_id,
             metadata_json=metadata_json,
+            source=source,
             created_at=created_at,
         )
         db.add(event)
@@ -225,6 +227,50 @@ def main() -> None:
             remaining_tags[0].generation_id == original_record_id,
             "Expected duplicate generation tag to be re-pointed onto the canonical record",
         )
+
+    # A history scan by another (non-admin) viewer that knew only the job's
+    # work id: folded into the click keyed by the task id, and the card it
+    # carried moves to the clicker.
+    viewer_id = _create_user(email="viewer@example.com", name="Viewer", is_admin=False)
+    click_event_id = _create_usage_event(
+        tool_id=tool_id,
+        user_id=user_id,
+        generation_id="900000000000001",
+        request_id=None,
+        created_at=datetime(2026, 10, 20, 9, 0, 0),
+        metadata_json={"klingTaskId": "900000000000001", "workId": "900000000000777"},
+    )
+    history_event_id = _create_usage_event(
+        tool_id=tool_id,
+        user_id=viewer_id,
+        generation_id="900000000000777",
+        request_id=None,
+        created_at=datetime(2026, 10, 21, 9, 0, 0),
+        metadata_json={"klingTaskId": "", "discoveredTaskIds": ["900000000000777"],
+                       "mediaAssets": [{"url": "https://cdn.example.com/generated/linked.mp4"}]},
+        source="asset_history_discovered",
+    )
+    history_record_id = _create_generation_record(
+        owner_user_id=viewer_id,
+        provider_task_id="900000000000777",
+        source_usage_event_id=history_event_id,
+        ingestion_source="recovered",
+    )
+
+    with SessionLocal() as db:
+        summary = run(db, apply=True, logger=logging.getLogger("merge_duplicate_kling_usage_events_smoke"))
+
+    linked = [d for d in summary["details"] if d["match"] == "linked_kling_id"]
+    _assert(len(linked) == 1 and linked[0]["keepEventId"] == click_event_id, "Expected the history copy to fold into the click")
+    with SessionLocal() as db:
+        _assert(db.get(ITPortalToolUsageEvent, history_event_id) is None, "Expected the history copy event to be deleted")
+        click = db.get(ITPortalToolUsageEvent, click_event_id)
+        _assert(click.metadata_json.get("klingTaskId") == "900000000000001", "Expected the click's task id to survive")
+        _assert(any(a.get("url", "").endswith("linked.mp4") for a in click.metadata_json["mediaAssets"]),
+                "Expected the history copy's video to land on the click")
+        record = db.get(GenerationRecord, history_record_id)
+        _assert(record.source_usage_event_id == click_event_id, "Expected the card to move onto the click")
+        _assert(record.owner_user_id == user_id, "Expected the card to belong to the clicker, not the viewer")
 
     print("merge_duplicate_kling_usage_events_smoke: ok")
 
