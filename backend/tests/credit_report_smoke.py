@@ -1486,8 +1486,8 @@ def test_workbook_end_to_end():
         tool_headers, tool_rows = _table(wb[W.TOOL])
         cost = {r[0]: r[tool_headers.index("Cost")] for r in tool_rows}
         tool_names = {_display(k): v for k, v in cost.items()}
-        _assert(tool_names["Suno"].startswith("Fixed price per song") and tool_names["Flow"].startswith("Not captured"),
-                "Suno priced by an admin setting; Flow marked not captured")
+        _assert(tool_names["Suno"].startswith("Fixed price per song") and tool_names["Flow"].startswith("Credits per output from Flow's published rates"),
+                "Suno priced by an admin setting; Flow priced from its rate table and plan")
         _assert(tool_names["Kling"] == "Recorded", "recorded tools say so")
         user_headers, _user_rows = _table(wb[W.USER])
         _assert("Credits per generation" in tool_headers and "Credits per generation" in user_headers,

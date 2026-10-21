@@ -46,6 +46,7 @@ from providers.flow.constants import (
     flow_media_kind,
 )
 from providers.flow.models import FlowCaptureEvent, FlowGeneration
+from providers.flow.pricing import settings_fields, stamp_generation
 
 logger = logging.getLogger("flow_normalization")
 
@@ -292,6 +293,12 @@ def normalize_capture_event(db: Session, event: FlowCaptureEvent) -> Optional[Fl
         for field_name, value in fields.items():
             if is_new or value is not None:
                 setattr(generation, field_name, value)
+        # Generation settings (content-flow.js's metadata.rmwSettings) only
+        # ride on live captures; a later snapshot without them must not
+        # blank out what was already recorded.
+        for field_name, value in settings_fields(fields["metadata_json"]).items():
+            if value is not None:
+                setattr(generation, field_name, value)
 
     if not is_stale_snapshot:
         generation.source_capture_event_id = event.id
@@ -343,6 +350,7 @@ def normalize_capture_event(db: Session, event: FlowCaptureEvent) -> Optional[Fl
         db.add(generation)
     db.flush()
 
+    stamp_generation(db, generation)
     _project_into_generation_record(db, generation)
     return generation
 
@@ -384,6 +392,10 @@ def _project_into_generation_record(db: Session, generation: FlowGeneration) -> 
     record.canonical_asset_key = generation.provider_creation_id
     record.prompt_text = generation.prompt
     record.ingestion_source = generation.ingestion_source
+    # Priced from the rate table (providers/flow/pricing.py); NULL = unknown.
+    record.credits_burned = generation.credits_used
+    if generation.model_name:
+        record.model_label = generation.model_name
     mapped_capture_status = _CAPTURE_STATUS_BY_PROVIDER_STATUS.get((generation.status or "").strip().lower())
     if mapped_capture_status:
         record.capture_status = mapped_capture_status

@@ -15,6 +15,8 @@ from utils.generation_events import record_generation_project_event
 from utils.permissions import require_faculty, require_user
 
 
+IST_OFFSET = timedelta(minutes=330)  # India Standard Time, UTC+05:30
+
 router = APIRouter(prefix="/api/generations", tags=["Generations"])
 # GenerationRecord is a shared, cross-provider table - Freepik's normalization
 # pipeline projects its own generations into it too (see
@@ -240,10 +242,16 @@ def search_generations(
         query = query.join(GenerationTag, GenerationTag.generation_id == GenerationRecord.id).filter(
             GenerationTag.normalized_tag == _normalize_tag(tag)
         )
+    # date_from/date_to are India calendar days (what the dashboard shows);
+    # created_at is naive UTC, so each IST day starts at 18:30 UTC the day
+    # before. Comparing against UTC midnight put 00:00-05:30 IST work on the
+    # previous day.
     if date_from:
-        query = query.filter(GenerationRecord.created_at >= date_from)
+        query = query.filter(GenerationRecord.created_at >= datetime.combine(date_from, datetime.min.time()) - IST_OFFSET)
     if date_to:
-        query = query.filter(GenerationRecord.created_at < date_to + timedelta(days=1))
+        query = query.filter(
+            GenerationRecord.created_at < datetime.combine(date_to + timedelta(days=1), datetime.min.time()) - IST_OFFSET
+        )
     if q:
         like = f"%{q.strip()}%"
         query = query.filter(

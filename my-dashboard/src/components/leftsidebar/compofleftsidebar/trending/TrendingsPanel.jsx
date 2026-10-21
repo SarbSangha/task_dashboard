@@ -19,6 +19,7 @@ import SunoExplorerBody from '../workspace/tabs/suno-capture/SunoExplorerBody';
 import EpidemicExplorerBody from '../workspace/tabs/epidemicsound-capture/EpidemicExplorerBody';
 import SpliceExplorerBody from '../workspace/tabs/splice-capture/SpliceExplorerBody';
 import './TrendingsPanel.css';
+import { toIndiaISODate } from '../../../../utils/dateTime';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
 const ALL_DEPARTMENTS = 'all_departments';
@@ -99,7 +100,7 @@ const getDateFolderKey = (asset) => {
   if (!source) return 'unknown-date';
   const parsed = new Date(source);
   if (Number.isNaN(parsed.getTime())) return 'unknown-date';
-  return parsed.toISOString().slice(0, 10);
+  return toIndiaISODate(parsed);
 };
 
 const formatDateFolderLabel = (key) => {

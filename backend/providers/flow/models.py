@@ -31,6 +31,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    UniqueConstraint,
 )
 
 from database_config import Base
@@ -233,6 +234,23 @@ class FlowGeneration(Base):
     media_url = Column(Text)
     thumbnail_url = Column(Text)
 
+    # ---- Generation settings + credits (see providers/flow/pricing.py) ----
+    # What Flow's composer showed when Generate was clicked (content-flow.js
+    # snapshots its "Settings trigger" and the last model seen in the
+    # settings panel into metadata.rmwSettings). NULL on rows captured before
+    # that existed - their cost is unknown, not 0.
+    media_type = Column(String(20))        # video | image
+    model_name = Column(String(120))       # Flow's own label, e.g. "Omni 1.1 Flash"
+    resolution = Column(String(20))        # 360p | 720p | ... (videos only)
+    duration_seconds = Column(Integer)     # videos only
+    aspect_ratio = Column(String(20))      # 16:9 | 9:16 | ...
+    output_count = Column(Integer)         # the click's xN; each output is its own row
+    # The plan the account was on that day (free | pro | ultra) and the
+    # credits this ONE output cost under it, from the rate table. NULL
+    # credits = unknown (no settings, unpriced model, or no plan set).
+    account_plan = Column(String(20))
+    credits_used = Column(Integer)
+
     # ---- Asset mirroring (see providers/flow/asset_mirror.py) ----
     # Confirmed live 2026-08-14: Flow's own media_url is a Google Cloud
     # signed URL (flow-content.google/image/...?Expires=...&Signature=...)
@@ -300,7 +318,71 @@ class FlowGeneration(Base):
             "assetMirrorStatus": self.asset_mirror_status,
             "assetMirrorAttemptedAt": serialize_utc_datetime(self.asset_mirror_attempted_at),
             "assetMirrorError": self.asset_mirror_error,
+            "mediaType": self.media_type,
+            "modelName": self.model_name,
+            "resolution": self.resolution,
+            "durationSeconds": self.duration_seconds,
+            "aspectRatio": self.aspect_ratio,
+            "outputCount": self.output_count,
+            "accountPlan": self.account_plan,
+            "creditsUsed": self.credits_used,
             "metadata": self.metadata_json or {},
             "createdAt": serialize_utc_datetime(self.created_at),
             "updatedAt": serialize_utc_datetime(self.updated_at),
         }
+
+
+class FlowCreditRate(Base):
+    """Credits ONE Flow output costs, per model/resolution/duration and plan
+    - the Rates tab of flow_credit_combinations.xlsx (Google Flow Help:
+    "Manage your credits"). Aspect ratio and Frames vs Ingredients do not
+    change the price; xN outputs are N rows, each charged once.
+
+    resolution/duration_seconds NULL = any (image models). Credits NULL =
+    no price: either not offered on that plan (Lite Lower Priority is
+    Ultra-only) or not published yet - the note says which. Free accounts
+    are charged the Plus & Pro column.
+
+    Dated like ToolGenerationPrice: a price change adds a row from its date
+    and ends the old one the day before, so older generations keep the
+    price they were made at.
+    """
+
+    __tablename__ = "flow_credit_rates"
+    __table_args__ = (Index("ix_flow_credit_rates_model_effective", "model_key", "effective_from"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_name = Column(String(120), nullable=False)    # as shown to admins ("Veo 3.1 - Fast")
+    model_key = Column(String(120), nullable=False)     # pricing.model_key(model_name)
+    resolution = Column(String(20))
+    duration_seconds = Column(Integer)
+    credits_plus_pro = Column(Integer)
+    credits_ultra = Column(Integer)
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date)                          # NULL = still current
+    notes = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class FlowAccountPlan(Base):
+    """Which Google plan a Flow account was on, from a date: decides which
+    credit column its generations are charged. Set on the real login; a
+    user credential linked to it (linked_credential_id) inherits it."""
+
+    __tablename__ = "flow_account_plans"
+    __table_args__ = (
+        UniqueConstraint("credential_id", "effective_from", name="uq_flow_account_plans_credential_from"),
+        CheckConstraint("plan IN ('free', 'pro', 'ultra')", name="ck_flow_account_plans_plan"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    credential_id = Column(
+        Integer, ForeignKey("it_portal_tool_credentials.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    plan = Column(String(20), nullable=False)
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date)                          # NULL = still current
+    notes = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

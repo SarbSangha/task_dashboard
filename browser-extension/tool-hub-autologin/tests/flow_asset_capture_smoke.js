@@ -31,6 +31,18 @@ function makeEl(tag, props) {
 
 const composer = makeEl('TEXTAREA', { value: '' });
 let domImages = [];
+// document.querySelector results, by exact selector.
+const domBySelector = {};
+
+// A Flow button: its text includes Material icon ligatures, like the real one.
+function makeFlowButton(text, icons, parentElement) {
+  const iconEls = icons.map((name) => makeEl('MAT-ICON', { textContent: name }));
+  return makeEl('BUTTON', {
+    textContent: text,
+    parentElement: parentElement || null,
+    querySelectorAll: (sel) => (sel === 'mat-icon' ? iconEls : []),
+  });
+}
 
 const documentStub = {
   readyState: 'complete',
@@ -41,7 +53,7 @@ const documentStub = {
   removeEventListener: () => {},
   getElementById: () => null,
   createElement: (tag) => makeEl(String(tag).toUpperCase()),
-  querySelector: () => null,
+  querySelector: (sel) => domBySelector[sel] || null,
   querySelectorAll: (sel) => {
     if (String(sel).indexOf('textarea') >= 0) return [composer];
     if (String(sel).indexOf('img') >= 0) return domImages;
@@ -179,8 +191,28 @@ async function run() {
   await wait(20);
   check('pre-existing gallery asset is NOT captured', captureEvents().length === 0, captureEvents());
 
+  // Flow's composer (as seen live 2026-10-21). The model is only in the DOM
+  // while the settings panel is open: open it, let the click listener read
+  // it, then close it again before generating.
+  domBySelector['[aria-label="Settings trigger"]'] = makeFlowButton(' Video · 360p · 10s crop_16_9 x1 ', ['crop_16_9']);
+  const panel = makeEl('DIV', { textContent: 'Video Frames Ingredients Omni 1.1 Flash 360p 720p x1 Generating will use 7 credits' });
+  domBySelector['[aria-label="Select model family"]'] = makeFlowButton('Omni 1.1 Flash arrow_drop_down', ['arrow_drop_down'], panel);
+  for (const fn of listeners.click || []) fn({});
+  await wait(350);
+  delete domBySelector['[aria-label="Select model family"]'];
+  check('model seen in the settings panel is remembered across reloads',
+    JSON.stringify(storage.rmw_flow_last_models) === JSON.stringify({ video: 'Omni 1.1 Flash' }), storage.rmw_flow_last_models);
+
   // The user types a prompt, then clicks Generate (gate -> picker -> arm).
+  // Flow swaps the composer to its "generating" state right after the click,
+  // so the settings trigger is gone by the time the picker resolves and the
+  // session arms (seen live 2026-10-21) - the click-time snapshot must win.
   typePrompt('boy with pagesys');
+  const generateButton = makeEl('BUTTON', { getAttribute: (name) => (name === 'aria-label' ? 'Start generation' : null) });
+  generateButton.closest = () => generateButton;
+  for (const fn of listeners.pointerdown || []) fn({ target: generateButton });
+  const triggerAtClick = domBySelector['[aria-label="Settings trigger"]'];
+  delete domBySelector['[aria-label="Settings trigger"]'];
   fireGateRequest('gate-1');
   await wait(50);
 
@@ -191,6 +223,7 @@ async function run() {
   check('no row emitted before the settle delay', captureEvents().length === 0, captureEvents());
 
   await wait(5400); // FLOW_MEDIA_SETTLE_MS + margin
+  domBySelector['[aria-label="Settings trigger"]'] = triggerAtClick;
 
   const events = captureEvents();
   const rows = events.filter((e) => e.event_type === 'generation_workflow_row');
@@ -212,6 +245,11 @@ async function run() {
     check('provenance marker present', md.rmwCaptureSource === 'asset-observation', md);
     check('task attribution carried through', rowA.linked_task_id === 1161, rowA);
     check('client attribution carried through', rowA.linked_client_id === 2, rowA);
+    const st = md.rmwSettings || {};
+    check('generation settings carried for costing',
+      st.type === 'video' && st.model === 'Omni 1.1 Flash' && st.resolution === '360p' && st.durationSeconds === 10
+        && st.aspectRatio === '16:9' && st.outputs === 1, st);
+    check("Flow's own credit quote kept when seen for the same settings", st.quotedCredits === 7, st);
   }
 
   const bothSameBatch = rows.length === 2 && rows[0].payload.metadata.batchId === rows[1].payload.metadata.batchId;
@@ -249,6 +287,26 @@ async function run() {
   check('second generation uses the newer prompt',
     secondRows.length > 0 && secondRows[0].payload.metadata.displayName === 'third prompt same window',
     secondRows.map((r) => r.payload.metadata.displayName));
+
+  // Regression: a video's poster and clip share the media id AND the Expires
+  // value. The clip's media event used to get the poster's exact
+  // client_event_id, so it was deduped away and the row kept the still.
+  sentMessages.length = 0;
+  typePrompt('boy running from dogs');
+  fireGateRequest('gate-video');
+  await wait(50);
+  const VID = 'e2812a58-7bd8-45da-81db-b76eda2f3979';
+  const signed = '?Expires=1792581558&KeyName=labs-flow-prod-cdn-key&Signature=';
+  loadAsset(`https://flow-content.google/image/${VID}${signed}poster`);
+  await wait(50);
+  loadAsset(`https://flow-content.google/video/${VID}${signed}clip`);
+  await wait(5400);
+  const videoMedia = captureEvents().filter((e) => e.event_type === 'media_url_resolved' && e.payload.mediaId === VID);
+  check('video clip URL is reported alongside its poster',
+    videoMedia.some((m) => m.payload.url.indexOf('/video/') >= 0), videoMedia.map((m) => m.payload.url));
+  check('poster and clip get distinct client_event_ids',
+    new Set(videoMedia.map((m) => m.client_event_id)).size === videoMedia.length && videoMedia.length === 2,
+    videoMedia.map((m) => m.client_event_id));
 
   // A real network-decoded row must win over the synthetic path.
   sentMessages.length = 0;

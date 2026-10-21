@@ -97,7 +97,9 @@ TOOL_COST_NOTES = {
     "Splice": "One row per sample downloaded, 1 Splice credit each, × the account's credit rate.",
     "Suno": "Fixed price per song, set by an admin (Reports → Credit Rates): Suno shows no per-song cost "
             "of its own. Songs from before the first price show 0. ₹ is an equal share of the subscription (est.).",
-    "Flow": "Not captured: Flow's capture payload has no cost or credit field.",
+    "Flow": "Credits per output from Flow's published rates for the model, resolution and duration used, "
+            "under the account's plan (Reports → Credit Rates). Generations captured before settings were "
+            "recorded, or whose account has no plan set, show 0. ₹ is an equal share of the subscription (est.).",
     "Higgsfield": "Not captured: Higgsfield's captures carry no credits (empty credit history). "
                   "₹ is an equal share of the subscription (est.).",
 }
@@ -149,7 +151,9 @@ TOOL_SOURCES: tuple = (
     # is in metadata_json.
     ToolSource("ElevenLabs", ElevenlabsGeneration, "credits_used", ("prompt",), ("media_url", "thumbnail_url"),
                model_label=("voice_name", "source"), raw_status_key="state"),
-    ToolSource("Flow", FlowGeneration, None, ("prompt",), ("media_url", "thumbnail_url")),
+    # Priced from a rate table x the account's plan (providers/flow/pricing.py).
+    ToolSource("Flow", FlowGeneration, "credits_used", ("prompt",), ("media_url", "thumbnail_url"),
+               model_label=("model_name",)),
     ToolSource("Suno", SunoGeneration, "credits_used", ("prompt",), ("media_url", "thumbnail_url"),
                model_label=("model_name",)),
     ToolSource("Epidemic Sound", EpidemicAdaptation, "credits_used", ("prompt",), ("media_url",),
@@ -336,10 +340,11 @@ def _size(src: ToolSource, m, display: DisplayConfig) -> tuple:
         size = case((preview == 1, zero), (counted, cast(m.credits_used, Float)),
                     else_=cast(func.coalesce(m.prompt_length, func.length(m.prompt), 0), Float))
         return size, case((preview == 1, 0), (counted, 0), else_=1), preview
-    if src.name in ("Suno", "Higgsfield"):
-        # No per-item cost of their own (Suno only once a fixed price is set).
+    if src.name in ("Suno", "Higgsfield", "Flow"):
+        # No per-item cost of their own (Suno once a fixed price is set, Flow
+        # once a rate and plan apply).
         return one, case((_num(getattr(m, src.credits)) > 0, 0), else_=1), literal(0, Integer)
-    if src.credits is None:                      # Flow: nothing captured at all
+    if src.credits is None:                      # Splice, Grammarly: no ledger column
         return one, literal(1, Integer), literal(0, Integer)
     if src.name == "HeyGen":                     # pay-per-use: size unused
         return cast(_num(getattr(m, src.credits)), Float), literal(0, Integer), literal(0, Integer)

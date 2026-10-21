@@ -20,6 +20,7 @@ import AdminPendingTab from './AdminPendingTab';
 import AdminPasswordTab from './AdminPasswordTab';
 import AdminClientsTab from './AdminClientsTab';
 import AdminToolRenewalsTab from './AdminToolRenewalsTab';
+import AdminCreditPricingTab from './AdminCreditPricingTab';
 import UserDetailDrawer from './UserDetailDrawer';
 import './AdminRequestPanel.css';
 
@@ -34,6 +35,7 @@ const TABS = [
   { id: 'sheets',    label: 'Sheet Access' },
   { id: 'clients',   label: 'Manage Clients' },
   { id: 'renewals',  label: 'Tool Renewals' },
+  { id: 'pricing',   label: 'Credit Pricing' },
 ];
 
 const STAT_DEFS = [
@@ -360,6 +362,8 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
               {activeTab === 'renewals' && (
                 <AdminToolRenewalsTab search={search} />
               )}
+
+              {activeTab === 'pricing' && <AdminCreditPricingTab />}
             </div>
           </div>
         )}

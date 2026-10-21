@@ -35,7 +35,9 @@ from sqlalchemy.orm import Session
 
 from models_new import ITPortalTool, ITPortalToolUsageEvent, User
 
-STARTER_SOURCES = frozenset({"generate_intent", "expected_credit_lock", "xhr_response"})
+# dom_balance_fallback is the click itself when the submit response was
+# missed (53 of 254 click cards, 2026-10-15..21) - still the person who ran it.
+STARTER_SOURCES = frozenset({"generate_intent", "expected_credit_lock", "xhr_response", "dom_balance_fallback"})
 HISTORY_SOURCE = "asset_history_discovered"
 
 

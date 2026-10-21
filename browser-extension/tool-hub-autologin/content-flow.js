@@ -2098,6 +2098,134 @@ function hideFlowCaptureStatus() {
   if (badge) badge.style.display = 'none';
 }
 
+// ---- Generation settings, for costing (2026-10-21) ----
+//
+// Flow reports no cost, but its price is published per model, resolution,
+// duration and plan (backend providers/flow/pricing.py). All but the plan
+// are on screen when Generate is clicked - seen live 2026-10-21:
+//   - the composer's "Settings trigger" button always reads
+//     "Video · 360p · 10s <crop_16_9 icon> x1" (type, resolution, duration,
+//     aspect, outputs);
+//   - the model is only in the DOM while the settings panel is open (its
+//     "Select model family" menu button). Flow keeps that choice until the
+//     user changes it, and changing it means opening the panel - so the
+//     last model seen there (per media type, persisted) is the current one.
+// The panel also prints "Generating will use N credits" (all outputs);
+// kept as quotedCredits when seen for these exact settings, for auditing.
+// Snapshotted at arm time and sent as metadata.rmwSettings on the cycle's
+// rows. An unknown model goes up as null and the backend leaves the cost
+// blank rather than guess.
+const FLOW_SETTINGS_TRIGGER_SELECTOR = '[aria-label="Settings trigger"]';
+const FLOW_MODEL_MENU_SELECTOR = '[aria-label="Select model family"]';
+const FLOW_LAST_MODELS_KEY = 'rmw_flow_last_models';
+const FLOW_CREDIT_QUOTE_RE = /Generating will use\s+(\d+)\s+credits?/i;
+let flowLastModels = {};        // 'video' | 'image' -> model label
+let flowLastCreditQuote = null; // { credits, settingsText, model }
+
+chromeStorageGet([FLOW_LAST_MODELS_KEY]).then((stored) => {
+  const saved = stored[FLOW_LAST_MODELS_KEY];
+  // Anything read live since load is newer than what was stored.
+  if (saved && typeof saved === 'object') flowLastModels = { ...saved, ...flowLastModels };
+});
+
+// A button's text minus its Material icon ligatures ("arrow_drop_down").
+function flowTextWithoutIcons(el) {
+  let text = `${el?.textContent || ''}`;
+  const icons = Array.from(el?.querySelectorAll?.('mat-icon') || [])
+    .map((icon) => `${icon.textContent || ''}`.trim())
+    .filter(Boolean);
+  for (const icon of icons) text = text.replace(icon, ' ');
+  return { text: text.replace(/\s+/g, ' ').trim(), icons };
+}
+
+function readFlowSettingsTrigger() {
+  const trigger = document.querySelector(FLOW_SETTINGS_TRIGGER_SELECTOR);
+  if (!trigger) return null;
+  const { text, icons } = flowTextWithoutIcons(trigger);
+  const type = (/\b(video|image)\b/i.exec(text) || [])[1];
+  const crop = icons.map((icon) => /^crop_(\d+)_(\d+)$/.exec(icon)).find(Boolean);
+  return {
+    type: type ? type.toLowerCase() : null,
+    resolution: ((/\b(\d{3,4}p)\b/i.exec(text) || [])[1] || '').toLowerCase() || null,
+    durationSeconds: Number((/\b(\d{1,2})s\b/.exec(text) || [])[1]) || null,
+    aspectRatio: crop ? `${crop[1]}:${crop[2]}` : (icons.includes('crop_square') ? '1:1' : null),
+    outputs: Number((/\bx(\d)\b/.exec(text) || [])[1]) || null,
+    settingsText: text,
+  };
+}
+
+function readFlowSettingsPanel() {
+  const menu = document.querySelector(FLOW_MODEL_MENU_SELECTOR);
+  if (!menu) return; // panel closed: keep the last model seen
+  const model = flowTextWithoutIcons(menu).text;
+  const trigger = readFlowSettingsTrigger();
+  if (!model || !trigger?.type) return;
+  if (flowLastModels[trigger.type] !== model) {
+    flowLastModels = { ...flowLastModels, [trigger.type]: model };
+    chromeStorageSet({ [FLOW_LAST_MODELS_KEY]: flowLastModels }).catch(() => {});
+  }
+  let quote = null;
+  for (let box = menu, depth = 0; box && depth < 10 && !quote; box = box.parentElement, depth += 1) {
+    quote = FLOW_CREDIT_QUOTE_RE.exec(`${box.textContent || ''}`);
+  }
+  flowLastCreditQuote = quote ? { credits: Number(quote[1]), settingsText: trigger.settingsText, model } : null;
+}
+
+// The panel opens, and the model changes, on clicks; Angular renders a
+// beat later, so read twice.
+document.addEventListener('click', () => {
+  window.setTimeout(readFlowSettingsPanel, 300);
+  window.setTimeout(readFlowSettingsPanel, 1000);
+}, true);
+
+// Taken at the Generate gesture itself, not at arm time: the session arms
+// only after the task/client picker resolves, and by then Flow has already
+// put the composer in its "generating" state with the settings trigger gone
+// - a live capture (2026-10-21) armed with no settings at all. Same gestures
+// content-flow-network.js arms its gate on; observed only, never blocked.
+const FLOW_SETTINGS_AT_CLICK_MAX_AGE_MS = 120000;
+let flowSettingsAtClick = null; // { settings, at }
+
+function noteFlowSettingsAtClick() {
+  const settings = snapshotFlowSettings();
+  if (settings) flowSettingsAtClick = { settings, at: Date.now() };
+}
+
+document.addEventListener('pointerdown', (event) => {
+  const control = event.target?.closest?.('button, [role="button"]');
+  if (control && /generat/i.test(control.getAttribute?.('aria-label') || '')) noteFlowSettingsAtClick();
+}, true);
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.shiftKey) return;
+  const target = event.target;
+  if (target?.tagName === 'TEXTAREA' || target?.isContentEditable === true) noteFlowSettingsAtClick();
+}, true);
+
+// The click's snapshot if recent, else whatever the composer shows now.
+function takeFlowSettingsForArm() {
+  const atClick = flowSettingsAtClick && Date.now() - flowSettingsAtClick.at <= FLOW_SETTINGS_AT_CLICK_MAX_AGE_MS
+    ? flowSettingsAtClick.settings : null;
+  flowSettingsAtClick = null;
+  const settings = atClick || snapshotFlowSettings();
+  if (!settings) console.warn('[RMW Flow Capture] no generation settings found - this generation will have no cost');
+  return settings;
+}
+
+function snapshotFlowSettings() {
+  readFlowSettingsPanel(); // in case the panel is open right now
+  const trigger = readFlowSettingsTrigger();
+  if (!trigger) return null;
+  const model = (trigger.type && flowLastModels[trigger.type]) || null;
+  const quote = flowLastCreditQuote;
+  return {
+    ...trigger,
+    model,
+    quotedCredits: quote && quote.model === model && quote.settingsText === trigger.settingsText
+      ? quote.credits : null,
+  };
+}
+
 // ---- Arm/disarm ----
 
 const FLOW_ARM_MAX_DURATION_MS = 10 * 60 * 1000; // generous for slow renders
@@ -2184,6 +2312,9 @@ function armFlowGeneration() {
     }
     scheduleFlowArmQuietReset();
     flowPromptAtArm = flowLastPromptText || scanFlowComposerText();
+    // Same trade-off as the prompt above: the newest click's settings win
+    // for rows of this session not yet reported.
+    flowActiveGeneration.settings = takeFlowSettingsForArm();
     setFlowCaptureStatus(`Waiting for generation…${flowGenerationLinkLabel(flowActiveGeneration)}`);
     return;
   }
@@ -2197,6 +2328,7 @@ function armFlowGeneration() {
     taskName: pendingSelection?.taskName ?? null,
     clientId: pendingSelection?.clientId ?? null,
     clientName: pendingSelection?.clientName ?? null,
+    settings: takeFlowSettingsForArm(), // see "Generation settings, for costing"
   };
   flowArmMaxTimer = window.setTimeout(disarmFlowGeneration, FLOW_ARM_MAX_DURATION_MS);
   scheduleFlowArmQuietReset();
@@ -2205,6 +2337,7 @@ function armFlowGeneration() {
     generateIntentId: flowActiveGeneration.generateIntentId,
     taskId: flowActiveGeneration.taskId,
     clientId: flowActiveGeneration.clientId,
+    settings: flowActiveGeneration.settings,
   });
   onFlowGenerationArmed();
 }
@@ -2338,6 +2471,10 @@ async function reportFlowGenerationRow(row, { isReconciliation }) {
   // this same change-token pattern exists to prevent.
   const changeToken = row?.metadata?.updateTime || row?.metadata?.createTime || 'unknown';
   const clientEventId = `flow:${creationId || `rand:${Math.random().toString(36).slice(2)}`}:${changeToken}`;
+  // What the composer showed for this click (model, resolution, duration...)
+  // - the backend prices the row from it. Live rows of the armed session only.
+  const settings = !isReconciliation && flowActiveGeneration ? flowActiveGeneration.settings : null;
+  const payload = settings && row?.metadata ? { ...row, metadata: { ...row.metadata, rmwSettings: settings } } : row;
   try {
     const result = await msg({
       type: 'FLOW_CAPTURE_EVENT',
@@ -2347,7 +2484,7 @@ async function reportFlowGenerationRow(row, { isReconciliation }) {
         creation_id: creationId || null,
         family_id: row?.metadata?.batchId ? String(row.metadata.batchId) : null,
         is_reconciliation: Boolean(isReconciliation),
-        payload: row,
+        payload,
         capture_version: 1,
         // Task/Client Mapping - only ever present for a live-capture row
         // belonging to the currently-armed session.
@@ -2389,7 +2526,13 @@ async function reportFlowMediaUrl(mediaId, resolvedUrl) {
   try {
     expiresToken = new URL(resolvedUrl).searchParams.get('Expires') || 'unknown';
   } catch {}
-  const clientEventId = `flow:media:${mediaId}:${expiresToken}`;
+  // A video's poster and clip share BOTH the media id and the Expires value
+  // (one signing pass), so without the kind the clip's event was an exact
+  // repeat of the poster's and was deduped away - by the background queue
+  // and by the backend's (provider, credential, client_event_id) index - and
+  // the row kept the still. Image keys stay unchanged.
+  const kindToken = FLOW_VIDEO_ASSET_RE.test(`${resolvedUrl}`) ? 'video:' : '';
+  const clientEventId = `flow:media:${kindToken}${mediaId}:${expiresToken}`;
   try {
     const result = await msg({
       type: 'FLOW_CAPTURE_EVENT',

@@ -14,6 +14,7 @@ import KlingAnalyticsPanel from './KlingAnalyticsPanel';
 import KlingCardSkeletonGrid from './KlingCardSkeletonGrid';
 import { parseKlingQuery } from './klingSearchDsl';
 import './KlingTab.css';
+import { toIndiaISODate } from '../../../../../utils/dateTime';
 
 const ALL_DEPARTMENTS = 'all_departments';
 const ALL_MODELS = 'all_models';
@@ -31,31 +32,23 @@ const DATE_PRESETS = [
   { value: 'month', label: 'This Month' },
 ];
 
-function toISODate(date) {
-  return date.toISOString().slice(0, 10);
-}
-
+// India calendar days, matching how the backend reads date_from/date_to.
+// (These used toISOString(), i.e. UTC days - so "Today" in India asked for
+// yesterday and every preset was shifted a day back.)
 function resolveDateRange(preset) {
   if (preset === 'all') return { dateFrom: undefined, dateTo: undefined };
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const [year, month, day] = toIndiaISODate().split('-').map(Number);
+  const dayOffset = (offset) => new Date(Date.UTC(year, month - 1, day + offset)).toISOString().slice(0, 10);
+  const today = dayOffset(0);
 
-  if (preset === 'today') {
-    return { dateFrom: toISODate(startOfToday), dateTo: toISODate(startOfToday) };
-  }
-  if (preset === 'yesterday') {
-    const yesterday = new Date(startOfToday);
-    yesterday.setDate(yesterday.getDate() - 1);
-    return { dateFrom: toISODate(yesterday), dateTo: toISODate(yesterday) };
-  }
+  if (preset === 'today') return { dateFrom: today, dateTo: today };
+  if (preset === 'yesterday') return { dateFrom: dayOffset(-1), dateTo: dayOffset(-1) };
   if (preset === 'week') {
-    const start = new Date(startOfToday);
-    start.setDate(start.getDate() - start.getDay());
-    return { dateFrom: toISODate(start), dateTo: toISODate(startOfToday) };
+    const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+    return { dateFrom: dayOffset(-weekday), dateTo: today };
   }
   if (preset === 'month') {
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    return { dateFrom: toISODate(start), dateTo: toISODate(startOfToday) };
+    return { dateFrom: `${year}-${String(month).padStart(2, '0')}-01`, dateTo: today };
   }
   return { dateFrom: undefined, dateTo: undefined };
 }

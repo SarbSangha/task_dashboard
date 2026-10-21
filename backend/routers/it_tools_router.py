@@ -1814,6 +1814,12 @@ def _normalize_usage_text(value: Optional[str], max_length: int = 160) -> Option
 
 def _usage_source_rank(value: Optional[str]) -> int:
     normalized = f"{value or ''}".strip().lower()
+    # A history scan only proves some browser listed the job. Ranked below
+    # every click-time source so merging it into a click's event never
+    # relabels that event as history-only - which made the record sync drop
+    # its owner and the Credit Report credit it to "Unknown user".
+    if normalized == KLING_HISTORY_DISCOVERY_SOURCE:
+        return 0
     if normalized == "asset_show_price_reconciled":
         return 1
     if normalized == "trade_history_reconciled":
@@ -1847,6 +1853,56 @@ def _choose_usage_confidence(existing: Optional[float], incoming: Optional[float
     if existing is None:
         return incoming
     return max(existing, incoming)
+
+
+KLING_TOOL_SLUGS = {"kling", "kling-ai", "klingai"}
+KLING_HISTORY_DISCOVERY_SOURCE = "asset_history_discovered"
+# A history row can name a job days after it ran; its click sits near the
+# job's own time, so only events around that time are searched.
+KLING_LINKED_ID_WINDOW_BEFORE = timedelta(days=2)
+KLING_LINKED_ID_WINDOW_AFTER = timedelta(days=1)
+_KLING_ID_METADATA_KEYS = ("klingTaskId", "taskId", "workId", "creativeId")
+
+
+def _kling_job_ids(generation_id: Optional[str], metadata: Optional[dict]) -> set:
+    """Every Kling id one report names for its job: task, work, creative."""
+    metadata = metadata if isinstance(metadata, dict) else {}
+    values = [generation_id, *(metadata.get(key) for key in _KLING_ID_METADATA_KEYS)]
+    history = metadata.get("assetHistory") if isinstance(metadata.get("assetHistory"), dict) else {}
+    values += [history.get("taskId"), history.get("workId")]
+    discovered = metadata.get("discoveredTaskIds")
+    if isinstance(discovered, list):
+        values += discovered[:8]
+    return {text for text in (f"{value or ''}".strip() for value in values) if len(text) >= 6}
+
+
+def _find_usage_event_by_kling_ids(db: Session, *, tool_id: int, credential_id: int, ids: set,
+                                   around: Optional[datetime]) -> Optional[ITPortalToolUsageEvent]:
+    """The event on this Kling account already recorded for a job that
+    shares any of `ids` (by its generation_id or a metadata id)."""
+    if not ids:
+        return None
+    reference = around or datetime.utcnow()
+    id_list = sorted(ids)
+    metadata_matches = [
+        ITPortalToolUsageEvent.metadata_json[key].as_string().in_(id_list) for key in _KLING_ID_METADATA_KEYS
+    ]
+    candidates = (
+        db.query(ITPortalToolUsageEvent)
+        .filter(
+            ITPortalToolUsageEvent.tool_id == tool_id,
+            ITPortalToolUsageEvent.credential_id == credential_id,
+            ITPortalToolUsageEvent.created_at >= reference - KLING_LINKED_ID_WINDOW_BEFORE,
+            ITPortalToolUsageEvent.created_at <= reference + KLING_LINKED_ID_WINDOW_AFTER,
+            or_(ITPortalToolUsageEvent.generation_id.in_(id_list), *metadata_matches),
+        )
+        .order_by(ITPortalToolUsageEvent.created_at.asc())
+        .limit(5)
+        .all()
+    )
+    # Prefer the click that started the job over another history copy.
+    starters = [c for c in candidates if (c.source or "") != KLING_HISTORY_DISCOVERY_SOURCE]
+    return (starters or candidates or [None])[0]
 
 
 def _is_admin_reporter(user: Optional[User]) -> bool:
@@ -2519,6 +2575,11 @@ def _merge_usage_metadata(existing: Optional[dict], incoming: Optional[dict]) ->
         return assets[:12]
 
     for key, value in (incoming or {}).items():
+        # A history row that only knows a job's work id sends klingTaskId ""
+        # and discoveredTaskIds [workId]; copying those wiped the click
+        # event's real task id, so later reports of the job no longer matched.
+        if (value is None or value == "" or value == [] or value == {}) and merged.get(key) not in (None, "", [], {}):
+            continue
         if key == "lifecycleEvent" and isinstance(value, dict):
             incoming_lifecycle_event = value
             continue
@@ -3344,6 +3405,7 @@ def report_extension_usage_event(
     usage_event = None
     action_name = "tool_usage_reported"
     dedupe_match_reason = "create_new"
+    is_kling_tool = (tool.slug or "").strip().lower() in KLING_TOOL_SLUGS
 
     if payload.event_id:
         usage_event = (
@@ -3395,6 +3457,21 @@ def report_extension_usage_event(
             if usage_event:
                 dedupe_match_reason = "stable_id_same_credential"
 
+        if not usage_event and credential and is_kling_tool:
+            # Kling gives one job a task id AND a work id. A history row often
+            # carries only the work id while the click's event is keyed by the
+            # task id (work id in its metadata), so the stable match above
+            # missed and the job became two events - two cards under two
+            # people, its credits counted twice (seen 2026-10-15..19: 178 of
+            # 346 history-only cards duplicated a click under another owner).
+            usage_event = _find_usage_event_by_kling_ids(
+                db, tool_id=tool.id, credential_id=credential.id,
+                ids=_kling_job_ids(generation_id, merged_metadata),
+                around=historical_occurred_at,
+            )
+            if usage_event:
+                dedupe_match_reason = "kling_linked_id_same_credential"
+
         if not usage_event and internal_generation_id:
             internal_query = (
                 db.query(ITPortalToolUsageEvent)
@@ -3443,7 +3520,12 @@ def report_extension_usage_event(
             usage_event = dedupe_query.order_by(ITPortalToolUsageEvent.created_at.desc()).first()
             if usage_event:
                 dedupe_match_reason = "stable_or_fingerprint_any_credential"
-        elif normalized_event_type == "generate_click":
+        elif not usage_event and normalized_event_type == "generate_click":
+            # Only for a click carrying no ids at all. Without the
+            # `not usage_event` guard this ran whenever an id match above had
+            # already succeeded and replaced that match with this lookup's
+            # (usually empty) result - so a click whose task id a teammate's
+            # history scan had already recorded became a second event/card.
             duplicate_window_start = datetime.utcnow() - timedelta(seconds=8)
             duplicate_query = (
                 db.query(ITPortalToolUsageEvent)
@@ -3514,10 +3596,24 @@ def report_extension_usage_event(
             # reporter does not, hand ownership to the real employee -- the same
             # non-admin preference merge_duplicate_kling_usage_events.py already
             # applies when cleaning up historical duplicate rows.
+            #
+            # History scans never move ownership: they come from whoever's
+            # browser listed the job, not who ran it. The reverse does: a
+            # history scan can reach the server before the clicker's own
+            # report (their tab learns the task id late), and the event it
+            # created is owned by the viewer - the click is the real owner.
             previous_owner = db.query(User).filter(User.id == usage_event.user_id).first()
-            if _is_admin_reporter(previous_owner) and not _is_admin_reporter(current_user):
+            incoming_is_history = (source or "") == KLING_HISTORY_DISCOVERY_SOURCE
+            existing_is_history = (usage_event.source or "") == KLING_HISTORY_DISCOVERY_SOURCE
+            if not incoming_is_history and (
+                existing_is_history
+                or (_is_admin_reporter(previous_owner) and not _is_admin_reporter(current_user))
+            ):
                 merged_metadata["reassignedFromUserId"] = usage_event.user_id
                 merged_metadata["reassignedAt"] = _serialize_utc_datetime(datetime.utcnow())
+                merged_metadata["reassignedReason"] = (
+                    "history_scan_owner_replaced_by_click" if existing_is_history else "admin_owner_replaced"
+                )
                 usage_event.user_id = current_user.id
 
             merged_metadata["crossUserDuplicate"] = True

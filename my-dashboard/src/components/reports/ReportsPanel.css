@@ -108,6 +108,17 @@
   border-radius: 8px; padding: 7px 10px; font-size: 12.5px; font-family: inherit;
 }
 .rpt-input[type="date"] { color-scheme: dark; }
+
+/* Buttons in the admin price editors (Suno / Flow credits). */
+.rpt-btn {
+  display: inline-flex; align-items: center; height: 30px; padding: 0 12px; cursor: pointer;
+  border: 1px solid var(--color-border, rgba(148,163,184,.24)); border-radius: 8px;
+  background: var(--color-surface-elevated, rgba(255,255,255,.04)); color: var(--color-text, inherit);
+  font-size: 12px; font-weight: 600; transition: transform .12s ease, border-color .12s ease;
+}
+.rpt-btn:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--color-primary, #2563eb); }
+.rpt-btn:disabled { opacity: .55; cursor: default; }
+.rpt-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--color-primary-soft, rgba(96,165,250,.16)); }
 .rpt-select { cursor: pointer; min-width: 130px; }
 .rpt-input:focus, .rpt-select:focus { outline: none; border-color: var(--color-primary, #2563eb); box-shadow: 0 0 0 3px var(--color-primary-soft, rgba(96,165,250,.16)); }
 

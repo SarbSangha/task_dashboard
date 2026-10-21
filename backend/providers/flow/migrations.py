@@ -49,12 +49,28 @@ def _sqlite_add_column_if_missing(conn, table_name: str, column_name: str, sql_t
     conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"))
 
 
+# Generation settings + credits (providers/flow/pricing.py). The rate and
+# plan tables are new, so create_all() makes them.
+_SETTINGS_COLUMNS = (
+    ("media_type", "VARCHAR(20)"),
+    ("model_name", "VARCHAR(120)"),
+    ("resolution", "VARCHAR(20)"),
+    ("duration_seconds", "INTEGER"),
+    ("aspect_ratio", "VARCHAR(20)"),
+    ("output_count", "INTEGER"),
+    ("account_plan", "VARCHAR(20)"),
+    ("credits_used", "INTEGER"),
+)
+
+
 def ensure_flow_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "flow_generations", "mirrored_asset_key", "TEXT")
     _pg_add_column_if_missing(conn, "flow_generations", "mirrored_thumbnail_key", "TEXT")
     _pg_add_column_if_missing(conn, "flow_generations", "asset_mirror_status", "VARCHAR(20) NOT NULL DEFAULT 'pending'")
     _pg_add_column_if_missing(conn, "flow_generations", "asset_mirror_attempted_at", "TIMESTAMP")
     _pg_add_column_if_missing(conn, "flow_generations", "asset_mirror_error", "TEXT")
+    for column_name, sql_type in _SETTINGS_COLUMNS:
+        _pg_add_column_if_missing(conn, "flow_generations", column_name, sql_type)
 
 
 def ensure_flow_sqlite_schema(conn) -> None:
@@ -63,3 +79,5 @@ def ensure_flow_sqlite_schema(conn) -> None:
     _sqlite_add_column_if_missing(conn, "flow_generations", "asset_mirror_status", "VARCHAR(20) NOT NULL DEFAULT 'pending'")
     _sqlite_add_column_if_missing(conn, "flow_generations", "asset_mirror_attempted_at", "DATETIME")
     _sqlite_add_column_if_missing(conn, "flow_generations", "asset_mirror_error", "TEXT")
+    for column_name, sql_type in _SETTINGS_COLUMNS:
+        _sqlite_add_column_if_missing(conn, "flow_generations", column_name, sql_type)

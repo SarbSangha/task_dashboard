@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlparse
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,7 +21,18 @@ INTERNAL_ASSET_HINT_RE = re.compile(
     r"/(?:assets?|static|web-assets?|kling-web)/[^?#]*(?:logo|icon|sprite|placeholder|loading|empty|default|avatar|badge|watermark|ui|guide|tutorial|sample|example)",
     flags=re.IGNORECASE,
 )
+# Kling serves resized renditions as /kimg/<ref>:<W>x<H>.webp. A tiny one is a
+# thumbnail chip (the reference image in the prompt box is 64x64), never a
+# generation's output - one became a card's picture on 2026-10-21. Same
+# 160px rule as content-kling.js's isInternalKlingPreviewAsset.
+KLING_THUMBNAIL_CHIP_RE = re.compile(r"/kimg/[^?#]+:(\d+)x(\d+)\.webp(?:[?#]|$)", flags=re.IGNORECASE)
+KLING_THUMBNAIL_CHIP_MAX_PX = 160
 _GENERATION_TABLE_READY_BINDS: set[str] = set()
+
+
+def _is_kling_thumbnail_chip(url: str) -> bool:
+    match = KLING_THUMBNAIL_CHIP_RE.search(url)
+    return bool(match) and max(int(match.group(1)), int(match.group(2))) <= KLING_THUMBNAIL_CHIP_MAX_PX
 
 
 @dataclass
@@ -209,6 +220,12 @@ def _provider_generation_id(event: ITPortalToolUsageEvent, metadata: dict) -> st
 
 
 def _canonical_asset_url(metadata: dict) -> str:
+    choices = _canonical_asset_choices(metadata)
+    return choices[0] if choices else ""
+
+
+def _canonical_asset_choices(metadata: dict) -> list[str]:
+    """Output URLs a record could show, best first (videos before images)."""
     media_assets = metadata.get("mediaAssets") if isinstance(metadata.get("mediaAssets"), list) else []
     video_candidates: list[str] = []
     other_candidates: list[str] = []
@@ -224,7 +241,7 @@ def _canonical_asset_url(metadata: dict) -> str:
         lowered = url.lower()
         if "prompt-library-resources" in lowered:
             continue
-        if INTERNAL_ASSET_HINT_RE.search(lowered):
+        if INTERNAL_ASSET_HINT_RE.search(lowered) or _is_kling_thumbnail_chip(lowered):
             continue
         # No longer also requiring the URL text itself to contain a keyword/
         # extension guess ("output"/"result"/".mp4" etc, formerly
@@ -252,8 +269,7 @@ def _canonical_asset_url(metadata: dict) -> str:
     # real output videos on v15-kling.klingai.com, and 's' < 'v', so the old
     # sort-everything-together approach would silently prefer the thumbnail
     # over the actual video even when both were correctly captured.
-    candidates = video_candidates or other_candidates
-    return sorted(set(candidates))[0] if candidates else ""
+    return sorted(set(video_candidates)) + sorted(set(other_candidates))
 
 
 def _canonical_asset_key(asset_url: str) -> str:
@@ -476,6 +492,9 @@ def _find_generation_record_for_candidate(
         )
         if record:
             return record
+    record = _find_record_by_linked_kling_ids(session, candidate)
+    if record:
+        return record
     if candidate.canonical_asset_key:
         record = (
             session.query(GenerationRecord)
@@ -485,9 +504,81 @@ def _find_generation_record_for_candidate(
             )
             .first()
         )
-        if record:
+        # Same video, same job - unless both name different Kling tasks: then
+        # the video was swept in from another job (a Kling list response) and
+        # matching on it would merge this job into someone else's card.
+        if record and not (
+            record.provider_task_id and candidate.provider_task_id
+            and record.provider_task_id != candidate.provider_task_id
+        ):
             return record
     return None
+
+
+def _drop_canonical_owned_elsewhere(session: Session, candidate: BackfillCandidate, record_id: Optional[int]) -> None:
+    """A video already shown by another card belongs to that job, not this
+    one. Use the next output no other card owns, or none. Without this the
+    unique (provider, canonical_asset_key) index rejected the whole update,
+    so a card with one borrowed video got no video, prompt or credits at all
+    (seen 2026-10-21: a live test card stayed empty)."""
+    if not candidate.canonical_asset_key:
+        return
+
+    def owned_elsewhere(key: str) -> bool:
+        query = session.query(GenerationRecord.id).filter(
+            GenerationRecord.provider == "kling", GenerationRecord.canonical_asset_key == key
+        )
+        if record_id:
+            query = query.filter(GenerationRecord.id != record_id)
+        return query.first() is not None
+
+    if not owned_elsewhere(candidate.canonical_asset_key):
+        return
+    for url in _canonical_asset_choices(candidate.metadata_json or {}):
+        key = _canonical_asset_key(url)
+        if key and not owned_elsewhere(key):
+            candidate.canonical_asset_url, candidate.canonical_asset_key = url, key
+            return
+    candidate.canonical_asset_url = candidate.canonical_asset_key = None
+
+
+KLING_LINKED_ID_KEYS = ("klingTaskId", "taskId", "workId", "creativeId")
+LINKED_ID_WINDOW = timedelta(days=2)
+
+
+def _candidate_kling_ids(candidate: BackfillCandidate) -> set:
+    """Every Kling id the candidate names for its job (task, work, creative)."""
+    metadata = candidate.metadata_json or {}
+    values = [candidate.provider_task_id, candidate.provider_generation_id,
+              *(metadata.get(key) for key in KLING_LINKED_ID_KEYS)]
+    history = metadata.get("assetHistory") if isinstance(metadata.get("assetHistory"), dict) else {}
+    values += [history.get("taskId"), history.get("workId")]
+    return {text for text in (_normalize_text(value) for value in values) if len(text) >= 6}
+
+
+def _find_record_by_linked_kling_ids(session: Session, candidate: BackfillCandidate) -> Optional[GenerationRecord]:
+    """One Kling job has a task id and a work id; a history row often knows
+    only the work id, while the click's record is keyed by the task id with
+    the work id in its metadata. Match on any id they share."""
+    ids = sorted(_candidate_kling_ids(candidate))
+    if not ids or not candidate.created_at:
+        return None
+    return (
+        session.query(GenerationRecord)
+        .filter(
+            GenerationRecord.provider == "kling",
+            GenerationRecord.archived_at.is_(None),
+            GenerationRecord.created_at >= candidate.created_at - LINKED_ID_WINDOW,
+            GenerationRecord.created_at <= candidate.created_at + LINKED_ID_WINDOW,
+            or_(
+                GenerationRecord.provider_task_id.in_(ids),
+                GenerationRecord.provider_generation_id.in_(ids),
+                *(GenerationRecord.metadata_json[key].as_string().in_(ids) for key in KLING_LINKED_ID_KEYS),
+            ),
+        )
+        .order_by(GenerationRecord.created_at.asc())
+        .first()
+    )
 
 
 HISTORY_DISCOVERY_SOURCE = "asset_history_discovered"
@@ -697,6 +788,7 @@ def sync_generation_record_from_usage_event(
     if not existing and is_history_discovery:
         existing = _find_starter_record_for_history_discovery(session, usage_event, candidate)
         action = "update_history_matched_starter"
+    _drop_canonical_owned_elsewhere(session, candidate, existing.id if existing else None)
     if existing:
         try:
             with session.begin_nested():

@@ -26,6 +26,29 @@ function MetaField({ label, value }) {
   );
 }
 
+const PLAN_LABEL = { free: 'Free', pro: 'Plus & Pro', ultra: 'Ultra' };
+
+// "Video · 360p · 10s · 16:9 · x1" - what Flow's composer showed at Generate.
+function settingsLabel(g) {
+  const parts = [
+    g.mediaType && g.mediaType[0].toUpperCase() + g.mediaType.slice(1),
+    g.resolution,
+    g.durationSeconds != null && `${g.durationSeconds}s`,
+    g.aspectRatio,
+    g.outputCount != null && `x${g.outputCount}`,
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+// Priced from the rate table x the account's plan (backend
+// providers/flow/pricing.py); says why when it could not be.
+function creditsLabel(g) {
+  if (g.creditsUsed != null) return `${g.creditsUsed} credit${g.creditsUsed === 1 ? '' : 's'}`;
+  if (!g.modelName) return 'Unknown (settings not captured)';
+  if (!g.accountPlan) return 'Unknown (no plan set for this Flow account)';
+  return `Unknown (no ${PLAN_LABEL[g.accountPlan] || g.accountPlan} rate for this model)`;
+}
+
 const ASSET_MIRROR_STATUS_LABEL = {
   pending: 'Pending',
   mirrored: 'Mirrored',
@@ -136,6 +159,10 @@ export default function GenerationDetailPanel({ generationId }) {
         <MetaField label="Project ID" value={generation.projectId} />
         <MetaField label="Batch ID" value={generation.batchId} />
         <MetaField label="Primary Media ID" value={generation.primaryMediaId} />
+        <MetaField label="Model" value={generation.modelName} />
+        <MetaField label="Settings" value={settingsLabel(generation)} />
+        <MetaField label="Plan" value={PLAN_LABEL[generation.accountPlan] || generation.accountPlan} />
+        <MetaField label="Credits" value={creditsLabel(generation)} />
         <MetaField label={isVideo ? 'Video Backup Status' : 'Image Backup Status'} value={ASSET_MIRROR_STATUS_LABEL[generation.assetMirrorStatus] || generation.assetMirrorStatus} />
         <MetaField label="Ownership" value={ownershipMeta.label} />
         <MetaField label="Attribution Source" value={generation.ownershipSource} />

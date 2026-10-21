@@ -361,6 +361,26 @@
       .slice(0, 12);
   }
 
+  // Which Kling API a captured media item came from (path only - the query
+  // carries signed tokens), so a wrongly attached video can be traced to its
+  // response.
+  function urlPathOnly(url) {
+    try { return new URL(url, location.href).pathname.slice(0, 200); } catch { return ''; }
+  }
+
+  // Distinct task ids a response (or one item of it) names - more than one
+  // means it describes several generations.
+  function countResponseTaskIds(json, text = '') {
+    const ids = new Set();
+    for (const candidate of [
+      ...collectIdentifierCandidatesFromObject(json, 'response_json'),
+      ...collectIdentifierCandidatesFromText(text, 'response_text'),
+    ]) {
+      if (candidate.kind === 'task_id') ids.add(candidate.value);
+    }
+    return ids.size;
+  }
+
   function selectPrimaryKlingTaskId(candidates) {
     return candidates.find((candidate) => /^(task_id|job_id|generation_id|workflow_id|creation_id|contextual_id)$/.test(candidate.kind))
       || candidates[0]
@@ -702,7 +722,12 @@
       }
       const creationWork = getKlingCreationMaterialWork(item);
       const roots = [stripKlingCreationMaterialInputs(item), ...embeddedRoots];
-      const mediaAssets = mergeMediaAssetLists(
+      // An item naming several tasks is a wrapper around other items (the
+      // fallback above walks every nested object): its task id is just the
+      // first one found inside, so the media of all of them must not be
+      // pinned to it. Its children are rows of their own.
+      const namesSeveralTasks = !creationWork && countResponseTaskIds(item) > 1;
+      const mediaAssets = namesSeveralTasks ? [] : mergeMediaAssetLists(
         collectKlingWorksOutputAssets(item),
         creationWork
           ? []
@@ -810,6 +835,10 @@
     const normalizedKey = `${key || ''}`.trim().toLowerCase();
     if (!url) return false;
     if (/\.origin(?:[?#]|$)/i.test(url)) return false;
+    // Tiny renditions are thumbnail chips (e.g. the 64x64 reference image in
+    // the prompt box), never an output - same rule as content-kling.js.
+    const sizeMatch = url.match(/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kimg\/[^?#]+:(\d+)x(\d+)\.webp(?:[?#]|$)/i);
+    if (sizeMatch && Math.max(Number(sizeMatch[1]), Number(sizeMatch[2])) <= 160) return true;
     if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kimg\/[^?#]*(?:loading|placeholder|empty|default|sample|example)[^?#]*\.webp(?:[?#]|$)/i.test(url)) return true;
     if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web[-/][^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
     if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url)) return true;
@@ -1028,10 +1057,17 @@
     const multiShotEnabled = /\bmulti-?shot\b/i.test(telemetryText)
       || Boolean(pickString(requestObject, /^(multi_?shot|multi_?image)$/i));
     const promptText = pickString(requestObject, /^(prompt|text|query|positive_?prompt)$/i);
+    // A response naming several tasks (a status poll or feed of the shared
+    // account) carries several people's videos, and nothing here says which
+    // is whose. Attaching all of them to the one task picked above put other
+    // users' videos - and so the wrong prompt/owner - on a generation (seen
+    // 2026-10-21: 108 of the last 400 Kling records held 3-5 output videos).
+    // Per-task outputs come from the asset-history rows instead, which pair
+    // each task with its own work.
     const mediaAssets = mergeMediaAssetLists(
       markMediaAssetsAsRequestInputs(collectMediaAssetsFromPayload(requestObject, requestText)),
-      collectMediaAssetsFromPayload(merged, responseText)
-    );
+      countResponseTaskIds(responseJson, responseText) > 1 ? [] : collectMediaAssetsFromPayload(merged, responseText)
+    ).map((asset) => ({ ...asset, fromPath: urlPathOnly(payload.url) }));
     const status = normalizeLifecycleStatus(
       pickString(merged, /^(status|state|task_?status|stage|phase|event|event_?type)$/i),
       creditsUsed
@@ -1091,6 +1127,11 @@
           payload: {
             generationRequestDetected: hasRecentGenerateIntent,
             taskIdDetected: hasDiscoveredTaskId,
+            // Lets content-kling.js adopt a task id only from the submit (its
+            // request carried the prompt) or a response about one task.
+            requestHasPrompt: Boolean(extracted.promptText),
+            responseTaskIdCount: countResponseTaskIds(payload.responseJson, payload.responseText),
+            isListEndpoint: ASSET_HISTORY_URL_RE.test(payload.url) || TRADE_HISTORY_URL_RE.test(payload.url),
             klingTaskId: extracted.klingTaskId,
             generationId: extracted.generationId,
             requestId: extracted.requestId,
@@ -1128,6 +1169,8 @@
           url: payload.url,
           isAssetHistoryEndpoint: ASSET_HISTORY_URL_RE.test(payload.url),
           isTradeHistoryEndpoint: TRADE_HISTORY_URL_RE.test(payload.url),
+          requestHasPrompt: Boolean(extracted.promptText),
+          responseTaskIdCount: countResponseTaskIds(payload.responseJson, payload.responseText),
           ok: payload.ok,
           httpStatus: payload.httpStatus,
           source: payload.source,

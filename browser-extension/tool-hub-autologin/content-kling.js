@@ -64,6 +64,7 @@ const GENERATED_ASSET_SCAN_MS = 4000;
 const GENERATED_ASSET_SCAN_MAX_MS = 600000;
 const ACTIVE_GENERATION_MAX_MS = GENERATED_ASSET_SCAN_MAX_MS;
 const KLING_TIMESTAMP_FALLBACK_WINDOW_MS = 2000;
+const KLING_THUMBNAIL_CHIP_MAX_PX = 160; // see isInternalKlingPreviewAsset
 const MAX_EXPECTED_LOCK_AUTO_BURN = 300;
 const SUPPORTED_KLING_USAGE_FALLBACK_MODES = new Set(['image', 'video', 'motion-control', 'avatar']);
 const CREDIT_SOURCE_PROFILES = {
@@ -1173,6 +1174,10 @@ function isInternalKlingPreviewAsset(url = '', hint = '') {
     const width = Number(klingCdnSizeMatch[1]);
     const height = Number(klingCdnSizeMatch[2]);
     if (Number.isFinite(width) && Number.isFinite(height) && height > 0 && width / height >= 2.5) return true;
+    // A tiny rendition is a thumbnail chip (the reference image in the
+    // prompt box is served at 64x64), never an output being shown - the DOM
+    // fallback took one as a generation's output (2026-10-21).
+    if (Math.max(width, height) <= KLING_THUMBNAIL_CHIP_MAX_PX) return true;
   }
   if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web[-/][^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(normalizedUrl)) return true;
   if (/^https?:\/\/[^/]*(?:klingai\.com|kling\.ai)\/kos\/[^?#]*\/kling-web\/assets\/[^?#]*\.(?:png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(normalizedUrl)) return true;
@@ -1480,6 +1485,7 @@ function normalizeCapturedMediaAssets(value, source = 'network') {
       url,
       blobUrl: `${asset?.blobUrl || resolvedAssetUrl.blobUrl || ''}`.slice(0, 4000),
       key: `${asset?.key || ''}`.slice(0, 120),
+      fromPath: `${asset?.fromPath || ''}`.slice(0, 200), // which Kling API it came from (diagnostics)
       width: Number(asset?.width || 0) || null,
       height: Number(asset?.height || 0) || null,
       detectedAt: Number(asset?.detectedAt || Date.now()),
@@ -1521,6 +1527,10 @@ function normalizeCapturedMediaAssets(value, source = 'network') {
 }
 
 function collectVisibleGeneratedMediaAssets(generationMode = '') {
+  // The creations grid lists every job on the (shared) account: nothing on it
+  // is "this generation's new output". Scanning it while a job was tracked
+  // pinned old jobs' thumbnails to the new one (live test, 2026-10-21).
+  if (/\/creations(?:\/|$)/i.test(location.pathname || '')) return [];
   const normalizedGenerationMode = `${generationMode || ''}`.trim().toLowerCase();
   const shouldScanVideo = normalizedGenerationMode !== 'image';
   const assets = [];
@@ -1853,6 +1863,19 @@ function eventIdForKnownKlingTaskId(taskId) {
       || USAGE_CTX.activeGeneration?.scanSnapshot?.eventId
       || 0
   ) || null;
+}
+
+// Whether a response may hand a FIRST task id to the generation just
+// clicked. On a shared Kling account every tab polls job status and history
+// for everyone's jobs; taking "the first task id seen within 30s of the
+// click" could adopt a teammate's job - its id, then its prompt and video.
+// Only the submit (its request carried the prompt; 232 of 254 click cards got
+// their id there, 2026-10-15..21) or a response about a single job that is
+// not a history/credit list qualifies.
+function isTaskIdSourceForNewGeneration(payload = {}) {
+  if (payload?.requestHasPrompt || normalizePromptCaptureValue(payload?.promptText)) return true;
+  if (payload?.isListEndpoint || payload?.isAssetHistoryEndpoint || payload?.isTradeHistoryEndpoint) return false;
+  return Number(payload?.responseTaskIdCount || 0) <= 1;
 }
 
 function associateKlingTaskIdWithActiveGeneration(payload = {}) {
@@ -3179,6 +3202,25 @@ function buildAssetHistoryDiscoverySnapshot(row = {}, payload = {}) {
   };
 }
 
+// A Kling video job often finishes after this tab stopped tracking it (the
+// tracked generation expires after ACTIVE_GENERATION_MAX_MS) - its finished
+// status response then matched nothing and the video was dropped: 72 of 254
+// click cards had no video (2026-10-15..21). A response about ONE job that
+// carries its output is reported like a history row for that task: the
+// backend joins it to the click's event by task id, and a history row never
+// creates a card or moves ownership on its own (routers/it_tools_router.py).
+function reportFinishedJobOutput(payload = {}) {
+  const taskId = normalizeKlingTaskId(payload?.klingTaskId);
+  if (!taskId || payload?.isListEndpoint || payload?.isAssetHistoryEndpoint || payload?.isTradeHistoryEndpoint) return;
+  if (Number(payload?.responseTaskIdCount || 0) !== 1) return;
+  const outputs = (Array.isArray(payload?.mediaAssets) ? payload.mediaAssets : [])
+    .filter((asset) => inferCapturedAssetRole(asset?.url, asset?.key, asset?.source) !== 'input'
+      && asset?.assetRole !== 'input'
+      && !isInternalKlingPreviewAsset(asset?.url, asset?.key));
+  if (!outputs.some((asset) => inferCapturedAssetType(asset?.url, asset?.assetType || asset?.key) === 'video')) return;
+  reportAssetHistoryDiscoveryRow({ taskId, mediaAssets: outputs }, payload);
+}
+
 function reportAssetHistoryDiscoveryRow(row = {}, payload = {}) {
   const snapshot = buildAssetHistoryDiscoverySnapshot(row, payload);
   if (!snapshot) return 'invalid';
@@ -3695,7 +3737,8 @@ function handleKlingNetworkUsageMessage(event) {
         });
       }
       const discoveredIds = collectKlingTaskIdsFromPayload(payload);
-      if (payload.taskIdDetected && discoveredIds.length) {
+      if (payload.taskIdDetected && discoveredIds.length
+        && (getActiveGenerationTaskIds(generation).length || isTaskIdSourceForNewGeneration(payload))) {
         const associated = associateKlingTaskIdWithActiveGeneration({
           ...payload,
           ownershipConfidence: 0.99,
@@ -4090,6 +4133,7 @@ function handleKlingNetworkUsageMessage(event) {
   // this specific network event actually belongs to, not whichever generation
   // happened to be tracked last.
   const generation = resolveGenerationForPayload(payload);
+  if (!generation) reportFinishedJobOutput(payload);
   // TEMP DIAGNOSTIC - remove once the "no preview" investigation is done.
   const mediaAssetCountDiag = Array.isArray(payload?.mediaAssets) ? payload.mediaAssets.length : 0;
   if (mediaAssetCountDiag > 0 || payload?.isCompleted || payload?.status === 'settled') {
@@ -4133,7 +4177,8 @@ function handleKlingNetworkUsageMessage(event) {
   const hasNetworkSubmitPrompt = Boolean(normalizePromptCaptureValue(payload?.promptText));
   const canAssociateTaskId = hasRecentGenerateIntent
     && isActiveGenerationValid()
-    && (associationCandidateMatch !== false || !getActiveGenerationTaskIds().length || hasNetworkSubmitPrompt);
+    && (associationCandidateMatch !== false || !getActiveGenerationTaskIds().length || hasNetworkSubmitPrompt)
+    && (getActiveGenerationTaskIds().length > 0 || isTaskIdSourceForNewGeneration(payload));
   const associatedTaskId = canAssociateTaskId
     ? associateKlingTaskIdWithActiveGeneration(payload)
     : false;

@@ -159,6 +159,27 @@ Anything not in this table is not lost - `metadata_json` holds the full
 nested object, so a future column can be backfilled from existing rows
 without re-capturing.
 
+### `metadata.rmwSettings` (added 2026-10-21, for costing)
+
+Not from Flow's API: `content-flow.js` adds it to live rows of an armed
+session, from what Flow's composer showed when Generate was clicked (the
+"Settings trigger" button, plus the last model seen in the settings panel).
+`pricing.py`'s `settings_fields()` maps it; a later snapshot without it never
+blanks the columns.
+
+| `rmwSettings` key | Column | Example |
+|---|---|---|
+| `type` | `media_type` | `video` |
+| `model` | `model_name` (null if never seen in the panel) | `Omni 1.1 Flash` |
+| `resolution` | `resolution` | `360p` |
+| `durationSeconds` | `duration_seconds` | `10` |
+| `aspectRatio` | `aspect_ratio` | `16:9` |
+| `outputs` | `output_count` | `1` |
+| `quotedCredits`, `settingsText` | (metadata only) Flow's own "Generating will use N credits" for all outputs, and the raw button text | `7` |
+
+`credits_used` (and `GenerationRecord.credits_burned`) is then priced from
+`flow_credit_rates` x the account's `flow_account_plans` - see `pricing.py`.
+
 ## Known gaps (first pass)
 
 - **No resolved media URL.** `primary_media_id` is captured, but resolving

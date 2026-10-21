@@ -4,6 +4,7 @@ import { generationRecoveryAPI } from '../../../../../services/api';
 import { usePermissions } from '../../../../../hooks/usePermissions';
 import { useCustomDialogs } from '../../../../common/CustomDialogs';
 import './CaptureCenterTab.css';
+import { toIndiaISODate } from '../../../../../utils/dateTime';
 
 const AUDIT_PAGE_SIZE = 10;
 const PREVIEW_FETCH_LIMIT = 500;
@@ -16,7 +17,7 @@ const EMPTY_AUDIT_PAGINATION = {
 };
 
 function getTodayIsoDate() {
-  return new Date().toISOString().slice(0, 10);
+  return toIndiaISODate();
 }
 
 function normalizeApiError(error, fallback) {

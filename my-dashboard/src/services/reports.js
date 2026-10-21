@@ -276,6 +276,18 @@ export const reportsAPI = {
   generationPriceDelete: async (priceId) =>
     (await api.delete(`/api/reports/credit-rates/generation-prices/${priceId}`, { timeout: REPORTS_TIMEOUT_MS })).data,
 
+  // ---- Flow: credits per output from a rate table x the account's plan ----
+  flowPricing: async (requestConfig = {}) =>
+    (await api.get('/api/reports/credit-rates/flow', { timeout: REPORTS_TIMEOUT_MS, ...requestConfig })).data,
+  flowRateSet: async (payload) =>
+    (await api.post('/api/reports/credit-rates/flow/rates', payload, { timeout: REPORTS_TIMEOUT_MS })).data,
+  flowRateDelete: async (rateId) =>
+    (await api.delete(`/api/reports/credit-rates/flow/rates/${rateId}`, { timeout: REPORTS_TIMEOUT_MS })).data,
+  flowPlanSet: async (payload) =>
+    (await api.post('/api/reports/credit-rates/flow/plans', payload, { timeout: REPORTS_TIMEOUT_MS })).data,
+  flowPlanDelete: async (planId) =>
+    (await api.delete(`/api/reports/credit-rates/flow/plans/${planId}`, { timeout: REPORTS_TIMEOUT_MS })).data,
+
   // ---- Distribution layer ----
   emailSettings: async () => (await api.get('/api/reports/settings/email')).data,
   emailSettingsSave: async (payload) =>

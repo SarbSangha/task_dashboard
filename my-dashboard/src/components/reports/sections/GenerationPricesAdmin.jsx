@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { reportsAPI } from '../../../services/reports';
+import CollapsibleSection from './CollapsibleSection';
 
 /**
  * Fixed credits per generation for tools that never report a cost of their
@@ -94,13 +95,12 @@ const GenerationPricesAdmin = () => {
   }
 
   const tools = q.data?.tools || [];
+  const summary = tools.map((t) => `${t.tool}: ${t.currentCredits != null ? `${t.currentCredits} credits per ${t.unit}` : 'no price'}`
+    + ` · ${t.generations} ${t.unit}s`).join('   ');
   return (
-    <div className="rpt-card" style={{ padding: 16, marginBottom: 20 }}>
-      <div className="rpt-card-head" style={{ marginBottom: 10 }}>
-        <h3 className="rpt-card-title" style={{ fontSize: 14 }}>Credits per generation</h3>
-        <span className="rpt-card-hint">
-          For tools that never report a cost. A new price starts on its date; earlier generations keep their price.
-        </span>
+    <CollapsibleSection title="Credits per generation" summary={summary} storageKey="rmw.pricing.fixed.open">
+      <div className="rpt-card-hint" style={{ marginBottom: 6 }}>
+        For tools that never report a cost. A new price starts on its date; earlier generations keep their price.
       </div>
       {tools.map((t) => (
         <div key={t.tool} style={{ padding: '10px 0', borderBottom: '1px solid var(--color-border, #2a2a2a)' }}>
@@ -143,7 +143,7 @@ const GenerationPricesAdmin = () => {
           )}
         </div>
       ))}
-    </div>
+    </CollapsibleSection>
   );
 };
 

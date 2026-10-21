@@ -15,6 +15,7 @@ import ChartFrame, { ChartTooltip } from '../primitives/ChartFrame';
 import DataTable from '../primitives/DataTable';
 import CreditRatesAdmin from './CreditRatesAdmin';
 import GenerationPricesAdmin from './GenerationPricesAdmin';
+import FlowPricingAdmin from './FlowPricingAdmin';
 import { formatNumber, formatFull, formatDayLabel, initialsOf } from '../utils/format';
 import { chartClick as rawChartClick } from '../utils/chartClick';
 
@@ -106,6 +107,7 @@ const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser, onDrill,
         <>
           {isAdmin && <CreditRatesAdmin />}
           {isAdmin && <GenerationPricesAdmin />}
+          {isAdmin && <FlowPricingAdmin />}
 
           <InsightBanner
             recommendation={

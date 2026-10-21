@@ -100,6 +100,18 @@ export function formatMonthDayTimeIndia(value) {
   });
 }
 
+/**
+ * The India calendar day ("YYYY-MM-DD") a moment falls on. Date filters and
+ * day folders use this rather than toISOString().slice(0, 10), which gives
+ * the UTC day - a day early for everything between 00:00 and 05:30 IST, and
+ * a day early for "Today" itself (local midnight is 18:30 UTC the day before).
+ */
+export function toIndiaISODate(value = new Date()) {
+  const parts = getFormatterParts(value, { year: 'numeric', month: '2-digit', day: '2-digit' });
+  if (!parts) return '';
+  return `${getPartValue(parts, 'year')}-${getPartValue(parts, 'month')}-${getPartValue(parts, 'day')}`;
+}
+
 export function formatRelativeDayIndia(value, nowValue = new Date()) {
   const targetParts = getFormatterParts(value, {
     year: 'numeric',
