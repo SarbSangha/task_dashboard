@@ -211,6 +211,7 @@ function createGrammarlyDocsClientPickerSection(container, { onSelectionChange }
   const searchEl = section.querySelector('.rmw-search');
   const listEl = section.querySelector('.rmw-list');
   const state = { items: [], selected: null, closed: false };
+  const recentClients = globalThis.rmwRecentClients;
 
   function setSelected(item) {
     state.selected = item;
@@ -232,7 +233,13 @@ function createGrammarlyDocsClientPickerSection(container, { onSelectionChange }
       return;
     }
 
-    visible.forEach((item) => {
+    const ordered = recentClients ? recentClients.arrange(visible, Boolean(q)) : visible;
+    ordered.forEach((item) => {
+      const headingLabel = recentClients?.headingLabel(item);
+      if (headingLabel) {
+        listEl.appendChild(recentClients.heading(headingLabel));
+        return;
+      }
       const option = document.createElement('label');
       option.className = 'rmw-option';
       option.dataset.itemId = String(item.id);

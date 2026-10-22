@@ -634,9 +634,11 @@ def _build_admin_credential_summaries_by_tool(
     })
     users_by_id = {}
     if assigned_user_ids:
+        # Only the three fields shown: whole User rows carry the base64
+        # avatar, which made this the slowest query on GET /tools.
         users_by_id = {
             user.id: user
-            for user in db.query(User).filter(User.id.in_(assigned_user_ids)).all()
+            for user in db.query(User.id, User.name, User.email).filter(User.id.in_(assigned_user_ids)).all()
         }
 
     assignments_by_tool_and_credential_id: dict[tuple[int, int], list[dict]] = {}
@@ -1197,11 +1199,49 @@ def _resolve_chatgpt_totp_fallback(
 def _resolve_tool_credentials_map(db: Session, tool_ids: list[int], user_id: int) -> dict[int, ITPortalToolCredential]:
     if not tool_ids:
         return {}
+    # _resolve_tool_credential for many tools in three queries instead of
+    # three per tool: on a remote database (~0.3s a round trip) the per-tool
+    # loop made GET /tools take 12s+ for 20 tools and time the page out.
+    slug_by_tool_id = {
+        tool.id: _canonical_tool_slug_for_tool(tool)
+        for tool in db.query(ITPortalTool).filter(ITPortalTool.id.in_(tool_ids)).all()
+    }
+    latest_user_credential: dict[int, ITPortalToolCredential] = {}
+    for credential in (
+        db.query(ITPortalToolCredential)
+        .filter(
+            ITPortalToolCredential.tool_id.in_(tool_ids),
+            ITPortalToolCredential.scope == "user",
+            ITPortalToolCredential.user_id == user_id,
+        )
+        .order_by(ITPortalToolCredential.updated_at.desc(), ITPortalToolCredential.created_at.desc())
+        .all()
+    ):
+        latest_user_credential.setdefault(credential.tool_id, credential)
+
+    active_user_credentials = {
+        tool_id: credential for tool_id, credential in latest_user_credential.items() if credential.is_active
+    }
+    linked_ids = {c.linked_credential_id for c in active_user_credentials.values() if c.linked_credential_id}
+    linked_by_id = {}
+    if linked_ids:
+        linked_by_id = {
+            credential.id: credential
+            for credential in db.query(ITPortalToolCredential).filter(
+                ITPortalToolCredential.id.in_(linked_ids),
+                ITPortalToolCredential.scope == "company",
+                ITPortalToolCredential.is_active == True,
+            )
+        }
+
     credentials_by_tool: dict[int, ITPortalToolCredential] = {}
-    for tool_id in tool_ids:
-        credential = _resolve_tool_credential(db, tool_id, user_id)
-        if credential:
-            credentials_by_tool[tool_id] = credential
+    for tool_id, user_credential in active_user_credentials.items():
+        canonical_tool_slug = slug_by_tool_id.get(tool_id, "")
+        linked = linked_by_id.get(user_credential.linked_credential_id) if user_credential.linked_credential_id else None
+        if linked is not None and linked.tool_id == tool_id and _credential_has_secret_material(linked, canonical_tool_slug):
+            credentials_by_tool[tool_id] = linked
+        elif _credential_has_secret_material(user_credential, canonical_tool_slug):
+            credentials_by_tool[tool_id] = user_credential
     return credentials_by_tool
 
 

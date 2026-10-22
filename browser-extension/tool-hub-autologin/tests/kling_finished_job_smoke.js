@@ -143,6 +143,17 @@ async function run() {
   check('a history/credit list may not, even with one job in it',
     ok({ isAssetHistoryEndpoint: true, responseTaskIdCount: 1 }) === false && ok({ isListEndpoint: true, responseTaskIdCount: 1 }) === false);
 
+  // A video that merely starts playing / appears on the page after the click
+  // is often an earlier job someone is replaying while this one renders.
+  // Once the job's identity is known it must not become this job's output.
+  const hasIdentity = sandbox.generationHasIdentityForOutput;
+  check('no task id and no history output: page videos still allowed', hasIdentity({}, { metadata: { mediaAssets: [] } }) === false);
+  check('job with its Kling task id: page videos ignored', hasIdentity({ klingTaskId: '324543671505406' }, { metadata: {} }) === true);
+  check('job already holding its history output: page videos ignored',
+    hasIdentity({}, { metadata: { mediaAssets: [{ url: VIDEO('own'), source: 'asset_history' }] } }) === true);
+  check('a page-captured video alone is not identity',
+    hasIdentity({}, { metadata: { mediaAssets: [{ url: VIDEO('replayed'), source: 'mediasource_upload' }] } }) === false);
+
   console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED');
   process.exit(failures ? 1 : 0);
 }

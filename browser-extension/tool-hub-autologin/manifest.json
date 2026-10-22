@@ -205,7 +205,7 @@
       "matches": [
         "https://app.envato.com/*"
       ],
-      "js": ["content-envato-turbo-stream.js", "content-envato-task-api.js", "content-envato-task-modal.js", "content-envato-capture.js"],
+      "js": ["content-envato-turbo-stream.js", "content-envato-task-api.js", "content-recent-clients.js", "content-envato-task-modal.js", "content-envato-capture.js"],
       "run_at": "document_idle"
     },
     {
@@ -220,7 +220,7 @@
       "matches": [
         "https://elements.envato.com/*"
       ],
-      "js": ["content-envato-task-api.js", "content-envato-task-modal.js", "content-envato-elements-capture.js"],
+      "js": ["content-envato-task-api.js", "content-recent-clients.js", "content-envato-task-modal.js", "content-envato-elements-capture.js"],
       "run_at": "document_idle"
     },
     {
@@ -245,7 +245,7 @@
         "https://magnific.com/*",
         "https://*.magnific.com/*"
       ],
-      "js": ["content-freepik-task-api.js", "content-freepik-task-modal.js", "content-freepik.js"],
+      "js": ["content-freepik-task-api.js", "content-recent-clients.js", "content-freepik-task-modal.js", "content-freepik.js"],
       "run_at": "document_idle"
     },
     {
@@ -293,7 +293,7 @@
       "matches": [
         "https://app.grammarly.com/*"
       ],
-      "js": ["content-grammarly-docs-task-api.js", "content-grammarly-docs-task-modal.js", "content-grammarly-new-doc-gate.js"],
+      "js": ["content-grammarly-docs-task-api.js", "content-recent-clients.js", "content-grammarly-docs-task-modal.js", "content-grammarly-new-doc-gate.js"],
       "run_at": "document_idle"
     },
     {
@@ -310,7 +310,7 @@
         "https://higgsfield.ai/*",
         "https://*.higgsfield.ai/*"
       ],
-      "js": ["content-higgsfield-task-api.js", "content-higgsfield-task-modal.js", "content-higgsfield.js"],
+      "js": ["content-higgsfield-task-api.js", "content-recent-clients.js", "content-higgsfield-task-modal.js", "content-higgsfield.js"],
       "run_at": "document_idle"
     },
     {
@@ -327,7 +327,7 @@
         "https://heygen.com/*",
         "https://*.heygen.com/*"
       ],
-      "js": ["content-heygen-task-api.js", "content-heygen-task-modal.js", "content-heygen.js"],
+      "js": ["content-heygen-task-api.js", "content-recent-clients.js", "content-heygen-task-modal.js", "content-heygen.js"],
       "run_at": "document_idle"
     },
     {
@@ -344,7 +344,7 @@
         "https://elevenlabs.io/*",
         "https://*.elevenlabs.io/*"
       ],
-      "js": ["content-elevenlabs-task-api.js", "content-elevenlabs-task-modal.js", "content-elevenlabs-capture.js", "content-elevenlabs.js"],
+      "js": ["content-elevenlabs-task-api.js", "content-recent-clients.js", "content-elevenlabs-task-modal.js", "content-elevenlabs-capture.js", "content-elevenlabs.js"],
       "run_at": "document_start"
     },
     {
@@ -371,7 +371,7 @@
         "https://suno.com/*",
         "https://*.suno.com/*"
       ],
-      "js": ["content-suno-task-api.js", "content-suno-task-modal.js", "content-suno-capture.js", "content-suno.js"],
+      "js": ["content-suno-task-api.js", "content-recent-clients.js", "content-suno-task-modal.js", "content-suno-capture.js", "content-suno.js"],
       "run_at": "document_start"
     },
     {
@@ -396,7 +396,7 @@
         "https://epidemicsound.com/*",
         "https://*.epidemicsound.com/*"
       ],
-      "js": ["content-epidemicsound-task-api.js", "content-epidemicsound-task-modal.js", "content-epidemicsound-capture.js"],
+      "js": ["content-epidemicsound-task-api.js", "content-recent-clients.js", "content-epidemicsound-task-modal.js", "content-epidemicsound-capture.js"],
       "run_at": "document_idle"
     },
     {
@@ -421,7 +421,7 @@
         "https://splice.com/*",
         "https://*.splice.com/*"
       ],
-      "js": ["content-splice-task-api.js", "content-splice-task-modal.js", "content-splice-capture.js"],
+      "js": ["content-splice-task-api.js", "content-recent-clients.js", "content-splice-task-modal.js", "content-splice-capture.js"],
       "run_at": "document_idle"
     },
     {
@@ -453,7 +453,7 @@
         "https://klingai.com/*",
         "https://*.klingai.com/*"
       ],
-      "js": ["content-kling-task-api.js", "content-kling-task-modal.js", "content-kling.js"],
+      "js": ["content-kling-task-api.js", "content-recent-clients.js", "content-kling-task-modal.js", "content-kling.js"],
       "run_at": "document_idle"
     },
     {
@@ -471,7 +471,7 @@
         "https://flow.google.com/*",
         "https://one.google.com/*"
       ],
-      "js": ["content-flow-task-api.js", "content-flow-task-modal.js", "content-flow.js"],
+      "js": ["content-flow-task-api.js", "content-recent-clients.js", "content-flow-task-modal.js", "content-flow.js"],
       "run_at": "document_start"
     },
     {

@@ -18,7 +18,7 @@ from database_config import get_operational_db
 from models_new import GenerationClient, GenerationRecord, User
 from routers.it_tools_router import _resolve_usage_event_actor
 from services.workplace_access_service import enforce_workplace_tools_access
-from utils.client_gate import get_active_clients
+from utils.client_gate import get_active_clients, get_recent_client_ids
 from utils.datetime_utils import serialize_utc_datetime
 from utils.generation_gate import resolve_generation_gate_tool
 from utils.permissions import require_admin, require_user
@@ -80,10 +80,16 @@ def list_active_clients_for_generation(
     enforce_workplace_tools_access(current_user, db)
 
     clients = get_active_clients(db)
+    # recentRank (1 = most recent) marks this user's last few picks so the
+    # picker can list them first; carried on each client so the extension's
+    # background scripts pass it through unchanged.
+    recent_rank = {client_id: rank for rank, client_id in enumerate(get_recent_client_ids(db, current_user.id), start=1)}
     return {
         "success": True,
         "count": len(clients),
-        "clients": [{"id": client.id, "name": client.name} for client in clients],
+        "clients": [
+            {"id": client.id, "name": client.name, "recentRank": recent_rank.get(client.id)} for client in clients
+        ],
     }
 
 

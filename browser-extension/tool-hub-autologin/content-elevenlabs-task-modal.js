@@ -243,6 +243,8 @@ function createElevenlabsPickerSection(container, { key, title, radioGroupName, 
   const searchEl = section.querySelector('.rmw-search');
   const listEl = section.querySelector('.rmw-list');
   const state = { items: [], selected: null, closed: false };
+  // Only the Client picker keeps a Recent group (content-recent-clients.js).
+  const recentClients = key === 'client' ? globalThis.rmwRecentClients : null;
 
   function setSelected(item) {
     state.selected = item;
@@ -264,7 +266,13 @@ function createElevenlabsPickerSection(container, { key, title, radioGroupName, 
       return;
     }
 
-    visible.forEach((item) => {
+    const ordered = recentClients ? recentClients.arrange(visible, Boolean(q)) : visible;
+    ordered.forEach((item) => {
+      const headingLabel = recentClients?.headingLabel(item);
+      if (headingLabel) {
+        listEl.appendChild(recentClients.heading(headingLabel));
+        return;
+      }
       const option = document.createElement('label');
       option.className = 'rmw-option';
       option.dataset.itemId = String(item.id);

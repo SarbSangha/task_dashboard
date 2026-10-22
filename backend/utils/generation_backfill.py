@@ -224,11 +224,38 @@ def _canonical_asset_url(metadata: dict) -> str:
     return choices[0] if choices else ""
 
 
+# How much a captured asset's source says about WHICH job it belongs to.
+# 0: a Kling history row, which names the task id and its output together.
+# 1: another Kling API response for the job.
+# 2: the page itself (mediasource / blob_source / dom ...): "a video started
+#    playing or appeared after the click". While a job renders people replay
+#    their earlier outputs, so these routinely name a video from a job a few
+#    cards back - only a last resort.
+ASSET_SOURCE_TIER_IDENTITY = 0
+ASSET_SOURCE_TIER_API = 1
+ASSET_SOURCE_TIER_PAGE = 2
+_API_ASSET_SOURCES = {"network", "fetch_response", "xhr_response", "websocket_message", "eventsource_message"}
+
+
+def _asset_source_tier(source: object) -> int:
+    text = _normalize_text(source).lower()
+    if text.startswith("asset_history"):
+        return ASSET_SOURCE_TIER_IDENTITY
+    if text in _API_ASSET_SOURCES:
+        return ASSET_SOURCE_TIER_API
+    return ASSET_SOURCE_TIER_PAGE
+
+
 def _canonical_asset_choices(metadata: dict) -> list[str]:
-    """Output URLs a record could show, best first (videos before images)."""
+    """Output URLs a record could show, best first (see _ranked_asset_choices)."""
+    return [url for url, _tier in _ranked_asset_choices(metadata)]
+
+
+def _ranked_asset_choices(metadata: dict) -> list[tuple[str, int]]:
+    """(url, source tier) for each output a record could show, best first:
+    most trustworthy source, then videos before images."""
     media_assets = metadata.get("mediaAssets") if isinstance(metadata.get("mediaAssets"), list) else []
-    video_candidates: list[str] = []
-    other_candidates: list[str] = []
+    best: dict[str, tuple[int, int]] = {}
     for item in media_assets:
         if not isinstance(item, dict):
             continue
@@ -258,18 +285,15 @@ def _canonical_asset_choices(metadata: dict) -> list[str]:
         # link had already been captured - confirmed against a real captured
         # row whose only mediaAssets entry was rejected here.
         asset_type = _normalize_text(item.get("assetType")).lower()
-        if asset_type == "video":
-            video_candidates.append(url)
-        else:
-            other_candidates.append(url)
-    # Prefer a genuinely video-typed asset over a cover/thumbnail image or an
-    # ambiguously-typed one. A plain alphabetical sort across ALL candidates
-    # would otherwise pick whichever URL string happens to sort first - for
-    # Kling specifically, cover-image URLs live on s15-kling.klingai.com and
-    # real output videos on v15-kling.klingai.com, and 's' < 'v', so the old
-    # sort-everything-together approach would silently prefer the thumbnail
-    # over the actual video even when both were correctly captured.
-    return sorted(set(video_candidates)) + sorted(set(other_candidates))
+        rank = (_asset_source_tier(item.get("source")), 0 if asset_type == "video" else 1)
+        if url not in best or rank < best[url]:
+            best[url] = rank
+    # Within a tier, prefer a genuinely video-typed asset over a cover/thumbnail
+    # image or an ambiguously-typed one: for Kling, cover-image URLs live on
+    # s15-kling.klingai.com and output videos on v15-kling.klingai.com, so an
+    # alphabetical sort alone would pick the thumbnail. The URL itself is only
+    # the final tie-break, for a stable order.
+    return [(url, rank[0]) for url, rank in sorted(best.items(), key=lambda item: (item[1], item[0]))]
 
 
 def _canonical_asset_key(asset_url: str) -> str:

@@ -2142,6 +2142,9 @@ function prunePendingMediaSourcePayloads(now = Date.now()) {
 }
 
 function processOwnedMediaSourcePayload(mediaSourcePayload = {}, generation = USAGE_CTX.activeGeneration) {
+  // Checked before the upload too, so a replayed old video isn't sent to the
+  // server only to be dropped by reportGeneratedAssetCandidates.
+  if (generationHasIdentityForOutput(generation)) return;
   withGeneration(generation, () => {
     const asset = storeMediaSourceVideoAsset(mediaSourcePayload);
     if (!asset) return;
@@ -2279,6 +2282,17 @@ function stopGeneratedAssetDetection(generation = USAGE_CTX.activeGeneration) {
   clearActiveGeneration('asset_detection_stopped', generation);
 }
 
+// 'mediasource' / 'blob_source' / 'dom' assets are "a video started playing or
+// appeared after the click" - and while a job renders people replay their
+// earlier outputs, so those pick up a video from a job several cards back.
+// Once the job has its Kling task id (Kling's asset history will name its real
+// output) or already has that history output, they are only noise.
+function generationHasIdentityForOutput(generation, snapshot = generation?.scanSnapshot) {
+  if (getActiveGenerationTaskIds(generation).length) return true;
+  const existingAssets = Array.isArray(snapshot?.metadata?.mediaAssets) ? snapshot.metadata.mediaAssets : [];
+  return existingAssets.some((asset) => /^asset_history/i.test(`${asset?.source || ''}`));
+}
+
 function reportGeneratedAssetCandidates(snapshot, assets) {
   if (!snapshot || !assets.length) return;
   if (!snapshotMatchesActiveGeneration(snapshot)) {
@@ -2300,6 +2314,14 @@ function reportGeneratedAssetCandidates(snapshot, assets) {
   const captureSource = ownedAssets.some((asset) => /^mediasource/i.test(`${asset?.source || ''}`))
     ? 'mediasource'
     : (ownedAssets.some((asset) => /^asset_history/i.test(`${asset?.source || ''}`)) ? 'asset_history' : 'dom');
+  if (captureSource !== 'asset_history' && generationHasIdentityForOutput(USAGE_CTX.activeGeneration, snapshot)) {
+    debugUsageTelemetry('page_assets_skipped_identity_known', {
+      generateIntentId: USAGE_CTX.activeGeneration?.generateIntentId,
+      captureSource,
+      assetCount: ownedAssets.length,
+    });
+    return;
+  }
   // 'dom' candidates carry no per-asset identity at all (see
   // collectVisibleGeneratedMediaAssets - just url/type/size, no task id) -
   // they are matched to the active generation purely by "newest visible
