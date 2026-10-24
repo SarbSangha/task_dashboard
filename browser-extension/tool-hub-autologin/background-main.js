@@ -319,9 +319,22 @@ function runSafeStartupTask(task) {
   }
 }
 
+// exp/iat are server-clock seconds. When the ticket carries iat, measure its
+// lifetime on THIS PC's clock instead - a PC whose clock/timezone is off would
+// otherwise reject every fresh ticket ("Not authorized yet"). The backend still
+// enforces exp against its own clock on every credential request.
+function ticketExpiryToLocalMs(expSec, iatSec) {
+  const exp = Number(expSec || 0);
+  const iat = Number(iatSec || 0);
+  if (exp > 0 && iat > 0 && exp > iat) {
+    return Date.now() + (exp - iat) * 1000;
+  }
+  return exp * 1000;
+}
+
 function buildLaunchFromExtensionTicket(toolSlug, hostname, extensionTicket) {
   const payload = decodeExtensionTicketPayload(extensionTicket);
-  const expiresAt = Number(payload?.exp || 0) * 1000;
+  const expiresAt = ticketExpiryToLocalMs(payload?.exp, payload?.iat);
   if (!payload || payload.kind !== 'extension_autofill' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
     return null;
   }
@@ -2754,10 +2767,11 @@ async function createFlowTotpFallbackLaunch(settings) {
     return null;
   }
 
+  const serverTimeSec = Number(launchResponse.serverTime || 0);
   return {
     toolSlug: 'flow',
     ticket: extensionTicket,
-    expiresAt: expiresAtSec * 1000,
+    expiresAt: ticketExpiryToLocalMs(expiresAtSec, serverTimeSec),
     hostname: normalizeHostname(flowTool.websiteUrl || flowTool.loginUrl || ''),
   };
 }

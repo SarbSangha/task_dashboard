@@ -2017,3 +2017,80 @@ class RankingCheck(Base):
     source = Column(String(20), nullable=False, default="importer")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class AiLibraryDriveFolder(Base):
+    """Cache of the Drive folders the AI Library has created, so an upload
+    does not search Drive for its date / user / client folder every time.
+
+    Keyed by (parent, cache_key) rather than by name: cache_key is the date
+    ("2026-10-23"), "user:<id>" or "client:<id>", so two people with the same
+    display name get separate folders, and renaming a user does not orphan
+    their folder. The folder's visible Drive name is only a label.
+    """
+    __tablename__ = "ai_library_drive_folders"
+    __table_args__ = (
+        UniqueConstraint("parent_drive_id", "cache_key", name="uq_ai_library_drive_folders_parent_key"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    parent_drive_id = Column(String(128), nullable=False)
+    cache_key = Column(String(80), nullable=False)
+    name = Column(String(255), nullable=False)
+    drive_folder_id = Column(String(128), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AiLibraryUpload(Base):
+    """One file a user dropped on the AI Library page.
+
+    The bytes never pass through this server: the router asks Drive for a
+    resumable upload session and the browser sends the file straight to it
+    (see routers/ai_library_router.py). This row is created as "pending"
+    when the session is issued and becomes "complete" only after the server
+    has looked the resulting file up on Drive itself.
+    """
+    __tablename__ = "ai_library_uploads"
+    __table_args__ = (
+        Index("ix_ai_library_uploads_user_created", "user_id", "created_at"),
+        Index("ix_ai_library_uploads_client_created", "client_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    client_id = Column(Integer, ForeignKey("generation_clients.id", ondelete="SET NULL"), index=True)
+    # Snapshots, so the history still reads correctly after a rename/delete.
+    user_name = Column(String(255))
+    client_name = Column(String(255))
+    upload_date = Column(Date, nullable=False, index=True)   # IST day; also the date folder
+    file_name = Column(String(500), nullable=False)
+    mime_type = Column(String(255))
+    size_bytes = Column(Numeric(20, 0), nullable=False)
+    folder_path = Column(Text)
+    drive_folder_id = Column(String(128))
+    drive_file_id = Column(String(128), index=True)
+    drive_web_link = Column(Text)
+    status = Column(String(16), nullable=False, default="pending", index=True)  # pending | complete | failed
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    completed_at = Column(DateTime)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "userId": self.user_id,
+            "userName": self.user_name,
+            "clientId": self.client_id,
+            "clientName": self.client_name,
+            "uploadDate": self.upload_date.isoformat() if self.upload_date else None,
+            "fileName": self.file_name,
+            "mimeType": self.mime_type,
+            "sizeBytes": int(self.size_bytes or 0),
+            "folderPath": self.folder_path,
+            "driveFileId": self.drive_file_id,
+            "driveLink": self.drive_web_link,
+            "status": self.status,
+            "error": self.error,
+            "createdAt": serialize_utc_datetime(self.created_at),
+            "completedAt": serialize_utc_datetime(self.completed_at),
+        }

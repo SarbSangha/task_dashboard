@@ -1,0 +1,255 @@
+/* ==========================================================================
+   AI Library - drag-and-drop uploads to Google Drive + upload history.
+   Window geometry, header, filters and table come from the shared .trp-*
+   rules in reports/TaskReportPanel.css; only what is specific to this
+   panel lives here.
+   ========================================================================== */
+
+.ail-panel .trp-body { gap: 18px; }
+
+.ail-secondary-btn {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ail-secondary-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.ail-link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ail-mini-count {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+/* ── Notice + connection ─────────────────────────────────────────────── */
+
+.ail-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid;
+  font-size: 13px;
+}
+.ail-notice--success {
+  background: var(--color-feedback-success-bg);
+  border-color: var(--color-feedback-success-border);
+  color: var(--color-feedback-success-text);
+}
+.ail-notice--error {
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
+}
+.ail-notice .ail-link-btn { color: inherit; font-size: 18px; line-height: 1; }
+
+.ail-connection {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--color-feedback-warning-border);
+  border-radius: 12px;
+  background: var(--color-feedback-warning-bg);
+}
+.ail-connection--on {
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface-muted);
+}
+.ail-connection-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+.ail-connection-text strong { color: var(--color-text); font-size: 13.5px; }
+.ail-connection-text a { color: var(--color-primary); font-weight: 600; }
+
+.ail-dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-warning);
+}
+.ail-dot--on { background: var(--color-success); }
+
+/* ── Upload ──────────────────────────────────────────────────────────── */
+
+.ail-upload { display: flex; flex-direction: column; gap: 12px; }
+.ail-upload-controls { align-items: flex-end; }
+.ail-client-field { min-width: 240px; }
+.ail-destination {
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+  padding-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+.ail-destination code {
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.ail-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 170px;
+  padding: 24px;
+  border: 2px dashed var(--color-border-strong);
+  border-radius: 14px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.ail-dropzone p { margin: 0; font-size: 14px; }
+.ail-dropzone strong { color: var(--color-text); }
+.ail-dropzone:hover:not(.ail-dropzone--disabled),
+.ail-dropzone:focus-visible {
+  border-color: var(--color-primary);
+  outline: none;
+}
+.ail-dropzone--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+.ail-dropzone--disabled { cursor: not-allowed; opacity: 0.7; }
+.ail-dropzone-icon { width: 38px; height: 38px; color: var(--color-primary); }
+.ail-hint { font-size: 12px; color: var(--color-text-muted); }
+
+.ail-queue {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.ail-queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--color-table-header);
+}
+.ail-queue-head h3 { margin: 0; font-size: 13px; }
+.ail-queue ul { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; }
+
+.ail-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px 76px auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--color-divider);
+  font-size: 13px;
+}
+.ail-item-main { display: flex; flex-direction: column; min-width: 0; }
+.ail-item-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ail-item-meta { font-size: 12px; color: var(--color-text-muted); }
+.ail-item-status { font-size: 12px; font-weight: 700; color: var(--color-text-secondary); text-align: right; }
+.ail-item-actions { display: flex; gap: 10px; justify-content: flex-end; font-size: 12.5px; }
+.ail-item-actions a { color: var(--color-primary); font-weight: 700; }
+.ail-item-error { grid-column: 1 / -1; font-size: 12px; color: var(--color-feedback-error-text); }
+
+.ail-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  overflow: hidden;
+}
+.ail-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary);
+  transition: width 0.2s linear;
+}
+.ail-item--done .ail-progress span { background: var(--color-success); }
+.ail-item--done .ail-item-status { color: var(--color-success); }
+.ail-item--failed .ail-progress span { background: var(--color-danger); }
+.ail-item--failed .ail-item-status { color: var(--color-danger); }
+.ail-item--cancelled { opacity: 0.65; }
+
+/* ── History ─────────────────────────────────────────────────────────── */
+
+.ail-history { display: flex; flex-direction: column; gap: 12px; }
+.ail-history h3 { margin: 0; font-size: 14px; }
+.ail-search { min-width: 180px; flex: 1; }
+.ail-history-actions { display: flex; gap: 8px; align-items: flex-end; }
+
+.ail-table a { color: var(--color-primary); font-weight: 600; white-space: nowrap; }
+.ail-file-cell {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ail-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+.ail-pill--complete {
+  background: var(--color-feedback-success-bg);
+  border-color: var(--color-feedback-success-border);
+  color: var(--color-feedback-success-text);
+}
+.ail-pill--pending {
+  background: var(--color-feedback-warning-bg);
+  border-color: var(--color-feedback-warning-border);
+  color: var(--color-feedback-warning-text);
+}
+.ail-pill--failed {
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
+}
+
+.ail-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 640px) {
+  .ail-connection { flex-wrap: wrap; }
+  .ail-client-field { min-width: 0; width: 100%; }
+  .ail-item { grid-template-columns: minmax(0, 1fr) auto; }
+  .ail-progress { grid-column: 1 / -1; grid-row: 2; }
+}

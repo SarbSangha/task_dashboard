@@ -39,6 +39,8 @@ export const FEATURE_PERMISSIONS = {
   // Within Sheets: may add new sheets. Per-sheet Open / Open in Google
   // Sheets / Settings come with each sheet from the API, not from here.
   add_sheets: 'sheets_add',
+  // AI Library section: drag-and-drop uploads to the connected Google Drive.
+  view_ai_library: 'ai_library',
 };
 
 export function normalizeRoles(user) {

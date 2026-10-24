@@ -71,6 +71,7 @@ from routers import usage_intelligence_router
 from routers import credit_report_router
 from routers import sheet_activity_router
 from routers import sheets_router
+from routers import ai_library_router
 from utils import cache as cache_utils
 
 # Import auth utilities for system status
@@ -733,6 +734,9 @@ app.include_router(activity_router.router)
 app.include_router(admin_router.router)
 app.include_router(clients_router.router)
 app.include_router(buffer_router.router)
+
+# AI Library (browser -> Google Drive direct uploads)
+app.include_router(ai_library_router.router)
 
 # Groups & Messages
 app.include_router(groups_router.router)

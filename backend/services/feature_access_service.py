@@ -50,6 +50,10 @@ FEATURE_SHEET_ACTIVITY = "sheet_activity"
 #: permission; anything else about who sees it stays with admins
 #: (routers/sheets_router.py, Admin Queue -> Sheet Access).
 FEATURE_SHEETS_ADD = "sheets_add"
+#: Gates the AI Library sidebar section: drag-and-drop uploads that go
+#: straight from the browser to the connected Google Drive, plus the upload
+#: history (routers/ai_library_router.py).
+FEATURE_AI_LIBRARY = "ai_library"
 
 GATED_FEATURES: tuple[str, ...] = (
     FEATURE_RMW_DATA,
@@ -58,6 +62,7 @@ GATED_FEATURES: tuple[str, ...] = (
     FEATURE_CREDIT_REPORT,
     FEATURE_SHEET_ACTIVITY,
     FEATURE_SHEETS_ADD,
+    FEATURE_AI_LIBRARY,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +75,7 @@ FEATURE_LABELS = {
     FEATURE_CREDIT_REPORT: "Credit Report",
     FEATURE_SHEET_ACTIVITY: "Sheets",
     FEATURE_SHEETS_ADD: "Add Sheets",
+    FEATURE_AI_LIBRARY: "AI Library",
 }
 
 

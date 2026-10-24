@@ -147,6 +147,25 @@ Deploying the script, installing the triggers, backfill and limitations are cove
 
 `SHEETS_POLL_INTERVAL_SECONDS` (default 90, minimum 60) sets how often registered sheets in the Sheets section are read. Sheets are read through their "Anyone with the link" export, so no Google credentials are needed. Adding a sheet is covered in the same README.
 
+### Optional — AI Library (uploads to Google Drive)
+| Var | Purpose |
+|---|---|
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | OAuth client (type "Web application") from a Google Cloud project with the **Google Drive API** enabled. When they're unset, the AI Library panel says the server isn't set up. |
+| `GOOGLE_OAUTH_REDIRECT_URI` | Must match an Authorized redirect URI on that client exactly: `<API origin>/api/ai-library/google/callback`. Optional locally (derived from the request); set it in production. |
+| `AI_LIBRARY_MAX_FILE_SIZE_GB` | Largest single file (default 10). |
+
+Google Cloud setup, done once:
+1. Create a project and enable the **Google Drive API**.
+2. Set up the **OAuth consent screen**. Choose *Internal* if the Drive account is on Google Workspace. Otherwise choose *External* and then **publish** it: in *Testing* mode Google expires the stored token after 7 days and uploads stop. The only scope used is `drive.file`, which needs no Google verification.
+3. Create an **OAuth client ID** of type *Web application*:
+   - **Authorized redirect URIs:** `http://localhost:8000/api/ai-library/google/callback` and `https://dashboard.ritzmediaworld.in/api/ai-library/google/callback`
+   - **Authorized JavaScript origins:** `http://localhost:5173` and `https://dashboard.ritzmediaworld.in`
+4. Put the client ID and secret in `backend/.env` and restart the backend.
+5. In the dashboard, an admin opens **AI Library → Connect Google Drive** and signs in with the account that should hold the files. The app creates an `AI Library` folder in that Drive. Files go into `AI Library / <date, IST> / <user> / <client>`.
+6. Grant the section to people in **Admin Queue → Section Access → AI Library**.
+
+The browser uploads files straight to Drive, in 8 MB resumable chunks. The server only issues the one-time upload URL and checks the finished file, so file bytes never use the droplet's bandwidth or disk. Each upload is recorded in `ai_library_uploads`.
+
 ### Misc
 `LOAD_DOTENV`, `LOAD_DOTENV_OVERRIDE`, `RUN_STARTUP_SCHEMA_SYNC`, `INBOX_PROFILE_LOGGING`, `SLOW_REQUEST_LOG_MS`, `NOTIFICATION_QUEUE_MAX_SIZE`, `NOTIFICATION_QUEUE_WORKERS`, `WEB_CONCURRENCY`, `RENDER`
 

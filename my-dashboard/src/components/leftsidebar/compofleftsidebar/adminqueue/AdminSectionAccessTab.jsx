@@ -32,6 +32,7 @@ const FALLBACK_FEATURES = [
   { key: 'credit_report', label: 'Credit Report' },
   { key: 'sheet_activity', label: 'Sheets' },
   { key: 'sheets_add', label: 'Add Sheets' },
+  { key: 'ai_library', label: 'AI Library' },
 ];
 
 let _toastId = 0;

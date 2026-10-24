@@ -4630,6 +4630,7 @@ def launch_tool(
     }
 
     launch_url = tool.login_url or tool.website_url
+    launch_server_time = int(time.time())
     extension_ticket = None
     extension_ticket_expires_at = None
     usage_tracking_ticket = None
@@ -4645,21 +4646,27 @@ def launch_tool(
         )
         launch_url = _automation_launch_url(request, ticket)
     elif effective_extension_autofill:
-        extension_ticket_expires_at = int(time.time()) + EXTENSION_AUTOFILL_TICKET_TTL_SEC
+        # "iat" lets the extension rebase "exp" onto the user's own clock - a PC
+        # whose clock/timezone is off otherwise sees every fresh ticket as
+        # already expired ("Not authorized yet"). _decode_ticket still enforces
+        # "exp" against the server clock.
+        extension_ticket_expires_at = launch_server_time + EXTENSION_AUTOFILL_TICKET_TTL_SEC
         extension_ticket = _sign_ticket(
             {
                 "kind": "extension_autofill",
                 "toolId": tool.id,
                 "userId": current_user.id,
+                "iat": launch_server_time,
                 "exp": extension_ticket_expires_at,
             }
         )
-        usage_tracking_ticket_expires_at = int(time.time()) + USAGE_TRACKING_TICKET_TTL_SEC
+        usage_tracking_ticket_expires_at = launch_server_time + USAGE_TRACKING_TICKET_TTL_SEC
         usage_tracking_ticket = _sign_ticket(
             {
                 "kind": "tool_usage_tracking",
                 "toolId": tool.id,
                 "userId": current_user.id,
+                "iat": launch_server_time,
                 "exp": usage_tracking_ticket_expires_at,
             }
         )
@@ -4688,6 +4695,7 @@ def launch_tool(
         "extensionTicketExpiresAt": extension_ticket_expires_at,
         "usageTrackingTicket": usage_tracking_ticket,
         "usageTrackingTicketExpiresAt": usage_tracking_ticket_expires_at,
+        "serverTime": launch_server_time,
         "tool": _serialize_tool(tool, credential=credential, active_session_holder=current_user if tool.single_seat else None),
         "credential": revealed,
     }

@@ -3235,13 +3235,22 @@ export default function Tools({ view = 'tools', searchQuery: externalSearchQuery
       if (response.extensionAutoFill && response.extensionTicket && response.tool?.slug) {
         const normalizedToolSlug = normalizeToolSlug(response.tool.slug);
         const launchLoginMethod = `${response.credential?.loginMethod || ''}`.trim().toLowerCase();
+        // The extension compares these expiries against this PC's clock, so
+        // shift them by the PC-vs-server clock offset; otherwise a PC whose
+        // clock/timezone is off treats a fresh ticket as already expired.
+        const serverClockOffsetMs = Number(response.serverTime) > 0
+          ? Date.now() - Number(response.serverTime) * 1000
+          : 0;
+        const toLocalExpiryMs = (expiresAtSec) => (
+          Number(expiresAtSec) > 0 ? Number(expiresAtSec) * 1000 + serverClockOffsetMs : 0
+        );
         const launchDetail = {
           toolSlug: normalizedToolSlug,
           toolName: response.tool.name,
           ticket: response.extensionTicket,
-          expiresAt: Number(response.extensionTicketExpiresAt || 0) * 1000,
+          expiresAt: toLocalExpiryMs(response.extensionTicketExpiresAt),
           usageTrackingTicket: response.usageTrackingTicket || '',
-          usageTrackingTicketExpiresAt: Number(response.usageTrackingTicketExpiresAt || 0) * 1000,
+          usageTrackingTicketExpiresAt: toLocalExpiryMs(response.usageTrackingTicketExpiresAt),
           launchUrl: response.launchUrl,
         };
         window.dispatchEvent(new CustomEvent(EXTENSION_LAUNCH_EVENT, {

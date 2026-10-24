@@ -17,6 +17,7 @@ import TaskReportButton from './compofleftsidebar/TaskReportButton';
 import CreditReportButton from './compofleftsidebar/CreditReportButton';
 import SheetActivityButton from './compofleftsidebar/SheetActivityButton';
 import SheetsButton from './compofleftsidebar/SheetsButton';
+import AiLibraryButton from './compofleftsidebar/AiLibraryButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
 import OutboxModal from './compofleftsidebar/outbox/OutboxModal';
 import WorkSpaceModal from './compofleftsidebar/workspace/WorkSpaceModal';
@@ -30,6 +31,7 @@ import TaskReportPanel from '../reports/TaskReportPanel';
 import CreditReportPanel from '../reports/CreditReportPanel';
 import SheetActivityPanel from '../reports/SheetActivityPanel';
 import SheetsPanel from '../sheets/SheetsPanel';
+import AiLibraryPanel from '../aiLibrary/AiLibraryPanel';
 import { resumePendingOutput } from '../../utils/pendingOutput';
 import { usePermissions } from '../../hooks/usePermissions';
 import { useAuth } from '../../context/AuthContext';
@@ -49,6 +51,7 @@ const PANEL_TO_ACTIVE = {
   'credit-consumption': 'credit-consumption',
   'sheet-activity': 'sheet-activity',
   sheets: 'sheets',
+  'ai-library': 'ai-library',
   'create-task': 'create-task',
 };
 
@@ -70,6 +73,8 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
   const canViewCreditReport = can('view_credit_report');
   // Sheets section: granted per user in Admin Queue -> Section Access.
   const canViewSheetActivity = can('view_sheet_activity');
+  // AI Library section: granted per user in Admin Queue -> Section Access.
+  const canViewAiLibrary = can('view_ai_library');
   const hasAnyInsightItem = canViewRmwData || canViewBuffer || canViewAdminQueue;
   const navigate = useNavigate();
   const location = useLocation();
@@ -214,10 +219,12 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
       || (panel === 'buffer' && !canViewBuffer)
       || ((panel === 'credit-report' || panel === 'credit-consumption') && !canViewCreditReport)
       || ((panel === 'sheet-activity' || panel === 'sheets') && !canViewSheetActivity)
+      || (panel === 'ai-library' && !canViewAiLibrary)
     ) {
       navigate('/dashboard', { replace: true });
     }
-  }, [authLoading, authUser, panel, canViewRmwData, canViewBuffer, canViewCreditReport, canViewSheetActivity, navigate]);
+  }, [authLoading, authUser, panel, canViewRmwData, canViewBuffer, canViewCreditReport, canViewSheetActivity,
+    canViewAiLibrary, navigate]);
 
   const openAdminQueue = () => goTo('admin-queue');
   const closeAdminQueue = () => closePanel('admin-queue');
@@ -246,6 +253,9 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
 
   const openSheetActivity = () => goTo('sheet-activity');
   const closeSheetActivity = () => closePanel('sheet-activity');
+
+  const openAiLibrary = () => goTo('ai-library');
+  const closeAiLibrary = () => closePanel('ai-library');
 
   useEffect(() => {
     if (isCreateTaskVisible) return;
@@ -462,6 +472,20 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
             </div>
           )}
 
+          {/* ── AI LIBRARY (Section Access grant) ── */}
+          {canViewAiLibrary && (
+            <div className="nav-section">
+              <div className="nav-section-header">
+                <span className="nav-section-label">AI Library</span>
+              </div>
+
+              <AiLibraryButton
+                isActive={activeItem === 'ai-library'}
+                onClick={openAiLibrary}
+              />
+            </div>
+          )}
+
         </nav>
       </aside>
 
@@ -578,6 +602,13 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
         onClose={closeSheetActivity}
         onMinimizedChange={(isMinimized) => setPanelMinimized('sheet-activity', isMinimized)}
         onActivate={() => activatePanel('sheet-activity')}
+      />
+
+      <AiLibraryPanel
+        isOpen={canViewAiLibrary && isPanelVisible('ai-library')}
+        onClose={closeAiLibrary}
+        onMinimizedChange={(isMinimized) => setPanelMinimized('ai-library', isMinimized)}
+        onActivate={() => activatePanel('ai-library')}
       />
     </>
   );
