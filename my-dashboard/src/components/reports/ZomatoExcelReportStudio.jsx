@@ -370,22 +370,33 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     if (busy) return;
     setBusy(true);
     try {
+      // The interactive dashboard opens on the page's current filters (the
+      // workbook applies them itself) and, like the page, keeps test accounts in.
+      const dashboard = version === 'dashboard';
       const res = await creditReportAPI.exportXlsx({
         start: params.start,
         end: params.end,
         department: params.department,
         user: params.user,
-        tool: params.tool === 'ChatGPT' ? undefined : params.tool,
+        tool: params.tool === 'ChatGPT' && !dashboard ? undefined : params.tool,
         client: params.client,
         account: params.account,
         version,
         format: 'xlsx',
+        ...(dashboard ? { search: params.search, excludeTestAccounts: false } : {}),
       });
-      const stem = version === 'management' ? 'RMW-Management-Summary' : 'RMW-AI-Spend';
+      const stem = { management: 'RMW-Management-Summary', dashboard: 'RMW-AI-Dashboard' }[version] || 'RMW-AI-Spend';
       downloadBlobResponse(res, `${stem}_${params.start}_to_${params.end}.xlsx`);
       notify('Excel downloaded.');
-    } catch {
-      notify('Could not export the workbook.');
+    } catch (error) {
+      // A blob request's error body is a Blob: read the server's reason from it.
+      let detail = '';
+      try {
+        detail = JSON.parse(await error?.response?.data?.text?.())?.detail || '';
+      } catch {
+        // not a JSON error body
+      }
+      notify(typeof detail === 'string' && detail ? detail : 'Could not export the workbook.');
     } finally {
       setBusy(false);
     }
@@ -553,6 +564,9 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
             </button>
             {exportOpen && (
               <div className="zrs-menu" role="menu">
+                <button type="button" onClick={() => downloadWorkbook('dashboard')}>
+                  Interactive dashboard (.xlsx)
+                </button>
                 <button type="button" onClick={() => downloadWorkbook('full')}>
                   Full Excel workbook (.xlsx)
                 </button>

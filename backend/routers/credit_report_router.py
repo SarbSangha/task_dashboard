@@ -39,6 +39,7 @@ from utils.credit_report import (
     resolve_output_url,
     to_pdf,
 )
+from utils.credit_report.dashboard_workbook import DashboardTooLarge, generate_dashboard_workbook
 from utils.credit_report.live_cache import shared_build
 from utils.credit_report.live_sheet import build_live_sheet, seed_demo_ai_usage
 from utils.credit_report.output_media import (
@@ -209,6 +210,38 @@ def seed_credit_report_demo(
     return {"success": True, **result}
 
 
+DASHBOARD = "dashboard"
+
+
+def _export_dashboard(db: Session, start_iso: Optional[str], end_iso: Optional[str], exclude_test_accounts: bool,
+                      selection: dict) -> FileResponse:
+    """The interactive dashboard workbook: every row of the period, with the
+    page's current filters as its starting filter values (the workbook
+    applies them itself, so the export's own filters cover the whole period)."""
+    filters = ReportFilters.build(start=start_iso, end=end_iso, exclude_test_accounts=exclude_test_accounts)
+    db.close()
+    fd, path = tempfile.mkstemp(prefix="credit-dashboard-", suffix=".xlsx")
+    os.close(fd)
+    report_db = _snapshot_session()
+    try:
+        generate_dashboard_workbook(report_db, filters, path, dashboard_url=public_dashboard_url() or "",
+                                    selection=selection)
+    except DashboardTooLarge as exc:
+        _remove(path)
+        raise HTTPException(status_code=413, detail=str(exc))
+    except Exception:
+        _remove(path)
+        raise
+    finally:
+        _close_snapshot(report_db)
+    return FileResponse(
+        path,
+        media_type=XLSX_MIMETYPE,
+        filename=f"RMW-AI-Dashboard_{filters.start.isoformat()}_to_{filters.end.isoformat()}.xlsx",
+        background=BackgroundTask(_remove, path),
+    )
+
+
 @router.get("/export.xlsx")
 def export_credit_report(
     start: Optional[str] = Query(None, description="YYYY-MM-DD; with no dates, the last full month"),
@@ -222,8 +255,10 @@ def export_credit_report(
     # accounts stay out unless asked for (excludeTestAccounts=false).
     excludeTestAccounts: bool = Query(True, description="Leave out admin and test accounts (config + "
                                                         "CREDIT_REPORT_EXCLUDED_ACCOUNTS)"),
-    version: str = Query("full", description="full = every sheet; management = Summary, Team & Clients, Glossary"),
+    version: str = Query("full", description="full = every sheet; management = Summary, Team & Clients, Glossary; "
+                                             "dashboard = the Usage & Spend page as an interactive workbook"),
     format: str = Query("xlsx", description="xlsx, or pdf (management version only)"),
+    search: Optional[str] = Query(None, description="dashboard version: the page's search, its starting value"),
     db: Session = Depends(get_operational_db),
     _: User = Depends(require_credit_report_access),
 ):
@@ -231,10 +266,15 @@ def export_credit_report(
     end_iso = _parse_iso_date(end, "end")
     if start_iso and end_iso and start_iso > end_iso:
         raise HTTPException(status_code=400, detail="start must be on or before end")
+    if version == DASHBOARD:
+        return _export_dashboard(db, start_iso, end_iso, excludeTestAccounts, {
+            "tool": tool, "account_ids": _parse_account_ids(account), "department": department,
+            "user_id": user, "client": client, "search": search,
+        })
     if tool and tool.strip() and tool.strip() not in TOOL_NAMES:
         raise HTTPException(status_code=400, detail=f"Unknown tool: {tool}")
     if version not in VERSIONS:
-        raise HTTPException(status_code=400, detail=f"version must be one of {', '.join(VERSIONS)}")
+        raise HTTPException(status_code=400, detail=f"version must be one of {', '.join(VERSIONS + (DASHBOARD,))}")
     if format not in ("xlsx", "pdf"):
         raise HTTPException(status_code=400, detail="format must be xlsx or pdf")
     if format == "pdf" and version != MANAGEMENT:
