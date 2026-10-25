@@ -41,11 +41,11 @@ from typing import Iterator, Optional
 
 from sqlalchemy import Float, Integer, String, and_, case, cast, func, literal, or_, select, union_all
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from models_new import (GenerationClient, GenerationRecord, ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent,
                         User, UserRole)
-from providers.chatgpt.models import ConversationPrompt, ConversationRecord
+from providers.chatgpt.models import ConversationCaptureEvent, ConversationPrompt, ConversationRecord
 from providers.conversation_links import chat_web_url
 from providers.elevenlabs.models import ElevenlabsGeneration
 from providers.envato.models import EnvatoGeneration
@@ -463,10 +463,14 @@ def _source_select(src: ToolSource, utc_start, utc_end, dialect: str, display: D
 def _conversation_select(tool: str, provider: str, utc_start, utc_end, dialect: str, display: DisplayConfig):
     """ChatGPT / Claude: one row per prompt the person sent, from the shared
     conversation tables. No per-prompt cost and no client picker exist, so
-    each prompt takes an equal share of the subscription (see costing.py)
-    and has no client. Account is left blank: costing.account_sql gives the
-    row the tool's only company account."""
+    each prompt takes an equal share of its account's subscription (see
+    costing.py) and has no client. The account is the login the extension
+    recorded when it captured the prompt (a person's own login counts as the
+    company login it is linked to); only a prompt with none recorded falls
+    back to the tool's only company account (costing.account_sql)."""
     p, r = ConversationPrompt, ConversationRecord
+    event, login = ConversationCaptureEvent, aliased(ITPortalToolCredential)
+    account = func.coalesce(login.linked_credential_id, event.credential_id)
     when = func.coalesce(p.prompt_timestamp, p.created_at)
     return (
         select(
@@ -485,7 +489,7 @@ def _conversation_select(tool: str, provider: str, utc_start, utc_end, dialect: 
             case((or_(_blank_to_null(r.conversation_url).isnot(None),
                       _blank_to_null(r.provider_conversation_id).isnot(None)), 1), else_=0).label("has_output"),
             _null_text().label("raw_status"),
-            cast(literal(None), Integer).label("account"),
+            cast(account, Integer).label("account"),
             literal(1.0, Float).label("size"),
             literal(1, Integer).label("size_est"),
             literal(0, Integer).label("preview"),
@@ -493,6 +497,8 @@ def _conversation_select(tool: str, provider: str, utc_start, utc_end, dialect: 
         )
         .select_from(p)
         .join(r, r.id == p.conversation_id)
+        .outerjoin(event, event.id == p.source_capture_event_id)
+        .outerjoin(login, login.id == event.credential_id)
         .where(r.provider == provider, when >= utc_start, when < utc_end)
     )
 

@@ -251,7 +251,7 @@ def _load_rows(db: Session, filters: ReportFilters, period: str, meta: dict, bas
             what=what,
             prompt=(r.prompt or "").strip()[:PROMPT_CHARS],
             credits=round(float(r.credits or 0.0), 2),
-            cost=round(float(r.rupees or 0.0), 2),
+            cost=float(r.rupees or 0.0),     # unrounded: rounding each row drifts the totals off the page's
             status=r.charge_status,
             basis=r.basis or "",
             link=link,
@@ -563,8 +563,8 @@ def _write_agg(wb, ws, rows: list) -> None:
             _txt(ws, client),
             _txt(ws, basis),
             outs,
-            round(credits, 2),
-            round(cost, 2),
+            credits,
+            cost,
             f"=IF(AND({test}),1,0)",
             first,
         ])

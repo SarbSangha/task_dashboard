@@ -60,7 +60,7 @@ from models_new import (  # noqa: E402
     UserFeatureAccess,
     UserRole,
 )
-from providers.chatgpt.models import ConversationPrompt, ConversationRecord  # noqa: E402
+from providers.chatgpt.models import ConversationCaptureEvent, ConversationPrompt, ConversationRecord  # noqa: E402
 from providers.grammarly_docs.models import GrammarlyDocSession  # noqa: E402
 from providers.splice.models import SpliceDownload  # noqa: E402
 from providers.elevenlabs.models import ElevenlabsGeneration  # noqa: E402
@@ -100,7 +100,7 @@ TABLES = [
     ToolCreditRate, GenerationRecord,
     FreepikGeneration, EnvatoGeneration, HeygenGeneration, HiggsfieldGeneration, ElevenlabsGeneration,
     FlowGeneration, SunoGeneration, EpidemicAdaptation,
-    SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt,
+    SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt, ConversationCaptureEvent,
 ]
 Base.metadata.create_all(bind=engine, tables=[m.__table__ for m in TABLES])
 
