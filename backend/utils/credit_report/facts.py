@@ -19,6 +19,11 @@ Rules:
   pay-per-use tools, a share of the account's subscription otherwise.
 * A Kling job recorded twice counts once (dedupe.py); Freepik uploads are
   not generations and are left out.
+* A Kling row with no client (blank, or a placeholder display.py maps to
+  "No client") is left out. History scans
+  (asset_history_discovered) record no client and copy a job already
+  recorded at submit time under a slightly different generation_id, so
+  dedupe.py cannot pair them; counting them doubled the Kling totals.
 * A generation with no owner (history-sync imports land unowned on purpose,
   see providers/*/normalization.py's freshness rule) is reported under the
   user "Unknown user (imported history)", department "No department".
@@ -35,9 +40,11 @@ from datetime import date, timedelta
 from typing import Iterator, Optional
 
 from sqlalchemy import Float, Integer, String, and_, case, cast, func, literal, or_, select, union_all
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from models_new import GenerationClient, GenerationRecord, ITPortalTool, ITPortalToolUsageEvent, User, UserRole
+from models_new import (GenerationClient, GenerationRecord, ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent,
+                        User, UserRole)
 from providers.chatgpt.models import ConversationPrompt, ConversationRecord
 from providers.conversation_links import chat_web_url
 from providers.elevenlabs.models import ElevenlabsGeneration
@@ -50,9 +57,10 @@ from providers.heygen.models import HeygenGeneration
 from providers.higgsfield.models import HiggsfieldGeneration
 from providers.splice.models import SpliceDownload
 from providers.suno.models import SunoGeneration
+from utils.credential_crypto import decrypt_secret
 from utils.usage_intelligence.service import KLING_TOOL_SLUGS, MAX_SANE_KLING_CREDITS, resolve_period
 
-from .costing import PAY_PER_USE, PAY_PER_USE_TOOLS, SUBSCRIPTION, CostSetup, load_cost_setup
+from .costing import PAY_PER_USE, PAY_PER_USE_TOOLS, SUBSCRIPTION, CostSetup, load_cost_setup, report_tool
 from .dedupe import KlingDedup, find_recorded_twice
 from .display import DisplayConfig
 
@@ -95,8 +103,9 @@ TOOL_COST_NOTES = {
               "subscription (est.).",
     "Grammarly": "One row per document worked on. ₹ is an equal share of the subscription (est.).",
     "Splice": "One row per sample downloaded, 1 Splice credit each, × the account's credit rate.",
-    "Suno": "Fixed price per song, set by an admin (Reports → Credit Rates): Suno shows no per-song cost "
-            "of its own. Songs from before the first price show 0. ₹ is an equal share of the subscription (est.).",
+    "Suno": "Fixed price per song: Suno charges 5 credits per song but shows no per-song cost of its own. "
+            "An admin can set a different price from a date (Reports → Credit Rates). "
+            "₹ is an equal share of the subscription (est.).",
     "Flow": "Credits per output from Flow's published rates for the model, resolution and duration used, "
             "under the account's plan (Reports → Credit Rates). Generations captured before settings were "
             "recorded, or whose account has no plan set, show 0. ₹ is an equal share of the subscription (est.).",
@@ -191,6 +200,9 @@ class ReportFilters:
     user_id: Optional[int] = None           # UNASSIGNED_USER_ID selects the owner-less rows
     tool: Optional[str] = None
     client: Optional[str] = None
+    # One login of a tool: its ITPortalToolCredential ids (a login shared by
+    # several user-scope copies has several). Empty = every account.
+    accounts: tuple = ()
     exclude_test_accounts: bool = False     # opt-in: by default every account with usage is reported
     excluded_accounts: list = field(default_factory=list)   # [(user_id, name)], filled by resolve_excluded_accounts
     # Display-only, for the Home sheet.
@@ -205,7 +217,7 @@ class ReportFilters:
 
     @classmethod
     def build(cls, *, start=None, end=None, department=None, user_id=None, tool=None, client=None,
-              exclude_test_accounts: bool = False, today: Optional[date] = None) -> "ReportFilters":
+              accounts=None, exclude_test_accounts: bool = False, today: Optional[date] = None) -> "ReportFilters":
         """The date range defaults to the current month to date."""
         if start or end:
             period = resolve_period(start=start, end=end, today=today)
@@ -218,6 +230,7 @@ class ReportFilters:
             user_id=int(user_id) if user_id not in (None, "") else None,
             tool=_clean(tool),
             client=_clean(client),
+            accounts=_account_ids(accounts),
             exclude_test_accounts=bool(exclude_test_accounts),
             period=period,
             display=DisplayConfig.load(),
@@ -231,10 +244,48 @@ class ReportFilters:
         """The same filters over another period (its own costs and Kling check)."""
         period = resolve_period(start=start.isoformat(), end=end.isoformat())
         return ReportFilters(start=period["start"], end=period["end"], department=self.department,
-                             user_id=self.user_id, tool=self.tool, client=self.client,
+                             user_id=self.user_id, tool=self.tool, client=self.client, accounts=self.accounts,
                              exclude_test_accounts=self.exclude_test_accounts,
                              excluded_accounts=list(self.excluded_accounts), user_label=self.user_label,
-                             period=period, display=self.display)
+                             period=period, display=self.display, department_raws=list(self.department_raws))
+
+
+def _account_ids(value) -> tuple:
+    """'423,424' / 423 / [423, 424] / None -> (423, 424) / (423,) / (423, 424) / ()."""
+    if value in (None, ""):
+        return ()
+    parts = value.split(",") if isinstance(value, str) else (value if isinstance(value, (list, tuple, set)) else [value])
+    return tuple(sorted({int(p) for p in parts if str(p).strip()}))
+
+
+def load_account_logins(db: Session) -> dict:
+    """{account id: login email}, so accounts read 'digital@ctm.com' rather
+    than 'Claude #246'. A user-scope account without its own login borrows the
+    company account it is linked to.
+
+    Best-effort: the export may run as a read-only report role that is not
+    granted the login column, so a refused read (inside a savepoint, keeping
+    the export's snapshot transaction usable) or an undecryptable value just
+    leaves those accounts on their 'Tool #id' name."""
+    c = ITPortalToolCredential
+    try:
+        with db.begin_nested():
+            rows = db.query(c.id, c.linked_credential_id, c.login_identifier_encrypted).all()
+    except SQLAlchemyError:
+        return {}
+    own = {}
+    for cred_id, _linked, encrypted in rows:
+        try:
+            login = (decrypt_secret(encrypted) or "").strip()
+        except RuntimeError:
+            login = ""
+        if login:
+            own[int(cred_id)] = login
+    logins = dict(own)
+    for cred_id, linked, _encrypted in rows:
+        if int(cred_id) not in logins and linked is not None and int(linked) in own:
+            logins[int(cred_id)] = own[int(linked)]
+    return logins
 
 
 def prepare(db: Session, filters: ReportFilters) -> ReportFilters:
@@ -244,11 +295,17 @@ def prepare(db: Session, filters: ReportFilters) -> ReportFilters:
         return filters
     if filters.exclude_test_accounts and not filters.excluded_accounts:
         filters.excluded_accounts = resolve_excluded_accounts(db, filters.display)
-    filters.department_raws = [d for (d,) in db.query(User.department).distinct().all() if (d or "").strip()]
+    # Not tied to the period: a shifted (previous-period) copy keeps what the
+    # current period already loaded.
+    if not filters.department_raws:
+        filters.department_raws = [d for (d,) in db.query(User.department).distinct().all() if (d or "").strip()]
+    if not filters.display.account_logins:
+        filters.display.account_logins = load_account_logins(db)
     filters.cost = load_cost_setup(db, filters.start, filters.end, filters.display)
     filters.kling = find_recorded_twice(db, filters.start, filters.end, kling_slugs=KLING_TOOL_SLUGS,
                                         sane_max=MAX_SANE_KLING_CREDITS,
                                         is_charged=lambda s: charge_status(s) == CHARGED,
+                                        has_client=lambda c: filters.display.client_name(c) is not None,
                                         name_of=filters.display.person_name, ignore_users=filters.excluded_ids)
     filters.prepared = True
     return filters
@@ -475,7 +532,8 @@ def _kling_select(start: date, end: date, dialect: str, display: DisplayConfig, 
         .outerjoin(g, g.source_usage_event_id == e.id)
         # event_date is already an IST calendar day - the same window rule
         # the Usage Intelligence report applies to Kling.
-        .where(e.tool_id.in_(kling_tool_ids), e.event_date >= start, e.event_date <= end)
+        .where(e.tool_id.in_(kling_tool_ids), e.event_date >= start, e.event_date <= end,
+               display.client_sql(e.linked_client_name).isnot(None))
     )
     drop = kling.drop_ids
     if drop:
@@ -584,6 +642,8 @@ def _scoped(query, facts, filters: ReportFilters):
         query = query.where(facts.c.user_id == filters.user_id)
     if filters.client:
         query = query.where(client_expr == filters.client)
+    if filters.accounts:
+        query = query.where(facts.c.account.in_(filters.accounts))
     if filters.excluded_ids:
         query = query.where(or_(facts.c.user_id.is_(None), facts.c.user_id.notin_(filters.excluded_ids)))
     return query
@@ -744,20 +804,27 @@ def load_last_used(db: Session, cost: CostSetup) -> dict:
             key = int(acc)
             out[key] = max(out.get(key, last), last)
 
+    # One round trip for every tool instead of one query each.
+    selects = []
     for src in TOOL_SOURCES:
         m = src.model
-        when = _source_when(src)
         account = cost.account_sql(literal(src.name, String), m.credential_id)
-        for acc, last in db.query(account, func.max(when)).group_by(account).all():
-            note(acc, last)
+        selects.append(select(cast(account, Integer).label("account"), func.max(_source_when(src)).label("last_at"))
+                       .group_by(account))
     # Conversation prompts carry no account: they belong to the tool's only one.
     for tool_name, provider in CONVERSATION_TOOLS:
         acc = cost.default_account.get(tool_name)
         if acc is None:
             continue
-        last = (db.query(func.max(func.coalesce(ConversationPrompt.prompt_timestamp, ConversationPrompt.created_at)))
-                .join(ConversationRecord, ConversationRecord.id == ConversationPrompt.conversation_id)
-                .filter(ConversationRecord.provider == provider).scalar())
+        selects.append(
+            select(cast(literal(int(acc)), Integer).label("account"),
+                   func.max(func.coalesce(ConversationPrompt.prompt_timestamp, ConversationPrompt.created_at))
+                   .label("last_at"))
+            .select_from(ConversationPrompt)
+            .join(ConversationRecord, ConversationRecord.id == ConversationPrompt.conversation_id)
+            .where(ConversationRecord.provider == provider)
+        )
+    for acc, last in db.execute(union_all(*selects)):
         note(acc, last)
     return out
 
@@ -852,34 +919,60 @@ def stream_log(db: Session, filters: ReportFilters, user_order: list, batch_size
                     facts.c.tool, facts.c.record_id)
     else:
         ordering = (position, facts.c.occurred_at, facts.c.tool, facts.c.record_id)
-    q = _scoped(
-        select(
-            facts.c.tool,
-            facts.c.record_id,
-            cast(owner_key, Integer).label("user_id"),
-            facts.c.occurred_at,
-            facts.c.client,
-            facts.c.task,
-            facts.c.credits,
-            facts.c.prompt,
-            facts.c.model,
-            facts.c.status,
-            facts.c.raw_status,
-            charge_status_expr(facts.c.status).label("charge_status"),
-            facts.c.has_output,
-            facts.c.rupees,
-            facts.c.estimated,
-            facts.c.rate_assumed,
-            facts.c.preview,
-            facts.c.size_est,
-            facts.c.basis,
-            facts.c.output_key,
-        ),
-        facts,
-        filters,
-    ).order_by(*ordering)
+    q = _scoped(_log_select(facts, owner_key), facts, filters).order_by(*ordering)
     result = db.execute(q.execution_options(stream_results=True, yield_per=batch_size))
     return iter(result)
+
+
+def recent_log(db: Session, filters: ReportFilters, limit: int) -> list:
+    """The newest `limit` generations (all charge statuses), newest first:
+    the in-app log, without reading every row of the period."""
+    prepare(db, filters)
+    facts = facts_subquery(filters, _dialect(db))
+    owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
+    q = (_scoped(_log_select(facts, owner_key), facts, filters)
+         .order_by(facts.c.occurred_at.desc().nulls_last(), facts.c.tool, facts.c.record_id)
+         .limit(limit))
+    return db.execute(q).all()
+
+
+def load_model_counts(db: Session, filters: ReportFilters) -> list:
+    """Charged generations per (user, tool, model): what each person
+    generated, without reading every row of the period."""
+    prepare(db, filters)
+    facts = facts_subquery(filters, _dialect(db))
+    owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
+    q = (_scoped(select(cast(owner_key, Integer).label("user_id"), facts.c.tool, facts.c.model,
+                        func.count().label("rows")), facts, filters)
+         .where(charge_status_expr(facts.c.status) == CHARGED)
+         .group_by(owner_key, facts.c.tool, facts.c.model))
+    return db.execute(q).all()
+
+
+def _log_select(facts, owner_key):
+    return select(
+        facts.c.tool,
+        facts.c.record_id,
+        cast(owner_key, Integer).label("user_id"),
+        facts.c.occurred_at,
+        facts.c.client,
+        facts.c.task,
+        facts.c.credits,
+        facts.c.prompt,
+        facts.c.model,
+        facts.c.status,
+        facts.c.raw_status,
+        charge_status_expr(facts.c.status).label("charge_status"),
+        facts.c.has_output,
+        facts.c.rupees,
+        facts.c.estimated,
+        facts.c.rate_assumed,
+        facts.c.preview,
+        facts.c.size_est,
+        facts.c.basis,
+        facts.c.output_key,
+        facts.c.account,
+    )
 
 
 def cost_note(row) -> str:
@@ -898,8 +991,25 @@ def cost_note(row) -> str:
 # --------------------------------------------------------------------------- #
 # Filter options and output links
 # --------------------------------------------------------------------------- #
-def load_options(db: Session) -> dict:
-    display = DisplayConfig.load()
+def _used_account_ids(db: Session, ids: list) -> set:
+    """Which of these account ids have at least one row in any tool's table."""
+    if not ids:
+        return set()
+    tables = [s.model for s in TOOL_SOURCES] + [ITPortalToolUsageEvent]
+    used = set()
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        q = union_all(*(select(m.credential_id).where(m.credential_id.in_(chunk)).distinct() for m in tables))
+        used.update(int(cid) for (cid,) in db.execute(q))
+    return used
+
+
+def load_options(db: Session, display: Optional[DisplayConfig] = None) -> dict:
+    """Filter choices. `display`: a prepared report's config, whose logins
+    are already loaded (saves reading and decrypting them again)."""
+    if display is None or not display.account_logins:
+        display = DisplayConfig.load()
+        display.account_logins = load_account_logins(db)
     users = (
         db.query(User.id, User.name, User.department)
         .filter(User.is_deleted.is_(False))
@@ -920,10 +1030,40 @@ def load_options(db: Session) -> dict:
          for i, n, d in users),
         key=lambda u: u["name"].lower(),
     )
+    # Every login of a tracked tool, so the report can be cut to one login. A
+    # login shared by several account records (user-scope copies) is one
+    # option covering all of them. A login is offered while it has usage on
+    # record, or is active with a known login; a deactivated or nameless
+    # record (a per-person seat with no login) without usage is a leftover.
+    by_login: dict = {}
+    named = set()
+    for cred_id, name, slug, active in (
+        db.query(ITPortalToolCredential.id, ITPortalTool.name, ITPortalTool.slug, ITPortalToolCredential.is_active)
+        .join(ITPortalTool, ITPortalTool.id == ITPortalToolCredential.tool_id)
+        .order_by(ITPortalToolCredential.id)
+        .all()
+    ):
+        tool = report_tool(name, slug)
+        if tool not in TOOL_NAMES:
+            continue
+        label = display.account_label(cred_id, tool)
+        entry = by_login.setdefault((tool, label.lower()), {"tool": tool, "label": label, "ids": [], "isActive": False})
+        entry["ids"].append(int(cred_id))
+        entry["isActive"] = entry["isActive"] or bool(active)
+        if int(cred_id) in display.account_labels or int(cred_id) in display.account_logins:
+            named.add(int(cred_id))
+
+    def offered(a):
+        return a["isActive"] and named.intersection(a["ids"])
+
+    used = _used_account_ids(db, [i for a in by_login.values() if not offered(a) for i in a["ids"]])
+    accounts = sorted((a for a in by_login.values() if offered(a) or used.intersection(a["ids"])),
+                      key=lambda a: (a["tool"].lower(), not a["isActive"], a["label"].lower()))
     return {
         "departments": sorted(departments, key=str.lower),
         "users": user_rows,
         "tools": list(TOOL_NAMES),
+        "accounts": accounts,
         "clients": sorted(clients, key=str.lower) + [NO_CLIENT],
         "excludedAccounts": [{"id": uid, "name": name} for uid, name in resolve_excluded_accounts(db, display)],
     }

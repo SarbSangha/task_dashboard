@@ -27,6 +27,10 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def invalidate_admin_user_ids_cache() -> None:
+    _ADMIN_IDS_CACHE["exp"] = 0.0
+
+
 def admin_user_ids(db: Session) -> list[int]:
     now = monotonic()
     if _ADMIN_IDS_CACHE["exp"] > now:

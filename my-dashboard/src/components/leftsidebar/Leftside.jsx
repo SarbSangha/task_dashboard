@@ -1,5 +1,5 @@
 // src/components/leftsidebar/Leftside.jsx (FunctionalMenu)
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import './Leftside.css';
 import TrackingButton from './compofleftsidebar/tracking/TrackingButton';
@@ -20,21 +20,34 @@ import SheetsButton from './compofleftsidebar/SheetsButton';
 import AiLibraryButton from './compofleftsidebar/AiLibraryButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
 import OutboxModal from './compofleftsidebar/outbox/OutboxModal';
-import WorkSpaceModal from './compofleftsidebar/workspace/WorkSpaceModal';
 import InboxPanel from './compofleftsidebar/inbox/InboxPanel';
 import TrackingPanel from './compofleftsidebar/tracking/TrackingPanel';
-import AdminRequestPanel from './compofleftsidebar/adminqueue/AdminRequestPanel';
-import TrendingsPanel from './compofleftsidebar/trending/TrendingsPanel';
-import BufferPanel from './compofleftsidebar/buffer/BufferPanel';
-import ReportsPanel from '../reports/ReportsPanel';
-import TaskReportPanel from '../reports/TaskReportPanel';
-import CreditReportPanel from '../reports/CreditReportPanel';
-import SheetActivityPanel from '../reports/SheetActivityPanel';
-import SheetsPanel from '../sheets/SheetsPanel';
-import AiLibraryPanel from '../aiLibrary/AiLibraryPanel';
 import { resumePendingOutput } from '../../utils/pendingOutput';
 import { usePermissions } from '../../hooks/usePermissions';
 import { useAuth } from '../../context/AuthContext';
+
+// Heavy panels that do nothing while closed: their code (charts, report
+// builders, the tool explorers) is downloaded the first time one opens
+// instead of with the dashboard. See OnceOpened.
+const WorkSpaceModal = lazy(() => import('./compofleftsidebar/workspace/WorkSpaceModal'));
+const AdminRequestPanel = lazy(() => import('./compofleftsidebar/adminqueue/AdminRequestPanel'));
+const TrendingsPanel = lazy(() => import('./compofleftsidebar/trending/TrendingsPanel'));
+const BufferPanel = lazy(() => import('./compofleftsidebar/buffer/BufferPanel'));
+const ReportsPanel = lazy(() => import('../reports/ReportsPanel'));
+const TaskReportPanel = lazy(() => import('../reports/TaskReportPanel'));
+const CreditReportPanel = lazy(() => import('../reports/CreditReportPanel'));
+const SheetActivityPanel = lazy(() => import('../reports/SheetActivityPanel'));
+const SheetsPanel = lazy(() => import('../sheets/SheetsPanel'));
+const AiLibraryPanel = lazy(() => import('../aiLibrary/AiLibraryPanel'));
+
+/* Mounts a lazy panel the first time it opens and keeps it mounted after,
+   so a closed or minimized panel keeps its state exactly as before. */
+const OnceOpened = ({ open, children }) => {
+  const [opened, setOpened] = useState(open);
+  if (open && !opened) setOpened(true);
+  if (!opened && !open) return null;
+  return <Suspense fallback={null}>{children}</Suspense>;
+};
 
 const PANEL_TO_ACTIVE = {
   inbox: 'inbox',
@@ -524,19 +537,23 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
         onActivate={() => activatePanel('messages')}
       />
 
-      <TrendingsPanel
-        isOpen={canViewRmwData && isPanelVisible('trendings')}
-        onClose={closeTrendingsPanel}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('trendings', isMinimized)}
-        onActivate={() => activatePanel('trendings')}
-      />
+      <OnceOpened open={canViewRmwData && isPanelVisible('trendings')}>
+        <TrendingsPanel
+          isOpen={canViewRmwData && isPanelVisible('trendings')}
+          onClose={closeTrendingsPanel}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('trendings', isMinimized)}
+          onActivate={() => activatePanel('trendings')}
+        />
+      </OnceOpened>
 
-      <BufferPanel
-        isOpen={canViewBuffer && isPanelVisible('buffer')}
-        onClose={closeBufferPanel}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('buffer', isMinimized)}
-        onActivate={() => activatePanel('buffer')}
-      />
+      <OnceOpened open={canViewBuffer && isPanelVisible('buffer')}>
+        <BufferPanel
+          isOpen={canViewBuffer && isPanelVisible('buffer')}
+          onClose={closeBufferPanel}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('buffer', isMinimized)}
+          onActivate={() => activatePanel('buffer')}
+        />
+      </OnceOpened>
 
       <OutboxModal
         isOpen={isPanelVisible('outbox')}
@@ -546,70 +563,88 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
         onActivate={() => activatePanel('outbox')}
       />
 
-      <WorkSpaceModal
-        isOpen={isPanelVisible('workspace')}
-        onClose={closeWorkSpace}
-        initialTab={workspaceInitialTab}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('workspace', isMinimized)}
-        onActivate={() => activatePanel('workspace')}
-      />
+      <OnceOpened open={isPanelVisible('workspace')}>
+        <WorkSpaceModal
+          isOpen={isPanelVisible('workspace')}
+          onClose={closeWorkSpace}
+          initialTab={workspaceInitialTab}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('workspace', isMinimized)}
+          onActivate={() => activatePanel('workspace')}
+        />
+      </OnceOpened>
 
-      <AdminRequestPanel
-        isOpen={isPanelVisible('admin-queue')}
-        onClose={closeAdminQueue}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('admin-queue', isMinimized)}
-        onActivate={() => activatePanel('admin-queue')}
-      />
+      <OnceOpened open={isPanelVisible('admin-queue')}>
+        <AdminRequestPanel
+          isOpen={isPanelVisible('admin-queue')}
+          onClose={closeAdminQueue}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('admin-queue', isMinimized)}
+          onActivate={() => activatePanel('admin-queue')}
+        />
+      </OnceOpened>
 
-      <ReportsPanel
-        isOpen={isPanelVisible('reports')}
-        onClose={closeReports}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('reports', isMinimized)}
-        onActivate={() => activatePanel('reports')}
-      />
+      <OnceOpened open={isPanelVisible('reports')}>
+        <ReportsPanel
+          isOpen={isPanelVisible('reports')}
+          onClose={closeReports}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('reports', isMinimized)}
+          onActivate={() => activatePanel('reports')}
+        />
+      </OnceOpened>
 
-      <TaskReportPanel
-        isOpen={isPanelVisible('task-report')}
-        onClose={closeTaskReport}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('task-report', isMinimized)}
-        onActivate={() => activatePanel('task-report')}
-      />
+      <OnceOpened open={isPanelVisible('task-report')}>
+        <TaskReportPanel
+          isOpen={isPanelVisible('task-report')}
+          onClose={closeTaskReport}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('task-report', isMinimized)}
+          onActivate={() => activatePanel('task-report')}
+        />
+      </OnceOpened>
 
-      <CreditReportPanel
-        isOpen={canViewCreditReport && isPanelVisible('credit-report')}
-        onClose={closeCreditReport}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('credit-report', isMinimized)}
-        onActivate={() => activatePanel('credit-report')}
-      />
+      <OnceOpened open={canViewCreditReport && isPanelVisible('credit-report')}>
+        <CreditReportPanel
+          isOpen={canViewCreditReport && isPanelVisible('credit-report')}
+          onClose={closeCreditReport}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('credit-report', isMinimized)}
+          onActivate={() => activatePanel('credit-report')}
+        />
+      </OnceOpened>
 
-      <CreditReportPanel
-        variant="original"
-        isOpen={canViewCreditReport && isPanelVisible('credit-consumption')}
-        onClose={closeCreditConsumption}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('credit-consumption', isMinimized)}
-        onActivate={() => activatePanel('credit-consumption')}
-      />
+      <OnceOpened open={canViewCreditReport && isPanelVisible('credit-consumption')}>
+        <CreditReportPanel
+          variant="original"
+          isOpen={canViewCreditReport && isPanelVisible('credit-consumption')}
+          onClose={closeCreditConsumption}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('credit-consumption', isMinimized)}
+          onActivate={() => activatePanel('credit-consumption')}
+        />
+      </OnceOpened>
 
-      <SheetsPanel
-        isOpen={canViewSheetActivity && isPanelVisible('sheets')}
-        onClose={closeSheets}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('sheets', isMinimized)}
-        onActivate={() => activatePanel('sheets')}
-      />
+      <OnceOpened open={canViewSheetActivity && isPanelVisible('sheets')}>
+        <SheetsPanel
+          isOpen={canViewSheetActivity && isPanelVisible('sheets')}
+          onClose={closeSheets}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('sheets', isMinimized)}
+          onActivate={() => activatePanel('sheets')}
+        />
+      </OnceOpened>
 
-      <SheetActivityPanel
-        isOpen={canViewSheetActivity && isPanelVisible('sheet-activity')}
-        onClose={closeSheetActivity}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('sheet-activity', isMinimized)}
-        onActivate={() => activatePanel('sheet-activity')}
-      />
+      <OnceOpened open={canViewSheetActivity && isPanelVisible('sheet-activity')}>
+        <SheetActivityPanel
+          isOpen={canViewSheetActivity && isPanelVisible('sheet-activity')}
+          onClose={closeSheetActivity}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('sheet-activity', isMinimized)}
+          onActivate={() => activatePanel('sheet-activity')}
+        />
+      </OnceOpened>
 
-      <AiLibraryPanel
-        isOpen={canViewAiLibrary && isPanelVisible('ai-library')}
-        onClose={closeAiLibrary}
-        onMinimizedChange={(isMinimized) => setPanelMinimized('ai-library', isMinimized)}
-        onActivate={() => activatePanel('ai-library')}
-      />
+      <OnceOpened open={canViewAiLibrary && isPanelVisible('ai-library')}>
+        <AiLibraryPanel
+          isOpen={canViewAiLibrary && isPanelVisible('ai-library')}
+          onClose={closeAiLibrary}
+          onMinimizedChange={(isMinimized) => setPanelMinimized('ai-library', isMinimized)}
+          onActivate={() => activatePanel('ai-library')}
+        />
+      </OnceOpened>
     </>
   );
 };

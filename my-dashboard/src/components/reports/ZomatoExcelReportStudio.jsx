@@ -148,6 +148,8 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
   const [department, setDepartment] = useState('all');
   const [userId, setUserId] = useState('all');
   const [client, setClient] = useState('all');
+  // Ticked logins; empty = every account. Each entry is one login's ids, comma-separated.
+  const [accounts, setAccounts] = useState([]);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [sheet, setSheet] = useState('log');
@@ -190,13 +192,20 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     if (userId !== 'all') p.user = userId;
     if (tool !== 'all') p.tool = tool;
     if (client !== 'all') p.client = client;
+    if (accounts.length) p.account = accounts.join(',');
     if (debouncedSearch) p.search = debouncedSearch;
     return p;
-  }, [dateRange, department, userId, tool, client, debouncedSearch]);
+  }, [dateRange, department, userId, tool, client, accounts, debouncedSearch]);
 
+  // Set by Refresh: the server otherwise reuses a report built in the last 30 seconds.
+  const freshRef = useRef(false);
   const query = useQuery({
     queryKey: ['credit-report', 'live-sheet', params],
-    queryFn: () => creditReportAPI.liveSheet(params),
+    queryFn: () => {
+      const fresh = freshRef.current;
+      freshRef.current = false;
+      return creditReportAPI.liveSheet(fresh ? { ...params, fresh: true } : params);
+    },
     staleTime: 30_000,
     placeholderData: (prev) => prev,
     // Live: re-read the backend every 2 minutes while this tab is visible
@@ -217,6 +226,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
   const refreshing = loading && !query.isLoading;
 
   const refreshNow = async () => {
+    freshRef.current = true;
     setManualRefresh(true);
     try {
       await query.refetch();
@@ -229,7 +239,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
   const kpis = data?.kpis || {};
   const avgs = kpis.averages || {};
   const period = data?.period || {};
-  const options = data?.options || { departments: [], users: [], tools: [], clients: [] };
+  const options = data?.options || { departments: [], users: [], tools: [], clients: [], accounts: [] };
   const sheets = data?.sheets || {};
 
   /* dropdown options */
@@ -268,6 +278,34 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
       })),
     ];
   }, [options.clients, sheets.clients]);
+
+  // A tool can have several logins; the list follows the Tool filter. Each
+  // option is one login (its email), covering every account record using it,
+  // so its value is those account ids, comma-separated. Several can be ticked.
+  const accountOptions = useMemo(
+    () =>
+      (options.accounts || [])
+        .filter((a) => tool === 'all' || a.tool === tool)
+        .map((a) => ({
+          value: a.ids.join(','),
+          label: a.label,
+          hint: [tool === 'all' ? a.tool : null, a.isActive ? null : 'inactive'].filter(Boolean).join(' · ') || undefined,
+          icon: <ToolLogo name={a.tool} size={16} />,
+        })),
+    [options.accounts, tool]
+  );
+
+  // Switching tool drops ticked accounts that belong to another tool. Reads the
+  // latest accounts through a ref: table cells keep their first-render drill().
+  const accountsRef = useRef([]);
+  accountsRef.current = options.accounts || [];
+  const changeTool = (next) => {
+    setTool(next);
+    if (next === 'all') return;
+    setAccounts((prev) =>
+      prev.filter((v) => accountsRef.current.find((a) => a.ids.join(',') === v)?.tool === next)
+    );
+  };
 
   /* chart data */
   const trendData = useMemo(() => {
@@ -323,6 +361,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
     setDepartment('all');
     setUserId('all');
     setClient('all');
+    setAccounts([]);
     setSearch('');
   };
 
@@ -338,6 +377,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
         user: params.user,
         tool: params.tool === 'ChatGPT' ? undefined : params.tool,
         client: params.client,
+        account: params.account,
         version,
         format: 'xlsx',
       });
@@ -395,7 +435,12 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
 
   const drill = (next) => {
     if (next.user !== undefined) setUserId(String(next.user));
-    if (next.tool !== undefined) setTool(next.tool);
+    if (next.tool !== undefined) changeTool(next.tool);
+    if (next.accountId !== undefined) {
+      // A table cell knows one account id; select the whole login it belongs to.
+      const login = accountsRef.current.find((a) => a.ids.includes(Number(next.accountId)));
+      setAccounts([login ? login.ids.join(',') : String(next.accountId)]);
+    }
     if (next.department !== undefined) setDepartment(next.department);
     if (next.client !== undefined) setClient(next.client);
     if (next.date) {
@@ -455,7 +500,8 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
   const changeText = kpis.spendChangeText;
   const changeUp = changeText && !String(changeText).trim().startsWith('▼') && !String(changeText).includes('-');
 
-  const activeFilters = [tool, department, userId, client].filter((v) => v !== 'all').length + (search ? 1 : 0);
+  const activeFilters =
+    [tool, department, userId, client].filter((v) => v !== 'all').length + (accounts.length ? 1 : 0) + (search ? 1 : 0);
 
   return (
     <div className="zrs">
@@ -592,7 +638,20 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
       <section className="zrs-filters">
         <div className="zrs-field">
           <span>Tool</span>
-          <Dropdown value={tool} options={toolOptions} onChange={setTool} label="Tool" searchable />
+          <Dropdown value={tool} options={toolOptions} onChange={changeTool} label="Tool" searchable />
+        </div>
+        <div className="zrs-field">
+          <span>Account</span>
+          <Dropdown
+            multiple
+            value={accounts}
+            options={accountOptions}
+            onChange={setAccounts}
+            label="Account"
+            allLabel={tool === 'all' ? 'All accounts' : `All ${tool} accounts`}
+            searchable
+            menuWidth={280}
+          />
         </div>
         <div className="zrs-field">
           <span>Department</span>

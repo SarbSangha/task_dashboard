@@ -1236,6 +1236,10 @@ async function activateLaunchForTab(tabId, toolSlug, hostname, extensionTicket) 
 
   const directTicketLaunch = buildLaunchFromExtensionTicket(toolSlug, hostname, extensionTicket);
   if (!directTicketLaunch) {
+    const payload = decodeExtensionTicketPayload(extensionTicket);
+    if (payload?.kind === 'extension_autofill' && Number(payload.exp || 0) * 1000 <= Date.now()) {
+      throw new Error("Launch ticket looks expired - check this PC's date, time and time zone, then launch again from the dashboard.");
+    }
     throw new Error('Open this tool from the dashboard first.');
   }
   directTicketLaunch.isRootLaunch = true;

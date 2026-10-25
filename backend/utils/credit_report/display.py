@@ -56,6 +56,7 @@ class DisplayConfig:
     exclude_emails: set = field(default_factory=set)
     exclude_departments: set = field(default_factory=set)   # lower keys of raw department names
     account_labels: dict = field(default_factory=dict)      # account id -> label
+    account_logins: dict = field(default_factory=dict)      # account id -> login email (facts.load_account_logins)
     free_preview_models: dict = field(default_factory=dict) # tool -> [model ids]
     low_use_rupees_per_item: float = 40.0
     billing: dict = field(default_factory=dict)             # account id -> "monthly" | "annual"
@@ -131,7 +132,8 @@ class DisplayConfig:
     def account_label(self, account_id: Optional[int], tool: str) -> str:
         if account_id is None:
             return f"{tool} (account not recorded)"
-        return self.account_labels.get(int(account_id), f"{tool} #{account_id}")
+        account_id = int(account_id)
+        return self.account_labels.get(account_id) or self.account_logins.get(account_id) or f"{tool} #{account_id}"
 
     def is_free_preview(self, tool: str, model_id: Optional[str]) -> bool:
         return bool(model_id) and model_id in self.free_preview_models.get(tool, [])

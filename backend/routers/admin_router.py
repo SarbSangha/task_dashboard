@@ -11,6 +11,7 @@ from database_config import get_operational_db
 from models_new import DepartmentDirectory, User, UserApprovalRequest
 from auth import get_password_hash, revoke_user_sessions
 from services.admin_workflow_service import (
+    invalidate_admin_user_ids_cache,
     pending_password_change_for_request,
     push_admin_realtime_event,
     sanitize_request_payload,
@@ -24,7 +25,8 @@ from services.feature_access_service import (
     notify_feature_access_changed,
     set_feature_access,
 )
-from services.role_service import user_role_names
+from services.role_service import ADMIN_ROLE, grant_role, is_super_admin, revoke_role, user_role_names
+from services.tool_access_cleanup import release_tool_access
 from utils.cache import invalidate_pattern
 from utils.datetime_utils import serialize_utc_datetime
 from utils.permissions import has_any_role, require_admin
@@ -64,6 +66,10 @@ class BulkWorkplacePolicyPayload(BaseModel):
     enforce_active_task_policy: bool
 
 
+class AdminAccessPayload(BaseModel):
+    enabled: bool
+
+
 class FeatureAccessPayload(BaseModel):
     feature: str = Field(..., min_length=1, max_length=80)
     enabled: bool
@@ -86,7 +92,8 @@ def _serialize_user(user: User, approval_status: str) -> dict:
         "roles": sorted(user_role_names(user)),
         "isActive": user.is_active,
         "isDeleted": bool(getattr(user, "is_deleted", False)),
-        "isAdmin": user.is_admin,
+        "isAdmin": has_any_role(user, {ADMIN_ROLE}),
+        "isSuperAdmin": is_super_admin(user),
         "approvalStatus": approval_status,
         "approvedBy": user.approved_by,
         "approvedAt": serialize_utc_datetime(user.approved_at),
@@ -125,6 +132,11 @@ def _get_signup_request(db: Session, user_id: int) -> Optional[UserApprovalReque
         .order_by(UserApprovalRequest.created_at.desc())
         .first()
     )
+
+
+def _guard_super_admin(target: User, current_user: User, action: str) -> None:
+    if is_super_admin(target) and target.id != current_user.id:
+        raise HTTPException(status_code=403, detail=f"The super admin account cannot be {action}")
 
 
 def _archive_deleted_user_identity(user: User) -> None:
@@ -351,6 +363,8 @@ def deactivate_user(
         raise HTTPException(status_code=404, detail="User not found")
     if user.is_deleted:
         raise HTTPException(status_code=400, detail="User account is deleted")
+    if is_super_admin(user):
+        raise HTTPException(status_code=403, detail="The super admin account cannot be deactivated")
     user.is_active = False
     if payload and payload.reason:
         user.rejection_reason = payload.reason
@@ -418,6 +432,8 @@ def delete_user_account(
         raise HTTPException(status_code=404, detail="User not found")
     if user.is_deleted:
         raise HTTPException(status_code=400, detail="User is already deleted")
+    if is_super_admin(user):
+        raise HTTPException(status_code=403, detail="The super admin account cannot be deleted")
 
     user.is_deleted = True
     user.is_active = False
@@ -437,6 +453,8 @@ def delete_user_account(
         row.reviewed_by = current_user.id
         row.review_notes = f"Account deleted by admin. {user.deleted_reason}"
 
+    # Their tool seats and single-seat locks go with the account.
+    release_tool_access(db, user.id, current_user.id)
     revoke_user_sessions(db, user.id)
     db.commit()
     push_admin_realtime_event(
@@ -468,6 +486,7 @@ def admin_change_user_password(
         raise HTTPException(status_code=404, detail="User not found")
     if user.is_deleted:
         raise HTTPException(status_code=400, detail="Cannot change password for a deleted account")
+    _guard_super_admin(user, current_user, "reset by another admin")
 
     user.hashed_password = get_password_hash(payload.new_password)
     revoke_user_sessions(db, user.id)
@@ -486,6 +505,53 @@ def admin_change_user_password(
         },
     )
     return {"success": True, "message": "User password updated successfully"}
+
+
+@router.post("/users/{user_id}/admin-access")
+def set_user_admin_access(
+    user_id: int,
+    payload: AdminAccessPayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    user = db.query(User).filter(User.id == user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_deleted:
+        raise HTTPException(status_code=400, detail="Cannot change admin access for a deleted account")
+
+    if payload.enabled:
+        if not user.is_active:
+            raise HTTPException(status_code=400, detail="Restore login access before granting admin access")
+        user.is_admin = True
+        grant_role(db, user, ADMIN_ROLE)
+    else:
+        if is_super_admin(user):
+            raise HTTPException(status_code=403, detail="Admin access cannot be removed from the super admin")
+        if user.id == current_user.id:
+            raise HTTPException(status_code=400, detail="You cannot remove your own admin access")
+        user.is_admin = False
+        # "root" was only ever handed out alongside admin by the bootstrap.
+        revoke_role(db, user, ADMIN_ROLE)
+        revoke_role(db, user, "root")
+
+    db.commit()
+    db.refresh(user)
+    invalidate_admin_user_ids_cache()
+    push_admin_realtime_event(
+        db,
+        "admin_user_role_changed",
+        "Admin Access Granted" if payload.enabled else "Admin Access Removed",
+        f"Admin access {'granted to' if payload.enabled else 'removed from'} {user.name}.",
+        {
+            "userId": user.id,
+            "userEmail": user.email,
+            "userName": user.name,
+            "isAdmin": payload.enabled,
+            "updatedBy": current_user.id,
+        },
+    )
+    return {"success": True, "user": _serialize_user(user, "approved" if user.is_active else "pending")}
 
 
 @router.patch("/users/workplace-policy/bulk")

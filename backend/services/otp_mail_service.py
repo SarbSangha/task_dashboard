@@ -359,6 +359,52 @@ def latest_otp_uid_from_gmail(
                 pass
 
 
+def _header_text(message: Message, *names: str) -> str:
+    return " ".join(_decode_mime_header(value) for name in names for value in (message.get_all(name) or [])).lower()
+
+
+def _message_matches(
+    message: Message,
+    *,
+    sender_filter: Optional[str],
+    subject_pattern: Optional[str],
+    recipient: Optional[str],
+) -> bool:
+    """Whether a fetched email is really the one asked for.
+
+    The search widens to looser queries (down to "any email in the last few
+    minutes") when the filtered ones find nothing, so a shared inbox hands
+    back other tools' mail too. Every candidate is checked here against the
+    sender and subject filters, and - when given - the login the code is for,
+    so one account never gets another's code."""
+    if sender_filter and sender_filter.strip().lower() not in _header_text(message, "From", "Sender"):
+        return False
+    if subject_pattern and subject_pattern.strip().lower() not in _decode_mime_header(message.get("Subject", "")).lower():
+        return False
+    if recipient and recipient.strip().lower() not in _header_text(
+        message, "To", "Cc", "Delivered-To", "X-Original-To", "X-Forwarded-To"
+    ):
+        return False
+    return True
+
+
+_YEAR_LIKE = re.compile(r"(?:19|20)\d{2}")
+_CODE_HINT_BEFORE = re.compile(r"(?:code|otp|passcode|verification|verify|pin)\W{0,3}(?:\w+\W+){0,4}$", re.IGNORECASE)
+
+
+def _extract_code(pattern: str, subject: str, body: str) -> Optional[str]:
+    """The first code `pattern` finds in the subject, then the body. A
+    4-digit number that reads as a year (the "© 2026" in a footer) counts
+    only right after words like "code" or "verification"."""
+    for text in (subject, body):
+        for match in re.finditer(pattern, text or ""):
+            code = match.group(1) if match.groups() else match.group(0)
+            if _YEAR_LIKE.fullmatch(code) and not _CODE_HINT_BEFORE.search(text[max(0, match.start() - 40):match.start()]):
+                continue
+            return code
+    return None
+
+
 def _normalize_host(value: str) -> str:
     raw = (value or "").strip().lower()
     if not raw:
@@ -400,7 +446,11 @@ def fetch_otp_from_gmail(
     poll_interval_seconds: int = 2,
     not_before_dt: Optional[datetime] = None,
     after_uid: Optional[str] = None,
+    *,
+    otp_recipient: Optional[str] = None,
 ) -> Optional[str]:
+    """`otp_recipient`: the login the code is for; an email not addressed to
+    it is skipped (a shared inbox gets codes for several accounts)."""
     cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
     if not_before_dt is not None:
         cutoff_dt = max(cutoff_dt, not_before_dt.astimezone(timezone.utc))
@@ -479,10 +529,13 @@ def fetch_otp_from_gmail(
 
                     subject = _decode_mime_header(message.get("Subject", ""))
                     logger.debug("[OTP IMAP] checking subject=%r", subject[:60])
+                    if not _message_matches(message, sender_filter=otp_sender_filter,
+                                            subject_pattern=otp_subject_pattern, recipient=otp_recipient):
+                        logger.debug("[OTP IMAP] skipped uid=%s: sender/subject/recipient does not match", msg_id)
+                        continue
 
-                    match = re.search(pattern, subject) or re.search(pattern, _extract_body(message))
-                    if match:
-                        otp = match.group(1)
+                    otp = _extract_code(pattern, subject, _extract_body(message))
+                    if otp:
                         if not_before_dt is not None and message_dt and message_dt < cutoff_dt:
                             continue
                         logger.info("[OTP IMAP] OTP extracted for %s", email_address)

@@ -8,7 +8,8 @@ Checks, on an in-memory SQLite database:
   * a later price closes the earlier one; older songs keep their price;
   * a same-day entry corrects the price instead of adding a period;
   * deleting a price re-opens the previous one over its dates;
-  * songs before the first price stay unpriced (NULL);
+  * songs no price covers get Suno's default, 5 credits per song, and songs
+    stored before that default existed are stamped by stamp_unpriced;
   * a newly captured song is priced as it is normalized, by its own date;
   * the admin API: list / set / delete, admin only.
 """
@@ -79,7 +80,10 @@ def credits():
     return out
 
 
-check(all(v == (None, None) for v in credits().values()), "no price yet: every song unpriced")
+check(all(v == (None, None) for v in credits().values()), "stored before the default: every song unpriced")
+check(P.stamp_unpriced(db) == 6 and all(v == (5, 5) for v in credits().values()) and P.stamp_unpriced(db) == 0,
+      "stamp_unpriced: every song gets the default 5 (and its GenerationRecord), once")
+db.commit()
 
 _row, stamped = P.set_price(db, "Suno", 5, AUG17, "5 credits per song")
 db.commit()
@@ -119,8 +123,8 @@ early = P.prices(db, "Suno")[0]
 P.delete_price(db, early.id)
 db.commit()
 c = credits()
-check(c[(AUG17, "complete")] == (None, None) and c[(SEP1, "complete")] == (8, 8),
-      "deleting the first price: songs before 1 Sep are unpriced again")
+check(c[(AUG17, "complete")] == (5, 5) and c[(SEP1, "complete")] == (8, 8),
+      "deleting the first price: songs before 1 Sep fall back to the default 5")
 
 # A newly captured song is priced as it is normalized.
 P.set_price(db, "Suno", 5, AUG17)
@@ -141,6 +145,7 @@ check(g.credits_used == 5 and rec.credits_burned == 5, "a new capture (31 Aug) i
 
 summary = P.summary(db)[0]
 check(summary["tool"] == "Suno" and summary["unit"] == "song" and summary["currentCredits"] == 8
+      and summary["defaultCredits"] == 5
       and summary["generations"] == 7 and summary["firstGenerationDate"] == AUG17.isoformat()
       and [h["credits"] for h in summary["history"]] == [8, 5],
       f"summary for the admin screen: {summary['currentCredits']} now, history newest first")

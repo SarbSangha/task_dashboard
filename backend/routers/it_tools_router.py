@@ -636,9 +636,12 @@ def _build_admin_credential_summaries_by_tool(
     if assigned_user_ids:
         # Only the three fields shown: whole User rows carry the base64
         # avatar, which made this the slowest query on GET /tools.
+        # Deleted users are not listed (their seats are closed on delete).
         users_by_id = {
             user.id: user
-            for user in db.query(User.id, User.name, User.email).filter(User.id.in_(assigned_user_ids)).all()
+            for user in db.query(User.id, User.name, User.email)
+            .filter(User.id.in_(assigned_user_ids), User.is_deleted == False)
+            .all()
         }
 
     assignments_by_tool_and_credential_id: dict[tuple[int, int], list[dict]] = {}
@@ -1255,15 +1258,15 @@ def _apply_shared_credential_assignments(
 ) -> None:
     desired_user_ids = sorted({int(user_id) for user_id in assigned_user_ids if int(user_id) > 0})
     if desired_user_ids:
-        users = (
-            db.query(User)
-            .filter(User.id.in_(desired_user_ids), User.is_deleted == False)
-            .all()
-        )
+        users = db.query(User.id, User.is_deleted).filter(User.id.in_(desired_user_ids)).all()
         found_user_ids = {user.id for user in users}
         missing_user_ids = [user_id for user_id in desired_user_ids if user_id not in found_user_ids]
         if missing_user_ids:
             raise HTTPException(status_code=404, detail="One or more selected users could not be found")
+        # A deleted user still on an open screen is dropped, not refused: it
+        # would otherwise block every save of this login's assignments.
+        deleted_user_ids = {user.id for user in users if user.is_deleted}
+        desired_user_ids = [user_id for user_id in desired_user_ids if user_id not in deleted_user_ids]
 
     active_user_rows = (
         db.query(ITPortalToolCredential)
@@ -1640,6 +1643,39 @@ def _cleanup_auth_link_tickets() -> None:
         del _auth_link_consumed_tickets[ticket]
 
 
+# What a tool's OTP email looks like, for mailbox entries an admin left on the
+# defaults (no sender filter, the "any 4-8 digits" regex). A mailbox shared
+# with other tools otherwise hands back whichever email arrived last and the
+# first number in it - another tool's code, or the year in a footer.
+# match_recipient: the email must be addressed to the login being signed in,
+# since one inbox can receive codes for several accounts.
+# ChatGPT: "Your temporary ChatGPT login code" from noreply@tm.openai.com, a
+# 6-digit code in the body. OpenAI also mails "New sign-in to your OpenAI
+# account" after every login - a date (the year) but no code - which on a
+# shared login is often the newest email; the subject filter keeps it out.
+DEFAULT_OTP_REGEX = r"\b(\d{4,8})\b"
+OTP_TOOL_DEFAULTS = {
+    "chatgpt": {"otp_sender_filter": "openai.com", "otp_subject_pattern": "code", "otp_regex": r"\b(\d{6})\b",
+                "match_recipient": True},
+}
+
+
+def _apply_otp_tool_defaults(mailbox_entry: dict, canonical_tool_slug: str, credential_email: str) -> dict:
+    defaults = OTP_TOOL_DEFAULTS.get(canonical_tool_slug)
+    if not defaults:
+        return mailbox_entry
+    entry = dict(mailbox_entry)
+    if not entry.get("otp_sender_filter"):
+        entry["otp_sender_filter"] = defaults["otp_sender_filter"]
+    if not entry.get("otp_subject_pattern") and defaults.get("otp_subject_pattern"):
+        entry["otp_subject_pattern"] = defaults["otp_subject_pattern"]
+    if (entry.get("otp_regex") or DEFAULT_OTP_REGEX) == DEFAULT_OTP_REGEX:
+        entry["otp_regex"] = defaults["otp_regex"]
+    if defaults.get("match_recipient") and (credential_email or "").strip():
+        entry["otp_recipient"] = credential_email.strip()
+    return entry
+
+
 def _resolve_extension_otp_mailbox(
     db: Session,
     payload: OtpRequestPayload,
@@ -1672,6 +1708,7 @@ def _resolve_extension_otp_mailbox(
     credential_email = decrypt_secret(effective_credential.login_identifier_encrypted) if effective_credential else ""
     mailbox = db.query(ITPortalToolMailbox).filter(ITPortalToolMailbox.tool_id == tool.id).first()
     mailbox_entry = _select_matching_mailbox_entry(tool, mailbox, credential_email=credential_email)
+    mailbox_entry = _apply_otp_tool_defaults(mailbox_entry, _canonical_tool_slug_for_tool(tool), credential_email)
     return tool, mailbox_entry
 
 
@@ -3910,6 +3947,14 @@ async def get_extension_otp(
             max(0, payload.otp_not_before_epoch_ms - skew_ms) / 1000,
             tz=timezone.utc,
         )
+    # A code for this launch can only arrive after the launch. Without this
+    # floor a tool whose script sends no start time (ChatGPT) took the newest
+    # code in the inbox - on a shared login, often an earlier person's
+    # already-used one. The ticket's iat is server time; 10s of slack.
+    launch_iat = int(_decode_ticket(extension_ticket).get("iat") or 0)
+    if launch_iat:
+        launch_floor_dt = datetime.fromtimestamp(max(0, launch_iat - 10), tz=timezone.utc)
+        otp_not_before_dt = max(otp_not_before_dt, launch_floor_dt) if otp_not_before_dt else launch_floor_dt
 
     otp_poll_timeout_sec = (
         OTP_HIGGSFIELD_MAX_WAIT_SEC
@@ -3929,7 +3974,7 @@ async def get_extension_otp(
             fetch_otp_from_gmail,
             mailbox_entry["email_address"],
             app_password,
-            mailbox_entry.get("otp_regex") or r"\b(\d{4,8})\b",
+            mailbox_entry.get("otp_regex") or DEFAULT_OTP_REGEX,
             mailbox_entry.get("otp_sender_filter"),
             mailbox_entry.get("otp_subject_pattern"),
             OTP_EMAIL_MAX_AGE_SEC,
@@ -3938,6 +3983,7 @@ async def get_extension_otp(
             OTP_CODE_POLL_INTERVAL_SEC,
             otp_not_before_dt,
             payload.otp_after_uid,
+            otp_recipient=mailbox_entry.get("otp_recipient"),
         )
         last_fetch_error = None
     except imaplib.IMAP4.error as exc:
@@ -4214,7 +4260,9 @@ def list_credentials(
         if assigned_user_ids:
             users_by_id = {
                 user.id: user
-                for user in db.query(User).filter(User.id.in_(assigned_user_ids)).all()
+                for user in db.query(User)
+                .filter(User.id.in_(assigned_user_ids), User.is_deleted == False)
+                .all()
             }
 
         assignments_by_credential_id: dict[int, list[dict]] = {}

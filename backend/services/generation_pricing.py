@@ -1,17 +1,20 @@
 """Fixed credits per generation for tools that never report a cost (Suno).
 
 Suno's capture carries no per-song cost (providers/suno/CAPTURE_CONTRACT.md),
-but a song costs a known, fixed number of credits. An admin records that
-price with a start date (Reports -> Credit Rates); this module stamps it onto
-every generation of the tool, past and future:
+but a song costs a known, fixed number of credits: Suno charges 5 per song
+(DEFAULT_CREDITS). An admin can record a different price with a start date
+(Reports -> Credit Rates); this module stamps it onto every generation of the
+tool, past and future:
 
 * each generation gets the price in effect on its IST date - every charge
   status, so a song shows its cost wherever it is listed (totals still only
-  count Charged rows);
+  count Charged rows); dates no admin price covers get the default;
 * a price change starts a new dated row and closes the previous one, so
   older songs keep the price they were made at;
 * adding or removing a price re-stamps only the dates it covers; new
-  captures are stamped as they are normalized (stamp_generation).
+  captures are stamped as they are normalized (stamp_generation), and
+  captures stored before the default existed are stamped at startup
+  (stamp_unpriced).
 
 The value is written to the tool's own credits column and mirrored onto its
 cross-tool GenerationRecord.credits_burned, so the Credit Report, the cost
@@ -30,6 +33,9 @@ from sqlalchemy.orm import Session
 from models_new import GenerationRecord, ToolGenerationPrice
 
 IST = timedelta(minutes=330)
+
+# Credits per generation on dates no admin price covers.
+DEFAULT_CREDITS = {"Suno": 5}
 
 
 @dataclass(frozen=True)
@@ -70,12 +76,18 @@ def price_on(price_rows: list, day: Optional[date]) -> Optional[int]:
     return None
 
 
+def credits_on(tool: str, price_rows: list, day: Optional[date]) -> Optional[int]:
+    """The admin price in effect on `day`, else the tool's default."""
+    credits = price_on(price_rows, day)
+    return DEFAULT_CREDITS.get(tool) if credits is None else credits
+
+
 def stamp_generation(db: Session, tool: str, generation, record: Optional[GenerationRecord] = None) -> None:
     """Price one generation (called while it is normalized)."""
     spec = _tools().get(tool)
     if spec is None:
         return
-    credits = price_on(prices(db, tool), generation_day(generation))
+    credits = credits_on(tool, prices(db, tool), generation_day(generation))
     setattr(generation, spec.credits_column, credits)
     if record is not None:
         record.credits_burned = credits
@@ -92,15 +104,28 @@ def apply_prices(db: Session, tool: str, start: Optional[date] = None, end: Opti
         q = q.filter(when >= datetime(start.year, start.month, start.day) - IST)
     if end:
         q = q.filter(when < datetime(end.year, end.month, end.day) + timedelta(days=1) - IST)
-    rows = q.all()
-    price_rows = prices(db, tool)
+    return _stamp_rows(db, spec, q.all())
+
+
+def stamp_unpriced(db: Session) -> int:
+    """Stamp every generation still without a price (captured before the
+    tool's default existed). Returns how many rows were stamped. Does not commit."""
+    stamped = 0
+    for spec in _tools().values():
+        rows = db.query(spec.model).filter(getattr(spec.model, spec.credits_column).is_(None)).all()
+        stamped += _stamp_rows(db, spec, rows)
+    return stamped
+
+
+def _stamp_rows(db: Session, spec: PricedTool, rows: list) -> int:
+    price_rows = prices(db, spec.name)
     records = {}
     record_ids = [r.generation_record_id for r in rows if getattr(r, "generation_record_id", None)]
     for i in range(0, len(record_ids), 500):
         for rec in db.query(GenerationRecord).filter(GenerationRecord.id.in_(record_ids[i:i + 500])):
             records[rec.id] = rec
     for row in rows:
-        credits = price_on(price_rows, generation_day(row))
+        credits = credits_on(spec.name, price_rows, generation_day(row))
         setattr(row, spec.credits_column, credits)
         rec = records.get(getattr(row, "generation_record_id", None))
         if rec is not None and rec.provider == spec.provider:
@@ -171,7 +196,8 @@ def summary(db: Session) -> list:
         out.append({
             "tool": name,
             "unit": spec.unit,
-            "currentCredits": price_on(rows, today),
+            "currentCredits": credits_on(name, rows, today),
+            "defaultCredits": DEFAULT_CREDITS.get(name),
             "firstGenerationDate": (first_generation_day(db, name) or today).isoformat(),
             "generations": int(total),
             "generationsWithoutPrice": int(unpriced),

@@ -19,7 +19,8 @@ Rule, among a job's Charged rows in the report period:
   one person - and is flagged "owner uncertain".
 
 Charged Kling rows with no generation_id cannot be checked; they are kept
-and listed. Read-only: the database is never changed, the report just
+and listed. Rows with no client are skipped: the report leaves them out
+entirely (see facts.py). Read-only: the database is never changed, the report just
 leaves the dropped rows out (see facts._kling_select).
 """
 
@@ -98,13 +99,15 @@ class KlingDedup:
 
 
 def find_recorded_twice(db: Session, start: date, end: date, *, kling_slugs, sane_max: float,
-                        is_charged, name_of=None, ignore_users=()) -> KlingDedup:
+                        is_charged, has_client=None, name_of=None, ignore_users=()) -> KlingDedup:
     """Kling jobs recorded more than once among Charged rows with an IST
     event_date in [start, end]. `is_charged(raw status)` is the report's own
-    charge rule; `name_of(user id, raw name)` its display name rule.
+    charge rule; `has_client(raw client)` its no-client rule (default: not
+    blank); `name_of(user id, raw name)` its display name rule.
     `ignore_users` (excluded test & admin accounts) never count as the one
     person using an account."""
     ignore = set(ignore_users)
+    has_client = has_client or (lambda c: bool((c or "").strip()))
     e = ITPortalToolUsageEvent
     tool_ids = [tid for (tid,) in db.query(ITPortalTool.id).filter(
         func.lower(func.coalesce(ITPortalTool.slug, "")).in_(tuple(kling_slugs))).all()]
@@ -112,7 +115,7 @@ def find_recorded_twice(db: Session, start: date, end: date, *, kling_slugs, san
     if not tool_ids:
         return out
     rows = (db.query(e.id, e.user_id, e.source, e.status, e.credits_burned, e.created_at, e.event_date,
-                     e.credential_id, e.generation_id)
+                     e.credential_id, e.generation_id, e.linked_client_name)
             .filter(e.tool_id.in_(tool_ids), e.event_date >= start, e.event_date <= end)
             .order_by(e.created_at, e.id).all())
     starters_by_account = defaultdict(set)
@@ -121,7 +124,7 @@ def find_recorded_twice(db: Session, start: date, end: date, *, kling_slugs, san
         source = (r.source or "").strip().lower()
         if source in STARTER_SOURCES and r.user_id is not None and int(r.user_id) not in ignore:
             starters_by_account[r.credential_id].add(int(r.user_id))
-        if not is_charged(r.status):
+        if not is_charged(r.status) or not has_client(r.linked_client_name):
             continue
         credits = float(r.credits_burned or 0.0)
         row = KlingRow(id=int(r.id), user_id=int(r.user_id) if r.user_id is not None else None, source=source,

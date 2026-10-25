@@ -1557,7 +1557,9 @@ def _filters_line(filters: ReportFilters) -> str:
     else:
         user = filters.user_label or (f"User #{filters.user_id}" if filters.user_id is not None else "All")
     return (f"Department: {filters.department or 'All'}  ·  User: {user}  ·  "
-            f"Tool: {filters.tool or 'All'}  ·  Client: {filters.client or 'All'}")
+            f"Tool: {filters.tool or 'All'}  ·  Client: {filters.client or 'All'}"
+            + (f"  ·  Account: {filters.display.account_label(filters.accounts[0], filters.tool or 'Account')}"
+               if filters.accounts else ""))
 
 
 def _exclusion_line(filters: ReportFilters, model: ReportModel) -> str:

@@ -101,10 +101,12 @@ const ReportsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
     onMinimizedChange?.(isOpen && isMinimized);
   }, [isMinimized, isOpen, onMinimizedChange]);
 
+  // Deep Analytics' filter choices: Excel & Spend has its own, so they load
+  // only once a Deep Analytics section is open.
   const filtersQuery = useQuery({
     queryKey: ['reports', 'filters'],
     queryFn: () => reportsAPI.filters(),
-    enabled: isOpen,
+    enabled: isOpen && section !== 'excel-studio',
     staleTime: 10 * 60_000,
   });
   const departments = filtersQuery.data?.departments || [];

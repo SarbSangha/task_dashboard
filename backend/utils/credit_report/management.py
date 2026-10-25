@@ -322,12 +322,13 @@ def fill_period(view: PeriodView, groups: list, day_groups: list = ()) -> Period
 
 
 def build_period(db: Session, filters: ReportFilters, groups: Optional[list] = None,
-                 last_used: Optional[dict] = None) -> PeriodView:
+                 last_used: Optional[dict] = None, day_groups: Optional[list] = None) -> PeriodView:
     prepare(db, filters)
     groups = groups if groups is not None else load_groups(db, filters)
     view = PeriodView(start=filters.start, end=filters.end,
-                      filtered=bool(filters.department or filters.user_id is not None or filters.tool or filters.client))
-    fill_period(view, groups, load_day_groups(db, filters))
+                      filtered=bool(filters.department or filters.user_id is not None or filters.tool or filters.client
+                                    or bool(filters.accounts)))
+    fill_period(view, groups, day_groups if day_groups is not None else load_day_groups(db, filters))
     accounts = load_account_groups(db, filters)
     if last_used is None:
         last_used = load_last_used(db, filters.cost)
@@ -394,12 +395,13 @@ class ManagementView:
 
 
 def build_management(db: Session, filters: ReportFilters, groups: list, *, generated_at: Optional[datetime] = None,
-                     duplicates: int = 0, duplicate_rupees: float = 0.0) -> ManagementView:
+                     duplicates: int = 0, duplicate_rupees: float = 0.0,
+                     day_groups: Optional[list] = None) -> ManagementView:
     from .insights import attention_items, key_points
 
     prepare(db, filters)
     last_used = load_last_used(db, filters.cost)
-    cur = build_period(db, filters, groups, last_used)
+    cur = build_period(db, filters, groups, last_used, day_groups)
     p_start, p_end = previous_period(filters.start, filters.end)
     prev_filters = filters.shifted(p_start, p_end)
     prev = build_period(db, prev_filters, None, last_used)

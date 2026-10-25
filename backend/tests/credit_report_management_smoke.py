@@ -10,6 +10,7 @@ hand below, then checks:
   days, shared by size; unused fees are "Paid, not used";
 * Kling jobs recorded twice count once (starter kept; history-only jobs go
   to the account's only starter, flagged), rows with no job ID are listed;
+  Kling rows with no client are left out entirely;
 * Freepik uploads are not generations; ElevenLabs free preview models are ₹0;
 * ₹ totals agree: Summary = Team & Clients = detail sheets = Generation Log,
   overall and per tool;
@@ -172,14 +173,20 @@ def seed():
             return row.id
 
         IDS["J1"] = ev(asha, 100, date(2026, 10, 3), 6, ka, "J1", "xhr_response", "RMW", "j1 prompt")
-        IDS["J1copy"] = ev(bob, 100, date(2026, 10, 5), 6, ka, "J1", "asset_history_discovered")
+        IDS["J1copy"] = ev(bob, 100, date(2026, 10, 5), 6, ka, "J1", "asset_history_discovered", "RMW")
         IDS["J2"] = ev(bob, 200, date(2026, 10, 4), 6, kb, "J2", "generate_intent", "Acme")
-        IDS["J3"] = ev(bob, 60, date(2026, 10, 6), 6, ka, "J3", "asset_history_discovered")
-        IDS["J3copy"] = ev(cara, 60, date(2026, 10, 6), 7, ka, "J3", "asset_history_discovered")
+        IDS["J3"] = ev(bob, 60, date(2026, 10, 6), 6, ka, "J3", "asset_history_discovered", "Acme")
+        IDS["J3copy"] = ev(cara, 60, date(2026, 10, 6), 7, ka, "J3", "asset_history_discovered", "Acme")
+        # History-scan copy of J2 under its own job ID and with no client, as
+        # Kling's history really records them: left out, never counted.
+        IDS["noclient"] = ev(bob, 200, date(2026, 10, 4), 6, kb, "J2-history", "asset_history_discovered")
         # Found by a history scan (not a Generate click), so KA still has one starter: Asha.
-        IDS["noid"] = ev(cara, 40, date(2026, 10, 7), 6, ka, None, "asset_history_discovered", "Applicant")
+        IDS["noid"] = ev(cara, 40, date(2026, 10, 7), 6, ka, None, "asset_history_discovered", "Acme")
+        # "Applicant" is a placeholder the display config maps to "No client": left out too.
+        IDS["applicant"] = ev(cara, 30, date(2026, 10, 7), 7, kb, "J5", "asset_history_discovered", "Applicant")
         ev(admin, 70, date(2026, 10, 3), 8, ka, "JA", "xhr_response")
-        ev(asha, 50, date(2026, 9, 20), 6, ka, "J0", "xhr_response")                 # previous period
+        ev(asha, 50, date(2026, 9, 20), 6, ka, "J0", "xhr_response", "Acme")         # previous period
+        ev(asha, 20, date(2026, 9, 21), 6, ka, "J0b", "asset_history_discovered")    # previous period, no client
 
         at = datetime(2026, 10, 2, 9)
         db.add_all([
@@ -258,6 +265,7 @@ def test_costing_and_dedupe():
         j1 = next(j for j in k.jobs if j.job == "J1")
         _assert(not j1.owner_uncertain and j1.kept.id == IDS["J1"], "J1: the starter's (API) row is kept")
         _assert([r.id for r in k.no_job_id] == [IDS["noid"]], "the row with no job ID is listed")
+        _assert(not any(g.tool == "Kling" and g.client == NO_CLIENT for g in groups), "Kling rows with no client left out")
         # Rate fallback: KB has no rate of its own -> KA's (the tool's) rate, flagged; never the ₹1 placeholder.
         rate, assumed = f.cost.rate_on("Kling", IDS["KB"], date(2026, 10, 4))
         _assert(rate == RATE and assumed, f"rate assumed for KB: {rate} {assumed}")
@@ -265,6 +273,48 @@ def test_costing_and_dedupe():
     _close(period_fee(3100, date(2026, 10, 1), date(2026, 10, 14)), 1400, "fee pro-rated by days")
     _close(period_fee(3100, date(2026, 9, 17), date(2026, 10, 14)), 3100 * 14 / 30 + 1400, "fee across two months")
     print("ok  costing: pay-per-use, subscription shares, Kling recorded twice, uploads, preview models")
+
+
+def test_account_filter():
+    """One tool account at a time: KA holds J1, J3 and the no-job-ID row; KB holds J2."""
+    from utils.credential_crypto import encrypt_secret
+    from utils.credit_report.facts import load_options, stream_log
+    with SessionLocal() as db:
+        for account, expected in ((IDS["KA"], (100 + 60 + 40) * RATE), (IDS["KB"], 200 * RATE)):
+            f = _filters(db, tool="Kling", accounts=[account])
+            groups = _charged(load_groups(db, f))
+            _close(sum(g.rupees for g in groups), expected, f"Kling account {account} ₹")
+            log = list(stream_log(db, f, [IDS["asha"], IDS["Bob"], IDS["Cara"], 0]))
+            _assert(log and {r.account for r in log} == {account}, f"log rows of account {account} only")
+        # An account of another tool leaves Kling empty; the shifted (previous) period keeps the account.
+        _assert(not load_groups(db, _filters(db, tool="Kling", accounts=str(IDS["F1"]))), "Freepik account on Kling: no rows")
+        _assert(_filters(db, accounts=IDS["KA"]).shifted(date(2026, 9, 1), date(2026, 9, 30)).accounts == (IDS["KA"],),
+                "previous period keeps the account filter")
+        def options():
+            return {i: a for a in load_options(db)["accounts"] for i in a["ids"]}
+
+        accounts = options()
+        _assert(accounts[IDS["KA"]]["tool"] == "Kling" and accounts[IDS["F1"]]["tool"] == "Freepik",
+                "options list each tool account with its tool")
+        _assert(accounts[IDS["KA"]]["label"] == f"Kling #{IDS['KA']}", "no login stored -> 'Tool #id'")
+
+        # With a login stored, accounts read as that login; a linked user-scope account borrows it.
+        ka = db.get(ITPortalToolCredential, IDS["KA"])
+        ka.login_identifier_encrypted = encrypt_secret("digital@ctm.com")
+        linked = ITPortalToolCredential(tool_id=ka.tool_id, scope="user", linked_credential_id=ka.id)
+        db.add(linked)
+        db.flush()
+        try:
+            accounts = options()
+            _assert(accounts[IDS["KA"]]["label"] == "digital@ctm.com", "account named by its login")
+            _assert(accounts[linked.id] is accounts[IDS["KA"]] and accounts[IDS["KA"]]["ids"] == [IDS["KA"], linked.id],
+                    "one login shared by two account records is one option covering both")
+            f = _filters(db, tool="Kling", accounts=accounts[IDS["KA"]]["ids"])
+            log = list(stream_log(db, f, [IDS["asha"], IDS["Bob"], IDS["Cara"], 0]))
+            _assert(f.display.account_label(log[0].account, "Kling") == "digital@ctm.com", "log rows named by login")
+        finally:
+            db.rollback()
+    print("ok  account filter: one Kling account at a time, log rows carry their account")
 
 
 # --------------------------------------------------------------------------- #
@@ -276,7 +326,8 @@ def _independent_previous(db) -> tuple:
     utc_s, utc_e = datetime(2026, 9, 16, 18, 30), datetime(2026, 9, 30, 18, 30)
     kling = sum(float(e.credits_burned) * RATE for e in db.query(ITPortalToolUsageEvent)
                 .filter(ITPortalToolUsageEvent.event_date >= start, ITPortalToolUsageEvent.event_date <= end,
-                        ITPortalToolUsageEvent.user_id != IDS["Admin"]))
+                        ITPortalToolUsageEvent.user_id != IDS["Admin"])
+                if (e.linked_client_name or "").strip())          # Kling rows with no client are left out
     fees = {k: (v or 0.0) * SEP for k, v in FEE.items()}
     other = OTHER_FEE * SEP              # counted; Higgsfield P (renewal passed, unused) is not
     used = {"F1": db.query(FreepikGeneration).filter(FreepikGeneration.provider_created_at >= utc_s,
@@ -599,6 +650,7 @@ def _summary_only(path: str) -> str:
 def main() -> int:
     seed()
     test_costing_and_dedupe()
+    test_account_filter()
     test_previous_period()
     test_sentences()
     test_full_version_totals_and_links()

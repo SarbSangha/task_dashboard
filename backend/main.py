@@ -12,6 +12,7 @@ import re
 import time
 import traceback
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 # FIXED: Use relative imports or backend prefix
 from database_config import (
@@ -80,6 +81,7 @@ from auth import get_password_hash
 from auth import cleanup_expired_reset_tokens, cleanup_expired_sessions
 from routers.tasks_router import notification_dispatcher
 from services.notification_outbox_service import dispatch_notification_outbox_batch
+from services.role_service import ensure_super_admin
 from routers.report_distribution_router import process_due_schedules
 
 def _split_csv(value: str) -> list[str]:
@@ -525,7 +527,44 @@ async def lifespan(app: FastAPI):
                     _safe_print("DEFAULT_ADMIN_ROLES ignored for existing user; update roles from admin UI or database.")
         else:
             _safe_print("Default admin bootstrap disabled: DEFAULT_ADMIN_EMAIL is not set.")
+
         op_db.commit()
+
+        # The super admin's admin access cannot be removed from the admin UI.
+        # Best-effort: an unreachable database must not block startup - the
+        # seed simply runs again on the next start.
+        try:
+            super_admin = ensure_super_admin(op_db, os.getenv("SUPER_ADMIN_EMAIL") or admin_email)
+            op_db.commit()
+            if super_admin:
+                _safe_print(f"Super admin ensured: {super_admin.email}")
+        except SQLAlchemyError as exc:
+            op_db.rollback()
+            _safe_print(f"WARNING: super admin check skipped, database unavailable: {exc.__class__.__name__}")
+
+        # Captures stored before a tool had a default price (Suno: 5 credits
+        # per song) get it now; same best-effort rule as above.
+        try:
+            from services.generation_pricing import stamp_unpriced
+            stamped = stamp_unpriced(op_db)
+            op_db.commit()
+            if stamped:
+                _safe_print(f"Priced {stamped} generations with the default credits per generation")
+        except SQLAlchemyError as exc:
+            op_db.rollback()
+            _safe_print(f"WARNING: default generation pricing skipped, database unavailable: {exc.__class__.__name__}")
+
+        # Tool seats and single-seat locks still held by users deleted before
+        # deleting a user released them.
+        try:
+            from services.tool_access_cleanup import release_deleted_users_tool_access
+            closed = release_deleted_users_tool_access(op_db)
+            op_db.commit()
+            if closed:
+                _safe_print(f"Closed {closed} tool seats held by deleted users")
+        except SQLAlchemyError as exc:
+            op_db.rollback()
+            _safe_print(f"WARNING: deleted-user tool cleanup skipped, database unavailable: {exc.__class__.__name__}")
     finally:
         op_db.close()
     

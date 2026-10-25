@@ -3,7 +3,7 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 import hashlib
 import json
 import secrets
@@ -419,7 +419,9 @@ def resolve_session_user(
     """Resolve a signed session to a user with one database lookup."""
     user_id, issued_at, token_fingerprint = _decode_session_token(token)
     _validate_session_fingerprint(token_fingerprint, session_fingerprint)
-    user = db.query(User).filter(User.id == user_id).first()
+    # Every authenticated request runs this: leave out the avatar, a base64
+    # image of up to a few MB. A handler that reads it loads it then.
+    user = db.query(User).options(defer(User.avatar)).filter(User.id == user_id).first()
 
     if not user:
         if raise_on_missing:

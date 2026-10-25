@@ -53,7 +53,7 @@ from services.admin_workflow_service import (
     sanitize_request_payload,
 )
 from services.feature_access_service import feature_access_map
-from services.role_service import normalize_roles, replace_user_roles, user_role_names
+from services.role_service import replace_user_roles, strip_privileged_roles, user_role_names
 
 
 KNOWN_DEPARTMENTS = (
@@ -737,7 +737,8 @@ def register(
         _lock_employee_id_generation(db)
 
         # Create user
-        requested_roles = normalize_roles(user_data.roles or [])
+        # Self-signup must never be able to request admin-level roles.
+        requested_roles = strip_privileged_roles(user_data.roles or [])
         new_user = User(
             email=user_data.email,
             employee_id=generate_employee_id(db),

@@ -47,6 +47,25 @@ export function buildColumns({ drill, openOutput }) {
         cell: (r) => <ToolTag name={r.tool} onClick={() => drill({ tool: r.tool })} />,
       },
       {
+        key: 'account',
+        label: 'Account',
+        sort: (r) => r.accountId ?? -1,
+        td: 'nowrap',
+        cell: (r) =>
+          r.accountId != null ? (
+            <button
+              type="button"
+              className="zrs-cell-btn"
+              onClick={() => drill({ tool: r.tool, accountId: r.accountId })}
+              title={`Show only ${r.account}`}
+            >
+              {r.account}
+            </button>
+          ) : (
+            <span className="zrs-muted">{r.account || '—'}</span>
+          ),
+      },
+      {
         key: 'output',
         label: 'Output',
         sort: (r) => r.outputType,

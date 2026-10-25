@@ -50,8 +50,10 @@ from .facts import (
     load_day_groups,
     load_excluded_summary,
     load_groups,
+    load_model_counts,
     load_options,
     prepare,
+    recent_log,
     stream_log,
 )
 from .management import build_management, change_text, period_label
@@ -149,6 +151,7 @@ def build_live_sheet(
     user_id: Optional[int] = None,
     tool: Optional[str] = None,
     client: Optional[str] = None,
+    accounts=None,
     output_type: Optional[str] = None,
     search: Optional[str] = None,
     exclude_test_accounts: bool = False,
@@ -179,6 +182,7 @@ def build_live_sheet(
         user_id=user_id,
         tool=facts_tool,
         client=clean_client,
+        accounts=accounts,
         exclude_test_accounts=exclude_test_accounts,
     )
     prepare(db, filters)
@@ -186,8 +190,8 @@ def build_live_sheet(
     groups = load_groups(db, filters)
     excluded_info = load_excluded_summary(db, filters)
     model = build_model(groups, excluded_info)
-    mgmt = build_management(db, filters, groups)
     day_groups = load_day_groups(db, filters)
+    mgmt = build_management(db, filters, groups, day_groups=day_groups)
 
     # User metadata lookup
     user_meta: dict[int, dict] = {
@@ -237,12 +241,24 @@ def build_live_sheet(
         else:
             bucket["failed"] += dg.rows
 
-    # Pull individual generation log rows
-    if model.log_user_order:
-        for raw_row in stream_log(db, filters, model.log_user_order):
+    # Pull individual generation log rows. Without a search or output-type
+    # filter the log is just the newest `log_limit` rows, read straight from
+    # the database; a filter has to look at every row, so it streams them all.
+    scan_all = bool(search_q or clean_out_type)
+    if model.log_user_order and not scan_all:
+        for r in load_model_counts(db, filters):
+            out_type, _what = classify_generation(r.tool, r.model, None)
+            user_output_types[r.user_id][out_type] += int(r.rows or 0)
+        log_source = recent_log(db, filters, log_limit)
+    elif model.log_user_order:
+        log_source = stream_log(db, filters, model.log_user_order)
+    else:
+        log_source = ()
+    if log_source:
+        for raw_row in log_source:
             u_info = user_meta.get(raw_row.user_id, user_meta[UNASSIGNED_USER_ID])
             out_type, what_gen = classify_generation(raw_row.tool, raw_row.model, raw_row.prompt)
-            if raw_row.charge_status == CHARGED:
+            if scan_all and raw_row.charge_status == CHARGED:
                 user_output_types[raw_row.user_id][out_type] += 1
 
             if clean_out_type and out_type.lower() != clean_out_type.lower():
@@ -295,6 +311,8 @@ def build_live_sheet(
                     "prompt": prompt_text or "—",
                     "client": client_name,
                     "task": task_name,
+                    "accountId": raw_row.account,
+                    "account": filters.display.account_label(raw_row.account, raw_row.tool),
                     "credits": round(float(raw_row.credits or 0.0), 2),
                     "spendRupees": round(float(raw_row.rupees or 0.0), 2),
                     "chargeStatus": raw_row.charge_status,
@@ -342,7 +360,7 @@ def build_live_sheet(
         tools_list = [f"{t} ({c})" for t, c in sorted(tools_dict.items(), key=lambda kv: -kv[1])]
         out_types_dict = user_output_types.get(uid, {})
         what_summary = ", ".join(
-            f"{ot}: {cnt}" for ot, cnt in sorted(out_types_dict.items(), key=lambda kv: -kv[1])
+            f"{ot}: {cnt}" for ot, cnt in sorted(out_types_dict.items(), key=lambda kv: (-kv[1], kv[0]))
         ) or "—"
         share_pct = round((u_rupees / item_spend_rs * 100.0), 1) if item_spend_rs > 0 else (
             round((u_gens / total_gens * 100.0), 1) if total_gens > 0 else 0.0
@@ -557,7 +575,7 @@ def build_live_sheet(
     active_users_cnt = len([u for u in users_sheet if u["userId"] != UNASSIGNED_USER_ID and u["generations"] > 0])
     active_tools_cnt = len([t for t in tools_sheet if t["generations"] > 0])
 
-    opts = load_options(db)
+    opts = load_options(db, filters.display)
 
     return {
         "success": True,

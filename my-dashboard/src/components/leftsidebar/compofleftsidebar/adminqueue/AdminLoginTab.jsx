@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { authAPI } from '../../../../services/api';
+import { useAuth } from '../../../../context/AuthContext';
 import { UserAvatar } from '../../../common/UserAvatar';
 import './AdminLoginTab.css';
 
@@ -29,7 +30,8 @@ function ToastStack({ toasts }) {
 }
 
 function StatusBadge({ user }) {
-  if (user.isDeleted) return <span className="alt-badge alt-badge--deleted">Deleted</span>;
+  if (user.isDeleted)    return <span className="alt-badge alt-badge--deleted">Deleted</span>;
+  if (user.isSuperAdmin) return <span className="alt-badge alt-badge--admin">Super Admin</span>;
   if (user.isAdmin)   return <span className="alt-badge alt-badge--admin">Admin</span>;
   if (user.isActive)  return <span className="alt-badge alt-badge--active">Active</span>;
   return <span className="alt-badge alt-badge--disabled">Disabled</span>;
@@ -54,6 +56,7 @@ export default function AdminLoginTab({
   users, setUsers, search, loading,
   showConfirm, showPrompt, setMessage, onViewUser, onReload, formatDateTime,
 }) {
+  const { user: currentUser } = useAuth();
   const [filter, setFilter]           = useState('all');
   const [selected, setSelected]       = useState(new Set());
   const [expanded, setExpanded]       = useState(null);
@@ -172,6 +175,26 @@ export default function AdminLoginTab({
       addToast(e?.response?.data?.detail || 'Failed to delete account.', 'error');
     }
   }, [showConfirm, showPrompt, onReload, addToast]);
+
+  const handleToggleAdmin = useCallback(async (targetUser) => {
+    const grant = !targetUser.isAdmin;
+    const ok = await showConfirm(
+      grant
+        ? `Give ${targetUser.name} (${targetUser.email}) full admin access?
+
+They will be able to manage users, approvals and every admin setting.`
+        : `Remove admin access from ${targetUser.name} (${targetUser.email})?`,
+      { title: grant ? 'Make Admin' : 'Remove Admin' },
+    );
+    if (!ok) return;
+    try {
+      const res = await authAPI.setUserAdminAccess(targetUser.id, grant);
+      setUsers((p) => p.map((u) => (u.id === targetUser.id ? { ...u, ...res.user } : u)));
+      addToast(grant ? `${targetUser.name} is now an admin.` : `Admin access removed from ${targetUser.name}.`);
+    } catch (e) {
+      addToast(e?.response?.data?.detail || 'Failed to update admin access.', 'error');
+    }
+  }, [showConfirm, setUsers, addToast]);
 
   // ── Bulk actions ───────────────────────────────────────────────────────────
 
@@ -326,10 +349,22 @@ export default function AdminLoginTab({
                               <button type="button" className="alt-expand-act" onClick={() => onViewUser(u)}>
                                 View Full Profile
                               </button>
-                              {!u.isDeleted && (
+                              {!u.isDeleted && (!u.isSuperAdmin || u.id === currentUser?.id) && (
                                 <button type="button" className="alt-expand-act" onClick={() => handleChangePassword(u)}>
                                   Change Password
                                 </button>
+                              )}
+                              {!u.isDeleted && !u.isSuperAdmin && u.id !== currentUser?.id && (u.isAdmin || u.isActive) && (
+                                <button
+                                  type="button"
+                                  className={`alt-expand-act${u.isAdmin ? ' alt-expand-act--danger' : ''}`}
+                                  onClick={() => handleToggleAdmin(u)}
+                                >
+                                  {u.isAdmin ? 'Remove Admin' : 'Make Admin'}
+                                </button>
+                              )}
+                              {u.isSuperAdmin && (
+                                <span className="alt-expand-note">Super admin — access cannot be removed.</span>
                               )}
                               {!u.isDeleted && !u.isAdmin && (
                                 <button type="button" className="alt-expand-act alt-expand-act--danger" onClick={() => handleDelete(u)}>

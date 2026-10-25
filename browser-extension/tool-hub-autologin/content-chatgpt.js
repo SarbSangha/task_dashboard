@@ -1234,6 +1234,7 @@ async function handleGoogleFlow() {
 // ── Authorization ─────────────────────────────────────────────
 async function checkAuth() {
   const ticket = captureTicket();
+  let ticketError = '';
   if (ticket) {
     const res = await sendMsg({ type: 'TOOL_HUB_ACTIVATE_LAUNCH', toolSlug: TOOL_SLUG, hostname: location.hostname, pageUrl: location.href, extensionTicket: ticket });
     if (res?.ok && res.authorized) {
@@ -1241,11 +1242,23 @@ async function checkAuth() {
       clearTicket();
       return { authorized: true, hostname: CTX.launchHostname };
     }
-    clearTicket();
+    // Keep the ticket for the AUTH phase's retries: the first attempt can fail
+    // transiently (e.g. the Incognito background worker still starting), and
+    // the URL copy is already gone. stop() clears it once retries run out.
+    ticketError = `${res?.error || 'ticket rejected'}`;
   }
   const res = await sendMsg({ type: 'TOOL_HUB_GET_LAUNCH_STATE', toolSlug: TOOL_SLUG, hostname: location.hostname, pageUrl: location.href });
   CTX.launchHostname = `${res?.hostname || CTX.launchHostname || ''}`.trim().toLowerCase();
-  return { authorized: Boolean(res?.ok && res.authorized), hostname: CTX.launchHostname };
+  const authorized = Boolean(res?.ok && res.authorized);
+  // Surfaced in the status log so "Not authorized" says WHY: no ticket reached
+  // this tab, the ticket was rejected (e.g. PC clock skew), or the background
+  // itself errored.
+  const reason = authorized ? '' : (
+    ticketError ? `launch ticket rejected: ${ticketError}`
+      : (!res?.ok ? `background error: ${res?.error || 'no response'}`
+        : 'no launch ticket reached this tab')
+  );
+  return { authorized, hostname: CTX.launchHostname, reason };
 }
 
 // ── Credential loader ─────────────────────────────────────────
@@ -1484,11 +1497,11 @@ async function tick() {
     case PHASE.AUTH: {
       setStatus('Checking authorization...');
       let auth;
-      try { auth = await checkAuth(); } catch { auth = { authorized: false }; }
+      try { auth = await checkAuth(); } catch (err) { auth = { authorized: false, reason: `check failed: ${err?.message || err}` }; }
       if (!auth.authorized) {
         CTX.authRetries += 1;
-        if (CTX.authRetries > MAX_AUTH_RETRIES) { stop('Open this tool from the dashboard first.'); return; }
-        setStatus(`Not authorized yet (${CTX.authRetries}/${MAX_AUTH_RETRIES})...`);
+        if (CTX.authRetries > MAX_AUTH_RETRIES) { stop(`Open this tool from the dashboard first. (${auth.reason || 'unknown'})`); return; }
+        setStatus(`Not authorized yet (${CTX.authRetries}/${MAX_AUTH_RETRIES}) - ${auth.reason || 'unknown'}...`);
         wake(AUTH_RETRY_DELAY_MS); return;
       }
       CTX.authorized = true;
@@ -2757,6 +2770,16 @@ try {
 
 // ── Entry point ───────────────────────────────────────────────
 function start() {
+  // Auto-login runs in the top frame only, like the capture code above. This
+  // script is injected with all_frames, and each iframe would otherwise run
+  // its own auth/credential/fill loop - logging spurious "Not authorized yet"
+  // and spending the launch's credential continuations.
+  if (window.top !== window) return;
+  // Stash the dashboard launch ticket into sessionStorage right away rather
+  // than after the BOOT settle wait - ChatGPT's client router can rewrite the
+  // URL in that window and the ticket (ChatGPT's only authorization path,
+  // see DIRECT_TICKET_ONLY_TOOLS in background-main.js) would be lost.
+  if (!onGoogleDomain()) captureTicket();
   const boot = async () => {
     if (onGoogleDomain()) {
       let auth;

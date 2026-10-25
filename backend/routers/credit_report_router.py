@@ -39,6 +39,7 @@ from utils.credit_report import (
     resolve_output_url,
     to_pdf,
 )
+from utils.credit_report.live_cache import shared_build
 from utils.credit_report.live_sheet import build_live_sheet, seed_demo_ai_usage
 from utils.credit_report.output_media import (
     TOOL_KIND,
@@ -69,6 +70,13 @@ def _parse_iso_date(value: Optional[str], name: str) -> Optional[str]:
 
 REPORT_DB_ENV = "CREDIT_REPORT_DATABASE_URL"   # a SELECT-only role (report_ro); unset = the app's connection
 _report_engine = None
+
+
+def _parse_account_ids(value: Optional[str]) -> list:
+    ids = [p.strip() for p in (value or "").split(",") if p.strip()]
+    if not all(p.isdigit() for p in ids):
+        raise HTTPException(status_code=400, detail="account must be comma-separated account ids")
+    return [int(p) for p in ids]
 
 
 def _report_bind():
@@ -140,10 +148,12 @@ def credit_report_live_sheet(
     user: Optional[int] = Query(None, description="0 = Unknown user"),
     tool: Optional[str] = Query(None),
     client: Optional[str] = Query(None),
+    account: Optional[str] = Query(None, description="One login: its account (credential) ids, comma-separated"),
     outputType: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     excludeTestAccounts: bool = Query(False),
     limit: int = Query(800, ge=50, le=3000),
+    fresh: bool = Query(False, description="Skip a report finished in the last few seconds (Refresh)"),
     db: Session = Depends(get_operational_db),
     _: User = Depends(require_credit_report_access),
 ):
@@ -154,7 +164,15 @@ def credit_report_live_sheet(
     end_iso = _parse_iso_date(end, "end")
     if start_iso and end_iso and start_iso > end_iso:
         raise HTTPException(status_code=400, detail="start must be on or before end")
-    return build_live_sheet(
+    accounts = _parse_account_ids(account)
+    # Without a search or output-type filter the log is the newest rows, so
+    # one build at the default size serves any smaller limit (Home asks for
+    # 50): it keeps the first `limit` rows. A filtered log is built as asked.
+    scan = bool((search or "").strip() or (outputType or "").strip().lower() not in ("", "all"))
+    build_limit = limit if scan else max(limit, 800)
+    key = (start_iso, end_iso, department, user, tool, client, tuple(accounts), outputType, search,
+           excludeTestAccounts, build_limit)
+    payload = shared_build(key, lambda: build_live_sheet(
         db,
         start=start_iso,
         end=end_iso,
@@ -162,11 +180,15 @@ def credit_report_live_sheet(
         user_id=user,
         tool=tool,
         client=client,
+        accounts=accounts,
         output_type=outputType,
         search=search,
         exclude_test_accounts=excludeTestAccounts,
-        log_limit=limit,
-    )
+        log_limit=build_limit,
+    ), fresh=fresh)
+    if limit >= build_limit:
+        return payload
+    return {**payload, "sheets": {**payload["sheets"], "log": payload["sheets"]["log"][:limit]}}
 
 
 @router.post("/seed-demo")
@@ -195,6 +217,7 @@ def export_credit_report(
     user: Optional[int] = Query(None, description="0 = Unknown user (generations with no owner)"),
     tool: Optional[str] = Query(None),
     client: Optional[str] = Query(None),
+    account: Optional[str] = Query(None, description="One login: its account (credential) ids, comma-separated"),
     # On by default: the Summary is a management view, so test & admin
     # accounts stay out unless asked for (excludeTestAccounts=false).
     excludeTestAccounts: bool = Query(True, description="Leave out admin and test accounts (config + "
@@ -222,7 +245,8 @@ def export_credit_report(
         start_iso, end_iso = first.isoformat(), last.isoformat()
 
     filters = ReportFilters.build(start=start_iso, end=end_iso, department=department, user_id=user,
-                                  tool=tool, client=client, exclude_test_accounts=excludeTestAccounts)
+                                  tool=tool, client=client, accounts=_parse_account_ids(account),
+                                  exclude_test_accounts=excludeTestAccounts)
     if filters.user_id not in (None, UNASSIGNED_USER_ID):
         target = db.query(User.name).filter(User.id == filters.user_id).scalar()
         filters.user_label = filters.display.person_name(filters.user_id, target) if target else f"User #{filters.user_id}"

@@ -616,6 +616,13 @@ export const authAPI = {
     return response.data;
   },
 
+  // Grant/revoke admin power. The backend refuses to revoke it from the
+  // super admin account.
+  setUserAdminAccess: async (userId, enabled) => {
+    const response = await api.post(`/api/admin/users/${userId}/admin-access`, { enabled });
+    return response.data;
+  },
+
   getDeletedUsers: async () => {
     const response = await api.get('/api/admin/deleted-users');
     return response.data;

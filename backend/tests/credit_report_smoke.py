@@ -136,6 +136,8 @@ def _close(a, b, message):
 def seed():
     """Rows per user (Oct, IST), C = Charged, P = Pending, F = Failed:
 
+    Kling rows are client Gamma unless shown; Kling rows with no client are
+    left out of the report entirely (Ravi 25 C blank, Ravi 35 C none).
     Ravi  Kling 100 C Acme, 50 C, duplicate pair 10+10 C 3 s apart, 10 C 20 s later (not a dup),
           10 P same prompt (not a dup: pending); HeyGen 50 C Acme           = 230 C, 10 P
     Asha  Kling 5000->0 C, Freepik 20 C Beta, HeyGen 180 C Beta, HeyGen 6 P processing,
@@ -170,7 +172,7 @@ def seed():
         db.add(kling)
         db.flush()
 
-        def ev(uid, credits, client=None, day=date(2026, 10, 3), prompt=None, status="settled", at=None):
+        def ev(uid, credits, client="Gamma", day=date(2026, 10, 3), prompt=None, status="settled", at=None):
             e = ITPortalToolUsageEvent(tool_id=kling.id, user_id=uid, event_type="generation", event_date=day,
                                        credits_burned=credits, linked_client_name=client, prompt_text=prompt,
                                        status=status, created_at=at or datetime(day.year, day.month, day.day, 6))
@@ -179,7 +181,9 @@ def seed():
             return e
 
         e1 = ev(ravi, 100, "Acme", prompt="a cat on the moon")
-        ev(ravi, 50, "  ")
+        ev(ravi, 50)
+        ev(ravi, 25, "  ")                                      # no client -> left out
+        ev(ravi, 35, None)                                      # no client -> left out
         dup_day = datetime(2026, 10, 4, 6, 0, 0)
         ev(ravi, 10, prompt=DUP_PROMPT, day=date(2026, 10, 4), at=dup_day)
         ev(ravi, 10, prompt=DUP_PROMPT, day=date(2026, 10, 4), at=dup_day.replace(second=3))
@@ -289,7 +293,8 @@ def test_group_queries():
             _close(by_user.get(name, 0), expected, f"{name} charged credits")
         unassigned = [g for g in groups if g.user_id == UNASSIGNED_USER_ID]
         _assert(unassigned and all(g.department == UNASSIGNED_DEPARTMENT for g in unassigned), "no owner -> unknown user / No department")
-        _close(_charged(groups, "tool")["Kling"], 180, "Kling: clamp 5000 -> 0, September excluded")
+        _close(_charged(groups, "tool")["Kling"], 180, "Kling: clamp 5000 -> 0, September and no-client rows excluded")
+        _assert(not any(g.tool == "Kling" and g.client == NO_CLIENT for g in groups), "Kling rows with no client left out")
         flow = [g for g in groups if g.tool == "Flow"]
         _assert(sum(g.generations for g in flow) == 1, "Flow: IST boundaries keep 1 of 2 rows")
         _assert({g.month for g in groups} == {"2026-10"}, "IST month")
