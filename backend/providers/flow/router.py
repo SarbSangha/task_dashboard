@@ -217,7 +217,7 @@ def list_generations(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
-    query = db.query(FlowGeneration).filter(FlowGeneration.provider == PROVIDER)
+    query = db.query(FlowGeneration).filter(FlowGeneration.provider == PROVIDER, FlowGeneration.archived_at.is_(None))
     if owner_user_id is not None:
         query = query.filter(FlowGeneration.owner_user_id == owner_user_id)
     if batch_id:
@@ -244,7 +244,7 @@ def get_generation(
 ):
     generation = (
         db.query(FlowGeneration)
-        .filter(FlowGeneration.provider == PROVIDER, FlowGeneration.id == generation_id)
+        .filter(FlowGeneration.provider == PROVIDER, FlowGeneration.id == generation_id, FlowGeneration.archived_at.is_(None))
         .first()
     )
     if not generation:

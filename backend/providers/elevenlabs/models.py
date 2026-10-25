@@ -45,6 +45,8 @@ from sqlalchemy import (
 )
 
 from database_config import Base
+from utils.admin_card_credits import admin_credits_entry, admin_credits_payload
+from utils.admin_card_media import admin_media_payload
 from utils.datetime_utils import serialize_utc_datetime
 from utils import r2_storage
 
@@ -276,6 +278,10 @@ class ElevenlabsGeneration(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+    # Admin card edits (routers/provider_card_admin_router.py). Own columns,
+    # not metadata_json: normalization rewrites metadata_json on every capture.
+    admin_edit_json = Column(JSON)
+    archived_at = Column(DateTime, index=True)
 
     def to_dict(self):
         r2_client = r2_storage.build_client() if self.mirrored_asset_key and r2_storage.is_configured() else None
@@ -313,6 +319,8 @@ class ElevenlabsGeneration(Base):
             "mediaUrl": self.media_url,
             "thumbnailUrl": self.thumbnail_url,
             "metadata": self.metadata_json or {},
+            "adminMedia": admin_media_payload(self.admin_edit_json),
+            "adminCredits": admin_credits_payload(admin_credits_entry(self.admin_edit_json)),
             "mirroredAssetUrl": _presigned_mirror_url(self.mirrored_asset_key, client=r2_client),
             "assetMirrorStatus": self.asset_mirror_status,
             "assetMirrorAttemptedAt": serialize_utc_datetime(self.asset_mirror_attempted_at),

@@ -4,7 +4,7 @@ import GenerationDetailPanel from './GenerationDetailPanel';
 import '../../../trending/kling/KlingGenerationDrawer.css';
 
 // Mirrors freepik-capture/FreepikGenerationDrawer.jsx exactly.
-export default function EnvatoGenerationDrawer({ generationId, onClose }) {
+export default function EnvatoGenerationDrawer({ generationId, onClose, onGenerationUpdated, onGenerationDeleted }) {
   useEffect(() => {
     if (!generationId) return undefined;
     const handleKeyDown = (event) => {
@@ -37,7 +37,11 @@ export default function EnvatoGenerationDrawer({ generationId, onClose }) {
           </button>
         </div>
         <div className="kling-drawer-body">
-          <GenerationDetailPanel generationId={generationId} />
+          <GenerationDetailPanel
+            generationId={generationId}
+            onGenerationUpdated={onGenerationUpdated}
+            onGenerationDeleted={onGenerationDeleted}
+          />
         </div>
       </div>
     </div>,

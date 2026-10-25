@@ -11,7 +11,7 @@ import '../../../trending/kling/KlingGenerationDrawer.css';
  * HeygenGenerationDrawer.jsx/KlingGenerationDrawer.jsx: portal to
  * document.body, mount only while a generation is selected, Escape-to-close.
  */
-export default function HiggsfieldGenerationDrawer({ generationId, onClose }) {
+export default function HiggsfieldGenerationDrawer({ generationId, onClose, onGenerationUpdated, onGenerationDeleted }) {
   useEffect(() => {
     if (!generationId) return undefined;
     const handleKeyDown = (event) => {
@@ -44,7 +44,11 @@ export default function HiggsfieldGenerationDrawer({ generationId, onClose }) {
           </button>
         </div>
         <div className="kling-drawer-body">
-          <GenerationDetailPanel generationId={generationId} />
+          <GenerationDetailPanel
+            generationId={generationId}
+            onGenerationUpdated={onGenerationUpdated}
+            onGenerationDeleted={onGenerationDeleted}
+          />
         </div>
       </div>
     </div>,

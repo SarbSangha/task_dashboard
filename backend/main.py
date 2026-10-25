@@ -65,6 +65,7 @@ from routers import generation_projects_router
 from routers import generation_records_router
 from routers import generation_recovery_router
 from routers import generation_collections_router
+from routers import provider_card_admin_router
 from routers import reports_router
 from routers import credit_rates_router
 from routers import report_distribution_router
@@ -827,6 +828,9 @@ app.include_router(suno_router.router)
 
 # Grammarly Docs (coda.grammarly.com) Session Capture System
 app.include_router(grammarly_docs_router.router)
+
+# Admin card edits (replace media / delete card) for the provider capture cards above
+app.include_router(provider_card_admin_router.router)
 
 # Reports / Business Intelligence (AI Intelligence Command Center)
 app.include_router(reports_router.router)

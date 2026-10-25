@@ -11,7 +11,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
-from models_new import GenerationCollectionMember, GenerationProject, GenerationRecord, GenerationTag, User
+from models_new import (
+    GenerationCollectionMember,
+    GenerationProject,
+    GenerationRecord,
+    GenerationTag,
+    ITPortalToolUsageEvent,
+    User,
+)
+from utils.admin_card_credits import validate_admin_credits
 from utils.datetime_utils import serialize_utc_datetime
 from utils.generation_events import record_generation_project_event
 from utils import r2_storage
@@ -45,6 +53,9 @@ _WHITESPACE_RE = re.compile(r"\s+")
 ADMIN_VIDEO_MAX_BYTES = 90 * 1024 * 1024  # requests pass the proxy only under ~100 MB; same cap as the frontend's LEGACY_UPLOAD_FALLBACK_MAX_BYTES
 ADMIN_VIDEO_EXTENSIONS = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}
 ADMIN_VIDEO_KEY_PREFIX = "kling-admin-uploads"
+# The Kling reports zero out credits above their MAX_SANE_KLING_CREDITS (3000)
+# as garbage, so an admin can't enter more than that.
+ADMIN_KLING_MAX_CREDITS = 3000
 
 
 class GenerationTagCreatePayload(BaseModel):
@@ -1004,3 +1015,79 @@ def delete_generation(
     generation.updated_at = datetime.utcnow()
     db.commit()
     return {"success": True}
+
+
+class GenerationCreditsPayload(BaseModel):
+    credits: float
+
+
+def _card_usage_event(db: Session, generation: GenerationRecord) -> Optional[ITPortalToolUsageEvent]:
+    """The usage event the credit report reads this card's credits from."""
+    if not generation.source_usage_event_id:
+        return None
+    return db.query(ITPortalToolUsageEvent).filter(ITPortalToolUsageEvent.id == generation.source_usage_event_id).first()
+
+
+@router.put("/{generation_id}/credits")
+def set_generation_credits(
+    generation_id: int,
+    payload: GenerationCreditsPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Admin-entered credits for a Kling card: written to the card and to its
+    usage event (what the credit report reads), and held there against later
+    capture writes - see utils/admin_card_credits.py."""
+    try:
+        value = validate_admin_credits(payload.credits, whole=False, maximum=ADMIN_KLING_MAX_CREDITS)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    generation = _active_kling_generation(db, generation_id)
+    usage_event = _card_usage_event(db, generation)
+    previous = (generation.metadata_json or {}).get("adminCredits") or {}
+    metadata_json = _record_admin_edit(generation, current_user.id, "credits_set",
+                                       fromValue=generation.credits_burned, toValue=value)
+    metadata_json["adminCredits"] = {
+        "value": value,
+        # What capture recorded, restored on reset - kept from the first edit on.
+        "capturedValue": previous["capturedValue"] if "capturedValue" in previous else generation.credits_burned,
+        "capturedEventValue": (
+            previous["capturedEventValue"] if "capturedEventValue" in previous
+            else (usage_event.credits_burned if usage_event else None)
+        ),
+        "editedByAdminId": current_user.id,
+        "editedAt": datetime.utcnow().isoformat(),
+    }
+    generation.metadata_json = metadata_json
+    generation.admin_credits = value
+    generation.credits_burned = value
+    generation.updated_at = datetime.utcnow()
+    if usage_event:
+        usage_event.credits_burned = value
+    db.commit()
+    return _generation_detail_payload(db, generation_id)
+
+
+@router.delete("/{generation_id}/credits")
+def reset_generation_credits(
+    generation_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Drops the admin-entered credits, restoring the latest captured values."""
+    generation = _active_kling_generation(db, generation_id)
+    entry = (generation.metadata_json or {}).get("adminCredits")
+    if generation.admin_credits is None or not isinstance(entry, dict):
+        raise HTTPException(status_code=400, detail="This card has no admin-entered credits")
+    usage_event = _card_usage_event(db, generation)
+    metadata_json = _record_admin_edit(generation, current_user.id, "credits_reset",
+                                       fromValue=entry.get("value"), toValue=entry.get("capturedValue"))
+    metadata_json.pop("adminCredits", None)
+    generation.metadata_json = metadata_json
+    generation.admin_credits = None
+    generation.credits_burned = entry.get("capturedValue")
+    generation.updated_at = datetime.utcnow()
+    if usage_event:
+        usage_event.credits_burned = entry.get("capturedEventValue")
+    db.commit()
+    return _generation_detail_payload(db, generation_id)

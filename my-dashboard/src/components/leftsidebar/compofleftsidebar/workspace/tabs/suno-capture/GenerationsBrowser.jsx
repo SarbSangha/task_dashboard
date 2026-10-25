@@ -25,6 +25,7 @@ export default function GenerationsBrowser({
   downloadedOnly,
   onTotalChange,
   onOpenGeneration,
+  editedGeneration,
 }) {
   const [generations, setGenerations] = useState([]);
   const [total, setTotal] = useState(0);
@@ -70,6 +71,20 @@ export default function GenerationsBrowser({
   useEffect(() => {
     onTotalChange?.(total);
   }, [total, onTotalChange]);
+
+  // An admin card edit made in the detail drawer (AdminCardActions), applied
+  // to the loaded list in place rather than refetching away loaded pages.
+  useEffect(() => {
+    if (!editedGeneration?.id) return;
+    if (editedGeneration.deleted) {
+      setGenerations((prev) => prev.filter((item) => item.id !== editedGeneration.id));
+      setTotal((prev) => Math.max(0, prev - 1));
+    } else if (editedGeneration.data) {
+      setGenerations((prev) => prev.map((item) => (
+        item.id === editedGeneration.id ? { ...item, ...editedGeneration.data } : item
+      )));
+    }
+  }, [editedGeneration]);
 
   const handleLoadMore = useCallback(() => {
     if (loadingMore || generations.length >= total) return;

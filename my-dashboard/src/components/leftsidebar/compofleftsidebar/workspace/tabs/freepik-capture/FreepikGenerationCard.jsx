@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { AdminMediaCardPreview } from '../../../../../common/AdminMediaPreview';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import { useNearViewport } from '../../../../../../hooks/useNearViewport';
 import { formatRelativeTime, getOwnershipStatusMeta, isVideoAssetUrl, truncate } from './freepikCaptureUtils';
@@ -63,7 +64,11 @@ export const FreepikGenerationCard = React.memo(function FreepikGenerationCard({
   return (
     <div className="kling-card">
       <div className="kling-card-preview" onClick={() => onOpen(generation)}>
-        <FreepikCardPreview generation={generation} />
+        {generation.adminMedia ? (
+          <AdminMediaCardPreview media={generation.adminMedia} />
+        ) : (
+          <FreepikCardPreview generation={generation} />
+        )}
       </div>
 
       <div className="kling-card-top">

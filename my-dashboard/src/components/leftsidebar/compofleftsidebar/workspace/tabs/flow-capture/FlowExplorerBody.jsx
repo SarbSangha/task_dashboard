@@ -23,6 +23,8 @@ import '../../../trending/TrendingsPanel.css';
 export default function FlowExplorerBody({ searchInput = '' }) {
   const { isAdmin } = usePermissions();
   const [openGenerationId, setOpenGenerationId] = useState(null);
+  // Last admin card edit from the drawer, applied to the loaded list by GenerationsBrowser.
+  const [editedGeneration, setEditedGeneration] = useState(null);
   const [generationsTotal, setGenerationsTotal] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -55,10 +57,19 @@ export default function FlowExplorerBody({ searchInput = '' }) {
       <GenerationsBrowser
         searchInput={searchInput}
         onOpenGeneration={setOpenGenerationId}
+        editedGeneration={editedGeneration}
         onTotalChange={setGenerationsTotal}
       />
 
-      <FlowGenerationDrawer generationId={openGenerationId} onClose={() => setOpenGenerationId(null)} />
+      <FlowGenerationDrawer
+        generationId={openGenerationId}
+        onClose={() => setOpenGenerationId(null)}
+        onGenerationUpdated={(data) => setEditedGeneration({ id: data.id, data })}
+        onGenerationDeleted={(id) => {
+          setEditedGeneration({ id, deleted: true });
+          setOpenGenerationId(null);
+        }}
+      />
 
       <DeveloperToolsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </div>

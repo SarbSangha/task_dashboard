@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { AdminMediaCardPreview } from '../../../../../common/AdminMediaPreview';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import { useNearViewport } from '../../../../../../hooks/useNearViewport';
 import { formatRelativeTime, getGenerationStatusMeta, getOwnershipStatusMeta, truncate } from './higgsfieldCaptureUtils';
@@ -68,7 +69,11 @@ export const HiggsfieldGenerationCard = React.memo(function HiggsfieldGeneration
   return (
     <div className="kling-card">
       <div className="kling-card-preview" onClick={() => onOpen(generation)}>
-        <HiggsfieldCardPreview generation={generation} />
+        {generation.adminMedia ? (
+          <AdminMediaCardPreview media={generation.adminMedia} />
+        ) : (
+          <HiggsfieldCardPreview generation={generation} />
+        )}
       </div>
 
       <div className="kling-card-top">

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { AdminMediaCardPreview } from '../../../../../common/AdminMediaPreview';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import { useNearViewport } from '../../../../../../hooks/useNearViewport';
 import { formatRelativeTime, getItemTypeMeta, getOwnershipStatusMeta, isAudioItemType, truncate } from './envatoCaptureUtils';
@@ -66,7 +67,11 @@ export const EnvatoGenerationCard = React.memo(function EnvatoGenerationCard({ g
   return (
     <div className="kling-card">
       <div className="kling-card-preview" onClick={() => onOpen(generation)}>
-        <EnvatoCardPreview generation={generation} />
+        {generation.adminMedia ? (
+          <AdminMediaCardPreview media={generation.adminMedia} />
+        ) : (
+          <EnvatoCardPreview generation={generation} />
+        )}
       </div>
 
       <div className="kling-card-top">

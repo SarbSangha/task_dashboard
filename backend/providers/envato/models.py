@@ -36,6 +36,8 @@ from sqlalchemy import (
 from datetime import datetime
 
 from database_config import Base
+from utils.admin_card_credits import admin_credits_entry, admin_credits_payload
+from utils.admin_card_media import admin_media_payload
 from utils.datetime_utils import serialize_utc_datetime
 from utils import r2_storage
 
@@ -231,6 +233,10 @@ class EnvatoGeneration(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+    # Admin card edits (routers/provider_card_admin_router.py). Own columns,
+    # not metadata_json: normalization rewrites metadata_json on every capture.
+    admin_edit_json = Column(JSON)
+    archived_at = Column(DateTime, index=True)
 
     def to_dict(self):
         return {
@@ -277,6 +283,8 @@ class EnvatoGeneration(Base):
             "thumbnailUrl": self.thumbnail_url,
             "srcSet": self.src_set_json or [],
             "metadata": self.metadata_json or {},
+            "adminMedia": admin_media_payload(self.admin_edit_json),
+            "adminCredits": admin_credits_payload(admin_credits_entry(self.admin_edit_json)),
             "sourceMetadata": self.source_metadata_json or {},
             "createdAt": serialize_utc_datetime(self.created_at),
             "updatedAt": serialize_utc_datetime(self.updated_at),

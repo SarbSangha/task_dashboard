@@ -14,7 +14,7 @@ import '../../../trending/kling/KlingGenerationDrawer.css';
  * generation is selected (rather than always-mounted + open/close via CSS
  * transform), Escape-to-close, and the same fade/slide-in entrance.
  */
-export default function FreepikGenerationDrawer({ generationId, onClose }) {
+export default function FreepikGenerationDrawer({ generationId, onClose, onGenerationUpdated, onGenerationDeleted }) {
   useEffect(() => {
     if (!generationId) return undefined;
     const handleKeyDown = (event) => {
@@ -47,7 +47,11 @@ export default function FreepikGenerationDrawer({ generationId, onClose }) {
           </button>
         </div>
         <div className="kling-drawer-body">
-          <GenerationDetailPanel generationId={generationId} />
+          <GenerationDetailPanel
+            generationId={generationId}
+            onGenerationUpdated={onGenerationUpdated}
+            onGenerationDeleted={onGenerationDeleted}
+          />
         </div>
       </div>
     </div>,

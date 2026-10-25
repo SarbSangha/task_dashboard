@@ -177,6 +177,43 @@ def _pg_add_column_if_missing(conn, table_name: str, column_name: str, sql_type:
     conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"))
 
 
+# Provider generations tables whose Capture Center cards admins can edit - see
+# routers/provider_card_admin_router.py.
+CARD_ADMIN_GENERATION_TABLES = (
+    "freepik_generations",
+    "higgsfield_generations",
+    "heygen_generations",
+    "suno_generations",
+    "elevenlabs_generations",
+    "envato_generations",
+    "flow_generations",
+)
+
+
+def _ensure_card_admin_columns(conn) -> None:
+    is_postgres = conn.dialect.name == "postgresql"
+    for table_name in CARD_ADMIN_GENERATION_TABLES:
+        if not _table_exists(conn, table_name):
+            continue
+        if is_postgres:
+            _pg_add_column_if_missing(conn, table_name, "admin_edit_json", "JSON")
+            _pg_add_column_if_missing(conn, table_name, "archived_at", "TIMESTAMP")
+        else:
+            columns = _table_columns(conn, table_name)
+            if "admin_edit_json" not in columns:
+                conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN admin_edit_json JSON"))
+            if "archived_at" not in columns:
+                conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN archived_at DATETIME"))
+        conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table_name}_archived_at ON {table_name}(archived_at)"))
+
+    # Admin-entered card credits (utils/admin_card_credits.py), Kling's and every provider's projection.
+    if _table_exists(conn, "generation_records"):
+        if is_postgres:
+            _pg_add_column_if_missing(conn, "generation_records", "admin_credits", "DOUBLE PRECISION")
+        elif "admin_credits" not in _table_columns(conn, "generation_records"):
+            conn.execute(text("ALTER TABLE generation_records ADD COLUMN admin_credits FLOAT"))
+
+
 def _pg_constraint_exists(conn, constraint_name: str) -> bool:
     row = conn.execute(
         text(
@@ -925,6 +962,8 @@ def _ensure_postgres_schema(conn) -> None:
 
     # ---- Flow Generation Capture System (see providers/flow/migrations.py) ----
     ensure_flow_postgres_schema(conn)
+
+    _ensure_card_admin_columns(conn)
 
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_enabled ON tasks(workflow_enabled)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_workflow_status ON tasks(workflow_status)"))
@@ -2086,6 +2125,8 @@ def ensure_operational_schema(engine) -> None:
 
         # ---- Flow Generation Capture System (see providers/flow/migrations.py) ----
         ensure_flow_sqlite_schema(conn)
+
+        _ensure_card_admin_columns(conn)
 
         conn.execute(
             text(

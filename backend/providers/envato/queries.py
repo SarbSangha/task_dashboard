@@ -33,7 +33,7 @@ class GenerationFilters:
 
 
 def _apply_generation_filters(query, filters: GenerationFilters):
-    query = query.filter(EnvatoGeneration.provider == PROVIDER)
+    query = query.filter(EnvatoGeneration.provider == PROVIDER, EnvatoGeneration.archived_at.is_(None))
     if filters.owner_user_id is not None:
         query = query.filter(EnvatoGeneration.owner_user_id == filters.owner_user_id)
     if filters.ownership_status:
@@ -76,7 +76,7 @@ def list_generations(db: Session, *, filters: GenerationFilters, limit: int = DE
 def get_generation(db: Session, generation_id: int) -> Optional[EnvatoGeneration]:
     return (
         db.query(EnvatoGeneration)
-        .filter(EnvatoGeneration.provider == PROVIDER, EnvatoGeneration.id == generation_id)
+        .filter(EnvatoGeneration.provider == PROVIDER, EnvatoGeneration.id == generation_id, EnvatoGeneration.archived_at.is_(None))
         .first()
     )
 

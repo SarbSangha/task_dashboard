@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { generationCollectionsAPI, generationRecordsAPI } from '../../../../../services/api';
+import AdminCreditsEditor from '../../../../common/AdminCreditsEditor';
 import { UserAvatar } from '../../../../common/UserAvatar';
 import { usePermissions } from '../../../../../hooks/usePermissions';
 import { getGenerationMediaKind, formatGenerationDate } from './klingMedia';
@@ -328,6 +329,21 @@ export default function KlingGenerationDrawer({
                 </button>
               </div>
               {adminError && <p className="kling-drawer-inline-error">{adminError}</p>}
+
+              <h4>Credits</h4>
+              <AdminCreditsEditor
+                currentCredits={detail.creditsBurned}
+                adminCredits={detail.metadata?.adminCredits}
+                max={3000}
+                onSave={async (value) => {
+                  const response = await generationRecordsAPI.setCredits(detail.id, value);
+                  applyAdminUpdate(response?.data);
+                }}
+                onReset={async () => {
+                  const response = await generationRecordsAPI.resetCredits(detail.id);
+                  applyAdminUpdate(response?.data);
+                }}
+              />
             </div>
           )}
 

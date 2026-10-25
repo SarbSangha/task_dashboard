@@ -46,6 +46,8 @@ export default function EnvatoExplorerBody({ searchInput = '' }) {
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [selectedUserName, setSelectedUserName] = useState(null);
   const [openGenerationId, setOpenGenerationId] = useState(null);
+  // Last admin card edit from the drawer, applied to the loaded list by GenerationsBrowser.
+  const [editedGeneration, setEditedGeneration] = useState(null);
 
   const [ownershipFilter, setOwnershipFilter] = useState('');
   const [itemTypeFilter, setItemTypeFilter] = useState('');
@@ -255,6 +257,7 @@ export default function EnvatoExplorerBody({ searchInput = '' }) {
           ownerName={selectedUserName}
           onBackToUsers={handleBackToUsers}
           onOpenGeneration={setOpenGenerationId}
+          editedGeneration={editedGeneration}
           searchInput={searchInput}
           ownershipFilter={ownershipFilter}
           itemTypeFilter={itemTypeFilter}
@@ -264,7 +267,15 @@ export default function EnvatoExplorerBody({ searchInput = '' }) {
         />
       )}
 
-      <EnvatoGenerationDrawer generationId={openGenerationId} onClose={() => setOpenGenerationId(null)} />
+      <EnvatoGenerationDrawer
+        generationId={openGenerationId}
+        onClose={() => setOpenGenerationId(null)}
+        onGenerationUpdated={(data) => setEditedGeneration({ id: data.id, data })}
+        onGenerationDeleted={(id) => {
+          setEditedGeneration({ id, deleted: true });
+          setOpenGenerationId(null);
+        }}
+      />
 
       <DeveloperToolsDrawer
         open={drawerOpen}

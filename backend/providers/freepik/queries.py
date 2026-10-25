@@ -38,7 +38,7 @@ class GenerationFilters:
 
 
 def _apply_generation_filters(query, filters: GenerationFilters):
-    query = query.filter(FreepikGeneration.provider == PROVIDER)
+    query = query.filter(FreepikGeneration.provider == PROVIDER, FreepikGeneration.archived_at.is_(None))
     if filters.owner_user_id is not None:
         query = query.filter(FreepikGeneration.owner_user_id == filters.owner_user_id)
     if filters.ownership_status:
@@ -89,7 +89,7 @@ def list_generations(db: Session, *, filters: GenerationFilters, limit: int = DE
 def get_generation(db: Session, generation_id: int) -> Optional[FreepikGeneration]:
     return (
         db.query(FreepikGeneration)
-        .filter(FreepikGeneration.provider == PROVIDER, FreepikGeneration.id == generation_id)
+        .filter(FreepikGeneration.provider == PROVIDER, FreepikGeneration.id == generation_id, FreepikGeneration.archived_at.is_(None))
         .first()
     )
 

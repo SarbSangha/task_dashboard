@@ -1,4 +1,5 @@
 import React from 'react';
+import { AdminMediaCardPreview } from '../../../../../common/AdminMediaPreview';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import { useNearViewport } from '../../../../../../hooks/useNearViewport';
 import { formatCount, formatRelativeTime, getOwnershipStatusMeta, truncate } from './sunoCaptureUtils';
@@ -58,7 +59,11 @@ export const SunoGenerationCard = React.memo(function SunoGenerationCard({ gener
   return (
     <div className="kling-card">
       <div className="kling-card-preview" onClick={() => onOpen(generation)}>
-        <SunoCardPreview generation={generation} />
+        {generation.adminMedia ? (
+          <AdminMediaCardPreview media={generation.adminMedia} />
+        ) : (
+          <SunoCardPreview generation={generation} />
+        )}
       </div>
 
       <div className="kling-card-top">

@@ -36,7 +36,7 @@ class GenerationFilters:
 
 
 def _apply_generation_filters(query, filters: GenerationFilters):
-    query = query.filter(HiggsfieldGeneration.provider == PROVIDER)
+    query = query.filter(HiggsfieldGeneration.provider == PROVIDER, HiggsfieldGeneration.archived_at.is_(None))
     if filters.owner_user_id is not None:
         query = query.filter(HiggsfieldGeneration.owner_user_id == filters.owner_user_id)
     if filters.ownership_status:
@@ -85,7 +85,7 @@ def list_generations(db: Session, *, filters: GenerationFilters, limit: int = DE
 def get_generation(db: Session, generation_id: int) -> Optional[HiggsfieldGeneration]:
     return (
         db.query(HiggsfieldGeneration)
-        .filter(HiggsfieldGeneration.provider == PROVIDER, HiggsfieldGeneration.id == generation_id)
+        .filter(HiggsfieldGeneration.provider == PROVIDER, HiggsfieldGeneration.id == generation_id, HiggsfieldGeneration.archived_at.is_(None))
         .first()
     )
 

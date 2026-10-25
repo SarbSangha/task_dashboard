@@ -234,7 +234,8 @@
   align-items: center;
 }
 
-.kling-drawer-collection-row select {
+.kling-drawer-collection-row select,
+.kling-drawer-collection-row .kling-tag-input-field {
   flex: 1 1 auto;
   min-width: 0;
 }

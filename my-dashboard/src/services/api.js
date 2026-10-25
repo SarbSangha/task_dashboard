@@ -1802,6 +1802,56 @@ export const generationRecordsAPI = {
     const response = await api.delete(`/api/generations/${generationId}`, requestConfig);
     return response.data;
   },
+
+  // Admin only: enter / reset the card's credits.
+  setCredits: async (generationId, credits, requestConfig = {}) => {
+    const response = await api.put(`/api/generations/${generationId}/credits`, { credits }, requestConfig);
+    return response.data;
+  },
+
+  resetCredits: async (generationId, requestConfig = {}) => {
+    const response = await api.delete(`/api/generations/${generationId}/credits`, requestConfig);
+    return response.data;
+  },
+};
+
+// Admin only: replace / remove a provider capture card's media, or delete the
+// card (Freepik, Higgsfield, HeyGen, Suno, ElevenLabs, Envato, Flow) - the
+// provider-generic twin of generationRecordsAPI's Kling card edits above.
+export const providerCardAdminAPI = {
+  uploadMedia: async (provider, generationId, file, { onProgress, ...requestConfig } = {}) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.put(`/api/providers/${provider}/generations/${generationId}/media`, formData, {
+      ...requestConfig,
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0,
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) onProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
+      },
+    });
+    return response.data;
+  },
+
+  removeMedia: async (provider, generationId, requestConfig = {}) => {
+    const response = await api.delete(`/api/providers/${provider}/generations/${generationId}/media`, requestConfig);
+    return response.data;
+  },
+
+  deleteGeneration: async (provider, generationId, requestConfig = {}) => {
+    const response = await api.delete(`/api/providers/${provider}/generations/${generationId}`, requestConfig);
+    return response.data;
+  },
+
+  setCredits: async (provider, generationId, credits, requestConfig = {}) => {
+    const response = await api.put(`/api/providers/${provider}/generations/${generationId}/credits`, { credits }, requestConfig);
+    return response.data;
+  },
+
+  resetCredits: async (provider, generationId, requestConfig = {}) => {
+    const response = await api.delete(`/api/providers/${provider}/generations/${generationId}/credits`, requestConfig);
+    return response.data;
+  },
 };
 
 export const generationRecoveryAPI = {

@@ -381,7 +381,7 @@ def list_generations(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_admin),
 ):
-    query = db.query(SunoGeneration).filter(SunoGeneration.provider == PROVIDER)
+    query = db.query(SunoGeneration).filter(SunoGeneration.provider == PROVIDER, SunoGeneration.archived_at.is_(None))
     if owner_user_id is not None:
         query = query.filter(SunoGeneration.owner_user_id == owner_user_id)
     if model_name:
@@ -420,7 +420,7 @@ def get_generation(
 ):
     generation = (
         db.query(SunoGeneration)
-        .filter(SunoGeneration.provider == PROVIDER, SunoGeneration.id == generation_id)
+        .filter(SunoGeneration.provider == PROVIDER, SunoGeneration.id == generation_id, SunoGeneration.archived_at.is_(None))
         .first()
     )
     if not generation:

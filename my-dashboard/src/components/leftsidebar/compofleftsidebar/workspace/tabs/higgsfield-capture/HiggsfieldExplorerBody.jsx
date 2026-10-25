@@ -51,6 +51,8 @@ export default function HiggsfieldExplorerBody({ searchInput = '' }) {
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [selectedUserName, setSelectedUserName] = useState(null);
   const [openGenerationId, setOpenGenerationId] = useState(null);
+  // Last admin card edit from the drawer, applied to the loaded list by GenerationsBrowser.
+  const [editedGeneration, setEditedGeneration] = useState(null);
 
   // `searchInput` comes from TrendingsPanel's own header, same as HeyGen's.
   const [ownershipFilter, setOwnershipFilter] = useState('');
@@ -224,6 +226,7 @@ export default function HiggsfieldExplorerBody({ searchInput = '' }) {
           ownerName={selectedUserName}
           onBackToUsers={handleBackToUsers}
           onOpenGeneration={setOpenGenerationId}
+          editedGeneration={editedGeneration}
           searchInput={searchInput}
           ownershipFilter={ownershipFilter}
           taskFilter={taskFilter}
@@ -232,7 +235,15 @@ export default function HiggsfieldExplorerBody({ searchInput = '' }) {
         />
       )}
 
-      <HiggsfieldGenerationDrawer generationId={openGenerationId} onClose={() => setOpenGenerationId(null)} />
+      <HiggsfieldGenerationDrawer
+        generationId={openGenerationId}
+        onClose={() => setOpenGenerationId(null)}
+        onGenerationUpdated={(data) => setEditedGeneration({ id: data.id, data })}
+        onGenerationDeleted={(id) => {
+          setEditedGeneration({ id, deleted: true });
+          setOpenGenerationId(null);
+        }}
+      />
 
       <DeveloperToolsDrawer
         open={drawerOpen}

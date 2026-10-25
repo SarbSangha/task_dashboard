@@ -5,6 +5,7 @@ from datetime import datetime
 from database_config import Base, ArchiveBase
 import enum
 from typing import Optional
+from utils import admin_card_credits  # noqa: F401 - registers the hook holding admin-entered credits
 from utils import r2_storage
 from utils.datetime_utils import serialize_utc_datetime
 
@@ -1250,6 +1251,8 @@ class GenerationRecord(Base):
     duration_label = Column(String(80))
     resolution_label = Column(String(80))
     credits_burned = Column(Float)
+    # Admin-entered credits; held over credits_burned by utils/admin_card_credits.py.
+    admin_credits = Column(Float)
     ingestion_source = Column(String(40), nullable=False, default="captured", index=True)
     capture_status = Column(String(40), nullable=False, default="active", index=True)
     owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True)

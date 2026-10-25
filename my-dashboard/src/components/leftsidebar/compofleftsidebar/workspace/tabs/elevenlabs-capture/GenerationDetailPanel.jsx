@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { elevenlabsCaptureAPI } from '../../../../../../services/api';
+import AdminCardActions from '../../../../../common/AdminCardActions';
+import { AdminMediaDrawerPreview } from '../../../../../common/AdminMediaPreview';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import JsonViewer from './JsonViewer';
 import {
@@ -35,7 +37,7 @@ const ASSET_MIRROR_STATUS_LABEL = {
   skipped: 'Skipped (no audio output)',
 };
 
-export default function GenerationDetailPanel({ generationId }) {
+export default function GenerationDetailPanel({ generationId, onGenerationUpdated, onGenerationDeleted }) {
   const [generation, setGeneration] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -89,7 +91,9 @@ export default function GenerationDetailPanel({ generationId }) {
   return (
     <>
       <div className="kling-drawer-preview">
-        {primaryAudioUrl ? (
+        {generation.adminMedia ? (
+          <AdminMediaDrawerPreview media={generation.adminMedia} />
+        ) : primaryAudioUrl ? (
           <audio
             src={primaryAudioUrl}
             className="kling-drawer-preview-media"
@@ -120,6 +124,16 @@ export default function GenerationDetailPanel({ generationId }) {
           Copy Prompt
         </button>
       </div>
+
+      <AdminCardActions
+        provider="elevenlabs"
+        generation={generation}
+        onUpdated={(data) => {
+          setGeneration((prev) => ({ ...prev, ...data }));
+          onGenerationUpdated?.(data);
+        }}
+        onDeleted={onGenerationDeleted}
+      />
 
       <div className="kling-drawer-section">
         <div className="kling-drawer-owner-row">

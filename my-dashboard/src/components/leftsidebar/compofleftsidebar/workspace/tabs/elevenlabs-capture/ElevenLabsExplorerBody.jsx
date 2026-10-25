@@ -31,6 +31,8 @@ import '../../../trending/TrendingsPanel.css';
 export default function ElevenLabsExplorerBody({ searchInput = '' }) {
   const { isAdmin } = usePermissions();
   const [openGenerationId, setOpenGenerationId] = useState(null);
+  // Last admin card edit from the drawer, applied to the loaded list by GenerationsBrowser.
+  const [editedGeneration, setEditedGeneration] = useState(null);
   const [generationsTotal, setGenerationsTotal] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mode, setMode] = useState('generations'); // 'generations' | 'downloads'
@@ -88,10 +90,19 @@ export default function ElevenLabsExplorerBody({ searchInput = '' }) {
         searchInput={searchInput}
         downloadedOnly={mode === 'downloads'}
         onOpenGeneration={setOpenGenerationId}
+        editedGeneration={editedGeneration}
         onTotalChange={setGenerationsTotal}
       />
 
-      <ElevenLabsGenerationDrawer generationId={openGenerationId} onClose={() => setOpenGenerationId(null)} />
+      <ElevenLabsGenerationDrawer
+        generationId={openGenerationId}
+        onClose={() => setOpenGenerationId(null)}
+        onGenerationUpdated={(data) => setEditedGeneration({ id: data.id, data })}
+        onGenerationDeleted={(id) => {
+          setEditedGeneration({ id, deleted: true });
+          setOpenGenerationId(null);
+        }}
+      />
 
       <DeveloperToolsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </div>

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { AdminMediaCardPreview } from '../../../../../common/AdminMediaPreview';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import { useNearViewport } from '../../../../../../hooks/useNearViewport';
 import { formatRelativeTime, getOwnershipStatusMeta, truncate } from './flowCaptureUtils';
@@ -78,7 +79,11 @@ export const FlowGenerationCard = React.memo(function FlowGenerationCard({ gener
   return (
     <div className="kling-card">
       <div className="kling-card-preview" onClick={() => onOpen(generation)}>
-        <FlowCardPreview generation={generation} />
+        {generation.adminMedia ? (
+          <AdminMediaCardPreview media={generation.adminMedia} />
+        ) : (
+          <FlowCardPreview generation={generation} />
+        )}
       </div>
 
       <div className="kling-card-top">

@@ -65,6 +65,8 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [selectedUserName, setSelectedUserName] = useState(null);
   const [openGenerationId, setOpenGenerationId] = useState(null);
+  // Last admin card edit from the drawer, applied to the loaded list by GenerationsBrowser.
+  const [editedGeneration, setEditedGeneration] = useState(null);
 
   // `searchInput` comes from TrendingsPanel's own header (the "RMW Data"
   // title row) rather than being owned here - see the "search bar should sit
@@ -295,6 +297,7 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
           ownerName={selectedUserName}
           onBackToUsers={handleBackToUsers}
           onOpenGeneration={setOpenGenerationId}
+          editedGeneration={editedGeneration}
           searchInput={searchInput}
           ownershipFilter={ownershipFilter}
           taskFilter={taskFilter}
@@ -303,7 +306,15 @@ export default function FreepikExplorerBody({ searchInput = '' }) {
         />
       )}
 
-      <FreepikGenerationDrawer generationId={openGenerationId} onClose={() => setOpenGenerationId(null)} />
+      <FreepikGenerationDrawer
+        generationId={openGenerationId}
+        onClose={() => setOpenGenerationId(null)}
+        onGenerationUpdated={(data) => setEditedGeneration({ id: data.id, data })}
+        onGenerationDeleted={(id) => {
+          setEditedGeneration({ id, deleted: true });
+          setOpenGenerationId(null);
+        }}
+      />
 
       <DeveloperToolsDrawer
         open={drawerOpen}

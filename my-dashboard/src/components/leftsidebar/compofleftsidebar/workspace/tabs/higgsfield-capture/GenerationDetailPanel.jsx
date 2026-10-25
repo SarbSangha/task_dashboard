@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { higgsfieldCaptureAPI } from '../../../../../../services/api';
+import AdminCardActions from '../../../../../common/AdminCardActions';
+import { AdminMediaDrawerPreview } from '../../../../../common/AdminMediaPreview';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import JsonViewer from './JsonViewer';
 import {
@@ -26,7 +28,7 @@ function MetaField({ label, value }) {
   );
 }
 
-export default function GenerationDetailPanel({ generationId }) {
+export default function GenerationDetailPanel({ generationId, onGenerationUpdated, onGenerationDeleted }) {
   const [generation, setGeneration] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -104,7 +106,9 @@ export default function GenerationDetailPanel({ generationId }) {
   return (
     <>
       <div className="kling-drawer-preview">
-        {primaryAssetUrl && isVideo ? (
+        {generation.adminMedia ? (
+          <AdminMediaDrawerPreview media={generation.adminMedia} />
+        ) : primaryAssetUrl && isVideo ? (
           <video
             src={primaryAssetUrl}
             poster={heroImage || undefined}
@@ -134,6 +138,16 @@ export default function GenerationDetailPanel({ generationId }) {
           Copy Prompt
         </button>
       </div>
+
+      <AdminCardActions
+        provider="higgsfield"
+        generation={generation}
+        onUpdated={(data) => {
+          setGeneration((prev) => ({ ...prev, ...data }));
+          onGenerationUpdated?.(data);
+        }}
+        onDeleted={onGenerationDeleted}
+      />
 
       <div className="kling-drawer-section">
         <div className="kling-drawer-owner-row">

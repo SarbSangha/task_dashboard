@@ -1,4 +1,5 @@
 import React from 'react';
+import { AdminMediaCardPreview } from '../../../../../common/AdminMediaPreview';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import { useNearViewport } from '../../../../../../hooks/useNearViewport';
 import { formatCount, formatRelativeTime, getOwnershipStatusMeta, truncate } from './elevenlabsCaptureUtils';
@@ -57,7 +58,11 @@ export const ElevenLabsGenerationCard = React.memo(function ElevenLabsGeneration
   return (
     <div className="kling-card">
       <div className="kling-card-preview" onClick={() => onOpen(generation)}>
-        <ElevenLabsCardPreview generation={generation} />
+        {generation.adminMedia ? (
+          <AdminMediaCardPreview media={generation.adminMedia} />
+        ) : (
+          <ElevenLabsCardPreview generation={generation} />
+        )}
       </div>
 
       <div className="kling-card-top">
