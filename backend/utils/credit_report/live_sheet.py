@@ -395,6 +395,12 @@ def build_live_sheet(
             "sharePct": share_pct,
         })
 
+    def top_user_name(row) -> str:
+        """The row's top person by name (Top keys are user ids), the named
+        one before Unassigned - the same label the Excel workbook shows."""
+        top = row.top_named_user or row.top_user
+        return model.user(top.first).label if top and top.first else "—"
+
     # Build Sheet 3: Tools
     tools_sheet = []
     sub_by_tool: dict[str, dict[str, float]] = defaultdict(lambda: {"fee": 0.0, "unused": 0.0})
@@ -415,7 +421,7 @@ def build_live_sheet(
             "tool": t.name,
             "outputCategory": TOOL_OUTPUT_CATEGORY.get(t.name, "AI Output"),
             "users": t.users,
-            "topUser": t.top_named_user.first or t.top_user.first or "—",
+            "topUser": top_user_name(t),
             "topDepartment": t.top_department.first or "—",
             "generations": t_gens,
             "avgGenerationsPerDay": round(t_gens / period_days, 2),
@@ -542,7 +548,7 @@ def build_live_sheet(
         departments_sheet.append({
             "department": d.name,
             "users": d.users,
-            "topUser": d.top_named_user.first or d.top_user.first or "—",
+            "topUser": top_user_name(d),
             "topTool": d.top_tool.first or "—",
             "generations": d_gens,
             "avgGenerationsPerDay": round(d_gens / period_days, 2),
@@ -562,7 +568,7 @@ def build_live_sheet(
         clients_sheet.append({
             "client": c.name,
             "users": c.users,
-            "topUser": c.top_named_user.first or c.top_user.first or "—",
+            "topUser": top_user_name(c),
             "topTool": c.top_tool.first or "—",
             "generations": c_gens,
             "avgGenerationsPerDay": round(c_gens / period_days, 2),
