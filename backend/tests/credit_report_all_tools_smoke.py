@@ -26,10 +26,11 @@ from models_new import (  # noqa: E402
     Base, GenerationClient, GenerationRecord, ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent,
     ToolCreditRate, User, UserFeatureAccess, UserRole,
 )
-from providers.chatgpt.models import ConversationPrompt, ConversationRecord, ConversationResponse  # noqa: E402
+from providers.chatgpt.models import (ConversationCaptureEvent, ConversationPrompt, ConversationRecord,  # noqa: E402
+                                     ConversationResponse)
 from providers.elevenlabs.models import ElevenlabsGeneration  # noqa: E402
-from providers.envato.models import EnvatoGeneration  # noqa: E402
-from providers.epidemicsound.models import EpidemicAdaptation  # noqa: E402
+from providers.envato.models import EnvatoDownload  # noqa: E402
+from providers.epidemicsound.models import EpidemicDownload  # noqa: E402
 from providers.flow.models import FlowGeneration  # noqa: E402
 from providers.freepik.models import FreepikGeneration  # noqa: E402
 from providers.grammarly_docs.models import GrammarlyDocSession  # noqa: E402
@@ -48,10 +49,10 @@ CLAUDE_API_URL = f"https://claude.ai/api/organizations/0a0b0c0d-0000-4000-8000-0
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 TABLES = [User, UserRole, UserFeatureAccess, GenerationClient, ITPortalTool, ITPortalToolCredential,
-          ITPortalToolUsageEvent, ToolCreditRate, GenerationRecord, FreepikGeneration, EnvatoGeneration,
+          ITPortalToolUsageEvent, ToolCreditRate, GenerationRecord, FreepikGeneration, EnvatoDownload,
           HeygenGeneration, HiggsfieldGeneration, ElevenlabsGeneration, FlowGeneration, SunoGeneration,
-          EpidemicAdaptation, SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt,
-          ConversationResponse]
+          EpidemicDownload, SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt,
+          ConversationResponse, ConversationCaptureEvent]
 Base.metadata.create_all(bind=engine, tables=[m.__table__ for m in TABLES])
 
 # A whole month, so each monthly fee is counted in full.

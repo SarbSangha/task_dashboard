@@ -50,8 +50,8 @@ from providers.chatgpt.models import ConversationCaptureEvent, ConversationPromp
 from providers.grammarly_docs.models import GrammarlyDocSession  # noqa: E402
 from providers.splice.models import SpliceDownload  # noqa: E402
 from providers.elevenlabs.models import ElevenlabsGeneration  # noqa: E402
-from providers.envato.models import EnvatoGeneration  # noqa: E402
-from providers.epidemicsound.models import EpidemicAdaptation  # noqa: E402
+from providers.envato.models import EnvatoDownload  # noqa: E402
+from providers.epidemicsound.models import EpidemicDownload  # noqa: E402
 from providers.flow.models import FlowGeneration  # noqa: E402
 from providers.freepik.models import FreepikGeneration  # noqa: E402
 from providers.heygen.models import HeygenGeneration  # noqa: E402
@@ -70,9 +70,9 @@ from utils.credit_report.facts import DayGroup, FactGroup  # noqa: E402
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 TABLES = [User, UserRole, UserFeatureAccess, GenerationClient, ITPortalTool, ITPortalToolCredential,
-          ITPortalToolUsageEvent, ToolCreditRate, GenerationRecord, FreepikGeneration, EnvatoGeneration,
+          ITPortalToolUsageEvent, ToolCreditRate, GenerationRecord, FreepikGeneration, EnvatoDownload,
           HeygenGeneration, HiggsfieldGeneration, ElevenlabsGeneration, FlowGeneration, SunoGeneration,
-          EpidemicAdaptation, SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt, ConversationCaptureEvent]
+          EpidemicDownload, SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt, ConversationCaptureEvent]
 Base.metadata.create_all(bind=engine, tables=[m.__table__ for m in TABLES])
 
 START, END = "2026-10-01", "2026-10-14"
@@ -221,7 +221,7 @@ def seed():
         db.add_all([HiggsfieldGeneration(generation_id=f"h{i}", owner_user_id=cara, credential_id=h,
                                          status="completed", provider_created_at=datetime(2026, 10, 10, 9))
                     for i in range(10)])
-        db.add(EnvatoGeneration(item_uuid="v0", owner_user_id=bob, credential_id=v, provider_created_at=datetime(2026, 8, 1)))
+        db.add(EnvatoDownload(item_uuid="v0", owner_user_id=bob, credential_id=v, downloaded_at=datetime(2026, 8, 1)))
         db.commit()
 
 

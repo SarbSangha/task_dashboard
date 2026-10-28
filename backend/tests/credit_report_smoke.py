@@ -64,8 +64,8 @@ from providers.chatgpt.models import ConversationCaptureEvent, ConversationPromp
 from providers.grammarly_docs.models import GrammarlyDocSession  # noqa: E402
 from providers.splice.models import SpliceDownload  # noqa: E402
 from providers.elevenlabs.models import ElevenlabsGeneration  # noqa: E402
-from providers.envato.models import EnvatoGeneration  # noqa: E402
-from providers.epidemicsound.models import EpidemicAdaptation  # noqa: E402
+from providers.envato.models import EnvatoDownload  # noqa: E402
+from providers.epidemicsound.models import EpidemicDownload  # noqa: E402
 from providers.flow.models import FlowGeneration  # noqa: E402
 from providers.freepik.models import FreepikGeneration  # noqa: E402
 from providers.heygen.models import HeygenGeneration  # noqa: E402
@@ -98,8 +98,8 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 TABLES = [
     User, UserRole, UserFeatureAccess, GenerationClient, ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent,
     ToolCreditRate, GenerationRecord,
-    FreepikGeneration, EnvatoGeneration, HeygenGeneration, HiggsfieldGeneration, ElevenlabsGeneration,
-    FlowGeneration, SunoGeneration, EpidemicAdaptation,
+    FreepikGeneration, EnvatoDownload, HeygenGeneration, HiggsfieldGeneration, ElevenlabsGeneration,
+    FlowGeneration, SunoGeneration, EpidemicDownload,
     SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt, ConversationCaptureEvent,
 ]
 Base.metadata.create_all(bind=engine, tables=[m.__table__ for m in TABLES])
@@ -113,11 +113,11 @@ IDS: dict = {}
 
 # Expected figures for 1-7 Oct 2026 (IST), admin accounts excluded.
 # Tester is a test account but is only excluded once listed in CREDIT_REPORT_EXCLUDED_ACCOUNTS.
-EXPECTED_USER_CHARGED = {"Ravi": 230, "Asha": 200, "Bob": 1035, "Zed": 10, "Del": 15, "Tester": 33, UNASSIGNED: 999}
-CHARGED_TOTAL = 2522
+EXPECTED_USER_CHARGED = {"Ravi": 230, "Asha": 200, "Bob": 35, "Zed": 0, "Del": 15, "Tester": 33, UNASSIGNED: 999}
+CHARGED_TOTAL = 1512
 CHARGED_ROWS = 18
-PENDING_TOTAL = 2536
-PENDING_ROWS = 8
+PENDING_TOTAL = 1536
+PENDING_ROWS = 7
 FAILED_TOTAL = 40
 FAILED_ROWS = 1
 ALL_ROWS = CHARGED_ROWS + PENDING_ROWS + FAILED_ROWS
@@ -143,9 +143,9 @@ def seed():
     Asha  Kling 5000->0 C, Freepik 20 C Beta, HeyGen 180 C Beta, HeyGen 6 P processing,
           HeyGen 0 P draft                                                  = 200 C, 6 P
     Bob   Freepik 30 C Acme (long prompt), Freepik 40 F, ElevenLabs 5 C (no status), ElevenLabs 1500 P
-          generating_music, Suno None C complete, Suno P streaming, Epidemic 1000 C Acme, 1000 P draft,
-          Kling 0 P submitted, Kling 20 P reconciling                       = 1035 C, 2520 P, 40 F
-    Zed   (blank dept) Envato 10 C, Flow 0 C (30 Sep 20:00 UTC = 1 Oct IST)  = 10 C
+          generating_music, Suno None C complete, Suno P streaming, Epidemic download (0 credits) Acme,
+          Kling 0 P submitted, Kling 20 P reconciling                       = 35 C, 1520 P, 40 F
+    Zed   (blank dept) Envato download (0 credits), Flow 0 C (30 Sep 20:00 UTC = 1 Oct IST)  = 0 C
     Del   (deleted) Higgsfield 15 C Gamma                                   = 15 C
     (no owner) Freepik 999 C, history-sync import                           = 999 C  -> "Unassigned"
     Admin (is_admin) Freepik 77 C; Tester HeyGen 33 C                        -> excluded by default
@@ -227,10 +227,10 @@ def seed():
                            status="complete", asset_mirror_status="mirrored", mirrored_asset_key="suno/s1.mp3",
                            media_url="https://cdn.suno.example/s1.mp3", model_name="chirp-v4"),
             SunoGeneration(provider_creation_id="s2", owner_user_id=bob, provider_created_at=at, status="streaming"),
-            EpidemicAdaptation(version_id="ep1", owner_user_id=bob, credits_used=1000, status="completed",
-                               linked_client_name="Acme", created_at=at),
-            EpidemicAdaptation(version_id="ep2", owner_user_id=bob, credits_used=1000, status="draft", created_at=at),
-            EnvatoGeneration(item_uuid="en1", owner_user_id=zed, credits_badge=10, provider_created_at=at),
+            # Stock downloads: no credits, no status (every download counts).
+            EpidemicDownload(download_id="ep1", owner_user_id=bob, linked_client_name="Acme", asset_title="Acme theme",
+                             downloaded_at=at),
+            EnvatoDownload(item_uuid="en1", owner_user_id=zed, asset_title="Stock clip", downloaded_at=at),
             FlowGeneration(provider_creation_id="fl1", owner_user_id=zed, provider_created_at=datetime(2026, 9, 30, 20)),
             FlowGeneration(provider_creation_id="fl2", owner_user_id=zed, provider_created_at=datetime(2026, 10, 7, 19)),
             HiggsfieldGeneration(generation_id="hf1", owner_user_id=dele, credits_used=15, linked_client_name="Gamma",
@@ -301,7 +301,7 @@ def test_group_queries():
         _assert("Admin" not in by_user and "RoleAdmin" not in by_user, "admins excluded by default")
         _assert("Tester" in by_user, "unlisted test account still included")
         zero = sum(g.zero_credit for g in groups if g.charge_status == CHARGED)
-        _assert(zero == 3, f"zero-credit charged rows (clamped Kling, Suno, Flow): {zero}")
+        _assert(zero == 5, f"zero-credit charged rows (clamped Kling, Suno, Flow, 2 downloads): {zero}")
     print("ok  group queries")
 
 
@@ -316,7 +316,7 @@ def test_filters_and_exclusion():
         _assert({g.tool for g in load_groups(db, _filters(db, tool="Kling"))} == {"Kling"}, "tool filter")
         nc = load_groups(db, _filters(db, client=NO_CLIENT))
         _assert(nc and {g.client for g in nc} == {NO_CLIENT}, "No client filter")
-        _close(_sum(load_groups(db, _filters(db, user_id=IDS["Bob"])), CHARGED), 1035, "user filter")
+        _close(_sum(load_groups(db, _filters(db, user_id=IDS["Bob"])), CHARGED), 35, "user filter")
         _assert(load_groups(db, _filters(db, tool="Nope")) == [], "unknown tool returns nothing")
 
         # Exclusion: off -> admin + tester counted; env list adds the tester.
@@ -341,7 +341,7 @@ def test_model():
     with SessionLocal() as db:
         model = build_model(load_groups(db, _filters(db)))
     ranks = {u.name: (u.company_rank, u.department_rank) for u in model.users}
-    _assert(ranks["Bob"] == (1, 1) and ranks["Ravi"] == (2, 1) and ranks["Asha"] == (3, 2), f"ranks {ranks}")
+    _assert(ranks["Ravi"] == (1, 1) and ranks["Asha"] == (2, 2) and ranks["Bob"] == (3, 1), f"ranks {ranks}")
     _assert(ranks[UNASSIGNED] == ("—", "—"), "Unassigned is not ranked")
     _assert(model.users[-1].name == UNASSIGNED, "Unassigned listed last")
     video = next(d for d in model.departments if d.name == "Video")
@@ -351,14 +351,14 @@ def test_model():
     unassigned_dept = next(d for d in model.departments if d.name == UNASSIGNED_DEPARTMENT)
     _assert(unassigned_dept.top_user.keys == (UNASSIGNED_USER_ID,), "Unassigned (999 credits) tops its department")
     _assert(unassigned_dept.top_named_user.keys == (IDS["Zed"],), "top named user beside it")
-    _assert(model.top_user.keys == (IDS["Bob"],) and model.top_named_user.keys == (IDS["Bob"],),
-            "company top user: Bob (1,035) beats Unassigned (999)")
+    _assert(model.top_user.keys == (UNASSIGNED_USER_ID,) and model.top_named_user.keys == (IDS["Ravi"],),
+            "company top user: Unassigned (999) beats Ravi (230), who is kept beside it")
     freepik = next(t for t in model.tools if t.name == "Freepik")
     _assert(freepik.top_user.keys == (UNASSIGNED_USER_ID,) and freepik.top_named_user.keys == (IDS["Bob"],),
             "Freepik: Unassigned on top, Bob the top named user")
     bob = model.user(IDS["Bob"])
     _close(bob.client_rate, 0.5, "Bob: 2 of 4 charged generations have a client")
-    _close(bob.totals.credits_per_generation, 1035 / 4, "credits per generation")
+    _close(bob.totals.credits_per_generation, 35 / 4, "credits per generation")
     # Most used tool = most items (never credits): one item each with four tools is a four-way tie.
     _assert(bob.top_tool.keys == ("ElevenLabs", "Epidemic Sound", "Freepik", "Suno") and bob.top_tool.generations == 1,
             f"top tool by items, ties together: {bob.top_tool}")
@@ -1465,8 +1465,9 @@ def test_workbook_end_to_end():
         _assert(dq[W.DUPLICATE_LABEL][1] == 0, "DQ: no double charges (no shared output)")
         _assert(list(wb[W.QUALITY].tables)[0] == "tblDataQuality", "Data Quality issues table first")
         _assert(dq[W.ZERO_MISSED][1] == 1, "DQ: Kling's clamped row is charged with 0 credits")
-        _assert(dq[W.NOT_CAPTURED][1] == 2 and "Suno 1" in dq[W.NOT_CAPTURED][4] and "Flow 1" in dq[W.NOT_CAPTURED][4],
-                "DQ: Suno and Flow rows are 'cost not captured'")
+        _assert(dq[W.NOT_CAPTURED][1] == 4 and all(f"{t} 1" in dq[W.NOT_CAPTURED][4]
+                                                   for t in ("Suno", "Flow", "Envato", "Epidemic Sound")),
+                "DQ: Suno, Flow and the two downloads are 'cost not captured'")
         if datetime.now() > datetime(2026, 10, 6):
             _assert(dq[W.STALE_PENDING][1] == PENDING_ROWS, "DQ: every seeded pending row is over 24 h old")
         _assert(dq["Test & admin accounts excluded"][1] == 1, "DQ excluded (admin's one generation)")

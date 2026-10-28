@@ -419,6 +419,11 @@ class EnvatoDownload(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
+    @property
+    def item_page_url(self):
+        """Permanent public link to the item (see itemPageUrl in to_dict)."""
+        return f"https://elements.envato.com/item-uuid-redirect/{self.item_uuid}" if self.item_uuid else None
+
     def to_dict(self):
         r2_client = (
             r2_storage.build_client()
@@ -453,10 +458,7 @@ class EnvatoDownload(Base):
             # This is the durable reference for a download. The real asset URL
             # is a short-lived signed CloudFront link (~10 min) and, for audio,
             # points at a ZIP - neither is usable as a stored link.
-            "itemPageUrl": (
-                f"https://elements.envato.com/item-uuid-redirect/{self.item_uuid}"
-                if self.item_uuid else None
-            ),
+            "itemPageUrl": self.item_page_url,
             "assetTitle": self.asset_title,
             "assetThumbnailUrl": self.asset_thumbnail_url,
             "assetSourceUrl": self.asset_source_url,

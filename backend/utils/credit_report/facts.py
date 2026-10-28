@@ -52,8 +52,8 @@ from models_new import (GenerationClient, GenerationRecord, ITPortalTool, ITPort
 from providers.chatgpt.models import ConversationCaptureEvent, ConversationPrompt, ConversationRecord
 from providers.conversation_links import chat_web_url
 from providers.elevenlabs.models import ElevenlabsGeneration
-from providers.envato.models import EnvatoGeneration
-from providers.epidemicsound.models import EpidemicAdaptation
+from providers.envato.models import EnvatoDownload
+from providers.epidemicsound.models import EpidemicDownload
 from providers.flow.models import FlowGeneration
 from providers.freepik.models import FreepikGeneration
 from providers.grammarly_docs.models import GrammarlyDocSession
@@ -99,13 +99,18 @@ FAILED_STATUSES = frozenset({
 
 # Tools whose captures carry no per-generation cost at all. Their 0 is
 # "not captured", not "free" - see TOOL_COST_NOTES.
-CREDITS_NOT_CAPTURED = frozenset({"Flow", "Suno", "Higgsfield", "ChatGPT", "Claude", "Grammarly"})
+CREDITS_NOT_CAPTURED = frozenset({"Flow", "Suno", "Higgsfield", "ChatGPT", "Claude", "Grammarly", "Envato",
+                                  "Epidemic Sound"})
 TOOL_COST_NOTES = {
     "ChatGPT": "One row per prompt sent. ChatGPT has no per-prompt cost: ₹ is an equal share of the "
                "subscription (est.).",
     "Claude": "One row per prompt sent. Claude has no per-prompt cost: ₹ is an equal share of the "
               "subscription (est.).",
     "Grammarly": "One row per document worked on. ₹ is an equal share of the subscription (est.).",
+    "Envato": "One row per stock asset downloaded. Downloads cost no credits: ₹ is an equal share of the "
+              "subscription (est.).",
+    "Epidemic Sound": "One row per track downloaded. Downloads cost no credits: ₹ is an equal share of the "
+                      "subscription (est.).",
     "Splice": "One row per sample downloaded, 1 Splice credit each, × the account's credit rate.",
     "Suno": "Fixed price per song: Suno charges 5 credits per song but shows no per-song cost of its own. "
             "An admin can set a different price from a date (Reports → Credit Rates). "
@@ -153,8 +158,12 @@ TOOL_SOURCES: tuple = (
     ToolSource("Freepik", FreepikGeneration, "credits_charged", ("prompt", "name_field"),
                ("raw_url", "download_url", "large_preview_url", "preview_url", "thumbnail_url", "web_url"),
                model_label=("tool_name", "tool", "mode")),
-    ToolSource("Envato", EnvatoGeneration, "credits_badge", ("prompt", "title"),
-               ("canvas_url", "fallback_url", "thumbnail_url"), model_label=("item_type", "style"), mirrored_key=False),
+    # Envato and Epidemic Sound are used for stock downloads, not generations
+    # (envato_generations / epidemic_adaptations have never had a row), so
+    # their usage is the downloads - read like Splice's. No credits: the
+    # subscription fee is shared across the downloads.
+    ToolSource("Envato", EnvatoDownload, None, ("asset_title", "search_term"), ("asset_source_url", "page_url"),
+               model_label=("item_type",), has_provider_created_at=False, occurred_at="downloaded_at"),
     ToolSource("HeyGen", HeygenGeneration, "credits_used", ("script_text",),
                ("video_url", "download_url", "storage_url", "share_url", "preview_url", "thumbnail_url"),
                model_label=("avatar_name", "motion_engine")),
@@ -169,8 +178,8 @@ TOOL_SOURCES: tuple = (
                model_label=("model_name",)),
     ToolSource("Suno", SunoGeneration, "credits_used", ("prompt",), ("media_url", "thumbnail_url"),
                model_label=("model_name",)),
-    ToolSource("Epidemic Sound", EpidemicAdaptation, "credits_used", ("prompt",), ("media_url",),
-               has_provider_created_at=False),
+    ToolSource("Epidemic Sound", EpidemicDownload, None, ("asset_title",), ("asset_source_url", "page_url"),
+               has_provider_created_at=False, occurred_at="downloaded_at"),
     # Pay-per-use: every sample download costs 1 Splice credit.
     ToolSource("Splice", SpliceDownload, None, ("asset_title",), ("asset_source_url", "preview_mp3_url"),
                has_provider_created_at=False, fixed_credits=1.0, occurred_at="downloaded_at"),
@@ -1176,6 +1185,9 @@ def resolve_output_url(db: Session, tool: str, record_id: int) -> Optional[str]:
                 return r2_storage.generate_presigned_url(row.mirrored_asset_key)
         except Exception:  # fall through to the provider URL
             pass
+    # An Envato download's stored URLs are search pages; its item page is the durable link.
+    if isinstance(row, EnvatoDownload) and row.item_page_url:
+        return row.item_page_url
     for name in src.output:
         value = (getattr(row, name, None) or "").strip()
         if value:
