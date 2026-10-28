@@ -4,6 +4,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from contextlib import asynccontextmanager
 from datetime import datetime
 import asyncio
@@ -873,23 +874,25 @@ def root():
 
 # ==================== ROOT & STATIC FILES ====================
 
+def _check_database_health(session_factory) -> str:
+    try:
+        with session_factory() as db:
+            db.execute(text("SELECT 1"))
+        return "healthy"
+    except Exception as e:
+        return f"unhealthy: {str(e)}"
+
+
 # Health check (API route)
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
-    try:
-        with OperationalSessionLocal() as op_db:
-            op_db.execute(text("SELECT 1"))
-        op_status = "healthy"
-    except Exception as e:
-        op_status = f"unhealthy: {str(e)}"
-
-    try:
-        with ArchiveSessionLocal() as ar_db:
-            ar_db.execute(text("SELECT 1"))
-        ar_status = "healthy"
-    except Exception as e:
-        ar_status = f"unhealthy: {str(e)}"
+    # The DB pings run in the request threadpool: on the event loop, a ping
+    # waiting on a full connection pool would freeze every request in this
+    # worker. (Not asyncio.to_thread: its small default pool is shared with
+    # the long-running background sweeps.)
+    op_status = await run_in_threadpool(_check_database_health, OperationalSessionLocal)
+    ar_status = await run_in_threadpool(_check_database_health, ArchiveSessionLocal)
 
     redis_status = "disabled"
     if cache_utils.redis_client is not None:

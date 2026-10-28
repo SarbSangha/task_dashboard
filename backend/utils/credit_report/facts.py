@@ -34,14 +34,18 @@ Rules:
 
 from __future__ import annotations
 
+import itertools
 import os
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Iterator, Optional
 
-from sqlalchemy import Float, Integer, String, and_, case, cast, func, literal, or_, select, union_all
+from sqlalchemy import (Float, Integer, String, and_, case, cast, column, func, literal, or_, select, table, text,
+                        union_all)
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session, aliased
+from sqlalchemy.sql.expression import ClauseElement, Executable
 
 from models_new import (GenerationClient, GenerationRecord, ITPortalTool, ITPortalToolCredential, ITPortalToolUsageEvent,
                         User, UserRole)
@@ -611,6 +615,66 @@ def facts_subquery(filters: ReportFilters, dialect: str = "postgresql"):
     return _costed(raw, filters, dialect)
 
 
+# --------------------------------------------------------------------------- #
+# The facts, computed once per report build
+# --------------------------------------------------------------------------- #
+# Every loader below aggregates the same facts: every tool's table unioned and
+# costed. As a subquery, Postgres rebuilt that union for each loader - about
+# ten times per Usage & Spend build, 0.5-1 s each on the production data. So
+# the first loader to need a given facts query in a transaction writes its
+# rows once to a temporary table (dropped when the transaction ends) and every
+# later loader with the same query reads that table. Same SELECT, same rows -
+# computed once. CREDIT_REPORT_MATERIALIZE_FACTS=0 turns it off.
+_FACTS_CACHE_KEY = "credit_report_facts"
+_facts_table_ids = itertools.count(1)
+
+
+class _CreateTempTableAs(Executable, ClauseElement):
+    inherit_cache = False
+
+    def __init__(self, name: str, selectable):
+        self.name = name
+        self.selectable = selectable
+
+
+@compiles(_CreateTempTableAs)
+def _compile_create_temp_table_as(element, compiler, **kw):
+    return f"CREATE TEMPORARY TABLE {element.name} ON COMMIT DROP AS {compiler.process(element.selectable, **kw)}"
+
+
+def _materialize_facts_enabled() -> bool:
+    return (os.getenv("CREDIT_REPORT_MATERIALIZE_FACTS") or "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _facts(db: Session, filters: ReportFilters):
+    """The facts for `filters`, as a temporary table when one with the exact
+    same query already exists in this transaction or can be made (Postgres,
+    writable transaction), else as the plain subquery."""
+    dialect = _dialect(db)
+    facts = facts_subquery(filters, dialect)
+    if dialect != "postgresql" or not _materialize_facts_enabled():
+        return facts
+    cache = db.info.get(_FACTS_CACHE_KEY)
+    # A temporary table only lives as long as the transaction that made it.
+    if cache is None or cache["transaction"] is not db.get_transaction():
+        # The Excel exports read one READ ONLY snapshot (credit_report_router.
+        # _snapshot_session), where Postgres refuses CREATE TABLE: they keep
+        # the subquery.
+        read_only = db.execute(text("SELECT current_setting('transaction_read_only')")).scalar() == "on"
+        cache = db.info[_FACTS_CACHE_KEY] = {"transaction": db.get_transaction(), "read_only": read_only,
+                                             "tables": {}}
+    if cache["read_only"]:
+        return facts
+    query = select(facts)
+    compiled = query.compile(dialect=db.get_bind().dialect)
+    key = (str(compiled), repr(sorted(compiled.params.items())))
+    if key not in cache["tables"]:
+        name = f"credit_report_facts_{next(_facts_table_ids)}"
+        db.execute(_CreateTempTableAs(name, query))
+        cache["tables"][key] = table(name, *[column(c.name, c.type) for c in facts.c])
+    return cache["tables"][key]
+
+
 def department_expr(filters: Optional[ReportFilters] = None):
     # An owner-less row has no joined user, so it falls to "No department" too.
     display = filters.display if filters else DisplayConfig()
@@ -691,7 +755,7 @@ def _rupee_sums(facts) -> list:
 
 def load_groups(db: Session, filters: ReportFilters) -> list:
     prepare(db, filters)
-    facts = facts_subquery(filters, _dialect(db))
+    facts = _facts(db, filters)
     dept = department_expr(filters)
     client_expr = func.coalesce(facts.c.client, NO_CLIENT)
     bucket = charge_status_expr(facts.c.status)
@@ -757,7 +821,7 @@ class AccountGroup:
 
 def load_account_groups(db: Session, filters: ReportFilters) -> list:
     prepare(db, filters)
-    facts = facts_subquery(filters, _dialect(db))
+    facts = _facts(db, filters)
     q = _scoped(
         select(facts.c.tool, facts.c.account, func.count().label("items"),
                func.coalesce(func.sum(facts.c.credits), 0.0).label("credits"), *_rupee_sums(facts),
@@ -774,7 +838,7 @@ def load_issue_counts(db: Session, filters: ReportFilters) -> dict:
     """Charged rows and rupees behind the cost notes: {issue: (rows, rupees)}
     for "rate assumed", "estimated" and "free preview model"."""
     prepare(db, filters)
-    facts = facts_subquery(filters, _dialect(db))
+    facts = _facts(db, filters)
     charged = charge_status_expr(facts.c.status) == CHARGED
 
     def pair(cond):
@@ -858,7 +922,7 @@ class DayGroup:
 def load_day_groups(db: Session, filters: ReportFilters) -> list:
     prepare(db, filters)
     dialect = _dialect(db)
-    facts = facts_subquery(filters, dialect)
+    facts = _facts(db, filters)
     owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
     client_expr = func.coalesce(facts.c.client, NO_CLIENT)
     bucket = charge_status_expr(facts.c.status)
@@ -882,7 +946,7 @@ def load_excluded_summary(db: Session, filters: ReportFilters) -> dict:
     ids = filters.excluded_ids
     if not ids:
         return {"accounts": 0, "generations": 0, "credits": 0.0}
-    facts = facts_subquery(filters, _dialect(db))
+    facts = _facts(db, filters)
     inverse = ReportFilters(**{**filters.__dict__, "exclude_test_accounts": False})
     charged = case((charge_status_expr(facts.c.status) == CHARGED, facts.c.credits), else_=0.0)
     q = _scoped(select(func.count(), func.coalesce(func.sum(charged), 0.0)), facts, inverse).where(
@@ -912,7 +976,7 @@ def stream_log(db: Session, filters: ReportFilters, user_order: list, batch_size
     if not user_order:
         return iter(())
     prepare(db, filters)
-    facts = facts_subquery(filters, _dialect(db))
+    facts = _facts(db, filters)
     owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
     position = case({uid: i for i, uid in enumerate(user_order)}, value=owner_key, else_=len(user_order))
     if tool_order:
@@ -934,7 +998,7 @@ def recent_log(db: Session, filters: ReportFilters, limit: int) -> list:
     """The newest `limit` generations (all charge statuses), newest first:
     the in-app log, without reading every row of the period."""
     prepare(db, filters)
-    facts = facts_subquery(filters, _dialect(db))
+    facts = _facts(db, filters)
     owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
     q = (_scoped(_log_select(facts, owner_key), facts, filters)
          .order_by(facts.c.occurred_at.desc().nulls_last(), facts.c.tool, facts.c.record_id)
@@ -946,7 +1010,7 @@ def load_model_counts(db: Session, filters: ReportFilters) -> list:
     """Charged generations per (user, tool, model): what each person
     generated, without reading every row of the period."""
     prepare(db, filters)
-    facts = facts_subquery(filters, _dialect(db))
+    facts = _facts(db, filters)
     owner_key = func.coalesce(User.id, UNASSIGNED_USER_ID)
     q = (_scoped(select(cast(owner_key, Integer).label("user_id"), facts.c.tool, facts.c.model,
                         func.count().label("rows")), facts, filters)

@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 import database_config
 from database_config import get_operational_db
@@ -86,7 +87,8 @@ async def receive_sheet_activity(
         foreign = {ev.spreadsheetId for ev in events} - allowed
         if foreign:
             raise HTTPException(status_code=403, detail="Spreadsheet is not allowed")
-    result = svc.ingest(db, events, source=source if source in svc.SOURCES else "webhook")
+    # In the threadpool so the DB work never blocks the event loop.
+    result = await run_in_threadpool(svc.ingest, db, events, source=source if source in svc.SOURCES else "webhook")
     return {"success": True, **result}
 
 

@@ -6,6 +6,7 @@ import logging
 import smtplib
 import ssl
 from email.message import EmailMessage
+from anyio import from_thread
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, Cookie, Request, Header
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, or_, text
@@ -827,8 +828,15 @@ def register(
         )
 
 
+# Plain def, not async def: FastAPI then runs it in its worker threadpool, so
+# the DB queries and the bcrypt check below never block the event loop. An
+# async handler that waits on a full connection pool freezes every request in
+# the worker - including the ones holding the connections it is waiting for.
+# The async cache/rate-limit helpers still run on the loop via from_thread.run.
+# The other handlers below that call from_thread.run are plain def for the
+# same reason.
 @router.post("/login")
-async def login(
+def login(
     credentials: UserLoginExtended,
     request: Request,
     response: Response,
@@ -838,7 +846,7 @@ async def login(
     try:
         normalized_email = credentials.email.strip().lower()
         _safe_log(f"\nLOGIN ATTEMPT: {normalized_email}")
-        await _check_login_rate_limit(normalized_email, request)
+        from_thread.run(_check_login_rate_limit, normalized_email, request)
         
         # Find user
         user = db.query(User).filter(
@@ -923,9 +931,9 @@ async def login(
         # Update last login only after session creation succeeds.
         user.last_login = datetime.utcnow()
         db.commit()
-        await _clear_login_rate_limit(normalized_email, request)
+        from_thread.run(_clear_login_rate_limit, normalized_email, request)
         serialized_user = _serialize_user(user)
-        await _set_auth_response_cache(session_id, serialized_user)
+        from_thread.run(_set_auth_response_cache, session_id, serialized_user)
 
         cookie_secure, cookie_samesite = _resolve_cookie_policy(request)
         
@@ -1033,7 +1041,7 @@ def get_profile(
 
 
 @router.get("/avatar")
-async def get_avatar(
+def get_avatar(
     request: Request,
     session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
@@ -1043,7 +1051,7 @@ async def get_avatar(
     if not resolved_session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    cached_avatar = await _get_auth_response_cache(resolved_session_id or "", "avatar")
+    cached_avatar = from_thread.run(_get_auth_response_cache, resolved_session_id or "", "avatar")
     if cached_avatar:
         verify_session_token(
             resolved_session_id,
@@ -1064,12 +1072,12 @@ async def get_avatar(
         "hasAvatar": bool(current_user.avatar),
     }
     if resolved_session_id:
-        await _set_auth_response_cache(resolved_session_id, payload, "avatar")
+        from_thread.run(_set_auth_response_cache, resolved_session_id, payload, "avatar")
     return payload
 
 
 @router.post("/avatar")
-async def upload_avatar(
+def upload_avatar(
     payload: AvatarUpload,
     session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
@@ -1086,9 +1094,9 @@ async def upload_avatar(
     db.commit()
     db.refresh(current_user)
     resolved_session_id = get_request_session_token(session_id, x_session_id)
-    await _clear_auth_response_cache(resolved_session_id)
+    from_thread.run(_clear_auth_response_cache, resolved_session_id)
     if resolved_session_id:
-        await _set_auth_response_cache(resolved_session_id, _serialize_user(current_user))
+        from_thread.run(_set_auth_response_cache, resolved_session_id, _serialize_user(current_user))
 
     return {
         "success": True,
@@ -1099,7 +1107,7 @@ async def upload_avatar(
 
 
 @router.delete("/avatar")
-async def delete_avatar(
+def delete_avatar(
     session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
     current_user: User = Depends(get_current_user),
@@ -1109,9 +1117,9 @@ async def delete_avatar(
     db.commit()
     db.refresh(current_user)
     resolved_session_id = get_request_session_token(session_id, x_session_id)
-    await _clear_auth_response_cache(resolved_session_id)
+    from_thread.run(_clear_auth_response_cache, resolved_session_id)
     if resolved_session_id:
-        await _set_auth_response_cache(resolved_session_id, _serialize_user(current_user))
+        from_thread.run(_set_auth_response_cache, resolved_session_id, _serialize_user(current_user))
 
     return {
         "success": True,
@@ -1122,7 +1130,7 @@ async def delete_avatar(
 
 
 @router.put("/profile")
-async def update_profile(
+def update_profile(
     payload: ProfileUpdate,
     session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-Id"),
@@ -1151,9 +1159,9 @@ async def update_profile(
         db.commit()
         db.refresh(current_user)
         resolved_session_id = get_request_session_token(session_id, x_session_id)
-        await _clear_auth_response_cache(resolved_session_id)
+        from_thread.run(_clear_auth_response_cache, resolved_session_id)
         if resolved_session_id:
-            await _set_auth_response_cache(resolved_session_id, _serialize_user(current_user))
+            from_thread.run(_set_auth_response_cache, resolved_session_id, _serialize_user(current_user))
 
     return {
         "success": True,
@@ -1562,7 +1570,7 @@ def update_password(
 
 
 @router.post("/forgot-password", response_model=MessageResponse)
-async def forgot_password(
+def forgot_password(
     request: Request,
     background_tasks: BackgroundTasks,
     payload: ForgotPasswordRequest, 
@@ -1570,7 +1578,7 @@ async def forgot_password(
 ):
     """Request password reset"""
     normalized_email = payload.email.strip().lower()
-    await _check_forgot_password_rate_limit(normalized_email, request)
+    from_thread.run(_check_forgot_password_rate_limit, normalized_email, request)
     user = db.query(User).filter(
         func.lower(func.trim(User.email)) == normalized_email
     ).first()

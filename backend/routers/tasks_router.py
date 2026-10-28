@@ -4,6 +4,7 @@ import concurrent.futures
 import json
 
 from fastapi import HTTPException, Depends, Query, Cookie, Header, Request, WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, load_only
 from sqlalchemy import or_, and_, func, case, inspect, cast, Text as SQLText
 from sqlalchemy.exc import SQLAlchemyError
@@ -456,20 +457,10 @@ def _send_single_web_push(endpoint: str, p256dh: str, auth: str, payload_json: s
         return False, None, (str(exc).strip() or "web push failed")[:500]
 
 
-async def deliver_web_push_notifications(user_id: int, payload: dict) -> None:
-    if not web_push_enabled():
-        return
-
-    # Read targets / fan out / write results back, as three phases with NO
-    # database connection held across the network calls in the middle one.
-    # A single session spanning the whole fan-out (the previous shape) kept a
-    # Postgres connection checked out for as long as the slowest push endpoint
-    # took to answer - and pywebpush had no HTTP timeout, so "as long as" could
-    # mean forever. Under NullPool (hosted Supabase pooler, see
-    # database_config.py) each of those is a real connection nobody can reuse.
+def _load_web_push_targets(user_id: int) -> list:
     db = OperationalSessionLocal()
     try:
-        targets = [
+        return [
             (row.id, row.endpoint, row.p256dh, row.auth)
             for row in db.query(WebPushSubscription)
             .filter(
@@ -480,36 +471,12 @@ async def deliver_web_push_notifications(user_id: int, payload: dict) -> None:
         ]
     except Exception:
         db.rollback()
-        return
+        return []
     finally:
         db.close()
 
-    if not targets:
-        return
 
-    payload_json = _serialize_web_push_payload(payload)
-    results = await asyncio.gather(
-        *[
-            asyncio.to_thread(
-                _send_single_web_push,
-                endpoint,
-                p256dh,
-                auth,
-                payload_json,
-            )
-            for _subscription_id, endpoint, p256dh, auth in targets
-        ],
-        return_exceptions=True,
-    )
-
-    outcomes = []
-    for (subscription_id, *_rest), result in zip(targets, results):
-        if isinstance(result, Exception):
-            outcomes.append((subscription_id, False, None, (str(result).strip() or "web push failed")[:500]))
-        else:
-            ok, status_code, reason = result
-            outcomes.append((subscription_id, ok, status_code, reason))
-
+def _record_web_push_outcomes(outcomes: list) -> None:
     db = OperationalSessionLocal()
     try:
         now = datetime.utcnow()
@@ -542,6 +509,50 @@ async def deliver_web_push_notifications(user_id: int, payload: dict) -> None:
         db.rollback()
     finally:
         db.close()
+
+
+async def deliver_web_push_notifications(user_id: int, payload: dict) -> None:
+    if not web_push_enabled():
+        return
+
+    # Read targets / fan out / write results back, as three phases with NO
+    # database connection held across the network calls in the middle one.
+    # A single session spanning the whole fan-out (the previous shape) kept a
+    # Postgres connection checked out for as long as the slowest push endpoint
+    # took to answer - and pywebpush had no HTTP timeout, so "as long as" could
+    # mean forever. Under NullPool (hosted Supabase pooler, see
+    # database_config.py) each of those is a real connection nobody can reuse.
+    # The DB phases run in the request threadpool: on the event loop, a query
+    # waiting on a full connection pool would freeze every request in this
+    # worker.
+    targets = await run_in_threadpool(_load_web_push_targets, user_id)
+    if not targets:
+        return
+
+    payload_json = _serialize_web_push_payload(payload)
+    results = await asyncio.gather(
+        *[
+            asyncio.to_thread(
+                _send_single_web_push,
+                endpoint,
+                p256dh,
+                auth,
+                payload_json,
+            )
+            for _subscription_id, endpoint, p256dh, auth in targets
+        ],
+        return_exceptions=True,
+    )
+
+    outcomes = []
+    for (subscription_id, *_rest), result in zip(targets, results):
+        if isinstance(result, Exception):
+            outcomes.append((subscription_id, False, None, (str(result).strip() or "web push failed")[:500]))
+        else:
+            ok, status_code, reason = result
+            outcomes.append((subscription_id, ok, status_code, reason))
+
+    await run_in_threadpool(_record_web_push_outcomes, outcomes)
 
 
 class TaskCreate(BaseModel):
@@ -5775,14 +5786,21 @@ async def notifications_ws(websocket: WebSocket):
     if not session_id:
         await websocket.close(code=1008)
         return
-    db = OperationalSessionLocal()
+
+    # In the request threadpool: on the event loop, a lookup waiting on a full
+    # connection pool would freeze every request in this worker.
+    def _verify_user_id() -> int:
+        db = OperationalSessionLocal()
+        try:
+            return verify_session_token(session_id, db)
+        finally:
+            db.close()
+
     try:
-        user_id = verify_session_token(session_id, db)
+        user_id = await run_in_threadpool(_verify_user_id)
     except Exception:
         await websocket.close(code=1008)
         return
-    finally:
-        db.close()
 
     await notification_hub.connect(user_id, websocket, selected_subprotocol)
     try:

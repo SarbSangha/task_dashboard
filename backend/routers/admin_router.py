@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
+from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func
@@ -862,8 +863,11 @@ def list_departments(
     }
 
 
+# Plain def so the DB work runs in FastAPI's threadpool instead of blocking the
+# event loop (see login in auth_router.py); the async cache invalidation still
+# runs on the loop via from_thread.run.
 @router.post("/departments")
-async def create_department(
+def create_department(
     payload: DepartmentCreatePayload,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_operational_db),
@@ -896,7 +900,7 @@ async def create_department(
 
     db.commit()
     db.refresh(department)
-    await invalidate_pattern(AUTH_DEPARTMENTS_CACHE_PATTERN)
+    from_thread.run(invalidate_pattern, AUTH_DEPARTMENTS_CACHE_PATTERN)
     return {
         "success": True,
         "message": "Department added successfully",
