@@ -8,7 +8,11 @@ employees, then assembles plain dataclasses the sheet modules iterate over.
 Grain decisions (reconciled against the live reports API so the workbook agrees
 with the dashboard):
   * ChatGPT "session"/event  = one captured prompt (ConversationPrompt), IST-dated
-  * Kling event/generation   = one usage event (ITPortalToolUsageEvent), IST event_date
+  * Kling event/generation   = one usage event (ITPortalToolUsageEvent), IST event_date,
+                               counted by the Credit Consumption Report's rules (Charged
+                               only, has a client, a job recorded twice counts once - see
+                               _load_kling_scope) so it matches the Excel & Spend screen
+  * Names / departments / clients are shown cleaned, as on that screen (DisplayConfig)
   * Composite score          = ChatGPT sessions + Kling videos
   * A tool is "used" by an employee if they have >=1 event on it in-window.
 
@@ -23,10 +27,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import case, func
+from sqlalchemy import Integer, case, cast, func, literal
 from sqlalchemy.orm import Session
 
 from models_new import ITPortalTool, ITPortalToolUsageEvent, User
+from utils.credit_report.dedupe import KlingDedup, find_recorded_twice
+from utils.credit_report.display import DisplayConfig
+from utils.credit_report.facts import CHARGED, charge_status, charge_status_expr
 from providers.chatgpt.models import ConversationPrompt, ConversationRecord, ConversationResponse
 from providers.freepik.models import FreepikGeneration
 from providers.envato.models import EnvatoGeneration
@@ -590,11 +597,14 @@ def build_dataset(
     fl_start = period.start_dt - LOCAL_TZ_OFFSET
     fl_end = period.end_exclusive - LOCAL_TZ_OFFSET
 
-    employees = _load_employees(db)
+    display = DisplayConfig.load()
+    kling_scope = _load_kling_scope(db, period, display)
+
+    employees = _load_employees(db, display)
     by_uid = {emp.user_id: emp for emp in employees}
 
     _apply_chatgpt_aggregates(db, cg_start, cg_end, by_uid)
-    _apply_kling_aggregates(db, period, kling_tool_ids, by_uid)
+    _apply_kling_aggregates(db, period, kling_tool_ids, kling_scope, by_uid)
     _apply_freepik_aggregates(db, fp_start, fp_end, by_uid)
     _apply_envato_aggregates(db, ev_start, ev_end, by_uid)
     _apply_heygen_aggregates(db, hg_start, hg_end, by_uid)
@@ -603,7 +613,7 @@ def build_dataset(
     _apply_flow_aggregates(db, fl_start, fl_end, by_uid)
 
     chatgpt_events, cg_trunc = _load_chatgpt_events(db, cg_start, cg_end, by_uid)
-    kling_events, kl_trunc = _load_kling_events(db, period, kling_tool_ids, by_uid)
+    kling_events, kl_trunc = _load_kling_events(db, period, kling_tool_ids, kling_scope, by_uid)
     freepik_events, fp_trunc = _load_freepik_events(db, fp_start, fp_end, by_uid)
     envato_events, ev_trunc = _load_envato_events(db, ev_start, ev_end, by_uid)
     heygen_events, hg_trunc = _load_heygen_events(db, hg_start, hg_end, by_uid)
@@ -658,7 +668,7 @@ def build_dataset(
 # --------------------------------------------------------------------------- #
 # Employees + aggregates
 # --------------------------------------------------------------------------- #
-def _load_employees(db: Session) -> list[Employee]:
+def _load_employees(db: Session, display: DisplayConfig) -> list[Employee]:
     rows = (
         db.query(User.id, User.employee_id, User.name, User.department)
         .filter(User.is_deleted.is_(False))
@@ -671,11 +681,61 @@ def _load_employees(db: Session) -> list[Employee]:
             Employee(
                 user_id=uid,
                 employee_id=emp_id or f"U{uid}",
-                name=name or "Unknown",
-                department=dept or "Unassigned",
+                # Cleaned the same way the Excel & Spend screen shows them
+                # ('ishansh' -> 'Ishansh', 'GEN AI' -> 'Gen AI').
+                name=display.person_name(uid, name) or "Unknown",
+                department=display.department_name(dept) or "Unassigned",
             )
         )
     return out
+
+
+@dataclass
+class _KlingScope:
+    """Which Kling usage events count, and who each one is credited to.
+
+    The raw event table over-counts: one job can be recorded twice (the
+    browser that clicked Generate, then a history scan), each copy carrying the
+    job's full credits; rows still Pending or Failed carry no charge; and
+    history scans land with no client. The Excel & Spend screen's Credit
+    Consumption Report already settles all three (utils/credit_report/facts.py
+    and dedupe.py), so this applies its exact rules rather than a copy of them.
+    """
+    display: DisplayConfig
+    dedup: KlingDedup
+
+    def where(self):
+        e = ITPortalToolUsageEvent
+        clauses = [
+            charge_status_expr(e.status) == CHARGED,
+            self.display.client_sql(e.linked_client_name).isnot(None),
+        ]
+        drop = self.dedup.drop_ids
+        if drop:
+            clauses.append(e.id.notin_(sorted(drop)))
+        return clauses
+
+    def owner(self):
+        """A job recorded twice is credited to the person who started it."""
+        e = ITPortalToolUsageEvent
+        overrides = self.dedup.owner_override
+        if not overrides:
+            return e.user_id
+        return case(
+            *[(e.id == kept, literal(uid, Integer) if uid is not None else cast(literal(None), Integer))
+              for kept, uid in sorted(overrides.items())],
+            else_=e.user_id,
+        )
+
+
+def _load_kling_scope(db: Session, period: "Period", display: DisplayConfig) -> _KlingScope:
+    dedup = find_recorded_twice(
+        db, period.start, period.end, kling_slugs=KLING_TOOL_SLUGS, sane_max=MAX_SANE_KLING_CREDITS,
+        is_charged=lambda s: charge_status(s) == CHARGED,
+        has_client=lambda c: display.client_name(c) is not None,
+        name_of=display.person_name,
+    )
+    return _KlingScope(display=display, dedup=dedup)
 
 
 def _kling_tool_ids(db: Session) -> list[int]:
@@ -723,28 +783,41 @@ def _apply_chatgpt_aggregates(db, s, e, by_uid: dict[int, Employee]) -> None:
             emp.chatgpt_last = _as_date(last + LOCAL_TZ_OFFSET) if last else None  # UTC -> IST
 
 
-def _apply_kling_aggregates(db, period: "Period", tool_ids: list[int], by_uid: dict[int, Employee]) -> None:
+def _apply_kling_aggregates(
+    db, period: "Period", tool_ids: list[int], scope: _KlingScope, by_uid: dict[int, Employee],
+) -> None:
     """Kling usage from ITPortalToolUsageEvent, dated by the IST ``event_date``.
 
-    One usage event == one generation done on the tool (the two capture paths,
-    generate_click and network_generation, are near-disjoint). Credits are
-    clamped so garbage values do not distort totals.
+    One counted usage event == one generation (see _KlingScope for which
+    events count). Credits are clamped so garbage values do not distort totals.
     """
     if not tool_ids:
         return
-    rows = (
+    # Owner is a CASE over the dedupe's reassignments; grouping on it directly
+    # would repeat its bound parameters, which Postgres can't match to the
+    # SELECT list - so it is labelled in a subquery and grouped outside.
+    counted = (
         db.query(
-            ITPortalToolUsageEvent.user_id,
-            func.count(ITPortalToolUsageEvent.id),
-            func.coalesce(func.sum(_sane_credits()), 0.0),
-            func.max(ITPortalToolUsageEvent.event_date),
+            scope.owner().label("uid"),
+            _sane_credits().label("credits"),
+            ITPortalToolUsageEvent.event_date.label("day"),
         )
         .filter(
             ITPortalToolUsageEvent.tool_id.in_(tool_ids),
             ITPortalToolUsageEvent.event_date >= period.start,
             ITPortalToolUsageEvent.event_date <= period.end,
+            *scope.where(),
         )
-        .group_by(ITPortalToolUsageEvent.user_id)
+        .subquery()
+    )
+    rows = (
+        db.query(
+            counted.c.uid,
+            func.count(),
+            func.coalesce(func.sum(counted.c.credits), 0.0),
+            func.max(counted.c.day),
+        )
+        .group_by(counted.c.uid)
         .all()
     )
     for uid, cnt, credits, last in rows:
@@ -987,8 +1060,11 @@ def _load_chatgpt_events(db, s, e, by_uid) -> tuple[list[ChatGptEvent], bool]:
     return out, truncated
 
 
-def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tuple[list[KlingEvent], bool]:
-    """One row per Kling usage event (== one generation), dated by IST event_date.
+def _load_kling_events(
+    db, period: "Period", tool_ids: list[int], scope: _KlingScope, by_uid,
+) -> tuple[list[KlingEvent], bool]:
+    """One row per counted Kling usage event (== one generation, see
+    _KlingScope), dated by IST event_date.
 
     Selects only the needed columns (never ``metadata_json`` — it is large and,
     for Kling usage events, does not carry negative-prompt / aspect / gen-time),
@@ -999,7 +1075,7 @@ def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tup
     UE = ITPortalToolUsageEvent
     q = (
         db.query(
-            UE.user_id, UE.event_date, UE.prompt_text, UE.model_label,
+            scope.owner(), UE.event_date, UE.prompt_text, UE.model_label,
             UE.duration_label, UE.resolution_label, UE.credits_burned,
             UE.generation_id, UE.external_event_id, UE.event_type, UE.status,
             UE.linked_client_name, UE.linked_task_name,
@@ -1008,6 +1084,7 @@ def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tup
             UE.tool_id.in_(tool_ids),
             UE.event_date >= period.start,
             UE.event_date <= period.end,
+            *scope.where(),
         )
         .order_by(UE.event_date.asc(), UE.created_at.asc())
         .limit(RAW_ROW_CAP + 1)
@@ -1040,7 +1117,7 @@ def _load_kling_events(db, period: "Period", tool_ids: list[int], by_uid) -> tup
                 kling_id=generation_id or external_event_id or "—",
                 project=event_type or "—",
                 status=(status or "settled").title(),
-                client_name=linked_client_name or "",
+                client_name=scope.display.client_name(linked_client_name) or "",
                 task_name=linked_task_name or "",
             )
         )
