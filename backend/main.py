@@ -35,6 +35,7 @@ from providers.chatgpt import router as chatgpt_router
 from providers.claude import router as claude_router
 from providers.elevenlabs import router as elevenlabs_router
 from providers.elevenlabs.asset_mirror import mirror_pending_generations as mirror_pending_elevenlabs_generations
+from providers.elevenlabs.asset_mirror import mirror_pending_content_generations as mirror_pending_elevenlabs_content_generations
 from providers.envato import router as envato_router
 from providers.flow import router as flow_router
 from providers.freepik import router as freepik_router
@@ -44,6 +45,7 @@ from providers.heygen import router as heygen_router
 from providers.heygen.asset_mirror import mirror_pending_generations as mirror_pending_heygen_generations
 from providers.higgsfield import router as higgsfield_router
 from providers.splice import router as splice_router
+from providers.cursor import router as cursor_router
 from providers.epidemicsound import router as epidemicsound_router
 from providers.suno import router as suno_router
 from providers.grammarly_docs import router as grammarly_docs_router
@@ -298,6 +300,17 @@ def _run_elevenlabs_asset_mirror_cycle(limit: int) -> dict:
         db.close()
 
 
+def _run_elevenlabs_content_mirror_cycle(limit: int) -> dict:
+    db = OperationalSessionLocal()
+    try:
+        return mirror_pending_elevenlabs_content_generations(db, limit=limit)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def _run_sheets_poll_cycle() -> list:
     from services.sheets import poll_due_sheets
 
@@ -462,6 +475,32 @@ async def _periodic_elevenlabs_asset_mirror_dispatch(interval_seconds: int = 300
                 )
         except Exception as exc:
             _safe_print(f"ElevenLabs asset mirror dispatch failed: {exc}")
+
+
+async def _periodic_elevenlabs_content_mirror_dispatch(interval_seconds: int = 120) -> None:
+    """Backs up ElevenLabs Image & Video files (and only those - see
+    providers/elevenlabs/asset_mirror.py's mirror_pending_content_generations
+    and the lifespan comment below on why the general ElevenLabs sweep stays
+    off). Their download links expire ~2 hours after capture, hence the short
+    default interval."""
+    while True:
+        await asyncio.sleep(max(60, interval_seconds))
+        try:
+            stats = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _run_elevenlabs_content_mirror_cycle,
+                    _int_env("ELEVENLABS_CONTENT_MIRROR_BATCH_SIZE", 10),
+                ),
+                timeout=max(30, _int_env("ELEVENLABS_CONTENT_MIRROR_TIMEOUT_SECONDS", 300)),
+            )
+            if stats.get("scanned"):
+                _safe_print(
+                    "ElevenLabs Image & Video backup scanned="
+                    f"{stats['scanned']} mirrored={stats['mirrored']} "
+                    f"skipped={stats['skipped']} failed={stats['failed']}"
+                )
+        except Exception as exc:
+            _safe_print(f"ElevenLabs Image & Video backup dispatch failed: {exc}")
 
 
 # ==================== LIFESPAN EVENT ====================
@@ -629,6 +668,15 @@ async def lifespan(app: FastAPI):
     # are left in place (harmless if ever manually invoked, e.g. from a
     # future admin action or once a real signed-URL path is discovered) -
     # just not wired to run automatically.
+    #
+    # Image & Video (2026-10-29) is the exception: those rows DO carry a
+    # public signed download_url (valid ~2h), so a separate sweep scoped to
+    # just those sources - and only rows that already have a URL, so it can
+    # never mislabel anything "skipped" - backs them up.
+    elevenlabs_content_mirror_task = asyncio.create_task(
+        _periodic_elevenlabs_content_mirror_dispatch(_int_env("ELEVENLABS_CONTENT_MIRROR_INTERVAL_SECONDS", 120)),
+        name="elevenlabs-content-mirror-dispatch",
+    )
     _safe_print(f"Frontend: {_display_frontend_url()}\n")
 
     try:
@@ -640,10 +688,12 @@ async def lifespan(app: FastAPI):
         freepik_asset_mirror_task.cancel()
         heygen_asset_mirror_task.cancel()
         flow_asset_mirror_task.cancel()
+        elevenlabs_content_mirror_task.cancel()
         sheets_poll_task.cancel()
         await asyncio.gather(
             auth_cleanup_task, notification_outbox_task, report_schedule_task,
-            freepik_asset_mirror_task, heygen_asset_mirror_task, flow_asset_mirror_task, sheets_poll_task,
+            freepik_asset_mirror_task, heygen_asset_mirror_task, flow_asset_mirror_task,
+            elevenlabs_content_mirror_task, sheets_poll_task,
             return_exceptions=True,
         )
         await notification_dispatcher.stop()
@@ -820,6 +870,10 @@ app.include_router(elevenlabs_router.router)
 
 # Splice Generation Capture System
 app.include_router(splice_router.router)
+
+# Cursor (desktop AI editor) Prompt + Usage Tracking - fed by the Cursor
+# extension and uploaded usage CSVs, not the browser extension
+app.include_router(cursor_router.router)
 
 # Epidemic Sound Generation Capture System
 app.include_router(epidemicsound_router.router)

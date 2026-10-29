@@ -46,7 +46,34 @@ MIRROR_KEY_PREFIX = "freepik-mirror"
 REQUEST_PACING_SECONDS = 0.4
 
 
+_VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
+
+
+def is_video_url(url: Optional[str]) -> bool:
+    return bool(url) and urlparse(url).path.lower().endswith(_VIDEO_EXTENSIONS)
+
+
+def is_video_generation(generation: FreepikGeneration) -> bool:
+    """file_type_id 4 is Freepik's video type - it lines up exactly with the
+    rows whose download_url/raw_url is an .mp4 (96/96 in the 2026-10-29
+    data); the URL/tool checks cover a row captured before those arrive."""
+    return (
+        generation.file_type_id == 4
+        or "video" in (generation.tool or "").lower()
+        or is_video_url(generation.download_url)
+        or is_video_url(generation.raw_url)
+    )
+
+
 def _asset_url_candidates(generation: FreepikGeneration) -> list[str]:
+    # A video's only real asset is the clip itself. Its preview/large_preview
+    # are the START FRAME still (normalization.py's _extract_video_asset), so
+    # falling back to them when the clip's token had expired stored a
+    # picture as the "video" and marked it done for good - 12 of 14 mirrored
+    # video rows on 2026-10-29. raw_url is a second, independently tokened
+    # copy of the clip.
+    if is_video_generation(generation):
+        return [url for url in dict.fromkeys((generation.download_url, generation.raw_url)) if is_video_url(url)]
     # Same priority normalization.py's _project_into_generation_record uses
     # for GenerationRecord.canonical_asset_url (download_url first) - kept in
     # lockstep so the mirrored copy is the same asset the rest of the app
@@ -110,7 +137,10 @@ def _mirror_generation(db: Session, generation: FreepikGeneration, *, http_clien
     down the rest of the sweep)."""
     asset_candidates = _asset_url_candidates(generation)
     thumbnail_candidates = _thumbnail_url_candidates(generation)
-    if not asset_candidates and not thumbnail_candidates:
+    # A video with no clip link yet (still rendering) must not be marked
+    # "mirrored" on the strength of its start-frame thumbnail alone -
+    # normalization re-queues it once a capture brings the clip's link.
+    if not asset_candidates and (not thumbnail_candidates or is_video_generation(generation)):
         generation.asset_mirror_status = "skipped"
         generation.asset_mirror_attempted_at = datetime.utcnow()
         generation.asset_mirror_error = None

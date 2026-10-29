@@ -197,6 +197,12 @@ export default function GenerationDetailPanel({ generationId, onGenerationUpdate
         <MetaField label="Duration" value={generation.metadata?.duration != null ? `${generation.metadata.duration}s` : null} />
         <MetaField label="Frame Rate" value={generation.metadata?.fps != null ? `${generation.metadata.fps} fps` : null} />
         <MetaField label="Elapsed Time" value={generation.elapsedTimeMs != null ? `${(generation.elapsedTimeMs / 1000).toFixed(1)}s` : null} />
+        <MetaField
+          label="Credits Used"
+          value={generation.creditsUsed != null
+            ? `${formatCredits(generation.creditsUsed)}${generation.onUnlimitedPlan ? ' (unlimited plan)' : ''}`
+            : null}
+        />
         <MetaField label="Credits Charged" value={formatCredits(generation.creditsCharged)} />
         <MetaField label="Credits Estimated" value={formatCredits(generation.creditsEstimated)} />
         <MetaField label="Ownership" value={ownershipMeta.label} />

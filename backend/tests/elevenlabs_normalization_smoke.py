@@ -213,7 +213,111 @@ def test_one_generation_produces_exactly_one_generation_record() -> None:
     print("ok  one generation produces exactly one GenerationRecord even when normalized twice")
 
 
+def _content_generation_row(gen_id: str, *, created_unix: int, status: str, modality: str = "video") -> dict:
+    """Real GET /v1/content/generations row shape (Image & Video, observed
+    2026-10-29) - signed GCS URLs replaced with placeholders."""
+    done = status == "completed"
+    ext = "mp4" if modality == "video" else "png"
+    url = (lambda name: f"https://storage.googleapis.com/xi-backend/database/workspace/w/content_generation/{gen_id}/s/{name}?X-Goog-Signature=x") if done else (lambda name: None)
+    return {
+        "id": gen_id,
+        "prompt": "Dadaji aur Pota yoga pose se naturally apni normal standing position mein aa jaate hain",
+        "display_prompt": {"type": "doc", "content": []},
+        "model_id": "gemini-omni-1.1-flash",
+        "model_parameters": {"aspect_ratio": "9:16", "duration_secs": 8, "resolution": "720p", "start_frame": {"content_asset_id": "k80EQT5eqSVsG6F3Dq7r"}},
+        "modality": modality,
+        "mime_type": f"{'video' if modality == 'video' else 'image'}/{ext}",
+        "status": status,
+        "content_url": url(f"content.{ext}"),
+        "download_url": url(f"content.{ext}"),
+        "thumbnail_url": url("thumbnail.jpg"),
+        "price": {"credits": 4892.709575138122, "price_cents": 7828.3, "cost_fiat_currency": "inr", "promotion": None},
+        "created_at_unix": created_unix,
+        "updated_at_unix": created_unix + (50 if done else 5),
+        "finished_at_unix": created_unix + 50 if done else None,
+    }
+
+
+def test_image_video_generation_normalizes_and_requeues_mirror() -> None:
+    """An Image & Video generation first captured while still generating (no
+    URL yet - the mirror sweep marks that "skipped"), then again completed:
+    one row, source Video, ElevenLabs' own credit price, the finished file's
+    URL, and the mirror re-queued so the video actually gets copied."""
+    now_unix = int((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds())
+    with SessionLocal() as db:
+        first = normalize_capture_event(db, _capture(
+            db, _content_generation_row("FwNONsqNHOz2b9vngBki", created_unix=now_unix, status="processing"),
+            client_event_id="evt-video-generating",
+        ))
+        db.flush()
+        _assert(first is not None and first.source == "Video", f"expected source Video, got {first and first.source!r}")
+        _assert(first.media_url is None, "a still-generating row has no asset URL yet")
+        _assert(first.credits_used == 4893, f"credits should come from price.credits, got {first.credits_used!r}")
+        _assert(first.to_dict()["mediaKind"] == "video", "dashboard should render this as a video")
+        first.asset_mirror_status = "skipped"  # what the sweep does to a row with no URL
+        db.flush()
+
+        second = normalize_capture_event(db, _capture(
+            db, _content_generation_row("FwNONsqNHOz2b9vngBki", created_unix=now_unix, status="completed"),
+            client_event_id="evt-video-completed",
+        ))
+        db.flush()
+        _assert(second.id == first.id, "the completed snapshot must update the same generation, not add one")
+        _assert(second.status == "completed", f"status should advance, got {second.status!r}")
+        _assert(second.media_url and "content.mp4" in second.media_url, f"finished file URL missing: {second.media_url!r}")
+        _assert(second.thumbnail_url and "thumbnail.jpg" in second.thumbnail_url, "thumbnail URL missing")
+        _assert(second.provider_updated_at > second.provider_created_at, "updated_at_unix should be read")
+        _assert(second.asset_mirror_status == "pending", f"mirror should be re-queued, got {second.asset_mirror_status!r}")
+        _assert(second.prompt.startswith("Dadaji aur Pota"), "prompt not extracted")
+        db.rollback()
+
+    image = _extract_fields(_content_generation_row("imgGen0000000000001", created_unix=now_unix, status="completed", modality="image"))
+    _assert(image["source"] == "Image" and image["media_url"].split("?")[0].endswith("content.png"), "image rows map to source Image")
+    print("ok  an Image & Video generation normalizes (generating -> completed) and its mirror is re-queued")
+
+
+def test_uploaded_reference_file_is_not_a_generation() -> None:
+    """A reference image the person uploaded (real upload response shape,
+    2026-10-29) must not become a generation row."""
+    now_unix = int((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds())
+    upload = {
+        "id": "IqwxDFiig6Gd6v8RNdMz", "created_at_unix": now_unix, "status": "finalized", "source": None,
+        "name": "kling_20261014_IMAGE_Mood__Cine_4789_1 (2).png", "mime_type": "image/png",
+        "access_info": {"access_source": "creator", "is_creator": True, "role": "admin"},
+        "content_url": "https://storage.googleapis.com/xi-backend/database/workspace/w/content_generation/content_asset/IqwxDFiig6Gd6v8RNdMz/asset.png?x",
+        "download_url": "https://storage.googleapis.com/xi-backend/database/workspace/w/content_generation/content_asset/IqwxDFiig6Gd6v8RNdMz/asset.png?x",
+    }
+    with SessionLocal() as db:
+        result = normalize_capture_event(db, _capture(db, upload, client_event_id="evt-upload"))
+        _assert(result is None, "an uploaded file must not create a generation")
+        _assert(db.query(ElevenlabsGeneration).filter(ElevenlabsGeneration.provider_creation_id == "IqwxDFiig6Gd6v8RNdMz").count() == 0,
+                "no generation row for an upload")
+        db.rollback()
+    print("ok  an uploaded reference file is not recorded as a generation")
+
+
+def test_music_and_tts_rows_unchanged_by_image_video_support() -> None:
+    """Image & Video support must not change how Music/TTS rows normalize."""
+    music = _extract_fields({
+        "id": "chat1", "current_song_id": "song1", "created_at_utc": "2026-08-17T05:57:38.640000Z",
+        "song": {"id": "song1", "created_at_utc": "2026-08-17T05:57:38.640000Z", "updated_at_utc": "2026-08-17T05:57:44.552000Z",
+                 "generation_settings": {"model_id": "music_v2", "prompt": "jatt", "song_length_ms": 10000},
+                 "download_url": "https://storage.googleapis.com/x/generated_task.mp4", "status": "completed", "product_type_source": "Music"},
+    })
+    _assert(music["source"] == "Music" and music["credits_used"] == 150 and music["thumbnail_url"] is None, f"music row changed: {music['source']!r} {music['credits_used']!r}")
+    tts = _extract_fields({"history_item_id": "t1", "text": "hi", "source": "TTS", "date_unix": 1786610923,
+                           "character_count_change_from": 1188, "character_count_change_to": 1215})
+    _assert(tts["source"] == "TTS" and tts["credits_used"] == 27, "tts row changed")
+    with SessionLocal() as db:
+        gen = ElevenlabsGeneration(provider="elevenlabs", metadata_json={"song": {"id": "s"}})
+        _assert(gen.to_dict()["mediaKind"] == "audio", "music/tts stay audio on the dashboard")
+    print("ok  Music and TTS rows normalize exactly as before")
+
+
 if __name__ == "__main__":
+    test_image_video_generation_normalizes_and_requeues_mirror()
+    test_music_and_tts_rows_unchanged_by_image_video_support()
+    test_uploaded_reference_file_is_not_a_generation()
     test_synthetic_row_extracts_expected_fields()
     test_row_with_only_one_identity_key_normalizes_without_raising()
     test_totally_empty_payload_is_skipped_not_raised()

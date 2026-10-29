@@ -39,7 +39,7 @@ from uuid import uuid4
 import httpx
 from sqlalchemy.orm import Session
 
-from providers.elevenlabs.constants import PROVIDER
+from providers.elevenlabs.constants import CONTENT_GENERATION_SOURCE_BY_MODALITY, PROVIDER
 from providers.elevenlabs.models import ElevenlabsGeneration
 from utils import r2_storage
 
@@ -167,7 +167,13 @@ def _mirror_generation(db: Session, generation: ElevenlabsGeneration, *, http_cl
     return "mirrored"
 
 
-def mirror_pending_generations(db: Session, *, limit: int = 25) -> dict:
+def mirror_pending_generations(
+    db: Session,
+    *,
+    limit: int = 25,
+    sources: Optional[tuple[str, ...]] = None,
+    require_url: bool = False,
+) -> dict:
     """Sweeps up to `limit` un-mirrored rows, newest first - mirrors
     providers/freepik/asset_mirror.py's identical function/docstring
     (prioritizing newest gives the sweep the best odds of succeeding before a
@@ -185,13 +191,14 @@ def mirror_pending_generations(db: Session, *, limit: int = 25) -> dict:
         stats["r2_not_configured"] = True
         return stats
 
-    rows = (
-        db.query(ElevenlabsGeneration)
-        .filter(ElevenlabsGeneration.provider == PROVIDER, ElevenlabsGeneration.asset_mirror_status == "pending")
-        .order_by(ElevenlabsGeneration.provider_created_at.desc())
-        .limit(limit)
-        .all()
+    query = db.query(ElevenlabsGeneration).filter(
+        ElevenlabsGeneration.provider == PROVIDER, ElevenlabsGeneration.asset_mirror_status == "pending",
     )
+    if sources:
+        query = query.filter(ElevenlabsGeneration.source.in_(sources))
+    if require_url:
+        query = query.filter(ElevenlabsGeneration.media_url.isnot(None))
+    rows = query.order_by(ElevenlabsGeneration.provider_created_at.desc()).limit(limit).all()
     if not rows:
         return stats
 
@@ -209,3 +216,18 @@ def mirror_pending_generations(db: Session, *, limit: int = 25) -> dict:
             stats[outcome] += 1
 
     return stats
+
+
+def mirror_pending_content_generations(db: Session, *, limit: int = 10) -> dict:
+    """The one ElevenLabs sweep that runs on a timer (main.py's
+    _periodic_elevenlabs_content_mirror_dispatch): Image & Video rows only.
+    Unlike TTS/Music audio (pushed by the browser - see main.py's comment on
+    why the general sweep above stays off), these rows carry a public signed
+    GCS download_url, so the backend fetches the file itself. That link only
+    lives ~2 hours (X-Goog-Expires=7200, confirmed 2026-10-29), hence a short
+    interval. Only rows that already have a URL are picked up: a row still
+    generating stays "pending" until its completed snapshot brings one, never
+    "skipped"."""
+    return mirror_pending_generations(
+        db, limit=limit, sources=tuple(CONTENT_GENERATION_SOURCE_BY_MODALITY.values()), require_url=True,
+    )

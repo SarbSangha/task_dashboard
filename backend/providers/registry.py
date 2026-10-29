@@ -260,6 +260,28 @@ PROVIDERS: dict[str, ProviderInfo] = {
             "out of scope - see CAPTURE_CONTRACT.md."
         ),
     ),
+    "cursor": ProviderInfo(
+        slug="cursor",
+        display_name="Cursor",
+        tool_slugs=frozenset({"cursor"}),
+        status="in_development",
+        models_module="providers.cursor.models",
+        migrations_module=None,
+        notes=(
+            "DESKTOP app, not a website - the only provider not captured by the browser extension. "
+            "A Cursor (VS Code-style) extension reads each prompt from Cursor's local state.vscdb "
+            "(cursorDiskKV bubbleId:/composerData: rows) and posts it to /capture/prompts with a "
+            "tracker token bound to that computer, which the extension gets by trading a one-time "
+            "setup code an admin created for the person (no launcher ticket exists for a desktop "
+            "app). Cursor 3 records 0 tokens locally and encrypts the session the "
+            "extension would need to read cursor.com usage, so tokens/cost come from an admin-uploaded "
+            "usage CSV (cursor.com -> Dashboard -> Usage -> Export CSV) instead; matching.py ties each "
+            "CSV row to the prompt running at that moment, per Cursor login, at read time (never "
+            "stored). No Task/Client mapping (no gate is possible inside the IDE). No migrations_module: "
+            "brand-new tables get their full schema from Base.metadata.create_all() alone. See "
+            "CAPTURE_CONTRACT.md."
+        ),
+    ),
     "grammarly": ProviderInfo(
         slug="grammarly",
         display_name="Grammarly (Docs)",

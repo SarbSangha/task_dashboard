@@ -283,6 +283,51 @@ def test_to_dict_never_raises_when_presigning_fails() -> None:
     print("ok  a presign failure at serialization time degrades to null instead of raising")
 
 
+def test_video_backup_never_falls_back_to_the_start_frame() -> None:
+    """Real 2026-10-29 shape: a video-generator row's download_url/raw_url are
+    the .mp4, preview/thumbnail the start_frame.jpg (independently tokened).
+    With the clip's links expired but the still's alive, the old candidate
+    order stored the still as the "video" and marked it done (12 of 14
+    mirrored video rows). It must now fail honestly instead; a working raw_url
+    copy is used; and a video with no clip link yet isn't marked done."""
+    put_calls = _install_fakes()
+    base = "https://pikaso.cdnpk.net/private/production/5083579436"
+    frame = f"{base}/start_frame.jpg?token=exp=1~hmac=f"
+    dead_mp4 = f"{base}/clip-0.mp4?token=exp=1~hmac=a&filename=clip.mp4"
+    raw_mp4 = f"{base}/clip-0.mp4?token=exp=2~hmac=b"
+    _FakeHttpClient.responses = {
+        dead_mp4: _FakeResponse(content=b"", content_type="text/html", status_error=True),
+        raw_mp4: _FakeResponse(content=b"mp4-bytes", content_type="video/mp4"),
+        frame: _FakeResponse(content=b"jpg-bytes", content_type="image/jpeg"),
+    }
+    with SessionLocal() as db:
+        expired = FreepikGeneration(provider="freepik", creation_id="vid-expired", tool="video-generator", file_type_id=4,
+                                    download_url=dead_mp4, preview_url=frame, thumbnail_url=frame)
+        via_raw = FreepikGeneration(provider="freepik", creation_id="vid-raw", tool="video-generator", file_type_id=4,
+                                    download_url=dead_mp4, raw_url=raw_mp4, preview_url=frame, thumbnail_url=frame)
+        rendering = FreepikGeneration(provider="freepik", creation_id="vid-rendering", tool="video-generator", file_type_id=4,
+                                      preview_url=frame, thumbnail_url=frame)
+        db.add_all([expired, via_raw, rendering])
+        db.commit()
+        for row in (expired, via_raw, rendering):
+            asset_mirror._mirror_generation(db, row, http_client=_FakeHttpClient(), r2_client=None)
+        db.commit()
+
+        _assert(expired.asset_mirror_status == "failed" and expired.mirrored_asset_key is None,
+                f"an expired clip must fail, not store the start frame: {expired.asset_mirror_status!r} {expired.mirrored_asset_key!r}")
+        _assert(via_raw.asset_mirror_status == "mirrored" and via_raw.mirrored_asset_key.endswith(".mp4"),
+                f"the raw_url copy of the clip should be used: {via_raw.mirrored_asset_key!r}")
+        _assert(via_raw.mirrored_thumbnail_key and via_raw.mirrored_thumbnail_key.endswith(".jpg"), "the start frame is kept as the thumbnail")
+        _assert(rendering.asset_mirror_status == "skipped" and rendering.mirrored_asset_key is None,
+                "a video with no clip link yet must not be marked mirrored on its thumbnail alone")
+        _assert(not any(call["contentType"] == "image/jpeg" and "-asset" in call["key"] for call in put_calls),
+                "a still image was stored as a video's main asset")
+        for row in (expired, via_raw, rendering):
+            db.delete(row)
+        db.commit()
+    print("ok  a video is only ever backed up as the clip itself - never its start-frame still")
+
+
 if __name__ == "__main__":
     test_mirror_success_stores_r2_keys_and_to_dict_presigns_them()
     test_falls_back_to_next_candidate_when_first_url_is_expired()
@@ -291,4 +336,5 @@ if __name__ == "__main__":
     test_already_resolved_rows_are_never_rescanned()
     test_r2_not_configured_leaves_rows_untouched()
     test_to_dict_never_raises_when_presigning_fails()
+    test_video_backup_never_falls_back_to_the_start_frame()
     print("\nall freepik asset mirror smoke checks passed")

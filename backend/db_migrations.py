@@ -92,6 +92,20 @@ DEFAULT_TOOL_DIRECTORY = (
         "status": "active",
         "is_active": True,
     },
+    {
+        "name": "Cursor",
+        "slug": "cursor",
+        "category": "AI",
+        "description": "Cursor AI code editor",
+        "website_url": "https://cursor.com/",
+        "login_url": "https://cursor.com/dashboard",
+        "icon": "Cpu",
+        # A desktop app: there's no web login to autofill - the tile just
+        # opens cursor.com's dashboard (where the usage CSV is exported).
+        "launch_mode": "external_link",
+        "status": "active",
+        "is_active": True,
+    },
 )
 
 

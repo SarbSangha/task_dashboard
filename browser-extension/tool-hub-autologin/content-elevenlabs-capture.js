@@ -190,7 +190,23 @@ function getElevenlabsRowSource(rawRow) {
   if (row.source !== undefined && row.source !== null && row.source !== '') return String(row.source);
   if (row.source_type !== undefined && row.source_type !== null && row.source_type !== '') return String(row.source_type);
   if (row.product_type_source !== undefined && row.product_type_source !== null && row.product_type_source !== '') return String(row.product_type_source);
+  if (row.modality !== undefined && row.modality !== null && row.modality !== '') return String(row.modality); // Image & Video
   return '';
+}
+
+// Image & Video (elevenlabs.io/app/image-video), confirmed 2026-10-29: flat
+// rows from GET /v1/content/generations, told apart by `modality` +
+// `model_parameters` (no TTS or Music row has either). Unlike TTS, a row is
+// usually first seen while still generating (no download_url yet), and the
+// finished file is a public signed GCS URL the backend's asset mirror fetches
+// itself - so no bytes are pushed from this file for these rows.
+function isElevenlabsContentGenerationRow(row) {
+  return Boolean(row && typeof row === 'object' && 'modality' in row && 'model_parameters' in row);
+}
+
+function elevenlabsContentGenerationSettled(row) {
+  const status = `${row?.status || ''}`.toLowerCase();
+  return status === 'completed' || status === 'failed' || Boolean(row?.download_url || row?.content_url);
 }
 
 // Returns {field, raw} for whichever timestamp-like field is present, or
@@ -234,6 +250,11 @@ function looksLikeElevenlabsHistoryRowLocal(candidate) {
   if (candidate.current_song_id !== undefined && !(candidate.song && typeof candidate.song === 'object')) {
     return false;
   }
+  // Same uploaded-file exclusion as content-elevenlabs-network.js's.
+  if (candidate.model_parameters === undefined && (candidate.access_info !== undefined
+    || /\/content_asset\//.test(`${candidate.download_url || ''} ${candidate.content_url || ''}`))) {
+    return false;
+  }
   return true;
 }
 
@@ -244,6 +265,7 @@ function extractElevenlabsHistoryRowsFromJson(json) {
   if (Array.isArray(json.history)) return json.history.filter(looksLikeElevenlabsHistoryRowLocal);
   if (Array.isArray(json.items)) return json.items.filter(looksLikeElevenlabsHistoryRowLocal);
   if (Array.isArray(json.chats)) return json.chats.filter(looksLikeElevenlabsHistoryRowLocal); // Music, confirmed 2026-08-17
+  if (Array.isArray(json.generations)) return json.generations.filter(looksLikeElevenlabsHistoryRowLocal); // Image & Video, confirmed 2026-10-29
   return [];
 }
 
@@ -285,6 +307,12 @@ let elevenlabsArmQuietTimer = null;
 let elevenlabsArmMaxTimer = null;
 let elevenlabsAcceleratedPollTimers = [];
 let elevenlabsLastLiveCapturedAt = 0;
+// An Image & Video generation takes anywhere from seconds to several minutes,
+// far past the accelerated polls above (last one at 80s). While one captured
+// this session is still generating, its list is re-polled at this interval
+// (and the arm kept alive) until it completes or the arm's hard max expires.
+const ELEVENLABS_CONTENT_FOLLOW_UP_POLL_MS = 15 * 1000;
+let elevenlabsContentFollowUpTimer = null;
 
 chromeStorageGet([ELEVENLABS_LAST_LIVE_CAPTURED_AT_KEY]).then((stored) => {
   elevenlabsLastLiveCapturedAt = Number(stored[ELEVENLABS_LAST_LIVE_CAPTURED_AT_KEY] || 0);
@@ -315,6 +343,7 @@ function scheduleElevenlabsAcceleratedPolls() {
 function clearElevenlabsArmTimers() {
   if (elevenlabsArmQuietTimer) { window.clearTimeout(elevenlabsArmQuietTimer); elevenlabsArmQuietTimer = null; }
   if (elevenlabsArmMaxTimer) { window.clearTimeout(elevenlabsArmMaxTimer); elevenlabsArmMaxTimer = null; }
+  if (elevenlabsContentFollowUpTimer) { window.clearTimeout(elevenlabsContentFollowUpTimer); elevenlabsContentFollowUpTimer = null; }
   clearElevenlabsAcceleratedPollTimers();
 }
 
@@ -470,13 +499,25 @@ function looksLikeElevenlabsIconSubmitButton(candidate) {
 
 function looksLikeElevenlabsGenerateButton(candidate) {
   if (!candidate) return false;
+  // History cards are buttons wrapping the result itself, whose <img alt> is
+  // the prompt (confirmed 2026-10-29 on Image & Video: alt "generate the
+  // frame where h...") - so clicking a picture whose prompt mentions
+  // "generate" opened the Task popup and blocked the viewer. No real Generate
+  // button wraps an image or video (they're text or an SVG icon).
+  if (candidate.querySelector?.('img, video, picture, canvas')) return false;
+  // Settings switches, e.g. Image & Video's <button aria-label="Generate audio
+  // ON">On</button> (confirmed 2026-10-29) - toggling it isn't generating.
+  if (candidate.getAttribute?.('role') === 'switch' || candidate.hasAttribute?.('aria-pressed')
+    || candidate.hasAttribute?.('aria-checked') || /\b(on|off)\s*$/i.test(candidate.getAttribute?.('aria-label') || '')) return false;
   const text = elevenlabsButtonDescriptorText(candidate);
   if (text && text.length <= 80 && ELEVENLABS_GENERATE_TEXT_PHRASES.some((phrase) => text.includes(phrase))) {
     return true;
   }
   const testId = `${candidate.getAttribute?.('data-testid') || ''}`.toLowerCase();
   const ariaLabel = `${candidate.getAttribute?.('aria-label') || ''}`.toLowerCase();
-  if (testId.includes('generate') || ariaLabel.includes('generate')) return true;
+  // Length-capped like the text check above: a long label is content (e.g. a
+  // prompt), not a button name.
+  if (testId.includes('generate') || (ariaLabel.length <= 40 && ariaLabel.includes('generate'))) return true;
   return looksLikeElevenlabsIconSubmitButton(candidate);
 }
 
@@ -532,6 +573,30 @@ document.addEventListener('click', (event) => {
   } catch {}
 }, true); // capturing phase - fires even if the page's own handler stops propagation
 
+// Image & Video's composer also generates on Ctrl/Cmd+Enter (confirmed
+// 2026-10-29: its Generate button is <button type="submit"
+// aria-label="Generate" data-agent-tooltip="Generate (Ctrl + Enter)">). A
+// keypress never reaches the click gate above, so it skipped the Task/Client
+// popup and was never armed - nothing captured. Routed through the same gate
+// here (on a pick, runElevenlabsTaskGate clicks the real button, which the
+// click gate lets through and arms). Only from the composer's own prompt box
+// (it and the button share one <form>), never e.g. the history search box,
+// and scoped to that page, so Music/TTS behave exactly as before.
+document.addEventListener('keydown', (event) => {
+  try {
+    if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey) || event.isComposing) return;
+    if (elevenlabsTaskGateModalOpen) return;
+    if (!/^\/app\/image-video(\/|$)/.test(location.pathname)) return;
+    const promptBox = event.target?.closest?.('[contenteditable="true"], textarea');
+    const form = promptBox?.closest?.('form');
+    const button = form?.querySelector('button[type="submit"][aria-label="Generate"]');
+    if (!button || !elevenlabsIsVisible(button) || elevenlabsIsDisabled(button)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    runElevenlabsTaskGate(button);
+  } catch {}
+}, true);
+
 // ---- Row qualification + reporting ----
 
 // A Music row's asset URL (song.download_url) often isn't resolved yet on
@@ -549,7 +614,10 @@ function evaluateElevenlabsRowForLiveCapture(row) {
   if (!isElevenlabsGenerationArmed()) return { qualifies: false, reason: 'not_armed' };
 
   const isMusicRow = Boolean(row && typeof row === 'object' && row.song && typeof row.song === 'object');
-  const hasResolvedAsset = isMusicRow ? elevenlabsRowHasResolvedMusicAsset(row) : undefined;
+  const isContentRow = isElevenlabsContentGenerationRow(row);
+  let hasResolvedAsset;
+  if (isMusicRow) hasResolvedAsset = elevenlabsRowHasResolvedMusicAsset(row);
+  else if (isContentRow) hasResolvedAsset = elevenlabsContentGenerationSettled(row);
   const previousCapture = elevenlabsActiveGeneration.capturedHistoryItemIds.get(identityValue);
   // Once-per-identity-per-arm for everything EXCEPT a Music row whose
   // first-ever capture happened before its asset URL existed - that one
@@ -557,9 +625,10 @@ function evaluateElevenlabsRowForLiveCapture(row) {
   // proactivelyFetchElevenlabsMusicAudio actually gets to run against a
   // fetchable row instead of being permanently starved by this same gate
   // (confirmed real 2026-08-17: a generation stuck at asset_mirror_status
-  // "pending" indefinitely, first capture pre-dated the asset URL).
-  const isNewlyResolvedMusicAsset = Boolean(previousCapture && isMusicRow && !previousCapture.hasAudioUrl && hasResolvedAsset);
-  if (previousCapture && !isNewlyResolvedMusicAsset) {
+  // "pending" indefinitely, first capture pre-dated the asset URL). An Image
+  // & Video row gets the same one extra pass once it finishes generating.
+  const isNewlyResolvedAsset = Boolean(previousCapture && (isMusicRow || isContentRow) && !previousCapture.hasAudioUrl && hasResolvedAsset);
+  if (previousCapture && !isNewlyResolvedAsset) {
     return { qualifies: false, reason: 'already_captured_this_session' };
   }
 
@@ -583,7 +652,7 @@ function evaluateElevenlabsRowForLiveCapture(row) {
   // its timestamp never changes between the incomplete and resolved
   // snapshots (only song.download_url does), so it would otherwise get
   // wrongly rejected as "not newer than watermark".
-  if (!isNewlyResolvedMusicAsset) {
+  if (!isNewlyResolvedAsset) {
     if (timestampMs < elevenlabsActiveGeneration.armedAt - ELEVENLABS_CLOCK_SKEW_SLACK_MS) {
       return { qualifies: false, reason: 'older_than_arm' };
     }
@@ -606,7 +675,11 @@ async function reportElevenlabsHistoryRow(row, { isReconciliation }) {
 
   const source = getElevenlabsRowSource(row);
   const tsInfo = getElevenlabsRowRawTimestamp(row);
-  const changeToken = tsInfo ? `${tsInfo.raw}` : hashString(JSON.stringify(row));
+  let changeToken = tsInfo ? `${tsInfo.raw}` : hashString(JSON.stringify(row));
+  // An Image & Video row keeps its created time while it goes from
+  // generating to completed - without status/updated time in the id, the
+  // backend would drop the completed snapshot as a duplicate of the first.
+  if (isElevenlabsContentGenerationRow(row)) changeToken += `:${row.status || ''}:${row.updated_at_unix || ''}`;
   const clientEventId = `elevenlabs:${source || 'unknown'}:${identityValue}:${changeToken}`;
 
   try {
@@ -638,6 +711,13 @@ async function reportElevenlabsHistoryRow(row, { isReconciliation }) {
 
 function processElevenlabsIncomingRow(row) {
   const evaluation = evaluateElevenlabsRowForLiveCapture(row);
+  const isContentRow = isElevenlabsContentGenerationRow(row);
+  if (!evaluation.qualifies && evaluation.reason === 'already_captured_this_session'
+    && isContentRow && !elevenlabsContentGenerationSettled(row)) {
+    // Ours, still generating: keep waiting for it to finish.
+    scheduleElevenlabsArmQuietReset();
+    scheduleElevenlabsContentFollowUpPoll();
+  }
   if (!evaluation.qualifies) {
     console.debug('[RMW ElevenLabs Capture] ignored non-qualifying row (not a live generation)', {
       identity: getElevenlabsRowIdentity(row), reason: evaluation.reason,
@@ -650,6 +730,13 @@ function processElevenlabsIncomingRow(row) {
   setElevenlabsCaptureStatus('Capturing…');
   console.debug('[RMW ElevenLabs Capture] qualifying row - reporting as live', { identity: evaluation.identityValue });
   reportElevenlabsHistoryRow(row, { isReconciliation: false });
+
+  // Image & Video: the backend mirrors the finished file from the row's own
+  // URL - none of the audio fetching/correlation below applies.
+  if (isContentRow) {
+    if (!evaluation.hasAudioUrl) scheduleElevenlabsContentFollowUpPoll();
+    return;
+  }
 
   // Try to fetch the audio ourselves first (deterministic, no dependency on
   // Play/Download ever happening at all - see "Proactive audio fetch"
@@ -1192,6 +1279,73 @@ async function fetchElevenlabsMusicChatsPage(page) {
   }
 }
 
+// ---- Image & Video (GET /v1/content/generations, confirmed 2026-10-29) ----
+// Same host/auth as Music. The web app itself asks for page 0, 35 per page,
+// image_video_source=generate_content; the response is {generations, has_more}.
+
+const ELEVENLABS_CONTENT_SOURCE_KEY = 'ImageVideo';
+const ELEVENLABS_CONTENT_PAGE_SIZE = 35;
+const ELEVENLABS_CONTENT_MAX_PAGES = 5;
+
+async function fetchElevenlabsContentGenerationsPage(page) {
+  try {
+    const params = new URLSearchParams();
+    params.set('search', '');
+    params.set('page', String(page));
+    params.set('per_page', String(ELEVENLABS_CONTENT_PAGE_SIZE));
+    params.set('image_video_source', 'generate_content');
+    // credentials deliberately OMITTED - same wildcard-CORS reasoning as
+    // fetchElevenlabsHistoryPage above.
+    const response = await fetch(elevenlabsApiUrl(`/v1/content/generations?${params.toString()}`), {
+      headers: elevenlabsApiHeaders(),
+    });
+    if (!response.ok) return null;
+    return await response.json().catch(() => null);
+  } catch {
+    return null;
+  }
+}
+
+async function pollElevenlabsContentGenerations() {
+  if (!isElevenlabsGenerationArmed()) return;
+  const json = await fetchElevenlabsContentGenerationsPage(0);
+  if (json) extractElevenlabsHistoryRowsFromJson(json).forEach((row) => processElevenlabsIncomingRow(row));
+}
+
+function scheduleElevenlabsContentFollowUpPoll() {
+  if (elevenlabsContentFollowUpTimer) return;
+  elevenlabsContentFollowUpTimer = window.setTimeout(() => {
+    elevenlabsContentFollowUpTimer = null;
+    pollElevenlabsContentGenerations().catch(() => {});
+  }, ELEVENLABS_CONTENT_FOLLOW_UP_POLL_MS);
+}
+
+async function walkElevenlabsContentReconciliation(sourceState) {
+  const lastSeenId = sourceState?.lastSeenId || null;
+  let newestSeenThisWalk = null;
+
+  for (let page = 0; page < ELEVENLABS_CONTENT_MAX_PAGES; page++) {
+    const json = await fetchElevenlabsContentGenerationsPage(page);
+    if (!json) {
+      console.warn('[RMW ElevenLabs Sync] Image & Video page fetch/decode failed, stopping walk', { page: page + 1 });
+      break;
+    }
+    const rows = extractElevenlabsHistoryRowsFromJson(json);
+    let reachedKnownRow = false;
+    for (const row of rows) {
+      const id = getElevenlabsRowIdentity(row);
+      if (id && lastSeenId && id === lastSeenId) { reachedKnownRow = true; break; }
+      await reportElevenlabsHistoryRow(row, { isReconciliation: true });
+      // Only a finished row can be the "seen up to here" marker - one still
+      // generating must be looked at again next walk to catch its result.
+      if (!newestSeenThisWalk && id && elevenlabsContentGenerationSettled(row)) newestSeenThisWalk = id;
+    }
+    if (reachedKnownRow || !json.has_more) break;
+  }
+
+  return { lastSeenId: newestSeenThisWalk || lastSeenId };
+}
+
 // Page-number pagination, unlike /v1/history's cursor above - stops once a
 // row matching the previous walk's lastSeenId is reached (nothing new since
 // last time) or a page comes back short of a full page (last page) - no
@@ -1246,7 +1400,7 @@ async function walkElevenlabsReconciliation() {
     return;
   }
 
-  console.debug('[RMW ElevenLabs Sync] starting reconciliation walk', { sources: [...ELEVENLABS_KNOWN_SOURCES, ELEVENLABS_MUSIC_SOURCE_KEY] });
+  console.debug('[RMW ElevenLabs Sync] starting reconciliation walk', { sources: [...ELEVENLABS_KNOWN_SOURCES, ELEVENLABS_MUSIC_SOURCE_KEY, ELEVENLABS_CONTENT_SOURCE_KEY] });
   await patchElevenlabsSyncState({ lastWalkAt: now });
 
   const perSource = state.perSource || {};
@@ -1262,6 +1416,11 @@ async function walkElevenlabsReconciliation() {
     nextPerSource[ELEVENLABS_MUSIC_SOURCE_KEY] = await walkElevenlabsMusicReconciliation(perSource[ELEVENLABS_MUSIC_SOURCE_KEY]);
   } catch (error) {
     console.warn('[RMW ElevenLabs Sync] Music walk failed, skipping', { error: error?.message || error });
+  }
+  try {
+    nextPerSource[ELEVENLABS_CONTENT_SOURCE_KEY] = await walkElevenlabsContentReconciliation(perSource[ELEVENLABS_CONTENT_SOURCE_KEY]);
+  } catch (error) {
+    console.warn('[RMW ElevenLabs Sync] Image & Video walk failed, skipping', { error: error?.message || error });
   }
 
   await patchElevenlabsSyncState({ perSource: nextPerSource });
@@ -1294,6 +1453,11 @@ async function triggerElevenlabsHistoryPoll() {
     }
   } catch (error) {
     console.warn('[RMW ElevenLabs Capture] accelerated Music post-arm poll failed', { error: error?.message || error });
+  }
+  try {
+    await pollElevenlabsContentGenerations();
+  } catch (error) {
+    console.warn('[RMW ElevenLabs Capture] accelerated Image & Video post-arm poll failed', { error: error?.message || error });
   }
 }
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from models_new import User
@@ -21,6 +21,15 @@ from providers.freepik.models import FreepikCaptureEvent, FreepikDownload, Freep
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
+
+# Credits a generation actually used - the same rule as the credit report
+# (utils/credit_report/facts.py): what Freepik charged, or, on the unlimited
+# plan where the charge is 0, Freepik's own cost estimate. Summing
+# credits_charged alone showed every unlimited-plan generation as 0.
+CREDITS_USED = case(
+    (func.coalesce(FreepikGeneration.credits_charged, 0.0) > 0, FreepikGeneration.credits_charged),
+    else_=func.coalesce(FreepikGeneration.credits_estimated, 0.0),
+)
 
 
 @dataclass
@@ -299,6 +308,12 @@ def get_metrics(db: Session) -> dict:
         .scalar()
         or 0.0
     )
+    credits_used_total = (
+        db.query(func.coalesce(func.sum(CREDITS_USED), 0.0))
+        .filter(FreepikGeneration.provider == PROVIDER)
+        .scalar()
+        or 0.0
+    )
     total_search_queries = db.query(func.count(FreepikSearchQuery.id)).filter(FreepikSearchQuery.provider == PROVIDER).scalar() or 0
     total_downloads = db.query(func.count(FreepikDownload.id)).filter(FreepikDownload.provider == PROVIDER).scalar() or 0
     return {
@@ -307,6 +322,7 @@ def get_metrics(db: Session) -> dict:
         "resolvedOwnershipCount": int(resolved_count),
         "unknownOwnershipCount": int(total_generations - resolved_count),
         "creditsChargedTotal": float(credits_total),
+        "creditsUsedTotal": float(credits_used_total),
         "totalSearchQueries": int(total_search_queries),
         "totalDownloads": int(total_downloads),
     }
@@ -322,6 +338,7 @@ def credits_by_owner(db: Session, *, date_from: Optional[date] = None, date_to: 
             FreepikGeneration.owner_user_id,
             func.count(FreepikGeneration.id).label("generation_count"),
             func.coalesce(func.sum(FreepikGeneration.credits_charged), 0.0).label("credits_charged_total"),
+            func.coalesce(func.sum(CREDITS_USED), 0.0).label("credits_used_total"),
             func.coalesce(func.sum(FreepikGeneration.credits_estimated), 0.0).label("credits_estimated_total"),
         )
         .filter(FreepikGeneration.provider == PROVIDER, FreepikGeneration.owner_user_id.isnot(None))
@@ -346,10 +363,11 @@ def credits_by_owner(db: Session, *, date_from: Optional[date] = None, date_to: 
                 "department": getattr(user, "department", None),
                 "generationCount": int(row.generation_count),
                 "creditsChargedTotal": float(row.credits_charged_total),
+                "creditsUsedTotal": float(row.credits_used_total),
                 "creditsEstimatedTotal": float(row.credits_estimated_total),
             }
         )
-    results.sort(key=lambda item: item["creditsChargedTotal"], reverse=True)
+    results.sort(key=lambda item: item["creditsUsedTotal"], reverse=True)
     return results
 
 
@@ -364,6 +382,7 @@ def list_users(db: Session, *, q: Optional[str] = None, limit: int = DEFAULT_LIM
             FreepikGeneration.owner_user_id,
             func.count(FreepikGeneration.id).label("generation_count"),
             func.coalesce(func.sum(FreepikGeneration.credits_charged), 0.0).label("credits_charged_total"),
+            func.coalesce(func.sum(CREDITS_USED), 0.0).label("credits_used_total"),
             func.max(FreepikGeneration.created_at).label("last_generation_at"),
         )
         .filter(FreepikGeneration.provider == PROVIDER, FreepikGeneration.owner_user_id.isnot(None))
@@ -392,6 +411,7 @@ def list_users(db: Session, *, q: Optional[str] = None, limit: int = DEFAULT_LIM
                 "department": user.department,
                 "generationCount": int(row.generation_count),
                 "creditsChargedTotal": float(row.credits_charged_total),
+                "creditsUsedTotal": float(row.credits_used_total),
                 "lastGenerationAt": row.last_generation_at.isoformat() if row.last_generation_at else None,
             }
         )
@@ -408,6 +428,7 @@ def get_user_detail(db: Session, user_id: int) -> Optional[dict]:
         db.query(
             func.count(FreepikGeneration.id).label("generation_count"),
             func.coalesce(func.sum(FreepikGeneration.credits_charged), 0.0).label("credits_charged_total"),
+            func.coalesce(func.sum(CREDITS_USED), 0.0).label("credits_used_total"),
             func.coalesce(func.sum(FreepikGeneration.credits_estimated), 0.0).label("credits_estimated_total"),
         )
         .filter(FreepikGeneration.provider == PROVIDER, FreepikGeneration.owner_user_id == user_id)
@@ -421,5 +442,6 @@ def get_user_detail(db: Session, user_id: int) -> Optional[dict]:
         "department": user.department,
         "generationCount": int(stats.generation_count or 0),
         "creditsChargedTotal": float(stats.credits_charged_total or 0.0),
+        "creditsUsedTotal": float(stats.credits_used_total or 0.0),
         "creditsEstimatedTotal": float(stats.credits_estimated_total or 0.0),
     }

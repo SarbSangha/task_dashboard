@@ -2497,6 +2497,75 @@ export const spliceCaptureAPI = {
   },
 };
 
+// ==================== CURSOR CAPTURE CENTER API ====================
+// Cursor is a desktop app: prompts arrive from the Cursor extension (authenticated
+// with the personal tracker token minted below), and tokens/cost from the usage
+// CSV an admin exports from cursor.com and uploads here.
+export const cursorCaptureAPI = {
+  listPrompts: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/cursor/prompts',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getPrompt: async (promptId, requestConfig = {}) => {
+    const response = await api.get(`/api/providers/cursor/prompts/${promptId}`, requestConfig);
+    return response.data;
+  },
+
+  getView: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/cursor/view',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  getSummary: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/cursor/summary',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  listAccounts: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/cursor/accounts', requestConfig);
+    return response.data;
+  },
+
+  uploadUsageCsv: async (csvText, { accountEmail, fileName } = {}, requestConfig = {}) => {
+    const response = await api.post('/api/providers/cursor/usage/upload', csvText, {
+      ...requestConfig,
+      params: { account_email: accountEmail || undefined, file_name: fileName || undefined },
+      headers: { ...(requestConfig.headers || {}), 'Content-Type': 'text/csv' },
+    });
+    return response.data;
+  },
+
+  listPeople: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/cursor/people', requestConfig);
+    return response.data;
+  },
+
+  createSetupCode: async (userId, requestConfig = {}) => {
+    const response = await api.post('/api/providers/cursor/setup-codes', { user_id: userId }, requestConfig);
+    return response.data;
+  },
+
+  listDevices: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/cursor/devices', requestConfig);
+    return response.data;
+  },
+
+  disconnectDevice: async (deviceId, requestConfig = {}) => {
+    const response = await api.post(`/api/providers/cursor/devices/${deviceId}/disconnect`, null, requestConfig);
+    return response.data;
+  },
+};
+
 // ==================== GRAMMARLY DOCS CAPTURE CENTER API ====================
 export const grammarlyDocsCaptureAPI = {
   listSessions: async (paramsOrConfig = {}, requestConfig = {}) => {

@@ -196,6 +196,68 @@ download-labeled element" diagnostic logger already in that file. Update
 this section once a real Download click has been observed confirming (or
 correcting) that DOM shape.
 
+## Confirmed network shape: Image & Video (2026-10-29)
+
+Inspected live on `elevenlabs.io/app/image-video` (composer tabs Image / Video / Lip sync). Like Music,
+it's a separate endpoint and envelope, not a new `source` on `/v1/history`. The page fetches it over
+REST (the Firestore channel only carries the user document):
+
+```
+GET https://api.us.elevenlabs.io/v1/content/generations?search=&page=0&per_page=35&image_video_source=generate_content
+```
+```json
+{ "generations": [ {
+  "id": "FwNONsqNHOz2b9vngBki",
+  "prompt": "Dadaji aur Pota yoga pose se ...",
+  "display_prompt": { "type": "doc", "content": [ ... ] },
+  "model_id": "gemini-omni-1.1-flash",
+  "model_parameters": { "aspect_ratio": "9:16", "duration_secs": 8, "resolution": "720p",
+                        "start_frame": { "content_asset_id": "k80EQT5eqSVsG6F3Dq7r" }, "end_frame": null },
+  "modality": "video", "mime_type": "video/mp4",
+  "file_properties": { "width": 720, "height": 1280, "duration_secs": 8.04, "size_bytes": 5327104, "has_audio": true },
+  "status": "completed", "error_message": null,
+  "content_url": "https://storage.googleapis.com/xi-backend/.../content.mp4?X-Goog-...",
+  "download_url": "https://storage.googleapis.com/xi-backend/.../content.mp4?X-Goog-...",
+  "preview_content_url": ".../preview_content.mp4?...", "thumbnail_url": ".../thumbnail.jpg?...",
+  "price": { "credits": 4892.7, "price_cents": 7828.3, "cost_fiat_currency": "inr" },
+  "created_at_unix": 1792665103, "updated_at_unix": 1792665153, "finished_at_unix": 1792665153,
+  "generation_session_id": "yYJeXqOZyncCmfjqteIN"
+} ], "has_more": false }
+```
+
+- **No `source` field.** `normalization.py` maps `modality` to source `Image` / `Video` / `LipSync`
+  (`CONTENT_GENERATION_SOURCE_BY_MODALITY`). A row is recognised by `modality` + `model_parameters`,
+  which no TTS or Music row has.
+- **Credits are ElevenLabs' own price** (`price.credits`, rounded). The composer previews the same
+  figure before Generate via `POST /v1/content/generations/price`
+  (`{model_id, generations_count, model_parameters}`); that's pricing only, not a generation.
+- **The asset is a public signed GCS URL** (`download_url`) that is **only valid ~2 hours**
+  (`X-Goog-Expires=7200`). The general ElevenLabs mirror sweep stays off (see `main.py`), so a
+  dedicated sweep, `mirror_pending_content_generations`, runs every 2 minutes
+  (`ELEVENLABS_CONTENT_MIRROR_INTERVAL_SECONDS`, default 120). It handles only Image/Video/LipSync rows
+  that already have a URL, so it never touches TTS/Music and never marks a still-generating row
+  "skipped". The extension pushes no bytes for these rows. Verified 2026-10-29 against a real image row
+  (1.57 MB PNG downloaded and stored as `.png`, `image/png`).
+- **Uploads are not generations.** A reference file uploaded under "Image refs" comes back as a row-like
+  object (`id` + `created_at_unix`, `status: "finalized"`) with `access_info`/`name` and a
+  `/content_asset/` URL, but no prompt, model or price. The extension and `normalization.py` both
+  ignore it. Two uploads were captured as empty "generations" before this fix.
+- **In-progress status** is `"generating"` (observed 2026-10-29).
+- **Generating → completed under one id.** A row first seen mid-generation has no URL. The extension
+  puts `status` + `updated_at_unix` in `client_event_id`, so the completed snapshot isn't dropped as a
+  duplicate. It gives that row one more pass through its once-per-arm gate (as for Music) and
+  re-polls the list every 15s while it's still generating. Normalization re-queues a "skipped" mirror
+  once the URL arrives.
+- **Generate button:** `<button type="submit" aria-label="Generate" data-agent-tooltip="Generate (Ctrl + Enter)">`.
+  The click gate matches it by `aria-label`, confirmed by a live click that opened the Task/Client popup.
+  **Ctrl/Cmd+Enter** also generates; on `/app/image-video` it's now routed through the same gate, but only
+  from the composer's prompt box.
+- **Not Generate buttons:** history cards are `<button>`s wrapping the result, and their `<img alt>` is
+  the prompt (e.g. "generate the frame where h..."). The "Generate audio ON" switch and Music's
+  `role="radio"` "Generate" mode tab also look similar. The detector skips anything that wraps an
+  image/video, any switch/radio/toggle, and `aria-label`s longer than 40 characters.
+- Not yet observed: the generate request itself, a `failed` row, and Lip sync.
+
 ## Audio asset delivery (confirmed 2026-08-13, corrected same day)
 
 **First pass guessed wrong and was corrected against real DevTools traffic -

@@ -293,6 +293,26 @@ def _extract_fields(payload: dict) -> dict:
     }
 
 
+def _requeue_video_backup_on_fresh_link(generation: FreepikGeneration, previous_clip_links: tuple) -> None:
+    """A video's backup is terminal once "failed"/"skipped"/"mirrored", but
+    Freepik's clip links carry short-lived tokens: a later capture of the
+    same creation brings a freshly signed one. Re-queue the backup then if
+    the video itself was never stored - it failed (token expired before the
+    sweep got to it), was skipped (no clip link yet), or an older sweep
+    stored the start-frame still instead of the clip."""
+    from providers.freepik.asset_mirror import is_video_generation, is_video_url
+
+    if not is_video_generation(generation):
+        return
+    new_links = {url for url in (generation.download_url, generation.raw_url) if is_video_url(url)}
+    if not new_links or new_links <= set(previous_clip_links):
+        return
+    stored_clip = bool(generation.mirrored_asset_key) and is_video_url(generation.mirrored_asset_key)
+    if generation.asset_mirror_status in ("failed", "skipped") or (generation.asset_mirror_status == "mirrored" and not stored_clip):
+        generation.asset_mirror_status = "pending"
+        generation.asset_mirror_error = None
+
+
 def _is_stale_snapshot(generation: FreepikGeneration, fields: dict) -> bool:
     """True when this payload describes an OLDER state of the creation than
     the one already stored.
@@ -426,6 +446,7 @@ def normalize_capture_event(db: Session, event: FreepikCaptureEvent) -> Optional
     #   1. an outright older snapshot leaves the stored columns untouched;
     #   2. otherwise a None never overwrites a value we already have.
     is_stale_snapshot = (not is_new) and _is_stale_snapshot(generation, fields)
+    previous_clip_links = (generation.download_url, generation.raw_url)
     if is_stale_snapshot:
         logger.info(
             "freepik normalization: keeping stored columns for creation_id=%s - "
@@ -444,6 +465,8 @@ def normalize_capture_event(db: Session, event: FreepikCaptureEvent) -> Optional
         # Points at the capture event whose state the row currently reflects,
         # so it must not be dragged backwards to an older one either.
         generation.source_capture_event_id = event.id
+        if not is_new:
+            _requeue_video_backup_on_fresh_link(generation, previous_clip_links)
     generation.tool_id = event.tool_id
     generation.credential_id = event.credential_id
     # Task Mapping - sticky like ownership below: only ever set from an event

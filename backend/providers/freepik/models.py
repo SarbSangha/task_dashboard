@@ -422,6 +422,9 @@ class FreepikGeneration(Base):
             "creditsCharged": self.credits_charged,
             "creditsEstimated": self.credits_estimated,
             "unlimitedCredits": self.unlimited_credits,
+            # Same rule as queries.CREDITS_USED / the credit report.
+            "creditsUsed": self.credits_charged if (self.credits_charged or 0) > 0 else self.credits_estimated,
+            "onUnlimitedPlan": bool((self.credits_charged or 0) <= 0 and (self.unlimited_credits or 0) > 0),
             "creditLedger": self.credit_ledger_json or [],
             "previewUrl": self.preview_url,
             "thumbnailUrl": self.thumbnail_url,

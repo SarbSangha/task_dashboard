@@ -100,7 +100,14 @@ OWNERSHIP_FRESHNESS_WINDOW_SECONDS = 15 * 60
 # tighten KNOWN_SOURCE_VALUES/CAPTURE_CONTRACT.md once Sound-Effects/Dubbing/
 # Voice-Changer are actually observed. "Music" confirmed 2026-08-17 (real
 # `/v1/music/chats` traffic, surfaced via `song.product_type_source`).
-KNOWN_SOURCE_VALUES = frozenset({"TTS", "Music"})
+KNOWN_SOURCE_VALUES = frozenset({"TTS", "Music", "Image", "Video", "LipSync"})
+
+# Image & Video (elevenlabs.io/app/image-video), confirmed 2026-10-29: rows
+# come from GET /v1/content/generations and carry no `source` at all, only
+# `modality` - mapped to a source value here so the surface can be filtered
+# like TTS/Music. "lip_sync" is the composer's third tab, not observed in a
+# real row yet.
+CONTENT_GENERATION_SOURCE_BY_MODALITY = {"image": "Image", "video": "Video", "lip_sync": "LipSync"}
 
 # Music has no TTS-style character-credit tally at all (no
 # character_count_change_from/to on the row) - its cost is a flat per-second

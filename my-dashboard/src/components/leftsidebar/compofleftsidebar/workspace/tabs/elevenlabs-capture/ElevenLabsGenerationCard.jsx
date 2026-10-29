@@ -25,6 +25,26 @@ const ElevenLabsCardPreview = React.memo(function ElevenLabsCardPreview({ genera
   const [previewRef, isNearViewport] = useNearViewport();
   const audioUrl = generation.mirroredAssetUrl || generation.mediaUrl;
 
+  // Image & Video generations (mediaKind from the backend's to_dict) - same
+  // lazy <img>/<video> preview flow-capture/FlowGenerationCard.jsx uses.
+  if (generation.mediaKind === 'image' || generation.mediaKind === 'video') {
+    const isVideo = generation.mediaKind === 'video';
+    if (!audioUrl) {
+      return <div className="kling-card-fallback">{generation.status === 'failed' ? 'Generation failed' : 'Still generating…'}</div>;
+    }
+    return (
+      <div ref={previewRef} className="kling-card-lazy-frame">
+        {!isNearViewport ? (
+          <div className="kling-card-fallback">{isVideo ? 'Video Preview' : 'Image Preview'}</div>
+        ) : isVideo ? (
+          <video src={audioUrl} poster={generation.thumbnailUrl || undefined} className="kling-card-image" muted playsInline preload="metadata" />
+        ) : (
+          <img src={audioUrl} alt={truncate(generation.prompt, 60) || 'ElevenLabs image'} className="kling-card-image" loading="lazy" decoding="async" />
+        )}
+      </div>
+    );
+  }
+
   if (!audioUrl) {
     return <div className="kling-card-fallback">No audio available</div>;
   }

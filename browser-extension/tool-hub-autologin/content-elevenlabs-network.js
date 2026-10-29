@@ -136,12 +136,21 @@
     if (candidate.current_song_id !== undefined && !(candidate.song && typeof candidate.song === 'object')) {
       return false;
     }
+    // A file the person UPLOADED (e.g. an Image & Video reference image) -
+    // its upload response looks like a row (id + created_at_unix) but is no
+    // generation: `access_info`/`name`, stored under /content_asset/, no
+    // prompt/model/price. Confirmed 2026-10-29 (two uploads were captured as
+    // empty "generations").
+    if (candidate.model_parameters === undefined && (candidate.access_info !== undefined
+      || /\/content_asset\//.test(`${candidate.download_url || ''} ${candidate.content_url || ''}`))) {
+      return false;
+    }
     return true;
   }
 
   // Handles: a bare array of matching objects, {history:[...]}, {items:[...]},
-  // {chats:[...]} (Music, confirmed 2026-08-17), or a single bare object
-  // matching the shape.
+  // {chats:[...]} (Music, confirmed 2026-08-17), {generations:[...]} (Image &
+  // Video, confirmed 2026-10-29), or a single bare object matching the shape.
   function extractHistoryRows(json) {
     if (!json || typeof json !== 'object') return [];
     if (Array.isArray(json)) {
@@ -156,6 +165,12 @@
     }
     if (Array.isArray(json.chats)) {
       return json.chats.filter(looksLikeElevenlabsHistoryRow);
+    }
+    // Image & Video, confirmed 2026-10-29: GET /v1/content/generations
+    // returns {generations:[...], has_more} - flat rows (id, created_at_unix,
+    // modality, model_parameters, status, download_url once completed).
+    if (Array.isArray(json.generations)) {
+      return json.generations.filter(looksLikeElevenlabsHistoryRow);
     }
     return [];
   }

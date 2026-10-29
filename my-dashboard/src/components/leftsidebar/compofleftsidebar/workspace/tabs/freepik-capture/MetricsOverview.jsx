@@ -55,7 +55,13 @@ export default function MetricsOverview({ metrics, loading, error }) {
         value={formatCount(unknownCount)}
         hint={unknownCount > 0 ? 'From reconciliation import - no ticket was active at capture time' : undefined}
       />
-      <MetricCard icon="💳" tone="info" label="Credits Charged (total)" value={formatCredits(metrics.creditsChargedTotal)} />
+      <MetricCard
+        icon="💳"
+        tone="info"
+        label="Credits Used (total)"
+        value={formatCredits(metrics.creditsUsedTotal ?? metrics.creditsChargedTotal)}
+        hint="Unlimited-plan generations count Freepik's own cost estimate (they're charged 0)"
+      />
     </div>
   );
 }

@@ -46,6 +46,7 @@ from sqlalchemy.orm import Session
 
 from models_new import GenerationRecord
 from providers.elevenlabs.constants import (
+    CONTENT_GENERATION_SOURCE_BY_MODALITY,
     GENERATION_SOURCE_LIVE_CAPTURE,
     GENERATION_SOURCE_RECONCILIATION,
     GENERATION_STATUS_COMPLETED,
@@ -236,6 +237,47 @@ def _music_credits_used(payload: dict) -> Optional[int]:
     return round(length_ms / 1000 * MUSIC_CREDITS_PER_SECOND)
 
 
+def _is_content_generation(payload: Any) -> bool:
+    """An Image & Video row from GET /v1/content/generations (confirmed
+    2026-10-29): flat, keyed by `modality` + `model_parameters`, with a
+    public signed `download_url`/`content_url` (GCS, no ElevenLabs auth
+    needed) once `status` is "completed". Neither key exists on a TTS or
+    Music row."""
+    return isinstance(payload, dict) and "modality" in payload and "model_parameters" in payload
+
+
+def _is_uploaded_asset(payload: Any) -> bool:
+    """A file the person UPLOADED (e.g. a reference image under Image &
+    Video's "Image refs"), not something ElevenLabs generated - confirmed
+    2026-10-29: the upload response looks like a row (id + created_at_unix)
+    but carries `access_info`/`name` and lives under `/content_asset/`, with
+    no prompt, model or price. Never a generation."""
+    if not isinstance(payload, dict) or "model_parameters" in payload:
+        return False
+    if "access_info" in payload:
+        return True
+    return any("/content_asset/" in str(payload.get(key) or "") for key in ("download_url", "content_url"))
+
+
+def _content_generation_source(payload: dict) -> Optional[str]:
+    modality = payload.get("modality")
+    if not isinstance(modality, str) or not modality:
+        return None
+    return CONTENT_GENERATION_SOURCE_BY_MODALITY.get(modality.lower(), modality.title())
+
+
+# Image & Video rows carry ElevenLabs' own price for the generation
+# (`price.credits`, a float - e.g. 4892.7 for an 8s Gemini Omni Flash video),
+# the same figure the composer previews before Generate via
+# POST /v1/content/generations/price.
+def _content_generation_credits(payload: dict) -> Optional[int]:
+    price = payload.get("price")
+    credits = price.get("credits") if isinstance(price, dict) else None
+    if not isinstance(credits, (int, float)) or credits < 0:
+        return None
+    return round(credits)
+
+
 def _extract_asset_url(payload: dict) -> Optional[str]:
     """Best-guess asset URL extraction - tries top-level candidates first,
     then a nested `media`/`audio` object's own `url` field (a plausible shape
@@ -313,17 +355,24 @@ def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) ->
         payload, "date_unix", "created_at_unix", "created_at", "date", "created_at_utc",
         log_field="created_timestamp", capture_event_id=capture_event_id,
     )
+    # updated_at_unix/finished_at_unix only exist on Image & Video rows, which
+    # change state (generating -> completed) under the same created time.
     updated_raw = _first_present(
-        payload, "date_unix", "created_at_unix", "created_at", "date", "updated_at_utc", "finished_at_utc",
+        payload, "updated_at_unix", "finished_at_unix",
+        "date_unix", "created_at_unix", "created_at", "date", "updated_at_utc", "finished_at_utc",
         log_field="updated_timestamp", capture_event_id=capture_event_id,
     )
     provider_created_at = _parse_dt(created_raw)
     provider_updated_at = _parse_dt(updated_raw) or provider_created_at
 
-    source = _s(
-        _first_present(payload, "source", "source_type", "product_type_source", log_field="source", capture_event_id=capture_event_id),
-        40,
-    )
+    is_content_generation = _is_content_generation(payload)
+    if is_content_generation:
+        source = _s(_content_generation_source(payload), 40)
+    else:
+        source = _s(
+            _first_present(payload, "source", "source_type", "product_type_source", log_field="source", capture_event_id=capture_event_id),
+            40,
+        )
     if source and source.upper() not in {v.upper() for v in KNOWN_SOURCE_VALUES}:
         logger.debug(
             "elevenlabs normalization: unrecognized source value %r (capture_event_id=%s) - "
@@ -349,9 +398,14 @@ def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) ->
         voice_name = _s(_voice_from_dialogue(dialogue_entries, "voice_name"), 255)
 
     asset_url = _extract_asset_url(payload)
-    credits_used = _credits_used(payload)
-    if credits_used is None:
-        credits_used = _music_credits_used(payload)
+    thumbnail_url = None
+    if is_content_generation:
+        credits_used = _content_generation_credits(payload)
+        thumbnail_url = _s(payload.get("thumbnail_url"))
+    else:
+        credits_used = _credits_used(payload)
+        if credits_used is None:
+            credits_used = _music_credits_used(payload)
 
     return {
         "provider_creation_id": _s(creation_id, 160),
@@ -368,6 +422,7 @@ def _extract_fields(payload: dict, *, capture_event_id: Optional[int] = None) ->
         "provider_created_at": provider_created_at,
         "provider_updated_at": provider_updated_at,
         "media_url": _s(asset_url),
+        "thumbnail_url": thumbnail_url,
         "metadata_json": payload,
     }
 
@@ -384,6 +439,9 @@ def _is_stale_snapshot(generation: ElevenlabsGeneration, fields: dict) -> bool:
 
 
 def normalize_capture_event(db: Session, event: ElevenlabsCaptureEvent) -> Optional[ElevenlabsGeneration]:
+    if _is_uploaded_asset(event.payload_json):
+        logger.info("elevenlabs normalization skipped capture_event_id=%s: an uploaded file, not a generation", event.id)
+        return None
     fields = _extract_fields(event.payload_json or {}, capture_event_id=event.id)
     if not fields["provider_creation_id"]:
         logger.warning(
@@ -421,6 +479,16 @@ def normalize_capture_event(db: Session, event: ElevenlabsCaptureEvent) -> Optio
 
     if not is_stale_snapshot:
         generation.source_capture_event_id = event.id
+    # An Image & Video row first seen while still generating has no URL, so
+    # the mirror sweep marks it "skipped" - terminal. Its completed snapshot
+    # brings the URL; re-queue it so the finished file is actually mirrored.
+    if (
+        not is_new
+        and generation.asset_mirror_status == "skipped"
+        and generation.media_url
+        and _is_content_generation(event.payload_json)
+    ):
+        generation.asset_mirror_status = "pending"
     generation.tool_id = event.tool_id
     generation.credential_id = event.credential_id
     # Task Mapping - sticky like ownership below: only ever set from an event

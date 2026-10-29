@@ -2867,6 +2867,70 @@ window.setTimeout(() => {
   runFreepikReconciliationWalk().catch(() => {});
 }, 15000);
 
+// ---- Recent sweep: re-check the NEWEST page every few minutes ----
+//
+// The walk above runs once per page load and pages ever deeper into history
+// (lastSyncedPage + 1 onward), so after a browser's first walk it never
+// looks at page 1 again - where new generations appear. Combined with the
+// backend storing a never-seen reconciliation row only while it is fresh
+// (OWNERSHIP_FRESHNESS_WINDOW_SECONDS, 15 min), a generation the live path
+// missed (e.g. a video that finished long after its Generate click, or a
+// "Multiple"-models batch) was almost never recovered: 24 videos generated,
+// only a few captured (reported 2026-10-29). This sweep fetches page 1 on a
+// short interval and reports only recently created rows (anything older
+// would be dropped server-side anyway), so each one is seen well inside the
+// freshness window. Shared across this browser's tabs via the sync state, so
+// several open Freepik tabs still sweep only once per interval.
+const FREEPIK_RECENT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const FREEPIK_RECENT_SWEEP_LOOKBACK_MS = 30 * 60 * 1000;
+
+function getFreepikRowCreatedMs(row) {
+  const raw = row?.creation?.created_at || row?.created_at;
+  const parsed = raw ? Date.parse(raw) : NaN;
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+async function runFreepikRecentSweep() {
+  const state = await getFreepikSyncState();
+  if (!state.listingUrlTemplate) return; // learned from the page's own Creations request, as for the walk
+  const now = Date.now();
+  // A little slack so this tab's own interval isn't skipped by a few ms of drift.
+  if (state.lastRecentSweepAt && now - state.lastRecentSweepAt < FREEPIK_RECENT_SWEEP_INTERVAL_MS - 15000) return;
+  await patchFreepikSyncState({ lastRecentSweepAt: now });
+
+  const pageUrl = buildFreepikListingUrlForPage(state.listingUrlTemplate, 1);
+  if (!pageUrl) return;
+  let json = null;
+  try {
+    const response = await fetch(pageUrl, { credentials: 'include' });
+    if (!response.ok) {
+      console.warn('[RMW Freepik Sync] recent sweep: page 1 returned non-OK status', { status: response.status });
+      return;
+    }
+    json = await response.json();
+  } catch (error) {
+    console.warn('[RMW Freepik Sync] recent sweep: page 1 fetch failed', { error: error?.message || error });
+    return;
+  }
+
+  const rows = json && Array.isArray(json.data) ? json.data : [];
+  let reported = 0;
+  for (const row of rows) {
+    const createdMs = getFreepikRowCreatedMs(row);
+    if (createdMs === null || createdMs < now - FREEPIK_RECENT_SWEEP_LOOKBACK_MS) continue;
+    await reportFreepikGenerationRow(row, { isReconciliation: true });
+    reported += 1;
+  }
+  console.debug('[RMW Freepik Sync] recent sweep finished', { rowsOnPage: rows.length, reported });
+}
+
+window.setTimeout(() => {
+  runFreepikRecentSweep().catch(() => {});
+}, 20000);
+window.setInterval(() => {
+  runFreepikRecentSweep().catch(() => {});
+}, FREEPIK_RECENT_SWEEP_INTERVAL_MS);
+
 // ============================================================================
 // ---- Search + Download capture (added 2026-08-06) ----
 //

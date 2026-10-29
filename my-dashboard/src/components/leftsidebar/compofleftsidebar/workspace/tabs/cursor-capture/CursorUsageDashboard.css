@@ -1,0 +1,87 @@
+/* The Cursor tab's usage page - a clone of the standalone Cursor Usage Tracker
+   site's dashboard, scoped under .cut so nothing leaks into the rest of RMW Data.
+   Surfaces/text follow the dashboard's own theme variables (light + dark); the
+   blue accent and layout are the standalone site's. */
+.cut {
+  --cut-bg: var(--color-surface-muted, #f6f6f4);
+  --cut-surface: var(--color-card, var(--color-surface, #fcfcfb));
+  --cut-surface-2: var(--color-surface-muted, #f0efec);
+  --cut-border: var(--color-border, #e4e3de);
+  --cut-grid: var(--color-border-subtle, #ebeae6);
+  --cut-text: var(--color-text, #0b0b0b);
+  --cut-text-2: var(--color-text-secondary, #52514e);
+  --cut-muted: var(--color-text-muted, #85837d);
+  --cut-accent: #2a78d6;
+  --cut-accent-soft: rgba(42, 120, 214, 0.14);
+  --cut-bar: #2a78d6;
+  --cut-warn-bg: rgba(234, 179, 8, 0.14);
+  --cut-est: #a37a00;
+  color: var(--cut-text);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 4px 2px 24px;
+}
+.cut * { box-sizing: border-box; }
+.cut .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+.cut-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.cut h1 { font-size: 20px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+.cut-sub { color: var(--cut-muted); font-size: 12.5px; }
+.cut-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.cut-seg { display: inline-flex; background: var(--cut-surface); border: 1px solid var(--cut-border); border-radius: 8px; padding: 2px; }
+.cut-seg button { border: 0; background: transparent; color: var(--cut-text-2); padding: 6px 10px; border-radius: 6px; font: inherit; font-size: 13px; cursor: pointer; }
+.cut-seg button.on { background: var(--cut-accent-soft); color: var(--cut-text); font-weight: 600; }
+.cut-btn { border: 1px solid var(--cut-border); background: var(--cut-surface); color: var(--cut-text); padding: 6px 12px; border-radius: 8px; font: inherit; font-size: 13px; cursor: pointer; width: auto; max-width: 260px; }
+.cut-btn:hover:not(:disabled) { background: var(--cut-surface-2); }
+.cut-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.cut-note { background: var(--cut-warn-bg); color: var(--cut-text); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
+.cut-note.error { background: rgba(227, 73, 72, 0.12); }
+
+.cut-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.cut-tile { background: var(--cut-surface); border: 1px solid var(--cut-border); border-radius: 12px; padding: 14px 16px; }
+.cut-tile .k { color: var(--cut-text-2); font-size: 12.5px; }
+.cut-tile .v { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; margin-top: 2px; }
+.cut-tile .h { color: var(--cut-muted); font-size: 12px; }
+
+.cut-grid2 { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 16px; }
+@media (max-width: 860px) { .cut-grid2 { grid-template-columns: 1fr; } }
+.cut-card { background: var(--cut-surface); border: 1px solid var(--cut-border); border-radius: 12px; padding: 16px; min-width: 0; }
+.cut-card + .cut-card, .cut-card.spaced { margin-bottom: 16px; }
+.cut-card h2 { font-size: 14px; margin: 0 0 2px; font-weight: 600; }
+.cut-card .cut-sub { margin-bottom: 12px; }
+
+.cut-daily { position: relative; height: 220px; }
+.cut-daily svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.cut-tip { position: fixed; pointer-events: none; background: var(--cut-text); color: var(--cut-surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; white-space: nowrap; z-index: 9999; }
+
+.cut-model-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; margin-bottom: 10px; }
+.cut-model-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.cut-model-row .amt { font-size: 13px; text-align: right; }
+.cut-track { grid-column: 1 / -1; height: 6px; background: var(--cut-surface-2); border-radius: 4px; overflow: hidden; }
+.cut-fill { height: 100%; background: var(--cut-bar); border-radius: 4px; }
+.cut-model-row .meta, .cut-meta { grid-column: 1 / -1; color: var(--cut-muted); font-size: 11.5px; }
+
+.cut-tablebar { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 10px; }
+.cut-tscroll { overflow-x: auto; }
+.cut table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cut th { text-align: left; color: var(--cut-text-2); font-weight: 500; font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--cut-border); white-space: nowrap; user-select: none; }
+.cut th.sortable { cursor: pointer; }
+.cut th.num, .cut td.num { text-align: right; }
+.cut td { padding: 9px 10px; border-bottom: 1px solid var(--cut-grid); vertical-align: top; }
+.cut tr.row, .cut tr.prow { cursor: pointer; }
+.cut tr.row:hover td, .cut tr.prow:hover td { background: var(--cut-surface-2); }
+.cut tr.dim { opacity: 0.55; }
+.cut tr.unassigned td { color: var(--cut-muted); }
+.cut-ptext { max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cut-conv { color: var(--cut-muted); font-size: 11.5px; }
+.cut-chip { display: inline-block; background: var(--cut-surface-2); border: 1px solid var(--cut-border); border-radius: 5px; padding: 0 6px; font-size: 11.5px; margin: 0 4px 2px 0; white-space: nowrap; }
+.cut-est { color: var(--cut-est); font-size: 11px; margin-left: 3px; }
+.cut tr.detail td { background: var(--cut-surface-2); }
+.cut-full { white-space: pre-wrap; word-break: break-word; font-size: 13px; max-height: 320px; overflow: auto; margin-bottom: 10px; }
+.cut-kv { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--cut-text-2); font-size: 12.5px; }
+.cut-kv b { color: var(--cut-text); font-weight: 600; }
+.cut-empty { color: var(--cut-muted); padding: 30px 0; text-align: center; }
+.cut-pager { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 10px; color: var(--cut-muted); font-size: 12.5px; }
+.cut-footer { color: var(--cut-muted); font-size: 12px; margin-top: 18px; }
+.cut-btn.on { background: var(--cut-accent-soft); font-weight: 600; }

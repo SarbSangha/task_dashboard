@@ -298,6 +298,41 @@ def test_to_dict_never_raises_when_presigning_fails() -> None:
     print("ok  a presign failure at serialization time degrades to null instead of raising")
 
 
+def test_image_video_sweep_backs_up_only_finished_image_video_rows() -> None:
+    """The scheduled Image & Video sweep (main.py) backs up a finished image,
+    leaves a still-generating video "pending" (never "skipped" - its URL
+    hasn't arrived yet), and never touches TTS/Music rows, whose audio only
+    ever arrives via the browser push (the reason the general sweep is off)."""
+    put_calls = _install_fakes()
+    image_url = "https://storage.googleapis.com/xi-backend/database/workspace/w/content_generation/img/s/content.png?X-Goog-Expires=7200"
+    _FakeHttpClient.responses = {image_url: _FakeResponse(content=b"\x89PNG-bytes", content_type="image/png")}
+
+    with SessionLocal() as db:
+        image = ElevenlabsGeneration(provider="elevenlabs", provider_creation_id="iv-image", source="Image", media_url=image_url)
+        video = ElevenlabsGeneration(provider="elevenlabs", provider_creation_id="iv-video", source="Video", media_url=None)
+        tts = ElevenlabsGeneration(provider="elevenlabs", provider_creation_id="iv-tts", source="TTS",
+                                   media_url="https://api.elevenlabs.io/v1/history/iv-tts/audio")
+        music = ElevenlabsGeneration(provider="elevenlabs", provider_creation_id="iv-music", source="Music", media_url=None)
+        db.add_all([image, video, tts, music])
+        db.commit()
+        ids = {"image": image.id, "video": video.id, "tts": tts.id, "music": music.id}
+
+        stats = asset_mirror.mirror_pending_content_generations(db, limit=10)
+        _assert(stats["scanned"] == 1 and stats["mirrored"] == 1 and stats["skipped"] == 0, f"unexpected stats: {stats}")
+
+        rows = {name: db.query(ElevenlabsGeneration).filter(ElevenlabsGeneration.id == gid).one() for name, gid in ids.items()}
+        _assert(rows["image"].asset_mirror_status == "mirrored" and rows["image"].mirrored_asset_key.endswith(".png"),
+                f"image not backed up as .png: {rows['image'].asset_mirror_status!r} {rows['image'].mirrored_asset_key!r}")
+        _assert(rows["video"].asset_mirror_status == "pending", f"a still-generating video must stay pending, got {rows['video'].asset_mirror_status!r}")
+        _assert(rows["tts"].asset_mirror_status == "pending" and rows["music"].asset_mirror_status == "pending",
+                "TTS/Music rows must be left for the browser push")
+        _assert(put_calls and put_calls[-1]["contentType"] == "image/png", f"stored with the wrong type: {put_calls}")
+        for row in rows.values():
+            db.delete(row)
+        db.commit()
+    print("ok  the Image & Video sweep backs up finished images/videos only, never TTS/Music or unfinished rows")
+
+
 if __name__ == "__main__":
     test_row_with_no_candidate_url_is_skipped_without_fetching()
     test_mirror_success_stores_r2_key_and_to_dict_presigns_it()
@@ -306,4 +341,5 @@ if __name__ == "__main__":
     test_failed_row_is_never_rescanned_by_a_later_sweep()
     test_r2_not_configured_leaves_rows_untouched()
     test_to_dict_never_raises_when_presigning_fails()
+    test_image_video_sweep_backs_up_only_finished_image_video_rows()
     print("\nall elevenlabs asset mirror smoke checks passed")

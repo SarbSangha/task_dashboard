@@ -424,7 +424,44 @@ def test_capture_batch_commits_and_isolates_duplicates() -> None:
     print("ok  capture batch commits durably and isolates in-batch duplicates")
 
 
+def test_fresh_clip_link_requeues_a_video_backup() -> None:
+    """A video whose backup failed (expired token) or stored the start-frame
+    still is re-queued when a later capture brings a freshly signed clip
+    link - and only then. Images are left exactly as before."""
+    def video_row(link, updated_at):
+        row = _listing_row(creation_id="vid-requeue", status="completed", updated_at=updated_at, credits=0, download_url=link)
+        row["file_type_id"] = 4
+        row["creation"]["tool"] = "video-generator"
+        return row
+
+    clip = "https://pikaso.cdnpk.net/private/production/1/clip-0.mp4?token=exp={}~hmac=x"
+    with SessionLocal() as db:
+        gen = normalize_capture_event(db, _capture(db, video_row(clip.format(1), "2026-10-29T10:00:00Z")))
+        gen.asset_mirror_status, gen.mirrored_asset_key = "mirrored", "freepik-mirror/1/abc-asset.jpg"  # the old bug
+        db.flush()
+        normalize_capture_event(db, _capture(db, video_row(clip.format(1), "2026-10-29T10:05:00Z")))
+        _assert(gen.asset_mirror_status == "mirrored", "the same (already tried) link must not re-queue")
+        normalize_capture_event(db, _capture(db, video_row(clip.format(2), "2026-10-29T10:10:00Z")))
+        _assert(gen.asset_mirror_status == "pending", f"a fresh clip link must re-queue a still-only backup, got {gen.asset_mirror_status!r}")
+
+        gen.asset_mirror_status, gen.mirrored_asset_key = "mirrored", "freepik-mirror/1/def-asset.mp4"  # the clip is stored
+        db.flush()
+        normalize_capture_event(db, _capture(db, video_row(clip.format(3), "2026-10-29T10:15:00Z")))
+        _assert(gen.asset_mirror_status == "mirrored", "a video whose clip is already stored is left alone")
+
+        image = normalize_capture_event(db, _capture(db, _listing_row(
+            creation_id="img-requeue", status="completed", updated_at="2026-10-29T10:00:00Z", download_url="https://x/a.png?token=1")))
+        image.asset_mirror_status = "failed"
+        db.flush()
+        normalize_capture_event(db, _capture(db, _listing_row(
+            creation_id="img-requeue", status="completed", updated_at="2026-10-29T10:05:00Z", download_url="https://x/a.png?token=2")))
+        _assert(image.asset_mirror_status == "failed", "image rows behave exactly as before")
+        db.rollback()
+    print("ok  a fresh clip link re-queues a failed/still-only video backup (images unchanged)")
+
+
 if __name__ == "__main__":
+    test_fresh_clip_link_requeues_a_video_backup()
     test_capture_status_tracks_provider_status()
     test_stale_snapshot_does_not_erase_stored_columns()
     test_identifier_then_creation_id_reuses_one_record()

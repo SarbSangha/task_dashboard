@@ -96,6 +96,21 @@ Reported by the extension after walking one or more listing pages with
 incremental walk; a full reconciliation (admin-triggered, walks every page
 regardless of cursor) always overwrites. See `sync.py`.
 
+## Recent sweep (extension 0.1.77, 2026-10-29)
+
+The reconciliation walk runs once per page load and pages ever deeper into history, so after a
+browser's first walk it never re-reads page 1, where new generations appear. Because the backend
+stores a never-seen reconciliation row only while it's fresh (15 min), generations the live path
+missed were almost never recovered (24 videos generated, only a few captured).
+
+`content-freepik.js`'s `runFreepikRecentSweep` therefore re-fetches **page 1** of the learned
+listing URL every **5 minutes** and reports only rows created in the last 30 minutes, as
+`is_reconciliation: true`. A fresh row is then stored and attributed per the table above. The
+interval is shared across a browser's tabs through the sync state.
+
+Trade-off, accepted by the user: on a shared team login, a fresh generation can be credited to
+whichever browser's sweep reports it first, if its own live capture didn't.
+
 ## Versioning rule
 
 Never repurpose an existing `CaptureEventIn` field for a different meaning.

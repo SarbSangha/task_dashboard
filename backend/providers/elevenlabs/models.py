@@ -51,6 +51,18 @@ from utils.datetime_utils import serialize_utc_datetime
 from utils import r2_storage
 
 
+def _media_kind(metadata) -> str:
+    """"image" | "video" | "audio" - Image & Video rows (GET
+    /v1/content/generations) say so via `modality`/`mime_type`; everything
+    else ElevenLabs makes (TTS, Music, ...) is audio."""
+    if isinstance(metadata, dict) and "modality" in metadata and "model_parameters" in metadata:
+        mime = str(metadata.get("mime_type") or "")
+        if mime.startswith("image/") or metadata.get("modality") == "image":
+            return "image"
+        return "video"
+    return "audio"
+
+
 def _presigned_mirror_url(key, *, client=None):
     """Mints a fresh short-lived R2 URL for a mirrored-asset key at
     serialization time - identical reasoning/implementation to
@@ -317,6 +329,7 @@ class ElevenlabsGeneration(Base):
             "providerCreatedAt": serialize_utc_datetime(self.provider_created_at),
             "providerUpdatedAt": serialize_utc_datetime(self.provider_updated_at),
             "mediaUrl": self.media_url,
+            "mediaKind": _media_kind(self.metadata_json),
             "thumbnailUrl": self.thumbnail_url,
             "metadata": self.metadata_json or {},
             "adminMedia": admin_media_payload(self.admin_edit_json),

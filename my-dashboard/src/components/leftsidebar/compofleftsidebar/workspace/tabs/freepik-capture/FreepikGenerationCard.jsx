@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AdminMediaCardPreview } from '../../../../../common/AdminMediaPreview';
 import { UserAvatar } from '../../../../../common/UserAvatar';
 import { useNearViewport } from '../../../../../../hooks/useNearViewport';
-import { formatRelativeTime, getOwnershipStatusMeta, isVideoAssetUrl, truncate } from './freepikCaptureUtils';
+import { formatCredits, formatRelativeTime, getOwnershipStatusMeta, isVideoAssetUrl, truncate } from './freepikCaptureUtils';
 
 // Visual twin of trending/kling/KlingGenerationCard.jsx - same CSS classes
 // (.kling-card*, .type-badge/.stage-badge from KlingTab.css/TrendingsPanel.css,
@@ -33,6 +33,39 @@ const FreepikCardPreview = React.memo(function FreepikCardPreview({ generation }
   }, [candidates]);
 
   const imageUrl = candidates[candidateIndex];
+  // A video creation's thumbnail is only its start frame - play the clip
+  // itself (our backed-up copy first), with that frame as its poster, the
+  // same lazy <video> flow-capture/FlowGenerationCard.jsx uses. Falls back
+  // to the still if the clip won't load (e.g. an expired Freepik link).
+  const videoUrl = useMemo(
+    () => [generation.mirroredAssetUrl, generation.downloadUrl, generation.rawUrl].find(isVideoAssetUrl) || null,
+    [generation.mirroredAssetUrl, generation.downloadUrl, generation.rawUrl]
+  );
+  const [videoFailed, setVideoFailed] = useState(false);
+
+  useEffect(() => {
+    setVideoFailed(false);
+  }, [videoUrl]);
+
+  if (videoUrl && !videoFailed) {
+    return (
+      <div ref={previewRef} className="kling-card-lazy-frame">
+        {isNearViewport ? (
+          <video
+            src={videoUrl}
+            poster={imageUrl || undefined}
+            className="kling-card-image"
+            muted
+            playsInline
+            preload="metadata"
+            onError={() => setVideoFailed(true)}
+          />
+        ) : (
+          <div className="kling-card-fallback">Video Preview</div>
+        )}
+      </div>
+    );
+  }
 
   if (!imageUrl) {
     return <div ref={previewRef} className="kling-card-fallback">No preview</div>;
@@ -90,7 +123,11 @@ export const FreepikGenerationCard = React.memo(function FreepikGenerationCard({
       </div>
 
       <p className="kling-card-meta">
-        {generation.creditsCharged != null ? `💳 ${generation.creditsCharged} credits` : 'Unlimited plan'}
+        {/* creditsUsed: what was charged, or Freepik's estimate on the
+            unlimited plan (charged 0) - same rule as the credit report. */}
+        {generation.creditsUsed != null
+          ? `💳 ${formatCredits(generation.creditsUsed)} credits${generation.onUnlimitedPlan ? ' (unlimited)' : ''}`
+          : 'Credits not reported'}
         {' · '}
         {/* providerCreatedAt = when Freepik actually generated this (what a
             viewer means by "X ago" on an image card). generation.createdAt

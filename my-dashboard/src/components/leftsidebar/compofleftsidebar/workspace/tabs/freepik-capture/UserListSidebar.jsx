@@ -30,7 +30,7 @@ function UserCard({ user, isSelected, onSelect }) {
         <div className="chatgpt-capture-user-card-meta">
           {user.department && <span className="chatgpt-capture-chip">{user.department}</span>}
           <span>{formatCount(user.generationCount)} generations</span>
-          <span>💳 {formatCredits(user.creditsChargedTotal)}</span>
+          <span>💳 {formatCredits(user.creditsUsedTotal ?? user.creditsChargedTotal)}</span>
           <span className="chatgpt-capture-conv-card-time">{formatRelativeTime(user.lastGenerationAt)}</span>
         </div>
       </div>

@@ -18,6 +18,7 @@ import ElevenLabsExplorerBody from '../workspace/tabs/elevenlabs-capture/ElevenL
 import SunoExplorerBody from '../workspace/tabs/suno-capture/SunoExplorerBody';
 import EpidemicExplorerBody from '../workspace/tabs/epidemicsound-capture/EpidemicExplorerBody';
 import SpliceExplorerBody from '../workspace/tabs/splice-capture/SpliceExplorerBody';
+import CursorExplorerBody from '../workspace/tabs/cursor-capture/CursorExplorerBody';
 import './TrendingsPanel.css';
 import { toIndiaISODate } from '../../../../utils/dateTime';
 
@@ -633,6 +634,10 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   // Splice's Capture Center follows the identical isAdmin-only gate as every
   // other provider tab here.
   const canViewSpliceDownloads = isAdmin;
+  // Cursor's Capture Center follows the identical isAdmin-only gate as every
+  // other provider tab - including connecting computers, which only an admin
+  // can do (People & devices).
+  const canViewCursorTab = isAdmin;
   // Lifted up here (rather than owned inside FreepikExplorerBody/KlingTab) so
   // the search input can live in the panel's own header row, in the same
   // slot the Data tab's "Search across all formats..." box uses, per the
@@ -647,6 +652,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const [sunoSearchInput, setSunoSearchInput] = useState('');
   const [epidemicSearchInput, setEpidemicSearchInput] = useState('');
   const [spliceSearchInput, setSpliceSearchInput] = useState('');
+  const [cursorSearchInput, setCursorSearchInput] = useState('');
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -859,6 +865,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const isSunoTab = activeView === 'suno';
   const isEpidemicTab = activeView === 'epidemicsound';
   const isSpliceTab = activeView === 'splice';
+  const isCursorTab = activeView === 'cursor';
   const isDataTab = activeView === 'data';
   const activeDirectoryCriteria = useMemo(
     () => directoryStructure.filter((criterionKey) => criterionKey !== 'none'),
@@ -1260,7 +1267,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       >
         <div className="trendings-header">
           <h2>RMW Data</h2>
-          {!isMinimized && !isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && (
+          {!isMinimized && !isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && (
             <div className="trendings-header-search">
               <input
                 className="trendings-search"
@@ -1366,6 +1373,17 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                 aria-label="Search Splice downloads by title"
                 value={spliceSearchInput}
                 onChange={(e) => setSpliceSearchInput(e.target.value)}
+              />
+            </div>
+          )}
+          {!isMinimized && isCursorTab && (
+            <div className="trendings-header-search">
+              <input
+                className="trendings-search"
+                placeholder="Search prompts, chats..."
+                aria-label="Search Cursor prompts and chat names"
+                value={cursorSearchInput}
+                onChange={(e) => setCursorSearchInput(e.target.value)}
               />
             </div>
           )}
@@ -1521,15 +1539,26 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                     Splice
                   </button>
                 )}
+                {canViewCursorTab && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isCursorTab}
+                    className={`trendings-view-tab ${isCursorTab ? 'active' : ''}`}
+                    onClick={() => setActiveView('cursor')}
+                  >
+                    Cursor
+                  </button>
+                )}
               </div>
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && (
                 <div className="trendings-toolbar-status">
                   {isDirectoryTab
                     ? 'Browse folders first, then load only the files for the selected path.'
                     : `Fast databank mode is active.${lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}`}
                 </div>
               )}
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && (
                 <div className="trendings-select-filters">
                   <label className="trendings-filter-select-wrap">
                     <span className="trendings-filter-select-label">Format</span>
@@ -1561,7 +1590,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                   </label>
                 </div>
               )}
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && (
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && (
                 <div className="trendings-sort-group">
                   <button
                     className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
@@ -1603,10 +1632,12 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
                                     ? 'trendings-content--epidemicsound'
                                     : isSpliceTab
                                       ? 'trendings-content--splice'
-                                      : 'trendings-content--data'
+                                      : isCursorTab
+                                        ? 'trendings-content--cursor'
+                                        : 'trendings-content--data'
               }`}
             >
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
+              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
               {isKlingTab && <KlingTab isActive={isKlingTab} searchInput={klingSearchInput} />}
               {isFreepikTab && <FreepikExplorerBody searchInput={freepikSearchInput} />}
               {isHeyGenTab && <HeygenExplorerBody searchInput={heygenSearchInput} />}
@@ -1617,6 +1648,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
               {isSunoTab && <SunoExplorerBody searchInput={sunoSearchInput} />}
               {isEpidemicTab && <EpidemicExplorerBody searchInput={epidemicSearchInput} />}
               {isSpliceTab && <SpliceExplorerBody searchInput={spliceSearchInput} />}
+              {isCursorTab && <CursorExplorerBody searchInput={cursorSearchInput} />}
               {isDirectoryTab && (
                 <div className="trendings-directory-window">
                   <div className="trendings-directory-header">

@@ -81,6 +81,14 @@ export default function GenerationDetailPanel({ generationId, onGenerationUpdate
   // Speech-to-Text rows legitimately have neither (assetMirrorStatus ===
   // 'skipped', no audio output at all).
   const primaryAudioUrl = generation.mirroredAssetUrl || generation.mediaUrl || null;
+  // Image & Video generations render as an image/video, not audio.
+  const isVisualMedia = generation.mediaKind === 'image' || generation.mediaKind === 'video';
+  const modelParameters = generation.metadata?.model_parameters || {};
+  const visualSettings = [
+    modelParameters.aspect_ratio,
+    modelParameters.resolution,
+    modelParameters.duration_secs ? `${modelParameters.duration_secs}s` : null,
+  ].filter(Boolean).join(' · ');
   const ownerLabel = generation.ownerName || (generation.ownerUserId ? `User #${generation.ownerUserId}` : 'Unclaimed — not yet attributed');
 
   const copyPrompt = async () => {
@@ -93,6 +101,20 @@ export default function GenerationDetailPanel({ generationId, onGenerationUpdate
       <div className="kling-drawer-preview">
         {generation.adminMedia ? (
           <AdminMediaDrawerPreview media={generation.adminMedia} />
+        ) : isVisualMedia ? (
+          primaryAudioUrl ? (
+            generation.mediaKind === 'video' ? (
+              <video src={primaryAudioUrl} poster={generation.thumbnailUrl || undefined} controls playsInline preload="metadata" className="kling-drawer-preview-media" />
+            ) : (
+              <img src={primaryAudioUrl} alt={generation.prompt || 'ElevenLabs image'} className="kling-drawer-preview-media" />
+            )
+          ) : (
+            <div className="kling-drawer-preview-empty">
+              {generation.status === 'failed'
+                ? 'ElevenLabs reported this generation as failed.'
+                : 'Still generating — the file appears once ElevenLabs finishes it.'}
+            </div>
+          )
         ) : primaryAudioUrl ? (
           <audio
             src={primaryAudioUrl}
@@ -153,14 +175,21 @@ export default function GenerationDetailPanel({ generationId, onGenerationUpdate
         <MetaField label="Linked Task" value={generation.linkedTaskName} />
         <MetaField label="Linked Client" value={generation.linkedClientName} />
         <MetaField label="Source" value={generation.source} />
-        <MetaField label="Voice" value={generation.voiceName || generation.voiceId} />
+        {isVisualMedia ? (
+          <>
+            <MetaField label="Model" value={generation.metadata?.model_id} />
+            <MetaField label="Settings" value={visualSettings || null} />
+          </>
+        ) : (
+          <MetaField label="Voice" value={generation.voiceName || generation.voiceId} />
+        )}
         <MetaField
           label="Credits Used"
           value={generation.creditsUsed !== null && generation.creditsUsed !== undefined ? formatCount(generation.creditsUsed) : 'Not available'}
         />
         <MetaField label="Ownership" value={ownershipMeta.label} />
         <MetaField label="Attribution Source" value={generation.ownershipSource} />
-        <MetaField label="Audio Backup Status" value={ASSET_MIRROR_STATUS_LABEL[generation.assetMirrorStatus] || generation.assetMirrorStatus} />
+        <MetaField label={isVisualMedia ? 'File Backup Status' : 'Audio Backup Status'} value={ASSET_MIRROR_STATUS_LABEL[generation.assetMirrorStatus] || generation.assetMirrorStatus} />
         <MetaField label="Generated" value={formatAbsoluteTime(generation.providerCreatedAt)} />
         <MetaField label="Captured" value={formatAbsoluteTime(generation.createdAt)} />
         <MetaField label="Downloaded" value={generation.downloadedAt ? formatAbsoluteTime(generation.downloadedAt) : 'Not downloaded yet'} />
