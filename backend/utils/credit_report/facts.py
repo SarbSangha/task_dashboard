@@ -478,6 +478,10 @@ def _source_select(src: ToolSource, utc_start, utc_end, dialect: str, display: D
         cast(preview, Integer).label("preview"),
         cast(output_key, String).label("output_key"),
     ).where(when >= utc_start, when < utc_end)
+    if hasattr(m, "archived_at"):
+        # A card an admin deleted (archived) leaves the report too - duplicates
+        # and junk rows are what gets deleted, and they kept showing in Activity.
+        q = q.where(m.archived_at.is_(None))
     if src.name == "Freepik":
         q = q.where(func.lower(func.coalesce(m.tool_name, m.tool, "")).notin_(FREEPIK_UPLOAD_TOOLS))
     return q
@@ -562,7 +566,9 @@ def _kling_select(start: date, end: date, dialect: str, display: DisplayConfig, 
         # event_date is already an IST calendar day - the same window rule
         # the Usage Intelligence report applies to Kling.
         .where(e.tool_id.in_(kling_tool_ids), e.event_date >= start, e.event_date <= end,
-               display.client_sql(e.linked_client_name).isnot(None))
+               display.client_sql(e.linked_client_name).isnot(None),
+               # A Kling card an admin deleted archives its GenerationRecord.
+               or_(g.id.is_(None), g.archived_at.is_(None)))
     )
     drop = kling.drop_ids
     if drop:

@@ -334,8 +334,9 @@ def delete_generation(
 
     The generation's projected GenerationRecord is archived too, as Kling's
     delete does, so the card also leaves Generation Projects/Collections and
-    the reports_router analytics. Normalization never resets archived_at, and
-    the credit report doesn't filter on it, so spent credits still count."""
+    the reports_router analytics. Normalization never resets archived_at. The
+    credit report (Reports & Spend) skips archived cards as well, so a
+    deleted card leaves its Activity rows and totals."""
     model, _ = _provider_config(provider)
     generation = _active_generation(db, model, generation_id, for_update=True)
     now = datetime.utcnow()
