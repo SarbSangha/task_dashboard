@@ -18,13 +18,14 @@ generation gets a rupee figure instead, by how the company pays for the tool:
   Charged generations by size:
       Freepik    credits charged, or Freepik's own estimate on an
                  unlimited-plan generation (it charges 0 but records the cost)
+      Figma      the AI credits Figma reported for the prompt
       ElevenLabs credits from the character counter; when the counter did not
                  move, the text length (1 credit per character, est.);
                  0 for a free preview model
       others     one equal share per generation (no per-item cost, est.)
   An account with no generations in the period is "Paid, not used": its
   fee counts in total spend but belongs to no person or client.
-* Every other company tool with an active fee (Semrush, Figma, Canva...) is
+* Every other company tool with an active fee (Semrush, Canva...) is
   "Paid, not tracked": the dashboard captures no usage for it, but its fee
   still counts in total spend, so the total is what the company pays.
 
@@ -48,7 +49,7 @@ PAY_PER_USE = "Pay-per-use"
 SUBSCRIPTION = "Subscription"
 PAY_PER_USE_TOOLS = ("Kling", "HeyGen", "Splice")
 SUBSCRIPTION_TOOLS = ("Freepik", "ElevenLabs", "Higgsfield", "Suno", "Envato", "Epidemic Sound", "Flow",
-                      "ChatGPT", "Claude", "Grammarly")
+                      "ChatGPT", "Claude", "Grammarly", "Figma")
 
 # it_portal_tools name / slug (lower case) -> the report's tool name.
 TOOL_ALIASES = {
@@ -61,6 +62,7 @@ TOOL_ALIASES = {
     "chatgpt": "ChatGPT", "chat gpt": "ChatGPT", "openai": "ChatGPT",
     "claude": "Claude", "claude ai": "Claude", "claude.ai": "Claude",
     "grammarly": "Grammarly", "grammarly-docs": "Grammarly", "grammarly docs": "Grammarly",
+    "figma": "Figma",
 }
 
 
@@ -213,7 +215,7 @@ def load_cost_setup(db: Session, start: date, end: date, display) -> CostSetup:
             continue
         if name in PAY_PER_USE_TOOLS:
             continue
-        # Every other company tool the company pays for (Semrush, Figma, Canva...)
+        # Every other company tool the company pays for (Semrush, Canva...)
         # is "Paid, not tracked": its fee counts in total spend even though
         # the dashboard captures no usage for it, so total spend is what the
         # company actually pays.

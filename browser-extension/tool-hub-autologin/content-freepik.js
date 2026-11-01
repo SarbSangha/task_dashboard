@@ -2607,10 +2607,15 @@ function runFreepikActionGate(event) {
         return; // already reported (see runFreepikDownloadTaskGate) - let the re-dispatched gesture reach Freepik's own handler
       }
 
-      if (Date.now() < freepikDownloadGateClearedUntil) {
-        // Already cleared the gate for this download interaction - this is
-        // very likely the follow-up click picking a size/format from a menu
-        // the first click opened. See FREEPIK_DOWNLOAD_GATE_GRACE_MS above.
+      if (downloadMenuPick && Date.now() < freepikDownloadGateClearedUntil) {
+        // The size/format pick our own replay makes after the picker closed
+        // (reopenFreepikMenuAndClick) - one pass, used up by its click. See
+        // FREEPIK_DOWNLOAD_GATE_GRACE_MS above. Every other download click -
+        // the same Download button again, another card's hover icon, a
+        // second size pick - is a new download: it gets the picker and is
+        // recorded. (Reported 2026-10-30: the client picker only showed for
+        // the first download; the next ones went through unrecorded.)
+        if (event.type === 'click') freepikDownloadGateClearedUntil = 0;
         return;
       }
 
@@ -3149,7 +3154,13 @@ function waitForFreepikMenuItemMatch(itemText, timeoutMs = FREEPIK_MENU_REOPEN_T
 // detached) item is kept only as a last-resort fallback if no match shows
 // up in time - still better than doing nothing.
 async function reopenFreepikMenuAndClick(trigger, originalItem, itemText) {
-  dispatchRealisticClick(trigger);
+  // The trigger toggles (Radix opens AND closes on pointerdown): clicking it
+  // while the menu is still open - our modal does not always dismiss it -
+  // closed the menu, so the picked size was never clicked and nothing
+  // downloaded. Only reopen when it is actually closed.
+  if (`${trigger?.getAttribute?.('aria-expanded') || ''}` !== 'true' || !findFreepikVisibleMenuItemByText(itemText)) {
+    dispatchRealisticClick(trigger);
+  }
   const match = await waitForFreepikMenuItemMatch(itemText);
   dispatchRealisticClick(match || originalItem);
 }
@@ -3172,8 +3183,10 @@ let freepikDownloadTaskGateModalOpen = false;
 // clicked, so that second click re-opened this same modal, making it
 // impossible to ever actually pick a size/format - the gate never let the
 // user get past step one of their own download. Once cleared for one
-// download interaction, any further "download"-shaped click within this
-// window is treated as the same interaction and passed through unasked.
+// download interaction, the size/format pick our own replay makes passes
+// unasked - and only that: the pass is closed again as soon as the replay
+// has run (see runFreepikDownloadTaskGate), so the user's next download,
+// even on the same button, always gets the picker and is recorded.
 const FREEPIK_DOWNLOAD_GATE_GRACE_MS = 20000;
 let freepikDownloadGateClearedUntil = 0;
 
@@ -3199,6 +3212,10 @@ async function runFreepikDownloadTaskGate(target, { reopenTrigger } = {}) {
       dispatchRealisticClick(target);
     }
   } finally {
+    // The replay above dispatches synchronously, so it has already passed
+    // the gate by now: close both passes so the next click is a new download.
+    freepikDownloadGateClearedUntil = 0;
+    freepikDownloadTaskGateBypassTarget = null;
     freepikDownloadTaskGateModalOpen = false;
   }
 }

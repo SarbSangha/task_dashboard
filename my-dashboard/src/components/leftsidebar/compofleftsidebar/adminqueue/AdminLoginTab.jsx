@@ -1,7 +1,8 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { authAPI } from '../../../../services/api';
 import { useAuth } from '../../../../context/AuthContext';
 import { UserAvatar } from '../../../common/UserAvatar';
+import { getAvatarHue } from '../../../../utils/taskPresentation';
 import './AdminLoginTab.css';
 
 const PAGE_SIZE = 50;
@@ -29,12 +30,111 @@ function ToastStack({ toasts }) {
   );
 }
 
+// Status is only about sign-in; whether someone is an admin lives in the
+// Role column, so an admin no longer hides whether they can log in.
 function StatusBadge({ user }) {
-  if (user.isDeleted)    return <span className="alt-badge alt-badge--deleted">Deleted</span>;
-  if (user.isSuperAdmin) return <span className="alt-badge alt-badge--admin">Super Admin</span>;
-  if (user.isAdmin)   return <span className="alt-badge alt-badge--admin">Admin</span>;
-  if (user.isActive)  return <span className="alt-badge alt-badge--active">Active</span>;
-  return <span className="alt-badge alt-badge--disabled">Disabled</span>;
+  if (user.isDeleted) return <span className="alt-status alt-status--deleted">Deleted</span>;
+  if (user.isActive) return <span className="alt-status alt-status--active">Active</span>;
+  return (
+    <span className="alt-status alt-status--disabled" title={user.rejectionReason ? `Reason: ${user.rejectionReason}` : undefined}>
+      Disabled
+    </span>
+  );
+}
+
+const POSITION_LABELS = { NORMAL: 'Member', HOD: 'Head of dept.', SPOC: 'SPOC', FACULTY: 'Faculty', ADMIN: 'Admin' };
+
+function RoleCell({ user }) {
+  if (user.isSuperAdmin) return <span className="alt-role alt-role--admin">Super admin</span>;
+  if (user.isAdmin) return <span className="alt-role alt-role--admin">Admin</span>;
+  const position = `${user.position || ''}`.trim().toUpperCase();
+  const label = POSITION_LABELS[position] || (position ? tidyText(position) : 'Member');
+  return <span className={`alt-role${position && position !== 'NORMAL' ? ' alt-role--lead' : ''}`}>{label}</span>;
+}
+
+// Departments arrive as typed at signup ("DIGITAL", "Data Analyst"); show
+// all-caps names in title case so the column reads consistently.
+function tidyText(value = '') {
+  const text = `${value || ''}`.trim();
+  if (!text || text !== text.toUpperCase() || text.length <= 3) return text;
+  return text.toLowerCase().replace(/\b([a-z])/g, (m) => m.toUpperCase());
+}
+
+function relativeTime(value) {
+  if (!value) return null;
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return null;
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  if (days === 1) return 'Yesterday';
+  if (days < 30) return `${days} days ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months} mo ago`;
+  const years = Math.round(days / 365);
+  return `${years} yr${years === 1 ? '' : 's'} ago`;
+}
+
+function AvatarWithHue({ user, size }) {
+  return (
+    <span
+      className="alt-avatar"
+      style={{ '--user-avatar-fallback-background': `hsl(${getAvatarHue(user.name || user.email)} 52% 48%)` }}
+    >
+      <UserAvatar avatar={user.avatar} name={user.name} size={size} />
+    </span>
+  );
+}
+
+// Row actions in a popover. Fixed-positioned from the trigger's rect so the
+// table's overflow wrapper cannot clip it on the last rows.
+function RowMenu({ anchor, items, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const close = (event) => { if (!ref.current?.contains(event.target) && !anchor.el.contains(event.target)) onClose(); };
+    const onKey = (event) => { if (event.key === 'Escape') onClose(); };
+    const onScroll = () => onClose();
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onScroll);
+    document.addEventListener('scroll', onScroll, true);
+    ref.current?.querySelector('button')?.focus();
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onScroll);
+      document.removeEventListener('scroll', onScroll, true);
+    };
+  }, [anchor, onClose]);
+
+  const rect = anchor.el.getBoundingClientRect();
+  const estimatedHeight = items.length * 36 + 12;
+  const openUp = rect.bottom + estimatedHeight > window.innerHeight - 8;
+  const style = {
+    right: Math.max(8, window.innerWidth - rect.right),
+    ...(openUp ? { bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 }),
+  };
+
+  return (
+    <div className="alt-menu" role="menu" ref={ref} style={style}>
+      {items.map((item, index) => (item.divider ? (
+        <div key={`d${index}`} className="alt-menu-divider" role="separator" />
+      ) : (
+        <button
+          key={item.label}
+          type="button"
+          role="menuitem"
+          className={`alt-menu-item${item.danger ? ' alt-menu-item--danger' : ''}`}
+          onClick={() => { onClose(); item.onSelect(); }}
+        >
+          {item.label}
+        </button>
+      )))}
+    </div>
+  );
 }
 
 function EmptyState({ children }) {
@@ -55,11 +155,12 @@ function EmptyState({ children }) {
 export default function AdminLoginTab({
   users, setUsers, search, loading,
   showConfirm, showPrompt, setMessage, onViewUser, onReload, formatDateTime,
+  filterRequest = null,
 }) {
   const { user: currentUser } = useAuth();
   const [filter, setFilter]           = useState('all');
   const [selected, setSelected]       = useState(new Set());
-  const [expanded, setExpanded]       = useState(null);
+  const [menu, setMenu]               = useState(null);
   const [bulkLoading, setBulkLoading] = useState(false);
   const [toasts, setToasts]           = useState([]);
   const [page, setPage]               = useState(1);
@@ -101,7 +202,13 @@ export default function AdminLoginTab({
   const safePage   = Math.min(page, totalPages);
   const paged      = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  const changeFilter = (v) => { setFilter(v); setPage(1); setSelected(new Set()); setExpanded(null); };
+  const changeFilter = (v) => { setFilter(v); setPage(1); setSelected(new Set()); setMenu(null); };
+
+  // A click on a header stat (Active / Disabled / Admins / Users) opens this
+  // tab with the matching filter applied.
+  useEffect(() => {
+    if (filterRequest?.value) changeFilter(filterRequest.value);
+  }, [filterRequest?.nonce]);
 
   // ── Selection ──────────────────────────────────────────────────────────────
 
@@ -229,6 +336,25 @@ They will be able to manage users, approvals and every admin setting.`
     else addToast(`${enable ? 'Restored' : 'Removed'} login access for ${ok2} user${ok2 !== 1 ? 's' : ''}.`);
   };
 
+  // ── Row menu ───────────────────────────────────────────────────────────────
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  const menuItems = (u) => {
+    const isSelf = u.id === currentUser?.id;
+    const items = [{ label: 'Open profile', onSelect: () => onViewUser(u) }];
+    if (u.isDeleted) return items;
+    if (!u.isSuperAdmin || isSelf) items.push({ label: 'Change password', onSelect: () => handleChangePassword(u) });
+    if (!u.isSuperAdmin && !isSelf && (u.isAdmin || u.isActive)) {
+      items.push({ label: u.isAdmin ? 'Remove admin access' : 'Make admin', onSelect: () => handleToggleAdmin(u) });
+    }
+    if (!u.isAdmin) {
+      items.push({ divider: true });
+      items.push({ label: 'Delete account…', danger: true, onSelect: () => handleDelete(u) });
+    }
+    return items;
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -278,105 +404,93 @@ They will be able to manage users, approvals and every admin setting.`
                 <th className="alt-col-dept"    scope="col">Department</th>
                 <th className="alt-col-role"    scope="col">Role</th>
                 <th className="alt-col-status"  scope="col">Status</th>
-                <th className="alt-col-login"   scope="col">Last Login</th>
-                <th className="alt-col-actions" scope="col">Actions</th>
+                <th className="alt-col-login"   scope="col">Last login</th>
+                <th className="alt-col-actions" scope="col"><span className="alt-sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
               {paged.map((u) => {
                 const isSel = selected.has(u.id);
-                const isExp = expanded === u.id;
-                const roleLabel = (u.roles || []).filter((r) => r !== 'user').join(', ') || (u.isAdmin ? 'Admin' : 'User');
+                const isSelf = u.id === currentUser?.id;
+                const lastLogin = relativeTime(u.lastLogin);
+                const deletedAgo = relativeTime(u.deletedAt);
+                const extraRoles = (u.roles || []).filter((r) => !['user', 'admin', 'root', 'super_admin'].includes(r));
+                // Clicks on the checkbox / buttons keep their own meaning.
+                const openRow = (event) => {
+                  if (event.target.closest('button, input, a')) return;
+                  onViewUser(u);
+                };
                 return (
-                  <React.Fragment key={u.id}>
-                    <tr className={`alt-row${isSel ? ' alt-row--sel' : ''}${isExp ? ' alt-row--exp' : ''}`}>
-                      <td className="alt-col-chk">
-                        <input type="checkbox" className="alt-cb" checked={isSel} onChange={() => toggleOne(u.id)} aria-label={`Select ${u.name}`} />
-                      </td>
-                      <td className="alt-col-user">
-                        <div className="alt-user-cell">
-                          <UserAvatar avatar={u.avatar} name={u.name} size={32} />
-                          <div className="alt-user-info">
-                            <span className="alt-user-name" title={u.name}>{u.name}</span>
-                            <span className="alt-user-email" title={u.email}>{u.email}</span>
-                          </div>
+                  <tr
+                    key={u.id}
+                    className={`alt-row alt-row--clickable${isSel ? ' alt-row--sel' : ''}${!u.isActive && !u.isDeleted ? ' alt-row--muted' : ''}`}
+                    onClick={openRow}
+                  >
+                    <td className="alt-col-chk">
+                      <input type="checkbox" className="alt-cb" checked={isSel} onChange={() => toggleOne(u.id)} aria-label={`Select ${u.name}`} />
+                    </td>
+                    <td className="alt-col-user">
+                      <div className="alt-user-cell">
+                        <AvatarWithHue user={u} size={34} />
+                        <div className="alt-user-info">
+                          <button type="button" className="alt-user-name" title={`Open ${u.name}'s profile`} onClick={() => onViewUser(u)}>
+                            {u.name}
+                            {isSelf && <span className="alt-you">You</span>}
+                          </button>
+                          <span className="alt-user-email" title={u.email}>{u.email}</span>
                         </div>
-                      </td>
-                      <td className="alt-col-dept"><span className="alt-cell">{u.department || '—'}</span></td>
-                      <td className="alt-col-role"><span className="alt-cell">{roleLabel}</span></td>
-                      <td className="alt-col-status"><StatusBadge user={u} /></td>
-                      <td className="alt-col-login"><span className="alt-cell alt-cell--muted">{formatDateTime(u.lastLogin)}</span></td>
-                      <td className="alt-col-actions">
-                        <div className="alt-row-acts">
-                          {!u.isDeleted && !u.isAdmin && (
-                            <button
-                              type="button"
-                              className={`alt-act-btn${u.isActive ? ' alt-act-btn--disable' : ' alt-act-btn--enable'}`}
-                              onClick={() => handleToggleAccess(u)}
-                              aria-label={`${u.isActive ? 'Disable' : 'Enable'} login for ${u.name}`}
-                            >
-                              {u.isActive ? 'Disable' : 'Enable'}
-                            </button>
-                          )}
+                      </div>
+                    </td>
+                    <td className="alt-col-dept">
+                      <span className="alt-cell">{tidyText(u.department) || <span className="alt-cell--muted">—</span>}</span>
+                      {u.employeeId && <span className="alt-sub" title={u.employeeId}>{u.employeeId}</span>}
+                    </td>
+                    <td className="alt-col-role">
+                      <RoleCell user={u} />
+                      {extraRoles.length > 0 && <span className="alt-sub">{extraRoles.map(tidyText).join(', ')}</span>}
+                    </td>
+                    <td className="alt-col-status"><StatusBadge user={u} /></td>
+                    <td className="alt-col-login">
+                      {u.isDeleted ? (
+                        <span className="alt-cell alt-cell--muted" title={formatDateTime(u.deletedAt)}>
+                          Deleted {deletedAgo ? deletedAgo.toLowerCase() : ''}
+                        </span>
+                      ) : lastLogin ? (
+                        <span className="alt-cell" title={formatDateTime(u.lastLogin)}>{lastLogin}</span>
+                      ) : (
+                        <span className="alt-cell alt-cell--muted">Never</span>
+                      )}
+                    </td>
+                    <td className="alt-col-actions">
+                      <div className="alt-row-acts">
+                        {!u.isDeleted && !u.isAdmin && (
                           <button
                             type="button"
-                            className="alt-expand-btn"
-                            onClick={() => setExpanded(isExp ? null : u.id)}
-                            aria-expanded={isExp}
-                            aria-label={`${isExp ? 'Collapse' : 'Expand'} row for ${u.name}`}
+                            className={`alt-act-btn${u.isActive ? ' alt-act-btn--disable' : ' alt-act-btn--enable'}`}
+                            onClick={() => handleToggleAccess(u)}
+                            aria-label={`${u.isActive ? 'Disable' : 'Enable'} login for ${u.name}`}
                           >
-                            {isExp ? '▲' : '▼'}
+                            {u.isActive ? 'Disable' : 'Enable'}
                           </button>
-                        </div>
-                      </td>
-                    </tr>
-
-                    {isExp && (
-                      <tr className="alt-row-expand-row">
-                        <td colSpan={7}>
-                          <div className="alt-expand-inner">
-                            {u.rejectionReason && (
-                              <p className="alt-expand-note">
-                                <strong>Disabled:</strong> {u.rejectionReason}
-                              </p>
-                            )}
-                            {u.isDeleted && (
-                              <p className="alt-expand-note alt-expand-note--danger">
-                                <strong>Deleted:</strong> {formatDateTime(u.deletedAt)} · {u.deletedReason || 'No reason provided'}
-                              </p>
-                            )}
-                            <div className="alt-expand-actions">
-                              <button type="button" className="alt-expand-act" onClick={() => onViewUser(u)}>
-                                View Full Profile
-                              </button>
-                              {!u.isDeleted && (!u.isSuperAdmin || u.id === currentUser?.id) && (
-                                <button type="button" className="alt-expand-act" onClick={() => handleChangePassword(u)}>
-                                  Change Password
-                                </button>
-                              )}
-                              {!u.isDeleted && !u.isSuperAdmin && u.id !== currentUser?.id && (u.isAdmin || u.isActive) && (
-                                <button
-                                  type="button"
-                                  className={`alt-expand-act${u.isAdmin ? ' alt-expand-act--danger' : ''}`}
-                                  onClick={() => handleToggleAdmin(u)}
-                                >
-                                  {u.isAdmin ? 'Remove Admin' : 'Make Admin'}
-                                </button>
-                              )}
-                              {u.isSuperAdmin && (
-                                <span className="alt-expand-note">Super admin — access cannot be removed.</span>
-                              )}
-                              {!u.isDeleted && !u.isAdmin && (
-                                <button type="button" className="alt-expand-act alt-expand-act--danger" onClick={() => handleDelete(u)}>
-                                  Delete Account
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
+                        )}
+                        <button
+                          type="button"
+                          className={`alt-more-btn${menu?.user.id === u.id ? ' is-open' : ''}`}
+                          onClick={(event) => {
+                            const el = event.currentTarget;
+                            setMenu((prev) => (prev?.user.id === u.id ? null : { user: u, el }));
+                          }}
+                          aria-haspopup="menu"
+                          aria-expanded={menu?.user.id === u.id}
+                          aria-label={`More actions for ${u.name}`}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
+                          </svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
@@ -396,6 +510,14 @@ They will be able to manage users, approvals and every admin setting.`
             <button type="button" className="alt-page-btn" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages} aria-label="Next page">›</button>
           </div>
         </div>
+      )}
+
+      {menu && (
+        <RowMenu
+          anchor={menu}
+          onClose={closeMenu}
+          items={menuItems(menu.user)}
+        />
       )}
 
       <ToastStack toasts={toasts} />

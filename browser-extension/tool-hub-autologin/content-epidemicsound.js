@@ -117,8 +117,21 @@ function ensureStatusBadge() {
   return badge;
 }
 
+// One line per step into the extension's launch timeline (background-main.js
+// recordLaunchTimeline), so a slow launch shows where its time went.
+function timeline(step) {
+  try {
+    chrome.runtime.sendMessage({ type: 'TOOL_HUB_LAUNCH_TIMELINE', toolSlug: TOOL_SLUG, step, at: Date.now() }, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch {}
+}
+
 function setStatus(message) {
   if (STATE.status === message) return;
+  // First line only: some statuses append a multi-line state snapshot.
+  const firstLine = `${message}`.split('\n')[0];
+  if (firstLine !== `${STATE.status || ''}`.split('\n')[0]) timeline(firstLine);
   STATE.status = message;
   const badge = ensureStatusBadge();
   if (badge) {
@@ -2094,6 +2107,7 @@ function boot() {
   const begin = () => {
     if (begun) return;
     begun = true;
+    timeline(`page usable (${document.readyState}) - automation starts in ${PAGE_SETTLE_AFTER_LOAD_MS}ms`);
     if (readyPoll) {
       window.clearInterval(readyPoll);
       readyPoll = null;
@@ -2116,5 +2130,19 @@ function boot() {
     } catch {}
   }, 150);
 }
+
+timeline('script loaded on this page');
+// The site's own load times for this page, once it has finished loading -
+// separates "Epidemic Sound is slow" from "the automation is slow".
+window.addEventListener('load', () => {
+  window.setTimeout(() => {
+    try {
+      const nav = performance.getEntriesByType('navigation')[0];
+      if (nav) {
+        timeline(`site load: first byte ${Math.round(nav.responseStart)}ms, DOM ready ${Math.round(nav.domContentLoadedEventEnd)}ms, fully loaded ${Math.round(nav.loadEventEnd)}ms (${nav.type})`);
+      }
+    } catch {}
+  }, 0);
+}, { once: true });
 
 boot();

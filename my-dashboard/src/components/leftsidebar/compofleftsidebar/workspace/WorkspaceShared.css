@@ -1,8 +1,60 @@
 .projects-status-row {
   display: flex;
-  align-items: stretch;
-  gap: 12px;
-  margin-bottom: 16px;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.projects-search-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  transition: border-color var(--theme-transition-fast), box-shadow var(--theme-transition-fast);
+}
+
+.projects-search-field:focus-within {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent);
+  box-shadow: var(--shadow-focus);
+  color: var(--color-primary);
+}
+
+.projects-search-field .projects-search {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+.projects-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.projects-refresh-btn:disabled svg {
+  animation: projects-refresh-spin 0.9s linear infinite;
+}
+
+@keyframes projects-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
+.project-folder-icon {
+  color: var(--color-warning);
+  flex-shrink: 0;
 }
 
 .projects-status-row .add-btn {
@@ -10,8 +62,9 @@
 }
 
 .projects-status-row .cache-status-banner {
-  flex: 1;
-  min-width: 0;
+  flex: 0 0 auto;
+  align-self: center;
+  margin-left: auto;
 }
 
 .projects-search {

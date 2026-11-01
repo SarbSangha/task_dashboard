@@ -39,6 +39,7 @@ TOOL_KIND = {
     "Splice": "audio",
     "Freepik": "image",
     "Grammarly": "page",
+    "Figma": "page",
     "ChatGPT": "chat",
     "Claude": "chat",
 }

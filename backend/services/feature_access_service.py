@@ -79,6 +79,91 @@ FEATURE_LABELS = {
 }
 
 
+#: Sidebar sections everyone sees by default, which an admin can hide from
+#: one person (the inverse of GATED_FEATURES: allow-by-default). Stored in
+#: the same user_feature_access table as a `hidden:<section>` row so no
+#: schema change is needed; normalize_feature() never matches that prefix,
+#: so these rows can never be mistaken for a grant. This only decides what
+#: the sidebar draws and which routes the frontend opens - the underlying
+#: task/message APIs stay available, since other flows (assignments,
+#: notifications) depend on them.
+SECTION_TRACKING = "tracking"
+SECTION_CREATE_TASK = "create_task"
+SECTION_INBOX = "inbox"
+SECTION_OUTBOX = "outbox"
+SECTION_WORKSPACE = "workspace"
+SECTION_MESSAGES = "messages"
+
+HIDEABLE_SECTIONS: tuple[str, ...] = (
+    SECTION_TRACKING,
+    SECTION_CREATE_TASK,
+    SECTION_INBOX,
+    SECTION_OUTBOX,
+    SECTION_WORKSPACE,
+    SECTION_MESSAGES,
+)
+
+SECTION_LABELS = {
+    SECTION_TRACKING: "Tracking",
+    SECTION_CREATE_TASK: "Create Task",
+    SECTION_INBOX: "Inbox",
+    SECTION_OUTBOX: "Outbox",
+    SECTION_WORKSPACE: "Workspace",
+    SECTION_MESSAGES: "Messages",
+}
+
+HIDDEN_SECTION_PREFIX = "hidden:"
+
+
+def normalize_section(section: object) -> str:
+    value = str(section or "").strip().lower()
+    return value if value in HIDEABLE_SECTIONS else ""
+
+
+def hidden_sections(user: Optional[User]) -> list[str]:
+    """Default-visible sections hidden for this user. Admins hide nothing."""
+    if not user or is_feature_exempt(user):
+        return []
+    hidden = set()
+    for grant in getattr(user, "feature_grants", None) or []:
+        key = str(getattr(grant, "feature", "") or "")
+        if key.startswith(HIDDEN_SECTION_PREFIX):
+            section = normalize_section(key[len(HIDDEN_SECTION_PREFIX):])
+            if section:
+                hidden.add(section)
+    return [s for s in HIDEABLE_SECTIONS if s in hidden]
+
+
+def section_visibility_map(user: Optional[User]) -> dict:
+    """`{"inbox": True, ...}` - False only where an admin hid the section."""
+    hidden = set(hidden_sections(user))
+    return {section: section not in hidden for section in HIDEABLE_SECTIONS}
+
+
+def set_section_visible(
+    db: Session,
+    user: User,
+    section: str,
+    visible: bool,
+    granted_by: Optional[int] = None,
+) -> bool:
+    """Delete or create the `hidden:` row. Does not commit."""
+    normalized = normalize_section(section)
+    if not normalized:
+        raise ValueError(f"Unknown section: {section!r}")
+    key = f"{HIDDEN_SECTION_PREFIX}{normalized}"
+    existing = (
+        db.query(UserFeatureAccess)
+        .filter(UserFeatureAccess.user_id == user.id, UserFeatureAccess.feature == key)
+        .first()
+    )
+    if not visible and not existing:
+        db.add(UserFeatureAccess(user_id=user.id, feature=key, granted_by=granted_by))
+    elif visible and existing:
+        db.delete(existing)
+    return bool(visible)
+
+
 def normalize_feature(feature: object) -> str:
     value = str(feature or "").strip().lower()
     return value if value in GATED_FEATURES else ""
@@ -127,7 +212,12 @@ def has_feature_access(user: Optional[User], feature: str) -> bool:
     return normalized in set(granted_features(user))
 
 
-def notify_feature_access_changed(user_ids: Iterable[int], feature: str, enabled: bool) -> None:
+def notify_feature_access_changed(
+    user_ids: Iterable[int],
+    feature: str,
+    enabled: bool,
+    message: Optional[str] = None,
+) -> None:
     """Tell the affected users their sidebar changed, so they need not reload.
 
     AuthContext.checkAuth() runs once on mount and is never re-run on a
@@ -152,7 +242,7 @@ def notify_feature_access_changed(user_ids: Iterable[int], feature: str, enabled
     payload = {
         "eventType": "user_feature_access_changed",
         "title": "Section access updated",
-        "message": (
+        "message": message or (
             f"{FEATURE_LABELS.get(feature, feature)} was "
             f"{'granted to' if enabled else 'removed from'} your account."
         ),

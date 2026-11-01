@@ -63,6 +63,7 @@ const MessageSystemButton = ({ isActive, onClick, isOpen = false }) => {
             eventType !== 'message_read_receipt'
           ) return;
           if (isOpen) { scheduleRefresh(); return; }
+          if (payload.metadata?.muted) return;
           if (eventType === 'message_read_receipt') { scheduleRefresh(); return; }
           if (!setsHydratedRef.current) { scheduleRefresh(); return; }
 

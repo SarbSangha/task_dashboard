@@ -1,0 +1,414 @@
+/* "Export to Excel" button + options popover in the RMW Data context bar. */
+
+.rmw-export {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.rmw-export-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 45%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--theme-transition-fast), box-shadow var(--theme-transition-fast);
+}
+
+.rmw-export-btn:hover:not(:disabled),
+.rmw-export-btn.is-open {
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-surface));
+}
+
+.rmw-export-btn:disabled { cursor: progress; opacity: 0.8; }
+
+.rmw-export-btn:focus-visible,
+.rmw-export-go:focus-visible,
+.rmw-export-close:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+.rmw-export-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: rmw-export-spin 0.8s linear infinite;
+}
+
+.rmw-export-spinner--light {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+}
+
+@keyframes rmw-export-spin { to { transform: rotate(360deg); } }
+
+/* ── Popover: header / scrolling body / pinned footer ─────────────────────── */
+
+.rmw-export-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(76vh, 680px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface-modal);
+  box-shadow: var(--shadow-popover);
+  animation: rmw-export-in 0.14s ease;
+}
+
+.rmw-export-pop--wide { width: min(500px, calc(100vw - 32px)); }
+
+@keyframes rmw-export-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.rmw-export-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 14px 14px 12px 16px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-primary) 5%, var(--color-surface-modal));
+}
+
+.rmw-export-head-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+  background: var(--color-surface);
+}
+
+.rmw-export-head-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rmw-export-head-copy strong { font-size: 14px; color: var(--color-text); line-height: 1.2; }
+
+.rmw-export-sheets { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.rmw-export-sheet {
+  padding: 1px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.rmw-export-sheet:first-child {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
+  color: var(--color-primary);
+}
+
+.rmw-export-close {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.rmw-export-close:hover { background: var(--color-surface-muted); color: var(--color-text); }
+
+.rmw-export-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+  scrollbar-width: thin;
+}
+
+.rmw-export-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-modal);
+}
+
+.rmw-export-status {
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.rmw-export-status strong { color: var(--color-text); }
+.rmw-export-status--invalid { color: var(--color-feedback-error-text); font-weight: 600; }
+
+.rmw-export-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 9px;
+  background: var(--color-primary);
+  color: var(--color-on-primary, #fff);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.rmw-export-go:disabled { opacity: 0.5; cursor: not-allowed; }
+.rmw-export-go:not(:disabled):hover { filter: brightness(1.06); }
+
+.rmw-export-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.rmw-export-check input { margin-top: 2px; accent-color: var(--color-primary); }
+
+.rmw-export-error { font-size: 12px; color: var(--color-feedback-error-text); }
+
+.rmw-export-error--box {
+  padding: 8px 10px;
+  border: 1px solid var(--color-feedback-error-border);
+  border-radius: 8px;
+  background: var(--color-feedback-error-bg);
+}
+
+/* Section headings shared with the Kling filter fields (layout "stack"). */
+.kff-group { display: flex; flex-direction: column; gap: 8px; }
+
+.kff-group + .kff-group {
+  padding-top: 14px;
+  border-top: 1px dashed var(--color-border-subtle);
+}
+
+.kff-group-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+/* ── Kling export filters ─────────────────────────────────────────────────── */
+
+.kexp { display: flex; flex-direction: column; gap: 12px; }
+
+.kexp-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kexp-bar-text { font-size: 12.5px; font-weight: 600; color: var(--color-text); }
+.kexp-bar-actions { display: flex; gap: 12px; }
+
+.kexp-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.kexp-link:hover { text-decoration: underline; }
+
+.kexp-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: -4px; }
+
+.kexp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 3px 0 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
+  color: color-mix(in srgb, var(--color-primary) 80%, var(--color-text));
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kexp-chip button {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.kexp-chip button:hover { background: color-mix(in srgb, var(--color-primary) 18%, transparent); }
+
+.kexp-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: stretch;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px dashed var(--color-border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.kexp-more:hover { color: var(--color-text); border-color: var(--color-border-strong); background: var(--color-surface-muted); }
+
+.kexp-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: var(--color-on-primary, #fff);
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+}
+
+.kexp-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--color-surface-muted);
+}
+
+/* In the popover the group title already names the date field. */
+.kff--stack .kff-field--wide > .kff-label { display: none; }
+.kff--stack { display: flex; flex-direction: column; gap: 14px; }
+
+/* ── Generic tool export (ToolExportOptions) ──────────────────────────────── */
+
+.texp { display: flex; flex-direction: column; gap: 14px; }
+.texp-loading { padding: 18px 0; text-align: center; font-size: 12.5px; color: var(--color-text-muted); }
+.texp-hint { font-size: 11.5px; color: var(--color-text-muted); }
+.texp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; }
+.texp-search { padding: 10px 12px; border-radius: 9px; background: var(--color-surface-muted); }
+
+.texp-sheets { display: flex; flex-direction: column; gap: 8px; }
+
+.texp-sheet {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 11px;
+  background: var(--color-surface);
+  transition: border-color var(--theme-transition-fast), opacity var(--theme-transition-fast);
+}
+
+.texp-sheet.is-open { border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-border-subtle)); }
+.texp-sheet.is-off { opacity: 0.6; background: transparent; }
+
+.texp-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 10px 6px 12px;
+}
+
+.texp-sheet-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.texp-sheet-check input { accent-color: var(--color-primary); width: 15px; height: 15px; }
+.texp-sheet-title { font-size: 13px; font-weight: 700; color: var(--color-text); }
+
+.texp-sheet-count {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.texp-sheet-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 7px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.texp-sheet-toggle:hover { color: var(--color-text); border-color: var(--color-border); }
+
+.texp-sheet-toggle.has-active {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
+  color: var(--color-primary);
+}
+
+.texp-sheet-body {
+  padding: 10px 12px 12px;
+  border-top: 1px dashed var(--color-border-subtle);
+}

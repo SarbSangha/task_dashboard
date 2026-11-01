@@ -8,6 +8,22 @@ import WindowControls from '../../../common/WindowControls';
 import Menu from '../../../ui/Menu';
 import { usePermissions } from '../../../../hooks/usePermissions';
 import { WorkspaceSkeleton } from '../../../ui/WorkspaceSkeleton';
+import {
+  IconAnalytics,
+  IconCapture,
+  IconChart,
+  IconChevronDown,
+  IconCompany,
+  IconCompass,
+  IconCredits,
+  IconDocument,
+  IconFilm,
+  IconOverview,
+  IconProjects,
+  IconSpark,
+  IconTeam,
+  IconTools,
+} from './workspaceIcons';
 
 // Tab-strip overflow sizing (px). Rough per-tab and trailing-area reserves used
 // to decide how many primary tabs fit before the rest fold into the More menu.
@@ -31,23 +47,23 @@ const GrammarlyDocsCaptureCenterTab = lazy(() => import('./tabs/GrammarlyDocsCap
 const AiExplorerTab = lazy(() => import('./tabs/ai-explorer/AiExplorerTab'));
 
 const PRIMARY_TABS = [
-  { key: 'overview', label: 'Overview', icon: '📈' },
-  { key: 'projects', label: 'Projects', icon: '📁' },
-  { key: 'team', label: 'Team', icon: '👥' },
-  { key: 'company', label: 'Company', icon: '🏢' },
-  { key: 'analytics', label: 'Analytics', icon: '📊' },
-  { key: 'Tools', label: 'Tools', icon: '🧰' },
+  { key: 'overview', label: 'Overview', icon: <IconOverview /> },
+  { key: 'projects', label: 'Projects', icon: <IconProjects /> },
+  { key: 'team', label: 'Team', icon: <IconTeam /> },
+  { key: 'company', label: 'Company', icon: <IconCompany /> },
+  { key: 'analytics', label: 'Analytics', icon: <IconAnalytics /> },
+  { key: 'Tools', label: 'Tools', icon: <IconTools /> },
 ];
 
 const SECONDARY_TABS = [
-  { key: 'ai-explorer', label: 'AI Explorer', icon: '🧭', adminOnly: true },
-  { key: 'generation-projects', label: 'Gen Projects', icon: '🎬' },
-  { key: 'capture-center', label: 'Capture Center', icon: '🛟', adminOnly: true },
-  { key: 'chatgpt-capture-center', label: 'ChatGPT Capture', icon: '🧠', adminOnly: true },
-  { key: 'claude-capture-center', label: 'Claude Capture', icon: '✳️', adminOnly: true },
-  { key: 'grammarly-docs-capture-center', label: 'Grammarly Docs', icon: '📝', adminOnly: true },
-  { key: 'credits', label: 'Credits', icon: '💳' },
-  { key: 'charts', label: 'Charts', icon: '📉' },
+  { key: 'ai-explorer', label: 'AI Explorer', icon: <IconCompass />, adminOnly: true },
+  { key: 'generation-projects', label: 'Gen Projects', icon: <IconFilm /> },
+  { key: 'capture-center', label: 'Capture Center', icon: <IconCapture />, adminOnly: true },
+  { key: 'chatgpt-capture-center', label: 'ChatGPT Capture', icon: <IconSpark />, adminOnly: true },
+  { key: 'claude-capture-center', label: 'Claude Capture', icon: <IconSpark />, adminOnly: true },
+  { key: 'grammarly-docs-capture-center', label: 'Grammarly Docs', icon: <IconDocument />, adminOnly: true },
+  { key: 'credits', label: 'Credits', icon: <IconCredits /> },
+  { key: 'charts', label: 'Charts', icon: <IconChart /> },
 ];
 
 const ALL_TAB_ITEMS = [...PRIMARY_TABS, ...SECONDARY_TABS];
@@ -318,7 +334,7 @@ export default function WorkSpaceModal({ isOpen, onClose, initialTab = 'overview
                       className={`workspace-tab-more${activeInMore ? ' has-active' : ''}${open ? ' open' : ''}`}
                     >
                       <span className="tab-label">More</span>
-                      <span className="workspace-tab-more-caret" aria-hidden="true">▾</span>
+                      <IconChevronDown size={14} className="workspace-tab-more-caret" />
                     </button>
                   )}
                 />

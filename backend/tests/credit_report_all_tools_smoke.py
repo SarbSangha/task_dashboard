@@ -37,6 +37,7 @@ from providers.grammarly_docs.models import GrammarlyDocSession  # noqa: E402
 from providers.heygen.models import HeygenGeneration  # noqa: E402
 from providers.higgsfield.models import HiggsfieldGeneration  # noqa: E402
 from providers.splice.models import SpliceDownload  # noqa: E402
+from providers.figma.models import FigmaPrompt  # noqa: E402
 from providers.suno.models import SunoGeneration  # noqa: E402
 from utils.credit_report.facts import resolve_output_url  # noqa: E402
 from utils.credit_report.output_media import chat_transcript  # noqa: E402
@@ -51,7 +52,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 TABLES = [User, UserRole, UserFeatureAccess, GenerationClient, ITPortalTool, ITPortalToolCredential,
           ITPortalToolUsageEvent, ToolCreditRate, GenerationRecord, FreepikGeneration, EnvatoDownload,
           HeygenGeneration, HiggsfieldGeneration, ElevenlabsGeneration, FlowGeneration, SunoGeneration,
-          EpidemicDownload, SpliceDownload, GrammarlyDocSession, ConversationRecord, ConversationPrompt,
+          EpidemicDownload, SpliceDownload, FigmaPrompt, GrammarlyDocSession, ConversationRecord, ConversationPrompt,
           ConversationResponse, ConversationCaptureEvent]
 Base.metadata.create_all(bind=engine, tables=[m.__table__ for m in TABLES])
 

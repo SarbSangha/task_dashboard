@@ -46,6 +46,8 @@ from providers.heygen.asset_mirror import mirror_pending_generations as mirror_p
 from providers.higgsfield import router as higgsfield_router
 from providers.splice import router as splice_router
 from providers.cursor import router as cursor_router
+from providers.claude_code import router as claude_code_router
+from providers.figma import router as figma_router
 from providers.epidemicsound import router as epidemicsound_router
 from providers.suno import router as suno_router
 from providers.grammarly_docs import router as grammarly_docs_router
@@ -66,10 +68,12 @@ from routers import it_tools_router
 from routers import mailbox_admin_router
 from routers import generation_projects_router
 from routers import generation_records_router
+from routers import rmw_data_export_router
 from routers import generation_recovery_router
 from routers import generation_collections_router
 from routers import provider_card_admin_router
 from routers import reports_router
+from routers import task_report_router
 from routers import credit_rates_router
 from routers import report_distribution_router
 from routers import usage_intelligence_router
@@ -85,6 +89,7 @@ from auth import get_password_hash
 from auth import cleanup_expired_reset_tokens, cleanup_expired_sessions
 from routers.tasks_router import notification_dispatcher
 from services.notification_outbox_service import dispatch_notification_outbox_batch
+from utils.notification_bus import notification_bus
 from services.role_service import ensure_super_admin
 from routers.report_distribution_router import process_due_schedules
 
@@ -623,6 +628,11 @@ async def lifespan(app: FastAPI):
         notification_dispatcher.start()
     except Exception as exc:
         _safe_print(f"Notification dispatcher failed to start; continuing degraded: {exc}")
+    try:
+        # Lets every uvicorn worker deliver to sockets held by the others.
+        await notification_bus.start(notification_dispatcher.deliver_from_peer)
+    except Exception as exc:
+        _safe_print(f"Notification bus failed to start; realtime stays per-worker: {exc}")
     auth_cleanup_task = asyncio.create_task(
         _periodic_auth_store_cleanup(_int_env("AUTH_CLEANUP_INTERVAL_SECONDS", 3600)),
         name="auth-store-cleanup",
@@ -697,6 +707,7 @@ async def lifespan(app: FastAPI):
             return_exceptions=True,
         )
         await notification_dispatcher.stop()
+        await notification_bus.stop()
     
     _safe_print("\nShutting down gracefully...")
     await cache_utils.close_redis()
@@ -840,6 +851,7 @@ app.include_router(it_tools_router.router)
 app.include_router(mailbox_admin_router.router)
 app.include_router(generation_projects_router.router)
 app.include_router(generation_records_router.router)
+app.include_router(rmw_data_export_router.router)
 app.include_router(generation_recovery_router.router)
 app.include_router(generation_collections_router.router)
 
@@ -875,6 +887,14 @@ app.include_router(splice_router.router)
 # extension and uploaded usage CSVs, not the browser extension
 app.include_router(cursor_router.router)
 
+# Claude Code (terminal + VS Code) usage - Claude Code's own OpenTelemetry
+# events, enabled per computer by the same Cursor Usage Tracker extension
+app.include_router(claude_code_router.router)
+
+# Figma AI credits - each agent prompt's credits as Figma itself reports
+# them, captured by the browser extension in a dashboard-launched tab
+app.include_router(figma_router.router)
+
 # Epidemic Sound Generation Capture System
 app.include_router(epidemicsound_router.router)
 
@@ -889,6 +909,7 @@ app.include_router(provider_card_admin_router.router)
 
 # Reports / Business Intelligence (AI Intelligence Command Center)
 app.include_router(reports_router.router)
+app.include_router(task_report_router.router)
 app.include_router(credit_rates_router.router)
 app.include_router(report_distribution_router.router)
 app.include_router(usage_intelligence_router.router)

@@ -1167,6 +1167,7 @@ const InboxPanel = ({ isOpen, onClose, onStartTaskToWorkspace, onMinimizedChange
                 <InboxCard
                   key={task.id}
                   task={task}
+                  isUnread={!(task.isRead || getTaskFilterMeta(task).isSeenByMe)}
                   onMarkSeen={markTaskSeen}
                   onTrackClick={handleTrackClick}
                   onTaskAction={runTaskAction}

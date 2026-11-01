@@ -623,6 +623,13 @@ export const authAPI = {
     return response.data;
   },
 
+  // Admin edits a user's profile directly. Send only the fields that changed:
+  // { name, email, employee_id, department, position }.
+  adminUpdateUserProfile: async (userId, changes) => {
+    const response = await api.patch(`/api/admin/users/${userId}/profile`, changes);
+    return response.data;
+  },
+
   getDeletedUsers: async () => {
     const response = await api.get('/api/admin/deleted-users');
     return response.data;
@@ -650,6 +657,13 @@ export const authAPI = {
     return response.data;
   },
 
+  setUserSectionVisibility: async (userId, section, visible) => {
+    const response = await api.patch(`/api/admin/users/${userId}/section-visibility`, {
+      section,
+      visible,
+    });
+    return response.data;
+  },
   setUserFeatureAccess: async (userId, feature, enabled) => {
     const response = await api.patch(`/api/admin/users/${userId}/feature-access`, {
       feature,
@@ -1129,6 +1143,11 @@ export const taskAPI = {
     return response.data;
   },
 
+  sendTestNotification: async () => {
+    const response = await api.post('/api/tasks/notifications/push/test');
+    return response.data;
+  },
+
   markNotificationRead: async (notificationId) => {
     const response = await api.post(`/api/tasks/notifications/${notificationId}/read`);
     return response.data;
@@ -1234,6 +1253,21 @@ export const groupAPI = {
     const response = await api.delete(`/api/groups/${groupId}/messages/${messageId}/reaction`);
     return response.data;
   },
+
+  pinMessage: async (groupId, messageId) => {
+    const response = await api.post(`/api/groups/${groupId}/messages/${messageId}/pin`);
+    return response.data;
+  },
+
+  unpinMessage: async (groupId, messageId) => {
+    const response = await api.delete(`/api/groups/${groupId}/messages/${messageId}/pin`);
+    return response.data;
+  },
+
+  setMuted: async (groupId, muted) => {
+    const response = await api.put(`/api/groups/${groupId}/mute`, { muted });
+    return response.data;
+  },
 };
 
 export const directMessageAPI = {
@@ -1303,6 +1337,21 @@ export const directMessageAPI = {
     const response = await api.delete(`/api/direct-messages/conversations/${userId}/messages/${messageId}/reaction`);
     return response.data;
   },
+
+  pinMessage: async (userId, messageId) => {
+    const response = await api.post(`/api/direct-messages/conversations/${userId}/messages/${messageId}/pin`);
+    return response.data;
+  },
+
+  unpinMessage: async (userId, messageId) => {
+    const response = await api.delete(`/api/direct-messages/conversations/${userId}/messages/${messageId}/pin`);
+    return response.data;
+  },
+
+  setMuted: async (userId, muted) => {
+    const response = await api.put(`/api/direct-messages/conversations/${userId}/mute`, { muted });
+    return response.data;
+  },
 };
 
 const realtimeSubscribers = new Map();
@@ -1312,8 +1361,17 @@ let realtimeReconnectTimer = null;
 let realtimeIdleCloseTimer = null;
 let realtimeHeartbeatTimer = null;
 let realtimeBackoffMs = 1000;
-const REALTIME_MAX_BACKOFF_MS = 30000;
-const REALTIME_HEARTBEAT_MS = 25000;
+let realtimeLastActivityAt = 0;
+let realtimeHasConnectedBefore = false;
+let realtimeLifecycleListenersAttached = false;
+const REALTIME_MIN_BACKOFF_MS = 1000;
+const REALTIME_MAX_BACKOFF_MS = 10000;
+const REALTIME_HEARTBEAT_MS = 20000;
+// No pong/message for this long means the connection died silently (laptop
+// sleep, Wi-Fi switch, proxy idle timeout) - the browser may not fire
+// onclose for minutes, and every notification in between would be lost.
+const REALTIME_STALE_AFTER_MS = 50000;
+const REALTIME_RESUME_CHECK_MS = 5000;
 
 const buildRealtimeWsUrl = () => {
   return `${API_URL.replace(/^http/i, 'ws')}/api/tasks/ws/notifications`;
@@ -1328,7 +1386,7 @@ const broadcastRealtime = (kind, payload) => {
   realtimeSubscribers.forEach((handlers) => {
     try {
       if (kind === 'message' && typeof handlers.onMessage === 'function') handlers.onMessage(payload);
-      if (kind === 'open' && typeof handlers.onOpen === 'function') handlers.onOpen();
+      if (kind === 'open' && typeof handlers.onOpen === 'function') handlers.onOpen(payload);
       if (kind === 'close' && typeof handlers.onClose === 'function') handlers.onClose(payload);
       if (kind === 'error' && typeof handlers.onError === 'function') handlers.onError(payload);
     } catch (err) {
@@ -1354,7 +1412,8 @@ const clearRealtimeTimers = () => {
 
 const scheduleRealtimeReconnect = () => {
   if (realtimeReconnectTimer || realtimeSubscribers.size === 0) return;
-  const delay = realtimeBackoffMs;
+  // Jitter spreads reconnects out after a deploy restarts the backend.
+  const delay = Math.round(realtimeBackoffMs * (0.7 + Math.random() * 0.6));
   realtimeReconnectTimer = window.setTimeout(() => {
     realtimeReconnectTimer = null;
     ensureRealtimeSocket();
@@ -1362,25 +1421,96 @@ const scheduleRealtimeReconnect = () => {
   realtimeBackoffMs = Math.min(realtimeBackoffMs * 2, REALTIME_MAX_BACKOFF_MS);
 };
 
+const isRealtimeSocketLive = () =>
+  !!realtimeSocket
+  && (realtimeSocket.readyState === WebSocket.OPEN || realtimeSocket.readyState === WebSocket.CONNECTING);
+
+// Drops the current socket without waiting for a close handshake that a dead
+// connection may never complete, and connects again right away.
+const restartRealtimeSocket = () => {
+  const staleSocket = realtimeSocket;
+  realtimeSocket = null;
+  if (staleSocket) {
+    staleSocket.onopen = null;
+    staleSocket.onmessage = null;
+    staleSocket.onerror = null;
+    staleSocket.onclose = null;
+    try {
+      staleSocket.close();
+    } catch {
+      // no-op
+    }
+    broadcastRealtime('close', { code: 4000, reason: 'stale' });
+  }
+  if (realtimeReconnectTimer) {
+    window.clearTimeout(realtimeReconnectTimer);
+    realtimeReconnectTimer = null;
+  }
+  realtimeBackoffMs = REALTIME_MIN_BACKOFF_MS;
+  ensureRealtimeSocket();
+};
+
+const sendRealtimePing = () => {
+  if (!realtimeSocket || realtimeSocket.readyState !== WebSocket.OPEN) return;
+  try {
+    realtimeSocket.send('ping');
+  } catch {
+    // no-op
+  }
+};
+
 const ensureRealtimeHeartbeat = () => {
   if (realtimeHeartbeatTimer) return;
   realtimeHeartbeatTimer = window.setInterval(() => {
     if (!realtimeSocket || realtimeSocket.readyState !== WebSocket.OPEN) return;
-    try {
-      realtimeSocket.send('ping');
-    } catch {
-      // no-op
+    if (Date.now() - realtimeLastActivityAt > REALTIME_STALE_AFTER_MS) {
+      restartRealtimeSocket();
+      return;
     }
+    sendRealtimePing();
   }, REALTIME_HEARTBEAT_MS);
+};
+
+// After sleep, a network change or a long time in a background tab, check
+// the connection immediately instead of waiting for the next heartbeat.
+const handleRealtimeResume = () => {
+  if (realtimeSubscribers.size === 0) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  if (!isRealtimeSocketLive()) {
+    realtimeBackoffMs = REALTIME_MIN_BACKOFF_MS;
+    if (realtimeReconnectTimer) {
+      window.clearTimeout(realtimeReconnectTimer);
+      realtimeReconnectTimer = null;
+    }
+    ensureRealtimeSocket();
+    return;
+  }
+  if (realtimeSocket.readyState !== WebSocket.OPEN) return;
+  const pingSentAt = Date.now();
+  sendRealtimePing();
+  window.setTimeout(() => {
+    if (realtimeSocket?.readyState === WebSocket.OPEN && realtimeLastActivityAt < pingSentAt) {
+      restartRealtimeSocket();
+    }
+  }, REALTIME_RESUME_CHECK_MS);
+};
+
+const attachRealtimeLifecycleListeners = () => {
+  if (realtimeLifecycleListenersAttached || typeof window === 'undefined') return;
+  realtimeLifecycleListenersAttached = true;
+  window.addEventListener('online', handleRealtimeResume);
+  window.addEventListener('focus', handleRealtimeResume);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') handleRealtimeResume();
+  });
 };
 
 const ensureRealtimeSocket = () => {
   if (typeof window === 'undefined') return;
   if (realtimeSubscribers.size === 0) return;
-  if (realtimeSocket && (realtimeSocket.readyState === WebSocket.OPEN || realtimeSocket.readyState === WebSocket.CONNECTING)) {
-    return;
-  }
+  if (isRealtimeSocketLive()) return;
 
+  attachRealtimeLifecycleListeners();
   clearRealtimeTimers();
   const protocols = buildRealtimeWsProtocols();
   const socket = protocols
@@ -1389,12 +1519,17 @@ const ensureRealtimeSocket = () => {
   realtimeSocket = socket;
 
   socket.onopen = () => {
-    realtimeBackoffMs = 1000;
+    realtimeBackoffMs = REALTIME_MIN_BACKOFF_MS;
+    realtimeLastActivityAt = Date.now();
     ensureRealtimeHeartbeat();
-    broadcastRealtime('open');
+    // Subscribers use `reconnected` to catch up on events sent while offline.
+    broadcastRealtime('open', { reconnected: realtimeHasConnectedBefore });
+    realtimeHasConnectedBefore = true;
   };
 
   socket.onmessage = (event) => {
+    realtimeLastActivityAt = Date.now();
+    if (event.data === 'pong') return;
     try {
       const payload = JSON.parse(event.data);
       broadcastRealtime('message', payload);
@@ -2566,7 +2701,68 @@ export const cursorCaptureAPI = {
   },
 };
 
+// ==================== CLAUDE CODE CAPTURE CENTER API ====================
+// Claude Code (terminal + VS Code) reports its own usage over OpenTelemetry,
+// switched on per computer by the same Cursor Usage Tracker extension - so a
+// computer is connected through Cursor's People & devices first.
+export const figmaCaptureAPI = {
+  getView: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/figma/view',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+};
+
+export const claudeCodeCaptureAPI = {
+  getView: async (paramsOrConfig = {}, requestConfig = {}) => {
+    const response = await api.get(
+      '/api/providers/claude-code/view',
+      buildParamRequestConfig(paramsOrConfig, requestConfig)
+    );
+    return response.data;
+  },
+
+  listConnections: async (requestConfig = {}) => {
+    const response = await api.get('/api/providers/claude-code/connections', requestConfig);
+    return response.data;
+  },
+};
+
 // ==================== GRAMMARLY DOCS CAPTURE CENTER API ====================
+// RMW Data -> per-tool Excel workbooks (backend/routers/rmw_data_export_router.py).
+// Returns the raw axios response so downloadBlobResponse() can read the
+// server's filename from Content-Disposition.
+export const rmwDataExportAPI = {
+  listTools: async (requestConfig = {}) => {
+    const response = await api.get('/api/rmw-data/export/tools', requestConfig);
+    return response.data;
+  },
+  // Filters (with values and counts) a tool's export offers.
+  getOptions: async (tool, requestConfig = {}) => {
+    const response = await api.get(`/api/rmw-data/export/${encodeURIComponent(tool)}/options`, requestConfig);
+    return response.data;
+  },
+  // One sheet's records with the same filters (tool tabs' Records view).
+  getRows: async (tool, params = {}, requestConfig = {}) => {
+    const response = await api.get(`/api/rmw-data/export/${encodeURIComponent(tool)}/rows`, { params, timeout: 60000, ...requestConfig });
+    return response.data;
+  },
+  // Rows per sheet the export would contain with these params.
+  preview: async (tool, params = {}, requestConfig = {}) => {
+    const response = await api.get(`/api/rmw-data/export/${encodeURIComponent(tool)}/preview`, { params, ...requestConfig });
+    return response.data;
+  },
+  exportTool: async (tool, params = {}, requestConfig = {}) =>
+    api.get(`/api/rmw-data/export/${encodeURIComponent(tool)}`, {
+      params,
+      responseType: 'blob',
+      timeout: 180000,
+      ...requestConfig,
+    }),
+};
+
 export const grammarlyDocsCaptureAPI = {
   listSessions: async (paramsOrConfig = {}, requestConfig = {}) => {
     const response = await api.get(

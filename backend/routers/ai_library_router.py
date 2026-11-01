@@ -28,10 +28,10 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from database_config import get_operational_db
@@ -385,52 +385,168 @@ def fail_ai_library_upload(
     return {"success": True, "upload": record.to_dict()}
 
 
-def _history_query(db: Session, current_user: User, *, start, end, client_id, user_id, status, q):
+# ── History filters (list, options, Excel export) ───────────────────────────
+
+FILE_KINDS = ("video", "image", "audio", "document", "archive", "other")
+FILE_KIND_LABELS = {
+    "video": "Video", "image": "Image", "audio": "Audio", "document": "Document",
+    "archive": "Archive", "other": "Other",
+}
+STATUS_LABELS = {"complete": "Uploaded", "pending": "Incomplete", "failed": "Failed"}
+SORTS = {"newest", "oldest", "largest", "smallest", "name"}
+_ARCHIVE_EXTS = (".zip", ".rar", ".7z", ".tar", ".gz", ".tgz")
+_DOC_EXTS = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".psd", ".ai", ".svg")
+
+
+def file_kind_expr():
+    """File type from MIME type, falling back to the extension (archives and
+    design files often arrive as application/octet-stream)."""
+    mime = func.lower(func.coalesce(AiLibraryUpload.mime_type, ""))
+    name = func.lower(AiLibraryUpload.file_name)
+    return case(
+        (mime.like("video/%"), "video"),
+        (mime.like("image/%"), "image"),
+        (mime.like("audio/%"), "audio"),
+        (or_(*[name.like(f"%{ext}") for ext in _ARCHIVE_EXTS], mime.like("%zip%"), mime.like("%rar%"),
+             mime.like("%7z%")), "archive"),
+        (or_(mime.like("text/%"), mime.like("application/pdf"), mime.like("%officedocument%"), mime.like("%msword%"),
+             *[name.like(f"%{ext}") for ext in _DOC_EXTS]), "document"),
+        else_="other",
+    )
+
+
+class HistoryFilters:
+    """Every history filter as one dependency, shared by the list, the
+    options counts and the Excel export so they always agree."""
+
+    def __init__(
+        self,
+        start: Optional[date] = Query(None),
+        end: Optional[date] = Query(None),
+        clientId: Optional[int] = Query(None),
+        userId: Optional[int] = Query(None),
+        status: Optional[str] = Query(None, pattern="^(pending|complete|failed)$"),
+        q: Optional[str] = Query(None, max_length=200),
+        kind: Optional[str] = Query(None),
+        minMb: Optional[float] = Query(None, ge=0),
+        maxMb: Optional[float] = Query(None, ge=0),
+    ):
+        if start and end and start > end:
+            raise HTTPException(status_code=400, detail='"From" date must be on or before the "To" date.')
+        if kind and kind not in FILE_KINDS:
+            raise HTTPException(status_code=400, detail=f"Unknown file type. Expected one of {list(FILE_KINDS)}")
+        if minMb is not None and maxMb is not None and minMb > maxMb:
+            raise HTTPException(status_code=400, detail="Minimum size is above the maximum size.")
+        self.start, self.end, self.client_id, self.user_id = start, end, clientId, userId
+        self.status, self.q, self.kind, self.min_mb, self.max_mb = status, (q or "").strip() or None, kind, minMb, maxMb
+
+    def describe(self, db: Session) -> list[str]:
+        fmt = "%d %b %Y"
+        parts = []
+        if self.start or self.end:
+            parts.append(f"Dates: {self.start.strftime(fmt) if self.start else 'start'} – "
+                         f"{self.end.strftime(fmt) if self.end else 'today'}")
+        if self.client_id:
+            name = db.query(func.max(AiLibraryUpload.client_name)).filter(AiLibraryUpload.client_id == self.client_id).scalar()
+            parts.append(f"Client: {name or self.client_id}")
+        if self.user_id:
+            name = db.query(User.name).filter(User.id == self.user_id).scalar()
+            parts.append(f"Uploaded by: {name or self.user_id}")
+        if self.status:
+            parts.append(f"Status: {STATUS_LABELS[self.status]}")
+        if self.kind:
+            parts.append(f"File type: {FILE_KIND_LABELS[self.kind]}")
+        if self.min_mb is not None or self.max_mb is not None:
+            parts.append(f"Size: {self.min_mb or 0:g} – {'any' if self.max_mb is None else f'{self.max_mb:g}'} MB")
+        if self.q:
+            parts.append(f'File name contains "{self.q}"')
+        return parts
+
+
+def _visible_uploads(db: Session, current_user: User):
     query = db.query(AiLibraryUpload)
     # Everyone sees their own uploads; admins see everyone's.
     if not _is_admin(current_user):
         query = query.filter(AiLibraryUpload.user_id == current_user.id)
-    elif user_id:
-        query = query.filter(AiLibraryUpload.user_id == user_id)
-    if start:
-        query = query.filter(AiLibraryUpload.upload_date >= start)
-    if end:
-        query = query.filter(AiLibraryUpload.upload_date <= end)
-    if client_id:
-        query = query.filter(AiLibraryUpload.client_id == client_id)
-    if status:
-        query = query.filter(AiLibraryUpload.status == status)
-    if q:
-        query = query.filter(AiLibraryUpload.file_name.ilike(f"%{q.strip()}%"))
     return query
+
+
+def _apply_history_filters(query, f: HistoryFilters, current_user: User, *, skip: tuple = ()):
+    if f.user_id and "user" not in skip and _is_admin(current_user):
+        query = query.filter(AiLibraryUpload.user_id == f.user_id)
+    if f.start and "date" not in skip:
+        query = query.filter(AiLibraryUpload.upload_date >= f.start)
+    if f.end and "date" not in skip:
+        query = query.filter(AiLibraryUpload.upload_date <= f.end)
+    if f.client_id and "client" not in skip:
+        query = query.filter(AiLibraryUpload.client_id == f.client_id)
+    if f.status and "status" not in skip:
+        query = query.filter(AiLibraryUpload.status == f.status)
+    if f.kind and "kind" not in skip:
+        query = query.filter(file_kind_expr() == f.kind)
+    if f.min_mb is not None and "size" not in skip:
+        query = query.filter(AiLibraryUpload.size_bytes >= f.min_mb * 1024 * 1024)
+    if f.max_mb is not None and "size" not in skip:
+        query = query.filter(AiLibraryUpload.size_bytes <= f.max_mb * 1024 * 1024)
+    if f.q and "q" not in skip:
+        query = query.filter(AiLibraryUpload.file_name.ilike(f"%{f.q}%"))
+    return query
+
+
+def _history_query(db: Session, current_user: User, *, start, end, client_id, user_id, status, q):
+    """Kept for callers that pass the original keyword set."""
+    f = HistoryFilters.__new__(HistoryFilters)
+    f.start, f.end, f.client_id, f.user_id = start, end, client_id, user_id
+    f.status, f.q, f.kind, f.min_mb, f.max_mb = status, (q or "").strip() or None, None, None, None
+    return _apply_history_filters(_visible_uploads(db, current_user), f, current_user)
+
+
+def _order(query, sort: str):
+    if sort == "oldest":
+        return query.order_by(AiLibraryUpload.created_at.asc(), AiLibraryUpload.id.asc())
+    if sort == "largest":
+        return query.order_by(AiLibraryUpload.size_bytes.desc(), AiLibraryUpload.id.desc())
+    if sort == "smallest":
+        return query.order_by(AiLibraryUpload.size_bytes.asc(), AiLibraryUpload.id.asc())
+    if sort == "name":
+        return query.order_by(func.lower(AiLibraryUpload.file_name).asc(), AiLibraryUpload.id.asc())
+    return query.order_by(AiLibraryUpload.created_at.desc(), AiLibraryUpload.id.desc())
+
+
+def _summary(query) -> dict:
+    count, total, clients, users = query.with_entities(
+        func.count(AiLibraryUpload.id),
+        func.coalesce(func.sum(AiLibraryUpload.size_bytes), 0),
+        func.count(func.distinct(AiLibraryUpload.client_id)),
+        func.count(func.distinct(AiLibraryUpload.user_id)),
+    ).one()
+    return {"count": int(count or 0), "totalBytes": int(total or 0), "clients": int(clients or 0), "uploaders": int(users or 0)}
 
 
 @router.get("/uploads")
 def list_ai_library_uploads(
-    start: Optional[date] = Query(None),
-    end: Optional[date] = Query(None),
-    clientId: Optional[int] = Query(None),
-    userId: Optional[int] = Query(None),
-    status: Optional[str] = Query(None, pattern="^(pending|complete|failed)$"),
-    q: Optional[str] = Query(None, max_length=200),
+    filters: HistoryFilters = Depends(),
+    sort: str = Query("newest"),
     page: int = Query(1, ge=1),
     pageSize: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_ai_library_access),
 ):
-    if start and end and start > end:
-        raise HTTPException(status_code=400, detail='"From" date must be on or before the "To" date.')
-    query = _history_query(db, current_user, start=start, end=end, client_id=clientId,
-                           user_id=userId, status=status, q=q)
-    total = query.count()
-    rows = (
-        query.order_by(AiLibraryUpload.created_at.desc(), AiLibraryUpload.id.desc())
-        .offset((page - 1) * pageSize)
-        .limit(pageSize)
-        .all()
-    )
-    return {"success": True, "total": total, "page": page, "pageSize": pageSize,
-            "items": [row.to_dict() for row in rows]}
+    if sort not in SORTS:
+        raise HTTPException(status_code=400, detail=f"Unknown sort. Expected one of {sorted(SORTS)}")
+    query = _apply_history_filters(_visible_uploads(db, current_user), filters, current_user)
+    summary = _summary(query)
+    rows = _order(query, sort).offset((page - 1) * pageSize).limit(pageSize).all()
+    kinds = dict(
+        db.query(AiLibraryUpload.id, file_kind_expr()).filter(AiLibraryUpload.id.in_([r.id for r in rows])).all()
+    ) if rows else {}
+    items = []
+    for row in rows:
+        item = row.to_dict()
+        item["fileKind"] = kinds.get(row.id, "other")
+        items.append(item)
+    return {"success": True, "total": summary["count"], "summary": summary, "page": page, "pageSize": pageSize,
+            "items": items}
 
 
 @router.get("/uploads/options")
@@ -438,11 +554,11 @@ def ai_library_upload_options(
     db: Session = Depends(get_operational_db),
     current_user: User = Depends(require_ai_library_access),
 ):
-    """Users and clients that appear in the caller's visible history, for
-    the history filters. Users are only listed for admins."""
-    base = _history_query(db, current_user, start=None, end=None, client_id=None, user_id=None, status=None, q=None)
+    """Values (with upload counts) for every history filter, from the
+    caller's visible history. Users are only listed for admins."""
+    base = _visible_uploads(db, current_user)
     clients = (
-        base.with_entities(AiLibraryUpload.client_id, func.max(AiLibraryUpload.client_name))
+        base.with_entities(AiLibraryUpload.client_id, func.max(AiLibraryUpload.client_name), func.count(AiLibraryUpload.id))
         .filter(AiLibraryUpload.client_id.isnot(None))
         .group_by(AiLibraryUpload.client_id)
         .all()
@@ -450,13 +566,142 @@ def ai_library_upload_options(
     users = []
     if _is_admin(current_user):
         users = (
-            base.with_entities(AiLibraryUpload.user_id, func.max(AiLibraryUpload.user_name))
+            base.with_entities(AiLibraryUpload.user_id, func.max(AiLibraryUpload.user_name), func.count(AiLibraryUpload.id))
             .filter(AiLibraryUpload.user_id.isnot(None))
             .group_by(AiLibraryUpload.user_id)
             .all()
         )
+    kind = file_kind_expr()
+    kinds = dict(base.with_entities(kind, func.count(AiLibraryUpload.id)).group_by(kind).all())
+    statuses = dict(base.with_entities(AiLibraryUpload.status, func.count(AiLibraryUpload.id)).group_by(AiLibraryUpload.status).all())
+    first, last, largest = base.with_entities(
+        func.min(AiLibraryUpload.upload_date), func.max(AiLibraryUpload.upload_date), func.max(AiLibraryUpload.size_bytes)
+    ).one()
     return {
         "success": True,
-        "clients": sorted(({"id": cid, "name": name} for cid, name in clients), key=lambda c: (c["name"] or "").lower()),
-        "users": sorted(({"id": uid, "name": name} for uid, name in users), key=lambda u: (u["name"] or "").lower()),
+        "clients": sorted(({"id": cid, "name": name, "count": int(n)} for cid, name, n in clients),
+                          key=lambda c: (c["name"] or "").lower()),
+        "users": sorted(({"id": uid, "name": name, "count": int(n)} for uid, name, n in users),
+                        key=lambda u: (u["name"] or "").lower()),
+        "kinds": [{"value": k, "label": FILE_KIND_LABELS[k], "count": int(kinds[k])} for k in FILE_KINDS if kinds.get(k)],
+        "statuses": [{"value": k, "label": STATUS_LABELS[k], "count": int(statuses[k])} for k in STATUS_LABELS if statuses.get(k)],
+        "dateRange": {"from": first.isoformat() if first else None, "to": last.isoformat() if last else None},
+        "largestMb": round(float(largest or 0) / (1024 * 1024), 1),
+        "summary": _summary(base),
     }
+
+
+@router.get("/uploads/export")
+def export_ai_library_uploads(
+    filters: HistoryFilters = Depends(),
+    sort: str = Query("newest"),
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_ai_library_access),
+):
+    """Excel workbook of the (filtered) upload history: Summary with
+    breakdowns, then every upload with a clickable Drive link."""
+    import io
+    from collections import defaultdict
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    from routers.rmw_data_export_router import IST, TITLE_FONT, _style_header, _write_table
+
+    if sort not in SORTS:
+        sort = "newest"
+    query = _apply_history_filters(_visible_uploads(db, current_user), filters, current_user)
+    rows = _order(query, sort).limit(50_000).all()
+    kinds = dict(
+        query.with_entities(AiLibraryUpload.id, file_kind_expr()).all()
+    )
+
+    def mb(value):
+        return round(float(value or 0) / (1024 * 1024), 2)
+
+    def ist(value):
+        return (value + IST_OFFSET) if value else None
+
+    wb = Workbook()
+    summary = wb.active
+    summary.title = "Summary"
+    summary["A1"] = "AI Library — upload history"
+    summary["A1"].font = TITLE_FONT
+    meta = [
+        ("Generated", datetime.now(IST).strftime("%d %b %Y, %I:%M %p IST")),
+        ("Generated by", f"{current_user.name} ({current_user.email})"),
+        ("Visibility", "Everyone's uploads" if _is_admin(current_user) else "Your uploads"),
+        ("Filters", "; ".join(filters.describe(db)) or "None (everything)"),
+    ]
+    for offset, (label, value) in enumerate(meta, start=3):
+        summary.cell(row=offset, column=1, value=label).font = Font(bold=True)
+        summary.cell(row=offset, column=2, value=value).alignment = Alignment(wrap_text=True, vertical="top")
+
+    total_bytes = sum(int(r.size_bytes or 0) for r in rows)
+    row_no = _write_table(summary, 4 + len(meta), "Totals", ["Measure", "Value"], [
+        ["Uploads", len(rows)],
+        ["Total size (MB)", mb(total_bytes)],
+        ["Uploaded", sum(1 for r in rows if r.status == "complete")],
+        ["Incomplete", sum(1 for r in rows if r.status == "pending")],
+        ["Failed", sum(1 for r in rows if r.status == "failed")],
+        ["Clients", len({r.client_id for r in rows if r.client_id})],
+        ["Uploaders", len({r.user_id for r in rows if r.user_id})],
+    ])
+
+    def breakdown(title, key_fn, sort_by_key=False):
+        nonlocal row_no
+        buckets = defaultdict(lambda: [0, 0])
+        for r in rows:
+            b = buckets[key_fn(r)]
+            b[0] += 1
+            b[1] += int(r.size_bytes or 0)
+        items = sorted(buckets.items(), key=(lambda kv: kv[0]) if sort_by_key else (lambda kv: (-kv[1][0], kv[0])))
+        total = len(rows) or 1
+        row_no = _write_table(summary, row_no, title, [title.split("By ")[-1].capitalize(), "Uploads", "Share", "Size (MB)"],
+                              [[k, n, f"{n / total:.0%}", mb(size)] for k, (n, size) in items[:40]])
+
+    breakdown("By client", lambda r: r.client_name or "No client")
+    breakdown("By uploader", lambda r: r.user_name or "Unknown")
+    breakdown("By month", lambda r: r.upload_date.strftime("%Y-%m (%b)") if r.upload_date else "Unknown", sort_by_key=True)
+    breakdown("By file type", lambda r: FILE_KIND_LABELS.get(kinds.get(r.id, "other"), "Other"))
+    breakdown("By status", lambda r: STATUS_LABELS.get(r.status, r.status))
+    for letter, width in zip("ABCD", (30, 60, 12, 14)):
+        summary.column_dimensions[letter].width = width
+
+    ws = wb.create_sheet("Uploads")
+    headers = ["Uploaded (IST)", "Upload day", "File", "File type", "Size (MB)", "Client", "Uploaded by",
+               "Status", "Folder", "Drive link", "Error", "Record ID"]
+    widths = [19, 12, 48, 11, 11, 20, 20, 12, 44, 16, 30, 10]
+    ws.append(headers)
+    _style_header(ws, 1, len(headers))
+    for r in rows:
+        ws.append([
+            ist(r.completed_at or r.created_at), r.upload_date, r.file_name,
+            FILE_KIND_LABELS.get(kinds.get(r.id, "other"), "Other"), mb(r.size_bytes), r.client_name,
+            r.user_name, STATUS_LABELS.get(r.status, r.status), r.folder_path,
+            "Open in Drive" if r.drive_web_link else None, r.error, r.id,
+        ])
+        if r.drive_web_link:
+            cell = ws.cell(row=ws.max_row, column=10)
+            cell.hyperlink = r.drive_web_link
+            cell.style = "Hyperlink"
+    for index, width in enumerate(widths, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=index).column_letter].width = width
+    for cell in ws["A"][1:]:
+        cell.number_format = "dd mmm yyyy, hh:mm"
+    for cell in ws["B"][1:]:
+        cell.number_format = "dd mmm yyyy"
+    for cell in ws["E"][1:]:
+        cell.number_format = "#,##0.00"
+    ws.freeze_panes = "C2"
+    if rows:
+        ws.auto_filter.ref = f"A1:L{len(rows) + 1}"
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    stamp = datetime.now(IST).strftime("%Y-%m-%d")
+    filename = f"ai-library_uploads_{stamp}.xlsx"
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+    )

@@ -53,7 +53,7 @@ from services.admin_workflow_service import (
     push_admin_realtime_event,
     sanitize_request_payload,
 )
-from services.feature_access_service import feature_access_map
+from services.feature_access_service import feature_access_map, section_visibility_map
 from services.role_service import replace_user_roles, strip_privileged_roles, user_role_names
 
 
@@ -379,6 +379,8 @@ def _serialize_user(user: User) -> dict:
         # (AUTH_RESPONSE_CACHE_TTL_SECONDS, 10s by default), which is why an
         # admin's grant shows up for the user within seconds.
         "featureAccess": feature_access_map(user),
+        # Default-visible sections an admin hid for this user (False = hidden).
+        "sectionVisibility": section_visibility_map(user),
     }
 
 

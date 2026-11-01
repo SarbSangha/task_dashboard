@@ -270,3 +270,29 @@
     grid-template-columns: repeat(7, 1fr);
   }
 }
+
+/* Full-width variant used inside filter grids (RMW Data / Kling). */
+.drp--block { display: flex; width: 100%; }
+
+.drp--block .drp-trigger {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+.drp--block .drp-trigger-label,
+.drp--block .drp-trigger-dates {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drp--block .drp-trigger-dates { flex: 1; min-width: 0; text-align: left; font-size: 12px; }
+.drp--block .drp-caret { margin-left: auto; flex-shrink: 0; }
+.drp--block .drp-trigger > svg { flex-shrink: 0; color: var(--color-text-muted); }
+.drp--block .drp-pop { z-index: 60; }
+
+/* Portal mode: rendered on <body>, placed by JS from the trigger's rect. */
+.drp-pop--portal { z-index: 1500; right: auto; }

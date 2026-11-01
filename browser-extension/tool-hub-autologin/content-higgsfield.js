@@ -1588,21 +1588,26 @@ async function reportHiggsfieldCaptureEvent({ eventType, isReconciliation, paylo
   const token = changeToken || higgsfieldChangeToken(payload);
   const clientEventId = `higgsfield:${primaryId}:${token}`;
 
+  const message = {
+    type: 'HIGGSFIELD_CAPTURE_EVENT',
+    event: {
+      event_type: eventType,
+      client_event_id: clientEventId,
+      generation_id: generationId || null,
+      project_id: identity?.projectId ? String(identity.projectId) : null,
+      is_reconciliation: Boolean(isReconciliation),
+      payload,
+      capture_version: 1,
+      linked_task_id: !isReconciliation && higgsfieldActiveGeneration ? higgsfieldActiveGeneration.taskId : null,
+      linked_client_id: !isReconciliation && higgsfieldActiveGeneration ? higgsfieldActiveGeneration.clientId : null,
+    },
+  };
   try {
-    const result = await sendRuntimeMessage({
-      type: 'HIGGSFIELD_CAPTURE_EVENT',
-      event: {
-        event_type: eventType,
-        client_event_id: clientEventId,
-        generation_id: generationId || null,
-        project_id: identity?.projectId ? String(identity.projectId) : null,
-        is_reconciliation: Boolean(isReconciliation),
-        payload,
-        capture_version: 1,
-        linked_task_id: !isReconciliation && higgsfieldActiveGeneration ? higgsfieldActiveGeneration.taskId : null,
-        linked_client_id: !isReconciliation && higgsfieldActiveGeneration ? higgsfieldActiveGeneration.clientId : null,
-      },
-    });
+    const result = await sendRuntimeMessage(message);
+    if (!result?.ok && globalThis.rmwCaptureStash?.isInvalidated(result?.error)) {
+      parkHiggsfieldCaptureMessage(message);
+      return;
+    }
     if (result?.ok) {
       console.debug('[RMW Higgsfield Capture] reported event', { eventType, primaryId, queued: result.queued });
       // "Queued", not "Saved" - result.ok only confirms the local background
@@ -1614,8 +1619,28 @@ async function reportHiggsfieldCaptureEvent({ eventType, isReconciliation, paylo
       setHiggsfieldCaptureStatus(`Capture failed: ${result?.error || 'unknown error'}`, { autoHideMs: 8000 });
     }
   } catch (error) {
+    if (globalThis.rmwCaptureStash?.isInvalidated(error)) {
+      parkHiggsfieldCaptureMessage(message);
+      return;
+    }
     console.warn('[RMW Higgsfield Capture] unexpected error reporting event', { eventType, error: error?.message || error });
   }
+}
+
+// See content-capture-stash.js: the extension was reloaded/updated under this
+// tab, so nothing can reach it until the page is refreshed. Park the event and
+// say so on screen instead of losing it silently.
+const HIGGSFIELD_CAPTURE_STASH_KEY = 'rmw_higgsfield_pending_capture';
+
+function parkHiggsfieldCaptureMessage(message) {
+  const waiting = globalThis.rmwCaptureStash.stash(HIGGSFIELD_CAPTURE_STASH_KEY, message);
+  setHiggsfieldCaptureStatus(`RMW capture paused - refresh this page to resume (${waiting} waiting)`);
+}
+
+if (globalThis.rmwCaptureStash) {
+  globalThis.rmwCaptureStash.drain(HIGGSFIELD_CAPTURE_STASH_KEY, sendRuntimeMessage).then((sent) => {
+    if (sent) console.debug('[RMW Higgsfield Capture] sent events parked before refresh', { sent });
+  });
 }
 
 // ---- Network-relay: content-higgsfield-network.js's intercepted rows ----

@@ -27,6 +27,10 @@ export const aiLibraryAPI = {
   list: async (params = {}) =>
     (await api.get('/api/ai-library/uploads', { params: clean(params), timeout: TIMEOUT_MS })).data,
   options: async () => (await api.get('/api/ai-library/uploads/options', { timeout: TIMEOUT_MS })).data,
+  // Excel workbook of the filtered history (raw axios response, for
+  // downloadBlobResponse in services/reports.js).
+  exportUploads: async (params = {}) =>
+    api.get('/api/ai-library/uploads/export', { params: clean(params), responseType: 'blob', timeout: 120000 }),
 };
 
 export default aiLibraryAPI;

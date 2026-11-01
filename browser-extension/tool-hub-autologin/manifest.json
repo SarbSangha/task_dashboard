@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "RMW Tool Hub Auto Login",
   "description": "Auto-fills approved company tool credentials from the RMW Tool Hub.",
-  "version": "0.1.77",
+  "version": "0.1.87",
   "incognito": "split",
   "icons": {
     "16": "icons/icon16.png",
@@ -276,6 +276,23 @@
     },
     {
       "matches": [
+        "https://www.figma.com/*",
+        "https://figma.com/*"
+      ],
+      "js": ["content-figma-network.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.figma.com/*",
+        "https://figma.com/*"
+      ],
+      "js": ["content-figma-capture.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
         "https://grammarly.com/*",
         "https://*.grammarly.com/*"
       ],
@@ -310,7 +327,7 @@
         "https://higgsfield.ai/*",
         "https://*.higgsfield.ai/*"
       ],
-      "js": ["content-higgsfield-task-api.js", "content-recent-clients.js", "content-higgsfield-task-modal.js", "content-higgsfield.js"],
+      "js": ["content-capture-stash.js", "content-higgsfield-task-api.js", "content-recent-clients.js", "content-higgsfield-task-modal.js", "content-higgsfield.js"],
       "run_at": "document_idle"
     },
     {
@@ -327,7 +344,7 @@
         "https://heygen.com/*",
         "https://*.heygen.com/*"
       ],
-      "js": ["content-heygen-task-api.js", "content-recent-clients.js", "content-heygen-task-modal.js", "content-heygen.js"],
+      "js": ["content-capture-stash.js", "content-heygen-task-api.js", "content-recent-clients.js", "content-heygen-task-modal.js", "content-heygen.js"],
       "run_at": "document_idle"
     },
     {
@@ -372,6 +389,16 @@
         "https://*.suno.com/*"
       ],
       "js": ["content-suno-task-api.js", "content-recent-clients.js", "content-suno-task-modal.js", "content-suno-capture.js", "content-suno.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://epidemicsound.com/*",
+        "https://*.epidemicsound.com/*"
+      ],
+      "js": [
+        "content-epidemicsound-ticket.js"
+      ],
       "run_at": "document_start"
     },
     {

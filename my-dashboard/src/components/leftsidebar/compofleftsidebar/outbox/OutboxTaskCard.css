@@ -318,7 +318,7 @@
 
 .outbox-label,
 .outbox-summary-label,
-.outbox-task-card .worker-submission-body label {
+.tc-card--tile .worker-submission-body label {
   color: var(--color-text-muted);
   font-size: 11px;
   font-weight: 700;
@@ -538,8 +538,8 @@
 }
 
 .extra-head,
-.outbox-task-card .worker-submission-head,
-.outbox-task-card .worker-submission-card-head {
+.tc-card--tile .worker-submission-head,
+.tc-card--tile .worker-submission-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -551,8 +551,8 @@
 }
 
 .outbox-task-extra .extra-col h4,
-.outbox-task-card .worker-submission-head h4,
-.outbox-task-card .worker-submission-card-head h5 {
+.tc-card--tile .worker-submission-head h4,
+.tc-card--tile .worker-submission-card-head h5 {
   margin: 0;
   color: var(--color-text);
 }
@@ -560,8 +560,8 @@
 .outbox-task-extra .extra-col p,
 .outbox-task-extra .extra-col li,
 .outbox-task-extra .extra-col span,
-.outbox-task-card .worker-submission-card-head p,
-.outbox-task-card .worker-submission-body p {
+.tc-card--tile .worker-submission-card-head p,
+.tc-card--tile .worker-submission-body p {
   margin: 0;
   color: var(--color-text-secondary);
 }
@@ -581,14 +581,14 @@
 
 .attachment-list,
 .link-list,
-.outbox-task-card .worker-submission-list {
+.tc-card--tile .worker-submission-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.outbox-task-card .worker-submission-list,
-.outbox-task-card .worker-submission-body {
+.tc-card--tile .worker-submission-list,
+.tc-card--tile .worker-submission-body {
   display: grid;
   gap: 12px;
 }
@@ -629,21 +629,21 @@
   text-underline-offset: 2px;
 }
 
-.outbox-task-card .worker-submission-block {
+.tc-card--tile .worker-submission-block {
   grid-column: 1 / -1;
 }
 
-.outbox-task-card .worker-submission-head {
+.tc-card--tile .worker-submission-head {
   margin-bottom: 12px;
 }
 
-.outbox-task-card .worker-submission-head span,
-.outbox-task-card .worker-submission-card-head p {
+.tc-card--tile .worker-submission-head span,
+.tc-card--tile .worker-submission-card-head p {
   color: var(--color-text-secondary);
   font-size: 12px;
 }
 
-.outbox-task-card .worker-submission-card {
+.tc-card--tile .worker-submission-card {
   display: grid;
   gap: 10px;
   padding: 12px;
@@ -652,11 +652,11 @@
   background: color-mix(in srgb, var(--color-surface) 92%, transparent);
 }
 
-.outbox-task-card .worker-submission-card.submitted {
+.tc-card--tile .worker-submission-card.submitted {
   border-color: var(--color-feedback-success-border);
 }
 
-.outbox-task-card .worker-submission-card.pending {
+.tc-card--tile .worker-submission-card.pending {
   border-color: var(--color-feedback-warning-border);
 }
 
@@ -668,7 +668,7 @@
   font-size: 11px;
 }
 
-.outbox-task-card .worker-submission-body label {
+.tc-card--tile .worker-submission-body label {
   display: block;
   margin-bottom: 5px;
 }

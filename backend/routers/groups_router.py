@@ -14,6 +14,17 @@ from models_new import ActivityStatus, ChatMessageReaction, ChatMessageReadRecei
 from routers.auth_router import get_current_user
 from routers.tasks_router import notification_dispatcher
 from utils.cache import cache_response
+from utils.chat_threads import (
+    PINNED_MESSAGES_LIMIT,
+    build_pinner_lookup,
+    mark_payload_muted,
+    muted_thread_ids,
+    pin_event_payload,
+    serialize_pin_fields,
+    serialize_pinned_message,
+    set_thread_muted,
+    users_muting_thread,
+)
 from utils.datetime_utils import normalize_to_utc_naive, utcnow_naive
 
 
@@ -55,6 +66,10 @@ class ReactionPayload(BaseModel):
 
 class GroupRolePayload(BaseModel):
     role: str = Field(pattern="^(admin|member)$")
+
+
+class MutePayload(BaseModel):
+    muted: bool = True
 
 
 def _utcnow() -> datetime:
@@ -484,6 +499,21 @@ def _build_group_receipt_lookup(
     return lookup
 
 
+def _build_group_message_preview(message: Optional[GroupChatMessage], sender_name: Optional[str]) -> dict:
+    if not message:
+        return {"lastMessageSenderId": None, "lastMessageSenderName": None, "lastMessagePreview": ""}
+    attachments = message.attachments_json or []
+    if message.deleted_at:
+        preview = "This message was deleted"
+    else:
+        preview = (message.message or "").strip() or f"{len(attachments)} attachment{'s' if len(attachments) != 1 else ''}"
+    return {
+        "lastMessageSenderId": message.sender_id,
+        "lastMessageSenderName": sender_name,
+        "lastMessagePreview": preview[:180],
+    }
+
+
 def _serialize_group(
     db: Session,
     group: GroupChat,
@@ -500,8 +530,9 @@ def _serialize_group(
         )
         .all()
     )
-    latest_message = (
-        db.query(GroupChatMessage)
+    latest_row = (
+        db.query(GroupChatMessage, User.name)
+        .join(User, User.id == GroupChatMessage.sender_id)
         .filter(GroupChatMessage.group_id == group.id)
         .order_by(GroupChatMessage.created_at.desc(), GroupChatMessage.id.desc())
         .first()
@@ -511,7 +542,7 @@ def _serialize_group(
         current_user_id,
         members,
         presence_lookup=_build_presence_lookup(db, [user.id for _member, user in members]),
-        latest_message_sender_id=latest_message.sender_id if latest_message else None,
+        latest_message=_build_group_message_preview(*latest_row) if latest_row else None,
     )
 
 
@@ -520,7 +551,7 @@ def _serialize_group_with_members(
     current_user_id: int,
     members: list[tuple[GroupChatMember, User]],
     presence_lookup: Optional[dict[int, dict]] = None,
-    latest_message_sender_id: Optional[int] = None,
+    latest_message: Optional[dict] = None,
 ) -> dict:
     payload_members = []
     my_role = "member"
@@ -546,7 +577,7 @@ def _serialize_group_with_members(
         "createdBy": group.created_by,
         "createdAt": group.created_at.isoformat() if group.created_at else None,
         "lastMessageAt": group.last_message_at.isoformat() if group.last_message_at else None,
-        "lastMessageSenderId": latest_message_sender_id,
+        **(latest_message or _build_group_message_preview(None, None)),
         "myRole": my_role,
         "members": payload_members,
         "memberCount": len(payload_members),
@@ -588,11 +619,12 @@ def _serialize_groups(
         .group_by(GroupChatMessage.group_id)
         .subquery()
     )
-    latest_sender_by_group = {
-        row.group_id: row.sender_id
-        for row in (
-            db.query(GroupChatMessage.group_id, GroupChatMessage.sender_id)
+    latest_by_group = {
+        message.group_id: _build_group_message_preview(message, sender_name)
+        for message, sender_name in (
+            db.query(GroupChatMessage, User.name)
             .join(latest_message_ids, GroupChatMessage.id == latest_message_ids.c.message_id)
+            .join(User, User.id == GroupChatMessage.sender_id)
             .all()
         )
     }
@@ -603,7 +635,7 @@ def _serialize_groups(
             current_user_id,
             members_by_group.get(group.id, []),
             presence_lookup=presence_lookup,
-            latest_message_sender_id=latest_sender_by_group.get(group.id),
+            latest_message=latest_by_group.get(group.id),
         )
         for group in groups
     ]
@@ -710,14 +742,16 @@ def get_group_unread_counts(
         for row in rows
         if int(row.unread_count or 0) > 0
     ]
-    total_unread_messages = sum(item["unreadCount"] for item in groups)
+    muted_group_ids = muted_thread_ids(db, current_user.id, "group")
+    audible_groups = [item for item in groups if item["groupId"] not in muted_group_ids]
     return {
         "success": True,
         "data": {
-            "groups": groups,
+            "groups": audible_groups,
             "countsByGroupId": {str(item["groupId"]): item["unreadCount"] for item in groups},
-            "totalUnreadMessages": total_unread_messages,
-            "totalUnreadThreads": len(groups),
+            "mutedGroupIds": sorted(muted_group_ids),
+            "totalUnreadMessages": sum(item["unreadCount"] for item in audible_groups),
+            "totalUnreadThreads": len(audible_groups),
         },
     }
 
@@ -899,8 +933,22 @@ def list_group_messages(
     receipt_lookup = _build_group_receipt_lookup(db, group.id, messages, current_user.id)
     reaction_lookup = _build_reaction_lookup(db, "group", [msg.id for msg in messages], current_user.id)
     reply_lookup = _build_group_reply_lookup(db, messages)
+    pinned_rows = (
+        db.query(GroupChatMessage, User)
+        .join(User, User.id == GroupChatMessage.sender_id)
+        .filter(
+            GroupChatMessage.group_id == group.id,
+            GroupChatMessage.pinned_at.isnot(None),
+            GroupChatMessage.deleted_at.is_(None),
+        )
+        .order_by(GroupChatMessage.pinned_at.desc())
+        .limit(PINNED_MESSAGES_LIMIT)
+        .all()
+    )
+    pinner_lookup = build_pinner_lookup(db, messages + [msg for msg, _sender in pinned_rows])
     return {
         "success": True,
+        "pinned": [serialize_pinned_message(msg, sender.name, pinner_lookup) for msg, sender in pinned_rows],
         "pagination": {
             "limit": limit,
             "hasMore": has_more,
@@ -921,6 +969,7 @@ def list_group_messages(
                 "editedAt": msg.edited_at.isoformat() if msg.edited_at else None,
                 "deletedAt": msg.deleted_at.isoformat() if msg.deleted_at else None,
                 "receipt": receipt_lookup.get(msg.id),
+                **serialize_pin_fields(msg, pinner_lookup),
                 **({"reactions": [], "myReaction": None} if msg.deleted_at else reaction_lookup.get(msg.id, {"reactions": [], "myReaction": None})),
             }
             for msg, sender in rows
@@ -1301,6 +1350,8 @@ def delete_group_message(
         message.forward_metadata_json = None
         message.deleted_at = now
         message.edited_at = None
+        message.pinned_at = None
+        message.pinned_by = None
         db.query(ChatMessageReaction).filter(
             ChatMessageReaction.message_scope == "group",
             ChatMessageReaction.message_id == message.id,
@@ -1434,7 +1485,11 @@ def send_group_message(
             "createdAt": msg.created_at.isoformat() if msg.created_at else None,
         },
     }
+    muted_member_ids = users_muting_thread(db, "group", group.id, member_ids)
+
     def _message_payload_for_member(member_id: int) -> dict:
+        if member_id in muted_member_ids and member_id not in mentioned_user_ids:
+            return mark_payload_muted(ws_payload)
         if member_id in mentioned_user_ids:
             return {
                 **ws_payload,
@@ -1467,3 +1522,81 @@ def send_group_message(
             "deletedAt": msg.deleted_at.isoformat() if msg.deleted_at else None,
         },
     }
+
+
+def _group_member_ids(db: Session, group_id: int) -> list[int]:
+    return [
+        row.user_id
+        for row in db.query(GroupChatMember.user_id).filter(
+            GroupChatMember.group_id == group_id,
+            GroupChatMember.is_active == True,
+        ).all()
+    ]
+
+
+def _set_group_message_pin(db: Session, group_id: int, message_id: int, current_user: User, pinned: bool) -> dict:
+    group, _ = _ensure_group_access(db, group_id, current_user.id)
+    message = (
+        db.query(GroupChatMessage)
+        .filter(GroupChatMessage.id == message_id, GroupChatMessage.group_id == group.id)
+        .first()
+    )
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message.deleted_at:
+        raise HTTPException(status_code=400, detail="Deleted messages cannot be pinned")
+
+    if pinned:
+        message.pinned_at = _utcnow()
+        message.pinned_by = current_user.id
+    else:
+        message.pinned_at = None
+        message.pinned_by = None
+    db.commit()
+    db.refresh(message)
+
+    payload = pin_event_payload(
+        scope="group",
+        actor=current_user,
+        message_id=message.id,
+        pinned=pinned,
+        group_id=group.id,
+        thread_label=group.name,
+    )
+    _notify_group_members(_group_member_ids(db, group.id), current_user.id, lambda _member_id: payload)
+
+    sender_name = db.query(User.name).filter(User.id == message.sender_id).scalar() or "Unknown"
+    pinner_lookup = build_pinner_lookup(db, [message])
+    return {"success": True, "data": serialize_pinned_message(message, sender_name, pinner_lookup)}
+
+
+@router.post("/{group_id}/messages/{message_id}/pin")
+def pin_group_message(
+    group_id: int,
+    message_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    return _set_group_message_pin(db, group_id, message_id, current_user, pinned=True)
+
+
+@router.delete("/{group_id}/messages/{message_id}/pin")
+def unpin_group_message(
+    group_id: int,
+    message_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    return _set_group_message_pin(db, group_id, message_id, current_user, pinned=False)
+
+
+@router.put("/{group_id}/mute")
+def set_group_mute(
+    group_id: int,
+    payload: MutePayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    group, _ = _ensure_group_access(db, group_id, current_user.id)
+    muted = set_thread_muted(db, current_user.id, "group", group.id, payload.muted)
+    return {"success": True, "data": {"groupId": group.id, "muted": muted}}

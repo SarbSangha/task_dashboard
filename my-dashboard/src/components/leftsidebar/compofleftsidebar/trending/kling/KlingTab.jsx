@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { authAPI, generationProjectsAPI, generationRecordsAPI } from '../../../../../services/api';
+import { generationProjectsAPI, generationRecordsAPI } from '../../../../../services/api';
 import { usePermissions } from '../../../../../hooks/usePermissions';
 import { useAuth } from '../../../../../context/AuthContext';
 import KlingFilterBar from './KlingFilterBar';
@@ -13,47 +13,14 @@ import KlingUnclaimedExplorer from './KlingUnclaimedExplorer';
 import KlingAnalyticsPanel from './KlingAnalyticsPanel';
 import KlingCardSkeletonGrid from './KlingCardSkeletonGrid';
 import { parseKlingQuery } from './klingSearchDsl';
+import { KLING_DEFAULT_FILTERS, isFilterInvalid, loadKlingFilterOptions, toKlingQueryParams } from './klingFilters';
 import './KlingTab.css';
-import { toIndiaISODate } from '../../../../../utils/dateTime';
 
-const ALL_DEPARTMENTS = 'all_departments';
-const ALL_MODELS = 'all_models';
-const ALL_RESOLUTIONS = 'all_resolutions';
-const ALL_OWNERSHIP = 'all_ownership';
-const ALL_USERS = 'all_users';
 const PAGE_SIZE = 60;
 const REQUEST_TIMEOUT_MS = 60000;
+const FILTER_DEBOUNCE_MS = 250;
 
-const DATE_PRESETS = [
-  { value: 'all', label: 'All Time' },
-  { value: 'today', label: 'Today' },
-  { value: 'yesterday', label: 'Yesterday' },
-  { value: 'week', label: 'This Week' },
-  { value: 'month', label: 'This Month' },
-];
-
-// India calendar days, matching how the backend reads date_from/date_to.
-// (These used toISOString(), i.e. UTC days - so "Today" in India asked for
-// yesterday and every preset was shifted a day back.)
-function resolveDateRange(preset) {
-  if (preset === 'all') return { dateFrom: undefined, dateTo: undefined };
-  const [year, month, day] = toIndiaISODate().split('-').map(Number);
-  const dayOffset = (offset) => new Date(Date.UTC(year, month - 1, day + offset)).toISOString().slice(0, 10);
-  const today = dayOffset(0);
-
-  if (preset === 'today') return { dateFrom: today, dateTo: today };
-  if (preset === 'yesterday') return { dateFrom: dayOffset(-1), dateTo: dayOffset(-1) };
-  if (preset === 'week') {
-    const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-    return { dateFrom: dayOffset(-weekday), dateTo: today };
-  }
-  if (preset === 'month') {
-    return { dateFrom: `${year}-${String(month).padStart(2, '0')}-01`, dateTo: today };
-  }
-  return { dateFrom: undefined, dateTo: undefined };
-}
-
-export default function KlingTab({ isActive, searchInput = '' }) {
+export default function KlingTab({ isActive, searchInput = '', onFiltersChange }) {
   const { can } = usePermissions();
   const { user } = useAuth();
   const currentUserId = user?.id ?? null;
@@ -62,22 +29,14 @@ export default function KlingTab({ isActive, searchInput = '' }) {
 
   const [subView, setSubView] = useState('all');
   const [search, setSearch] = useState('');
-  const [departmentFilter, setDepartmentFilter] = useState(ALL_DEPARTMENTS);
-  const [departmentOptions, setDepartmentOptions] = useState([ALL_DEPARTMENTS]);
-  const [modelFilter, setModelFilter] = useState(ALL_MODELS);
-  const [modelOptions, setModelOptions] = useState([]);
-  const [resolutionFilter, setResolutionFilter] = useState(ALL_RESOLUTIONS);
-  const [resolutionOptions, setResolutionOptions] = useState([]);
-  const [ownershipFilter, setOwnershipFilter] = useState(ALL_OWNERSHIP);
-  const [userFilter, setUserFilter] = useState(ALL_USERS);
-  const [userOptions, setUserOptions] = useState([]);
-  const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [datePreset, setDatePreset] = useState('all');
+  const [filters, setFilters] = useState(KLING_DEFAULT_FILTERS);
+  // What the grid actually queries: `filters` after a short pause, so typing
+  // a credit range or date does not fire a request per keystroke.
+  const [appliedFilters, setAppliedFilters] = useState(KLING_DEFAULT_FILTERS);
+  const [filterOptions, setFilterOptions] = useState({});
   const [sortBy, setSortBy] = useState('latest');
   const [collectionFilter, setCollectionFilter] = useState(null);
-  const [clientFilter, setClientFilter] = useState(null);
-  const [tagFilter, setTagFilter] = useState('');
-  const [tagOptions, setTagOptions] = useState([]);
+  const [summary, setSummary] = useState(null);
 
   const [generations, setGenerations] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -95,17 +54,35 @@ export default function KlingTab({ isActive, searchInput = '' }) {
   const favoritePendingIdsRef = useRef(favoritePendingIds);
   favoritePendingIdsRef.current = favoritePendingIds;
 
+  const updateFilters = useCallback((patch) => setFilters((prev) => ({ ...prev, ...patch })), []);
+  const resetFilters = useCallback(() => {
+    setFilters(KLING_DEFAULT_FILTERS);
+    setCollectionFilter(null);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAppliedFilters(filters), FILTER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [filters]);
+
+  // The panel's Excel export starts from whatever the tab is showing.
+  useEffect(() => {
+    onFiltersChange?.({ filters, q: search, collectionId: collectionFilter?.id ?? null, collectionName: collectionFilter?.name ?? null });
+  }, [filters, search, collectionFilter, onFiltersChange]);
+
   useEffect(() => {
     if (!isActive) return undefined;
     const timer = window.setTimeout(() => {
       const parsed = parseKlingQuery(searchInput);
-      if (parsed.department) setDepartmentFilter(parsed.department);
-      if (parsed.model) setModelFilter(parsed.model);
-      if (parsed.resolution) setResolutionFilter(parsed.resolution);
-      if (parsed.ownershipStatus) setOwnershipFilter(parsed.ownershipStatus);
-      if (parsed.tag) setTagFilter(parsed.tag);
-      if (parsed.isFavorite) setFavoritesOnly(true);
-      if (parsed.datePreset) setDatePreset(parsed.datePreset);
+      const patch = {};
+      if (parsed.department) patch.department = parsed.department;
+      if (parsed.model) patch.model = parsed.model;
+      if (parsed.resolution) patch.resolution = parsed.resolution;
+      if (parsed.ownershipStatus) patch.ownership = parsed.ownershipStatus;
+      if (parsed.tag) patch.tag = parsed.tag;
+      if (parsed.isFavorite) patch.favoritesOnly = true;
+      if (parsed.datePreset) patch.datePreset = parsed.datePreset;
+      if (Object.keys(patch).length) setFilters((prev) => ({ ...prev, ...patch }));
       setSearch(parsed.freeText);
     }, 250);
     return () => window.clearTimeout(timer);
@@ -114,35 +91,9 @@ export default function KlingTab({ isActive, searchInput = '' }) {
   useEffect(() => {
     if (!isActive) return undefined;
     let cancelled = false;
-    (async () => {
-      try {
-        const response = await authAPI.getDepartments();
-        const departments = Array.isArray(response?.departments) ? response.departments : [];
-        if (!cancelled) setDepartmentOptions([ALL_DEPARTMENTS, ...departments]);
-      } catch (error) {
-        console.warn('Failed to load department options for Kling tab:', error);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isActive]);
-
-  useEffect(() => {
-    if (!isActive) return undefined;
-    let cancelled = false;
-    (async () => {
-      try {
-        const response = await generationRecordsAPI.getFilters();
-        if (cancelled) return;
-        setModelOptions(Array.isArray(response?.models) ? response.models : []);
-        setResolutionOptions(Array.isArray(response?.resolutions) ? response.resolutions : []);
-        setTagOptions(Array.isArray(response?.tags) ? response.tags : []);
-        setUserOptions(Array.isArray(response?.owners) ? response.owners : []);
-      } catch (error) {
-        console.warn('Failed to load Kling filter options:', error);
-      }
-    })();
+    loadKlingFilterOptions()
+      .then((response) => { if (!cancelled) setFilterOptions(response || {}); })
+      .catch((error) => console.warn('Failed to load Kling filter options:', error));
     return () => {
       cancelled = true;
     };
@@ -164,45 +115,21 @@ export default function KlingTab({ isActive, searchInput = '' }) {
     };
   }, [isActive]);
 
+  const filtersInvalid = Boolean(isFilterInvalid(appliedFilters));
+
   const buildSearchParams = useCallback(
-    (offset) => {
-      const { dateFrom, dateTo } = resolveDateRange(datePreset);
-      return {
-        q: search || undefined,
-        department: departmentFilter === ALL_DEPARTMENTS ? undefined : departmentFilter,
-        model: modelFilter === ALL_MODELS ? undefined : modelFilter,
-        resolution: resolutionFilter === ALL_RESOLUTIONS ? undefined : resolutionFilter,
-        ownership_status: ownershipFilter === ALL_OWNERSHIP ? undefined : ownershipFilter,
-        owner_user_id: userFilter === ALL_USERS ? undefined : userFilter,
-        is_favorite: favoritesOnly ? true : undefined,
-        tag: tagFilter || undefined,
-        collection_id: collectionFilter?.id ?? undefined,
-        client_id: clientFilter?.id ?? undefined,
-        date_from: dateFrom,
-        date_to: dateTo,
-        sort: sortBy,
-        limit: PAGE_SIZE,
-        offset,
-      };
-    },
-    [
-      search,
-      departmentFilter,
-      modelFilter,
-      resolutionFilter,
-      ownershipFilter,
-      userFilter,
-      favoritesOnly,
-      tagFilter,
-      collectionFilter,
-      clientFilter,
-      datePreset,
-      sortBy,
-    ]
+    (offset) => toKlingQueryParams(appliedFilters, {
+      q: search || undefined,
+      collection_id: collectionFilter?.id ?? undefined,
+      sort: sortBy,
+      limit: PAGE_SIZE,
+      offset,
+    }),
+    [appliedFilters, search, collectionFilter, sortBy]
   );
 
   useEffect(() => {
-    if (!isActive || subView !== 'all') return undefined;
+    if (!isActive || subView !== 'all' || filtersInvalid) return undefined;
     let cancelled = false;
     setLoading(true);
     setLoadError('');
@@ -212,6 +139,7 @@ export default function KlingTab({ isActive, searchInput = '' }) {
         if (cancelled) return;
         const rows = Array.isArray(response?.data) ? response.data : [];
         setGenerations(rows);
+        setSummary(response?.summary || null);
         setHasMore(Boolean(response?.pagination?.hasMore));
         setNextOffset(Number.isFinite(response?.pagination?.nextOffset) ? response.pagination.nextOffset : 0);
       } catch (error) {
@@ -226,7 +154,7 @@ export default function KlingTab({ isActive, searchInput = '' }) {
     return () => {
       cancelled = true;
     };
-  }, [isActive, subView, buildSearchParams]);
+  }, [isActive, subView, buildSearchParams, filtersInvalid]);
 
   const loadMoreGenerations = useCallback(async () => {
     if (loadMoreInFlightRef.current || loadingMore || loading || !hasMore) return;
@@ -329,17 +257,15 @@ export default function KlingTab({ isActive, searchInput = '' }) {
 
   const handleSelectCollection = useCallback((collection) => {
     setCollectionFilter({ id: collection.id, name: collection.name });
-    setClientFilter(null);
+    setFilters((prev) => ({ ...prev, clientId: '' }));
     setSubView('all');
   }, []);
 
   const handleSelectClient = useCallback((client) => {
-    setClientFilter({ id: client.id, name: client.name });
+    setFilters((prev) => ({ ...prev, clientId: String(client.id) }));
     setCollectionFilter(null);
     setSubView('all');
   }, []);
-
-  const clearClientFilter = useCallback(() => setClientFilter(null), []);
 
   const clearCollectionFilter = useCallback(() => setCollectionFilter(null), []);
 
@@ -416,48 +342,29 @@ export default function KlingTab({ isActive, searchInput = '' }) {
       {subView === 'all' && (
         <>
           <KlingFilterBar
-            departmentFilter={departmentFilter}
-            departmentOptions={departmentOptions}
-            onDepartmentChange={setDepartmentFilter}
-            modelFilter={modelFilter}
-            modelOptions={modelOptions}
-            onModelChange={setModelFilter}
-            resolutionFilter={resolutionFilter}
-            resolutionOptions={resolutionOptions}
-            onResolutionChange={setResolutionFilter}
-            ownershipFilter={ownershipFilter}
-            onOwnershipChange={setOwnershipFilter}
-            userFilter={userFilter}
-            userOptions={userOptions}
-            onUserChange={setUserFilter}
-            favoritesOnly={favoritesOnly}
-            onToggleFavoritesOnly={() => setFavoritesOnly((prev) => !prev)}
-            tagFilter={tagFilter}
-            tagOptions={tagOptions}
-            onTagFilterChange={setTagFilter}
-            datePreset={datePreset}
-            datePresets={DATE_PRESETS}
-            onDatePresetChange={setDatePreset}
+            filters={filters}
+            onChange={updateFilters}
+            onReset={resetFilters}
+            options={filterOptions}
             sortBy={sortBy}
             onSortChange={setSortBy}
+            summary={summary}
+            loading={loading}
             collectionFilter={collectionFilter}
             onClearCollectionFilter={clearCollectionFilter}
-            clientFilter={clientFilter}
-            onClearClientFilter={clearClientFilter}
-            allDepartmentsValue={ALL_DEPARTMENTS}
-            allModelsValue={ALL_MODELS}
-            allResolutionsValue={ALL_RESOLUTIONS}
-            allOwnershipValue={ALL_OWNERSHIP}
-            allUsersValue={ALL_USERS}
           />
 
           <div className="kling-results-area">
             {loadError && <div className="kling-state kling-state-error">{loadError}</div>}
-            {!loadError && loading && <KlingCardSkeletonGrid count={12} />}
-            {!loadError && !loading && generations.length === 0 && (
-              <div className="kling-state">No Kling generations match these filters.</div>
+            {!loadError && filtersInvalid && <div className="kling-state">{isFilterInvalid(appliedFilters)}</div>}
+            {!loadError && !filtersInvalid && loading && <KlingCardSkeletonGrid count={12} />}
+            {!loadError && !filtersInvalid && !loading && generations.length === 0 && (
+              <div className="kling-state">
+                No Kling generations match these filters.
+                <button type="button" className="kfb-clear" onClick={resetFilters}>Clear all filters</button>
+              </div>
             )}
-            {!loadError && !loading && generations.length > 0 && (
+            {!loadError && !filtersInvalid && !loading && generations.length > 0 && (
               <KlingGenerationGrid
                 generations={generations}
                 hasMore={hasMore}

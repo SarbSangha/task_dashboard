@@ -1751,7 +1751,20 @@ function readHeygenLabeledValue(labelRe, { withinSelector, maxDepth = 4 } = {}) 
   return '';
 }
 
+// HeyGen's presenter / Single scene creator (app.heygen.com/home/photo-to-
+// video, confirmed in Chrome 2026-11-01) tags its controls with stable
+// data-atlas-id/data-testid hooks - read those first; the older label-based
+// guesses below stay as the fallback for the multi-scene AI Studio editor.
+// The label guesses alone picked up the sidebar ("Home Brand Apps Projects")
+// as the avatar name on this screen.
+function heygenAtlasText(atlasId) {
+  return heygenElementText(document.querySelector(`[data-atlas-id="${atlasId}"]`)) || '';
+}
+
 function readHeygenScriptText() {
+  const presenter = document.querySelector('[data-testid="presenter-script-editor"], [data-atlas-id="avatar-shots-prompt-input"]');
+  const presenterText = presenter ? `${presenter.value ?? ''}`.trim() || heygenElementText(presenter) : '';
+  if (presenterText) return presenterText;
   // The Script panel (left sidebar in the reference screenshot) is either a
   // contenteditable region or a textarea - try both, preferring one whose
   // nearby label/heading actually says "Script" over a blind first-match.
@@ -1771,6 +1784,13 @@ function readHeygenScriptText() {
 }
 
 function readHeygenAvatarInfo() {
+  const tileImg = document.querySelector('[data-testid="presenter-avatar-tile"] img, [data-atlas-id="avatar-shots-avatar-picker"] img');
+  if (tileImg) {
+    // src: https://dynamic.heygen.ai/.../talking_photo/<avatar id>/<look id>...
+    const match = `${tileImg.getAttribute('src') || ''}`.match(/talking_photo\/([0-9a-f]{16,})/i);
+    const alt = `${tileImg.getAttribute('alt') || ''}`.trim();
+    return { name: alt && alt.toLowerCase() !== 'ai' ? alt : null, id: match ? match[1] : null, version: null, type: match ? 'photar' : null };
+  }
   const panel = document.querySelector('[class*="avatar" i][class*="voice" i]') || document;
   const name = readHeygenLabeledValue(/^avatar$/i, { withinSelector: undefined })
     || heygenElementText(panel.querySelector?.('[class*="avatar" i] img[alt]'))
@@ -1780,7 +1800,7 @@ function readHeygenAvatarInfo() {
 }
 
 function readHeygenVoiceInfo() {
-  const raw = readHeygenLabeledValue(/^voice$/i);
+  const raw = heygenAtlasText('avatar-shots-presenter-voice-combo') || readHeygenLabeledValue(/^voice$/i);
   if (!raw) return { name: null, id: null, language: null, gender: null, style: null };
   // Reference screenshot shape: "Lively Liam - Serious" (voice name, then a
   // " - " separated style/emotion tag with a trailing emoji sometimes).
@@ -1790,7 +1810,7 @@ function readHeygenVoiceInfo() {
 }
 
 function readHeygenMotionEngine() {
-  return readHeygenLabeledValue(/^motion engine$/i) || null;
+  return heygenAtlasText('avatar-shots-presenter-engine-menu') || readHeygenLabeledValue(/^motion engine$/i) || null;
 }
 
 function readHeygenLayout() {
@@ -2044,7 +2064,7 @@ function buildHeygenSubmitSnapshot(button, kind) {
       avatarPosition: null,
     },
     videoConfig: {
-      resolution: null,
+      resolution: heygenAtlasText('avatar-shots-resolution') || null,
       aspectRatio: null,
       fps: null,
       duration: null,
@@ -2144,8 +2164,14 @@ function armHeygenGeneration(kind, button) {
 
 // ---- Reporting ----
 
+// Must differ whenever the row gains its output. HeyGen's render-status poll
+// ends {id, status: "completed"} with no URL, and the later listing row for
+// the same video is also "completed" - with a bare-status token both got the
+// same client_event_id and the server dropped the one carrying video_url as
+// a duplicate (video 4c2abb67…, 2026-11-01).
 function heygenChangeToken(payload) {
-  return payload?.status || payload?.updatedAt || 'unknown';
+  const base = payload?.status || payload?.updatedAt || 'unknown';
+  return heygenRowHasVideoUrl(payload) ? `${base}:output` : base;
 }
 
 async function reportHeygenCaptureEvent({ eventType, isReconciliation, payload, identity, changeToken }) {
@@ -2162,21 +2188,26 @@ async function reportHeygenCaptureEvent({ eventType, isReconciliation, payload, 
   const token = changeToken || heygenChangeToken(payload);
   const clientEventId = `heygen:${primaryId}:${token}`;
 
+  const message = {
+    type: 'HEYGEN_CAPTURE_EVENT',
+    event: {
+      event_type: eventType,
+      client_event_id: clientEventId,
+      video_id: videoId || null,
+      project_id: identity?.projectId ? String(identity.projectId) : null,
+      is_reconciliation: Boolean(isReconciliation),
+      payload,
+      capture_version: 1,
+      linked_task_id: !isReconciliation && heygenActiveGeneration ? heygenActiveGeneration.taskId : null,
+      linked_client_id: !isReconciliation && heygenActiveGeneration ? heygenActiveGeneration.clientId : null,
+    },
+  };
   try {
-    const result = await sendRuntimeMessage({
-      type: 'HEYGEN_CAPTURE_EVENT',
-      event: {
-        event_type: eventType,
-        client_event_id: clientEventId,
-        video_id: videoId || null,
-        project_id: identity?.projectId ? String(identity.projectId) : null,
-        is_reconciliation: Boolean(isReconciliation),
-        payload,
-        capture_version: 1,
-        linked_task_id: !isReconciliation && heygenActiveGeneration ? heygenActiveGeneration.taskId : null,
-        linked_client_id: !isReconciliation && heygenActiveGeneration ? heygenActiveGeneration.clientId : null,
-      },
-    });
+    const result = await sendRuntimeMessage(message);
+    if (!result?.ok && globalThis.rmwCaptureStash?.isInvalidated(result?.error)) {
+      parkHeygenCaptureMessage(message);
+      return;
+    }
     if (result?.ok) {
       console.debug('[RMW HeyGen Capture] reported event', { eventType, primaryId, queued: result.queued });
       // "Queued", not "Saved" - result.ok only confirms the local background
@@ -2188,8 +2219,28 @@ async function reportHeygenCaptureEvent({ eventType, isReconciliation, payload, 
       setHeygenCaptureStatus(`Capture failed: ${result?.error || 'unknown error'}`, { autoHideMs: 8000 });
     }
   } catch (error) {
+    if (globalThis.rmwCaptureStash?.isInvalidated(error)) {
+      parkHeygenCaptureMessage(message);
+      return;
+    }
     console.warn('[RMW HeyGen Capture] unexpected error reporting event', { eventType, error: error?.message || error });
   }
+}
+
+// See content-capture-stash.js: the extension was reloaded/updated under this
+// tab, so nothing can reach it until the page is refreshed. Park the event and
+// say so on screen instead of losing it silently.
+const HEYGEN_CAPTURE_STASH_KEY = 'rmw_heygen_pending_capture';
+
+function parkHeygenCaptureMessage(message) {
+  const waiting = globalThis.rmwCaptureStash.stash(HEYGEN_CAPTURE_STASH_KEY, message);
+  setHeygenCaptureStatus(`RMW capture paused - refresh this page to resume (${waiting} waiting)`);
+}
+
+if (globalThis.rmwCaptureStash) {
+  globalThis.rmwCaptureStash.drain(HEYGEN_CAPTURE_STASH_KEY, sendRuntimeMessage).then((sent) => {
+    if (sent) console.debug('[RMW HeyGen Capture] sent events parked before refresh', { sent });
+  });
 }
 
 // ---- Network-relay: content-heygen-network.js's intercepted rows ----
@@ -2212,11 +2263,26 @@ function heygenRowIdentity(row) {
   };
 }
 
+function heygenRowHasVideoUrl(row) {
+  const output = row?.output || {};
+  return Boolean(row?.videoUrl || row?.video_url || output.videoUrl || output.video_url);
+}
+
 function isHeygenRowSettled(row) {
   const status = `${row?.status || ''}`.toLowerCase();
   if (['completed', 'failed', 'cancelled'].includes(status)) return true;
-  const output = row?.output || {};
-  return Boolean(row?.videoUrl || row?.video_url || output.videoUrl || output.video_url);
+  return heygenRowHasVideoUrl(row);
+}
+
+// Listing rows that never became a video of their own: an editor draft that
+// was never generated, and a Video Agent chat session (its video is listed
+// separately). Mirrors normalization.py's _is_unrendered_listing_row - these
+// were the empty "no preview, no prompt, no credits" cards.
+function isHeygenListingRowUnrendered(row) {
+  const status = `${row?.status || ''}`.toLowerCase();
+  const resourceType = `${row?.resource_type || ''}`.toLowerCase();
+  const itemType = `${row?.item_type || ''}`.toLowerCase();
+  return status === 'draft' || resourceType === 'video_agent_session' || itemType === 'video_agent';
 }
 
 function onHeygenNetworkMessage(event) {
@@ -2257,6 +2323,7 @@ function onHeygenNetworkMessage(event) {
     // alone can't be looked up this way, only a real video_id.
     if (settled && identity.videoId) {
       queueHeygenCreditLedgerLookup(String(identity.videoId));
+      if (!heygenRowHasVideoUrl(row)) awaitHeygenVideoUrl(String(identity.videoId));
     }
 
     setHeygenCaptureStatus(settled ? 'Capturing…' : 'Generation detected — rendering…');
@@ -2335,6 +2402,11 @@ function onHeygenNetworkListingMessage(event) {
     if (isHeygenListingRowLibraryAsset(row)) return;
     const identity = heygenRowIdentity(row);
     if (!(identity.videoId || identity.renderId || identity.jobId || identity.workflowId)) return;
+    if (identity.videoId && heygenRowHasVideoUrl(row)) heygenAwaitingVideoUrl.delete(String(identity.videoId));
+    // A draft of a video we're already tracking still reports (the backend
+    // only refuses to CREATE a card from one); an untracked draft is dropped.
+    const trackedKey = String(identity.videoId || identity.renderId || identity.jobId || identity.workflowId);
+    if (isHeygenListingRowUnrendered(row) && !heygenActiveGeneration?.capturedIdentities.has(trackedKey)) return;
     // Historical/reconciliation rows are exactly the case Sarbjeet reported
     // (2026-08-05): most generations are only ever discovered this way, not
     // through a live-armed click, and the user won't reliably visit HeyGen's
@@ -2394,6 +2466,7 @@ function onHeygenNetworkCreditLedgerMessage(event) {
     if (!videoId) return;
     const creditsUsed = typeof row?.credit === 'number' ? row.credit : row?.display_value;
     if (typeof creditsUsed !== 'number') return;
+    heygenCreditLedgerResolved.add(videoId);
     reportHeygenCaptureEvent({
       eventType: 'credit_ledger_row',
       isReconciliation: true,
@@ -2430,6 +2503,27 @@ const HEYGEN_CREDIT_LEDGER_BATCH_MAX_SIZE = 40;
 const heygenCreditLedgerRequested = new Set();
 const heygenCreditLedgerQueue = new Set();
 let heygenCreditLedgerTimer = null;
+// HeyGen can post a video's charge a while after the render reports
+// "completed", so the first lookup often comes back with no row for it.
+// That used to be final for the page session (the id stayed in
+// heygenCreditLedgerRequested) and the card kept "no credits". Ids with no
+// ledger row yet are asked again on this backoff; a row seen for an id (from
+// any lookup, ours or the page's) stops its retries.
+const HEYGEN_CREDIT_LEDGER_RETRY_DELAYS_MS = [30 * 1000, 2 * 60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000];
+const heygenCreditLedgerResolved = new Set();
+const heygenCreditLedgerAttempts = new Map();
+
+function scheduleHeygenCreditLedgerRetries(actionIds) {
+  actionIds.forEach((videoId) => {
+    const attempt = heygenCreditLedgerAttempts.get(videoId) || 0;
+    const delay = HEYGEN_CREDIT_LEDGER_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) return;
+    heygenCreditLedgerAttempts.set(videoId, attempt + 1);
+    window.setTimeout(() => {
+      if (!heygenCreditLedgerResolved.has(videoId)) enqueueHeygenCreditLedgerId(videoId);
+    }, delay);
+  });
+}
 
 function flushHeygenCreditLedgerQueue() {
   heygenCreditLedgerTimer = null;
@@ -2443,11 +2537,16 @@ function flushHeygenCreditLedgerQueue() {
       payload: { actionIds },
     }, location.origin);
   } catch {}
+  scheduleHeygenCreditLedgerRetries(actionIds);
 }
 
 function queueHeygenCreditLedgerLookup(videoId) {
   if (!videoId || heygenCreditLedgerRequested.has(videoId)) return;
   heygenCreditLedgerRequested.add(videoId);
+  enqueueHeygenCreditLedgerId(videoId);
+}
+
+function enqueueHeygenCreditLedgerId(videoId) {
   heygenCreditLedgerQueue.add(videoId);
   if (heygenCreditLedgerQueue.size >= HEYGEN_CREDIT_LEDGER_BATCH_MAX_SIZE) {
     if (heygenCreditLedgerTimer) {
@@ -2458,6 +2557,45 @@ function queueHeygenCreditLedgerLookup(videoId) {
   }
   if (heygenCreditLedgerTimer) return;
   heygenCreditLedgerTimer = window.setTimeout(flushHeygenCreditLedgerQueue, HEYGEN_CREDIT_LEDGER_BATCH_DEBOUNCE_MS);
+}
+
+// ---- Listing refresh for a finished render with no video URL ----
+//
+// HeyGen's render-status poll ends with {id, status: "completed"} and no
+// video_url; only the project listing carries the file. When a video this tab
+// is tracking settles without one, content-heygen-network.js is asked to
+// replay the page's own last listing request a few times until the row comes
+// back with its URL (onHeygenNetworkListingMessage clears the wait). Without
+// this the card kept the script and credits but never got a video
+// (generation 190, 2026-09-07).
+const HEYGEN_VIDEO_URL_REFRESH_DELAYS_MS = [5 * 1000, 20 * 1000, 60 * 1000, 3 * 60 * 1000];
+const heygenAwaitingVideoUrl = new Map(); // videoId -> refresh attempts made
+
+function requestHeygenListingRefresh() {
+  try {
+    window.postMessage({ source: 'rmw-heygen-network-telemetry', type: 'HEYGEN_REQUEST_LISTING_REFRESH' }, location.origin);
+  } catch {}
+}
+
+function awaitHeygenVideoUrl(videoId) {
+  if (!videoId || heygenAwaitingVideoUrl.has(videoId)) return;
+  heygenAwaitingVideoUrl.set(videoId, 0);
+  const step = () => {
+    const attempt = heygenAwaitingVideoUrl.get(videoId);
+    if (attempt === undefined) return; // URL arrived
+    const delay = HEYGEN_VIDEO_URL_REFRESH_DELAYS_MS[attempt];
+    if (delay === undefined) {
+      heygenAwaitingVideoUrl.delete(videoId);
+      return;
+    }
+    heygenAwaitingVideoUrl.set(videoId, attempt + 1);
+    window.setTimeout(() => {
+      if (!heygenAwaitingVideoUrl.has(videoId)) return;
+      requestHeygenListingRefresh();
+      step();
+    }, delay);
+  };
+  step();
 }
 
 // ---- DOM fallback: poll for a rendered output element appearing on the
@@ -2472,16 +2610,23 @@ const HEYGEN_ASSET_SCAN_MAX_MS = 10 * 60 * 1000;
 let heygenAssetScanTimer = null;
 let heygenAssetScanStartedAt = 0;
 
-function collectHeygenVisibleOutputUrl() {
-  const video = Array.from(document.querySelectorAll('video[src], video source[src]'))
-    .find((el) => isVisible(el.closest('video') || el));
-  if (video) {
-    const src = video.tagName === 'VIDEO' ? video.currentSrc || video.src : video.src;
-    if (src && !src.startsWith('blob:')) return src;
-  }
-  const downloadLink = Array.from(document.querySelectorAll('a[href*=".mp4" i], a[download]'))
-    .find((el) => isVisible(el));
-  return downloadLink?.href || null;
+// Only a file named after a video id this click already owns counts. The
+// old "first visible <video>" rule grabbed whatever was on screen - on the
+// Single scene page that is the previous video in Recent Creations - and
+// stamped it as the new render's output 4 seconds after the click, marked
+// "completed" (generation 225 got generation 190's file, 2026-11-01).
+// HeyGen serves renders as .../<video_id>.mp4, so the id is a safe anchor.
+function collectHeygenVisibleOutputUrl(ownedIds) {
+  if (!ownedIds.length) return null;
+  const sources = [
+    ...Array.from(document.querySelectorAll('video[src], video source[src]'))
+      .filter((el) => isVisible(el.closest('video') || el))
+      .map((el) => (el.tagName === 'VIDEO' ? el.currentSrc || el.src : el.src)),
+    ...Array.from(document.querySelectorAll('a[href*=".mp4" i], a[download]'))
+      .filter((el) => isVisible(el))
+      .map((el) => el.href),
+  ];
+  return sources.find((src) => src && !src.startsWith('blob:') && ownedIds.some((id) => src.includes(id))) || null;
 }
 
 function stopHeygenAssetDetection() {
@@ -2496,7 +2641,8 @@ function startHeygenAssetDetection() {
       stopHeygenAssetDetection();
       return;
     }
-    const outputUrl = collectHeygenVisibleOutputUrl();
+    const ownedIds = Array.from(heygenActiveGeneration.capturedIdentities.keys()).filter((id) => id.length >= 16);
+    const outputUrl = collectHeygenVisibleOutputUrl(ownedIds);
     if (!outputUrl) return;
     stopHeygenAssetDetection();
     setHeygenCaptureStatus('Capturing…');

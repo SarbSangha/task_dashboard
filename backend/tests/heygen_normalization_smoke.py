@@ -524,6 +524,85 @@ def test_library_asset_listing_row_is_not_normalized_as_a_generation() -> None:
     print("ok  a library asset (uploaded audio) listing row is never normalized as a generation")
 
 
+def test_unrendered_listing_rows_never_become_cards() -> None:
+    """Regression for the empty "no preview, no prompt, no credits" cards
+    (2026-11-01 audit): an editor draft never generated and a Video Agent chat
+    session are listing rows, not videos. A draft row for a video already
+    tracked from a real click still merges."""
+    with SessionLocal() as db:
+        now_ts = int(datetime.utcnow().timestamp())
+        draft = normalize_capture_event(db, _capture(db, {
+            "item_id": "draft000000000000000000000000001", "item_type": "heygen_video",
+            "status": "draft", "created_ts": now_ts,
+        }))
+        session = normalize_capture_event(db, _capture(db, {
+            "item_id": "agent000000000000000000000000001", "item_type": "video_agent",
+            "resource_type": "video_agent_session", "status": "completed", "created_ts": now_ts,
+        }))
+        _assert(draft is None and session is None, f"draft/session must not become cards, got {draft!r} {session!r}")
+
+        tracked = normalize_capture_event(db, _capture(db, {"videoId": "tracked00000000000000000000000001", "scriptText": "hi", "status": "processing"}))
+        again = normalize_capture_event(db, _capture(db, {"item_id": "tracked00000000000000000000000001", "status": "draft", "created_ts": now_ts}))
+        _assert(tracked is not None and again is not None and again.id == tracked.id, "a tracked video must still merge a later draft row")
+        db.rollback()
+    print("ok  drafts and Video Agent sessions never become cards on their own")
+
+
+def test_listing_speech_script_is_the_prompt() -> None:
+    """Photo Avatar listing rows have avatar_iv_meta.prompt null; the spoken
+    script sits in extra_speech_meta.script (inside avatar_iv_meta, or directly
+    under metadata)."""
+    nested = _extract_fields({"item_id": "x", "metadata": {"avatar_iv_meta": {"prompt": None, "extra_speech_meta": {"script": "hello from avatar"}}}})
+    top = _extract_fields({"item_id": "y", "metadata": {"extra_speech_meta": {"script": "hello from metadata"}}})
+    motion = _extract_fields({"item_id": "z", "metadata": {"avatar_iv_meta": {"prompt": "wave", "extra_speech_meta": {"script": "spoken"}}}})
+    _assert(nested["script_text"] == "hello from avatar", f"nested script not read: {nested['script_text']!r}")
+    _assert(top["script_text"] == "hello from metadata", f"metadata script not read: {top['script_text']!r}")
+    _assert(motion["script_text"] == "wave", "an explicit prompt still wins")
+    print("ok  the spoken script is read as the prompt when no prompt is set")
+
+
+def test_credit_row_stored_before_its_generation_is_applied_later() -> None:
+    """Regression for the missing-credits race (2026-11-01 audit): a ledger
+    batch normalized before the listing batch committed found no generation
+    and was skipped for good. The generation must pick the stored credits up
+    when it is created."""
+    with SessionLocal() as db:
+        video_id = "credrace000000000000000000000001"
+        ledger = _capture(db, {"videoId": video_id, "credits": {"used": 4}}, fresh=False)
+        ledger.event_type = "credit_ledger_row"
+        ledger.provider_video_id = video_id
+        ledger.ownership_confidence = "reconciliation"
+        db.flush()
+        _assert(normalize_capture_event(db, ledger) is None, "a ledger row with no generation yet is skipped")
+
+        gen = normalize_capture_event(db, _capture(db, {"videoId": video_id, "scriptText": "hi", "status": "completed"}))
+        _assert(gen is not None and gen.credits_used == 4, f"expected the stored 4 credits, got {gen and gen.credits_used}")
+        record = db.query(GenerationRecord).filter(GenerationRecord.id == gen.generation_record_id).first()
+        _assert(record.credits_burned == 4, f"GenerationRecord must carry the credits too, got {record.credits_burned}")
+        db.rollback()
+    print("ok  credits stored before their generation existed are applied when it is created")
+
+
+def test_another_videos_file_is_never_attached() -> None:
+    """Regression for generation 225 (2026-11-01): the DOM fallback attached
+    the previous video's .mp4 to a new render. A file named after a different
+    video id is ignored; the render's own file is accepted."""
+    with SessionLocal() as db:
+        own, other = "a" * 32, "b" * 32
+        intent = "hgen_test_foreign_file"
+        gen = normalize_capture_event(db, _capture(db, {"scriptText": "hi", "status": "submitted", "externalEventId": intent}))
+        normalize_capture_event(db, _capture(db, {"video_id": own, "externalEventId": intent}))
+        normalize_capture_event(db, _capture(db, {
+            "scriptText": "hi", "status": "completed", "externalEventId": intent,
+            "output": {"videoUrl": f"https://files2.heygen.ai/aws_pacific/avatar_tmp/x/{other}.mp4"},
+        }))
+        _assert(gen.video_url is None, f"another video's file must be ignored, got {gen.video_url!r}")
+        normalize_capture_event(db, _capture(db, {"video_id": own, "status": "completed", "video_url": f"https://files2.heygen.ai/x/{own}.mp4?sig=1"}))
+        _assert(gen.video_url and own in gen.video_url, f"the render's own file must be stored, got {gen.video_url!r}")
+        db.rollback()
+    print("ok  a file named after another video is never attached to this one")
+
+
 def test_ticket_then_stamped_listing_discovery_merges_into_one_card() -> None:
     """Regression for the duplicate-card bug reported 2026-09-03 (the other
     half): a generation FIRST discovered via the reconciliation listing scan
@@ -702,6 +781,10 @@ if __name__ == "__main__":
     test_bare_id_queue_status_maps_to_video_id_not_workflow_id()
     test_cross_column_identity_without_shared_correlation_key_merges()
     test_library_asset_listing_row_is_not_normalized_as_a_generation()
+    test_unrendered_listing_rows_never_become_cards()
+    test_listing_speech_script_is_the_prompt()
+    test_credit_row_stored_before_its_generation_is_applied_later()
+    test_another_videos_file_is_never_attached()
     test_ticket_then_stamped_listing_discovery_merges_into_one_card()
     test_parse_dt_converts_offsets_to_utc()
     test_backfill_repairs_a_pre_fix_row()

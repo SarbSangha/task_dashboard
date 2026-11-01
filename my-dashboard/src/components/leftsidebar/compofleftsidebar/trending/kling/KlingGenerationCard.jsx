@@ -25,7 +25,7 @@ const KlingCardPreview = React.memo(function KlingCardPreview({ generation, medi
             className="kling-card-image"
             loading="lazy"
             decoding="async"
-            fetchPriority="low"
+            {...{ fetchpriority: 'low' }}
             onError={() => setFailed(true)}
           />
         ) : (

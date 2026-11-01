@@ -8,19 +8,14 @@ import { isMobileViewport } from '../../../../utils/isMobileViewport';
 import WindowControls from '../../../common/WindowControls';
 import { usePermissions } from '../../../../hooks/usePermissions';
 import { buildFileDownloadUrl, buildFileOpenUrl, buildFileThumbnailUrl } from '../../../../utils/fileLinks';
-import KlingTab from './kling/KlingTab';
-import FreepikExplorerBody from '../workspace/tabs/freepik-capture/FreepikExplorerBody';
-import HeygenExplorerBody from '../workspace/tabs/heygen-capture/HeygenExplorerBody';
-import HiggsfieldExplorerBody from '../workspace/tabs/higgsfield-capture/HiggsfieldExplorerBody';
-import EnvatoExplorerBody from '../workspace/tabs/envato-capture/EnvatoExplorerBody';
-import FlowExplorerBody from '../workspace/tabs/flow-capture/FlowExplorerBody';
-import ElevenLabsExplorerBody from '../workspace/tabs/elevenlabs-capture/ElevenLabsExplorerBody';
-import SunoExplorerBody from '../workspace/tabs/suno-capture/SunoExplorerBody';
-import EpidemicExplorerBody from '../workspace/tabs/epidemicsound-capture/EpidemicExplorerBody';
-import SpliceExplorerBody from '../workspace/tabs/splice-capture/SpliceExplorerBody';
-import CursorExplorerBody from '../workspace/tabs/cursor-capture/CursorExplorerBody';
+import ToolLogo from '../../../common/ToolLogo';
+import RmwExportButton from './RmwExportButton';
+import ToolRecordsTab from './ToolRecordsTab';
+import { ORIGINAL_SCREEN_TOOLS } from './toolCardRegistry';
+import { RMW_TOOL_TABS, RMW_TOOL_TABS_BY_KEY } from './rmwToolTabs';
 import './TrendingsPanel.css';
-import { toIndiaISODate } from '../../../../utils/dateTime';
+import { formatDateTimeIndia, toIndiaISODate } from '../../../../utils/dateTime';
+import { formatShortDateTime, getAvatarHue, getInitials, humanize } from '../../../../utils/taskPresentation';
 
 const MEDIA_FILTERS = ['all', 'text', 'image', 'video', 'music', 'link', 'pdf'];
 const ALL_DEPARTMENTS = 'all_departments';
@@ -90,6 +85,36 @@ const getSourceExtension = (asset) => {
   const source = `${asset?.url || asset?.filename || asset?.originalName || ''}`.toLowerCase();
   return source.split('.').pop();
 };
+
+// Text references carry their content on the task rather than in a file.
+const getAssetText = (asset) => {
+  if (!asset || !['text', 'link'].includes(asset.mediaType)) return '';
+  const stage = `${asset.stage || ''}`.toLowerCase();
+  if (stage.includes('result')) return `${asset.taskResultText || ''}`.trim();
+  if (stage.includes('input')) return `${asset.taskDescription || ''}`.trim();
+  return `${asset.taskResultText || asset.taskDescription || ''}`.trim();
+};
+
+const getAssetPerson = (asset) =>
+  asset?.uploadedByName || asset?.createdByName || asset?.submittedByName || 'Unknown';
+
+const MEDIA_TILE_ICONS = {
+  music: <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>,
+  pdf: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" /><path d="M14 3v5h5M9 13h6M9 17h4" /></>,
+  link: <><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1" /><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" /></>,
+  text: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" /><path d="M14 3v5h5M9 13h6M9 17h6" /></>,
+};
+
+function MediaTile({ kind, label }) {
+  return (
+    <div className={`rmw-card-tile rmw-card-tile--${kind}`}>
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {MEDIA_TILE_ICONS[kind] || MEDIA_TILE_ICONS.text}
+      </svg>
+      {label && <span>{label}</span>}
+    </div>
+  );
+}
 
 const getAssetActivityTime = (asset) => asset?.updatedAt || asset?.createdAt || null;
 
@@ -180,6 +205,19 @@ const buildDirectoryFilePathKey = (pathFilters = {}, criteriaKeys = []) => {
   return `${criteriaKeys.join('>')}|u=${uploaderKey}|d=${dateKey}|p=${projectKey}`;
 };
 
+const DATABANK_VIEWS = [
+  {
+    key: 'data',
+    label: 'Data',
+    icon: <><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></>,
+  },
+  {
+    key: 'directory',
+    label: 'Directory',
+    icon: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />,
+  },
+];
+
 const getMediaFilterLabel = (value) => {
   if (value === 'all') return 'All Formats';
   return `${value || ''}`.toUpperCase();
@@ -195,7 +233,7 @@ const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, o
   }, [thumbnailUrl]);
 
   if (!openUrl) {
-    return <div ref={previewRef} className="trendings-card-fallback">No preview</div>;
+    return <div ref={previewRef} className="trendings-card-lazy-frame"><MediaTile kind={asset.mediaType} label="No file" /></div>;
   }
 
   if (asset.mediaType === 'image') {
@@ -208,7 +246,7 @@ const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, o
             className="trendings-card-image"
             loading="lazy"
             decoding="async"
-            fetchPriority="low"
+            {...{ fetchpriority: 'low' }}
             onError={(event) => {
               if (openUrl && event.currentTarget.src !== openUrl) {
                 event.currentTarget.src = openUrl;
@@ -216,7 +254,7 @@ const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, o
             }}
           />
         ) : (
-          <div className="trendings-card-fallback">Image Preview</div>
+          <MediaTile kind="text" label="Image" />
         )}
       </div>
     );
@@ -232,24 +270,29 @@ const TrendingsCardPreview = React.memo(function TrendingsCardPreview({ asset, o
             className="trendings-card-image"
             loading="lazy"
             decoding="async"
-            fetchPriority="low"
+            {...{ fetchpriority: 'low' }}
             onError={(event) => {
               event.currentTarget.style.display = 'none';
               setThumbnailFailed(true);
             }}
           />
         ) : (
-          <div className="trendings-card-fallback">Video Preview</div>
+          <MediaTile kind="text" label="Video" />
         )}
       </div>
     );
   }
 
   if (asset.mediaType === 'music') {
-    return <div ref={previewRef} className="trendings-card-fallback">Audio Preview</div>;
+    return <div ref={previewRef} className="trendings-card-lazy-frame"><MediaTile kind="music" label="Audio" /></div>;
   }
 
-  return <div ref={previewRef} className="trendings-card-fallback">Text/Document</div>;
+  const ext = getSourceExtension(asset);
+  return (
+    <div ref={previewRef} className="trendings-card-lazy-frame">
+      <MediaTile kind={ext === 'pdf' ? 'pdf' : asset.mediaType} label={ext ? ext.toUpperCase() : 'Document'} />
+    </div>
+  );
 });
 
 const TrendingsAssetCard = React.memo(function TrendingsAssetCard({
@@ -264,68 +307,84 @@ const TrendingsAssetCard = React.memo(function TrendingsAssetCard({
   thumbnailUrl,
 }) {
   const hasMediaPreview = asset.mediaType === 'image' || asset.mediaType === 'video' || asset.mediaType === 'music';
+  const text = hasMediaPreview ? '' : getAssetText(asset);
+  const canPreview = Boolean(openUrl || text);
   const activityTime = getAssetActivityTime(asset);
   const assetMenuKey = getAssetMenuKey(asset);
+  const person = getAssetPerson(asset);
+  const taskLine = [asset.taskTitle, asset.taskNumber].filter(Boolean).join(' · ');
+
+  const copyText = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      /* clipboard blocked; nothing else to do */
+    }
+    onToggleMenu(assetMenuKey);
+  };
 
   return (
-    <div className={`trendings-card ${isMenuOpen ? 'menu-open' : ''}`}>
-      {hasMediaPreview && (
-        <div className="trendings-card-preview" onClick={() => onPreview(asset)}>
+    <div className={`trendings-card rmw-card ${isMenuOpen ? 'menu-open' : ''}`}>
+      <div
+        className={`rmw-card-preview rmw-card-preview--${asset.mediaType}${canPreview ? ' is-clickable' : ''}`}
+        onClick={canPreview ? () => onPreview(asset) : undefined}
+        onKeyDown={canPreview ? (event) => { if (event.key === 'Enter') onPreview(asset); } : undefined}
+        role={canPreview ? 'button' : undefined}
+        tabIndex={canPreview ? 0 : undefined}
+        aria-label={canPreview ? `Preview ${asset.filename}` : undefined}
+      >
+        {hasMediaPreview || !text ? (
           <TrendingsCardPreview asset={asset} openUrl={openUrl} thumbnailUrl={thumbnailUrl} />
-        </div>
-      )}
-      <div className="trendings-card-top">
-        <div className="trendings-card-top-left">
-          <span className={`type-badge ${asset.mediaType}`}>{asset.mediaType}</span>
-          <span className="stage-badge">{asset.stage}</span>
-        </div>
-        <div className="trendings-card-top-right">
-          <div className="trendings-card-upload-meta">
-            <span className="trendings-card-uploader">
-              {asset.uploadedByName || asset.createdByName || asset.submittedByName || 'Unknown uploader'}
-            </span>
-            <span className="trendings-card-upload-time">
-              {activityTime ? new Date(activityTime).toLocaleString() : '-'}
-            </span>
-          </div>
+        ) : (
+          <p className="rmw-card-text">{text}</p>
+        )}
+        <span className={`type-badge ${asset.mediaType} rmw-card-type`}>{asset.mediaType}</span>
+      </div>
+
+      <div className="rmw-card-body">
+        <div className="rmw-card-title-row">
+          <h4 className="trendings-title" title={asset.filename}>{asset.filename}</h4>
           <div className="trendings-card-menu-wrap">
             <button
+              type="button"
               className="trendings-card-menu-btn"
               onClick={(event) => {
                 event.stopPropagation();
                 onToggleMenu(assetMenuKey);
               }}
-              title="More"
+              aria-label={`More actions for ${asset.filename}`}
+              aria-expanded={isMenuOpen}
             >
-              ⋮
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <circle cx="12" cy="5" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="12" cy="19" r="1.7" />
+              </svg>
             </button>
             {isMenuOpen && (
               <div className="trendings-card-menu" onClick={(event) => event.stopPropagation()}>
-                <button onClick={() => onInfo(asset)}>
-                  Info
-                </button>
-                {canDownload && (
-                  <button onClick={() => onDownload(asset)}>
-                    Download
-                  </button>
+                {canPreview && <button type="button" onClick={() => { onToggleMenu(assetMenuKey); onPreview(asset); }}>Preview</button>}
+                <button type="button" onClick={() => onInfo(asset)}>Details</button>
+                {text && <button type="button" onClick={copyText}>Copy text</button>}
+                {canDownload && openUrl && (
+                  <button type="button" onClick={() => onDownload(asset)}>Download</button>
                 )}
               </div>
             )}
           </div>
         </div>
+        {taskLine && <p className="rmw-card-task" title={taskLine}>{taskLine}</p>}
+        <div className="rmw-card-chips">
+          {asset.stage && <span className="rmw-card-chip">{humanize(asset.stage)}</span>}
+          {asset.projectName && <span className="rmw-card-chip rmw-card-chip--project" title={asset.projectName}>{asset.projectName}</span>}
+        </div>
       </div>
-      <h4 className="trendings-title">{asset.filename}</h4>
-      <p className="trendings-meta">{asset.taskTitle} • {asset.taskNumber}</p>
-      <p className="trendings-meta">{asset.projectName || 'No project name'}</p>
-      {!hasMediaPreview && (
-        openUrl ? (
-          <button className="trendings-open-link-btn" onClick={() => onPreview(asset)}>
-            Preview
-          </button>
-        ) : (
-          <span className="trendings-no-link">In-app text reference</span>
-        )
-      )}
+
+      <div className="rmw-card-foot">
+        <span className="rmw-card-avatar" style={{ '--hue': getAvatarHue(person) }} aria-hidden="true">{getInitials(person)}</span>
+        <span className="rmw-card-person" title={person}>{person}</span>
+        <span className="rmw-card-time" title={activityTime ? formatDateTimeIndia(activityTime) : undefined}>
+          {activityTime ? formatShortDateTime(activityTime) : '—'}
+        </span>
+      </div>
     </div>
   );
 });
@@ -602,57 +661,28 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const { can, isAdmin } = usePermissions();
   const canDownloadRmwData = can('download_rmw_data');
   const canViewKlingGenerations = can('view_kling_generations');
-  // Freepik's Capture Center has always been admin-only (same gate
-  // FreepikExplorerBody enforces internally) rather than a separate granular
-  // permission key like Kling's - reusing isAdmin here just keeps the tab
-  // button itself from appearing for people who'd only see its access-denied
-  // message anyway.
-  const canViewFreepikGenerations = isAdmin;
-  // HeyGen's Capture Center follows the identical isAdmin-only gate as
-  // Freepik's - same backend shape (admin-gated GET endpoints only), same
-  // reasoning for not adding a dedicated PERMISSION_MATRIX key.
-  const canViewHeyGenGenerations = isAdmin;
-  // Higgsfield's Capture Center follows the identical isAdmin-only gate as
-  // Freepik's/HeyGen's - same backend shape, same reasoning for not adding a
-  // dedicated PERMISSION_MATRIX key.
-  const canViewHiggsfieldGenerations = isAdmin;
-  // Envato's Capture Center follows the identical isAdmin-only gate as every
-  // other provider tab here.
-  const canViewEnvatoGenerations = isAdmin;
-  // Flow's Capture Center follows the identical isAdmin-only gate as every
-  // other provider tab here.
-  const canViewFlowGenerations = isAdmin;
-  // ElevenLabs' Capture Center follows the identical isAdmin-only gate as
-  // every other provider tab here.
-  const canViewElevenLabsGenerations = isAdmin;
-  // Suno's Capture Center follows the identical isAdmin-only gate as every
-  // other provider tab here.
-  const canViewSunoGenerations = isAdmin;
-  // Epidemic Sound's Capture Center follows the identical isAdmin-only gate
-  // as every other provider tab here.
-  const canViewEpidemicDownloads = isAdmin;
-  // Splice's Capture Center follows the identical isAdmin-only gate as every
-  // other provider tab here.
-  const canViewSpliceDownloads = isAdmin;
-  // Cursor's Capture Center follows the identical isAdmin-only gate as every
-  // other provider tab - including connecting computers, which only an admin
-  // can do (People & devices).
-  const canViewCursorTab = isAdmin;
-  // Lifted up here (rather than owned inside FreepikExplorerBody/KlingTab) so
-  // the search input can live in the panel's own header row, in the same
-  // slot the Data tab's "Search across all formats..." box uses, per the
-  // "search bar should sit between RMW Data and the window controls" request.
-  const [freepikSearchInput, setFreepikSearchInput] = useState('');
-  const [klingSearchInput, setKlingSearchInput] = useState('');
-  const [heygenSearchInput, setHeygenSearchInput] = useState('');
-  const [higgsfieldSearchInput, setHiggsfieldSearchInput] = useState('');
-  const [envatoSearchInput, setEnvatoSearchInput] = useState('');
-  const [flowSearchInput, setFlowSearchInput] = useState('');
-  const [elevenlabsSearchInput, setElevenlabsSearchInput] = useState('');
-  const [sunoSearchInput, setSunoSearchInput] = useState('');
-  const [epidemicSearchInput, setEpidemicSearchInput] = useState('');
-  const [spliceSearchInput, setSpliceSearchInput] = useState('');
-  const [cursorSearchInput, setCursorSearchInput] = useState('');
+  // Every tool tab except Kling sits on admin-only capture APIs, so the tab
+  // is hidden rather than showing an access-denied body (see rmwToolTabs.js).
+  const visibleToolTabs = useMemo(
+    () => RMW_TOOL_TABS.filter((tab) => (tab.adminOnly ? isAdmin : canViewKlingGenerations)),
+    [isAdmin, canViewKlingGenerations],
+  );
+  // Each tool tab's search text, keyed by tab. Lifted up here (rather than
+  // owned inside each explorer) so the box lives in the panel's own header
+  // row, in the slot the Data tab's "Search across all formats..." box uses.
+  const [toolSearch, setToolSearch] = useState({});
+  // Kling reports its active filters so the export popover can start from them.
+  const [klingFilterState, setKlingFilterState] = useState(null);
+  // Other tools: the Records view's filters, per tool, for the export popover.
+  const [toolFilterState, setToolFilterState] = useState({});
+  const handleToolFilters = useCallback((key, value) => {
+    setToolFilterState((prev) => (prev[key] === value ? prev : { ...prev, [key]: value }));
+  }, []);
+  const toolFilterHandlers = useMemo(
+    () => Object.fromEntries(RMW_TOOL_TABS.map((tab) => [tab.key, (value) => handleToolFilters(tab.key, value)])),
+    [handleToolFilters],
+  );
+  const tabbarRef = useRef(null);
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -774,7 +804,7 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen || activeView === 'directory' || activeView === 'kling') return;
+    if (!isOpen || activeView !== 'data') return;
     let cancelled = false;
 
     const load = async () => {
@@ -855,17 +885,14 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const filteredAssets = useMemo(() => assets, [assets]);
   const canLoadMore = hasMore && (Boolean(nextCursor) || nextOffset != null);
   const isDirectoryTab = activeView === 'directory';
-  const isKlingTab = activeView === 'kling';
-  const isFreepikTab = activeView === 'freepik';
-  const isHeyGenTab = activeView === 'heygen';
-  const isHiggsfieldTab = activeView === 'higgsfield';
-  const isEnvatoTab = activeView === 'envato';
-  const isFlowTab = activeView === 'flow';
-  const isElevenLabsTab = activeView === 'elevenlabs';
-  const isSunoTab = activeView === 'suno';
-  const isEpidemicTab = activeView === 'epidemicsound';
-  const isSpliceTab = activeView === 'splice';
-  const isCursorTab = activeView === 'cursor';
+  const activeTool = RMW_TOOL_TABS_BY_KEY[activeView] || null;
+  const isToolTab = Boolean(activeTool);
+
+  // The tab strip scrolls sideways when it does not fit; keep the active tab visible.
+  useEffect(() => {
+    tabbarRef.current?.querySelector('.trendings-view-tab.active')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeView]);
   const isDataTab = activeView === 'data';
   const activeDirectoryCriteria = useMemo(
     () => directoryStructure.filter((criterionKey) => criterionKey !== 'none'),
@@ -1188,6 +1215,17 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
   const renderPreviewContent = (asset) => {
     if (!asset) return null;
     const previewUrl = buildOpenUrl(asset);
+    const inAppText = getAssetText(asset);
+    if (!previewUrl && inAppText) {
+      return (
+        <div className="rmw-preview-text">
+          <pre>{inAppText}</pre>
+          <button type="button" className="trendings-open-link-btn" onClick={() => navigator.clipboard?.writeText(inAppText)}>
+            Copy text
+          </button>
+        </div>
+      );
+    }
     if (!previewUrl) return <div className="trendings-preview-empty">Preview not available</div>;
 
     const ext = getSourceExtension(asset);
@@ -1267,134 +1305,28 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
       >
         <div className="trendings-header">
           <h2>RMW Data</h2>
-          {!isMinimized && !isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && (
+          {!isMinimized && !isToolTab && (
             <div className="trendings-header-search">
               <input
                 className="trendings-search"
-                placeholder="Search across all formats..."
+                placeholder={isDirectoryTab ? 'Search across all formats…' : 'Search files, tasks, projects…'}
+                aria-label="Search the databank"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
               />
             </div>
           )}
-          {!isMinimized && isFreepikTab && (
+          {!isMinimized && activeTool && (
             <div className="trendings-header-search">
               <input
                 className="trendings-search"
-                placeholder="Search prompts..."
-                aria-label="Search Freepik generations by prompt or creation id"
-                value={freepikSearchInput}
-                onChange={(e) => setFreepikSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isHeyGenTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder="Search scripts..."
-                aria-label="Search HeyGen generations by script or video id"
-                value={heygenSearchInput}
-                onChange={(e) => setHeygenSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isHiggsfieldTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder="Search prompts..."
-                aria-label="Search Higgsfield generations by prompt or generation id"
-                value={higgsfieldSearchInput}
-                onChange={(e) => setHiggsfieldSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isEnvatoTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder="Search prompts..."
-                aria-label="Search Envato generations by prompt or item id"
-                value={envatoSearchInput}
-                onChange={(e) => setEnvatoSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isFlowTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder="Search prompts..."
-                aria-label="Search Flow generations by prompt"
-                value={flowSearchInput}
-                onChange={(e) => setFlowSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isElevenLabsTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder="Search prompts..."
-                aria-label="Search ElevenLabs generations by prompt"
-                value={elevenlabsSearchInput}
-                onChange={(e) => setElevenlabsSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isSunoTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder="Search prompts..."
-                aria-label="Search Suno generations by prompt"
-                value={sunoSearchInput}
-                onChange={(e) => setSunoSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isEpidemicTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder="Search titles..."
-                aria-label="Search Epidemic Sound downloads by title"
-                value={epidemicSearchInput}
-                onChange={(e) => setEpidemicSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isSpliceTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder="Search titles..."
-                aria-label="Search Splice downloads by title"
-                value={spliceSearchInput}
-                onChange={(e) => setSpliceSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isCursorTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder="Search prompts, chats..."
-                aria-label="Search Cursor prompts and chat names"
-                value={cursorSearchInput}
-                onChange={(e) => setCursorSearchInput(e.target.value)}
-              />
-            </div>
-          )}
-          {!isMinimized && isKlingTab && (
-            <div className="trendings-header-search">
-              <input
-                className="trendings-search"
-                placeholder='Search prompts, models, users, projects... (try department:Marketing status:resolved)'
-                aria-label="Search Kling generations"
-                value={klingSearchInput}
-                onChange={(e) => setKlingSearchInput(e.target.value)}
+                placeholder={activeTool.searchPlaceholder}
+                aria-label={activeTool.searchLabel}
+                value={toolSearch[activeTool.key] || ''}
+                onChange={(e) => {
+                  const { value } = e.target;
+                  setToolSearch((prev) => ({ ...prev, [activeTool.key]: value }));
+                }}
               />
             </div>
           )}
@@ -1409,246 +1341,142 @@ const TrendingsPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) => {
 
         {!isMinimized && (
           <>
-            <div className="trendings-filter-row">
-              <div className="trendings-view-tabs" role="tablist" aria-label="RMW Data Views">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={isDataTab}
-                  className={`trendings-view-tab ${isDataTab ? 'active' : ''}`}
-                  onClick={() => setActiveView('data')}
-                >
-                  Data
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={isDirectoryTab}
-                  className={`trendings-view-tab ${isDirectoryTab ? 'active' : ''}`}
-                  onClick={() => setActiveView('directory')}
-                >
-                  Directory
-                </button>
-                {canViewKlingGenerations && (
+            <div className="trendings-tabbar" role="tablist" aria-label="RMW Data views" ref={tabbarRef}>
+              <div className="trendings-tab-group">
+                <span className="trendings-tab-group-label" aria-hidden="true">Databank</span>
+                {DATABANK_VIEWS.map((view) => (
                   <button
+                    key={view.key}
                     type="button"
                     role="tab"
-                    aria-selected={isKlingTab}
-                    className={`trendings-view-tab ${isKlingTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('kling')}
+                    aria-selected={activeView === view.key}
+                    className={`trendings-view-tab ${activeView === view.key ? 'active' : ''}`}
+                    onClick={() => setActiveView(view.key)}
                   >
-                    Kling
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      {view.icon}
+                    </svg>
+                    {view.label}
                   </button>
-                )}
-                {canViewFreepikGenerations && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isFreepikTab}
-                    className={`trendings-view-tab ${isFreepikTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('freepik')}
-                  >
-                    Freepik
-                  </button>
-                )}
-                {canViewHeyGenGenerations && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isHeyGenTab}
-                    className={`trendings-view-tab ${isHeyGenTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('heygen')}
-                  >
-                    HeyGen
-                  </button>
-                )}
-                {canViewHiggsfieldGenerations && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isHiggsfieldTab}
-                    className={`trendings-view-tab ${isHiggsfieldTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('higgsfield')}
-                  >
-                    Higgsfield
-                  </button>
-                )}
-                {canViewEnvatoGenerations && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isEnvatoTab}
-                    className={`trendings-view-tab ${isEnvatoTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('envato')}
-                  >
-                    Envato
-                  </button>
-                )}
-                {canViewFlowGenerations && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isFlowTab}
-                    className={`trendings-view-tab ${isFlowTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('flow')}
-                  >
-                    Flow
-                  </button>
-                )}
-                {canViewElevenLabsGenerations && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isElevenLabsTab}
-                    className={`trendings-view-tab ${isElevenLabsTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('elevenlabs')}
-                  >
-                    ElevenLabs
-                  </button>
-                )}
-                {canViewSunoGenerations && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isSunoTab}
-                    className={`trendings-view-tab ${isSunoTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('suno')}
-                  >
-                    Suno
-                  </button>
-                )}
-                {canViewEpidemicDownloads && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isEpidemicTab}
-                    className={`trendings-view-tab ${isEpidemicTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('epidemicsound')}
-                  >
-                    Epidemic Sound
-                  </button>
-                )}
-                {canViewSpliceDownloads && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isSpliceTab}
-                    className={`trendings-view-tab ${isSpliceTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('splice')}
-                  >
-                    Splice
-                  </button>
-                )}
-                {canViewCursorTab && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isCursorTab}
-                    className={`trendings-view-tab ${isCursorTab ? 'active' : ''}`}
-                    onClick={() => setActiveView('cursor')}
-                  >
-                    Cursor
-                  </button>
-                )}
+                ))}
               </div>
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && (
-                <div className="trendings-toolbar-status">
-                  {isDirectoryTab
-                    ? 'Browse folders first, then load only the files for the selected path.'
-                    : `Fast databank mode is active.${lastLatencyMs != null ? ` Last response: ${Math.round(lastLatencyMs)} ms.` : ''}`}
-                </div>
-              )}
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && (
-                <div className="trendings-select-filters">
-                  <label className="trendings-filter-select-wrap">
-                    <span className="trendings-filter-select-label">Format</span>
-                    <select
-                      className="trendings-filter-select"
-                      value={filter}
-                      onChange={(event) => setFilter(event.target.value)}
+              {visibleToolTabs.length > 0 && (
+                <div className="trendings-tab-group trendings-tab-group--tools">
+                  <span className="trendings-tab-group-label" aria-hidden="true">AI tools</span>
+                  {visibleToolTabs.map((tab) => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={activeView === tab.key}
+                      className={`trendings-view-tab trendings-view-tab--tool ${activeView === tab.key ? 'active' : ''}`}
+                      onClick={() => setActiveView(tab.key)}
                     >
-                      {MEDIA_FILTERS.map((item) => (
-                        <option key={item} value={item}>
-                          {getMediaFilterLabel(item)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="trendings-filter-select-wrap">
-                    <span className="trendings-filter-select-label">Department</span>
-                    <select
-                      className="trendings-filter-select"
-                      value={departmentFilter}
-                      onChange={(event) => setDepartmentFilter(event.target.value)}
-                    >
-                      {departmentOptions.map((department) => (
-                        <option key={department} value={department}>
-                          {department === ALL_DEPARTMENTS ? 'All Departments' : department}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-              )}
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && (
-                <div className="trendings-sort-group">
-                  <button
-                    className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
-                    onClick={() => setSortBy('latest')}
-                  >
-                    Latest
-                  </button>
-                  <button
-                    className={`trendings-sort-btn ${sortBy === 'top' ? 'active' : ''}`}
-                    onClick={() => setSortBy('top')}
-                  >
-                    Best Format
-                  </button>
+                      <ToolLogo name={tab.label} websiteUrl={tab.website} size={16} />
+                      {tab.label}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
 
+            {activeTool ? (
+              <div className="trendings-context-bar">
+                <div className="trendings-context-tool">
+                  <ToolLogo name={activeTool.label} websiteUrl={activeTool.website} size={30} />
+                  <div className="trendings-context-copy">
+                    <div className="trendings-context-title">
+                      {activeTool.label}
+                      <span className="trendings-context-chip">{activeTool.category}</span>
+                    </div>
+                    <p className="trendings-context-desc">{activeTool.description}</p>
+                  </div>
+                </div>
+                <RmwExportButton
+                  tool={activeTool}
+                  searchText={toolSearch[activeTool.key] || ''}
+                  toolFilters={activeTool.key === 'kling' ? klingFilterState : toolFilterState[activeTool.key] || null}
+                />
+              </div>
+            ) : (
+              <div className="trendings-filter-row">
+              <div className="trendings-select-filters">
+                <label className="trendings-filter-select-wrap">
+                  <span className="trendings-filter-select-label">Format</span>
+                  <select
+                    className="trendings-filter-select"
+                    value={filter}
+                    onChange={(event) => setFilter(event.target.value)}
+                  >
+                    {MEDIA_FILTERS.map((item) => (
+                      <option key={item} value={item}>
+                        {getMediaFilterLabel(item)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="trendings-filter-select-wrap">
+                  <span className="trendings-filter-select-label">Department</span>
+                  <select
+                    className="trendings-filter-select"
+                    value={departmentFilter}
+                    onChange={(event) => setDepartmentFilter(event.target.value)}
+                  >
+                    {departmentOptions.map((department) => (
+                      <option key={department} value={department}>
+                        {department === ALL_DEPARTMENTS ? 'All Departments' : department}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="trendings-sort-group">
+                <button
+                  className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
+                  onClick={() => setSortBy('latest')}
+                >
+                  Latest
+                </button>
+                <button
+                  className={`trendings-sort-btn ${sortBy === 'top' ? 'active' : ''}`}
+                  onClick={() => setSortBy('top')}
+                >
+                  Best Format
+                </button>
+              </div>
+                <div className="trendings-toolbar-status">
+                  {isDirectoryTab
+                    ? 'Pick folders on the left, then load the files in that path.'
+                    : loading
+                      ? 'Loading…'
+                      : `${filteredAssets.length.toLocaleString()}${canLoadMore ? '+' : ''} item${filteredAssets.length === 1 ? '' : 's'}${lastLatencyMs != null ? ` · ${Math.round(lastLatencyMs)} ms` : ''}`}
+                </div>
+              </div>
+            )}
+
             <div
-              className={`trendings-content ${
-                isDirectoryTab
-                  ? 'trendings-content--directory'
-                  : isKlingTab
-                    ? 'trendings-content--kling'
-                    : isFreepikTab
-                      ? 'trendings-content--freepik'
-                      : isHeyGenTab
-                        ? 'trendings-content--heygen'
-                        : isHiggsfieldTab
-                          ? 'trendings-content--higgsfield'
-                          : isEnvatoTab
-                            ? 'trendings-content--envato'
-                            : isFlowTab
-                              ? 'trendings-content--flow'
-                              : isElevenLabsTab
-                                ? 'trendings-content--elevenlabs'
-                                : isSunoTab
-                                  ? 'trendings-content--suno'
-                                  : isEpidemicTab
-                                    ? 'trendings-content--epidemicsound'
-                                    : isSpliceTab
-                                      ? 'trendings-content--splice'
-                                      : isCursorTab
-                                        ? 'trendings-content--cursor'
-                                        : 'trendings-content--data'
-              }`}
+              className={`trendings-content trendings-content--${isDirectoryTab ? 'directory' : activeTool ? activeTool.key : 'data'}`}
             >
-              {!isKlingTab && !isFreepikTab && !isHeyGenTab && !isHiggsfieldTab && !isEnvatoTab && !isFlowTab && !isElevenLabsTab && !isSunoTab && !isEpidemicTab && !isSpliceTab && !isCursorTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
-              {isKlingTab && <KlingTab isActive={isKlingTab} searchInput={klingSearchInput} />}
-              {isFreepikTab && <FreepikExplorerBody searchInput={freepikSearchInput} />}
-              {isHeyGenTab && <HeygenExplorerBody searchInput={heygenSearchInput} />}
-              {isHiggsfieldTab && <HiggsfieldExplorerBody searchInput={higgsfieldSearchInput} />}
-              {isEnvatoTab && <EnvatoExplorerBody searchInput={envatoSearchInput} />}
-              {isFlowTab && <FlowExplorerBody searchInput={flowSearchInput} />}
-              {isElevenLabsTab && <ElevenLabsExplorerBody searchInput={elevenlabsSearchInput} />}
-              {isSunoTab && <SunoExplorerBody searchInput={sunoSearchInput} />}
-              {isEpidemicTab && <EpidemicExplorerBody searchInput={epidemicSearchInput} />}
-              {isSpliceTab && <SpliceExplorerBody searchInput={spliceSearchInput} />}
-              {isCursorTab && <CursorExplorerBody searchInput={cursorSearchInput} />}
+              {!isToolTab && loadError && <div className="trendings-state trendings-state-error">{loadError}</div>}
+              {activeTool && (
+                activeTool.key === 'kling' || ORIGINAL_SCREEN_TOOLS.has(activeTool.key) ? (
+                  // Kling has its own filtered view; Cursor/Claude Code/Figma keep their screens.
+                  <activeTool.Body
+                    key={activeTool.key}
+                    isActive
+                    searchInput={toolSearch[activeTool.key] || ''}
+                    onFiltersChange={activeTool.key === 'kling' ? setKlingFilterState : undefined}
+                  />
+                ) : (
+                  // Data-driven filters + the tool's own cards and drawers.
+                  <ToolRecordsTab
+                    key={activeTool.key}
+                    tool={activeTool}
+                    searchInput={toolSearch[activeTool.key] || ''}
+                    onFiltersChange={toolFilterHandlers[activeTool.key]}
+                  />
+                )
+              )}
               {isDirectoryTab && (
                 <div className="trendings-directory-window">
                   <div className="trendings-directory-header">

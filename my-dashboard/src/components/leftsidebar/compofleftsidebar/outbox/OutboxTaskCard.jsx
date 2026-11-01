@@ -1,7 +1,33 @@
 // src/components/outbox/OutboxTaskCard.jsx
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import './OutboxTaskCard.css';
+import '../../../common/taskCard/TaskCard.css';
+import {
+  formatShortDateTime,
+  getAvatarHue,
+  getDeadlineInfo,
+  getInitials,
+  getPriorityTone,
+  getStatusTone,
+  humanize,
+} from '../../../../utils/taskPresentation';
+import {
+  IconArrowRight,
+  IconChevronDown,
+  IconClock,
+  IconCopy,
+  IconDownload,
+  IconEye,
+  IconFlag,
+  IconFolder,
+  IconLink,
+  IconMore,
+  IconPaperclip,
+  IconPause,
+  IconRoute,
+  IconUsers,
+} from '../../../common/taskCard/taskIcons';
 import { buildFileDownloadUrl } from '../../../../utils/fileLinks';
 import FilePreviewModal from '../../../common/FilePreviewModal';
 
@@ -13,10 +39,26 @@ const OutboxTaskCard = ({
   onTrackClick,
   currentUser,
   formatDate, 
-  formatTime, 
-  getStatusClass 
+  formatTime,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const closeOnOutside = (event) => {
+      if (!menuRef.current?.contains(event.target)) setMenuOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [menuOpen]);
   const [copied, setCopied] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [previewFile, setPreviewFile] = useState(null);
@@ -34,7 +76,6 @@ const OutboxTaskCard = ({
     status,
     priority,
     taskDetails,
-    deadline,
     createdAt,
     updatedAt,
     attachments,
@@ -76,7 +117,6 @@ const OutboxTaskCard = ({
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (char) => char.toUpperCase());
   const displayStatusLabel = isFinalApprovalPending ? 'Submitted' : statusLabel;
-  const displayStatusForClass = isFinalApprovalPending ? 'submitted' : status;
   const statusFallsThroughReceived = [
     'assigned',
     'forwarded',
@@ -413,45 +453,80 @@ const OutboxTaskCard = ({
     onTrackClick?.(task);
   };
 
+  const statusTone = isFinalApprovalPending ? 'review' : getStatusTone(status);
+  const deadlineInfo = getDeadlineInfo(task);
+  const priorityTone = getPriorityTone(priority);
+  const sentAtValue = sentAt || createdAt;
+  const menuLabel = (action) => ({
+    track: 'Track',
+    chat: 'Chat',
+    edit_draft: 'Edit draft',
+    delete_draft: 'Delete draft',
+    edit_task: 'Edit task',
+    hold_task: 'Hold task',
+    unhold_task: 'Unhold task',
+    revoke_task: 'Revoke task',
+  }[action] || humanize(action));
+  const stopCardToggle = (event) => event.stopPropagation();
+
   return (
     <>
-      <div
-        className={`outbox-task-card ${isExpanded ? 'expanded' : ''}`}
+      <article
+        className={`tc-card tc-card--tile tone-${statusTone} ${isExpanded ? 'is-expanded' : ''}`}
         onClick={() => onClick(id)}
       >
-        {/* Card Header */}
-        <div className="outbox-task-header">
-          <div className="outbox-avatar">
-            <span>{toDepartment?.[0] || 'T'}</span>
-          </div>
-          <div className="outbox-header-text">
-            <div className="outbox-title-row">
-              <h3 className="outbox-task-title">
-                {displayTaskName}
-                {isResult && <span className="result-badge">Result</span>}
-                {activeHoldInfo && <span className="hold-badge">Held</span>}
-              </h3>
-            </div>
-            <div className="outbox-subtitle-row">
-              <p className="outbox-project-name">📁 {projectName || 'No project'}</p>
-              {(projectId || id) && (
-                <span className="outbox-reference-pill">
-                  {projectId || `Task #${id}`}
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="status-and-track">
-            <span className={`outbox-status-pill ${getStatusClass(displayStatusForClass)}`}>
-              {displayStatusLabel}
+        {activeHoldInfo && (
+          <div className="tc-alert tc-alert--held" role="note">
+            <IconPause size={14} />
+            <span>
+              <strong>On hold.</strong>
+              {holdUntilLabel ? ` Auto-unholds on ${holdUntilLabel}.` : ' Manual unhold required.'}
+              {activeHoldInfo.reason ? ` ${activeHoldInfo.reason}` : ''}
             </span>
-            <div className="outbox-card-menu-wrap" onClick={(e) => e.stopPropagation()}>
-              <button className="outbox-card-menu-btn" onClick={() => setMenuOpen((prev) => !prev)}>⋮</button>
+          </div>
+        )}
+
+        <div className="tc-main">
+          <span
+            className="tc-avatar"
+            style={{ '--tc-avatar-hue': `${getAvatarHue(receiverPrimary)}deg` }}
+            title={`To ${receiverPrimary}`}
+            aria-hidden="true"
+          >
+            {getInitials(receiverPrimary)}
+          </span>
+          <div className="tc-body">
+            <div className="tc-title-line">
+              <h3 className="tc-title" title={displayTaskName}>{displayTaskName}</h3>
+            </div>
+            <div className="tc-sub">
+              <span className="tc-truncate"><IconFolder size={13} /> {projectName || 'No project'}</span>
+              {isResult && <span className="tc-chip tc-chip--accent">Result</span>}
+              {activeHoldInfo && <span className="tc-chip tc-chip--warning">Held</span>}
+            </div>
+          </div>
+          <div className="tc-tile-head-side" onClick={stopCardToggle}>
+            <span className={`tc-status tone-${statusTone}`}>{displayStatusLabel}</span>
+            <div className="tc-menu-wrap" ref={menuRef}>
+              <button
+                type="button"
+                className="tc-btn tc-btn--icon"
+                onClick={() => setMenuOpen((prev) => !prev)}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label="More actions"
+                title="More actions"
+              >
+                <IconMore size={16} />
+              </button>
               {menuOpen && (
-                <div className="outbox-card-menu">
+                <div className="tc-menu" role="menu">
                   {menuActions.map((action) => (
                     <button
                       key={action}
+                      type="button"
+                      role="menuitem"
+                      className={['revoke_task', 'delete_draft'].includes(action) ? 'is-danger' : ''}
                       onClick={(e) => {
                         setMenuOpen(false);
                         if (action === 'track') {
@@ -461,21 +536,7 @@ const OutboxTaskCard = ({
                         onTaskAction?.(task, action);
                       }}
                     >
-                      {action === 'track'
-                        ? 'Track'
-                        : action === 'chat'
-                          ? 'Chat'
-                          : action === 'edit_draft'
-                            ? 'Edit Draft'
-                            : action === 'delete_draft'
-                              ? 'Delete Draft'
-                          : action === 'edit_task'
-                            ? 'Edit Task'
-                            : action === 'hold_task'
-                              ? 'Hold Task'
-                              : action === 'unhold_task'
-                                ? 'Unhold Task'
-                                : 'Revoke Task'}
+                      {menuLabel(action)}
                     </button>
                   ))}
                 </div>
@@ -484,213 +545,166 @@ const OutboxTaskCard = ({
           </div>
         </div>
 
-        {activeHoldInfo && (
-          <div className="task-hold-banner">
-            <strong>Task on hold</strong>
-            <span>
-              {holdUntilLabel
-                ? `Auto-unholds on ${holdUntilLabel}`
-                : 'Manual unhold required'}
-              {activeHoldInfo.reason ? ` • ${activeHoldInfo.reason}` : ''}
-            </span>
+        <div className="tc-route">
+          <div className="tc-route-end">
+            <span className="tc-route-label">From</span>
+            <span className="tc-route-name" title={senderPrimary}>{senderPrimary}</span>
+            {senderSecondaryText && <span className="tc-route-dept" title={senderSecondaryText}>{senderSecondaryText}</span>}
           </div>
-        )}
-
-        {/* Card Meta - Enhanced */}
-        <div className="outbox-task-meta">
-          <div className="meta-item">
-            <span className="meta-icon">📤</span>
-            <div className="outbox-meta-copy">
-              <span className="outbox-label">From</span>
-              <p className="outbox-value" title={senderPrimary}>{senderPrimary}</p>
-              {senderSecondaryText ? (
-                <p className="outbox-subvalue" title={senderSecondaryText}>{senderSecondaryText}</p>
-              ) : null}
-            </div>
-          </div>
-          <div className="meta-item">
-            <span className="meta-icon">📥</span>
-            <div className="outbox-meta-copy">
-              <span className="outbox-label">To</span>
-              <p className="outbox-value" title={receiverPrimary}>{receiverPrimary}</p>
-              {receiverSecondaryText ? (
-                <p className="outbox-subvalue" title={receiverSecondaryText}>{receiverSecondaryText}</p>
-              ) : null}
-            </div>
-          </div>
-          <div className="meta-item">
-            <span className="meta-icon">📅</span>
-            <div className="outbox-meta-copy">
-              <span className="outbox-label">Sent</span>
-              <p className="outbox-value">{formatDate(sentAt || createdAt)}</p>
-            </div>
-          </div>
-          <div className="meta-item">
-            <span className="meta-icon">⏰</span>
-            <div className="outbox-meta-copy">
-              <span className="outbox-label">Time</span>
-              <p className="outbox-value">{formatTime(sentAt || createdAt)}</p>
-            </div>
-          </div>
-          <div className="meta-item">
-            <span className="meta-icon">✅</span>
-            <div className="outbox-meta-copy">
-              <span className="outbox-label">Submitted</span>
-              <p className="outbox-value">{submittedDisplayAt ? formatDate(submittedDisplayAt) : 'Not reached'}</p>
-              {submittedDisplayAt ? <p className="outbox-subvalue">{formatTime(submittedDisplayAt)}</p> : null}
-            </div>
-          </div>
-          <div className="meta-item">
-            <span className="meta-icon">🏁</span>
-            <div className="outbox-meta-copy">
-              <span className="outbox-label">Approval</span>
-              <p className="outbox-value">{approvalDisplayAt ? formatDate(approvalDisplayAt) : 'Not reached'}</p>
-              {approvalDisplayAt ? <p className="outbox-subvalue">{formatTime(approvalDisplayAt)}</p> : null}
-            </div>
+          <IconArrowRight size={16} className="tc-route-arrow" />
+          <div className="tc-route-end">
+            <span className="tc-route-label">To</span>
+            <span className="tc-route-name" title={receiverPrimary}>{receiverPrimary}</span>
+            {receiverSecondaryText && <span className="tc-route-dept" title={receiverSecondaryText}>{receiverSecondaryText}</span>}
           </div>
         </div>
 
-        {/* Badges */}
-        <div className="outbox-task-badges">
-          <span className="type-badge request-type">📨 {requestTypeLabel}</span>
-          <span className={`priority-badge priority-${priority?.toLowerCase()}`}>
-            {getPriorityIcon(priority)} {priority}
+        {isDraft ? (
+          <div className="tc-times">
+            <div className="tc-time">
+              <span>Last saved</span>
+              <strong>{formatShortDateTime(updatedAt || createdAt) || '—'}</strong>
+            </div>
+          </div>
+        ) : (
+        <div className="tc-times">
+          <div className="tc-time" title={sentAtValue ? `${formatDate(sentAtValue)} ${formatTime(sentAtValue)}` : ''}>
+            <span>Sent</span>
+            <strong>{formatShortDateTime(sentAtValue) || '—'}</strong>
+          </div>
+          <div className={`tc-time ${submittedDisplayAt ? '' : 'is-pending'}`}>
+            <span>Submitted</span>
+            <strong>{submittedDisplayAt ? formatShortDateTime(submittedDisplayAt) : 'Not yet'}</strong>
+          </div>
+          <div className={`tc-time ${approvalDisplayAt ? '' : 'is-pending'}`}>
+            <span>Approved</span>
+            <strong>{approvalDisplayAt ? formatShortDateTime(approvalDisplayAt) : 'Not yet'}</strong>
+          </div>
+        </div>
+        )}
+
+        <div className="tc-chips">
+          {priority && (
+            <span className={`tc-priority ${priorityTone ? `tc-priority--${priorityTone}` : ''}`}>
+              <IconFlag size={12} /> {priority}
+            </span>
+          )}
+          <span className={`tc-deadline tc-deadline--${deadlineInfo.tone}`} title={deadlineInfo.full ? `Deadline: ${deadlineInfo.full}` : 'No deadline'}>
+            <IconClock size={12} />
+            {deadlineInfo.tone === 'none' ? 'No deadline' : <><b>{deadlineInfo.meta}</b> · {deadlineInfo.label}</>}
           </span>
-          <span className="tag-badge">🏷️ {taskTag}</span>
-          {taskType === 'result' && (
-            <span className="type-badge result-type">📊 Result</span>
-          )}
-          {deadline && (
-            <span className="deadline-badge">
-              ⏳ Deadline: {formatDate(deadline)},{formatTime(deadline)}
-            </span>
-          )}
+          {taskTag && <span className="tc-chip">{taskTag}</span>}
+          {requestTypeLabel !== 'Task' && <span className="tc-chip tc-chip--accent">{requestTypeLabel}</span>}
           {hasWorkerSubmissionSummary && (
-            <span className="type-badge worker-submission-badge">
-              {workerSubmissionSummary.submitted || 0}/{workerSubmissionSummary.total || workerSubmissionRows.length} submitted · {submissionModeLabel}
+            <span className="tc-chip" title={submissionModeLabel}>
+              <IconUsers size={12} /> {workerSubmissionSummary.submitted || 0}/{workerSubmissionSummary.total || workerSubmissionRows.length} submitted
             </span>
           )}
         </div>
 
-        {summaryText && (
-          <div className="outbox-summary-panel">
-            <span className="outbox-summary-label">Summary</span>
-            <p className="outbox-summary-text">{summaryText}</p>
-          </div>
-        )}
+        {summaryText && !isExpanded && <p className="tc-summary">{summaryText}</p>}
 
-        {/* Timeline Progress */}
-        {timelineSteps.some((step) => step.reached) && (
-          <div className="timeline-progress">
-            {timelineSteps.map((step, index) => (
-              <React.Fragment key={step.key}>
-                <div
-                  className={`timeline-step ${step.reached ? 'completed' : ''} ${currentTimelineKey === step.key ? 'current' : ''}`}
-                >
-                  <div className="timeline-dot"></div>
-                  <span className="timeline-label">{step.label}</span>
-                </div>
-                {index < timelineSteps.length - 1 ? (
-                  <div className={`timeline-line ${timelineSteps[index].reached && timelineSteps[index + 1].reached ? 'reached' : ''}`}></div>
-                ) : null}
-              </React.Fragment>
+        {!isDraft && timelineSteps.some((step) => step.reached) && (
+          <ol className="tc-steps" aria-label="Task progress">
+            {timelineSteps.map((step) => (
+              <li
+                key={step.key}
+                className={`tc-step ${step.reached ? 'is-reached' : ''} ${currentTimelineKey === step.key ? 'is-current' : ''}`}
+                aria-current={currentTimelineKey === step.key ? 'step' : undefined}
+              >
+                <span className="tc-step-dot" />
+                <span className="tc-step-label">{step.label}</span>
+              </li>
             ))}
-          </div>
+          </ol>
         )}
 
-        {/* Expanded Details */}
         {isExpanded && (
-          <div className="outbox-task-extra">
-            {/* Task Details */}
-            <div className="extra-col">
-              <div className="extra-head">
-                <h4>📋 Task Details</h4>
-                <button
-                  type="button"
-                  className="mini-action-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    copyToClipboard(displayTaskDetails);
-                  }}
-                  disabled={!displayTaskDetails}
-                >
-                  {copied ? 'Copied' : 'Copy'}
-                </button>
+          <div className="tc-details" onClick={stopCardToggle}>
+            <section className="tc-section">
+              <div className="tc-section-head">
+                <h4 className="tc-section-title">Brief</h4>
+                {displayTaskDetails && (
+                  <button
+                    type="button"
+                    className="tc-mini"
+                    onClick={() => copyToClipboard(displayTaskDetails)}
+                    title={copied ? 'Copied' : 'Copy brief'}
+                    aria-label="Copy brief"
+                  >
+                    <IconCopy size={14} />
+                  </button>
+                )}
               </div>
-              <p>{displayTaskDetails || 'No details provided'}</p>
-            </div>
+              {displayTaskDetails ? <p className="tc-text">{displayTaskDetails}</p> : <p className="tc-muted">No brief was added.</p>}
+            </section>
 
-            {/* Attachments */}
-            {attachments && attachments.length > 0 && (
-              <div className="extra-col">
-                <h4>📎 Attachments ({attachments.length})</h4>
-                <ul className="attachment-list">
-                  {attachments.map((att, idx) => (
-                    <li key={idx}>
-                      <span>{att.originalName || att.filename || `Attachment ${idx + 1}`}</span>
-                      <span className="attachment-actions">
-                        <button
-                          type="button"
-                          className="mini-action-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setPreviewFile(att);
-                          }}
-                        >
-                          Open
-                        </button>
-                        <button
-                          type="button"
-                          className="mini-action-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            forceDownload(att, att.originalName || att.filename || `attachment-${idx + 1}`);
-                          }}
-                        >
-                          Download
-                        </button>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* Links */}
-            {links && links.length > 0 && (
-              <div className="extra-col">
-                <h4>🔗 Links ({links.length})</h4>
-                <ul className="link-list">
-                  {links.map((link, idx) => (
-                    <li key={idx}>
-                      <span>{link.length > 40 ? link.substring(0, 40) + '...' : link}</span>
-                      <span className="attachment-actions">
-                        <a
-                          href={link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          Open
-                        </a>
-                        <button
-                          type="button"
-                          className="mini-action-btn"
-                          onClick={(e) => copyLink(link, e)}
-                        >
-                          Copy Link
-                        </button>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+            {(attachments?.length > 0 || links?.length > 0) && (
+              <section className="tc-section">
+                <div className="tc-section-head"><h4 className="tc-section-title">Links &amp; files</h4></div>
+                {links?.length > 0 && (
+                  <ul className="tc-file-list">
+                    {links.map((link, idx) => (
+                      <li key={`${link}-${idx}`} className="tc-file">
+                        <IconLink size={14} />
+                        <a className="tc-file-name" href={link} target="_blank" rel="noopener noreferrer" title={link}>{link}</a>
+                        <span className="tc-file-actions">
+                          <button type="button" className="tc-mini" onClick={(e) => copyLink(link, e)} title="Copy link" aria-label="Copy link">
+                            <IconCopy size={14} />
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {attachments?.length > 0 && (
+                  <ul className="tc-file-list" style={{ marginTop: links?.length ? 6 : 0 }}>
+                    {attachments.map((att, idx) => {
+                      const label = att.originalName || att.filename || `Attachment ${idx + 1}`;
+                      return (
+                        <li key={`${att.url || att.filename || idx}-${idx}`} className="tc-file">
+                          <IconPaperclip size={14} />
+                          <span className="tc-file-name" title={label}>{label}</span>
+                          <span className="tc-file-actions">
+                            <button type="button" className="tc-mini" onClick={() => setPreviewFile(att)} title="Preview" aria-label={`Preview ${label}`}>
+                              <IconEye size={15} />
+                            </button>
+                            <button type="button" className="tc-mini" onClick={() => forceDownload(att, label)} title="Download" aria-label={`Download ${label}`}>
+                              <IconDownload size={15} />
+                            </button>
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
             )}
             {renderWorkerSubmissions()}
           </div>
         )}
-      </div>
-      {toastMessage && <div className="copy-toast">{toastMessage}</div>}
+
+        <div className="tc-tile-footer" onClick={stopCardToggle}>
+          <span className="tc-ref" title={projectId || `Task #${id}`}>{projectId || `Task #${id}`}</span>
+          <div className="tc-actions">
+            {isDraft && (
+              <button type="button" className="tc-btn tc-btn--primary" onClick={() => onTaskAction?.(task, 'edit_draft')}>
+                Edit draft
+              </button>
+            )}
+            <button type="button" className="tc-btn tc-btn--ghost" onClick={() => onClick(id)} aria-expanded={isExpanded}>
+              {isExpanded ? 'Less' : 'Details'}
+              <IconChevronDown size={14} className="tc-chevron" />
+            </button>
+            {!isDraft && (
+              <button type="button" className="tc-btn tc-btn--ghost" onClick={handleTrackClick}>
+                <IconRoute size={14} /> Track
+              </button>
+            )}
+          </div>
+        </div>
+      </article>
+      {toastMessage && <div className="tc-toast" role="status">{toastMessage}</div>}
       {previewFile ? (
         <FilePreviewModal
           file={previewFile}
@@ -699,18 +713,8 @@ const OutboxTaskCard = ({
           onClose={() => setPreviewFile(null)}
         />
       ) : null}
-
     </>
   );
-};
-
-const getPriorityIcon = (priority) => {
-  const icons = {
-    'High': '🔴',
-    'Medium': '🟡',
-    'Low': '🟢'
-  };
-  return icons[priority] || '⚪';
 };
 
 // PropTypes
@@ -790,7 +794,6 @@ OutboxTaskCard.propTypes = {
   }),
   formatDate: PropTypes.func.isRequired,
   formatTime: PropTypes.func.isRequired,
-  getStatusClass: PropTypes.func.isRequired,
 };
 
 export default OutboxTaskCard;

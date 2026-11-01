@@ -275,12 +275,19 @@
     } catch {}
   }
 
-  function inspectResponseText(url, text, transport) {
+  // The last project-listing request the PAGE itself made (method, URL, body),
+  // replayed by onListingRefreshRequest below. See that function for why.
+  let lastListingRequest = null;
+
+  function inspectResponseText(url, text, transport, request) {
     if (!text || text.length > MAX_TEXT_LENGTH) return;
     const json = parseJson(text);
 
     const listingRows = extractListingRows(json);
     if (listingRows.length) {
+      if (transport === 'http' && request && !request.isReplay) {
+        lastListingRequest = { url: `${url}`, method: request.method || 'GET', body: typeof request.body === 'string' ? request.body : null };
+      }
       console.debug('[RMW HeyGen Network] found listing-shaped response', { url, count: listingRows.length, transport });
       postRows('HEYGEN_NETWORK_LISTING', listingRows, url);
       return;
@@ -313,11 +320,15 @@
       const url = typeof input === 'string' ? input : (input && input.url) || '';
       const promise = rawFetch.apply(this, arguments);
       if (!shouldInspectUrl(url)) return promise;
+      const request = {
+        method: (init && init.method) || (input && typeof input === 'object' && input.method) || 'GET',
+        body: init && typeof init.body === 'string' ? init.body : null,
+      };
       return promise.then((response) => {
         try {
           const contentType = `${response.headers?.get?.('content-type') || ''}`;
           if (/json/i.test(contentType)) {
-            response.clone().text().then((text) => inspectResponseText(url, text, 'http')).catch(() => {});
+            response.clone().text().then((text) => inspectResponseText(url, text, 'http', request)).catch(() => {});
           }
         } catch {}
         return response;
@@ -333,20 +344,22 @@
 
     OriginalXHR.prototype.open = function rmwHeygenXhrOpen(method, url, ...rest) {
       this.__rmwHeygenUrl = url;
+      this.__rmwHeygenMethod = method;
       return rawOpen.call(this, method, url, ...rest);
     };
 
     OriginalXHR.prototype.send = function rmwHeygenXhrSend(...args) {
       const url = this.__rmwHeygenUrl || '';
       if (shouldInspectUrl(url)) {
+        const request = { method: this.__rmwHeygenMethod || 'GET', body: typeof args[0] === 'string' ? args[0] : null };
         this.addEventListener('loadend', function () {
           try {
             if (this.status < 200 || this.status >= 300) return;
             const responseType = this.responseType;
             if (responseType === '' || responseType === 'text') {
-              if (typeof this.responseText === 'string') inspectResponseText(url, this.responseText, 'http');
+              if (typeof this.responseText === 'string') inspectResponseText(url, this.responseText, 'http', request);
             } else if (responseType === 'json') {
-              if (this.response != null) inspectResponseText(url, JSON.stringify(this.response), 'http');
+              if (this.response != null) inspectResponseText(url, JSON.stringify(this.response), 'http', request);
             }
           } catch {}
         });
@@ -441,4 +454,42 @@
   }
 
   window.addEventListener('message', onCreditLedgerFetchRequest);
+
+  // ---- Listing refresh after a render finishes (2026-11-01) ----
+  //
+  // The render-status poll HeyGen runs while a video renders ends with
+  // {id, status: "completed", progress: 100} - no video_url, no thumbnail.
+  // Only the project/items listing carries the finished file, and the page
+  // only fetches that when the user opens Projects. A video generated and
+  // left alone therefore stayed an empty card (script + credits, no video)
+  // forever - confirmed on generation 190, 2026-09-07. content-heygen.js asks
+  // for a refresh when a tracked render settles without a URL; this replays
+  // the page's OWN last listing request (same method, URL and body, cookie
+  // credentials) rather than guessing an endpoint, minus any pagination
+  // cursor so the newest page comes back. Nothing happens if the page has not
+  // made a listing request yet in this tab.
+  function onListingRefreshRequest(event) {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.source !== SOURCE || data.type !== 'HEYGEN_REQUEST_LISTING_REFRESH') return;
+    if (!lastListingRequest) return;
+    let url = lastListingRequest.url;
+    try {
+      const parsed = new URL(url, location.href);
+      ['token', 'cursor', 'next_token', 'page_token'].forEach((key) => parsed.searchParams.delete(key));
+      url = parsed.toString();
+    } catch {}
+    const method = `${lastListingRequest.method || 'GET'}`.toUpperCase();
+    const init = { method, credentials: 'include' };
+    if (method !== 'GET' && lastListingRequest.body) {
+      init.body = lastListingRequest.body;
+      init.headers = { 'Content-Type': 'application/json' };
+    }
+    rawFetch(url, init)
+      .then((response) => (response.ok ? response.text() : ''))
+      .then((text) => inspectResponseText(url, text, 'http', { method, isReplay: true }))
+      .catch(() => {});
+  }
+
+  window.addEventListener('message', onListingRefreshRequest);
 })();

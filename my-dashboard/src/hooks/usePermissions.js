@@ -43,6 +43,15 @@ export const FEATURE_PERMISSIONS = {
   view_ai_library: 'ai_library',
 };
 
+/**
+ * Sidebar sections everyone sees unless an admin hid them for this person
+ * (Admin Queue -> user profile). Allow-by-default, the inverse of
+ * FEATURE_PERMISSIONS. Keys mirror HIDEABLE_SECTIONS in
+ * backend/services/feature_access_service.py; the server reports them as
+ * `sectionVisibility` (false = hidden).
+ */
+export const HIDEABLE_SECTIONS = ['tracking', 'create_task', 'inbox', 'outbox', 'workspace', 'messages'];
+
 export function normalizeRoles(user) {
   const roles = new Set(
     Array.isArray(user?.roles)
@@ -81,6 +90,7 @@ export function resolvePermissionSnapshot(user) {
 
   const isAdmin = roleSet.has('admin');
   const featureAccess = user?.featureAccess || {};
+  const sectionVisibility = user?.sectionVisibility || {};
 
   return {
     roles,
@@ -88,6 +98,9 @@ export function resolvePermissionSnapshot(user) {
     isFaculty: isAdmin || roleSet.has('faculty'),
     isUser: roleSet.has('user') || isAdmin || roleSet.has('faculty'),
     featureAccess,
+    // Only an explicit false hides: a missing map (older server, cached /me)
+    // keeps today's behaviour of showing everything.
+    canSeeSection: (section) => sectionVisibility[section] !== false,
     can: (action) => {
       // Per-user grants, checked before the role matrix. Deny-by-default:
       // a missing/absent flag means "not granted", so a stale client that

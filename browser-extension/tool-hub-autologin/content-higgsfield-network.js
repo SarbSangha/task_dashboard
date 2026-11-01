@@ -527,12 +527,12 @@
   // bookkeeping per ledger row.
   const HIGGSFIELD_CREDIT_LEDGER_ENDPOINT = 'https://fnf-api-gw.higgsfield.ai/fnf/workspaces/credit-ledger';
 
-  function onCreditLedgerFetchRequest(event) {
+  async function onCreditLedgerFetchRequest(event) {
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== SOURCE || data.type !== 'HIGGSFIELD_REQUEST_CREDIT_LEDGER') return;
 
-    const token = getFreshHiggsfieldBearerToken();
+    const token = await getFreshHiggsfieldBearerToken();
     if (!token) {
       console.debug('[RMW Higgsfield Network] proactive credit ledger sweep requested but no fresh bearer token is available yet');
       return;
@@ -582,7 +582,18 @@
   // both are proactive, bearer-token-authenticated fetches with the exact
   // same "no fresh-enough token yet -> silently no-op rather than send an
   // unauthenticated request that would just 401" posture.
-  function getFreshHiggsfieldBearerToken() {
+  //
+  // Asks the page's own Clerk session for a token first (2026-11-01): a
+  // header copied off the page's last request goes stale within a minute and
+  // mid-login, which is what made the credit-ledger, detail and listing
+  // sweeps 401 in a real incognito session. Clerk.session.getToken() returns
+  // a cached token or refreshes it, the same call the page makes before its
+  // own requests. The token stays inside this closure either way.
+  async function getFreshHiggsfieldBearerToken() {
+    try {
+      const sessionToken = await window.Clerk?.session?.getToken?.();
+      if (typeof sessionToken === 'string' && sessionToken) return `Bearer ${sessionToken}`;
+    } catch {}
     if (!higgsfieldBearerToken || Date.now() - higgsfieldBearerTokenCapturedAt > HIGGSFIELD_BEARER_TOKEN_MAX_AGE_MS) {
       return null;
     }
@@ -612,14 +623,14 @@
     } catch {}
   }
 
-  function onJobDetailFetchRequest(event) {
+  async function onJobDetailFetchRequest(event) {
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== SOURCE || data.type !== 'HIGGSFIELD_REQUEST_JOB_DETAIL') return;
     const jobId = typeof data.payload?.jobId === 'string' ? data.payload.jobId.trim() : '';
     if (!jobId) return;
 
-    const token = getFreshHiggsfieldBearerToken();
+    const token = await getFreshHiggsfieldBearerToken();
     if (!token) {
       console.debug('[RMW Higgsfield Network] job detail lookup requested but no fresh bearer token is available yet', { jobId });
       postHiggsfieldJobDetailFailure(jobId, 'no_token');
@@ -682,12 +693,12 @@
   // shot the way a one-time page visit might.
   const HIGGSFIELD_ASSET_LISTING_ENDPOINT = 'https://fnf-api-gw.higgsfield.ai/fnf/assets';
 
-  function onAssetListingFetchRequest(event) {
+  async function onAssetListingFetchRequest(event) {
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== SOURCE || data.type !== 'HIGGSFIELD_REQUEST_ASSET_LISTING') return;
 
-    const token = getFreshHiggsfieldBearerToken();
+    const token = await getFreshHiggsfieldBearerToken();
     if (!token) {
       console.debug('[RMW Higgsfield Network] proactive asset listing sweep requested but no fresh bearer token is available yet');
       return;

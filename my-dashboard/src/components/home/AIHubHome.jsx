@@ -142,7 +142,7 @@ function ChartTip({ active, payload, label }) {
 export default function AIHubHome({ pushMeta, pushDetail }) {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { can, isAdmin } = usePermissions();
+  const { can, canSeeSection, isAdmin } = usePermissions();
   const canSeeSpend = isAdmin || can('view_credit_report');
 
   const [period, setPeriod] = useState('30d');
@@ -278,15 +278,21 @@ export default function AIHubHome({ pushMeta, pushDetail }) {
                 <Icon name="chart" size={16} /> Full report
               </button>
             )}
-            <button type="button" className="hub-btn" onClick={openTools}>
-              <Icon name="tools" size={16} /> AI tools
-            </button>
-            <button type="button" className="hub-btn" onClick={() => navigate('/dashboard/create-task')}>
-              <Icon name="plus" size={16} /> Assign task
-            </button>
-            <button type="button" className="hub-btn" onClick={() => navigate('/dashboard/inbox')}>
-              <Icon name="inbox" size={16} /> Inbox
-            </button>
+            {canSeeSection('workspace') && (
+              <button type="button" className="hub-btn" onClick={openTools}>
+                <Icon name="tools" size={16} /> AI tools
+              </button>
+            )}
+            {canSeeSection('create_task') && (
+              <button type="button" className="hub-btn" onClick={() => navigate('/dashboard/create-task')}>
+                <Icon name="plus" size={16} /> Assign task
+              </button>
+            )}
+            {canSeeSection('inbox') && (
+              <button type="button" className="hub-btn" onClick={() => navigate('/dashboard/inbox')}>
+                <Icon name="inbox" size={16} /> Inbox
+              </button>
+            )}
           </div>
         </div>
       </section>

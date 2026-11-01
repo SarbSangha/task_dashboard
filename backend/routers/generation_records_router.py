@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, or_
+from sqlalchemy import Text, and_, case, cast, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -188,6 +188,80 @@ def get_generation_filters(
         .all()
     )
     owners = [{"userId": user_id, "name": name} for user_id, name in owner_rows]
+
+    credits = kling_effective_credits()
+    active = (GenerationRecord.provider == KLING_PROVIDER, GenerationRecord.archived_at.is_(None))
+    owner_counts = dict(
+        db.query(GenerationRecord.owner_user_id, func.count(GenerationRecord.id))
+        .filter(*active)
+        .group_by(GenerationRecord.owner_user_id)
+        .all()
+    )
+    for owner in owners:
+        owner["count"] = int(owner_counts.get(owner["userId"], 0))
+
+    account = kling_account_expr()
+    accounts = [
+        {"value": label, "count": int(count), "credits": float(credit_sum or 0)}
+        for label, count, credit_sum in db.query(account, func.count(GenerationRecord.id), func.sum(credits))
+        .filter(*active, account.isnot(None))
+        .group_by(account)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .all()
+    ]
+    clients = [
+        {"id": client_id, "name": name or f"Client {client_id}", "count": int(count)}
+        for client_id, name, count in db.query(
+            GenerationRecord.linked_client_id, GenerationRecord.linked_client_name, func.count(GenerationRecord.id)
+        )
+        .filter(*active, GenerationRecord.linked_client_id.isnot(None))
+        .group_by(GenerationRecord.linked_client_id, GenerationRecord.linked_client_name)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .all()
+    ]
+    departments = [
+        {"value": dept, "count": int(count)}
+        for dept, count in db.query(User.department, func.count(GenerationRecord.id))
+        .join(User, GenerationRecord.owner_user_id == User.id)
+        .filter(*active, User.department.isnot(None))
+        .group_by(User.department)
+        .order_by(func.count(GenerationRecord.id).desc())
+        .all()
+    ]
+
+    def flag(condition):
+        return func.sum(case((condition, 1), else_=0))
+
+    missing_credits = credits.is_(None)
+    missing_prompt = kling_missing_prompt_expr()
+    missing_file = GenerationRecord.canonical_asset_url.is_(None)
+    stats = db.query(
+        func.count(GenerationRecord.id),
+        func.sum(credits),
+        func.min(credits),
+        func.max(credits),
+        func.min(GenerationRecord.created_at),
+        func.max(GenerationRecord.created_at),
+        flag(kling_is_video_expr()),
+        flag(kling_is_image_expr()),
+        flag(GenerationRecord.linked_task_id.isnot(None)),
+        flag(GenerationRecord.linked_client_id.isnot(None)),
+        flag(and_(GenerationRecord.linked_task_id.is_(None), GenerationRecord.linked_client_id.is_(None))),
+        flag(missing_credits),
+        flag(missing_prompt),
+        flag(missing_file),
+        flag(or_(missing_credits, missing_prompt, missing_file)),
+        flag(kling_is_duplicate_expr()),
+        flag(_kling_meta_text("source") == KLING_HISTORY_SOURCE),
+        flag(GenerationRecord.is_favorite.is_(True)),
+    ).filter(*active).one()
+    (total, total_credits, credit_min, credit_max, first_at, last_at, video, image, linked_task, linked_client, unlinked,
+     no_credits, no_prompt, no_file, any_missing, duplicates, history, favorites) = stats
+    total = int(total or 0)
+
+    def ist_day(value):
+        return (value + IST_OFFSET).date().isoformat() if value else None
+
     return {
         "success": True,
         "models": models,
@@ -195,25 +269,318 @@ def get_generation_filters(
         "ownershipStatuses": sorted(OWNERSHIP_STATUS_OPTIONS),
         "tags": tags,
         "owners": owners,
+        "accounts": accounts,
+        "clients": clients,
+        "departments": departments,
+        "creditRange": {"min": float(credit_min) if credit_min is not None else None,
+                        "max": float(credit_max) if credit_max is not None else None},
+        "dateRange": {"from": ist_day(first_at), "to": ist_day(last_at)},
+        "counts": {
+            "total": total,
+            "credits": float(total_credits or 0),
+            "video": int(video or 0),
+            "image": int(image or 0),
+            "noOutput": total - int(video or 0) - int(image or 0),
+            "linkedTask": int(linked_task or 0),
+            "noTask": total - int(linked_task or 0),
+            "linkedClient": int(linked_client or 0),
+            "noClient": total - int(linked_client or 0),
+            "unlinked": int(unlinked or 0),
+            "missingCredits": int(no_credits or 0),
+            "missingPrompt": int(no_prompt or 0),
+            "missingFile": int(no_file or 0),
+            "missingAny": int(any_missing or 0),
+            "complete": total - int(any_missing or 0),
+            "duplicates": int(duplicates or 0),
+            "history": int(history or 0),
+            "live": total - int(history or 0),
+            "favorites": int(favorites or 0),
+        },
     }
+
+
+# ── Kling filters (shared by /search and the RMW Data Excel export) ─────────
+#
+# Chosen from what the captured data actually carries: model/duration/
+# resolution labels are blank on ~97% of rows, so the useful axes are the
+# Kling account a generation was made on, output type, credits, whether it is
+# linked to a task/client, and data-quality gaps (no credits / prompt / file).
+# Several of those live in metadata_json rather than columns.
+
+KLING_OUTPUT_TYPES = {"video", "image", "none"}
+KLING_LINKED_OPTIONS = {"task", "no_task", "client", "no_client", "unlinked"}
+KLING_QUALITY_OPTIONS = {"complete", "missing_any", "missing_credits", "missing_prompt", "missing_file"}
+KLING_DUPLICATE_OPTIONS = {"only", "exclude"}
+KLING_CAPTURE_OPTIONS = {"history", "live"}
+KLING_HISTORY_SOURCE = "asset_history_discovered"
+
+
+def kling_effective_credits():
+    """Admin-corrected credits win over what the capture reported."""
+    return func.coalesce(GenerationRecord.admin_credits, GenerationRecord.credits_burned)
+
+
+def _kling_meta_text(key: str):
+    return GenerationRecord.metadata_json[key].as_string()
+
+
+def kling_account_expr():
+    return _kling_meta_text("klingAccountLabel")
+
+
+def _kling_media_assets_text():
+    # Never NULL, so NOT LIKE keeps rows that have no mediaAssets at all.
+    return func.coalesce(cast(GenerationRecord.metadata_json["mediaAssets"], Text), "")
+
+
+def kling_is_video_expr():
+    # mediaAssets is a list of {"assetType": "video" | "image" | "media"};
+    # a generation counts as video when any captured output is a video.
+    return _kling_media_assets_text().like('%"assetType": "video"%')
+
+
+def kling_is_image_expr():
+    text = _kling_media_assets_text()
+    return and_(~kling_is_video_expr(), or_(text.like('%"assetType": "image"%'), text.like('%"assetType": "media"%')))
+
+
+def kling_is_duplicate_expr():
+    return func.coalesce(_kling_meta_text("crossUserDuplicate"), "false") == "true"
+
+
+def kling_missing_prompt_expr():
+    return or_(GenerationRecord.prompt_text.is_(None), func.trim(GenerationRecord.prompt_text) == "")
+
+
+class KlingFilterParams:
+    """Every Kling filter as one dependency, so search and export agree."""
+
+    def __init__(
+        self,
+        q: Optional[str] = Query(None, max_length=300),
+        department: Optional[str] = Query(None),
+        owner_user_id: Optional[int] = Query(None),
+        project_id: Optional[int] = Query(None),
+        collection_id: Optional[int] = Query(None),
+        client_id: Optional[int] = Query(None),
+        model: Optional[str] = Query(None),
+        resolution: Optional[str] = Query(None),
+        ownership_status: Optional[str] = Query(None),
+        is_favorite: Optional[bool] = Query(None),
+        tag: Optional[str] = Query(None),
+        include_archived: bool = Query(False),
+        date_from: Optional[date] = Query(None),
+        date_to: Optional[date] = Query(None),
+        account: Optional[str] = Query(None, max_length=200),
+        output_type: Optional[str] = Query(None),
+        credits_min: Optional[float] = Query(None, ge=0),
+        credits_max: Optional[float] = Query(None, ge=0),
+        linked: Optional[str] = Query(None),
+        quality: Optional[str] = Query(None),
+        duplicates: Optional[str] = Query(None),
+        capture: Optional[str] = Query(None),
+    ):
+        self.q = (q or "").strip() or None
+        self.department = (department or "").strip() or None
+        self.owner_user_id = owner_user_id
+        self.project_id = project_id
+        self.collection_id = collection_id
+        self.client_id = client_id
+        self.model = (model or "").strip() or None
+        self.resolution = resolution or None
+        self.ownership_status = ownership_status or None
+        self.is_favorite = is_favorite
+        self.tag = (tag or "").strip() or None
+        self.include_archived = include_archived
+        self.date_from = date_from
+        self.date_to = date_to
+        self.account = (account or "").strip() or None
+        self.output_type = output_type or None
+        self.credits_min = credits_min
+        self.credits_max = credits_max
+        self.linked = linked or None
+        self.quality = quality or None
+        self.duplicates = duplicates or None
+        self.capture = capture or None
+        self._validate()
+
+    def _validate(self):
+        checks = (
+            ("ownership_status", self.ownership_status, OWNERSHIP_STATUS_OPTIONS),
+            ("output_type", self.output_type, KLING_OUTPUT_TYPES),
+            ("linked", self.linked, KLING_LINKED_OPTIONS),
+            ("quality", self.quality, KLING_QUALITY_OPTIONS),
+            ("duplicates", self.duplicates, KLING_DUPLICATE_OPTIONS),
+            ("capture", self.capture, KLING_CAPTURE_OPTIONS),
+        )
+        for name, value, allowed in checks:
+            if value and value not in allowed:
+                raise HTTPException(status_code=400, detail=f"Invalid {name}. Expected one of {sorted(allowed)}")
+        if self.date_from and self.date_to and self.date_from > self.date_to:
+            raise HTTPException(status_code=400, detail="The start date is after the end date")
+        if self.credits_min is not None and self.credits_max is not None and self.credits_min > self.credits_max:
+            raise HTTPException(status_code=400, detail="Minimum credits is above maximum credits")
+
+    def describe(self, db: Optional[Session] = None) -> list[str]:
+        """Human-readable list of the active filters (for the export Summary)."""
+        fmt = "%d %b %Y"
+        parts = []
+        if self.q:
+            parts.append(f'Search: "{self.q}"')
+        if self.date_from or self.date_to:
+            start = self.date_from.strftime(fmt) if self.date_from else "start"
+            end = self.date_to.strftime(fmt) if self.date_to else "today"
+            parts.append(f"Dates: {start} – {end}")
+        if self.owner_user_id is not None:
+            name = None
+            if db is not None:
+                name = db.query(User.name).filter(User.id == self.owner_user_id).scalar()
+            parts.append(f"Person: {name or self.owner_user_id}")
+        if self.department:
+            parts.append(f"Department: {self.department}")
+        if self.account:
+            parts.append(f"Kling account: {self.account}")
+        if self.output_type:
+            parts.append({"video": "Output: video", "image": "Output: image", "none": "Output: none captured"}[self.output_type])
+        if self.credits_min is not None or self.credits_max is not None:
+            low = f"{self.credits_min:g}" if self.credits_min is not None else "0"
+            high = f"{self.credits_max:g}" if self.credits_max is not None else "any"
+            parts.append(f"Credits: {low} – {high}")
+        labels = {
+            "linked": {"task": "Linked to a task", "no_task": "No linked task", "client": "Linked to a client",
+                       "no_client": "No linked client", "unlinked": "No task or client"},
+            "quality": {"complete": "Complete records", "missing_any": "Missing any data",
+                        "missing_credits": "Missing credits", "missing_prompt": "Missing prompt",
+                        "missing_file": "Missing video file"},
+            "duplicates": {"only": "Duplicates only", "exclude": "Duplicates hidden"},
+            "capture": {"history": "History import", "live": "Live capture"},
+        }
+        for attr, mapping in labels.items():
+            value = getattr(self, attr)
+            if value:
+                parts.append(mapping[value])
+        if self.client_id is not None:
+            parts.append(f"Client id: {self.client_id}")
+        if self.collection_id is not None:
+            parts.append(f"Collection id: {self.collection_id}")
+        if self.ownership_status:
+            parts.append(f"Ownership: {self.ownership_status}")
+        if self.model:
+            parts.append(f"Model: {self.model}")
+        if self.resolution:
+            parts.append(f"Resolution: {self.resolution}")
+        if self.tag:
+            parts.append(f"Tag: {self.tag}")
+        if self.is_favorite:
+            parts.append("Favourites only")
+        return parts
+
+
+def apply_kling_filters(query, f: KlingFilterParams):
+    """Filter a query over GenerationRecord outer-joined to User and GenerationProject."""
+    query = query.filter(GenerationRecord.provider == KLING_PROVIDER)
+    if not f.include_archived:
+        query = query.filter(GenerationRecord.archived_at.is_(None))
+    if f.department:
+        query = query.filter(func.lower(User.department) == f.department.lower())
+    if f.owner_user_id is not None:
+        query = query.filter(GenerationRecord.owner_user_id == f.owner_user_id)
+    if f.project_id is not None:
+        query = query.filter(GenerationRecord.project_id == f.project_id)
+    if f.client_id is not None:
+        query = query.filter(GenerationRecord.linked_client_id == f.client_id)
+    if f.collection_id is not None:
+        query = query.join(
+            GenerationCollectionMember, GenerationCollectionMember.generation_id == GenerationRecord.id
+        ).filter(GenerationCollectionMember.collection_id == f.collection_id)
+    if f.model:
+        query = query.filter(GenerationRecord.model_label.ilike(f"%{f.model}%"))
+    if f.resolution:
+        query = query.filter(GenerationRecord.resolution_label == f.resolution)
+    if f.ownership_status:
+        query = query.filter(GenerationRecord.ownership_status == f.ownership_status)
+    if f.is_favorite is not None:
+        query = query.filter(GenerationRecord.is_favorite == f.is_favorite)
+    if f.tag:
+        query = query.join(GenerationTag, GenerationTag.generation_id == GenerationRecord.id).filter(
+            GenerationTag.normalized_tag == _normalize_tag(f.tag)
+        )
+    # date_from/date_to are India calendar days (what the dashboard shows);
+    # created_at is naive UTC, so each IST day starts at 18:30 UTC the day
+    # before. Comparing against UTC midnight put 00:00-05:30 IST work on the
+    # previous day.
+    if f.date_from:
+        query = query.filter(GenerationRecord.created_at >= datetime.combine(f.date_from, datetime.min.time()) - IST_OFFSET)
+    if f.date_to:
+        query = query.filter(
+            GenerationRecord.created_at < datetime.combine(f.date_to + timedelta(days=1), datetime.min.time()) - IST_OFFSET
+        )
+    if f.account:
+        query = query.filter(kling_account_expr() == f.account)
+    if f.output_type == "video":
+        query = query.filter(kling_is_video_expr())
+    elif f.output_type == "image":
+        query = query.filter(kling_is_image_expr())
+    elif f.output_type == "none":
+        query = query.filter(~kling_is_video_expr(), ~kling_is_image_expr())
+    credits = kling_effective_credits()
+    if f.credits_min is not None:
+        query = query.filter(credits >= f.credits_min)
+    if f.credits_max is not None:
+        query = query.filter(credits <= f.credits_max)
+    if f.linked == "task":
+        query = query.filter(GenerationRecord.linked_task_id.isnot(None))
+    elif f.linked == "no_task":
+        query = query.filter(GenerationRecord.linked_task_id.is_(None))
+    elif f.linked == "client":
+        query = query.filter(GenerationRecord.linked_client_id.isnot(None))
+    elif f.linked == "no_client":
+        query = query.filter(GenerationRecord.linked_client_id.is_(None))
+    elif f.linked == "unlinked":
+        query = query.filter(GenerationRecord.linked_task_id.is_(None), GenerationRecord.linked_client_id.is_(None))
+    missing_credits = credits.is_(None)
+    missing_prompt = kling_missing_prompt_expr()
+    missing_file = GenerationRecord.canonical_asset_url.is_(None)
+    if f.quality == "missing_credits":
+        query = query.filter(missing_credits)
+    elif f.quality == "missing_prompt":
+        query = query.filter(missing_prompt)
+    elif f.quality == "missing_file":
+        query = query.filter(missing_file)
+    elif f.quality == "missing_any":
+        query = query.filter(or_(missing_credits, missing_prompt, missing_file))
+    elif f.quality == "complete":
+        query = query.filter(~missing_credits, ~missing_prompt, ~missing_file)
+    if f.duplicates == "only":
+        query = query.filter(kling_is_duplicate_expr())
+    elif f.duplicates == "exclude":
+        query = query.filter(~kling_is_duplicate_expr())
+    if f.capture == "history":
+        query = query.filter(_kling_meta_text("source") == KLING_HISTORY_SOURCE)
+    elif f.capture == "live":
+        query = query.filter(func.coalesce(_kling_meta_text("source"), "") != KLING_HISTORY_SOURCE)
+    if f.q:
+        like = f"%{f.q}%"
+        query = query.filter(
+            or_(
+                GenerationRecord.prompt_text.ilike(like),
+                GenerationRecord.model_label.ilike(like),
+                GenerationRecord.canonical_asset_key.ilike(like),
+                GenerationRecord.provider_task_id.ilike(like),
+                GenerationRecord.provider_generation_id.ilike(like),
+                GenerationRecord.linked_task_name.ilike(like),
+                GenerationRecord.linked_client_name.ilike(like),
+                kling_account_expr().ilike(like),
+                User.name.ilike(like),
+                GenerationProject.name.ilike(like),
+            )
+        )
+    return query
 
 
 @router.get("/search")
 def search_generations(
-    q: Optional[str] = Query(None),
-    department: Optional[str] = Query(None),
-    owner_user_id: Optional[int] = Query(None),
-    project_id: Optional[int] = Query(None),
-    collection_id: Optional[int] = Query(None),
-    client_id: Optional[int] = Query(None),
-    model: Optional[str] = Query(None),
-    resolution: Optional[str] = Query(None),
-    ownership_status: Optional[str] = Query(None),
-    is_favorite: Optional[bool] = Query(None),
-    tag: Optional[str] = Query(None),
-    include_archived: bool = Query(False),
-    date_from: Optional[date] = Query(None),
-    date_to: Optional[date] = Query(None),
+    filters: KlingFilterParams = Depends(),
     sort: str = Query("latest"),
     limit: int = Query(DEFAULT_SEARCH_PAGE_SIZE, ge=1, le=MAX_SEARCH_PAGE_SIZE),
     offset: int = Query(0, ge=0),
@@ -222,8 +589,6 @@ def search_generations(
 ):
     if sort not in SEARCH_SORT_OPTIONS:
         raise HTTPException(status_code=400, detail=f"Invalid sort option. Expected one of {sorted(SEARCH_SORT_OPTIONS)}")
-    if ownership_status and ownership_status not in OWNERSHIP_STATUS_OPTIONS:
-        raise HTTPException(status_code=400, detail=f"Invalid ownership_status. Expected one of {sorted(OWNERSHIP_STATUS_OPTIONS)}")
 
     resolved_limit, resolved_offset = _clamp_pagination(limit, offset, DEFAULT_SEARCH_PAGE_SIZE, MAX_SEARCH_PAGE_SIZE)
 
@@ -231,63 +596,22 @@ def search_generations(
         db.query(GenerationRecord, User, GenerationProject)
         .outerjoin(User, GenerationRecord.owner_user_id == User.id)
         .outerjoin(GenerationProject, GenerationRecord.project_id == GenerationProject.id)
-        .filter(GenerationRecord.provider == KLING_PROVIDER)
     )
+    query = apply_kling_filters(query, filters)
 
-    if not include_archived:
-        query = query.filter(GenerationRecord.archived_at.is_(None))
-    if department:
-        query = query.filter(func.lower(User.department) == department.strip().lower())
-    if owner_user_id is not None:
-        query = query.filter(GenerationRecord.owner_user_id == owner_user_id)
-    if project_id is not None:
-        query = query.filter(GenerationRecord.project_id == project_id)
-    if client_id is not None:
-        query = query.filter(GenerationRecord.linked_client_id == client_id)
-    if collection_id is not None:
-        query = query.join(
-            GenerationCollectionMember, GenerationCollectionMember.generation_id == GenerationRecord.id
-        ).filter(GenerationCollectionMember.collection_id == collection_id)
-    if model:
-        query = query.filter(GenerationRecord.model_label.ilike(f"%{model.strip()}%"))
-    if resolution:
-        query = query.filter(GenerationRecord.resolution_label == resolution)
-    if ownership_status:
-        query = query.filter(GenerationRecord.ownership_status == ownership_status)
-    if is_favorite is not None:
-        query = query.filter(GenerationRecord.is_favorite == is_favorite)
-    if tag:
-        query = query.join(GenerationTag, GenerationTag.generation_id == GenerationRecord.id).filter(
-            GenerationTag.normalized_tag == _normalize_tag(tag)
-        )
-    # date_from/date_to are India calendar days (what the dashboard shows);
-    # created_at is naive UTC, so each IST day starts at 18:30 UTC the day
-    # before. Comparing against UTC midnight put 00:00-05:30 IST work on the
-    # previous day.
-    if date_from:
-        query = query.filter(GenerationRecord.created_at >= datetime.combine(date_from, datetime.min.time()) - IST_OFFSET)
-    if date_to:
-        query = query.filter(
-            GenerationRecord.created_at < datetime.combine(date_to + timedelta(days=1), datetime.min.time()) - IST_OFFSET
-        )
-    if q:
-        like = f"%{q.strip()}%"
-        query = query.filter(
-            or_(
-                GenerationRecord.prompt_text.ilike(like),
-                GenerationRecord.model_label.ilike(like),
-                GenerationRecord.canonical_asset_key.ilike(like),
-                GenerationRecord.provider_task_id.ilike(like),
-                GenerationRecord.provider_generation_id.ilike(like),
-                User.name.ilike(like),
-                GenerationProject.name.ilike(like),
-            )
-        )
+    # First page only: how many generations and credits the filters match,
+    # so the toolbar can say "126 generations · 3,410 credits".
+    summary = None
+    if resolved_offset == 0:
+        count, credit_sum = query.with_entities(
+            func.count(func.distinct(GenerationRecord.id)), func.sum(kling_effective_credits())
+        ).one()
+        summary = {"count": int(count or 0), "credits": float(credit_sum or 0)}
 
     if sort == "oldest":
         query = query.order_by(GenerationRecord.created_at.asc(), GenerationRecord.id.asc())
     elif sort == "credits":
-        query = query.order_by(GenerationRecord.credits_burned.desc().nullslast(), GenerationRecord.created_at.desc())
+        query = query.order_by(kling_effective_credits().desc().nullslast(), GenerationRecord.created_at.desc())
     else:
         query = query.order_by(GenerationRecord.created_at.desc(), GenerationRecord.id.desc())
 
@@ -303,6 +627,7 @@ def search_generations(
             _serialize_generation_row(generation, owner, project, tags_map.get(generation.id))
             for generation, owner, project in rows
         ],
+        "summary": summary,
         "pagination": {
             "limit": resolved_limit,
             "offset": resolved_offset,

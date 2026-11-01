@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import WindowControls from '../common/WindowControls';
 import { useCustomDialogs } from '../common/CustomDialogs';
 import { useMinimizedWindowStack } from '../../hooks/useMinimizedWindowStack';
-import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { isMobileViewport } from '../../utils/isMobileViewport';
 import { clientsAPI } from '../../services/api';
 import { aiLibraryAPI } from '../../services/aiLibrary';
 import { startDriveUpload, UploadCancelledError } from '../../utils/driveResumableUpload';
 import '../reports/TaskReportPanel.css';
+import AiLibraryHistory from './AiLibraryHistory';
+import { formatBytes } from './aiLibraryFormat';
 import './AiLibraryPanel.css';
 
 /**
@@ -28,11 +29,9 @@ import './AiLibraryPanel.css';
  */
 
 const CONCURRENCY = 3;
-const PAGE_SIZE = 25;
 const PROGRESS_PAINT_MS = 200;
 const CLIENT_STORAGE_KEY = 'aiLibrary.lastClientId';
 const ACTIVE = new Set(['starting', 'uploading', 'verifying']);
-const EMPTY_FILTERS = { start: '', end: '', clientId: '', userId: '', status: '', search: '' };
 
 const STATUS_LABELS = {
   queued: 'Waiting',
@@ -51,18 +50,6 @@ const readError = (err, fallback) => {
   if (typeof detail === 'string') return detail;
   return err?.message || fallback;
 };
-
-const formatBytes = (bytes) => {
-  const value = Number(bytes) || 0;
-  if (value < 1024) return `${value} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let size = value / 1024;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
-  return `${size >= 100 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
-};
-
-const formatTime = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
 
 const readStoredClient = () => {
   try { return window.localStorage.getItem(CLIENT_STORAGE_KEY) || ''; } catch { return ''; }
@@ -94,15 +81,7 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
   const fileInputRef = useRef(null);
   const dragDepthRef = useRef(0);
 
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const search = useDebouncedValue(filters.search, 400);
-  const [page, setPage] = useState(1);
-  const [history, setHistory] = useState({ items: [], total: 0 });
-  const [historyOptions, setHistoryOptions] = useState({ clients: [], users: [] });
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState('');
   const [historyNonce, setHistoryNonce] = useState(0);
-  const historyRequestRef = useRef(0);
 
   const canManage = !!status?.canManage;
   const connected = !!status?.connected;
@@ -142,44 +121,6 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
     setSearchParams(next, { replace: true });
     loadStatus();
   }, [searchParams, setSearchParams, loadStatus]);
-
-  // ── History ──────────────────────────────────────────────────────────
-  const historyParams = useMemo(() => ({
-    start: filters.start || undefined,
-    end: filters.end || undefined,
-    clientId: filters.clientId || undefined,
-    userId: filters.userId || undefined,
-    status: filters.status || undefined,
-    q: search || undefined,
-  }), [filters.start, filters.end, filters.clientId, filters.userId, filters.status, search]);
-
-  const loadHistory = useCallback(async () => {
-    if (historyParams.start && historyParams.end && historyParams.start > historyParams.end) {
-      setHistoryError('"From" date must be on or before the "To" date.');
-      return;
-    }
-    const id = historyRequestRef.current + 1;
-    historyRequestRef.current = id;
-    setHistoryLoading(true);
-    try {
-      const [list, opts] = await Promise.all([
-        aiLibraryAPI.list({ ...historyParams, page, pageSize: PAGE_SIZE }),
-        aiLibraryAPI.options(),
-      ]);
-      if (historyRequestRef.current !== id) return;
-      setHistory({ items: list.items || [], total: list.total || 0 });
-      setHistoryOptions({ clients: opts.clients || [], users: opts.users || [] });
-      setHistoryError('');
-    } catch (err) {
-      if (historyRequestRef.current === id) setHistoryError(readError(err, 'Could not load upload history.'));
-    } finally {
-      if (historyRequestRef.current === id) setHistoryLoading(false);
-    }
-  }, [historyParams, page]);
-
-  useEffect(() => {
-    if (isOpen) loadHistory();
-  }, [isOpen, loadHistory, historyNonce]);
 
   // ── Upload queue ─────────────────────────────────────────────────────
   const patchItem = useCallback((key, patch) => {
@@ -420,18 +361,10 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
     setIsMaximized((prev) => !prev);
   };
 
-  const setFilter = (key) => (e) => {
-    setPage(1);
-    setFilters((prev) => ({ ...prev, [key]: e.target.value }));
-  };
-
   if (!isOpen) return null;
 
-  const totalPages = Math.max(1, Math.ceil(history.total / PAGE_SIZE));
-  const hasFilters = Object.entries(filters).some(([k, v]) => v !== EMPTY_FILTERS[k]);
   const hasFinished = items.some((i) => !(i.status === 'queued' || ACTIVE.has(i.status)));
   const activeCount = items.filter((i) => i.status === 'queued' || ACTIVE.has(i.status)).length;
-  const showUserColumn = canManage;
 
   return (
     <>
@@ -622,109 +555,7 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
             </section>
 
             {/* ── History ── */}
-            <section className="ail-history">
-              <h3>Upload history{!canManage && ' (yours)'}</h3>
-              <div className="trp-filters">
-                <label className="trp-field">
-                  <span>From</span>
-                  <input type="date" value={filters.start} onChange={setFilter('start')} max={filters.end || undefined} />
-                </label>
-                <label className="trp-field">
-                  <span>To</span>
-                  <input type="date" value={filters.end} onChange={setFilter('end')} min={filters.start || undefined} />
-                </label>
-                <label className="trp-field">
-                  <span>Client</span>
-                  <select value={filters.clientId} onChange={setFilter('clientId')}>
-                    <option value="">All clients</option>
-                    {historyOptions.clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </label>
-                {showUserColumn && (
-                  <label className="trp-field">
-                    <span>Uploaded by</span>
-                    <select value={filters.userId} onChange={setFilter('userId')}>
-                      <option value="">Everyone</option>
-                      {historyOptions.users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-                    </select>
-                  </label>
-                )}
-                <label className="trp-field">
-                  <span>Status</span>
-                  <select value={filters.status} onChange={setFilter('status')}>
-                    <option value="">Any</option>
-                    <option value="complete">Uploaded</option>
-                    <option value="pending">Incomplete</option>
-                    <option value="failed">Failed</option>
-                  </select>
-                </label>
-                <label className="trp-field ail-search">
-                  <span>Search</span>
-                  <input type="search" placeholder="File name…" value={filters.search} onChange={setFilter('search')} />
-                </label>
-                <div className="ail-history-actions">
-                  {hasFilters && (
-                    <button type="button" className="ail-secondary-btn" onClick={() => { setPage(1); setFilters(EMPTY_FILTERS); }}>
-                      Reset
-                    </button>
-                  )}
-                  <button type="button" className="ail-secondary-btn" onClick={loadHistory} disabled={historyLoading}>
-                    {historyLoading ? 'Loading…' : 'Refresh'}
-                  </button>
-                </div>
-              </div>
-
-              {historyError && <div className="trp-error" role="alert">{historyError}</div>}
-
-              {history.items.length === 0 ? (
-                <p className="trp-empty">{historyLoading ? 'Loading…' : 'No uploads yet.'}</p>
-              ) : (
-                <div className="trp-table-wrap">
-                  <table className="trp-table ail-table">
-                    <thead>
-                      <tr>
-                        <th>Uploaded</th>
-                        <th>File</th>
-                        <th>Client</th>
-                        {showUserColumn && <th>By</th>}
-                        <th>Size</th>
-                        <th>Status</th>
-                        <th aria-label="Drive link" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {history.items.map((row) => (
-                        <tr key={row.id}>
-                          <td>{formatTime(row.completedAt || row.createdAt)}</td>
-                          <td className="ail-file-cell" title={row.folderPath ? `${row.folderPath} / ${row.fileName}` : row.fileName}>
-                            {row.fileName}
-                          </td>
-                          <td>{row.clientName || '—'}</td>
-                          {showUserColumn && <td>{row.userName || '—'}</td>}
-                          <td>{formatBytes(row.sizeBytes)}</td>
-                          <td>
-                            <span className={`ail-pill ail-pill--${row.status}`} title={row.error || undefined}>
-                              {STATUS_LABELS[row.status] || row.status}
-                            </span>
-                          </td>
-                          <td>
-                            {row.driveLink && <a href={row.driveLink} target="_blank" rel="noreferrer">Open in Drive</a>}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {history.total > PAGE_SIZE && (
-                <div className="ail-pager">
-                  <button type="button" className="ail-secondary-btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</button>
-                  <span>Page {page} of {totalPages} · {history.total.toLocaleString()} uploads</span>
-                  <button type="button" className="ail-secondary-btn" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
-                </div>
-              )}
-            </section>
+            <AiLibraryHistory isOpen={isOpen} refreshKey={historyNonce} canManage={canManage} />
           </div>
         )}
       </div>

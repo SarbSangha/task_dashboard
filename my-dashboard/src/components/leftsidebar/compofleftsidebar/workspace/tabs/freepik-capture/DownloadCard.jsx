@@ -28,7 +28,7 @@ const DownloadCardPreview = React.memo(function DownloadCardPreview({ download }
           className="kling-card-image"
           loading="lazy"
           decoding="async"
-          fetchPriority="low"
+          {...{ fetchpriority: 'low' }}
         />
       ) : (
         <div className="kling-card-fallback">Image Preview</div>

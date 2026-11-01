@@ -228,6 +228,19 @@ No build, no dependencies. `chrome://extensions` → Developer mode → **Load u
 
 Manifest V3. If your dashboard runs on a different host/port than the ones listed, add it to `host_permissions` in `manifest.json` (currently covers `localhost`, `127.0.0.1`, `192.168.1.15`, `*.ritzmediaworld.in`, `*.ritzmediaworld.com`).
 
+### Cursor Usage Tracker (Cursor + Claude Code)
+
+`cursor-extension/` is the source of the `.vsix` installed in Cursor (or VS Code). Always build new versions from this folder. 1.5.0 was rebuilt here from the shipped 1.4.1, because an earlier "1.2.0" with Claude Code support had been built from older code and would have removed the dashboard connection.
+
+```bash
+cd cursor-extension
+npm ci
+node --test test/claudeSetup.test.js
+npm run package        # → dist/cursor-usage-tracker-<version>.vsix (needs npx/@vscode/vsce)
+```
+
+Bump `version` in `package.json` for every release so Cursor installs it over the old one. The extension id (`contenaissance.cursor-usage-tracker`) must stay the same, or computers lose their connection. Backend contracts: `backend/providers/cursor/CAPTURE_CONTRACT.md` and `backend/providers/claude_code/CAPTURE_CONTRACT.md`.
+
 ---
 
 ## 7. Production deploy shape (for reference)

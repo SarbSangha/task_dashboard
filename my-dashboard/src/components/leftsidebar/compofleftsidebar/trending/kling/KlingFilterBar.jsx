@@ -1,202 +1,112 @@
-import React from 'react';
+import DateRangePicker from '../../../../reports/DateRangePicker';
+import FilterPopover from '../FilterPopover';
+import KlingFilterFields from './KlingFilterFields';
+import { KLING_DEFAULT_FILTERS, SORT_OPTIONS, describeKlingFilters, isFilterInvalid, resolveDateRange } from './klingFilters';
 
+/**
+ * Kling's one-row toolbar: date range inline, every other filter behind the
+ * shared "Filters" popover (same pattern as the other tool tabs), then the
+ * live total with removable chips, Favourites and Sort.
+ */
 export default function KlingFilterBar({
-  departmentFilter,
-  departmentOptions,
-  onDepartmentChange,
-  modelFilter,
-  modelOptions,
-  onModelChange,
-  resolutionFilter,
-  resolutionOptions,
-  onResolutionChange,
-  ownershipFilter,
-  onOwnershipChange,
-  userFilter,
-  userOptions,
-  onUserChange,
-  favoritesOnly,
-  onToggleFavoritesOnly,
-  tagFilter,
-  tagOptions,
-  onTagFilterChange,
-  datePreset,
-  datePresets,
-  onDatePresetChange,
+  filters,
+  onChange,
+  onReset,
+  options,
   sortBy,
   onSortChange,
+  summary,
+  loading,
   collectionFilter,
   onClearCollectionFilter,
-  clientFilter,
-  onClearClientFilter,
-  allDepartmentsValue,
-  allModelsValue,
-  allResolutionsValue,
-  allOwnershipValue,
-  allUsersValue,
 }) {
+  const chips = describeKlingFilters(filters, options);
+  const invalid = isFilterInvalid(filters);
+  const hasAnyFilter = chips.length > 0 || Boolean(collectionFilter);
+  const { from, to } = resolveDateRange(filters);
+  // Favourites has its own toggle and the date its own picker.
+  const popoverActive = chips.filter((chip) => chip.key !== 'date' && chip.key !== 'favoritesOnly').length;
+
+  const clearPopoverFilters = () => onChange({
+    ...KLING_DEFAULT_FILTERS,
+    datePreset: filters.datePreset,
+    dateFrom: filters.dateFrom,
+    dateTo: filters.dateTo,
+    favoritesOnly: filters.favoritesOnly,
+  });
+
   return (
     <div className="kling-filter-bar">
-      {(collectionFilter || clientFilter) && (
-        <div className="kling-filter-bar-row">
+      <div className="ftb">
+        <div className="ftb-date">
+          <DateRangePicker
+            block
+            allowAll
+            portal
+            align="left"
+            ariaLabel="Date range"
+            start={from || ''}
+            end={to || ''}
+            presetKey={filters.datePreset}
+            onChange={(range, key) => onChange(
+              key === 'custom'
+                ? { datePreset: 'custom', dateFrom: range.start, dateTo: range.end }
+                : { datePreset: key, dateFrom: '', dateTo: '' },
+            )}
+          />
+        </div>
+
+        <FilterPopover activeCount={popoverActive} onClear={clearPopoverFilters}>
+          <KlingFilterFields filters={filters} onChange={onChange} options={options} showAdvanced layout="stack" hideDate />
+        </FilterPopover>
+
+        <div className="kfb-summary" aria-live="polite">
+          {invalid ? (
+            <span className="kfb-invalid">{invalid}</span>
+          ) : loading || !summary ? (
+            <span className="kfb-count kfb-count--muted">Counting…</span>
+          ) : (
+            <span className="kfb-count">
+              <strong>{summary.count.toLocaleString()}</strong> generation{summary.count === 1 ? '' : 's'}
+              <span className="kfb-dot">·</span>
+              <strong>{Math.round(summary.credits).toLocaleString()}</strong> credits
+            </span>
+          )}
+
           {collectionFilter && (
-            <div className="kling-active-project-chip">
-              <span>Collection: {collectionFilter.name}</span>
-              <button type="button" onClick={onClearCollectionFilter} aria-label="Clear collection filter">
-                &times;
-              </button>
-            </div>
+            <span className="kfb-chip kfb-chip--accent">
+              Collection: {collectionFilter.name}
+              <button type="button" onClick={onClearCollectionFilter} aria-label="Clear collection filter">×</button>
+            </span>
           )}
-          {clientFilter && (
-            <div className="kling-active-project-chip">
-              <span>Client: {clientFilter.name}</span>
-              <button type="button" onClick={onClearClientFilter} aria-label="Clear client filter">
-                &times;
-              </button>
-            </div>
+          {chips.map((chip) => (
+            <span key={chip.key} className="kfb-chip">
+              {chip.label}
+              <button type="button" onClick={() => onChange(chip.reset)} aria-label={`Remove filter ${chip.label}`}>×</button>
+            </span>
+          ))}
+          {hasAnyFilter && (
+            <button type="button" className="kfb-clear" onClick={onReset}>Clear all</button>
           )}
         </div>
-      )}
 
-      <div className="kling-filter-toolbar">
-        <div className="trendings-select-filters kling-select-filters">
-          <label className="trendings-filter-select-wrap">
-            <span className="trendings-filter-select-label">Department</span>
-            <select
-              className="trendings-filter-select"
-              value={departmentFilter}
-              onChange={(event) => onDepartmentChange(event.target.value)}
-            >
-              {departmentOptions.map((department) => (
-                <option key={department} value={department}>
-                  {department === allDepartmentsValue ? 'All Departments' : department}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="trendings-filter-select-wrap">
-            <span className="trendings-filter-select-label">Model</span>
-            <select
-              className="trendings-filter-select"
-              value={modelFilter}
-              onChange={(event) => onModelChange(event.target.value)}
-            >
-              <option value={allModelsValue}>All Models</option>
-              {modelOptions.map((model) => (
-                <option key={model} value={model}>
-                  {model}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="trendings-filter-select-wrap">
-            <span className="trendings-filter-select-label">Resolution</span>
-            <select
-              className="trendings-filter-select"
-              value={resolutionFilter}
-              onChange={(event) => onResolutionChange(event.target.value)}
-            >
-              <option value={allResolutionsValue}>All Resolutions</option>
-              {resolutionOptions.map((resolution) => (
-                <option key={resolution} value={resolution}>
-                  {resolution}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="trendings-filter-select-wrap">
-            <span className="trendings-filter-select-label">Ownership</span>
-            <select
-              className="trendings-filter-select"
-              value={ownershipFilter}
-              onChange={(event) => onOwnershipChange(event.target.value)}
-            >
-              <option value={allOwnershipValue}>All</option>
-              <option value="resolved">Resolved</option>
-              <option value="unknown">Unknown</option>
-            </select>
-          </label>
-
-          <label className="trendings-filter-select-wrap">
-            <span className="trendings-filter-select-label">User</span>
-            <select
-              className="trendings-filter-select"
-              value={userFilter}
-              onChange={(event) => onUserChange(event.target.value)}
-            >
-              <option value={allUsersValue}>All Users</option>
-              {userOptions.map((user) => (
-                <option key={user.userId} value={user.userId}>
-                  {user.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="trendings-filter-select-wrap">
-            <span className="trendings-filter-select-label">Date</span>
-            <select
-              className="trendings-filter-select"
-              value={datePreset}
-              onChange={(event) => onDatePresetChange(event.target.value)}
-            >
-              {datePresets.map((preset) => (
-                <option key={preset.value} value={preset.value}>
-                  {preset.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="trendings-filter-select-wrap">
-            <span className="trendings-filter-select-label">Tag</span>
-            <input
-              className="trendings-filter-select kling-tag-filter-input"
-              list="kling-tag-filter-options"
-              placeholder="Any tag"
-              value={tagFilter}
-              onChange={(event) => onTagFilterChange(event.target.value)}
-            />
-            <datalist id="kling-tag-filter-options">
-              {tagOptions.map((tagOption) => (
-                <option key={tagOption} value={tagOption} />
-              ))}
-            </datalist>
-          </label>
-        </div>
-
-        <div className="trendings-sort-group kling-toggle-group">
+        <div className="kfb-controls">
           <button
             type="button"
-            className={`trendings-sort-btn ${favoritesOnly ? 'active' : ''}`}
-            onClick={onToggleFavoritesOnly}
+            className={`kfb-btn${filters.favoritesOnly ? ' is-active' : ''}`}
+            onClick={() => onChange({ favoritesOnly: !filters.favoritesOnly })}
+            aria-pressed={filters.favoritesOnly}
           >
-            &#9733; Favorites
+            ★ Favourites
           </button>
-          <button
-            type="button"
-            className={`trendings-sort-btn ${sortBy === 'latest' ? 'active' : ''}`}
-            onClick={() => onSortChange('latest')}
-          >
-            Latest
-          </button>
-          <button
-            type="button"
-            className={`trendings-sort-btn ${sortBy === 'oldest' ? 'active' : ''}`}
-            onClick={() => onSortChange('oldest')}
-          >
-            Oldest
-          </button>
-          <button
-            type="button"
-            className={`trendings-sort-btn ${sortBy === 'credits' ? 'active' : ''}`}
-            onClick={() => onSortChange('credits')}
-          >
-            Most Credits
-          </button>
+          <label className="kfb-sort">
+            <span>Sort</span>
+            <select value={sortBy} onChange={(event) => onSortChange(event.target.value)} aria-label="Sort generations">
+              {SORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
         </div>
       </div>
     </div>

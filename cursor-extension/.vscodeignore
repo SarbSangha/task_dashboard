@@ -1,0 +1,10 @@
+node_modules/sql.js/dist/*debug*
+node_modules/sql.js/dist/*browser*
+node_modules/sql.js/dist/sql-asm*
+node_modules/sql.js/dist/worker*
+node_modules/sql.js/dist/*inline*
+node_modules/sql.js/dist/*memory-growth*
+node_modules/sql.js/dist/*.zip
+dist/**
+*.vsix
+test/**

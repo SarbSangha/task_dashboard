@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -25,6 +25,10 @@ from services.feature_access_service import (
     normalize_feature,
     notify_feature_access_changed,
     set_feature_access,
+    SECTION_LABELS,
+    normalize_section,
+    section_visibility_map,
+    set_section_visible,
 )
 from services.role_service import ADMIN_ROLE, grant_role, is_super_admin, revoke_role, user_role_names
 from services.tool_access_cleanup import release_tool_access
@@ -71,6 +75,20 @@ class AdminAccessPayload(BaseModel):
     enabled: bool
 
 
+# Positions the signup form offers; Position drives the hod/spoc/faculty roles
+# (utils/permissions.resolve_roles), so it is a closed list here too.
+ADMIN_EDITABLE_POSITIONS = ("NORMAL", "HOD", "SPOC", "FACULTY")
+
+
+class AdminUserProfilePayload(BaseModel):
+    # Every field optional: only the ones sent are changed.
+    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    email: Optional[EmailStr] = None
+    employee_id: Optional[str] = Field(default=None, max_length=60)
+    department: Optional[str] = Field(default=None, max_length=120)
+    position: Optional[str] = Field(default=None, max_length=40)
+
+
 class FeatureAccessPayload(BaseModel):
     feature: str = Field(..., min_length=1, max_length=80)
     enabled: bool
@@ -108,6 +126,8 @@ def _serialize_user(user: User, approval_status: str) -> dict:
         # {"rmw_data": bool, "buffer": bool} - reads True for every feature on
         # admins, who bypass the grant table entirely.
         "featureAccess": feature_access_map(user),
+        # Default-visible sidebar sections; False where an admin hid one.
+        "sectionVisibility": section_visibility_map(user),
         "isFeatureExempt": is_feature_exempt(user),
     }
 
@@ -662,6 +682,60 @@ def feature_access_catalog(_: User = Depends(require_admin)):
     }
 
 
+class SectionVisibilityPayload(BaseModel):
+    section: str
+    visible: bool
+
+
+@router.patch("/users/{user_id}/section-visibility")
+def set_user_section_visibility(
+    user_id: int,
+    payload: SectionVisibilityPayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    """Show or hide a default-visible sidebar section for one user."""
+    section = normalize_section(payload.section)
+    if not section:
+        raise HTTPException(status_code=400, detail=f"Unknown section: {payload.section}")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_deleted:
+        raise HTTPException(status_code=400, detail="Cannot update sections for a deleted account")
+    if is_feature_exempt(user):
+        raise HTTPException(status_code=400, detail="Administrators always see every section")
+
+    _commit_feature_access(
+        db,
+        lambda: set_section_visible(db, user, section, payload.visible, granted_by=current_user.id),
+    )
+    db.refresh(user)
+
+    label = SECTION_LABELS.get(section, section)
+    notify_feature_access_changed(
+        [user.id],
+        f"hidden:{section}",
+        payload.visible,
+        message=f"{label} was {'added to' if payload.visible else 'removed from'} your sidebar.",
+    )
+    push_admin_realtime_event(
+        db,
+        "admin_user_feature_access_changed",
+        "Sidebar Updated",
+        f"{label} {'shown to' if payload.visible else 'hidden from'} {user.name}.",
+        {
+            "userId": user.id,
+            "userName": user.name,
+            "section": section,
+            "visible": payload.visible,
+            "updatedBy": current_user.id,
+        },
+    )
+    return {"success": True, "user": _serialize_user(user, "approved" if user.is_active else "pending")}
+
+
 @router.patch("/users/{user_id}/feature-access")
 def set_user_feature_access(
     user_id: int,
@@ -905,4 +979,141 @@ def create_department(
         "success": True,
         "message": "Department added successfully",
         "department": _serialize_department(department, 0),
+    }
+
+
+# Caches whose responses embed user names/emails/departments.
+USER_DIRECTORY_CACHE_PATTERNS = (
+    "cache:group_users:*",
+    "cache:groups_mine:*",
+    AUTH_DEPARTMENTS_CACHE_PATTERN,
+)
+
+
+@router.patch("/users/{user_id}/profile")
+def admin_update_user_profile(
+    user_id: int,
+    payload: AdminUserProfilePayload,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_operational_db),
+):
+    """Admin edits another user's profile directly (no approval round-trip)."""
+    user = db.query(User).filter(User.id == user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_deleted:
+        raise HTTPException(status_code=400, detail="Deleted accounts cannot be edited")
+    _guard_super_admin(user, current_user, "edited by another admin")
+
+    sent = payload.model_dump(exclude_unset=True)
+    changes: dict[str, dict] = {}
+
+    def record(field: str, column: str, value) -> None:
+        current = getattr(user, column)
+        if (current or None) != (value or None):
+            changes[field] = {"from": current, "to": value}
+            setattr(user, column, value)
+
+    if "name" in sent:
+        name = (payload.name or "").strip()
+        if len(name) < 2:
+            raise HTTPException(status_code=400, detail="Name must be at least 2 characters")
+        record("name", "name", name)
+
+    if "email" in sent:
+        if not payload.email:
+            raise HTTPException(status_code=400, detail="Email is required")
+        email = str(payload.email).strip().lower()
+        taken = (
+            db.query(User.id)
+            .filter(func.lower(User.email) == email, User.id != user.id)
+            .first()
+        )
+        if taken:
+            raise HTTPException(status_code=409, detail="Another account already uses this email")
+        record("email", "email", email)
+
+    if "employee_id" in sent:
+        employee_id = (payload.employee_id or "").strip() or None
+        if employee_id:
+            taken = (
+                db.query(User.id)
+                .filter(func.lower(User.employee_id) == employee_id.lower(), User.id != user.id)
+                .first()
+            )
+            if taken:
+                raise HTTPException(status_code=409, detail="Another account already uses this employee ID")
+        record("employeeId", "employee_id", employee_id)
+
+    if "position" in sent:
+        position = (payload.position or "").strip().upper()
+        if position not in ADMIN_EDITABLE_POSITIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Position must be one of: {', '.join(ADMIN_EDITABLE_POSITIONS)}",
+            )
+        record("position", "position", position)
+
+    if "department" in sent:
+        department = (payload.department or "").strip()
+        if department:
+            match = (
+                db.query(DepartmentDirectory)
+                .filter(
+                    DepartmentDirectory.is_active == True,
+                    func.lower(func.trim(DepartmentDirectory.name)) == department.lower(),
+                )
+                .first()
+            )
+            if not match:
+                raise HTTPException(status_code=400, detail=f"Unknown department: {department}")
+            department = match.name
+        # Position is applied above, so this already sees the new value.
+        elif (user.position or "").upper() != "FACULTY":
+            raise HTTPException(status_code=400, detail="Department is required unless the position is Faculty")
+        record("department", "department", department or None)
+
+    if not changes:
+        return {
+            "success": True,
+            "message": "No changes",
+            "changes": {},
+            "user": _serialize_user(user, "approved" if user.is_active else "pending"),
+        }
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That email or employee ID is already in use")
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Profile update database unavailable")
+    db.refresh(user)
+
+    for pattern in USER_DIRECTORY_CACHE_PATTERNS:
+        try:
+            from_thread.run(invalidate_pattern, pattern)
+        except Exception:
+            pass
+    invalidate_admin_user_ids_cache()
+
+    push_admin_realtime_event(
+        db,
+        "admin_user_profile_updated",
+        "User Profile Updated",
+        f"Profile updated for {user.name} ({', '.join(changes)}).",
+        {
+            "userId": user.id,
+            "userEmail": user.email,
+            "userName": user.name,
+            "changedFields": sorted(changes),
+            "updatedBy": current_user.id,
+        },
+    )
+    return {
+        "success": True,
+        "message": "Profile updated",
+        "changes": {key: {"from": value["from"], "to": value["to"]} for key, value in changes.items()},
+        "user": _serialize_user(user, "approved" if user.is_active else "pending"),
     }

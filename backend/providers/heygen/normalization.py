@@ -34,6 +34,7 @@ so a follow-up pass that tightens content-heygen.js's envelope naming doesn't
 require a matching change here.
 """
 import hashlib
+import re
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -229,6 +230,18 @@ def _find_existing_generation(db: Session, *, video_id, render_id, job_id, workf
     return None
 
 
+def _speech_script(meta: dict) -> Optional[str]:
+    """The spoken script of a listing row. avatar_iv_meta.prompt is only the
+    optional motion prompt and is null for most Photo Avatar videos; the words
+    the avatar actually says sit in extra_speech_meta.script, found both inside
+    avatar_iv_meta and directly under the row's metadata (2026-11-01 audit)."""
+    speech = meta.get("extra_speech_meta") if isinstance(meta, dict) else None
+    if not isinstance(speech, dict):
+        return None
+    script = speech.get("script")
+    return script if isinstance(script, str) and script.strip() else None
+
+
 def _extract_fields(payload: dict) -> dict:
     """Maps one captured HeyGen event payload (the envelope content-heygen.js
     builds - see module docstring) to a flat dict of HeygenGeneration column
@@ -251,9 +264,15 @@ def _extract_fields(payload: dict) -> dict:
     # heygen.js's own envelope keys at all (it's a real HeyGen response, not
     # our DOM-scrape envelope). Consulted only as a fallback, after this
     # envelope's own keys, so it never shadows a richer DOM-scraped value.
-    avatar_iv_meta = ((payload.get("metadata") or {}).get("avatar_iv_meta")) or {}
+    listing_meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    avatar_iv_meta = listing_meta.get("avatar_iv_meta") or {}
 
-    script_text = _first(payload, "scriptText", "script_text", "promptText", "prompt") or avatar_iv_meta.get("prompt")
+    script_text = (
+        _first(payload, "scriptText", "script_text", "promptText", "prompt")
+        or avatar_iv_meta.get("prompt")
+        or _speech_script(avatar_iv_meta)
+        or _speech_script(listing_meta)
+    )
     scene_ids = _first(scene, "ids", "sceneIds") or []
     if not isinstance(scene_ids, list):
         scene_ids = []
@@ -362,6 +381,22 @@ def _extract_fields(payload: dict) -> dict:
     }
 
 
+_OUTPUT_URL_FIELDS = ("video_url", "download_url", "preview_url")
+_VIDEO_FILE_ID_RE = re.compile(r"/([0-9a-f]{32})\.(?:mp4|webm|mov)(?:[?#]|$)", re.IGNORECASE)
+
+
+def _is_other_videos_file(url: Optional[str], video_id: Optional[str]) -> bool:
+    """True when url is a HeyGen render file named after a DIFFERENT video.
+    HeyGen stores renders as .../<video_id>.mp4; the extension's old DOM
+    fallback grabbed whatever <video> was on screen and attached the previous
+    video's file to a new render (generation 225 got 190's, 2026-11-01). A URL
+    without a recognisable id, or with no known video id yet, is kept."""
+    if not url or not video_id:
+        return False
+    match = _VIDEO_FILE_ID_RE.search(url)
+    return bool(match and match.group(1).lower() != video_id.lower())
+
+
 def _is_stale_snapshot(generation: HeygenGeneration, fields: dict) -> bool:
     """True when this payload describes an OLDER state of the generation than
     the one already stored - see providers/freepik/normalization.py's version
@@ -399,6 +434,47 @@ def _is_non_video_library_asset(payload: dict) -> bool:
         if value and value.lower() == "audio":
             return True
     return False
+
+
+def _is_unrendered_listing_row(payload: dict) -> bool:
+    """True for listing rows that never became a video of their own: an
+    editor draft that was never generated (status "draft") and a Video Agent
+    chat session (resource_type "video_agent_session" - the video it produces
+    is listed separately as a normal heygen_video row). Both carry no script,
+    no output and no charge, so storing them made the empty "no preview, no
+    prompt, no credits" cards (2026-11-01 audit: 14 drafts, 2 sessions).
+    Only blocks CREATING a generation - a row already tracked from a real
+    Generate click is never touched by this."""
+    status = (_s(payload.get("status")) or "").lower()
+    resource_type = (_s(payload.get("resource_type")) or "").lower()
+    item_type = (_s(payload.get("item_type")) or "").lower()
+    return status == "draft" or resource_type == "video_agent_session" or item_type == "video_agent"
+
+
+def _stored_ledger_credits(db: Session, generation: HeygenGeneration) -> Optional[float]:
+    """Credits from a credit_ledger_row event that was stored before this
+    generation existed. The extension uploads listing rows and ledger rows in
+    separate batches; a ledger batch normalized while the listing batch was
+    still uncommitted found no generation, was skipped, and - being a
+    duplicate on every retry - was never applied (2026-11-01 audit: 6
+    completed videos had their ledger event stored but credits_used NULL).
+    Looking the event up again here makes the order irrelevant."""
+    ids = [value for value in (generation.video_id, generation.render_id, generation.job_id, generation.workflow_id) if value]
+    if not ids:
+        return None
+    event = (
+        db.query(HeygenCaptureEvent)
+        .filter(
+            HeygenCaptureEvent.provider == PROVIDER,
+            HeygenCaptureEvent.event_type == "credit_ledger_row",
+            HeygenCaptureEvent.provider_video_id.in_(ids),
+        )
+        .order_by(HeygenCaptureEvent.id.desc())
+        .first()
+    )
+    if event is None:
+        return None
+    return _f(((event.payload_json or {}).get("credits") or {}).get("used"))
 
 
 def normalize_capture_event(db: Session, event: HeygenCaptureEvent) -> Optional[HeygenGeneration]:
@@ -440,6 +516,13 @@ def normalize_capture_event(db: Session, event: HeygenCaptureEvent) -> Optional[
         external_event_id=fields["external_event_id"],
     )
 
+    if existing is None and _is_unrendered_listing_row(payload):
+        logger.info(
+            "heygen normalization skipped capture_event_id=%s: draft or Video Agent session, not a rendered video",
+            event.id,
+        )
+        return None
+
     is_reconciliation = event.ownership_confidence == "reconciliation"
     generation = existing or HeygenGeneration(provider=PROVIDER)
     is_new = existing is None
@@ -464,8 +547,15 @@ def normalize_capture_event(db: Session, event: HeygenCaptureEvent) -> Optional[
         # why there is nothing richer to put in it) would silently erase the
         # full script/avatar/voice snapshot metadata_json already stored from
         # an earlier, richer capture of the SAME generation.
+        known_video_id = fields["video_id"] or generation.video_id
         for field_name, value in fields.items():
             if field_name in ("metadata_json", "source_metadata_json"):
+                continue
+            if field_name in _OUTPUT_URL_FIELDS and _is_other_videos_file(value, known_video_id):
+                logger.warning(
+                    "heygen normalization ignored %s from capture_event_id=%s: file belongs to another video (expected %s)",
+                    field_name, event.id, known_video_id,
+                )
                 continue
             if is_new or value is not None:
                 setattr(generation, field_name, value)
@@ -544,6 +634,9 @@ def normalize_capture_event(db: Session, event: HeygenCaptureEvent) -> Optional[
         # never show up as "Unknown user". A fresh live capture of the same
         # item still creates it, owned.
         return None
+
+    if generation.credits_used is None and event.event_type != "credit_ledger_row":
+        generation.credits_used = _stored_ledger_credits(db, generation)
 
     if is_new:
         db.add(generation)

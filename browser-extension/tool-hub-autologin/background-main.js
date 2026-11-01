@@ -1289,6 +1289,49 @@ function removeBrowsingData(options, dataTypes) {
   });
 }
 
+// Every session wipe, newest last, so an unexpected sign-out can be traced to
+// its cause: in the service worker console run
+//   chrome.storage.local.get('rmw_session_wipe_log').then(console.log)
+const SESSION_WIPE_LOG_STORAGE_KEY = 'rmw_session_wipe_log';
+const SESSION_WIPE_LOG_LIMIT = 100;
+
+async function recordSessionWipe(entry) {
+  try {
+    const stored = await chrome.storage.local.get([SESSION_WIPE_LOG_STORAGE_KEY]);
+    const log = Array.isArray(stored[SESSION_WIPE_LOG_STORAGE_KEY]) ? stored[SESSION_WIPE_LOG_STORAGE_KEY] : [];
+    log.push({ at: new Date().toISOString(), ...entry });
+    await chrome.storage.local.set({ [SESSION_WIPE_LOG_STORAGE_KEY]: log.slice(-SESSION_WIPE_LOG_LIMIT) });
+  } catch {}
+}
+
+// Path only: query strings and hashes can carry launch tickets.
+function pathOfUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}`;
+  } catch {
+    return '';
+  }
+}
+
+// Launch timeline: what a tool tab did and when, for "why is this launch
+// slow" questions. Content scripts send TOOL_HUB_LAUNCH_TIMELINE steps; read
+// it in the service worker console with
+//   chrome.storage.local.get('rmw_launch_timeline').then(console.log)
+const LAUNCH_TIMELINE_STORAGE_KEY = 'rmw_launch_timeline';
+const LAUNCH_TIMELINE_LIMIT = 300;
+let launchTimelineChain = Promise.resolve();
+
+function recordLaunchTimeline(entry) {
+  launchTimelineChain = launchTimelineChain.then(async () => {
+    const stored = await chrome.storage.local.get([LAUNCH_TIMELINE_STORAGE_KEY]);
+    const log = Array.isArray(stored[LAUNCH_TIMELINE_STORAGE_KEY]) ? stored[LAUNCH_TIMELINE_STORAGE_KEY] : [];
+    log.push(entry);
+    await chrome.storage.local.set({ [LAUNCH_TIMELINE_STORAGE_KEY]: log.slice(-LAUNCH_TIMELINE_LIMIT) });
+  }).catch(() => {});
+  return launchTimelineChain;
+}
+
 async function clearToolSession(toolSlug, options = {}) {
   const startedAt = Date.now();
   const baseDomains = getToolSessionDomains(toolSlug, { includeGoogle: false });
@@ -1358,6 +1401,19 @@ async function clearToolSession(toolSlug, options = {}) {
     browsingDataClearMs: finishedAt - cookiesClearedAt,
     totalMs: finishedAt - startedAt,
   });
+  recordLaunchTimeline({
+    at: new Date(finishedAt).toISOString(),
+    tool: normalizeToolSlug(toolSlug),
+    step: `background: cleared session (${options.reason || 'unspecified'}) in ${finishedAt - startedAt}ms`,
+  });
+  await recordSessionWipe({
+    tool: normalizeToolSlug(toolSlug),
+    reason: options.reason || 'unspecified',
+    includeGoogle: Boolean(options.includeGoogle),
+    cookiesRemoved: removed,
+    tabId: options.tabId || undefined,
+    page: options.page || undefined,
+  });
 
   return { removed, siteDataCleared };
 }
@@ -1386,7 +1442,7 @@ async function clearGoogleSessionForFreshLaunch(toolSlug) {
   const normalizedSlug = normalizeToolSlug(toolSlug);
   if (!(TOOL_OPTIONAL_SESSION_DOMAINS[normalizedSlug] || []).length) return;
   try {
-    await clearToolSession(normalizedSlug, { includeGoogle: true });
+    await clearToolSession(normalizedSlug, { includeGoogle: true, reason: 'fresh_launch_google_clear' });
   } catch (error) {
     console.debug('[RMW Tool Hub Auto Login] Pre-launch Google session clear failed (non-fatal)', normalizedSlug, error?.message);
   }
@@ -1656,6 +1712,8 @@ async function cleanupToolSessionForClosedTab(tabId) {
   const otherRootTabOpen = isRootTab && await hasOtherOpenRootTab(normalizedSlug, tabId);
   if (shouldClearSessionOnClose && !otherRootTabOpen && (isRootTab || !hasOtherToolTabs)) {
     const cleanupResult = await clearToolSession(normalizedSlug, {
+      reason: isRootTab ? 'dashboard_launched_tab_closed' : 'last_launched_tab_closed',
+      tabId,
       includeGoogle: normalizedSlug === 'flow'
         || normalizedSlug === 'genspark'
         || normalizedSlug === 'behance'
@@ -2973,6 +3031,18 @@ function handleRuntimeMessage(message, sender, sendResponse) {
   const senderUrl = sender?.url || sender?.tab?.url || '';
   const senderIsDashboard = isAllowedDashboardUrl(senderUrl);
 
+  if (message?.type === 'TOOL_HUB_LAUNCH_TIMELINE') {
+    recordLaunchTimeline({
+      at: new Date(Number(message.at) || Date.now()).toISOString(),
+      tool: normalizeToolSlug(message.toolSlug),
+      tab: senderTabId || undefined,
+      page: pathOfUrl(senderUrl),
+      step: `${message.step || ''}`.slice(0, 300),
+    });
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message?.type === 'TOOL_HUB_ACTIVATE_LAUNCH') {
     activateLaunchForTab(
       senderTabId,
@@ -3101,7 +3171,12 @@ function handleRuntimeMessage(message, sender, sendResponse) {
   }
 
   if (message?.type === 'TOOL_HUB_CLEAR_TOOL_SESSION') {
-    clearToolSession(message.toolSlug, { includeGoogle: Boolean(message.includeGoogle) })
+    clearToolSession(message.toolSlug, {
+      includeGoogle: Boolean(message.includeGoogle),
+      reason: `${message.reason || 'content_script'}`.slice(0, 80),
+      tabId: senderTabId,
+      page: pathOfUrl(senderUrl),
+    })
       .then(async (result) => {
         if (!message.preserveLaunch) {
           await clearActiveLaunch(senderTabId, message.toolSlug);
@@ -3497,6 +3572,13 @@ function handleRuntimeMessage(message, sender, sendResponse) {
     return true;
   }
 
+  if (message?.type === 'FIGMA_CAPTURE_EVENT') {
+    handleFigmaCaptureEventMessage(message, senderTabId, senderOpenerTabId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === 'SPLICE_CAPTURE_EVENT') {
     handleSpliceCaptureEventMessage(message, senderTabId, senderOpenerTabId)
       .then((result) => sendResponse(result))
@@ -3633,6 +3715,7 @@ if (chrome?.runtime?.onStartup) {
     // retry-flush kick on startup, to drain anything left over from before
     // the service worker last terminated.
     runSafeStartupTask(runGrammarlyDocsCaptureFlush);
+    runSafeStartupTask(runFigmaCaptureFlush);
   });
 }
 
@@ -3656,6 +3739,7 @@ if (chrome?.runtime?.onInstalled) {
     runSafeStartupTask(runSpliceCaptureFlush);
     runSafeStartupTask(() => chrome.alarms.create(SPLICE_CAPTURE_HEALTH_ALARM, { periodInMinutes: 5 }));
     runSafeStartupTask(runGrammarlyDocsCaptureFlush);
+    runSafeStartupTask(runFigmaCaptureFlush);
   });
 }
 
@@ -3719,6 +3803,9 @@ if (chrome?.alarms?.onAlarm) {
     }
     if (alarm?.name === GRAMMARLY_DOCS_CAPTURE_RETRY_ALARM) {
       runSafeStartupTask(runGrammarlyDocsCaptureFlush);
+    }
+    if (alarm?.name === FIGMA_CAPTURE_RETRY_ALARM) {
+      runSafeStartupTask(runFigmaCaptureFlush);
     }
     if (alarm?.name === SINGLE_SEAT_HEARTBEAT_ALARM) {
       runSafeStartupTask(runSingleSeatHeartbeat);

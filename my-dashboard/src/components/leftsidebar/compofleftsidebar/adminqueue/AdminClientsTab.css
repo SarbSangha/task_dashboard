@@ -200,3 +200,14 @@
   color: var(--color-text-muted);
   text-align: center;
 }
+
+/* Deactivate is rare and reversible: outline style, not a solid red slab. */
+.act-btn--danger-ghost {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
+  color: var(--color-danger);
+}
+
+.act-btn--danger-ghost:hover {
+  background: color-mix(in srgb, var(--color-danger) 9%, transparent);
+}

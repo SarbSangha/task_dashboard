@@ -1,0 +1,126 @@
+{
+  "name": "cursor-usage-tracker",
+  "displayName": "Cursor Usage Tracker (+ Claude Code)",
+  "description": "Captures every Cursor prompt, and switches on Claude Code usage reporting (terminal and VS Code), for your own dashboard website.",
+  "version": "1.5.2",
+  "publisher": "contenaissance",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "cursorTracker.syncNow",
+        "title": "Cursor Tracker: Sync now"
+      },
+      {
+        "command": "cursorTracker.connectDashboard",
+        "title": "Cursor Tracker: Connect to dashboard"
+      },
+      {
+        "command": "cursorTracker.connectClaude",
+        "title": "Cursor Tracker: Connect Claude Code on this computer"
+      },
+      {
+        "command": "cursorTracker.disconnectClaude",
+        "title": "Cursor Tracker: Stop tracking Claude Code on this computer"
+      },
+      {
+        "command": "cursorTracker.configure",
+        "title": "Cursor Tracker: Use a standalone tracker site (URL and API key)"
+      },
+      {
+        "command": "cursorTracker.openDashboard",
+        "title": "Cursor Tracker: Open dashboard"
+      },
+      {
+        "command": "cursorTracker.resyncAll",
+        "title": "Cursor Tracker: Re-send last 30 days"
+      },
+      {
+        "command": "cursorTracker.showLog",
+        "title": "Cursor Tracker: Show log"
+      }
+    ],
+    "configuration": {
+      "title": "Cursor Usage Tracker",
+      "properties": {
+        "cursorTracker.dashboardUrl": {
+          "type": "string",
+          "default": "",
+          "deprecationMessage": "No longer used: run Cursor Tracker: Connect to dashboard with a setup code from an admin."
+        },
+        "cursorTracker.trackerToken": {
+          "type": "string",
+          "default": "",
+          "deprecationMessage": "No longer used: the token is kept in secure storage after Cursor Tracker: Connect to dashboard."
+        },
+        "cursorTracker.serverUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Standalone tracker site (only if not using the RMW dashboard), e.g. https://usage.example.com"
+        },
+        "cursorTracker.userName": {
+          "type": "string",
+          "default": "",
+          "description": "Your name on the dashboard. Each person sharing an account sets their own."
+        },
+        "cursorTracker.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Must match TRACKER_API_KEY on the server."
+        },
+        "cursorTracker.syncIntervalMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "How often to send new data."
+        },
+        "cursorTracker.lookbackDays": {
+          "type": "number",
+          "default": 3,
+          "description": "Each sync re-sends this many days so late token counts get updated."
+        },
+        "cursorTracker.firstSyncDays": {
+          "type": "number",
+          "default": 30,
+          "description": "How far back the very first sync goes."
+        },
+        "cursorTracker.sendPromptText": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send the text of your prompts (Cursor and Claude Code). Turn off to send only tokens, models and costs."
+        },
+        "cursorTracker.maxPromptChars": {
+          "type": "number",
+          "default": 4000,
+          "description": "Longer prompts are cut to this length."
+        },
+        "cursorTracker.fetchAccountUsage": {
+          "type": "boolean",
+          "default": false,
+          "description": "Try to pull usage from cursor.com with your signed-in session. Doesn't work on Cursor 3, which encrypts the session; upload the usage CSV on the dashboard instead."
+        },
+        "cursorTracker.databasePath": {
+          "type": "string",
+          "default": "",
+          "description": "Override location of Cursor's state.vscdb (leave empty for auto)."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "sql.js": "^1.15.2"
+  },
+  "scripts": {
+    "package": "npx --yes @vscode/vsce@3 package --allow-missing-repository --out dist/"
+  }
+}

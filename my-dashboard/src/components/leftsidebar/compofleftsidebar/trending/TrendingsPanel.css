@@ -915,11 +915,11 @@
 
 .trendings-virtual-cell {
   box-sizing: border-box;
-  padding: 0 24px 20px 0;
+  padding: 0 14px 16px 0;
 }
 
 .trendings-virtual-cell .trendings-card {
-  height: calc(100% - 20px);
+  height: calc(100% - 16px);
   max-height: none;
 }
 
@@ -1515,4 +1515,397 @@
   .trendings-directory-structure-controls {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── Tab bar: Databank views + AI tool tabs (one scrollable row) ───────────── */
+
+.trendings-tabbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+/* Scrollbar only while hovering, so the strip reads as tabs, not a scroller. */
+.trendings-tabbar:hover { scrollbar-color: var(--color-scrollbar-thumb) transparent; }
+
+.trendings-tab-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.trendings-tab-group--tools {
+  margin-left: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--color-border-subtle);
+}
+
+.trendings-tab-group-label {
+  margin-right: 4px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.trendings-tabbar .trendings-view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 11px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.trendings-tabbar .trendings-view-tab:hover {
+  background: var(--color-hover-surface);
+  border-color: transparent;
+  color: var(--color-text);
+  transform: none;
+  box-shadow: none;
+}
+
+.trendings-tabbar .trendings-view-tab:focus-visible { box-shadow: var(--shadow-focus); transform: none; }
+
+.trendings-tabbar .trendings-view-tab.active {
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-primary) 35%, transparent);
+  color: var(--color-primary);
+  box-shadow: none;
+}
+
+.trendings-view-tab--tool .tool-logo {
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.trendings-view-tab--tool:not(.active) .tool-logo { filter: saturate(0.85); }
+
+/* ── Context bar (tool tabs): what this tab holds + Excel export ──────────── */
+
+.trendings-context-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-surface-muted) 55%, transparent);
+}
+
+.trendings-context-tool {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.trendings-context-tool > .tool-logo {
+  flex-shrink: 0;
+  padding: 5px;
+  box-sizing: content-box;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+  background: var(--color-surface);
+}
+
+.trendings-context-copy { min-width: 0; }
+
+.trendings-context-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 750;
+  color: var(--color-text);
+}
+
+.trendings-context-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.trendings-context-desc {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Data / Directory filter row ──────────────────────────────────────────── */
+
+.trendings-filter-row { padding: 10px 20px; gap: 12px; }
+.trendings-filter-row .trendings-filter-select { height: 34px; min-width: 150px; }
+.trendings-filter-row .trendings-toolbar-status {
+  flex: 1 1 140px;
+  text-align: right;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .trendings-tabbar { padding: 8px 12px; }
+  .trendings-tab-group-label { display: none; }
+  .trendings-context-bar { flex-direction: column; align-items: stretch; padding: 10px 12px; }
+  .trendings-context-desc { white-space: normal; }
+  .trendings-filter-row .trendings-toolbar-status { text-align: left; }
+}
+
+/* ── Data cards (rmw-card): uniform preview, body, footer ─────────────────── */
+
+.trendings-card.rmw-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border-radius: 14px;
+  transition: border-color var(--theme-transition-fast), box-shadow var(--theme-transition-fast), transform var(--theme-transition-fast);
+}
+
+.trendings-card.rmw-card:hover {
+  border-color: var(--color-border);
+  box-shadow: var(--shadow-popover);
+}
+
+.rmw-card-preview {
+  position: relative;
+  flex: 1 1 150px;
+  min-height: 150px;
+  margin: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-radius: 14px 14px 0 0;
+  background: var(--color-surface-muted);
+}
+
+.rmw-card-preview.is-clickable { cursor: pointer; }
+.rmw-card-preview.is-clickable:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--color-primary); }
+.rmw-card-preview .trendings-card-image { transition: transform 0.25s ease; }
+.rmw-card-preview.is-clickable:hover .trendings-card-image { transform: scale(1.03); }
+
+.rmw-card-type {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.rmw-card-text {
+  height: 100%;
+  margin: 0;
+  padding: 38px 14px 14px;
+  box-sizing: border-box;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background:
+    linear-gradient(to bottom, transparent 70%, var(--color-surface-muted)),
+    var(--color-surface-muted);
+  -webkit-mask-image: linear-gradient(to bottom, #000 75%, transparent);
+  mask-image: linear-gradient(to bottom, #000 75%, transparent);
+}
+
+.rmw-card-tile {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+}
+
+.rmw-card-tile span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rmw-card-tile--music { color: color-mix(in srgb, #f97316 75%, var(--color-text-muted)); }
+.rmw-card-tile--pdf { color: color-mix(in srgb, #ef4444 70%, var(--color-text-muted)); }
+.rmw-card-tile--link { color: color-mix(in srgb, var(--color-primary) 70%, var(--color-text-muted)); }
+
+.rmw-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  padding: 12px 12px 8px;
+}
+
+.rmw-card-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.rmw-card .trendings-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rmw-card .trendings-card-menu-wrap { margin: -3px -2px 0 0; }
+
+.rmw-card .trendings-card-menu-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.rmw-card .trendings-card-menu-btn:hover,
+.rmw-card .trendings-card-menu-btn[aria-expanded="true"] {
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  box-shadow: none;
+}
+
+.rmw-card .trendings-card-menu { min-width: 140px; }
+
+.rmw-card-task {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rmw-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 22px;
+}
+
+.rmw-card-chip {
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rmw-card-chip--project {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: color-mix(in srgb, var(--color-primary) 80%, var(--color-text));
+}
+
+.rmw-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: 12px;
+}
+
+.rmw-card-avatar {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: hsl(var(--hue, 160) 52% 48%);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.rmw-card-person {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rmw-card-time {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Preview modal: in-app text */
+.rmw-preview-text {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.rmw-preview-text pre {
+  max-height: 60vh;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rmw-preview-text .trendings-open-link-btn { align-self: flex-start; }
+
+/* Tool tabs rendered by ToolRecordsTab manage their own padding and scroll,
+   whatever per-tool padding .trendings-content--<tool> carries. */
+.trendings-content:has(> .trc-root) {
+  padding: 0;
+  overflow: hidden;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { isCancelledError, useQueryClient } from '@tanstack/react-query';
 import { activityAPI, authAPI, isRequestCanceled, taskAPI } from '../../../../services/api';
 import { useAuth } from '../../../../context/AuthContext';
 import { INBOX_KEY, normalizeInboxResponse } from '../../../../hooks/useInbox';
@@ -82,17 +82,29 @@ export function useWorkspaceTaskDataset() {
     setError('');
 
     try {
+      // The request belongs to React Query (shared with the Inbox/Outbox
+      // panels), so it gets React Query's own signal. Passing this effect's
+      // signal let a quick remount cancel the shared request, and the next
+      // reader then got that cancellation - which the catch below used to turn
+      // into "no tasks", leaving Overview/Projects/Analytics empty until a
+      // manual refresh.
+      const emptyOnFailure = (fetchError) => {
+        if (isRequestCanceled(fetchError) || isCancelledError(fetchError)) throw fetchError;
+        return { data: [], tasks: [] };
+      };
       const [inboxRes, outboxRes] = await Promise.all([
         queryClient.fetchQuery({
           queryKey: INBOX_KEY(user?.id, {}),
-          queryFn: async () => normalizeInboxResponse(await taskAPI.getInbox({}, { signal })),
+          queryFn: async ({ signal: querySignal }) =>
+            normalizeInboxResponse(await taskAPI.getInbox({}, { signal: querySignal })),
           staleTime: WORKSPACE_TASK_CACHE_TTL_MS,
-        }).catch(() => ({ data: [], tasks: [] })),
+        }).catch(emptyOnFailure),
         queryClient.fetchQuery({
           queryKey: OUTBOX_KEY(user?.id, {}),
-          queryFn: async () => normalizeOutboxResponse(await taskAPI.getOutbox({}, { signal })),
+          queryFn: async ({ signal: querySignal }) =>
+            normalizeOutboxResponse(await taskAPI.getOutbox({}, { signal: querySignal })),
           staleTime: WORKSPACE_TASK_CACHE_TTL_MS,
-        }).catch(() => ({ data: [], tasks: [] })),
+        }).catch(emptyOnFailure),
       ]);
 
       if (signal?.aborted) return;
@@ -111,7 +123,7 @@ export function useWorkspaceTaskDataset() {
         liveUpdatedAt: Date.now(),
       }));
     } catch (loadError) {
-      if (isRequestCanceled(loadError) || signal?.aborted) return;
+      if (isRequestCanceled(loadError) || isCancelledError(loadError) || signal?.aborted) return;
       console.error('Failed to load workspace task dataset:', loadError);
       setError('Could not refresh workspace data right now.');
       if (!silent) {
@@ -119,9 +131,10 @@ export function useWorkspaceTaskDataset() {
         setCurrentUser(user || null);
       }
     } finally {
-      if (signal?.aborted) return;
-      if (silent) setIsRefreshing(false);
-      else setLoading(false);
+      if (!signal?.aborted) {
+        if (silent) setIsRefreshing(false);
+        else setLoading(false);
+      }
     }
   };
 
@@ -251,9 +264,10 @@ export function useWorkspaceTeamDirectory() {
         setActivityByUser({});
       }
     } finally {
-      if (signal?.aborted) return;
-      if (silent) setIsRefreshing(false);
-      else setLoading(false);
+      if (!signal?.aborted) {
+        if (silent) setIsRefreshing(false);
+        else setLoading(false);
+      }
     }
   };
 
@@ -438,9 +452,10 @@ export function useWorkspaceCompanyDirectory() {
         setActivityByUser({});
       }
     } finally {
-      if (signal?.aborted) return;
-      if (silent) setIsRefreshing(false);
-      else setLoading(false);
+      if (!signal?.aborted) {
+        if (silent) setIsRefreshing(false);
+        else setLoading(false);
+      }
     }
   };
 
@@ -695,15 +710,11 @@ function computeAverageDurationDays(tasks) {
   return Number((total / durations.length).toFixed(1));
 }
 
-function computeProductivityScore(tasks, activityRow, filterKey) {
-  if (filterKey === 'today' && activityRow?.totalSessionDuration) {
-    const activeTime = Number(activityRow.activeTime || 0);
-    const totalTime = Number(activityRow.totalSessionDuration || 0);
-    if (totalTime > 0) {
-      return Math.round((activeTime / totalTime) * 100);
-    }
-  }
-
+// Task-progress score for a period. It used to switch to "active session
+// time / total session time" for Today only, which made Today's number (and
+// its "vs yesterday" trend) measure something different from every other
+// period.
+function computeProductivityScore(tasks) {
   if (!tasks.length) return 0;
 
   const weightedScore = tasks.reduce((sum, task) => {
@@ -721,7 +732,7 @@ function computeProductivityScore(tasks, activityRow, filterKey) {
 function buildTrend(currentValue, previousValue, invert = false) {
   const delta = Number((currentValue - previousValue).toFixed(1));
   const effectiveDelta = invert ? -delta : delta;
-  const direction = effectiveDelta >= 0 ? 'positive' : 'negative';
+  const direction = effectiveDelta === 0 ? 'neutral' : effectiveDelta > 0 ? 'positive' : 'negative';
   return {
     delta,
     direction,
@@ -760,13 +771,6 @@ export function useWorkspaceAnalytics(filterKey) {
       setLoading(true);
       setError('');
       try {
-        const activityRes = await activityAPI.myActivity({ signal: controller.signal }).catch((error) => {
-          if (isRequestCanceled(error)) {
-            return { __canceled: true };
-          }
-          return { data: null };
-        });
-        if (activityRes?.__canceled) return;
         const range = getAnalyticsRange(filterKey);
         const currentTasks = getTasksForRange(tasks, range.start, range.end);
         const previousTasks = getTasksForRange(tasks, range.previousStart, range.previousEnd);
@@ -775,8 +779,8 @@ export function useWorkspaceAnalytics(filterKey) {
         const previousCompletionRate = computeCompletionRate(previousTasks);
         const averageTaskDuration = computeAverageDurationDays(currentTasks);
         const previousAverageDuration = computeAverageDurationDays(previousTasks);
-        const productivityScore = computeProductivityScore(currentTasks, activityRes?.data, filterKey);
-        const previousProductivityScore = computeProductivityScore(previousTasks, null, filterKey);
+        const productivityScore = computeProductivityScore(currentTasks);
+        const previousProductivityScore = computeProductivityScore(previousTasks);
 
         const completedTasks = currentTasks.filter((task) => (task.status || '').toLowerCase() === 'completed').length;
         const activeTasks = currentTasks.filter((task) =>
@@ -831,7 +835,9 @@ export function useWorkspaceAnalytics(filterKey) {
 }
 
 export function formatTrendText(trend, suffix, comparisonLabel) {
+  if (!trend.delta) return `No change from ${comparisonLabel}`;
   const absDelta = Math.abs(trend.delta);
-  const arrow = trend.direction === 'positive' ? '↑' : '↓';
+  // The arrow follows the number; colour (direction) says whether that's good.
+  const arrow = trend.delta > 0 ? '↑' : '↓';
   return `${arrow} ${absDelta}${suffix} from ${comparisonLabel}`;
 }

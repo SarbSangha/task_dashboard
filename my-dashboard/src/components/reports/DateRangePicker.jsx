@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   DATE_PRESETS, WEEKDAYS, MONTH_FMT, addMonths, computePresetDates, daysBetween, formatRange, fromIso,
   monthGrid, sameDay, startOfDay, toIso,
@@ -22,14 +23,40 @@ const Chevron = ({ dir }) => (
   </svg>
 );
 
-export default function DateRangePicker({ start, end, presetKey, onChange, align = 'right' }) {
+// Also used by RMW Data's filters and Excel exports. Extra props:
+//   allowAll  - adds an "All time" preset that clears the range (start/end '')
+//   block     - full-width trigger that sits in a filter grid
+//   presets   - preset list (defaults to dateRanges.js DATE_PRESETS)
+//   portal    - render the calendar on document.body, positioned from the
+//               trigger, so a scrolling/clipping parent cannot cut it off
+export default function DateRangePicker({
+  start, end, presetKey, onChange, align = 'right',
+  allowAll = false, allLabel = 'All time', block = false, presets = DATE_PRESETS, ariaLabel, portal = false,
+}) {
   const [open, setOpen] = useState(false);
   const [draftStart, setDraftStart] = useState(null);
   const [draftEnd, setDraftEnd] = useState(null);
   const [hoverDay, setHoverDay] = useState(null);
   const [viewMonth, setViewMonth] = useState(() => addMonths(fromIso(end) || new Date(), -1));
   const wrapRef = useRef(null);
+  const popRef = useRef(null);
+  const [portalStyle, setPortalStyle] = useState(null);
   const today = startOfDay(new Date());
+
+  // Portal mode: place the calendar under the trigger (or above it when
+  // there is no room below), clamped to the viewport.
+  const placePortal = () => {
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = Math.min(680, window.innerWidth - 16);
+    const left = align === 'right'
+      ? Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))
+      : Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    const below = window.innerHeight - rect.bottom;
+    setPortalStyle(below >= 380 || below >= rect.top
+      ? { position: 'fixed', top: rect.bottom + 8, left }
+      : { position: 'fixed', top: 'auto', bottom: window.innerHeight - rect.top + 8, left });
+  };
 
   const openPicker = () => {
     const s = fromIso(start);
@@ -38,28 +65,35 @@ export default function DateRangePicker({ start, end, presetKey, onChange, align
     setDraftEnd(e);
     setHoverDay(null);
     // Show the end month on the right, so the selected range is in view.
-    setViewMonth(addMonths(e || today, -1));
+    setViewMonth(addMonths(e || s || today, -1));
+    if (portal) placePortal();
     setOpen(true);
   };
 
   useEffect(() => {
     if (!open) return undefined;
     const onDown = (event) => {
-      if (wrapRef.current && !wrapRef.current.contains(event.target)) setOpen(false);
+      if (wrapRef.current?.contains(event.target) || popRef.current?.contains(event.target)) return;
+      setOpen(false);
     };
+    const onViewportChange = () => { if (portal) placePortal(); };
     const onKey = (event) => {
       if (event.key === 'Escape') setOpen(false);
     };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onViewportChange);
+    document.addEventListener('scroll', onViewportChange, true);
     return () => {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onViewportChange);
+      document.removeEventListener('scroll', onViewportChange, true);
     };
-  }, [open]);
+  }, [open, portal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyPreset = (key) => {
-    const range = computePresetDates(key);
+    const range = key === 'all' ? { start: '', end: '' } : computePresetDates(key);
     onChange(range, key);
     setOpen(false);
   };
@@ -90,7 +124,9 @@ export default function DateRangePicker({ start, end, presetKey, onChange, align
   const previewEnd = draftEnd || (draftStart && hoverDay && hoverDay >= draftStart ? hoverDay : null);
   const inRange = (day) => draftStart && previewEnd && day >= draftStart && day <= previewEnd;
 
-  const activePreset = DATE_PRESETS.find((p) => p.key === presetKey);
+  const presetList = allowAll ? [{ key: 'all', label: allLabel }, ...presets] : presets;
+  const activePreset = presetList.find((p) => p.key === presetKey);
+  const hasRange = Boolean(start && end);
   const buttonLabel = activePreset ? activePreset.label : formatRange(start, end);
   const draftDays = draftStart ? daysBetween(draftStart, draftEnd || draftStart) : 0;
   const canGoNext = addMonths(viewMonth, 2) <= addMonths(today, 1);
@@ -137,25 +173,33 @@ export default function DateRangePicker({ start, end, presetKey, onChange, align
   );
 
   return (
-    <div className="drp" ref={wrapRef}>
+    <div className={`drp${block ? ' drp--block' : ''}`} ref={wrapRef}>
       <button
         type="button"
         className={`drp-trigger ${open ? 'open' : ''}`}
         onClick={() => (open ? setOpen(false) : openPicker())}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={formatRange(start, end)}
+        aria-label={ariaLabel ? `${ariaLabel}: ${buttonLabel}` : undefined}
+        title={hasRange ? formatRange(start, end) : buttonLabel}
       >
         <CalendarIcon />
         <span className="drp-trigger-label">{buttonLabel}</span>
-        {activePreset && <span className="drp-trigger-dates">{formatRange(start, end)}</span>}
+        {activePreset && hasRange && <span className="drp-trigger-dates">{formatRange(start, end)}</span>}
         <span className="drp-caret" />
       </button>
 
-      {open && (
-        <div className={`drp-pop drp-align-${align}`} role="dialog" aria-label="Choose a date range">
+      {open && (() => {
+        const pop = (
+        <div
+          ref={popRef}
+          className={`drp-pop drp-align-${align}${portal ? ' drp-pop--portal' : ''}`}
+          style={portal ? portalStyle || undefined : undefined}
+          role="dialog"
+          aria-label="Choose a date range"
+        >
           <div className="drp-presets">
-            {DATE_PRESETS.map((p) => (
+            {presetList.map((p) => (
               <button
                 type="button"
                 key={p.key}
@@ -205,7 +249,9 @@ export default function DateRangePicker({ start, end, presetKey, onChange, align
             </div>
           </div>
         </div>
-      )}
+        );
+        return portal ? createPortal(pop, document.body) : pop;
+      })()}
     </div>
   );
 }

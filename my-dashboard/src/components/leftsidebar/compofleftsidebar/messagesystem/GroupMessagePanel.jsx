@@ -1,10 +1,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import { List, useDynamicRowHeight } from 'react-window';
+import { useDynamicRowHeight } from 'react-window';
 import './GroupMessagePanel.css';
 import { directMessageAPI, fileAPI, groupAPI, isRequestCanceled, subscribeRealtimeNotifications } from '../../../../services/api';
-import CacheStatusBanner from '../../../common/CacheStatusBanner';
 import { useAuth } from '../../../../context/AuthContext';
 import {
   buildTaskPanelCacheKey,
@@ -21,19 +20,44 @@ import { useMinimizedWindowStack } from '../../../../hooks/useMinimizedWindowSta
 import { isMobileViewport } from '../../../../utils/isMobileViewport';
 import WindowControls from '../../../common/WindowControls';
 import { GROUP_MESSAGES_KEY, useSendGroupMessage } from '../../../../hooks/useMessages';
-import ChatAttachmentGallery from '../../../common/chat/ChatAttachmentGallery';
+import { formatMonthDayTimeIndia } from '../../../../utils/dateTime';
+import { clearActiveChat, setActiveChat } from '../../../../utils/activeChat';
+import ChatComposer from './ChatComposer';
+import ChatThread from './ChatThread';
+import PinnedMessagesBar from './PinnedMessagesBar';
 import {
-  formatMonthDayTimeIndia,
-  formatRelativeDayIndia,
-  formatTimeIndiaShort,
-} from '../../../../utils/dateTime';
+  buildAttachmentCountLabel,
+  buildAvatarHue,
+  buildConversationPreview,
+  buildInitials,
+  buildThreadItems,
+  extractMentionIdsFromText,
+  formatListTimestamp,
+} from './chatUtils';
+import {
+  IconBell,
+  IconBellOff,
+  IconChat,
+  IconChevronLeft,
+  IconClose,
+  IconForward,
+  IconPlus,
+  IconRefresh,
+  IconSearch,
+  IconSelect,
+  IconUser,
+  IconUsers,
+} from './chatIcons';
 
 const GROUP_PANEL_CACHE_TTL_MS = 2 * 60 * 1000;
 const GROUP_MESSAGES_CACHE_TTL_MS = 90 * 1000;
 const TYPING_STOP_DELAY_MS = 1800;
 const TYPING_REMOTE_TTL_MS = 4200;
 const TYPING_REFRESH_INTERVAL_MS = 2500;
-const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+const FEEDBACK_DISMISS_MS = 4500;
+const HIGHLIGHT_DURATION_MS = 2200;
+const ERROR_FEEDBACK_PATTERN = /fail|unable|cannot|could not|not found|required|choose at least|select at least/i;
+
 const createInitialForwardState = () => ({
   open: false,
   groupIds: [],
@@ -72,23 +96,6 @@ const toUploadPercent = (loaded = 0, total = 0) => {
   return Math.min(100, Math.round((loaded * 100) / total));
 };
 
-const formatUploadSize = (bytes = 0) => {
-  const safeBytes = Number.isFinite(bytes) ? Math.max(bytes, 0) : 0;
-  if (safeBytes < 1024) return `${safeBytes} B`;
-
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = safeBytes / 1024;
-  let unitIndex = 0;
-
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-
-  const decimals = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
-};
-
 const buildAttachmentUploadState = (files = []) => {
   const firstFile = files[0] || null;
   const totalBytes = getUploadBytesTotal(files);
@@ -115,231 +122,6 @@ const createInitialComposerDraft = () => ({
   attachments: [],
   uploading: false,
   uploadState: createInitialAttachmentUploadState(),
-});
-
-function AttachmentUploadStatus({ uploadState, onCancel }) {
-  if (!uploadState?.active) return null;
-
-  const uploadLabel = uploadState.fileCount === 1 ? 'file' : 'items';
-  const currentFileLine = [
-    uploadState.currentFileIndex > 0
-      ? `File ${uploadState.currentFileIndex} of ${uploadState.fileCount}`
-      : '',
-    `${formatUploadSize(uploadState.currentFileUploadedBytes)} of ${formatUploadSize(uploadState.currentFileTotalBytes)}`,
-    uploadState.currentFileTotalBytes ? `${uploadState.currentFilePercent}%` : '',
-  ]
-    .filter(Boolean)
-    .join(' • ');
-
-  return (
-    <div className="group-chat-upload-status" role="status" aria-live="polite">
-      <div className="group-chat-upload-status-header">
-        <div className="group-chat-upload-status-copy">
-          <strong>Uploading {uploadState.fileCount} {uploadLabel}</strong>
-          <span>
-            {formatUploadSize(uploadState.uploadedBytes)} of {formatUploadSize(uploadState.totalBytes)} uploaded
-          </span>
-        </div>
-        <div className="group-chat-upload-status-actions">
-          <div className="group-chat-upload-status-percent">{uploadState.percent}%</div>
-          {onCancel && (
-            <button
-              type="button"
-              className="group-chat-upload-status-cancel"
-              onClick={onCancel}
-              aria-label="Cancel upload"
-              title="Cancel upload"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-              <span>Cancel</span>
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="group-chat-upload-status-bar" aria-hidden="true">
-        <span style={{ width: `${uploadState.percent}%` }} />
-      </div>
-      <div className="group-chat-upload-status-file">
-        <span>{uploadState.currentFileName || 'Preparing upload...'}</span>
-        <small>{currentFileLine}</small>
-      </div>
-    </div>
-  );
-}
-
-const VirtualMessageRow = React.memo(function VirtualMessageRow({
-  ariaAttributes,
-  buildAvatarHue,
-  buildInitials,
-  currentUserId,
-  formatMessageTime,
-  index,
-  isSelectionActive,
-  items,
-  mode,
-  onDeleteMessage,
-  onDiscardFailedMessage,
-  onEditMessage,
-  onOpenReceiptDetails,
-  onReactToMessage,
-  onReplyToMessage,
-  onRetryFailedMessage,
-  selectedIds,
-  style,
-  toggleMessageSelection,
-}) {
-  const item = items[index];
-  if (!item) return null;
-
-  if (item.type === 'separator') {
-    return (
-      <div {...ariaAttributes} style={style} className="group-chat-virtual-row group-chat-virtual-row--separator">
-        <div className="group-chat-day-separator">
-          <span>{item.label}</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (item.type === 'composer-spacer') {
-    return (
-      <div {...ariaAttributes} style={style} className="group-chat-virtual-row group-chat-virtual-row--composer-spacer">
-        <div className="group-chat-composer-spacer" />
-      </div>
-    );
-  }
-
-  const message = item.message;
-  const mine = Number(message.senderId) === Number(currentUserId);
-  const isSelected = selectedIds.includes(message.id);
-  const isDeleted = Boolean(message.deletedAt);
-  const isFailed = Boolean(message.failed);
-
-  return (
-    <div {...ariaAttributes} style={style} className="group-chat-virtual-row">
-      <div
-        className={`group-chat-row ${mine ? 'mine' : 'theirs'} ${isSelectionActive ? 'selecting' : ''} ${isSelected ? 'selected' : ''}`}
-        onClick={isSelectionActive ? () => toggleMessageSelection(mode, message.id) : undefined}
-      >
-        {isSelectionActive && (
-          <button
-            type="button"
-            className={`group-message-select-toggle ${isSelected ? 'selected' : ''}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              toggleMessageSelection(mode, message.id);
-            }}
-            aria-label={isSelected ? 'Deselect message' : 'Select message'}
-          >
-            {isSelected ? '✓' : ''}
-          </button>
-        )}
-        {!mine && (
-          <div
-            className="group-message-avatar"
-            style={{ '--group-avatar-hue': `${buildAvatarHue(message.senderName)}deg` }}
-          >
-            {buildInitials(message.senderName)}
-          </div>
-        )}
-        <div className={`group-message-bubble ${mine ? 'mine' : 'theirs'} ${message.isOptimistic ? 'optimistic' : ''}`}>
-          {!message.isOptimistic && !isFailed && !isDeleted && !isSelectionActive && (
-            <div className="message-reaction-picker" onClick={(event) => event.stopPropagation()}>
-              {QUICK_REACTIONS.map((emoji) => (
-                <button
-                  key={emoji}
-                  type="button"
-                  className={message.myReaction === emoji ? 'active' : ''}
-                  onClick={() => onReactToMessage(mode, message, emoji)}
-                  aria-label={`React ${emoji}`}
-                >
-                  {emoji}
-                </button>
-              ))}
-            </div>
-          )}
-          {!mine && <div className="group-message-sender">{message.senderName}</div>}
-          {!isDeleted && message.forwardMetadata && (
-            <div className="message-forward-badge">
-              <span>Forwarded</span>
-              <strong>{message.forwardMetadata.sourceLabel || 'message'}</strong>
-            </div>
-          )}
-          {!isDeleted && message.replyTo && (
-            <div className="message-reply-quote">
-              <strong>{message.replyTo.senderName}</strong>
-              <span>
-                {message.replyTo.deletedAt
-                  ? 'This message was deleted'
-                  : message.replyTo.message || buildAttachmentCountLabel(message.replyTo.attachments)}
-              </span>
-            </div>
-          )}
-          {isDeleted ? (
-            <div className="group-message-text group-message-deleted">This message was deleted</div>
-          ) : (
-            message.message && (
-              <HighlightedMessageText
-                currentUserId={currentUserId}
-                mentions={message.mentions}
-                text={message.message}
-              />
-            )
-          )}
-          {!isDeleted && !!message.attachments?.length && (
-            <div className="group-message-attachments">
-              <ChatAttachmentGallery attachments={message.attachments} />
-            </div>
-          )}
-          {isFailed && (
-            <div className="message-failed-actions" onClick={(event) => event.stopPropagation()}>
-              <span>Failed to send</span>
-              <button type="button" onClick={() => onRetryFailedMessage(mode, message)}>Retry</button>
-              <button type="button" onClick={() => onDiscardFailedMessage(mode, message)}>Discard</button>
-            </div>
-          )}
-          {!message.isOptimistic && !isFailed && !isDeleted && !isSelectionActive && (
-            <div className={`message-edit-actions ${mine ? 'mine' : ''}`} onClick={(event) => event.stopPropagation()}>
-              <button type="button" onClick={() => onReplyToMessage(mode, message)}>Reply</button>
-              {mine && <button type="button" onClick={() => onEditMessage(mode, message)}>Edit</button>}
-              {mine && <button type="button" onClick={() => onDeleteMessage(mode, message)}>Delete</button>}
-            </div>
-          )}
-          <div className="group-message-meta">
-            <span>{formatMessageTime(message.createdAt)}</span>
-            {message.editedAt && !isDeleted && <span>Edited</span>}
-            {isFailed && <span className="group-message-status failed">Not sent</span>}
-            {mine && !isFailed && (
-              <MessageReceiptIndicator
-                message={message}
-                mode={mode}
-                onOpenDetails={onOpenReceiptDetails}
-              />
-            )}
-          </div>
-          {!isDeleted && !!message.reactions?.length && (
-            <div className="message-reaction-summary">
-              {message.reactions.map((reaction) => (
-                <button
-                  key={reaction.emoji}
-                  type="button"
-                  className={message.myReaction === reaction.emoji ? 'active' : ''}
-                  title={buildReactionTitle(reaction)}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onReactToMessage(mode, message, reaction.emoji);
-                  }}
-                >
-                  <span>{reaction.emoji}</span>
-                  <strong>{reaction.count}</strong>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
 });
 
 const appendMessageById = (rows = [], nextMessage) => {
@@ -371,15 +153,6 @@ const replaceMessageById = (rows = [], messageId, nextMessage) => {
 const removeMessageById = (rows = [], messageId) =>
   rows.filter((row) => row?.id !== messageId);
 
-const buildAttachmentCountLabel = (attachments = []) => {
-  const count = Array.isArray(attachments) ? attachments.filter(Boolean).length : 0;
-  if (!count) return '';
-  return `${count} attachment${count === 1 ? '' : 's'}`;
-};
-
-const buildConversationPreview = (message, attachments = []) =>
-  `${message || ''}`.trim() || buildAttachmentCountLabel(attachments);
-
 const createFailedMessageFromPayload = ({
   attachments = [],
   currentUserId,
@@ -409,186 +182,19 @@ const createFailedMessageFromPayload = ({
   failedThreadId: threadId,
 });
 
-const normalizeMentionToken = (value = '') =>
-  `${value}`.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-
-const buildMentionTokens = (person = {}) => {
-  const tokens = new Set(
-    `${person.name || ''}`
-      .split(/\s+/)
-      .map(normalizeMentionToken)
-      .filter(Boolean)
-  );
-  const compactName = normalizeMentionToken(person.name || '');
-  if (compactName) tokens.add(compactName);
-  const emailLocal = `${person.email || ''}`.split('@')[0];
-  const compactEmail = normalizeMentionToken(emailLocal);
-  if (compactEmail) tokens.add(compactEmail);
-  return Array.from(tokens);
-};
-
-const extractMentionIdsFromText = (text = '', members = [], currentUserId = null) => {
-  const typedTokens = new Set(
-    Array.from(`${text}`.matchAll(/@([a-z0-9_-]+)/gi))
-      .map((match) => normalizeMentionToken(match[1]))
-      .filter(Boolean)
-  );
-  if (!typedTokens.size) return [];
-
-  return members
-    .filter((member) => member?.id && member.id !== currentUserId)
-    .filter((member) => buildMentionTokens(member).some((token) => typedTokens.has(token)))
-    .map((member) => member.id);
-};
-
-const escapeRegExp = (value = '') => `${value}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-function HighlightedMessageText({ currentUserId, mentions = [], text = '' }) {
-  if (!text) return null;
-
-  const tokenToMention = new Map();
-  mentions.forEach((mention) => {
-    buildMentionTokens(mention).forEach((token) => {
-      if (token) tokenToMention.set(token, mention);
-    });
-  });
-
-  if (!tokenToMention.size) {
-    return <div className="group-message-text">{text}</div>;
-  }
-
-  const tokenPattern = Array.from(tokenToMention.keys())
-    .sort((left, right) => right.length - left.length)
-    .map(escapeRegExp)
-    .join('|');
-  const mentionPattern = new RegExp(`@(${tokenPattern})(?=$|[^a-z0-9_-])`, 'gi');
-  const nodes = [];
-  let lastIndex = 0;
-  let match;
-
-  while ((match = mentionPattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
-    }
-    const token = normalizeMentionToken(match[1]);
-    const mention = tokenToMention.get(token);
-    nodes.push(
-      <span
-        key={`${match.index}-${match[0]}`}
-        className={`message-mention ${mention?.id === currentUserId ? 'mine' : ''}`}
-        title={mention?.name || match[0]}
-      >
-        {match[0]}
-      </span>
-    );
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-
-  return <div className="group-message-text">{nodes}</div>;
-}
-
-const getReadByNames = (message) =>
-  (Array.isArray(message?.receipt?.readBy) ? message.receipt.readBy : [])
-    .map((entry) => entry?.name)
-    .filter(Boolean);
-
-const getDeliveredByNames = (message) =>
-  (Array.isArray(message?.receipt?.deliveredBy) ? message.receipt.deliveredBy : [])
-    .map((entry) => entry?.name)
-    .filter(Boolean);
-
-const getReceiptStatus = (message) => {
-  if (message?.isOptimistic || message?.receipt?.status === 'sending') {
-    return { status: 'sending', label: 'Sending', tickCount: 1 };
-  }
-
-  const receipt = message?.receipt || {};
-  const readByNames = getReadByNames(message);
-  const deliveredByNames = getDeliveredByNames(message);
-  if (receipt.status === 'read' || readByNames.length > 0) {
-    return {
-      status: 'read',
-      label: readByNames.length ? `Seen by ${readByNames.join(', ')}` : 'Seen',
-      tickCount: 2,
-    };
-  }
-
-  if (receipt.status === 'delivered' || deliveredByNames.length > 0 || Number(receipt.deliveredCount) > 0) {
-    return {
-      status: 'delivered',
-      label: deliveredByNames.length ? `Delivered to ${deliveredByNames.join(', ')}` : 'Delivered',
-      tickCount: 2,
-    };
-  }
-
-  return { status: 'sent', label: 'Sent', tickCount: 1 };
-};
-
-function MessageTickIcon({ count = 1 }) {
-  return (
-    <span className={`message-tick-icon message-tick-icon-${count}`} aria-hidden="true">
-      <span>✓</span>
-      {count > 1 && <span>✓</span>}
-    </span>
-  );
-}
-
-function MessageReceiptIndicator({ message, mode, onOpenDetails }) {
-  const receipt = getReceiptStatus(message);
-  const readByNames = getReadByNames(message);
-  const canOpenDetails = mode === 'group' && !message?.isOptimistic && typeof onOpenDetails === 'function';
-  const shouldShowNames = mode === 'group' && receipt.status === 'read' && readByNames.length > 0;
-  const shortNames = readByNames.slice(0, 2).join(', ');
-  const overflowCount = Math.max(readByNames.length - 2, 0);
-  const seenLabel = overflowCount > 0 ? `${shortNames} +${overflowCount}` : shortNames;
-  const content = (
-    <>
-      <MessageTickIcon count={receipt.tickCount} />
-      <span className="message-receipt-label">{receipt.status === 'sending' ? 'Sending' : receipt.label}</span>
-      {shouldShowNames && <span className="message-receipt-seen-by">Seen by {seenLabel}</span>}
-    </>
-  );
-
-  if (canOpenDetails) {
-    return (
-      <button
-        type="button"
-        className={`message-receipt message-receipt-button message-receipt-${receipt.status}`}
-        title="View message info"
-        onClick={(event) => {
-          event.stopPropagation();
-          onOpenDetails(message.id);
-        }}
-      >
-        {content}
-      </button>
-    );
-  }
-
-  return (
-    <span className={`message-receipt message-receipt-${receipt.status}`} title={receipt.label}>
-      {content}
-    </span>
-  );
-}
-
 const formatReceiptTimestamp = (value) => {
   const formatted = formatMonthDayTimeIndia(value);
   return formatted === 'N/A' ? '' : formatted;
 };
 
-function ReceiptPersonRow({ buildAvatarHue, buildInitials, person, timestamp, fallbackLabel }) {
+function ReceiptPersonRow({ person, timestamp, fallbackLabel }) {
   const subtitle = [person?.department, person?.position].filter(Boolean).join(', ') || fallbackLabel;
 
   return (
     <div className="message-receipt-person-row">
       <div
-        className="message-receipt-person-avatar"
-        style={{ '--group-avatar-hue': `${buildAvatarHue(person?.name)}deg` }}
+        className="person-avatar person-avatar--sm"
+        style={{ '--avatar-hue': `${buildAvatarHue(person?.name)}deg` }}
       >
         {buildInitials(person?.name)}
       </div>
@@ -601,7 +207,7 @@ function ReceiptPersonRow({ buildAvatarHue, buildInitials, person, timestamp, fa
   );
 }
 
-function ReceiptSection({ buildAvatarHue, buildInitials, emptyLabel, fallbackLabel, items, title }) {
+function ReceiptSection({ emptyLabel, fallbackLabel, items, title }) {
   return (
     <section className="message-receipt-section">
       <div className="message-receipt-section-title">
@@ -615,8 +221,6 @@ function ReceiptSection({ buildAvatarHue, buildInitials, emptyLabel, fallbackLab
           {items.map((item) => (
             <ReceiptPersonRow
               key={item.id}
-              buildAvatarHue={buildAvatarHue}
-              buildInitials={buildInitials}
               fallbackLabel={fallbackLabel}
               person={item}
               timestamp={item.seenAt || item.deliveredAt}
@@ -629,8 +233,6 @@ function ReceiptSection({ buildAvatarHue, buildInitials, emptyLabel, fallbackLab
 }
 
 function MessageReceiptDetailsModal({
-  buildAvatarHue,
-  buildInitials,
   deliveredItems,
   message,
   onClose,
@@ -640,15 +242,15 @@ function MessageReceiptDetailsModal({
   if (!message) return null;
 
   return (
-    <div className="message-receipt-overlay" onClick={onClose}>
-      <div className="message-receipt-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="message-receipt-modal-header">
+    <div className="chat-modal-overlay" onClick={onClose}>
+      <div className="chat-modal message-receipt-modal" role="dialog" aria-modal="true" aria-labelledby="message-receipt-title" onClick={(event) => event.stopPropagation()}>
+        <div className="chat-modal-header">
           <div>
-            <h4>Message Info</h4>
+            <h4 id="message-receipt-title">Message info</h4>
             <p>{formatReceiptTimestamp(message.createdAt) || 'Sent message'}</p>
           </div>
-          <button type="button" className="message-receipt-close" onClick={onClose}>
-            x
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close message info">
+            <IconClose size={16} />
           </button>
         </div>
 
@@ -673,28 +275,22 @@ function MessageReceiptDetailsModal({
 
         <div className="message-receipt-sections">
           <ReceiptSection
-            buildAvatarHue={buildAvatarHue}
-            buildInitials={buildInitials}
             emptyLabel="No one has seen this message yet."
             fallbackLabel="Seen"
             items={readItems}
-            title="Seen By"
+            title="Seen by"
           />
           <ReceiptSection
-            buildAvatarHue={buildAvatarHue}
-            buildInitials={buildInitials}
             emptyLabel="No delivered-only members yet."
             fallbackLabel="Delivered"
             items={deliveredItems}
-            title="Delivered To"
+            title="Delivered to"
           />
           <ReceiptSection
-            buildAvatarHue={buildAvatarHue}
-            buildInitials={buildInitials}
             emptyLabel="Everyone has received this message."
             fallbackLabel="Waiting"
             items={pendingItems}
-            title="Waiting For"
+            title="Waiting for"
           />
         </div>
       </div>
@@ -706,11 +302,9 @@ const buildGroupSearchText = (group) => [
   group?.name,
   group?.myRole,
   group?.memberCount,
+  group?.lastMessagePreview,
   ...(Array.isArray(group?.members)
     ? group.members.map((member) => `${member?.name || ''} ${member?.email || ''} ${member?.department || ''} ${member?.position || ''}`)
-    : []),
-  ...(Array.isArray(group?.members)
-    ? group.members.map((member) => member?.presence?.status || '')
     : []),
 ].filter(Boolean).join(' ').toLowerCase();
 
@@ -719,7 +313,6 @@ const buildDirectSearchText = (item) => [
   item?.email,
   item?.department,
   item?.position,
-  item?.presence?.status,
   item?.conversation?.lastMessagePreview,
 ].filter(Boolean).join(' ').toLowerCase();
 
@@ -751,16 +344,12 @@ const getOnlineMemberCount = (members = []) =>
 const buildTypingLabel = (items = [], fallbackName = 'Someone') => {
   const names = items.map((item) => item?.name).filter(Boolean);
   if (names.length === 0) return '';
-  if (names.length === 1) return `${names[0] || fallbackName} is typing...`;
-  if (names.length === 2) return `${names[0]} and ${names[1]} are typing...`;
-  return `${names[0]}, ${names[1]} and ${names.length - 2} more are typing...`;
+  if (names.length === 1) return `${names[0] || fallbackName} is typing…`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`;
+  return `${names[0]}, ${names[1]} and ${names.length - 2} more are typing…`;
 };
 
-const buildReactionTitle = (reaction) => {
-  const names = (reaction?.users || []).map((entry) => entry?.name).filter(Boolean);
-  if (!names.length) return reaction?.emoji || 'Reaction';
-  return `${reaction.emoji} ${names.join(', ')}`;
-};
+const firstName = (value = '') => `${value}`.trim().split(/\s+/)[0] || value;
 
 const applyMessageReactionData = (rows, messageId, reactionData) =>
   rows.map((message) => (
@@ -811,6 +400,26 @@ const upsertDirectConversation = (rows = [], conversation) => {
   });
 };
 
+function ThreadLoadingState() {
+  return (
+    <div className="chat-thread-loading" role="status" aria-label="Loading messages">
+      {['is-theirs', 'is-theirs is-short', 'is-mine', 'is-theirs', 'is-mine is-short'].map((variant, index) => (
+        <span key={index} className={`chat-thread-loading-bubble ${variant}`} />
+      ))}
+    </div>
+  );
+}
+
+function ChatEmptyState({ icon: EmptyIcon, title, text }) {
+  return (
+    <div className="chat-empty">
+      <div className="chat-empty-icon"><EmptyIcon size={24} /></div>
+      <h4>{title}</h4>
+      <p>{text}</p>
+    </div>
+  );
+}
+
 const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMinimizedChange, onActivate }) => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -860,8 +469,19 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   const [editingMessage, setEditingMessage] = useState(null);
   const [replyingMessage, setReplyingMessage] = useState(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState(createInitialDeleteConfirmationState);
-  const groupMessageListRef = useRef(null);
-  const directMessageListRef = useRef(null);
+  const [groupPinned, setGroupPinned] = useState([]);
+  const [directPinned, setDirectPinned] = useState([]);
+  const [mutedGroupIds, setMutedGroupIds] = useState([]);
+  const [mutedUserIds, setMutedUserIds] = useState([]);
+  const [unreadMarker, setUnreadMarker] = useState(null);
+  const [scrollRequest, setScrollRequest] = useState(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState(null);
+  const [createGroupFilter, setCreateGroupFilter] = useState('');
+  const [pendingMemberRemovalId, setPendingMemberRemovalId] = useState(null);
+  const [groupThreadLoading, setGroupThreadLoading] = useState(false);
+  const [directThreadLoading, setDirectThreadLoading] = useState(false);
+  const shownGroupThreadRef = useRef(null);
+  const shownDirectThreadRef = useRef(null);
   const groupRowHeight = useDynamicRowHeight({
     defaultRowHeight: 116,
     key: selectedGroupId || 'group-empty',
@@ -1163,10 +783,6 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     [groups, selectedGroupId]
   );
   const isSelectedGroupAdmin = !!selectedGroup && selectedGroup.myRole === 'admin';
-  const selectedGroupPreviewNames = (selectedGroup?.members || [])
-    .slice(0, 3)
-    .map((member) => member.name)
-    .join(', ');
   const selectedGroupOnlineCount = getOnlineMemberCount(selectedGroup?.members || []);
   const selectedDirectUser = useMemo(
     () =>
@@ -1472,6 +1088,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
 
         setGroupUnreadCounts(groupResponse?.data?.countsByGroupId || {});
         setDirectUnreadCounts(directResponse?.data?.countsByUserId || {});
+        setMutedGroupIds((groupResponse?.data?.mutedGroupIds || []).map(Number));
+        setMutedUserIds((directResponse?.data?.mutedUserIds || []).map(Number));
       } catch (error) {
         console.error('Failed to sync message unread counts:', error);
       }
@@ -1562,26 +1180,6 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     [allUsers, currentUserId, selectedDirectUserId, selectionMode]
   );
 
-  const buildDayLabel = (value) => {
-    return formatRelativeDayIndia(value);
-  };
-
-  const formatMessageTime = (value) => {
-    const formatted = formatTimeIndiaShort(value);
-    return formatted === 'N/A' ? '' : formatted;
-  };
-
-  const buildInitials = (value) =>
-    (value || '')
-      .split(' ')
-      .map((part) => part[0])
-      .join('')
-      .slice(0, 2)
-      .toUpperCase() || 'G';
-
-  const buildAvatarHue = (value) =>
-    Array.from(value || 'group').reduce((total, char) => total + char.charCodeAt(0), 0) % 360;
-
   const openGroupReceiptDetails = (messageId) => {
     if (!messageId) return;
     setReceiptDetailsMessageId(messageId);
@@ -1629,42 +1227,26 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     return formatted === 'N/A' ? 'Unknown time' : formatted;
   };
 
-  const messageItems = useMemo(() => {
-    const items = [];
-    let lastLabel = null;
-
-    messages.forEach((message) => {
-      const label = buildDayLabel(message.createdAt);
-      if (label !== lastLabel) {
-        items.push({ type: 'separator', id: `separator-${label}-${message.id}`, label });
-        lastLabel = label;
-      }
-      items.push({ type: 'message', id: `message-${message.id}`, message });
-    });
-    if (items.length > 0) {
-      items.push({ type: 'composer-spacer', id: 'group-composer-spacer' });
-    }
-
-    return items;
-  }, [messages]);
-  const directMessageItems = useMemo(() => {
-    const items = [];
-    let lastLabel = null;
-
-    directMessages.forEach((message) => {
-      const label = buildDayLabel(message.createdAt);
-      if (label !== lastLabel) {
-        items.push({ type: 'separator', id: `direct-separator-${label}-${message.id}`, label });
-        lastLabel = label;
-      }
-      items.push({ type: 'message', id: `direct-message-${message.id}`, message });
-    });
-    if (items.length > 0) {
-      items.push({ type: 'composer-spacer', id: 'direct-composer-spacer' });
-    }
-
-    return items;
-  }, [directMessages]);
+  const groupUnreadMarkerCount = unreadMarker?.key === `group:${selectedGroupId}` ? unreadMarker.count : 0;
+  const directUnreadMarkerCount = unreadMarker?.key === `direct:${selectedDirectUserId}` ? unreadMarker.count : 0;
+  const messageItems = useMemo(
+    () => buildThreadItems({
+      messages,
+      currentUserId,
+      unreadCount: groupUnreadMarkerCount,
+      prefix: `group-${selectedGroupId}`,
+    }),
+    [currentUserId, groupUnreadMarkerCount, messages, selectedGroupId]
+  );
+  const directMessageItems = useMemo(
+    () => buildThreadItems({
+      messages: directMessages,
+      currentUserId,
+      unreadCount: directUnreadMarkerCount,
+      prefix: `direct-${selectedDirectUserId}`,
+    }),
+    [currentUserId, directMessages, directUnreadMarkerCount, selectedDirectUserId]
+  );
 
   useEffect(() => {
     if (!isActive || !cacheKeys) return;
@@ -1680,54 +1262,52 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     if (!isActive || !cacheKeys || !selectedGroupId) return;
     setTaskPanelCache(cacheKeys.groupMessages(selectedGroupId), {
       messages,
+      pinned: groupPinned,
     });
     queryClient.setQueryData(GROUP_MESSAGES_KEY(selectedGroupId), messages);
-  }, [cacheKeys, isActive, messages, queryClient, selectedGroupId]);
+  }, [cacheKeys, groupPinned, isActive, messages, queryClient, selectedGroupId]);
+
+  // Deep links (notification clicks: ?tab=direct&userId=…) are applied once per
+  // value; afterwards the user's own tab/thread choices win.
+  const appliedRouteTabRef = useRef(null);
+  const appliedRouteThreadRef = useRef(null);
 
   useEffect(() => {
-    if (!isActive) return;
-    if (routeTab === 'direct' && activeTab !== 'direct') {
-      setActiveTab('direct');
-      setVisibleListTab('direct');
+    if (!isActive) {
+      appliedRouteTabRef.current = null;
+      appliedRouteThreadRef.current = null;
       return;
     }
-    if (routeTab === 'groups' && activeTab !== 'groups') {
-      setActiveTab('groups');
-      setVisibleListTab('groups');
-    }
-  }, [activeTab, isActive, routeTab]);
+    if (!['direct', 'groups'].includes(routeTab) || appliedRouteTabRef.current === routeTab) return;
+    appliedRouteTabRef.current = routeTab;
+    setActiveTab(routeTab);
+    setVisibleListTab(routeTab);
+  }, [isActive, routeTab]);
 
   useEffect(() => {
     if (!isActive) return;
+    let routeKey = null;
+    if (routeTab === 'groups' && routeGroupId > 0) routeKey = `groups:${routeGroupId}`;
+    if (routeTab === 'direct' && routeDirectUserId > 0) routeKey = `direct:${routeDirectUserId}`;
+    if (!routeKey || appliedRouteThreadRef.current === routeKey) return;
 
-    if (routeTab === 'groups' && routeGroupId > 0) {
+    if (routeTab === 'groups') {
       const matchingGroup = groups.find((group) => Number(group.id) === routeGroupId);
-      if (matchingGroup && selectedGroupId !== matchingGroup.id) {
-        setSelectedGroupId(matchingGroup.id);
-      }
+      if (!matchingGroup) return;
+      appliedRouteThreadRef.current = routeKey;
+      setSelectedGroupId(matchingGroup.id);
+      if (isMobileViewport()) setVisibleListTab(null);
       return;
     }
 
-    if (routeTab === 'direct' && routeDirectUserId > 0) {
-      const matchingDirectUser =
-        directUsers.find((directUser) => Number(directUser.id) === routeDirectUserId)
-        || directConversations.find((conversation) => Number(conversation.user?.id) === routeDirectUserId)?.user;
-
-      if (matchingDirectUser && selectedDirectUserId !== matchingDirectUser.id) {
-        setSelectedDirectUserId(matchingDirectUser.id);
-      }
-    }
-  }, [
-    directConversations,
-    directUsers,
-    groups,
-    isActive,
-    routeDirectUserId,
-    routeGroupId,
-    routeTab,
-    selectedDirectUserId,
-    selectedGroupId,
-  ]);
+    const matchingDirectUser =
+      directUsers.find((directUser) => Number(directUser.id) === routeDirectUserId)
+      || directConversations.find((conversation) => Number(conversation.user?.id) === routeDirectUserId)?.user;
+    if (!matchingDirectUser) return;
+    appliedRouteThreadRef.current = routeKey;
+    setSelectedDirectUserId(matchingDirectUser.id);
+    if (isMobileViewport()) setVisibleListTab(null);
+  }, [directConversations, directUsers, groups, isActive, routeDirectUserId, routeGroupId, routeTab]);
 
   const { mutateAsync: sendGroupMessage } = useSendGroupMessage(selectedGroupId, {
     onOptimisticMessage: (optimisticMessage) => {
@@ -1845,6 +1425,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         if (selectedGroupIdRef.current !== groupId) return;
         if (!isActiveRef.current) return;
         setMessages((response?.data || []).map((message) => withGroupReceiptDefault(message)));
+        setGroupPinned(Array.isArray(response?.pinned) ? response.pinned : []);
         acknowledgeGroupMessagesDelivered(groupId);
         acknowledgeGroupMessagesRead(groupId);
         setMessageCacheStatus((prev) => ({
@@ -1943,6 +1524,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         if (selectedDirectUserIdRef.current !== otherUserId) return;
         if (!isActiveRef.current) return;
         setDirectMessages((response?.data || []).map((message) => withDirectReceiptDefault(message)));
+        setDirectPinned(Array.isArray(response?.pinned) ? response.pinned : []);
         acknowledgeDirectMessagesDelivered(otherUserId);
         acknowledgeDirectMessagesRead(otherUserId);
         if (response?.conversationWith) {
@@ -2006,14 +1588,15 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       setAllUsers(cachedGroups.allUsers || []);
       setCurrentUserId(cachedGroups.currentUserId || null);
       setGroups(cachedGroups.groups || []);
-      setSelectedGroupId(cachedGroups.selectedGroupId || null);
+      setSelectedGroupId((current) => current ?? cachedGroups.selectedGroupId ?? null);
       setLoading(false);
       setGroupsCacheStatus({
         showingCached: true,
         cachedAt: cachedGroupsEntry?.cachedAt || 0,
         liveUpdatedAt: 0,
       });
-      if (cachedGroups.selectedGroupId) {
+      const restoresCachedGroup = (selectedGroupIdRef.current ?? cachedGroups.selectedGroupId) === cachedGroups.selectedGroupId;
+      if (cachedGroups.selectedGroupId && restoresCachedGroup) {
         const cachedMessagesEntry = getTaskPanelCacheEntry(
           cacheKeys.groupMessages(cachedGroups.selectedGroupId),
           GROUP_MESSAGES_CACHE_TTL_MS
@@ -2036,7 +1619,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       try {
         const [usersResponse] = await Promise.all([
           groupAPI.listUsers(),
-          syncGroups({ keepSelected: false, silent: !!cachedGroups }),
+          syncGroups({ keepSelected: true, silent: !!cachedGroups }),
         ]);
         setCurrentUserId(user?.id || null);
         setAllUsers(usersResponse?.data || []);
@@ -2052,7 +1635,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     };
 
     load();
-  }, [cacheKeys, isActive, user]);
+  }, [cacheKeys, isActive, user?.id]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -2066,6 +1649,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       : null;
     const cachedMessages = cachedMessagesEntry?.value || null;
 
+    const isNewThread = shownGroupThreadRef.current !== selectedGroupId;
+    shownGroupThreadRef.current = selectedGroupId;
+    setGroupPinned(Array.isArray(cachedMessages?.pinned) ? cachedMessages.pinned : []);
     if (cachedMessages?.messages) {
       setMessages(cachedMessages.messages);
       setMessageCacheStatus({
@@ -2073,15 +1659,24 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         cachedAt: cachedMessagesEntry?.cachedAt || 0,
         liveUpdatedAt: 0,
       });
+    } else if (isNewThread) {
+      // Never show the previous thread's messages under the new header.
+      setMessages([]);
+      setGroupThreadLoading(true);
     }
 
-    loadMessages(selectedGroupId, { silent: !!cachedMessages }).catch((error) => {
-      console.error('Failed to load messages:', error);
-      if (!cachedMessages) {
-        setMessages([]);
-      }
-      setIsMessagesRefreshing(false);
-    });
+    const requestedGroupId = selectedGroupId;
+    loadMessages(selectedGroupId, { silent: !!cachedMessages })
+      .catch((error) => {
+        console.error('Failed to load messages:', error);
+        if (!cachedMessages) {
+          setMessages([]);
+        }
+        setIsMessagesRefreshing(false);
+      })
+      .finally(() => {
+        if (selectedGroupIdRef.current === requestedGroupId) setGroupThreadLoading(false);
+      });
   }, [cacheKeys, isActive, selectedGroupId]);
 
   useEffect(() => {
@@ -2190,7 +1785,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
           return;
         }
 
-        if (payload.eventType === 'message_updated' || payload.eventType === 'message_deleted') {
+        if (
+          payload.eventType === 'message_updated'
+          || payload.eventType === 'message_deleted'
+          || payload.eventType === 'message_pinned'
+        ) {
           const metadata = payload.metadata || {};
           const scope = `${metadata.scope || ''}`.toLowerCase();
           if (scope === 'group') {
@@ -2429,20 +2028,6 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
   }, []);
 
   useEffect(() => {
-    if (!isActive || !selectedGroupId || messageItems.length === 0) return undefined;
-
-    const firstFrameId = window.requestAnimationFrame(() => {
-      groupMessageListRef.current?.scrollToRow({
-        index: messageItems.length - 1,
-        align: 'end',
-        behavior: 'instant',
-      });
-    });
-
-    return () => window.cancelAnimationFrame(firstFrameId);
-  }, [isActive, selectedGroupId, messageItems.length]);
-
-  useEffect(() => {
     if (!isActive || !cacheKeys) return;
     setTaskPanelCache(cacheKeys.directIndex, {
       directUsers,
@@ -2455,8 +2040,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     if (!isActive || !cacheKeys || !selectedDirectUserId) return;
     setTaskPanelCache(cacheKeys.directMessages(selectedDirectUserId), {
       messages: directMessages,
+      pinned: directPinned,
     });
-  }, [cacheKeys, directMessages, isActive, selectedDirectUserId]);
+  }, [cacheKeys, directMessages, directPinned, isActive, selectedDirectUserId]);
 
   useEffect(() => {
     if (!isActive || !cacheKeys || !isDirectTabActive) return;
@@ -2466,14 +2052,15 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     if (cachedDirectData) {
       setDirectUsers(cachedDirectData.directUsers || []);
       setDirectConversations(cachedDirectData.directConversations || []);
-      setSelectedDirectUserId(cachedDirectData.selectedDirectUserId || null);
+      setSelectedDirectUserId((current) => current ?? cachedDirectData.selectedDirectUserId ?? null);
       setDirectLoading(false);
       setDirectCacheStatus({
         showingCached: true,
         cachedAt: cachedDirectEntry?.cachedAt || 0,
         liveUpdatedAt: 0,
       });
-      if (cachedDirectData.selectedDirectUserId) {
+      const restoresCachedDirect = (selectedDirectUserIdRef.current ?? cachedDirectData.selectedDirectUserId) === cachedDirectData.selectedDirectUserId;
+      if (cachedDirectData.selectedDirectUserId && restoresCachedDirect) {
         const cachedDirectMessagesEntry = getTaskPanelCacheEntry(
           cacheKeys.directMessages(cachedDirectData.selectedDirectUserId),
           GROUP_MESSAGES_CACHE_TTL_MS
@@ -2494,7 +2081,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       if (cachedDirectData) setDirectRefreshing(true);
       else setDirectLoading(true);
       try {
-        await syncDirectData({ keepSelected: false, silent: !!cachedDirectData });
+        await syncDirectData({ keepSelected: true, silent: !!cachedDirectData });
       } catch (error) {
         console.error('Failed to load direct messages:', error);
         if (!cachedDirectData) {
@@ -2522,6 +2109,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       ? getTaskPanelCacheEntry(cacheKeys.directMessages(selectedDirectUserId), GROUP_MESSAGES_CACHE_TTL_MS)
       : null;
     const cachedDirectMessages = cachedDirectMessagesEntry?.value || null;
+    const isNewThread = shownDirectThreadRef.current !== selectedDirectUserId;
+    shownDirectThreadRef.current = selectedDirectUserId;
+    setDirectPinned(Array.isArray(cachedDirectMessages?.pinned) ? cachedDirectMessages.pinned : []);
     if (cachedDirectMessages?.messages) {
       setDirectMessages(cachedDirectMessages.messages);
       setDirectMessageCacheStatus({
@@ -2529,15 +2119,23 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         cachedAt: cachedDirectMessagesEntry?.cachedAt || 0,
         liveUpdatedAt: 0,
       });
+    } else if (isNewThread) {
+      setDirectMessages([]);
+      setDirectThreadLoading(true);
     }
 
-    loadDirectMessages(selectedDirectUserId, { silent: !!cachedDirectMessages }).catch((error) => {
-      console.error('Failed to load direct messages:', error);
-      if (!cachedDirectMessages) {
-        setDirectMessages([]);
-      }
-      setDirectMessagesRefreshing(false);
-    });
+    const requestedUserId = selectedDirectUserId;
+    loadDirectMessages(selectedDirectUserId, { silent: !!cachedDirectMessages })
+      .catch((error) => {
+        console.error('Failed to load direct messages:', error);
+        if (!cachedDirectMessages) {
+          setDirectMessages([]);
+        }
+        setDirectMessagesRefreshing(false);
+      })
+      .finally(() => {
+        if (selectedDirectUserIdRef.current === requestedUserId) setDirectThreadLoading(false);
+      });
   }, [cacheKeys, isActive, isDirectTabActive, selectedDirectUserId]);
 
   useEffect(() => {
@@ -2548,21 +2146,9 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     setReceiptDetailsMessageId(null);
     setEditingMessage(null);
     setReplyingMessage(null);
+    setScrollRequest(null);
+    setHighlightedMessageId(null);
   }, [activeTab, selectedDirectUserId, selectedGroupId]);
-
-  useEffect(() => {
-    if (!isActive || !selectedDirectUserId || directMessageItems.length === 0) return undefined;
-
-    const firstFrameId = window.requestAnimationFrame(() => {
-      directMessageListRef.current?.scrollToRow({
-        index: directMessageItems.length - 1,
-        align: 'end',
-        behavior: 'instant',
-      });
-    });
-
-    return () => window.cancelAnimationFrame(firstFrameId);
-  }, [directMessageItems.length, isActive, selectedDirectUserId]);
 
   const toggleSelected = (id) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]));
@@ -2582,6 +2168,8 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       }
       setGroupName('');
       setSelectedIds([]);
+      setCreateGroupFilter('');
+      setShowGroupComposer(false);
       setFeedback('Group created successfully.');
     } catch (error) {
       setFeedback(error?.response?.data?.detail || 'Failed to create group.');
@@ -2607,6 +2195,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     const trimmedMessage = newMessage.trim();
     if (!trimmedMessage && pendingAttachments.length === 0) return;
     const draftMessage = trimmedMessage;
+    setUnreadMarker(null);
     const draftAttachments = pendingAttachments;
     const draftReply = isReplyingGroupMessage ? replyingMessage : null;
     const mentionIds = extractMentionIdsFromText(draftMessage, selectedGroup?.members || [], currentUserId);
@@ -2900,6 +2489,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
       replyTo: draftReply,
     };
     const tempId = `temp-direct-${Date.now()}`;
+    setUnreadMarker(null);
     setSendingDirectMessage(true);
     setReplyingMessage(null);
     setDirectNewMessage('');
@@ -3228,21 +2818,259 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
 
   const isGroupSelectionActive = selectionMode === 'group';
   const isDirectSelectionActive = selectionMode === 'direct';
+  const mutedGroupIdSet = useMemo(() => new Set(mutedGroupIds.map(Number)), [mutedGroupIds]);
+  const mutedUserIdSet = useMemo(() => new Set(mutedUserIds.map(Number)), [mutedUserIds]);
   const showEmptyGroupsState = !loading && !isRefreshing && hasResolvedGroupIndex && groups.length === 0;
   const showEmptyDirectState = !directLoading && !directRefreshing && hasResolvedDirectIndex && directListItems.length === 0;
   const showEmptyGroupSearchState =
     !loading && !isRefreshing && hasResolvedGroupIndex && groups.length > 0 && filteredGroups.length === 0;
   const showEmptyDirectSearchState =
     !directLoading && !directRefreshing && hasResolvedDirectIndex && directListItems.length > 0 && filteredDirectListItems.length === 0;
+  const isSelectedGroupMuted = !!selectedGroup && mutedGroupIdSet.has(Number(selectedGroup.id));
+  const isSelectedDirectMuted = !!selectedDirectUser && mutedUserIdSet.has(Number(selectedDirectUser.id));
+  const countAudibleUnreadThreads = (counts, mutedSet) =>
+    Object.entries(counts).filter(([threadId, count]) => count > 0 && !mutedSet.has(Number(threadId))).length;
+  const groupUnreadThreadCount = countAudibleUnreadThreads(groupUnreadCounts, mutedGroupIdSet);
+  const directUnreadThreadCount = countAudibleUnreadThreads(directUnreadCounts, mutedUserIdSet);
+  const isErrorFeedback = ERROR_FEEDBACK_PATTERN.test(feedback);
 
   const refreshCurrentView = () => {
     (activeTab === 'groups' ? syncGroups({ silent: true }) : syncDirectData({ silent: true })).catch(() => {});
   };
 
-  const toggleMessageList = (tab) => {
+  const switchListTab = (tab) => {
     setActiveTab(tab);
-    setVisibleListTab((currentTab) => (activeTab === tab && currentTab === tab ? null : tab));
+    setVisibleListTab(tab);
   };
+
+  const openGroupThread = (groupId) => {
+    if (groupId !== selectedGroupId) {
+      setUnreadMarker({ key: `group:${groupId}`, count: groupUnreadCounts[groupId] || 0 });
+    }
+    setSelectedGroupId(groupId);
+    if (isMobileViewport()) setVisibleListTab(null);
+  };
+
+  const openDirectThread = (userId) => {
+    if (userId !== selectedDirectUserId) {
+      setUnreadMarker({ key: `direct:${userId}`, count: directUnreadCounts[userId] || 0 });
+    }
+    setSelectedDirectUserId(userId);
+    if (isMobileViewport()) setVisibleListTab(null);
+  };
+
+  // Background alerts stay quiet for the conversation that is on screen.
+  useEffect(() => {
+    // On phones the list and the conversation take turns filling the screen.
+    const isConversationShown = !isMobileViewport() || visibleListTab !== activeTab;
+    const isOnScreen = isActive && !isMinimized && isConversationShown;
+    if (!isOnScreen) {
+      clearActiveChat();
+      return undefined;
+    }
+    if (activeTab === 'groups') setActiveChat('group', selectedGroupId);
+    else setActiveChat('direct', selectedDirectUserId);
+    return () => clearActiveChat();
+  }, [activeTab, isActive, isMinimized, selectedDirectUserId, selectedGroupId, visibleListTab]);
+
+  useEffect(() => {
+    if (!feedback) return undefined;
+    const timer = window.setTimeout(() => setFeedback(''), FEEDBACK_DISMISS_MS);
+    return () => window.clearTimeout(timer);
+  }, [feedback]);
+
+  useEffect(() => {
+    if (!highlightedMessageId) return undefined;
+    const timer = window.setTimeout(() => setHighlightedMessageId(null), HIGHLIGHT_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [highlightedMessageId]);
+
+  // Removing someone (or leaving) takes two clicks; the armed state expires.
+  const confirmMemberRemoval = (memberId) => {
+    if (pendingMemberRemovalId !== memberId) {
+      setPendingMemberRemovalId(memberId);
+      return;
+    }
+    setPendingMemberRemovalId(null);
+    removeMember(memberId);
+  };
+
+  useEffect(() => {
+    if (!pendingMemberRemovalId) return undefined;
+    const timer = window.setTimeout(() => setPendingMemberRemovalId(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [pendingMemberRemovalId]);
+
+  const handleCopyMessage = async (message) => {
+    const text = `${message?.message || ''}`;
+    if (!text) return;
+    const copyWithSelection = () => {
+      // Fallback for plain-HTTP deployments (no Clipboard API) and for
+      // clipboard requests the browser leaves pending.
+      const helper = document.createElement('textarea');
+      helper.value = text;
+      helper.setAttribute('readonly', '');
+      helper.style.position = 'fixed';
+      helper.style.opacity = '0';
+      document.body.appendChild(helper);
+      helper.select();
+      const copied = document.execCommand('copy');
+      helper.remove();
+      return copied;
+    };
+
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+      await Promise.race([
+        navigator.clipboard.writeText(text),
+        new Promise((_, reject) => window.setTimeout(() => reject(new Error('Clipboard timed out')), 1200)),
+      ]);
+      setFeedback('Message copied to clipboard.');
+    } catch {
+      setFeedback(copyWithSelection() ? 'Message copied to clipboard.' : 'Unable to copy this message.');
+    }
+  };
+
+  const handleTogglePin = async (mode, message) => {
+    if (!message?.id || message.isOptimistic || message.deletedAt) return;
+    const threadId = mode === 'group' ? selectedGroupIdRef.current : selectedDirectUserIdRef.current;
+    if (!threadId) return;
+    const shouldPin = !message.pinnedAt;
+    const chatAPI = mode === 'group' ? groupAPI : directMessageAPI;
+    const setRows = mode === 'group' ? setMessages : setDirectMessages;
+    const setPinned = mode === 'group' ? setGroupPinned : setDirectPinned;
+
+    try {
+      const response = shouldPin
+        ? await chatAPI.pinMessage(threadId, message.id)
+        : await chatAPI.unpinMessage(threadId, message.id);
+      const pinnedMessage = response?.data || null;
+      setRows((prev) => prev.map((row) => (
+        row.id === message.id
+          ? { ...row, pinnedAt: pinnedMessage?.pinnedAt || null, pinnedBy: pinnedMessage?.pinnedBy || null }
+          : row
+      )));
+      setPinned((prev) => {
+        const remaining = prev.filter((entry) => entry.id !== message.id);
+        return shouldPin && pinnedMessage ? [pinnedMessage, ...remaining] : remaining;
+      });
+      setFeedback(shouldPin ? 'Message pinned for everyone in this chat.' : 'Message unpinned.');
+    } catch (error) {
+      setFeedback(error?.response?.data?.detail || 'Failed to update the pin.');
+    }
+  };
+
+  const toggleThreadMute = async (mode, threadId) => {
+    const numericThreadId = Number(threadId);
+    if (!numericThreadId) return;
+    const isGroup = mode === 'group';
+    const currentlyMuted = isGroup ? mutedGroupIdSet.has(numericThreadId) : mutedUserIdSet.has(numericThreadId);
+    const setIds = isGroup ? setMutedGroupIds : setMutedUserIds;
+    const applyMuted = (muted) => setIds((prev) => (
+      muted ? Array.from(new Set([...prev, numericThreadId])) : prev.filter((id) => Number(id) !== numericThreadId)
+    ));
+
+    applyMuted(!currentlyMuted);
+    try {
+      await (isGroup
+        ? groupAPI.setMuted(numericThreadId, !currentlyMuted)
+        : directMessageAPI.setMuted(numericThreadId, !currentlyMuted));
+      setFeedback(currentlyMuted
+        ? 'Notifications are back on for this chat.'
+        : 'Chat muted. Unread counts still show, but no sounds or pop-ups.');
+      syncUnreadCounts({ silent: true });
+    } catch (error) {
+      applyMuted(currentlyMuted);
+      setFeedback(error?.response?.data?.detail || 'Failed to update notifications.');
+    }
+  };
+
+  const jumpToMessage = (mode, message) => {
+    if (!message?.id) return;
+    setScrollRequest({ mode, messageId: message.id, nonce: Date.now() });
+    // Reset first so jumping to the same message twice replays the flash.
+    setHighlightedMessageId(null);
+    window.requestAnimationFrame(() => setHighlightedMessageId(message.id));
+  };
+
+  const handleScrollRequestMissed = () => {
+    setHighlightedMessageId(null);
+    setFeedback('That pinned message is older than the loaded history.');
+  };
+
+  const handleGroupComposerChange = (nextValue) => {
+    if (isEditingGroupMessage) {
+      updateEditingMessageText(nextValue);
+      return;
+    }
+    setNewMessage(nextValue);
+    handleTypingInput('group', selectedGroupIdRef.current, nextValue);
+    if (selectedGroupIdRef.current) {
+      updateGroupComposerDraft(selectedGroupIdRef.current, {
+        text: nextValue,
+        attachments: pendingAttachments,
+        uploading: uploadingAttachment,
+        uploadState: attachmentUploadState,
+      });
+    }
+  };
+
+  const handleDirectComposerChange = (nextValue) => {
+    if (isEditingDirectMessage) {
+      updateEditingMessageText(nextValue);
+      return;
+    }
+    setDirectNewMessage(nextValue);
+    handleTypingInput('direct', selectedDirectUserIdRef.current, nextValue);
+    if (selectedDirectUserIdRef.current) {
+      updateDirectComposerDraft(selectedDirectUserIdRef.current, {
+        text: nextValue,
+        attachments: directPendingAttachments,
+        uploading: uploadingDirectAttachment,
+        uploadState: directAttachmentUploadState,
+      });
+    }
+  };
+
+  const removeGroupPendingAttachment = (index) => {
+    setPendingAttachments((prev) => {
+      const nextAttachments = prev.filter((_, attachmentIndex) => attachmentIndex !== index);
+      if (selectedGroupIdRef.current) {
+        updateGroupComposerDraft(selectedGroupIdRef.current, {
+          text: newMessage,
+          attachments: nextAttachments,
+          uploading: uploadingAttachment,
+          uploadState: attachmentUploadState,
+        });
+      }
+      return nextAttachments;
+    });
+  };
+
+  const removeDirectPendingAttachment = (index) => {
+    setDirectPendingAttachments((prev) => {
+      const nextAttachments = prev.filter((_, attachmentIndex) => attachmentIndex !== index);
+      if (selectedDirectUserIdRef.current) {
+        updateDirectComposerDraft(selectedDirectUserIdRef.current, {
+          text: directNewMessage,
+          attachments: nextAttachments,
+          uploading: uploadingDirectAttachment,
+          uploadState: directAttachmentUploadState,
+        });
+      }
+      return nextAttachments;
+    });
+  };
+
+  const buildReplyContext = (mode) => (
+    replyingMessage?.mode === mode
+      ? {
+          messageId: replyingMessage.messageId,
+          senderName: replyingMessage.senderName,
+          preview: replyingMessage.message || buildAttachmentCountLabel(replyingMessage.attachments),
+        }
+      : null
+  );
 
   const isActiveListVisible = visibleListTab === activeTab;
   const deleteMessagePreview = deleteConfirmation.message
@@ -3252,984 +3080,661 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
     deleteConfirmation.mode === 'group' ? 'this group' : 'this direct chat'
   );
 
-  const panelStatusBanner = (
-    <CacheStatusBanner
-      showingCached={activeTab === 'groups' ? groupsCacheStatus.showingCached : directCacheStatus.showingCached}
-      isRefreshing={activeTab === 'groups' ? isRefreshing : directRefreshing}
-      cachedAt={activeTab === 'groups' ? groupsCacheStatus.cachedAt : directCacheStatus.cachedAt}
-      liveUpdatedAt={activeTab === 'groups' ? groupsCacheStatus.liveUpdatedAt : directCacheStatus.liveUpdatedAt}
-      refreshingLabel={activeTab === 'groups' ? 'Refreshing latest groups...' : 'Refreshing latest direct chats...'}
-      liveLabel={activeTab === 'groups' ? 'Groups list is up to date' : 'Direct chats are up to date'}
-      cachedLabel={activeTab === 'groups' ? 'Showing cached groups' : 'Showing cached direct chats'}
-      className="cache-status-banner--header"
-    />
+  const activeCacheStatus = activeTab === 'groups' ? groupsCacheStatus : directCacheStatus;
+  const isSyncing = activeTab === 'groups'
+    ? isRefreshing || isMessagesRefreshing
+    : directRefreshing || directMessagesRefreshing;
+  const syncStatusLabel = isSyncing ? 'Syncing…' : activeCacheStatus.showingCached ? 'Saved copy' : '';
+  const syncStatus = syncStatusLabel ? (
+    <span className={`chat-sync-status ${isSyncing ? 'is-syncing' : ''}`} role="status">
+      <span className="chat-sync-dot" aria-hidden="true" />
+      {syncStatusLabel}
+    </span>
+  ) : null;
+
+  const createGroupCandidates = useMemo(() => {
+    const query = createGroupFilter.trim().toLowerCase();
+    return allUsers
+      .filter((groupUser) => groupUser.id !== currentUserId)
+      .filter((groupUser) => !query || `${groupUser.name || ''} ${groupUser.department || ''} ${groupUser.email || ''}`.toLowerCase().includes(query));
+  }, [allUsers, createGroupFilter, currentUserId]);
+
+  const addableGroupMembers = useMemo(
+    () => (selectedGroup
+      ? allUsers.filter((groupUser) => !selectedGroup.members.some((member) => member.id === groupUser.id))
+      : []),
+    [allUsers, selectedGroup]
   );
 
-  const messageSystemRail = (
-    <div className="message-system-rail">
-      <div className="message-system-rail-top">
-        <button
-          type="button"
-          className={`message-system-rail-btn ${activeTab === 'groups' && isActiveListVisible ? 'active' : ''}`}
-          onClick={() => toggleMessageList('groups')}
-          title="Group chats"
-          aria-label="Show group chats"
-          aria-expanded={activeTab === 'groups' && isActiveListVisible}
-        >
-          <svg viewBox="0 0 24 24" focusable="false">
-            <path
-              d="M8.5 11.25a2.75 2.75 0 1 0 0-5.5 2.75 2.75 0 0 0 0 5.5Zm7 1a2.25 2.25 0 1 0 0-4.5 2.25 2.25 0 0 0 0 4.5Z"
-              fill="currentColor"
-            />
-            <path
-              d="M4.75 17.5a4.5 4.5 0 0 1 7.5-3.33M13.5 17.5c.38-1.74 1.9-3 3.75-3 1.24 0 2.33.56 3.08 1.44"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-            />
-          </svg>
-        </button>
-        <button
-          type="button"
-          className={`message-system-rail-btn ${activeTab === 'direct' && isActiveListVisible ? 'active' : ''}`}
-          onClick={() => toggleMessageList('direct')}
-          title="Individual chats"
-          aria-label="Show individual chats"
-          aria-expanded={activeTab === 'direct' && isActiveListVisible}
-        >
-          <svg viewBox="0 0 24 24" focusable="false">
-            <path d="M12 12a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5Z" fill="currentColor" />
-            <path
-              d="M6 18a6 6 0 0 1 12 0"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-            />
-          </svg>
+  const renderPersonOption = (person, checked, onToggle) => (
+    <label key={person.id} className={`chat-person-option ${checked ? 'is-checked' : ''}`}>
+      <input type="checkbox" checked={checked} onChange={onToggle} />
+      <span className="person-avatar person-avatar--xs" style={{ '--avatar-hue': `${buildAvatarHue(person.name)}deg` }} aria-hidden="true">
+        {buildInitials(person.name)}
+      </span>
+      <span className="chat-person-copy">
+        <strong>{person.name}</strong>
+        <small>{person.department || person.position || 'Team member'}</small>
+      </span>
+    </label>
+  );
+
+  const renderSelectionBar = (count) => (
+    <div className="chat-selection-bar" role="toolbar" aria-label="Selected messages">
+      <span><strong>{count}</strong> {count === 1 ? 'message' : 'messages'} selected</span>
+      <div className="chat-selection-actions">
+        <button type="button" className="btn btn--ghost btn--sm" onClick={cancelMessageSelection}>Cancel</button>
+        <button type="button" className="btn btn--primary btn--sm" onClick={openForwardModal} disabled={count === 0}>
+          <IconForward size={14} />
+          Forward
         </button>
       </div>
     </div>
   );
 
-  const content = (
-    <div className={`group-message-root group-message-root--${variant}`}>
-      {variant !== 'overlay' && (
-        <div className="content-header">
-          <div className="content-header-copy">
-            <span className="content-header-label">Message System</span>
-            <h3>{activeTab === 'groups' ? 'Groups' : 'Individual Chat'}</h3>
+  const threadRowProps = (mode) => ({
+    currentUserId,
+    highlightedMessageId,
+    isSelectionActive: mode === 'group' ? isGroupSelectionActive : isDirectSelectionActive,
+    items: mode === 'group' ? messageItems : directMessageItems,
+    mode,
+    onCopyMessage: handleCopyMessage,
+    onDeleteMessage: handleDeleteMessage,
+    onDiscardFailedMessage: discardFailedMessage,
+    onEditMessage: handleEditMessage,
+    onOpenReceiptDetails: mode === 'group' ? openGroupReceiptDetails : undefined,
+    onReactToMessage: handleMessageReaction,
+    onReplyToMessage: handleReplyToMessage,
+    onRetryFailedMessage: retryFailedMessage,
+    onTogglePin: handleTogglePin,
+    selectedIds: mode === 'group' ? selectedGroupMessageIds : selectedDirectMessageIds,
+    toggleMessageSelection,
+  });
+
+  const groupListItems = filteredGroups.map((group) => {
+    const unreadCount = groupUnreadCounts[group.id] || 0;
+    const hasUnread = unreadCount > 0;
+    const isMuted = mutedGroupIdSet.has(Number(group.id));
+    const isSelected = selectedGroupId === group.id;
+    const typingLabel = buildTypingLabel(Object.values(groupTypingByGroupId[group.id] || {}));
+    const senderLabel = Number(group.lastMessageSenderId) === Number(currentUserId)
+      ? 'You'
+      : firstName(group.lastMessageSenderName || '');
+    const draftText = isSelected ? '' : `${groupComposerDrafts[group.id]?.text || ''}`.trim();
+    const preview = group.lastMessagePreview
+      ? `${senderLabel ? `${senderLabel}: ` : ''}${group.lastMessagePreview}`
+      : `${group.memberCount} members`;
+
+    return (
+      <button
+        type="button"
+        key={group.id}
+        className={`chat-list-item ${isSelected ? 'is-active' : ''} ${hasUnread ? 'has-unread' : ''} ${isMuted ? 'is-muted' : ''}`}
+        onClick={() => openGroupThread(group.id)}
+        aria-current={isSelected ? 'true' : undefined}
+      >
+        <span className="person-avatar person-avatar--md person-avatar--group" style={{ '--avatar-hue': `${buildAvatarHue(group.name)}deg` }} aria-hidden="true">
+          {buildInitials(group.name)}
+        </span>
+        <span className="chat-list-body">
+          <span className="chat-list-top">
+            <span className="chat-list-name">{group.name}</span>
+            {isMuted && <IconBellOff size={12} className="chat-list-muted-icon" aria-label="Muted" />}
+            <span className="chat-list-time">{formatListTimestamp(group.lastMessageAt)}</span>
+          </span>
+          <span className="chat-list-bottom">
+            {typingLabel
+              ? <span className="chat-list-preview is-typing">{typingLabel}</span>
+              : draftText
+                ? <span className="chat-list-preview is-draft"><strong>Draft:</strong> {draftText}</span>
+                : <span className="chat-list-preview">{preview}</span>}
+            {hasUnread && (
+              <span className={`chat-badge ${isMuted ? 'is-muted' : ''}`} aria-label={`${unreadCount} unread`}>
+                {formatUnreadCount(unreadCount)}
+              </span>
+            )}
+          </span>
+        </span>
+      </button>
+    );
+  });
+
+  const renderDirectListItem = (item) => {
+    const unreadCount = directUnreadCounts[item.id] || 0;
+    const hasUnread = unreadCount > 0;
+    const isMuted = mutedUserIdSet.has(Number(item.id));
+    const isSelected = selectedDirectUserId === item.id;
+    const presenceClass = getPresenceClassName(item.presence);
+    const typingLabel = Object.keys(directTypingByUserId[item.id] || {}).length ? 'typing…' : '';
+    const conversation = item.conversation;
+    const draftText = isSelected ? '' : `${directComposerDrafts[item.id]?.text || ''}`.trim();
+    const preview = conversation?.lastMessagePreview
+      ? `${Number(conversation.lastMessageSenderId) === Number(currentUserId) ? 'You: ' : ''}${conversation.lastMessagePreview}`
+      : item.department || item.position || 'Start a conversation';
+
+    return (
+      <button
+        type="button"
+        key={item.id}
+        className={`chat-list-item ${isSelected ? 'is-active' : ''} ${hasUnread ? 'has-unread' : ''} ${isMuted ? 'is-muted' : ''}`}
+        onClick={() => openDirectThread(item.id)}
+        aria-current={isSelected ? 'true' : undefined}
+      >
+        <span className="person-avatar person-avatar--md" style={{ '--avatar-hue': `${buildAvatarHue(item.name)}deg` }} aria-hidden="true">
+          {buildInitials(item.name)}
+          <span className={`chat-presence chat-presence--${presenceClass}`} />
+        </span>
+        <span className="chat-list-body">
+          <span className="chat-list-top">
+            <span className="chat-list-name">{item.name}</span>
+            {isMuted && <IconBellOff size={12} className="chat-list-muted-icon" aria-label="Muted" />}
+            <span className="chat-list-time">{formatListTimestamp(conversation?.lastMessageAt)}</span>
+          </span>
+          <span className="chat-list-bottom">
+            {typingLabel
+              ? <span className="chat-list-preview is-typing">{typingLabel}</span>
+              : draftText
+                ? <span className="chat-list-preview is-draft"><strong>Draft:</strong> {draftText}</span>
+                : <span className={`chat-list-preview ${conversation ? '' : 'is-placeholder'}`}>{preview}</span>}
+            {hasUnread && (
+              <span className={`chat-badge ${isMuted ? 'is-muted' : ''}`} aria-label={`${unreadCount} unread`}>
+                {formatUnreadCount(unreadCount)}
+              </span>
+            )}
+          </span>
+        </span>
+      </button>
+    );
+  };
+
+  const recentDirectItems = filteredDirectListItems.filter((item) => item.conversation);
+  const otherDirectItems = filteredDirectListItems.filter((item) => !item.conversation);
+
+  const sidebar = (
+    <aside className="chat-sidebar" aria-label="Conversations">
+      <div className="chat-sidebar-top">
+        <div className="chat-tabs" role="tablist" aria-label="Conversation type">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'groups'}
+            className={`chat-tab ${activeTab === 'groups' ? 'is-active' : ''}`}
+            onClick={() => switchListTab('groups')}
+          >
+            <IconUsers size={15} />
+            <span>Groups</span>
+            {groupUnreadThreadCount > 0 && <span className="chat-tab-count">{formatUnreadCount(groupUnreadThreadCount)}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'direct'}
+            className={`chat-tab ${activeTab === 'direct' ? 'is-active' : ''}`}
+            onClick={() => switchListTab('direct')}
+          >
+            <IconUser size={15} />
+            <span>Direct</span>
+            {directUnreadThreadCount > 0 && <span className="chat-tab-count">{formatUnreadCount(directUnreadThreadCount)}</span>}
+          </button>
+        </div>
+        <label className="chat-search">
+          <IconSearch size={15} />
+          <input
+            type="search"
+            value={messageSearch}
+            onChange={(event) => setMessageSearch(event.target.value)}
+            placeholder={activeTab === 'groups' ? 'Search groups or members' : 'Search people or messages'}
+            aria-label={activeTab === 'groups' ? 'Search groups' : 'Search direct messages'}
+          />
+        </label>
+      </div>
+
+      <div className="chat-sidebar-heading">
+        <span>
+          {activeTab === 'groups'
+            ? `${filteredGroups.length} ${filteredGroups.length === 1 ? 'group' : 'groups'}`
+            : `${filteredDirectListItems.length} ${filteredDirectListItems.length === 1 ? 'person' : 'people'}`}
+        </span>
+        <div className="chat-sidebar-actions">
+          <button type="button" className={`icon-btn icon-btn--sm ${isSyncing ? 'is-spinning' : ''}`} onClick={refreshCurrentView} title="Refresh" aria-label="Refresh conversations">
+            <IconRefresh size={14} />
+          </button>
+          {activeTab === 'groups' && (
+            <button
+              type="button"
+              className={`icon-btn icon-btn--sm ${showGroupComposer ? 'is-active' : ''}`}
+              onClick={() => setShowGroupComposer((prev) => !prev)}
+              title="New group"
+              aria-label="Create a new group"
+              aria-expanded={showGroupComposer}
+            >
+              <IconPlus size={15} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {activeTab === 'groups' && showGroupComposer && (
+        <div className="chat-create-group">
+          <div className="chat-create-group-head">
+            <strong>New group</strong>
+            <button type="button" className="icon-btn icon-btn--sm" onClick={() => setShowGroupComposer(false)} aria-label="Close new group form">
+              <IconClose size={14} />
+            </button>
           </div>
-          {panelStatusBanner}
+          <input
+            className="chat-field"
+            type="text"
+            placeholder="Group name"
+            maxLength={80}
+            value={groupName}
+            onChange={(event) => setGroupName(event.target.value)}
+          />
+          <label className="chat-search chat-search--compact">
+            <IconSearch size={13} />
+            <input
+              type="search"
+              value={createGroupFilter}
+              onChange={(event) => setCreateGroupFilter(event.target.value)}
+              placeholder="Filter people"
+              aria-label="Filter people to add"
+            />
+          </label>
+          <div className="chat-people-picker">
+            {loading && <div className="chat-muted-note">Loading people…</div>}
+            {!loading && createGroupCandidates.length === 0 && <div className="chat-muted-note">No people match this filter.</div>}
+            {!loading && createGroupCandidates.map((groupUser) =>
+              renderPersonOption(groupUser, selectedIds.includes(groupUser.id), () => toggleSelected(groupUser.id))
+            )}
+          </div>
+          <div className="chat-create-group-foot">
+            <span>{selectedIds.length} selected</span>
+            <button type="button" className="btn btn--primary btn--sm" onClick={createGroup} disabled={!groupName.trim() || selectedIds.length === 0}>
+              Create group
+            </button>
+          </div>
         </div>
       )}
 
-      <div className="message-system-shell">
-        {messageSystemRail}
-        <div className="message-system-stage">
-          {feedback && <div className="group-message-feedback">{feedback}</div>}
+      <div className="chat-list">
+        {activeTab === 'groups' && (
+          <>
+            {loading && !groups.length && <div className="chat-list-skeleton" aria-hidden="true"><span /><span /><span /></div>}
+            {showEmptyGroupsState && <div className="chat-muted-note">No groups yet. Use + to create one.</div>}
+            {showEmptyGroupSearchState && <div className="chat-muted-note">No groups match “{messageSearch.trim()}”.</div>}
+            {groupListItems}
+          </>
+        )}
+        {activeTab === 'direct' && (
+          <>
+            {directLoading && !directListItems.length && <div className="chat-list-skeleton" aria-hidden="true"><span /><span /><span /></div>}
+            {showEmptyDirectState && <div className="chat-muted-note">No people available for direct chat yet.</div>}
+            {showEmptyDirectSearchState && <div className="chat-muted-note">No people or chats match “{messageSearch.trim()}”.</div>}
+            {recentDirectItems.length > 0 && <div className="chat-list-section">Recent</div>}
+            {recentDirectItems.map(renderDirectListItem)}
+            {otherDirectItems.length > 0 && <div className="chat-list-section">All people</div>}
+            {otherDirectItems.map(renderDirectListItem)}
+          </>
+        )}
+      </div>
+    </aside>
+  );
 
-          {activeTab === 'groups' && (
-      <div className={`groups-shell ${isActiveListVisible ? '' : 'sidebar-hidden'}`}>
-        {isActiveListVisible && (
-        <div className="groups-sidebar">
-          <div className="message-system-sidebar-header">
-            <div>
-              <div className="message-system-sidebar-eyebrow">Groups</div>
-              <div className="message-system-sidebar-meta">
-                {filteredGroups.length} of {groups.length} {groups.length === 1 ? 'group' : 'groups'} available
+  const backButton = (
+    <button
+      type="button"
+      className="icon-btn chat-back"
+      onClick={() => setVisibleListTab(activeTab)}
+      aria-label="Back to conversations"
+    >
+      <IconChevronLeft size={18} />
+    </button>
+  );
+
+  const groupWindow = (
+    <section className="chat-pane" aria-label={selectedGroup ? `${selectedGroup.name} conversation` : 'Group conversation'}>
+      {!selectedGroup ? (
+        <ChatEmptyState icon={IconUsers} title="Select a group" text="Pick a group from the list to read and reply to the conversation." />
+      ) : (
+        <>
+          <header className="chat-pane-header">
+            {backButton}
+            <span className="person-avatar person-avatar--lg person-avatar--group" style={{ '--avatar-hue': `${buildAvatarHue(selectedGroup.name)}deg` }} aria-hidden="true">
+              {buildInitials(selectedGroup.name)}
+            </span>
+            <div className="chat-pane-header-copy">
+              <div className="chat-pane-header-title">
+                <h3>{selectedGroup.name}</h3>
+                {isSelectedGroupAdmin && <span className="chat-pill">Admin</span>}
+                {isSelectedGroupMuted && <span className="chat-pill chat-pill--muted"><IconBellOff size={11} />Muted</span>}
               </div>
+              <p className="chat-pane-header-sub">
+                {selectedGroup.memberCount} members
+                {selectedGroupOnlineCount > 0 && (
+                  <>
+                    <span className="chat-dot-sep" aria-hidden="true">·</span>
+                    <span className="chat-online">{selectedGroupOnlineCount} online</span>
+                  </>
+                )}
+              </p>
             </div>
-            <div className="message-system-sidebar-actions">
-              <button type="button" className="message-system-sidebar-btn" onClick={refreshCurrentView} title="Refresh groups" aria-label="Refresh groups">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+            <div className="chat-pane-header-actions">
+              <button
+                type="button"
+                className={`icon-btn ${isSelectedGroupMuted ? 'is-active' : ''}`}
+                onClick={() => toggleThreadMute('group', selectedGroup.id)}
+                title={isSelectedGroupMuted ? 'Unmute notifications' : 'Mute notifications'}
+                aria-label={isSelectedGroupMuted ? 'Unmute notifications' : 'Mute notifications'}
+                aria-pressed={isSelectedGroupMuted}
+              >
+                {isSelectedGroupMuted ? <IconBellOff size={17} /> : <IconBell size={17} />}
               </button>
               <button
                 type="button"
-                className={`message-system-sidebar-btn ${showGroupComposer ? 'active' : ''}`}
-                onClick={() => setShowGroupComposer((prev) => !prev)}
-                title={showGroupComposer ? 'Hide create group' : 'Create group'}
-                aria-label={showGroupComposer ? 'Hide create group' : 'Create group'}
+                className={`icon-btn ${isGroupSelectionActive ? 'is-active' : ''}`}
+                onClick={() => (isGroupSelectionActive ? cancelMessageSelection() : startMessageSelection('group'))}
+                title={isGroupSelectionActive ? 'Cancel selection' : 'Select messages to forward'}
+                aria-label={isGroupSelectionActive ? 'Cancel selection' : 'Select messages to forward'}
+                aria-pressed={isGroupSelectionActive}
               >
-                {showGroupComposer
-                  ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="14" height="14" aria-hidden="true"><path d="M5 12h14"/></svg>
-                  : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="14" height="14" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-                }
+                <IconSelect size={17} />
               </button>
-            </div>
-          </div>
-
-          {showGroupComposer && (
-            <div className="groups-create-card groups-create-card--drawer">
-              <div className="groups-create-title">Create Group</div>
-              <input
-                className="groups-input"
-                type="text"
-                placeholder="Group name..."
-                value={groupName}
-                onChange={(event) => setGroupName(event.target.value)}
-              />
-              <div className="groups-user-picker">
-                {loading && <div>Loading employees...</div>}
-                {!loading &&
-                  allUsers.map((groupUser) => (
-                    <label key={groupUser.id} className="groups-user-option">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.includes(groupUser.id)}
-                        onChange={() => toggleSelected(groupUser.id)}
-                      />
-                      <span>
-                        {groupUser.name} ({groupUser.department || 'N/A'})
-                      </span>
-                    </label>
-                  ))}
-              </div>
-              <button className="add-btn" onClick={createGroup} disabled={!groupName.trim() || selectedIds.length === 0}>
-                Create Channel
-              </button>
-            </div>
-          )}
-
-          <div className="groups-list">
-            {showEmptyGroupsState && <div className="group-message-info-card">No groups created yet.</div>}
-            {showEmptyGroupSearchState && <div className="group-message-info-card">No groups match this search.</div>}
-            {filteredGroups.map((group) => {
-              const unreadCount = groupUnreadCounts[group.id] || 0;
-              const hasUnread = unreadCount > 0;
-              const onlineMemberCount = getOnlineMemberCount(group.members || []);
-
-              return (
+              <div className="chat-menu-wrap" ref={groupMenuRef}>
                 <button
                   type="button"
-                  className={`group-thread-card ${selectedGroupId === group.id ? 'active' : ''} ${hasUnread ? 'has-unread' : ''}`}
-                  key={group.id}
-                  onClick={() => { setSelectedGroupId(group.id); if (isMobileViewport()) setVisibleListTab(null); }}
+                  className={`icon-btn ${showGroupMenu ? 'is-active' : ''}`}
+                  onClick={() => setShowGroupMenu((prev) => !prev)}
+                  title="Members"
+                  aria-label="Show group members"
+                  aria-expanded={showGroupMenu}
                 >
-                  <div
-                    className={`group-thread-avatar ${hasUnread ? 'has-unread' : ''}`}
-                    style={{ '--group-avatar-hue': `${buildAvatarHue(group.name)}deg` }}
-                  >
-                    {buildInitials(group.name)}
-                  </div>
-                  <div className="group-thread-copy">
-                    <div className="group-thread-topline">
-                      <div className={`group-thread-name ${hasUnread ? 'has-unread' : ''}`}>{group.name}</div>
-                      <div className="group-thread-topline-side">
-                        {hasUnread && <span className="group-thread-unread-badge">{formatUnreadCount(unreadCount)}</span>}
-                        <div className="group-thread-meta">
-                          {onlineMemberCount > 0 ? `${onlineMemberCount} online` : `${group.memberCount} members`}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="group-thread-subline">
-                      <span>Your role: {group.myRole}</span>
-                      <span>{group.members?.slice(0, 2).map((member) => member.name).join(', ')}</span>
-                    </div>
-                  </div>
+                  <IconUsers size={17} />
                 </button>
-              );
-            })}
-          </div>
-        </div>
-        )}
 
-        <div className="groups-chat-window">
-          {!selectedGroup && (
-            <div className="group-chat-empty">
-              <div className="group-chat-empty-icon">#</div>
-              <h4>Select a channel</h4>
-              <p>Choose a group from the left rail to open the conversation thread.</p>
-            </div>
-          )}
-
-          {selectedGroup && (
-            <>
-              <div className="group-chat-header">
-                <button
-                  type="button"
-                  className="group-chat-back-btn"
-                  onClick={() => setVisibleListTab(activeTab)}
-                  aria-label="Back to groups list"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" width="18" height="18" aria-hidden="true">
-                    <path d="M15 18l-6-6 6-6"/>
-                  </svg>
-                </button>
-                <div className="group-chat-summary">
-                  <div
-                    className="group-chat-header-avatar"
-                    style={{ '--group-avatar-hue': `${buildAvatarHue(selectedGroup.name)}deg` }}
-                  >
-                    {buildInitials(selectedGroup.name)}
-                  </div>
-                  <div>
-                    <div className="group-chat-title">{selectedGroup.name}</div>
-                    <div className="group-chat-subtitle">
-                      {selectedGroup.memberCount} members
-                      {selectedGroupOnlineCount > 0 ? `, ${selectedGroupOnlineCount} online` : ''}
-                      {selectedGroupPreviewNames ? `, ${selectedGroupPreviewNames}` : ''}
-                    </div>
-                  </div>
-                </div>
-                <div className="group-chat-actions">
-                  <span className="group-chat-badge">{selectedGroup.myRole}</span>
-                  <button
-                    type="button"
-                    className={`group-chat-selection-toggle ${isGroupSelectionActive ? 'active' : ''}`}
-                    onClick={() => (isGroupSelectionActive ? cancelMessageSelection() : startMessageSelection('group'))}
-                  >
-                    {isGroupSelectionActive ? 'Cancel Select' : 'Select Messages'}
-                  </button>
-                  <div className="group-chat-menu-wrap" ref={groupMenuRef}>
-                    <button
-                      type="button"
-                      className="group-chat-menu-trigger"
-                      onClick={() => setShowGroupMenu((prev) => !prev)}
-                    >
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
-                    </button>
-
-                    {showGroupMenu && (
-                      <div className="group-chat-menu">
-                        {isSelectedGroupAdmin && (
-                          <button
-                            type="button"
-                            className="group-chat-menu-action"
-                            onClick={() => setShowAddMemberPanel((prev) => !prev)}
-                          >
-                            {showAddMemberPanel ? 'Close Add Members' : '+ Add Members'}
-                          </button>
-                        )}
-
-                        {showAddMemberPanel && isSelectedGroupAdmin && (
-                          <div className="group-add-members-panel group-add-members-panel-menu">
-                            <div className="group-chat-menu-title">Add Members</div>
-                            <div className="group-add-members-list">
-                              {allUsers
-                                .filter((groupUser) => !selectedGroup.members.some((member) => member.id === groupUser.id))
-                                .map((groupUser) => (
-                                  <label key={groupUser.id} className="groups-user-option">
-                                    <input
-                                      type="checkbox"
-                                      checked={addMemberSelection.includes(groupUser.id)}
-                                      onChange={() =>
-                                        setAddMemberSelection((prev) =>
-                                          prev.includes(groupUser.id)
-                                            ? prev.filter((value) => value !== groupUser.id)
-                                            : [...prev, groupUser.id]
-                                        )
-                                      }
-                                    />
-                                    <span>
-                                      {groupUser.name} ({groupUser.department || 'N/A'})
-                                    </span>
-                                  </label>
-                                ))}
-                            </div>
-                            <button className="add-btn" style={{ marginTop: '8px' }} onClick={() => saveAddMembers(selectedGroup.id)}>
-                              Save Members
-                            </button>
-                          </div>
-                        )}
-
-                        <div className="group-chat-menu-section">
-                          <div className="group-chat-menu-title">Members</div>
-                          <div className="group-chat-menu-members">
-                            {selectedGroup.members.map((member) => (
-                              <div key={member.id} className="group-member-row group-member-row-menu">
-                                <div className="group-member-main">
-                                  <div
-                                    className="group-member-avatar"
-                                    style={{ '--group-avatar-hue': `${buildAvatarHue(member.name)}deg` }}
-                                  >
-                                    {buildInitials(member.name)}
-                                    <span className={`chat-presence-dot chat-presence-dot-${getPresenceClassName(member.presence)}`} />
-                                  </div>
-                                  <div>
-                                    <div className="group-member-name">{member.name}</div>
-                                    <div className="group-member-role-line">
-                                      <span>{member.role}</span>
-                                      <span className={`chat-presence-label chat-presence-label-${getPresenceClassName(member.presence)}`}>
-                                        {getPresenceLabel(member.presence)}
-                                      </span>
-                                    </div>
-                                  </div>
-                                </div>
-                                <div className="group-member-actions">
-                                  {isSelectedGroupAdmin && member.id !== currentUserId && selectedGroup.createdBy !== member.id && (
-                                    <>
-                                      <button
-                                        className="add-btn"
-                                        onClick={() => updateMemberRole(member.id, member.role === 'admin' ? 'member' : 'admin')}
-                                      >
-                                        {member.role === 'admin' ? 'Demote' : 'Make Admin'}
-                                      </button>
-                                      <button className="add-btn" onClick={() => removeMember(member.id)}>
-                                        Remove
-                                      </button>
-                                    </>
-                                  )}
-                                  {member.id === currentUserId && selectedGroup.createdBy !== currentUserId && (
-                                    <button className="add-btn" onClick={() => removeMember(member.id)}>
-                                      Leave
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
+                {showGroupMenu && (
+                  <div className="chat-popover chat-members-popover" role="dialog" aria-label="Group members">
+                    <div className="chat-popover-head">
+                      <div>
+                        <strong>Members</strong>
+                        <span>{selectedGroup.memberCount} people</span>
                       </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {isGroupSelectionActive && (
-                <div className="group-chat-selection-bar">
-                  <div className="group-chat-selection-copy">
-                    <strong>{selectedGroupMessageIds.length}</strong>
-                    <span>{selectedGroupMessageIds.length === 1 ? 'message selected' : 'messages selected'}</span>
-                  </div>
-                  <div className="group-chat-selection-actions">
-                    <button
-                      type="button"
-                      className="group-chat-selection-btn"
-                      onClick={openForwardModal}
-                      disabled={selectedGroupMessageIds.length === 0}
-                    >
-                      Forward Selected
-                    </button>
-                    <button
-                      type="button"
-                      className="group-chat-selection-btn secondary"
-                      onClick={cancelMessageSelection}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="group-chat-body">
-                <div className="group-chat-thread">
-                  {messages.length === 0 && <div className="group-chat-empty-thread">No messages yet. Say hello to the group.</div>}
-                  {messageItems.length > 0 && (
-                    <List
-                      className="group-chat-virtual-list"
-                      defaultHeight={520}
-                      listRef={groupMessageListRef}
-                      overscanCount={8}
-                      rowComponent={VirtualMessageRow}
-                      rowCount={messageItems.length}
-                      rowHeight={groupRowHeight}
-                      rowProps={{
-                        buildAvatarHue,
-                        buildInitials,
-                        currentUserId,
-                        formatMessageTime,
-                        isSelectionActive: isGroupSelectionActive,
-                        items: messageItems,
-                        mode: 'group',
-                        onDeleteMessage: handleDeleteMessage,
-                        onDiscardFailedMessage: discardFailedMessage,
-                        onEditMessage: handleEditMessage,
-                        onOpenReceiptDetails: openGroupReceiptDetails,
-                        onReactToMessage: handleMessageReaction,
-                        onReplyToMessage: handleReplyToMessage,
-                        onRetryFailedMessage: retryFailedMessage,
-                        selectedIds: selectedGroupMessageIds,
-                        toggleMessageSelection,
-                      }}
-                      style={{ flex: '1 1 auto', minHeight: 0, width: '100%' }}
-                    />
-                  )}
-                </div>
-              </div>
-
-              {selectedGroupTypingLabel && (
-                <div className="chat-typing-indicator">
-                  <span className="chat-typing-dots" aria-hidden="true"><i /><i /><i /></span>
-                  <span>{selectedGroupTypingLabel}</span>
-                </div>
-              )}
-
-              <div className="group-chat-composer">
-                {isEditingGroupMessage && (
-                  <div className="message-edit-preview">
-                    <div className="message-edit-preview-copy">
-                      <strong>Edit message</strong>
-                      <span>{editingMessage.originalText}</span>
+                      {isSelectedGroupAdmin && (
+                        <button type="button" className="btn btn--ghost btn--sm" onClick={() => setShowAddMemberPanel((prev) => !prev)}>
+                          {showAddMemberPanel ? 'Done' : (<><IconPlus size={13} />Add people</>)}
+                        </button>
+                      )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={cancelEditMessage}
-                      disabled={editingMessage.saving}
-                      aria-label="Cancel edit"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                    </button>
-                  </div>
-                )}
-                {!isEditingGroupMessage && isReplyingGroupMessage && (
-                  <div className="message-reply-preview">
-                    <div className="message-reply-preview-copy">
-                      <strong>Reply to {replyingMessage.senderName}</strong>
-                      <span>{replyingMessage.message || buildAttachmentCountLabel(replyingMessage.attachments)}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={cancelReplyToMessage}
-                      aria-label="Cancel reply"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                    </button>
-                  </div>
-                )}
-                {!isEditingGroupMessage && <AttachmentUploadStatus uploadState={attachmentUploadState} onCancel={cancelGroupAttachmentUpload} />}
-                {!isEditingGroupMessage && !!pendingAttachments.length && (
-                  <div className="group-chat-attachment-strip">
-                    {pendingAttachments.map((attachment, index) => (
-                      <div key={`${attachment.path || attachment.url || attachment.filename}-${index}`} className="group-chat-attachment-pill">
-                        <span>{getAttachmentLabel(attachment)}</span>
+
+                    {showAddMemberPanel && isSelectedGroupAdmin && (
+                      <div className="chat-add-members">
+                        <div className="chat-people-picker chat-people-picker--short">
+                          {addableGroupMembers.length === 0 && <div className="chat-muted-note">Everyone is already in this group.</div>}
+                          {addableGroupMembers.map((groupUser) =>
+                            renderPersonOption(
+                              groupUser,
+                              addMemberSelection.includes(groupUser.id),
+                              () => setAddMemberSelection((prev) => (
+                                prev.includes(groupUser.id) ? prev.filter((value) => value !== groupUser.id) : [...prev, groupUser.id]
+                              ))
+                            )
+                          )}
+                        </div>
                         <button
                           type="button"
-                          aria-label="Remove attachment"
-                          onClick={() =>
-                            setPendingAttachments((prev) => {
-                              const nextAttachments = prev.filter((_, attachmentIndex) => attachmentIndex !== index);
-                              if (selectedGroupIdRef.current) {
-                                updateGroupComposerDraft(selectedGroupIdRef.current, {
-                                  text: newMessage,
-                                  attachments: nextAttachments,
-                                  uploading: uploadingAttachment,
-                                  uploadState: attachmentUploadState,
-                                });
-                              }
-                              return nextAttachments;
-                            })
-                          }
+                          className="btn btn--primary btn--sm btn--block"
+                          onClick={() => saveAddMembers(selectedGroup.id)}
+                          disabled={addMemberSelection.length === 0}
                         >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" width="9" height="9" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                          Add {addMemberSelection.length || ''} {addMemberSelection.length === 1 ? 'person' : 'people'}
                         </button>
                       </div>
-                    ))}
+                    )}
+
+                    <ul className="chat-member-list">
+                      {selectedGroup.members.map((member) => {
+                        const presenceClass = getPresenceClassName(member.presence);
+                        const canManage = isSelectedGroupAdmin && member.id !== currentUserId && selectedGroup.createdBy !== member.id;
+                        const canLeave = member.id === currentUserId && selectedGroup.createdBy !== currentUserId;
+                        return (
+                          <li key={member.id} className="chat-member">
+                            <span className="person-avatar person-avatar--sm" style={{ '--avatar-hue': `${buildAvatarHue(member.name)}deg` }} aria-hidden="true">
+                              {buildInitials(member.name)}
+                              <span className={`chat-presence chat-presence--${presenceClass}`} />
+                            </span>
+                            <span className="chat-member-copy">
+                              <strong>
+                                {member.name}
+                                {member.id === currentUserId && <span className="chat-member-you"> (you)</span>}
+                              </strong>
+                              <small>
+                                <span className={`chat-presence-text is-${presenceClass}`}>{getPresenceLabel(member.presence)}</span>
+                                {member.role === 'admin' && <span className="chat-member-role">Admin</span>}
+                              </small>
+                            </span>
+                            {(canManage || canLeave) && (
+                              <span className="chat-member-actions">
+                                {canManage && (
+                                  <>
+                                    <button type="button" className="btn btn--ghost btn--xs" onClick={() => updateMemberRole(member.id, member.role === 'admin' ? 'member' : 'admin')}>
+                                      {member.role === 'admin' ? 'Remove admin' : 'Make admin'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`btn btn--xs ${pendingMemberRemovalId === member.id ? 'btn--danger' : 'btn--danger-ghost'}`}
+                                      onClick={() => confirmMemberRemoval(member.id)}
+                                    >
+                                      {pendingMemberRemovalId === member.id ? 'Confirm' : 'Remove'}
+                                    </button>
+                                  </>
+                                )}
+                                {canLeave && (
+                                  <button
+                                    type="button"
+                                    className={`btn btn--xs ${pendingMemberRemovalId === member.id ? 'btn--danger' : 'btn--danger-ghost'}`}
+                                    onClick={() => confirmMemberRemoval(member.id)}
+                                  >
+                                    {pendingMemberRemovalId === member.id ? 'Confirm leave' : 'Leave group'}
+                                  </button>
+                                )}
+                              </span>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
                   </div>
                 )}
-                <div className="group-chat-composer-shell">
-                  <button
-                    type="button"
-                    className="group-chat-tool-btn"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      openAttachmentPicker('files');
-                    }}
-                    title="Attach files"
-                    aria-label="Attach files"
-                    disabled={uploadingAttachment || isEditingGroupMessage}
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="group-chat-tool-icon" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-                  </button>
-                  <button
-                    type="button"
-                    className="group-chat-tool-btn"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      openAttachmentPicker('folder');
-                    }}
-                    title="Attach folder"
-                    disabled={uploadingAttachment || isEditingGroupMessage}
-                  >
-                    <svg
-                      className="group-chat-tool-icon"
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                      focusable="false"
-                    >
-                      <path
-                        d="M3.75 6.75A2.25 2.25 0 0 1 6 4.5h3.12a2.25 2.25 0 0 1 1.59.66l1.35 1.34H18A2.25 2.25 0 0 1 20.25 8.75v7.5A2.25 2.25 0 0 1 18 18.5H6a2.25 2.25 0 0 1-2.25-2.25v-9.5Z"
-                        fill="currentColor"
-                        opacity="0.22"
-                      />
-                      <path
-                        d="M3.75 8.5A2 2 0 0 1 5.75 6.5h5.38l1.32 1.3c.23.24.55.37.88.37h5.42a1.5 1.5 0 0 1 1.45 1.89l-1.16 4.32a2 2 0 0 1-1.93 1.48H5.95a2 2 0 0 1-1.98-1.74L3.75 8.5Z"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.7"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </button>
-                  <input
-                    className="groups-input group-chat-input"
-                    type="text"
-                    placeholder={isEditingGroupMessage ? 'Edit message' : 'Type a message'}
-                    value={isEditingGroupMessage ? editingMessage.text : newMessage}
-                    onChange={(event) => {
-                      const nextValue = event.target.value;
-                      if (isEditingGroupMessage) {
-                        updateEditingMessageText(nextValue);
-                        return;
-                      }
-                      setNewMessage(nextValue);
-                      handleTypingInput('group', selectedGroupIdRef.current, nextValue);
-                      if (selectedGroupIdRef.current) {
-                        updateGroupComposerDraft(selectedGroupIdRef.current, {
-                          text: nextValue,
-                          attachments: pendingAttachments,
-                          uploading: uploadingAttachment,
-                          uploadState: attachmentUploadState,
-                        });
-                      }
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        if (isEditingGroupMessage) {
-                          submitEditMessage();
-                        } else {
-                          sendMessage();
-                        }
-                      }
-                      if (event.key === 'Escape' && isEditingGroupMessage) {
-                        event.preventDefault();
-                        cancelEditMessage();
-                      }
-                    }}
-                  />
-                  <button
-                    className="group-chat-send-btn"
-                    onClick={isEditingGroupMessage ? submitEditMessage : sendMessage}
-                    disabled={
-                      isEditingGroupMessage
-                        ? editingMessage.saving || !editingMessage.text.trim()
-                        : sendingMessage || uploadingAttachment || (!newMessage.trim() && pendingAttachments.length === 0)
-                    }
-                    aria-label={isEditingGroupMessage ? 'Save edited message' : 'Send message'}
-                  >
-                    {isEditingGroupMessage ? (
-                      <span className="group-chat-confirm-icon">✓</span>
-                    ) : (
-                      <svg
-                        className={`group-chat-send-icon ${sendingMessage ? 'sending' : ''}`}
-                        viewBox="0 0 24 24"
-                        aria-hidden="true"
-                        focusable="false"
-                      >
-                        <path
-                          d="M4.5 11.5 18.95 5.48c.93-.39 1.88.55 1.49 1.48L14.4 21.47c-.38.92-1.71.89-2.04-.05l-1.7-4.86-4.83-1.73c-.93-.33-.96-1.65-.05-2.03Z"
-                          fill="currentColor"
-                        />
-                        <path
-                          d="M10.66 16.56 20.18 6.75"
-                          fill="none"
-                          stroke="#dbeafe"
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    )}
-                  </button>
-                </div>
               </div>
-            </>
-          )}
-        </div>
-      </div>
+            </div>
+          </header>
+
+          <PinnedMessagesBar
+            pinned={groupPinned}
+            threadKey={`group-${selectedGroupId}`}
+            onJump={(message) => jumpToMessage('group', message)}
+            onUnpin={(message) => handleTogglePin('group', message)}
+          />
+
+          {isGroupSelectionActive && renderSelectionBar(selectedGroupMessageIds.length)}
+
+          <ChatThread
+            currentUserId={currentUserId}
+            dropLabel={`Files will be added to your message in ${selectedGroup.name}`}
+            emptyState={groupThreadLoading
+              ? <ThreadLoadingState />
+              : <ChatEmptyState icon={IconChat} title="No messages yet" text={`Start the conversation in ${selectedGroup.name}.`} />}
+            items={messageItems}
+            onDropFiles={isEditingGroupMessage ? undefined : handleAttachmentSelect}
+            onScrollRequestMissed={handleScrollRequestMissed}
+            rowHeight={groupRowHeight}
+            rowProps={threadRowProps('group')}
+            scrollRequest={scrollRequest?.mode === 'group' ? scrollRequest : null}
+            threadKey={`group-${selectedGroupId}`}
+            typingLabel={selectedGroupTypingLabel}
+          />
+
+          <ChatComposer
+            attachments={pendingAttachments}
+            canSend={isEditingGroupMessage
+              ? !editingMessage.saving && !!editingMessage.text.trim()
+              : !sendingMessage && !uploadingAttachment && (!!newMessage.trim() || pendingAttachments.length > 0)}
+            editing={isEditingGroupMessage ? editingMessage : null}
+            focusKey={`group-${selectedGroupId}`}
+            getAttachmentLabel={getAttachmentLabel}
+            onCancelEdit={cancelEditMessage}
+            onCancelReply={cancelReplyToMessage}
+            onCancelUpload={cancelGroupAttachmentUpload}
+            onChange={handleGroupComposerChange}
+            onPasteFiles={handleAttachmentSelect}
+            onPickFiles={() => openAttachmentPicker('files')}
+            onPickFolder={() => openAttachmentPicker('folder')}
+            onRemoveAttachment={removeGroupPendingAttachment}
+            onSubmit={isEditingGroupMessage ? submitEditMessage : sendMessage}
+            placeholder={isEditingGroupMessage ? 'Edit your message' : `Message ${selectedGroup.name}`}
+            replyingTo={buildReplyContext('group')}
+            sending={sendingMessage}
+            uploadState={attachmentUploadState}
+            uploading={uploadingAttachment}
+            value={isEditingGroupMessage ? editingMessage.text : newMessage}
+          />
+        </>
       )}
-      {activeTab === 'direct' && (
-        <div className={`groups-shell ${isActiveListVisible ? '' : 'sidebar-hidden'}`}>
-          {isActiveListVisible && (
-          <div className="groups-sidebar">
-            <div className="message-system-sidebar-header">
-              <div>
-                <div className="message-system-sidebar-eyebrow">Direct Messages</div>
-                <div className="message-system-sidebar-meta">
-                  {filteredDirectListItems.length} of {directListItems.length} {directListItems.length === 1 ? 'conversation' : 'conversations'} available
-                </div>
+    </section>
+  );
+
+  const directWindow = (
+    <section className="chat-pane" aria-label={selectedDirectUser ? `Conversation with ${selectedDirectUser.name}` : 'Direct conversation'}>
+      {!selectedDirectUser ? (
+        <ChatEmptyState icon={IconUser} title="Select a conversation" text="Pick a teammate from the list to start or continue a direct conversation." />
+      ) : (
+        <>
+          <header className="chat-pane-header">
+            {backButton}
+            <span className="person-avatar person-avatar--lg" style={{ '--avatar-hue': `${buildAvatarHue(selectedDirectUser.name)}deg` }} aria-hidden="true">
+              {buildInitials(selectedDirectUser.name)}
+              <span className={`chat-presence chat-presence--${getPresenceClassName(selectedDirectUser.presence)}`} />
+            </span>
+            <div className="chat-pane-header-copy">
+              <div className="chat-pane-header-title">
+                <h3>{selectedDirectUser.name}</h3>
+                {isSelectedDirectMuted && <span className="chat-pill chat-pill--muted"><IconBellOff size={11} />Muted</span>}
               </div>
-              <div className="message-system-sidebar-actions">
-                <button type="button" className="message-system-sidebar-btn" onClick={refreshCurrentView} title="Refresh direct chats" aria-label="Refresh direct chats">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14" aria-hidden="true"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-                </button>
-              </div>
-            </div>
-            {/* <div className="groups-create-card groups-create-card--helper">
-              <div className="groups-create-title">Quick Start</div>
-              <div className="group-message-info-card direct-helper-card">
-                Choose a teammate from the list below to start or continue a one-to-one conversation.
-              </div>
-            </div> */}
-
-            <div className="groups-list">
-              {directLoading && <div className="group-message-info-card">Loading people...</div>}
-              {showEmptyDirectState && (
-                <div className="group-message-info-card">No people available for direct chat yet.</div>
-              )}
-              {showEmptyDirectSearchState && (
-                <div className="group-message-info-card">No people or chats match this search.</div>
-              )}
-              {!directLoading && filteredDirectListItems.map((item) => {
-                const unreadCount = directUnreadCounts[item.id] || 0;
-                const hasUnread = unreadCount > 0;
-                const presenceClass = getPresenceClassName(item.presence);
-
-                return (
-                  <button
-                    type="button"
-                    className={`group-thread-card ${selectedDirectUserId === item.id ? 'active' : ''} ${hasUnread ? 'has-unread' : ''}`}
-                    key={item.id}
-                    onClick={() => { setSelectedDirectUserId(item.id); if (isMobileViewport()) setVisibleListTab(null); }}
-                  >
-                    <div
-                      className={`group-thread-avatar ${hasUnread ? 'has-unread' : ''}`}
-                      style={{ '--group-avatar-hue': `${buildAvatarHue(item.name)}deg` }}
-                    >
-                      {buildInitials(item.name)}
-                      <span className={`chat-presence-dot chat-presence-dot-${presenceClass}`} />
-                    </div>
-                    <div className="group-thread-copy">
-                      <div className="group-thread-topline">
-                        <div className={`group-thread-name ${hasUnread ? 'has-unread' : ''}`}>{item.name}</div>
-                        <div className="group-thread-topline-side">
-                          {hasUnread && <span className="group-thread-unread-badge">{formatUnreadCount(unreadCount)}</span>}
-                          <div className="group-thread-meta">{item.department || item.position || 'User'}</div>
-                        </div>
-                      </div>
-                      <div className="group-thread-subline">
-                        <span className={`chat-presence-label chat-presence-label-${presenceClass}`}>
-                          {getPresenceLabel(item.presence)}
-                        </span>
-                        <span>{item.conversation?.lastMessagePreview || 'Start a conversation'}</span>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          )}
-
-          <div className="groups-chat-window">
-            {!selectedDirectUser && (
-              <div className="group-chat-empty">
-                <div className="group-chat-empty-icon">@</div>
-                <h4>Select a conversation</h4>
-                <p>Pick a teammate from the sidebar to open your direct message thread.</p>
-              </div>
-            )}
-
-            {selectedDirectUser && (
-              <>
-                <div className="group-chat-header">
-                  <button
-                    type="button"
-                    className="group-chat-back-btn"
-                    onClick={() => setVisibleListTab(activeTab)}
-                    aria-label="Back to messages list"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" width="18" height="18" aria-hidden="true">
-                      <path d="M15 18l-6-6 6-6"/>
-                    </svg>
-                  </button>
-                  <div className="group-chat-summary">
-                    <div
-                      className="group-chat-header-avatar"
-                      style={{ '--group-avatar-hue': `${buildAvatarHue(selectedDirectUser.name)}deg` }}
-                    >
-                      {buildInitials(selectedDirectUser.name)}
-                      <span className={`chat-presence-dot chat-presence-dot-${getPresenceClassName(selectedDirectUser.presence)}`} />
-                    </div>
-                    <div>
-                      <div className="group-chat-title">{selectedDirectUser.name}</div>
-                      <div className="group-chat-subtitle chat-presence-summary">
-                        <span className={`chat-presence-dot-inline chat-presence-dot-${getPresenceClassName(selectedDirectUser.presence)}`} />
-                        <span>{getPresenceLabel(selectedDirectUser.presence)}</span>
-                        <span>{selectedDirectUser.department || 'No department'}{selectedDirectUser.position ? `, ${selectedDirectUser.position}` : ''}</span>
-                      </div>
-                    </div>
-                </div>
-                <div className="group-chat-actions">
-                  {/* <span className="group-chat-badge"></span> */}
-                  <button
-                    type="button"
-                    className={`group-chat-selection-toggle ${isDirectSelectionActive ? 'active' : ''}`}
-                    onClick={() => (isDirectSelectionActive ? cancelMessageSelection() : startMessageSelection('direct'))}
-                  >
-                    {isDirectSelectionActive ? 'Cancel Select' : 'Select Messages'}
-                  </button>
-                </div>
-              </div>
-
-              {isDirectSelectionActive && (
-                <div className="group-chat-selection-bar">
-                  <div className="group-chat-selection-copy">
-                    <strong>{selectedDirectMessageIds.length}</strong>
-                    <span>{selectedDirectMessageIds.length === 1 ? 'message selected' : 'messages selected'}</span>
-                  </div>
-                  <div className="group-chat-selection-actions">
-                    <button
-                      type="button"
-                      className="group-chat-selection-btn"
-                      onClick={openForwardModal}
-                      disabled={selectedDirectMessageIds.length === 0}
-                    >
-                      Forward Selected
-                    </button>
-                    <button
-                      type="button"
-                      className="group-chat-selection-btn secondary"
-                      onClick={cancelMessageSelection}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="group-chat-body">
-                  <div className="group-chat-thread">
-                    {directMessages.length === 0 && (
-                      <div className="group-chat-empty-thread">No direct messages yet. Start the conversation.</div>
-                    )}
-                    {directMessageItems.length > 0 && (
-                      <List
-                        className="group-chat-virtual-list"
-                        defaultHeight={520}
-                        listRef={directMessageListRef}
-                        overscanCount={8}
-                        rowComponent={VirtualMessageRow}
-                        rowCount={directMessageItems.length}
-                        rowHeight={directRowHeight}
-                        rowProps={{
-                          buildAvatarHue,
-                          buildInitials,
-                          currentUserId,
-                          formatMessageTime,
-                          isSelectionActive: isDirectSelectionActive,
-                          items: directMessageItems,
-                          mode: 'direct',
-                          onDeleteMessage: handleDeleteMessage,
-                          onDiscardFailedMessage: discardFailedMessage,
-                          onEditMessage: handleEditMessage,
-                          onReactToMessage: handleMessageReaction,
-                          onReplyToMessage: handleReplyToMessage,
-                          onRetryFailedMessage: retryFailedMessage,
-                          selectedIds: selectedDirectMessageIds,
-                          toggleMessageSelection,
-                        }}
-                        style={{ flex: '1 1 auto', minHeight: 0, width: '100%' }}
-                      />
-                    )}
-                  </div>
-                </div>
-
-                {selectedDirectTypingLabel && (
-                  <div className="chat-typing-indicator">
-                    <span className="chat-typing-dots" aria-hidden="true"><i /><i /><i /></span>
-                    <span>{selectedDirectTypingLabel}</span>
-                  </div>
+              <p className="chat-pane-header-sub">
+                <span className={`chat-presence-text is-${getPresenceClassName(selectedDirectUser.presence)}`}>
+                  {getPresenceLabel(selectedDirectUser.presence)}
+                </span>
+                {(selectedDirectUser.department || selectedDirectUser.position) && (
+                  <>
+                    <span className="chat-dot-sep" aria-hidden="true">·</span>
+                    <span>{[selectedDirectUser.department, selectedDirectUser.position].filter(Boolean).join(', ')}</span>
+                  </>
                 )}
+              </p>
+            </div>
+            <div className="chat-pane-header-actions">
+              <button
+                type="button"
+                className={`icon-btn ${isSelectedDirectMuted ? 'is-active' : ''}`}
+                onClick={() => toggleThreadMute('direct', selectedDirectUser.id)}
+                title={isSelectedDirectMuted ? 'Unmute notifications' : 'Mute notifications'}
+                aria-label={isSelectedDirectMuted ? 'Unmute notifications' : 'Mute notifications'}
+                aria-pressed={isSelectedDirectMuted}
+              >
+                {isSelectedDirectMuted ? <IconBellOff size={17} /> : <IconBell size={17} />}
+              </button>
+              <button
+                type="button"
+                className={`icon-btn ${isDirectSelectionActive ? 'is-active' : ''}`}
+                onClick={() => (isDirectSelectionActive ? cancelMessageSelection() : startMessageSelection('direct'))}
+                title={isDirectSelectionActive ? 'Cancel selection' : 'Select messages to forward'}
+                aria-label={isDirectSelectionActive ? 'Cancel selection' : 'Select messages to forward'}
+                aria-pressed={isDirectSelectionActive}
+              >
+                <IconSelect size={17} />
+              </button>
+            </div>
+          </header>
 
-                <div className="group-chat-composer">
-                  {isEditingDirectMessage && (
-                    <div className="message-edit-preview">
-                      <div className="message-edit-preview-copy">
-                        <strong>Edit message</strong>
-                        <span>{editingMessage.originalText}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={cancelEditMessage}
-                        disabled={editingMessage.saving}
-                        aria-label="Cancel edit"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                      </button>
-                    </div>
-                  )}
-                  {!isEditingDirectMessage && isReplyingDirectMessage && (
-                    <div className="message-reply-preview">
-                      <div className="message-reply-preview-copy">
-                        <strong>Reply to {replyingMessage.senderName}</strong>
-                        <span>{replyingMessage.message || buildAttachmentCountLabel(replyingMessage.attachments)}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={cancelReplyToMessage}
-                        aria-label="Cancel reply"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" width="13" height="13" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                      </button>
-                    </div>
-                  )}
-                  {!isEditingDirectMessage && <AttachmentUploadStatus uploadState={directAttachmentUploadState} onCancel={cancelDirectAttachmentUpload} />}
-                  {!isEditingDirectMessage && !!directPendingAttachments.length && (
-                    <div className="group-chat-attachment-strip">
-                      {directPendingAttachments.map((attachment, index) => (
-                        <div key={`${attachment.path || attachment.url || attachment.filename}-${index}`} className="group-chat-attachment-pill">
-                          <span>{getAttachmentLabel(attachment)}</span>
-                          <button
-                            type="button"
-                            aria-label="Remove attachment"
-                            onClick={() =>
-                              setDirectPendingAttachments((prev) => {
-                                const nextAttachments = prev.filter((_, attachmentIndex) => attachmentIndex !== index);
-                                if (selectedDirectUserIdRef.current) {
-                                  updateDirectComposerDraft(selectedDirectUserIdRef.current, {
-                                    text: directNewMessage,
-                                    attachments: nextAttachments,
-                                    uploading: uploadingDirectAttachment,
-                                    uploadState: directAttachmentUploadState,
-                                  });
-                                }
-                                return nextAttachments;
-                              })
-                            }
-                          >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" width="9" height="9" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="group-chat-composer-shell">
-                    <button
-                      type="button"
-                      className="group-chat-tool-btn"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        openAttachmentPicker('files', handleDirectAttachmentSelect);
-                      }}
-                      title="Attach files"
-                      aria-label="Attach files"
-                      disabled={uploadingDirectAttachment || isEditingDirectMessage}
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="group-chat-tool-icon" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-                    </button>
-                    <button
-                      type="button"
-                      className="group-chat-tool-btn"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        openAttachmentPicker('folder', handleDirectAttachmentSelect);
-                      }}
-                      title="Attach folder"
-                      disabled={uploadingDirectAttachment || isEditingDirectMessage}
-                    >
-                      <svg
-                        className="group-chat-tool-icon"
-                        viewBox="0 0 24 24"
-                        aria-hidden="true"
-                        focusable="false"
-                      >
-                        <path
-                          d="M3.75 6.75A2.25 2.25 0 0 1 6 4.5h3.12a2.25 2.25 0 0 1 1.59.66l1.35 1.34H18A2.25 2.25 0 0 1 20.25 8.75v7.5A2.25 2.25 0 0 1 18 18.5H6a2.25 2.25 0 0 1-2.25-2.25v-9.5Z"
-                          fill="currentColor"
-                          opacity="0.22"
-                        />
-                        <path
-                          d="M3.75 8.5A2 2 0 0 1 5.75 6.5h5.38l1.32 1.3c.23.24.55.37.88.37h5.42a1.5 1.5 0 0 1 1.45 1.89l-1.16 4.32a2 2 0 0 1-1.93 1.48H5.95a2 2 0 0 1-1.98-1.74L3.75 8.5Z"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.7"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </button>
-                    <input
-                      className="groups-input group-chat-input"
-                      type="text"
-                      placeholder={isEditingDirectMessage ? 'Edit message' : 'Type a direct message'}
-                      value={isEditingDirectMessage ? editingMessage.text : directNewMessage}
-                      onChange={(event) => {
-                        const nextValue = event.target.value;
-                        if (isEditingDirectMessage) {
-                          updateEditingMessageText(nextValue);
-                          return;
-                        }
-                        setDirectNewMessage(nextValue);
-                        handleTypingInput('direct', selectedDirectUserIdRef.current, nextValue);
-                        if (selectedDirectUserIdRef.current) {
-                          updateDirectComposerDraft(selectedDirectUserIdRef.current, {
-                            text: nextValue,
-                            attachments: directPendingAttachments,
-                            uploading: uploadingDirectAttachment,
-                            uploadState: directAttachmentUploadState,
-                          });
-                        }
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          if (isEditingDirectMessage) {
-                            submitEditMessage();
-                          } else {
-                            sendDirectMessage();
-                          }
-                        }
-                        if (event.key === 'Escape' && isEditingDirectMessage) {
-                          event.preventDefault();
-                          cancelEditMessage();
-                        }
-                      }}
-                    />
-                    <button
-                      className="group-chat-send-btn"
-                      onClick={isEditingDirectMessage ? submitEditMessage : sendDirectMessage}
-                      disabled={
-                        isEditingDirectMessage
-                          ? editingMessage.saving || !editingMessage.text.trim()
-                          : sendingDirectMessage ||
-                            uploadingDirectAttachment ||
-                            (!directNewMessage.trim() && directPendingAttachments.length === 0)
-                      }
-                      aria-label={isEditingDirectMessage ? 'Save edited direct message' : 'Send direct message'}
-                    >
-                      {isEditingDirectMessage ? (
-                        <span className="group-chat-confirm-icon">✓</span>
-                      ) : (
-                        <svg
-                          className={`group-chat-send-icon ${sendingDirectMessage ? 'sending' : ''}`}
-                          viewBox="0 0 24 24"
-                          aria-hidden="true"
-                          focusable="false"
-                        >
-                          <path
-                            d="M4.5 11.5 18.95 5.48c.93-.39 1.88.55 1.49 1.48L14.4 21.47c-.38.92-1.71.89-2.04-.05l-1.7-4.86-4.83-1.73c-.93-.33-.96-1.65-.05-2.03Z"
-                            fill="currentColor"
-                          />
-                          <path
-                            d="M10.66 16.56 20.18 6.75"
-                            fill="none"
-                            stroke="#dbeafe"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
+          <PinnedMessagesBar
+            pinned={directPinned}
+            threadKey={`direct-${selectedDirectUserId}`}
+            onJump={(message) => jumpToMessage('direct', message)}
+            onUnpin={(message) => handleTogglePin('direct', message)}
+          />
+
+          {isDirectSelectionActive && renderSelectionBar(selectedDirectMessageIds.length)}
+
+          <ChatThread
+            currentUserId={currentUserId}
+            dropLabel={`Files will be added to your message to ${firstName(selectedDirectUser.name)}`}
+            emptyState={directThreadLoading
+              ? <ThreadLoadingState />
+              : <ChatEmptyState icon={IconChat} title="No messages yet" text={`Say hello to ${firstName(selectedDirectUser.name)}.`} />}
+            items={directMessageItems}
+            onDropFiles={isEditingDirectMessage ? undefined : handleDirectAttachmentSelect}
+            onScrollRequestMissed={handleScrollRequestMissed}
+            rowHeight={directRowHeight}
+            rowProps={threadRowProps('direct')}
+            scrollRequest={scrollRequest?.mode === 'direct' ? scrollRequest : null}
+            threadKey={`direct-${selectedDirectUserId}`}
+            typingLabel={selectedDirectTypingLabel}
+          />
+
+          <ChatComposer
+            attachments={directPendingAttachments}
+            canSend={isEditingDirectMessage
+              ? !editingMessage.saving && !!editingMessage.text.trim()
+              : !sendingDirectMessage && !uploadingDirectAttachment && (!!directNewMessage.trim() || directPendingAttachments.length > 0)}
+            editing={isEditingDirectMessage ? editingMessage : null}
+            focusKey={`direct-${selectedDirectUserId}`}
+            getAttachmentLabel={getAttachmentLabel}
+            onCancelEdit={cancelEditMessage}
+            onCancelReply={cancelReplyToMessage}
+            onCancelUpload={cancelDirectAttachmentUpload}
+            onChange={handleDirectComposerChange}
+            onPasteFiles={handleDirectAttachmentSelect}
+            onPickFiles={() => openAttachmentPicker('files', handleDirectAttachmentSelect)}
+            onPickFolder={() => openAttachmentPicker('folder', handleDirectAttachmentSelect)}
+            onRemoveAttachment={removeDirectPendingAttachment}
+            onSubmit={isEditingDirectMessage ? submitEditMessage : sendDirectMessage}
+            placeholder={isEditingDirectMessage ? 'Edit your message' : `Message ${firstName(selectedDirectUser.name)}`}
+            replyingTo={buildReplyContext('direct')}
+            sending={sendingDirectMessage}
+            uploadState={directAttachmentUploadState}
+            uploading={uploadingDirectAttachment}
+            value={isEditingDirectMessage ? editingMessage.text : directNewMessage}
+          />
+        </>
+      )}
+    </section>
+  );
+
+  const content = (
+    <div className={`group-message-root group-message-root--${variant}`}>
+      {variant !== 'overlay' && (
+        <div className="chat-embedded-header">
+          <span className="chat-title-icon"><IconChat size={16} /></span>
+          <h3>Messages</h3>
+          {syncStatus}
         </div>
       )}
-        </div>
+
+      <div className={`chat-shell ${isActiveListVisible ? '' : 'is-list-hidden'}`}>
+        {isActiveListVisible && sidebar}
+        {activeTab === 'groups' ? groupWindow : directWindow}
       </div>
+
+      {feedback && (
+        <div className={`chat-toast ${isErrorFeedback ? 'is-error' : ''}`} role={isErrorFeedback ? 'alert' : 'status'}>
+          <span>{feedback}</span>
+          <button type="button" onClick={() => setFeedback('')} aria-label="Dismiss">
+            <IconClose size={13} />
+          </button>
+        </div>
+      )}
+
       {receiptDetailsMessage && (
         <MessageReceiptDetailsModal
-          buildAvatarHue={buildAvatarHue}
-          buildInitials={buildInitials}
           deliveredItems={receiptDetailsData.deliveredItems}
           message={receiptDetailsMessage}
           onClose={closeReceiptDetails}
@@ -4238,18 +3743,18 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
         />
       )}
       {deleteConfirmation.open && (
-        <div className="message-delete-overlay" onClick={closeDeleteConfirmation}>
+        <div className="chat-modal-overlay" onClick={closeDeleteConfirmation}>
           <div
-            className="message-delete-modal"
+            className="chat-modal message-delete-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="message-delete-title"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="message-delete-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
+              <svg viewBox="0 0 24 24" width="20" height="20" focusable="false">
                 <path
-                  d="M9.25 4.75h5.5l.5 1.5h3.25m-13 0h3.25m8.75 0-.72 11.15a2.5 2.5 0 0 1-2.5 2.35H9.72a2.5 2.5 0 0 1-2.5-2.35L6.5 6.25m4.25 3.75v5.5m2.5-5.5v5.5"
+                  d="M4.5 7h15M9.5 7V5h5v2m-8 0 .8 11.2a2 2 0 0 0 2 1.8h5.4a2 2 0 0 0 2-1.8L17.5 7M10.5 11v5m3-5v5"
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="1.8"
@@ -4259,20 +3764,19 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               </svg>
             </div>
             <div className="message-delete-copy">
-              <p className="message-delete-kicker">Delete for everyone</p>
               <h4 id="message-delete-title">Delete this message?</h4>
               <p>
-                This will remove the message content, attachments, and reactions for everyone in {deleteThreadLabel}.
-                A deleted-message placeholder will remain in the chat.
+                It will be removed for everyone in {deleteThreadLabel}, along with its attachments and reactions.
+                A “message deleted” placeholder stays in the chat.
               </p>
             </div>
             <div className="message-delete-preview">
               <span>{deleteMessagePreview}</span>
             </div>
-            <div className="message-delete-actions">
+            <div className="chat-modal-actions">
               <button
                 type="button"
-                className="message-delete-btn secondary"
+                className="btn btn--ghost"
                 onClick={closeDeleteConfirmation}
                 disabled={deleteConfirmation.deleting}
               >
@@ -4280,29 +3784,29 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
               </button>
               <button
                 type="button"
-                className="message-delete-btn danger"
+                className="btn btn--danger"
                 onClick={confirmDeleteMessage}
                 disabled={deleteConfirmation.deleting}
               >
-                {deleteConfirmation.deleting ? 'Deleting...' : 'Delete for everyone'}
+                {deleteConfirmation.deleting ? 'Deleting…' : 'Delete for everyone'}
               </button>
             </div>
           </div>
         </div>
       )}
       {forwardState.open && (
-        <div className="message-forward-overlay" onClick={closeForwardModal}>
-          <div className="message-forward-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="message-forward-header">
+        <div className="chat-modal-overlay" onClick={closeForwardModal}>
+          <div className="chat-modal message-forward-modal" role="dialog" aria-modal="true" aria-labelledby="message-forward-title" onClick={(event) => event.stopPropagation()}>
+            <div className="chat-modal-header">
               <div>
-                <h4>Forward Messages</h4>
+                <h4 id="message-forward-title">Forward messages</h4>
                 <p>
-                  {selectedForwardCount} {selectedForwardCount === 1 ? 'message' : 'messages'} selected from{' '}
-                  {selectionMode === 'group' ? selectedGroup?.name || 'group chat' : selectedDirectUser?.name || 'direct chat'}.
+                  {selectedForwardCount} {selectedForwardCount === 1 ? 'message' : 'messages'} from{' '}
+                  {selectionMode === 'group' ? selectedGroup?.name || 'group chat' : selectedDirectUser?.name || 'direct chat'}
                 </p>
               </div>
-              <button type="button" className="message-forward-close" onClick={closeForwardModal}>
-                ✕
+              <button type="button" className="icon-btn" onClick={closeForwardModal} aria-label="Close forward dialog">
+                <IconClose size={16} />
               </button>
             </div>
 
@@ -4311,76 +3815,73 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
                 {selectedForwardMessages.map((message) => (
                   <div key={message.id} className="message-forward-summary-item">
                     <strong>{message.senderName || 'Unknown'}</strong>
-                    <span>{message.message || 'Forwarded attachment message'}</span>
+                    <span>{message.message || 'Attachment'}</span>
                     <small>{formatForwardTimestamp(message.createdAt)}</small>
                   </div>
                 ))}
               </div>
 
               <label className="message-forward-note">
-                <span>Add note (optional)</span>
+                <span>Add a note (optional)</span>
                 <textarea
+                  className="chat-field"
                   value={forwardState.note}
                   onChange={(event) => setForwardState((prev) => ({ ...prev, note: event.target.value }))}
-                  placeholder="Add context for the forwarded messages"
-                  rows={3}
+                  placeholder="Add context for the people you're forwarding to"
+                  rows={2}
                 />
               </label>
 
               <div className="message-forward-target-columns">
                 <div className="message-forward-target-card">
-                  <div className="message-forward-target-title">Forward To Group</div>
+                  <div className="message-forward-target-title">Groups</div>
                   <div className="message-forward-target-list">
-                    {forwardableGroups.length === 0 && (
-                      <div className="message-forward-empty">No other groups available.</div>
-                    )}
+                    {forwardableGroups.length === 0 && <div className="chat-muted-note">No other groups available.</div>}
                     {forwardableGroups.map((group) => (
-                      <label key={group.id} className="message-forward-target-option">
+                      <label key={group.id} className={`chat-person-option ${forwardState.groupIds.includes(group.id) ? 'is-checked' : ''}`}>
                         <input
                           type="checkbox"
                           checked={forwardState.groupIds.includes(group.id)}
                           onChange={() => toggleForwardGroupTarget(group.id)}
                         />
-                        <span>{group.name}</span>
-                        <small>{group.memberCount} members</small>
+                        <span className="person-avatar person-avatar--xs person-avatar--group" style={{ '--avatar-hue': `${buildAvatarHue(group.name)}deg` }} aria-hidden="true">
+                          {buildInitials(group.name)}
+                        </span>
+                        <span className="chat-person-copy">
+                          <strong>{group.name}</strong>
+                          <small>{group.memberCount} members</small>
+                        </span>
                       </label>
                     ))}
                   </div>
                 </div>
 
                 <div className="message-forward-target-card">
-                  <div className="message-forward-target-title">Forward To Individual</div>
+                  <div className="message-forward-target-title">People</div>
                   <div className="message-forward-target-list">
-                    {forwardableUsers.length === 0 && (
-                      <div className="message-forward-empty">No users available.</div>
+                    {forwardableUsers.length === 0 && <div className="chat-muted-note">No people available.</div>}
+                    {forwardableUsers.map((groupUser) =>
+                      renderPersonOption(groupUser, forwardState.userIds.includes(groupUser.id), () => toggleForwardUserTarget(groupUser.id))
                     )}
-                    {forwardableUsers.map((groupUser) => (
-                      <label key={groupUser.id} className="message-forward-target-option">
-                        <input
-                          type="checkbox"
-                          checked={forwardState.userIds.includes(groupUser.id)}
-                          onChange={() => toggleForwardUserTarget(groupUser.id)}
-                        />
-                        <span>{groupUser.name}</span>
-                        <small>{groupUser.department || groupUser.position || 'User'}</small>
-                      </label>
-                    ))}
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="message-forward-footer">
-              <button type="button" className="group-chat-selection-btn secondary" onClick={closeForwardModal}>
+            <div className="chat-modal-actions">
+              <button type="button" className="btn btn--ghost" onClick={closeForwardModal}>
                 Cancel
               </button>
               <button
                 type="button"
-                className="group-chat-selection-btn"
+                className="btn btn--primary"
                 onClick={submitForwardMessages}
-                disabled={forwardState.sending}
+                disabled={forwardState.sending || (forwardState.groupIds.length + forwardState.userIds.length === 0)}
               >
-                {forwardState.sending ? 'Forwarding...' : 'Forward Now'}
+                <IconForward size={15} />
+                {forwardState.sending
+                  ? 'Forwarding…'
+                  : `Forward${forwardState.groupIds.length + forwardState.userIds.length > 0 ? ` to ${forwardState.groupIds.length + forwardState.userIds.length}` : ''}`}
               </button>
             </div>
           </div>
@@ -4414,6 +3915,7 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
 
   if (variant === 'overlay') {
     if (!isOpen) return null;
+    const totalUnreadThreads = groupUnreadThreadCount + directUnreadThreadCount;
     return (
       <div
         className={`group-message-overlay ${isMinimized ? 'disabled' : ''}`}
@@ -4429,26 +3931,11 @@ const GroupMessagePanel = ({ isOpen = true, onClose, variant = 'embedded', onMin
             className="group-message-modal-header"
             onClick={isMinimized ? () => { onActivate?.(); setIsMinimized(false); } : undefined}
           >
-            <div className="group-message-header-main">
-              <div className="group-message-modal-copy">
-                <span className="group-message-modal-label">Message System</span>
-              </div>
-              {!isMinimized && (
-                <div className="group-message-header-search" onClick={(event) => event.stopPropagation()}>
-                  <svg className="group-message-header-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="11" cy="11" r="8" />
-                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                  </svg>
-                  <input
-                    type="search"
-                    value={messageSearch}
-                    onChange={(event) => setMessageSearch(event.target.value)}
-                    placeholder={activeTab === 'groups' ? 'Search groups or members...' : 'Search people or chats...'}
-                    aria-label={activeTab === 'groups' ? 'Search groups' : 'Search direct messages'}
-                  />
-                </div>
-              )}
-              {!isMinimized && panelStatusBanner}
+            <div className="chat-window-title">
+              <span className="chat-title-icon"><IconChat size={16} /></span>
+              <span className="chat-window-title-text">Messages</span>
+              {isMinimized && totalUnreadThreads > 0 && <span className="chat-badge">{formatUnreadCount(totalUnreadThreads)}</span>}
+              {!isMinimized && syncStatus}
             </div>
             <WindowControls
               isMinimized={isMinimized}

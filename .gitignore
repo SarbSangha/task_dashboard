@@ -54,6 +54,10 @@ htmlcov/
 
 my-dashboard/node_modules/
 my-dashboard/dist/
+
+# Cursor Usage Tracker extension: dependencies and the packaged .vsix
+cursor-extension/node_modules/
+cursor-extension/dist/
 # The deploy unpacks into dist.new/ and keeps the last build in
 # dist.prev/ for rollback; neither should ever look like a local change.
 my-dashboard/dist.*/

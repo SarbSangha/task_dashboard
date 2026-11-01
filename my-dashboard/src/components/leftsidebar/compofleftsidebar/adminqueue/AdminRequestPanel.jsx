@@ -38,15 +38,27 @@ const TABS = [
   { id: 'pricing',   label: 'Credit Pricing' },
 ];
 
+// Each stat opens the tab (and, for Login Access, the filter) it summarises.
 const STAT_DEFS = [
-  { key: 'total',     label: 'Users',        mod: '' },
-  { key: 'active',    label: 'Active',       mod: 'success' },
-  { key: 'disabled',  label: 'Disabled',     mod: 'warning' },
-  { key: 'admins',    label: 'Admins',       mod: 'info' },
-  { key: 'policyOn',  label: 'Policy On',    mod: 'policy' },
-  { key: 'approvals', label: 'Approvals',    mod: 'alert' },
-  { key: 'passwords', label: 'Pwd Requests', mod: 'alert' },
+  { key: 'total',     label: 'Users',        mod: '',        tab: 'login',     loginFilter: 'all' },
+  { key: 'active',    label: 'Active',       mod: 'success', tab: 'login',     loginFilter: 'active' },
+  { key: 'disabled',  label: 'Disabled',     mod: 'warning', tab: 'login',     loginFilter: 'inactive' },
+  { key: 'admins',    label: 'Admins',       mod: 'info',    tab: 'login',     loginFilter: 'admin' },
+  { key: 'policyOn',  label: 'Policy On',    mod: 'policy',  tab: 'policies' },
+  { key: 'approvals', label: 'Approvals',    mod: 'alert',   tab: 'approvals' },
+  { key: 'passwords', label: 'Pwd Requests', mod: 'alert',   tab: 'passwords' },
 ];
+
+// Tabs that read the header search box. The others (policies, sections,
+// sheets) have their own search field, and pricing has nothing to search, so
+// the header box is hidden there instead of sitting on screen doing nothing.
+const HEADER_SEARCH_PLACEHOLDERS = {
+  approvals: 'Search requests by name, email or department…',
+  login: 'Search users by name, email, ID or department…',
+  passwords: 'Search users by name, email or department…',
+  clients: 'Search clients…',
+  renewals: 'Search tools…',
+};
 
 const fmtTime = (ts) => {
   if (!ts) return '';
@@ -67,6 +79,7 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
   const [search, setSearch]           = useState('');
   const [message, setMessage]         = useState('');
   const [drawerUser, setDrawerUser]   = useState(null);
+  const [loginFilterRequest, setLoginFilterRequest] = useState(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(isMobileViewport);
 
@@ -82,22 +95,37 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
 
   const fmt = useCallback((v) => { const r = formatDateTimeIndia(v); return r === 'N/A' ? 'N/A' : r; }, []);
 
+  // Opening the panel, the socket connecting, window focus and the 3-minute
+  // timer can all start a load at once. Only the newest one may update the
+  // screen, and a failed background refresh must not paint an error bar over
+  // data that is already showing.
+  const loadSeqRef = useRef(0);
+  const hasDataRef = useRef(false);
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!cacheKey) return;
+    const seq = ++loadSeqRef.current;
     silent ? setIsRefreshing(true) : setLoading(true);
     try {
       const [rr, ur] = await Promise.all([authAPI.getAdminPendingRequests(), authAPI.getAdminAllUsers()]);
+      if (seq !== loadSeqRef.current) return;
       const reqs = rr?.requests || [];
       const usrs = ur?.users   || [];
       setRequests(reqs);
       setUsers(usrs);
+      hasDataRef.current = true;
       setTaskPanelCache(cacheKey, { requests: reqs, users: usrs });
       setCacheStatus((p) => ({ showingCached: false, cachedAt: p.cachedAt, liveUpdatedAt: Date.now() }));
       setMessage('');
     } catch (e) {
-      setMessage(e?.response?.data?.detail || 'Failed to load admin data');
+      console.warn('Admin queue load failed:', e);
+      if (seq !== loadSeqRef.current) return;
+      if (silent && hasDataRef.current) return;
+      setMessage(e?.response?.data?.detail || 'Could not load admin data. Check your connection and try again.');
     } finally {
-      silent ? setIsRefreshing(false) : setLoading(false);
+      if (seq === loadSeqRef.current) {
+        setIsRefreshing(false);
+        setLoading(false);
+      }
     }
   }, [cacheKey]);
 
@@ -114,6 +142,7 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
     const cached = entry?.value;
     if (Array.isArray(cached?.requests)) setRequests(cached.requests);
     if (Array.isArray(cached?.users))    setUsers(cached.users);
+    if (cached?.requests || cached?.users) hasDataRef.current = true;
     if (cached?.requests || cached?.users) {
       setCacheStatus({ showingCached: true, cachedAt: entry?.cachedAt || 0, liveUpdatedAt: 0 });
     }
@@ -155,7 +184,8 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
 
   const stats = {
     total:     liveUsers.length,
-    active:    liveUsers.filter((u) =>  u.isActive).length,
+    // Same buckets as the Login Access filters, so 41 + 2 + 1 adds up to Users.
+    active:    liveUsers.filter((u) =>  u.isActive && !u.isAdmin).length,
     disabled:  liveUsers.filter((u) => !u.isActive && !u.isAdmin).length,
     admins:    liveUsers.filter((u) =>  u.isAdmin).length,
     policyOn:  liveUsers.filter((u) => !u.isAdmin && u.enforceActiveTaskPolicy).length,
@@ -168,6 +198,11 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
     id === 'passwords' ? (stats.passwords || null) : null;
 
   const switchTab = (id) => { setActiveTab(id); setSearch(''); };
+  const openStat = ({ tab, loginFilter }) => {
+    switchTab(tab);
+    if (loginFilter) setLoginFilterRequest({ value: loginFilter, nonce: Date.now() });
+  };
+  const headerSearchPlaceholder = HEADER_SEARCH_PLACEHOLDERS[activeTab];
 
   const sharedProps = { showConfirm, showPrompt, setMessage, onViewUser: setDrawerUser, onReload: reload, formatDateTime: fmt };
 
@@ -200,15 +235,15 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
                 if (cacheStatus.showingCached) return (
                   <span className="aq-sync-pill aq-sync-pill--cached" role="status" aria-label="Showing cached data">
                     <span className="aq-sync-dot" aria-hidden="true" />
-                    CACHED
+                    Saved copy
                     {fmtTime(cacheStatus.cachedAt) && <span className="aq-sync-time">· {fmtTime(cacheStatus.cachedAt)}</span>}
                   </span>
                 );
                 if (cacheStatus.liveUpdatedAt) return (
                   <span className="aq-sync-pill aq-sync-pill--live" role="status" aria-label="Live data">
                     <span className="aq-sync-dot" aria-hidden="true" />
-                    LIVE DATA
-                    {fmtTime(cacheStatus.liveUpdatedAt) && <span className="aq-sync-time">· {fmtTime(cacheStatus.liveUpdatedAt)}</span>}
+                    Synced
+                    {fmtTime(cacheStatus.liveUpdatedAt) && <span className="aq-sync-time">{fmtTime(cacheStatus.liveUpdatedAt)}</span>}
                   </span>
                 );
                 return null;
@@ -216,7 +251,7 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
             </div>
           </div>
 
-          {!isMinimized && (
+          {!isMinimized && headerSearchPlaceholder && (
             <div className="aq-search-wrap">
               <svg className="aq-search-ico" viewBox="0 0 20 20" fill="none" aria-hidden="true" focusable="false">
                 <circle cx="9" cy="9" r="5.5" stroke="currentColor" strokeWidth="1.6" />
@@ -225,7 +260,7 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
               <input
                 type="search"
                 className="aq-search-input"
-                placeholder="Search by name, email, ID, department…"
+                placeholder={headerSearchPlaceholder}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 aria-label="Search admin queue"
@@ -249,19 +284,25 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
           <div className="aq-body">
             {/* ── Stat Cards ─────────────────────────────────────────────── */}
             <div className="aq-stats" role="region" aria-label="Summary statistics">
-              {STAT_DEFS.map(({ key, label, mod }) => {
+              {STAT_DEFS.map((def) => {
+                const { key, label, mod, tab } = def;
                 const val = stats[key];
+                // "Alert" colours only mean something when there is work waiting.
+                const effectiveMod = mod === 'alert' && !val ? '' : mod;
                 const isAlert = mod === 'alert' && val > 0;
+                const isCurrent = activeTab === tab && (!def.loginFilter || loginFilterRequest?.value === def.loginFilter);
                 return (
-                  <div
+                  <button
                     key={key}
-                    className={`aq-stat${mod ? ` aq-stat--${mod}` : ''}${isAlert ? ' aq-stat--pulse' : ''}`}
-                    role="status"
-                    aria-label={`${label}: ${val}`}
+                    type="button"
+                    className={`aq-stat${effectiveMod ? ` aq-stat--${effectiveMod}` : ''}${isAlert ? ' aq-stat--pulse' : ''}${isCurrent ? ' aq-stat--current' : ''}`}
+                    onClick={() => openStat(def)}
+                    aria-label={`${label}: ${val}. Show in ${TABS.find((t) => t.id === tab)?.label}`}
+                    title={`Show in ${TABS.find((t) => t.id === tab)?.label}`}
                   >
                     <span className="aq-stat-n">{val}</span>
                     <span className="aq-stat-l">{label}</span>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -314,6 +355,7 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
                   setUsers={setUsers}
                   search={search}
                   loading={loading}
+                  filterRequest={loginFilterRequest}
                   {...sharedProps}
                 />
               )}
@@ -356,7 +398,7 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
               )}
 
               {activeTab === 'clients' && (
-                <AdminClientsTab search={search} />
+                <AdminClientsTab search={search} showConfirm={showConfirm} />
               )}
 
               {activeTab === 'renewals' && (
@@ -372,6 +414,7 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
       {/* ── User Detail Drawer ─────────────────────────────────────────────── */}
       {drawerUser && (
         <UserDetailDrawer
+          key={drawerUser.id}
           user={drawerUser}
           setUsers={setUsers}
           onClose={() => setDrawerUser(null)}
@@ -379,6 +422,7 @@ const AdminRequestPanel = ({ isOpen, onClose, onMinimizedChange, onActivate }) =
           showPrompt={showPrompt}
           setMessage={setMessage}
           onReload={async () => { setDrawerUser(null); await reload(); }}
+          onRefresh={() => { void reload(); }}
           formatDateTime={fmt}
         />
       )}

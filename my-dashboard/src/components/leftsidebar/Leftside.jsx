@@ -72,8 +72,17 @@ const getPanelFromPath = (pathname = '') =>
   pathname.replace(/^\/dashboard\/?/, '').split('/')[0] || '';
 
 const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
-  const { can, isAdmin } = usePermissions();
+  const { can, canSeeSection, isAdmin } = usePermissions();
   const { user: authUser, loading: authLoading } = useAuth();
+
+  // Default-visible sections an admin can hide per user (user profile drawer).
+  const showTracking = canSeeSection('tracking');
+  const showCreateTask = canSeeSection('create_task');
+  const showInbox = canSeeSection('inbox');
+  const showOutbox = canSeeSection('outbox');
+  const showWorkspace = canSeeSection('workspace');
+  const showMessages = canSeeSection('messages');
+  const hasAnyWorkItem = showTracking || showCreateTask || showInbox || showOutbox || showWorkspace;
 
   // Per-user grants an admin hands out in Admin Queue -> Section Access.
   // Used for both the sidebar buttons and the panels themselves: the panels
@@ -233,11 +242,17 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
       || ((panel === 'credit-report' || panel === 'credit-consumption') && !canViewCreditReport)
       || ((panel === 'sheet-activity' || panel === 'sheets') && !canViewSheetActivity)
       || (panel === 'ai-library' && !canViewAiLibrary)
+      || (panel === 'tracking' && !showTracking)
+      || (panel === 'create-task' && !showCreateTask)
+      || (panel === 'inbox' && !showInbox)
+      || (panel === 'outbox' && !showOutbox)
+      || (panel === 'workspace' && !showWorkspace)
+      || (panel === 'messages' && !showMessages)
     ) {
       navigate('/dashboard', { replace: true });
     }
   }, [authLoading, authUser, panel, canViewRmwData, canViewBuffer, canViewCreditReport, canViewSheetActivity,
-    canViewAiLibrary, navigate]);
+    canViewAiLibrary, showTracking, showCreateTask, showInbox, showOutbox, showWorkspace, showMessages, navigate]);
 
   const openAdminQueue = () => goTo('admin-queue');
   const closeAdminQueue = () => closePanel('admin-queue');
@@ -358,35 +373,48 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
         <nav className="sidebar-nav" role="navigation" aria-label="Sidebar navigation">
 
           {/* ── WORK ── */}
+          {hasAnyWorkItem && (
           <div className="nav-section">
             <div className="nav-section-header">
               <span className="nav-section-label">Work</span>
             </div>
 
-            <TrackingButton
-              isActive={activeItem === 'tracking'}
-              onClick={openTrackingPanel}
-            />
-            <AssignTaskButton
-              isActive={activeItem === 'create-task'}
-              onClick={openAssignModal}
-            />
-            <InboxButton
-              isActive={activeItem === 'inbox'}
-              onClick={openInboxPanel}
-            />
-            <OutboxButton
-              isActive={activeItem === 'outbox'}
-              isOpen={isOutboxModalOpen}
-              onClick={openOutboxModal}
-            />
-            <WorkSpaceButton
-              isActive={activeItem === 'workspace'}
-              onClick={openWorkSpace}
-            />
+            {showTracking && (
+              <TrackingButton
+                isActive={activeItem === 'tracking'}
+                onClick={openTrackingPanel}
+              />
+            )}
+            {showCreateTask && (
+              <AssignTaskButton
+                isActive={activeItem === 'create-task'}
+                onClick={openAssignModal}
+              />
+            )}
+            {showInbox && (
+              <InboxButton
+                isActive={activeItem === 'inbox'}
+                onClick={openInboxPanel}
+              />
+            )}
+            {showOutbox && (
+              <OutboxButton
+                isActive={activeItem === 'outbox'}
+                isOpen={isOutboxModalOpen}
+                onClick={openOutboxModal}
+              />
+            )}
+            {showWorkspace && (
+              <WorkSpaceButton
+                isActive={activeItem === 'workspace'}
+                onClick={openWorkSpace}
+              />
+            )}
           </div>
+          )}
 
           {/* ── COMMUNICATION ── */}
+          {showMessages && (
           <div className="nav-section">
             <div className="nav-section-header">
               <span className="nav-section-label">Communication</span>
@@ -398,6 +426,7 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
               onClick={openMessageSystem}
             />
           </div>
+          )}
 
           {/* ── INSIGHT ── */}
           {/* Header is conditional too: with RMW Data and Buffer both

@@ -6,17 +6,15 @@ function EmptyState({ message }) {
   return (
     <div className="act-empty">
       <svg className="act-empty-icon" viewBox="0 0 48 48" fill="none" aria-hidden="true">
-        <circle cx="24" cy="24" r="20" stroke="currentColor" strokeWidth="1.8" opacity=".25" />
-        <path d="M16 28c2-4 10-4 12 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity=".4" />
-        <circle cx="18" cy="20" r="2" fill="currentColor" opacity=".45" />
-        <circle cx="30" cy="20" r="2" fill="currentColor" opacity=".45" />
+        <rect x="9" y="12" width="30" height="24" rx="5" stroke="currentColor" strokeWidth="1.8" opacity=".3" />
+        <path d="M16 21h16M16 27h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity=".5" />
       </svg>
       <p className="act-empty-text">{message}</p>
     </div>
   );
 }
 
-export default function AdminClientsTab({ search }) {
+export default function AdminClientsTab({ search, showConfirm }) {
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
@@ -63,6 +61,13 @@ export default function AdminClientsTab({ search }) {
   };
 
   const toggleActive = async (client) => {
+    if (client.isActive && showConfirm) {
+      const confirmed = await showConfirm(
+        `Deactivate "${client.name}"? It will no longer appear when people pick a client for tasks and generations. You can activate it again later.`,
+        { title: 'Deactivate client', confirmText: 'Deactivate' },
+      );
+      if (!confirmed) return;
+    }
     try {
       await clientsAPI.updateClient(client.id, { is_active: !client.isActive });
       await loadClients();
@@ -164,7 +169,7 @@ export default function AdminClientsTab({ search }) {
                           <button type="button" className="act-btn" onClick={() => startRename(client)}>Rename</button>
                           <button
                             type="button"
-                            className={`act-btn ${client.isActive ? 'act-btn--reject' : 'act-btn--approve'}`}
+                            className={`act-btn ${client.isActive ? 'act-btn--danger-ghost' : 'act-btn--approve'}`}
                             onClick={() => toggleActive(client)}
                           >
                             {client.isActive ? 'Deactivate' : 'Activate'}

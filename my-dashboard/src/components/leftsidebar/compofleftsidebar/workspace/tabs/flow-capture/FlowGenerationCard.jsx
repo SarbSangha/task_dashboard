@@ -63,7 +63,7 @@ const FlowCardPreview = React.memo(function FlowCardPreview({ generation }) {
           className="kling-card-image"
           loading="lazy"
           decoding="async"
-          fetchPriority="low"
+          {...{ fetchpriority: 'low' }}
           onError={() => setImageFailed(true)}
         />
       ) : (

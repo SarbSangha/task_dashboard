@@ -4,6 +4,21 @@ import CacheStatusBanner from '../../../../common/CacheStatusBanner';
 import { WorkspaceSkeleton } from '../../../../ui/WorkspaceSkeleton';
 import { ACTIVE_PROJECT_STATUSES, buildProjectSummaries, useWorkspaceTaskDataset } from '../workspaceTabData';
 import './OverviewTab.css';
+import {
+  IconAnalytics,
+  IconArrowRight,
+  IconFilm,
+  IconOverview,
+  IconProjects,
+  IconTeam,
+  IconTools,
+} from '../workspaceIcons';
+
+const IconCheckCircle = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="8.5" /><path d="m8.5 12.2 2.4 2.4 4.6-4.9" />
+  </svg>
+);
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -62,7 +77,7 @@ function KpiCard({ value, label, subtext, icon, colorClass, onClick }) {
       </div>
       <div className="ov-kpi-value">{value}</div>
       <div className="ov-kpi-sub">{subtext}</div>
-      {onClick && <span className="ov-kpi-arrow" aria-hidden="true">→</span>}
+      {onClick && <span className="ov-kpi-arrow" aria-hidden="true"><IconArrowRight size={14} /></span>}
     </Tag>
   );
 }
@@ -171,7 +186,9 @@ export default function OverviewTab({ onNavigateToTab }) {
       .slice(0, 6);
   }, [tasks]);
 
-  const topProjects = useMemo(() => buildProjectSummaries(tasks).slice(0, 3), [tasks]);
+  const allProjects = useMemo(() => buildProjectSummaries(tasks), [tasks]);
+  const topProjects = useMemo(() => allProjects.slice(0, 3), [allProjects]);
+  const activeProjectCount = allProjects.filter((project) => project.statusClass === 'active').length;
 
   const greeting  = getGreeting();
   const firstName = currentUser?.name?.split(' ')[0] || 'there';
@@ -182,7 +199,7 @@ export default function OverviewTab({ onNavigateToTab }) {
       value:      stats.activeTasks,
       label:      'Active Tasks',
       subtext:    stats.needWork > 0 ? `${stats.needWork} need${stats.needWork === 1 ? 's' : ''} attention` : 'On track',
-      icon:       '◉',
+      icon:       <IconOverview />,
       colorClass: 'ov-kpi-primary',
     },
     {
@@ -190,15 +207,16 @@ export default function OverviewTab({ onNavigateToTab }) {
       value:      stats.completedTasks,
       label:      'Completed',
       subtext:    `${stats.completionRate}% completion rate`,
-      icon:       '✓',
+      icon:       <IconCheckCircle />,
       colorClass: 'ov-kpi-success',
+      tab:        'analytics',
     },
     {
       key:        'projects',
       value:      stats.projects,
       label:      'Projects',
-      subtext:    stats.projects === 0 ? 'No projects yet' : `${topProjects.filter((p) => p.statusClass === 'active').length} active`,
-      icon:       '▣',
+      subtext:    stats.projects === 0 ? 'No projects yet' : `${activeProjectCount} active`,
+      icon:       <IconProjects />,
       colorClass: 'ov-kpi-purple',
       tab:        'projects',
     },
@@ -207,18 +225,18 @@ export default function OverviewTab({ onNavigateToTab }) {
       value:      stats.teamMembers,
       label:      'Team Members',
       subtext:    currentUser?.department || 'Your department',
-      icon:       '◈',
+      icon:       <IconTeam />,
       colorClass: 'ov-kpi-blue',
       tab:        'team',
     },
   ];
 
   const quickActions = [
-    { icon: '📁', label: 'Projects',    tab: 'projects' },
-    { icon: '📊', label: 'Analytics',   tab: 'analytics' },
-    { icon: '🧰', label: 'Tools',       tab: 'Tools' },
-    { icon: '👥', label: 'Team',        tab: 'team' },
-    { icon: '🎬', label: 'Gen Projects',tab: 'generation-projects' },
+    { icon: <IconProjects size={15} />,  label: 'Projects',     tab: 'projects' },
+    { icon: <IconAnalytics size={15} />, label: 'Analytics',    tab: 'analytics' },
+    { icon: <IconTools size={15} />,     label: 'Tools',        tab: 'Tools' },
+    { icon: <IconTeam size={15} />,      label: 'Team',         tab: 'team' },
+    { icon: <IconFilm size={15} />,      label: 'Gen Projects', tab: 'generation-projects' },
   ];
 
   const attentionCount = stats.needWork + stats.underReview;
@@ -269,23 +287,21 @@ export default function OverviewTab({ onNavigateToTab }) {
                   </span>
                 )}
               </div>
+              <nav className="ov-quick-actions" aria-label="Quick navigation">
+                {quickActions.map((action) => (
+                  <button
+                    key={action.label}
+                    type="button"
+                    className="ov-qa-btn"
+                    onClick={() => onNavigateToTab?.(action.tab)}
+                    aria-label={`Go to ${action.label}`}
+                  >
+                    <span className="ov-qa-icon" aria-hidden="true">{action.icon}</span>
+                    <span className="ov-qa-label">{action.label}</span>
+                  </button>
+                ))}
+              </nav>
             </div>
-
-            <nav className="ov-quick-actions" aria-label="Quick navigation">
-              {quickActions.map((action) => (
-                <button
-                  key={action.label}
-                  type="button"
-                  className="ov-qa-btn"
-                  onClick={() => onNavigateToTab?.(action.tab)}
-                  aria-label={`Go to ${action.label}`}
-                >
-                  <span className="ov-qa-icon" aria-hidden="true">{action.icon}</span>
-                  <span className="ov-qa-label">{action.label}</span>
-                  <span className="ov-qa-arrow" aria-hidden="true">›</span>
-                </button>
-              ))}
-            </nav>
           </section>
 
           {/* ── KPI Cards ─────────────────────────────────────────────── */}
@@ -331,7 +347,7 @@ export default function OverviewTab({ onNavigateToTab }) {
                         <div className="ov-priority-content">
                           <span className="ov-priority-title" title={title}>{title}</span>
                           <span className="ov-priority-meta">
-                            {formatRelativeTime(task.updatedAt || task.createdAt)}
+                            {[task.projectName, formatRelativeTime(task.updatedAt || task.createdAt)].filter(Boolean).join(' · ')}
                           </span>
                         </div>
                         <span className={`ov-badge ov-badge-${cfg.color}`}>{cfg.label}</span>
@@ -382,7 +398,7 @@ export default function OverviewTab({ onNavigateToTab }) {
                 className="ov-section-action"
                 onClick={() => onNavigateToTab?.('projects')}
               >
-                View all →
+                View all <IconArrowRight size={13} />
               </button>
             </div>
 
@@ -420,52 +436,6 @@ export default function OverviewTab({ onNavigateToTab }) {
             )}
           </section>
 
-          {/* ── Analytics Snapshot ────────────────────────────────────── */}
-          <section aria-label="Analytics snapshot">
-            <div className="ov-section-head">
-              <h3 className="ov-section-title">Analytics Snapshot</h3>
-              <button
-                type="button"
-                className="ov-section-action"
-                onClick={() => onNavigateToTab?.('analytics')}
-              >
-                Full analytics →
-              </button>
-            </div>
-            <div className="ov-analytics-strip">
-              <div className="ov-analytics-stat">
-                <span className="ov-analytics-icon" aria-hidden="true">◎</span>
-                <div className="ov-analytics-info">
-                  <span className="ov-analytics-val">{stats.completionRate}%</span>
-                  <span className="ov-analytics-lbl">Completion Rate</span>
-                </div>
-              </div>
-              <div className="ov-analytics-divider" aria-hidden="true" />
-              <div className="ov-analytics-stat">
-                <span className="ov-analytics-icon" aria-hidden="true">✓</span>
-                <div className="ov-analytics-info">
-                  <span className="ov-analytics-val">{stats.completedTasks}</span>
-                  <span className="ov-analytics-lbl">Tasks Done</span>
-                </div>
-              </div>
-              <div className="ov-analytics-divider" aria-hidden="true" />
-              <div className="ov-analytics-stat">
-                <span className="ov-analytics-icon" aria-hidden="true">▶</span>
-                <div className="ov-analytics-info">
-                  <span className="ov-analytics-val">{stats.activeTasks}</span>
-                  <span className="ov-analytics-lbl">In Progress</span>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="ov-analytics-cta"
-                onClick={() => onNavigateToTab?.('analytics')}
-              >
-                View Detailed Analytics
-                <span aria-hidden="true"> →</span>
-              </button>
-            </div>
-          </section>
         </>
       )}
     </div>

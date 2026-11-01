@@ -18,8 +18,9 @@
 }
 
 .workspace-analytics-status-row .cache-status-banner {
-  flex: 1;
-  min-width: 0;
+  flex: 0 0 auto;
+  align-self: center;
+  margin-left: auto;
 }
 
 .workspace-analytics-filter-btn {
@@ -165,4 +166,8 @@
   .workspace-analytics-card-wide {
     grid-column: span 1;
   }
+}
+
+.workspace-analytics-trend.neutral {
+  color: var(--color-text-muted);
 }

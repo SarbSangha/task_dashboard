@@ -13,6 +13,17 @@ from database_config import get_operational_db
 from models_new import ActivityStatus, ChatMessageReaction, ChatMessageReadReceipt, DirectMessage, User, UserActivity
 from routers.auth_router import get_current_user
 from routers.tasks_router import notification_dispatcher
+from utils.chat_threads import (
+    PINNED_MESSAGES_LIMIT,
+    build_pinner_lookup,
+    mark_payload_muted,
+    muted_thread_ids,
+    pin_event_payload,
+    serialize_pin_fields,
+    serialize_pinned_message,
+    set_thread_muted,
+    users_muting_thread,
+)
 from utils.datetime_utils import normalize_to_utc_naive, utcnow_naive
 
 
@@ -40,6 +51,10 @@ class TypingPayload(BaseModel):
 
 class ReactionPayload(BaseModel):
     emoji: str = Field(min_length=1, max_length=32)
+
+
+class MutePayload(BaseModel):
+    muted: bool = True
 
 
 def _utcnow() -> datetime:
@@ -218,6 +233,13 @@ def _should_send_typing_event(sender_id: int, recipient_id: int, active: bool) -
     return True
 
 
+def _conversation_filter(user_id: int, other_user_id: int):
+    return or_(
+        and_(DirectMessage.sender_id == user_id, DirectMessage.recipient_id == other_user_id),
+        and_(DirectMessage.sender_id == other_user_id, DirectMessage.recipient_id == user_id),
+    )
+
+
 def _get_active_user(db: Session, user_id: int) -> User:
     user = (
         db.query(User)
@@ -309,6 +331,7 @@ def _serialize_direct_message(
     receipt: Optional[dict] = None,
     reaction_data: Optional[dict] = None,
     reply_to: Optional[dict] = None,
+    pinner_lookup: Optional[dict[int, str]] = None,
 ) -> dict:
     return {
         "id": message.id,
@@ -323,6 +346,7 @@ def _serialize_direct_message(
         "editedAt": message.edited_at.isoformat() if message.edited_at else None,
         "deletedAt": message.deleted_at.isoformat() if message.deleted_at else None,
         "receipt": receipt,
+        **serialize_pin_fields(message, pinner_lookup or {}),
         **({"reactions": [], "myReaction": None} if message.deleted_at else (reaction_data or {"reactions": [], "myReaction": None})),
     }
 
@@ -561,14 +585,16 @@ def get_direct_unread_counts(
         for row in rows
         if int(row.unread_count or 0) > 0
     ]
-    total_unread_messages = sum(item["unreadCount"] for item in conversations)
+    muted_user_ids = muted_thread_ids(db, current_user.id, "direct")
+    audible_conversations = [item for item in conversations if item["userId"] not in muted_user_ids]
     return {
         "success": True,
         "data": {
-            "conversations": conversations,
+            "conversations": audible_conversations,
             "countsByUserId": {str(item["userId"]): item["unreadCount"] for item in conversations},
-            "totalUnreadMessages": total_unread_messages,
-            "totalUnreadThreads": len(conversations),
+            "mutedUserIds": sorted(muted_user_ids),
+            "totalUnreadMessages": sum(item["unreadCount"] for item in audible_conversations),
+            "totalUnreadThreads": len(audible_conversations),
         },
     }
 
@@ -613,9 +639,23 @@ def list_direct_messages(
     reaction_lookup = _build_reaction_lookup(db, "direct", [message.id for message in messages], current_user.id)
     reply_lookup = _build_direct_reply_lookup(db, messages)
     presence_lookup = _build_presence_lookup(db, [other_user.id])
+    pinned_rows = (
+        db.query(DirectMessage, User)
+        .join(User, User.id == DirectMessage.sender_id)
+        .filter(
+            _conversation_filter(current_user.id, other_user_id),
+            DirectMessage.pinned_at.isnot(None),
+            DirectMessage.deleted_at.is_(None),
+        )
+        .order_by(DirectMessage.pinned_at.desc())
+        .limit(PINNED_MESSAGES_LIMIT)
+        .all()
+    )
+    pinner_lookup = build_pinner_lookup(db, messages + [message for message, _sender in pinned_rows])
     return {
         "success": True,
         "conversationWith": _serialize_user(other_user, presence_lookup.get(other_user.id)),
+        "pinned": [serialize_pinned_message(message, sender.name, pinner_lookup) for message, sender in pinned_rows],
         "pagination": {
             "limit": limit,
             "hasMore": has_more,
@@ -628,6 +668,7 @@ def list_direct_messages(
                 receipt_lookup.get(message.id),
                 reaction_lookup.get(message.id),
                 reply_lookup.get(message.reply_to_message_id),
+                pinner_lookup,
             )
             for message, sender in rows
         ],
@@ -966,6 +1007,8 @@ def delete_direct_message(
         message.forward_metadata_json = None
         message.deleted_at = now
         message.edited_at = None
+        message.pinned_at = None
+        message.pinned_by = None
         db.query(ChatMessageReaction).filter(
             ChatMessageReaction.message_scope == "direct",
             ChatMessageReaction.message_id == message.id,
@@ -1063,6 +1106,8 @@ def send_direct_message(
             "createdAt": message.created_at.isoformat() if message.created_at else None,
         },
     }
+    if users_muting_thread(db, "direct", current_user.id, [recipient.id]):
+        ws_payload = mark_payload_muted(ws_payload)
     _notify_receipt_update(recipient.id, ws_payload)
 
     return {
@@ -1073,3 +1118,67 @@ def send_direct_message(
             reply_to=_serialize_direct_reply_preview(*reply_row) if reply_row else None,
         ),
     }
+
+
+def _set_direct_message_pin(db: Session, other_user_id: int, message_id: int, current_user: User, pinned: bool) -> dict:
+    if other_user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot chat with yourself")
+
+    other_user = _get_active_user(db, other_user_id)
+    message = _get_direct_message_for_conversation(db, message_id, current_user.id, other_user.id)
+    if message.deleted_at:
+        raise HTTPException(status_code=400, detail="Deleted messages cannot be pinned")
+
+    if pinned:
+        message.pinned_at = _utcnow()
+        message.pinned_by = current_user.id
+    else:
+        message.pinned_at = None
+        message.pinned_by = None
+    db.commit()
+    db.refresh(message)
+
+    _notify_receipt_update(other_user.id, pin_event_payload(
+        scope="direct",
+        actor=current_user,
+        message_id=message.id,
+        pinned=pinned,
+        other_user_id=current_user.id,
+    ))
+
+    sender_name = current_user.name if message.sender_id == current_user.id else other_user.name
+    return {"success": True, "data": serialize_pinned_message(message, sender_name, build_pinner_lookup(db, [message]))}
+
+
+@router.post("/conversations/{other_user_id}/messages/{message_id}/pin")
+def pin_direct_message(
+    other_user_id: int,
+    message_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    return _set_direct_message_pin(db, other_user_id, message_id, current_user, pinned=True)
+
+
+@router.delete("/conversations/{other_user_id}/messages/{message_id}/pin")
+def unpin_direct_message(
+    other_user_id: int,
+    message_id: int,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    return _set_direct_message_pin(db, other_user_id, message_id, current_user, pinned=False)
+
+
+@router.put("/conversations/{other_user_id}/mute")
+def set_direct_conversation_mute(
+    other_user_id: int,
+    payload: MutePayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(get_current_user),
+):
+    if other_user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot chat with yourself")
+    other_user = _get_active_user(db, other_user_id)
+    muted = set_thread_muted(db, current_user.id, "direct", other_user.id, payload.muted)
+    return {"success": True, "data": {"userId": other_user.id, "muted": muted}}

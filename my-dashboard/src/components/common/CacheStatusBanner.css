@@ -1,89 +1,59 @@
+/* Compact sync-status chip shared by Workspace tabs and the Assign Task modal. */
+
 .cache-status-banner {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 10px;
-  margin-bottom: 14px;
-  font-size: 12px;
-  font-weight: 600;
+  gap: 7px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 12px auto;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-subtle, var(--color-border));
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .cache-status-banner--header {
-  margin-bottom: 0;
-  flex: 1;
-  min-width: 0;
-  padding: 8px 12px;
-  border-radius: 12px;
+  margin: 0 0 0 auto;
+  flex: 0 0 auto;
 }
 
-.cache-status-banner--header .cache-status-copy {
-  min-width: 0;
-  flex-wrap: nowrap;
+.cache-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-success);
+  flex-shrink: 0;
 }
 
-.cache-status-banner--header .cache-status-text,
-.cache-status-banner--header .cache-status-side {
-  white-space: nowrap;
+.cache-status-banner.cached .cache-status-dot {
+  background: var(--color-text-disabled);
+}
+
+.cache-status-banner.refreshing {
+  color: var(--color-text-secondary);
+}
+
+.cache-status-banner.refreshing .cache-status-dot {
+  background: var(--color-primary);
+  animation: cache-status-pulse 1.1s ease-in-out infinite;
+}
+
+.cache-status-text {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.cache-status-banner.cached {
-  background: rgba(59, 130, 246, 0.08);
-  color: rgba(219, 234, 254, 0.96);
+@keyframes cache-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
-.cache-status-banner.live {
-  background: rgba(16, 185, 129, 0.08);
-  color: rgba(209, 250, 229, 0.96);
-}
-
-.cache-status-copy {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.cache-status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.22);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  font-size: 10px;
-}
-
-.cache-status-text,
-.cache-status-side {
-  opacity: 0.96;
-}
-
-.cache-status-side {
-  white-space: nowrap;
-}
-
-@media (max-width: 720px) {
-  .cache-status-banner {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .cache-status-banner--header .cache-status-copy {
-    flex-wrap: wrap;
-  }
-
-  .cache-status-banner--header .cache-status-text,
-  .cache-status-banner--header .cache-status-side {
-    white-space: normal;
-  }
-
-  .cache-status-side {
-    white-space: normal;
-  }
+@media (prefers-reduced-motion: reduce) {
+  .cache-status-banner.refreshing .cache-status-dot { animation: none; }
 }

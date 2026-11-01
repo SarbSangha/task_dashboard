@@ -51,7 +51,7 @@ const HiggsfieldCardPreview = React.memo(function HiggsfieldCardPreview({ genera
           className="kling-card-image"
           loading="lazy"
           decoding="async"
-          fetchPriority="low"
+          {...{ fetchpriority: 'low' }}
           onError={() => setCandidateIndex((index) => index + 1)}
         />
       ) : (

@@ -1097,7 +1097,26 @@ def test_capture_batch_commits_and_isolates_duplicates() -> None:
     print("ok  capture batch commits durably and isolates in-batch duplicates")
 
 
+def test_unlimited_job_is_zero_credits_and_project_rows_are_skipped() -> None:
+    """2026-11-01 audit: Unlimited-mode jobs never get a ledger row, so they
+    must show 0 credits rather than blank; project/story folder rows are not
+    generations and must not become empty cards."""
+    unlim = _extract_fields({"id": "j1", "job_set_type": "seedream_v4_5", "params": {"use_unlim": True, "prompt": "x"}})
+    paid = _extract_fields({"id": "j2", "job_set_type": "seedance_2_0", "params": {"use_unlim": False, "prompt": "x"}})
+    _assert(unlim["credits_used"] == 0.0, f"unlimited job should be 0 credits, got {unlim['credits_used']!r}")
+    _assert(paid["credits_used"] is None, f"a paid job without a charge yet stays unknown, got {paid['credits_used']!r}")
+    with SessionLocal() as db:
+        gen = normalize_capture_event(db, _capture(db, {
+            "id": "proj0001", "name": "Story", "medias": [], "video_medias": [], "workspace": {"id": "w"},
+            "category": "story", "status": "completed",
+        }))
+        _assert(gen is None, f"a project folder must not become a card, got {gen!r}")
+        db.rollback()
+    print("ok  unlimited jobs read as 0 credits; project folders never become cards")
+
+
 if __name__ == "__main__":
+    test_unlimited_job_is_zero_credits_and_project_rows_are_skipped()
     test_capture_status_tracks_provider_status()
     test_stale_snapshot_does_not_erase_stored_columns()
     test_job_id_then_generation_id_reuses_one_record()

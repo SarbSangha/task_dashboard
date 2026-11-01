@@ -436,7 +436,9 @@
 .outbox-task-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-  gap: 20px;
+  /* Each card keeps its own height, so opening one doesn't stretch its row. */
+  align-items: start;
+  gap: 16px;
   animation: fadeInContent 0.4s ease-out;
 }
 

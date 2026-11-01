@@ -49,7 +49,30 @@ export default function ProjectsTab() {
   return (
     <div className="tab-content tab-content-projects workspace-projects">
       <div className="projects-status-row">
-        <button className="add-btn" onClick={() => void refresh()}>
+        <label className="projects-search-field">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+          <input
+            className="projects-search"
+            type="search"
+            placeholder="Search project folders"
+            aria-label="Search project folders"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          className="add-btn projects-refresh-btn"
+          onClick={() => void refresh()}
+          disabled={isRefreshing}
+          title="Refresh project folders"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M20 11a8 8 0 0 0-14.3-4.9L4 8" /><path d="M4 4v4h4" /><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16" /><path d="M20 20v-4h-4" />
+          </svg>
           Refresh
         </button>
 
@@ -66,13 +89,6 @@ export default function ProjectsTab() {
       </div>
 
       <div className="projects-toolbar">
-        <input
-          className="projects-search"
-          type="text"
-          placeholder="Search project folder..."
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-        />
         <div className="projects-helper-text">
           Create tasks with the same project name to keep them inside one project folder.
         </div>
@@ -108,7 +124,9 @@ export default function ProjectsTab() {
                   <span className={`project-status ${project.statusClass}`}>{project.statusLabel}</span>
                 </div>
                 <div className="project-folder-meta">
-                  <span className="project-folder-icon">📁</span>
+                  <svg className="project-folder-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h3.6l2 2h7.4a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" />
+                  </svg>
                   <span>{project.projectId || 'No Project ID'}</span>
                 </div>
                 <p className="project-description">{project.description}</p>

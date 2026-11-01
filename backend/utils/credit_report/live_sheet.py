@@ -75,6 +75,7 @@ TOOL_OUTPUT_CATEGORY = {
     "Claude": "Chat / Copy",
     "Grammarly": "Writing",
     "Splice": "Music Samples",
+    "Figma": "Design",
 }
 
 
@@ -127,6 +128,9 @@ def classify_generation(tool: str, model_label: Optional[str], prompt: Optional[
     elif tool == "Splice":
         out_type = "Music Samples"
         label = f"Sample · {p_short}" if p_short else "Sample download · Splice"
+    elif tool == "Figma":
+        out_type = "Design"
+        label = f"Design · {m}" if m else "AI design · Figma"
     else:
         out_type = TOOL_OUTPUT_CATEGORY.get(tool, "AI Output")
         label = f"{out_type} ({m})" if m else out_type

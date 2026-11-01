@@ -225,6 +225,17 @@ export const reportsAPI = {
     return res.data;
   },
 
+  // Task Report (routers/task_report_router.py): one filter set shared by
+  // the listing, the option counts, the detail drawer and the workbook.
+  taskReportOptions: async (requestConfig = {}) =>
+    (await api.get('/api/reports/task-report/options', withParams({}, requestConfig))).data,
+  taskReportTasks: async (params = {}, requestConfig = {}) =>
+    (await api.get('/api/reports/task-report/tasks', withParams(params, requestConfig))).data,
+  taskReportDetail: async (taskId, requestConfig = {}) =>
+    (await api.get(`/api/reports/task-report/tasks/${taskId}`, withParams({}, requestConfig))).data,
+  taskReportXlsx: async (params = {}, requestConfig = {}) =>
+    api.get('/api/reports/task-report/export.xlsx', { ...withParams(params, requestConfig), responseType: 'blob', timeout: 180000 }),
+
   tasksDetailXlsx: async (params = {}, requestConfig = {}) =>
     api.get('/api/reports/tasks/detail.xlsx', {
       params,

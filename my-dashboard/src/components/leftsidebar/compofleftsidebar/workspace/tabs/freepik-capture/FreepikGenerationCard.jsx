@@ -80,7 +80,7 @@ const FreepikCardPreview = React.memo(function FreepikCardPreview({ generation }
           className="kling-card-image"
           loading="lazy"
           decoding="async"
-          fetchPriority="low"
+          {...{ fetchpriority: 'low' }}
           onError={() => setCandidateIndex((index) => index + 1)}
         />
       ) : (

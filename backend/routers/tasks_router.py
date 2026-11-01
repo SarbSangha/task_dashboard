@@ -46,6 +46,7 @@ from utils.cache import cache_response, invalidate_pattern
 from utils.datetime_utils import normalize_deadline_to_utc_naive, normalize_to_utc_naive, serialize_utc_datetime
 from utils.edge_cache import queue_edge_cache_purge
 from utils.generation_gate import resolve_generation_gate_tool
+from utils.notification_bus import notification_bus
 from utils.task_gate import get_active_tasks_for_user
 from services.role_service import user_role_names
 from routers.it_tools_router import _resolve_usage_event_actor
@@ -119,14 +120,29 @@ class NotificationHub:
             if not self.connections[user_id]:
                 self.connections.pop(user_id, None)
 
-    async def push(self, user_id: int, payload: dict):
+    async def push_to_sockets(self, user_id: int, payload: dict, timeout_seconds: float = 3) -> int:
+        """Send to every open socket of this user in this worker, in parallel.
+
+        One stalled socket (a laptop that went to sleep mid-connection) used to
+        hold up the user's other tabs and everything queued behind it.
+        """
         sockets = list(self.connections.get(user_id, set()))
-        for socket in sockets:
+        if not sockets:
+            return 0
+
+        async def _send(socket: WebSocket) -> bool:
             try:
-                await socket.send_json(payload)
+                await asyncio.wait_for(socket.send_json(payload), timeout=timeout_seconds)
+                return True
             except Exception:
                 self.disconnect(user_id, socket)
-        await deliver_web_push_notifications(user_id, payload)
+                return False
+
+        results = await asyncio.gather(*[_send(socket) for socket in sockets])
+        return sum(1 for ok in results if ok)
+
+    def connection_count(self) -> int:
+        return sum(len(sockets) for sockets in self.connections.values())
 
 
 notification_hub = NotificationHub()
@@ -142,15 +158,44 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+# Realtime-only events: they keep open dashboards in sync but must never become
+# a phone/OS notification. Web push with userVisibleOnly=true has to show
+# something for every push, so sending these produced stray "New update"
+# popups (and Chrome's "site updated in the background" notice) and made the
+# real message pushes queue behind them.
+SILENT_REALTIME_EVENT_TYPES = frozenset({
+    "chat_typing",
+    "message_read_receipt",
+    "message_delivery_receipt",
+    "message_updated",
+    "message_deleted",
+    "message_pinned",
+    "message_reaction",
+})
+
+
+def should_send_web_push(payload: dict) -> bool:
+    event_type = str(payload.get("eventType") or "").strip().lower()
+    if event_type in SILENT_REALTIME_EVENT_TYPES:
+        return False
+    return not (payload.get("metadata") or {}).get("muted")
+
+
 class NotificationDispatcher:
     def __init__(self, max_queue_size: int = 1000, worker_count: int = 2):
-        self.queue: asyncio.Queue[tuple[int, dict]] = asyncio.Queue(maxsize=max_queue_size)
+        # (user_id, payload, send_web_push). Only the worker that accepted the
+        # event sends web push; copies received from peer workers over the
+        # notification bus are socket-only, so each device buzzes once.
+        self.queue: asyncio.Queue[tuple[int, dict, bool]] = asyncio.Queue(maxsize=max_queue_size)
         self.worker_count = max(1, worker_count)
         self._workers: list[asyncio.Task] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.dropped = 0
         self.failures = 0
         self.push_timeout_seconds = max(1, _int_env("NOTIFICATION_PUSH_TIMEOUT_SECONDS", 5))
+        self._web_push_tasks: set[asyncio.Task] = set()
+        self._web_push_slots = asyncio.Semaphore(max(1, _int_env("WEB_PUSH_CONCURRENCY", 8)))
+        self.web_push_failures = 0
 
     def start(self) -> None:
         try:
@@ -180,9 +225,10 @@ class NotificationDispatcher:
         user_id: int,
         payload: dict,
         result_future: "concurrent.futures.Future[bool] | None" = None,
+        send_web_push: bool = True,
     ) -> None:
         try:
-            self.queue.put_nowait((user_id, payload))
+            self.queue.put_nowait((user_id, payload, send_web_push))
             ok = True
         except asyncio.QueueFull:
             self.dropped += 1
@@ -191,6 +237,19 @@ class NotificationDispatcher:
             result_future.set_result(ok)
 
     def enqueue(self, user_id: int, payload: dict) -> bool:
+        # Other uvicorn workers may hold this user's socket - hand them a copy.
+        try:
+            notification_bus.publish(user_id, payload)
+        except Exception:
+            logger.exception("Notification bus publish failed for user_id=%s", user_id)
+        return self._enqueue_local(user_id, payload, send_web_push=True)
+
+    async def deliver_from_peer(self, user_id: int, payload: dict) -> None:
+        """Notification bus callback: a peer worker accepted this event."""
+        self.start()
+        self._put_nowait(user_id, payload, send_web_push=False)
+
+    def _enqueue_local(self, user_id: int, payload: dict, *, send_web_push: bool) -> bool:
         self.start()
         try:
             asyncio.get_running_loop()
@@ -209,7 +268,7 @@ class NotificationDispatcher:
                 return False
             result_future: concurrent.futures.Future = concurrent.futures.Future()
             try:
-                self._loop.call_soon_threadsafe(self._put_nowait, user_id, payload, result_future)
+                self._loop.call_soon_threadsafe(self._put_nowait, user_id, payload, result_future, send_web_push)
             except RuntimeError:
                 # Loop is closed (e.g. a request thread still finishing work
                 # during process shutdown) - degrade the same way every other
@@ -222,7 +281,7 @@ class NotificationDispatcher:
                 return False
 
         try:
-            self.queue.put_nowait((user_id, payload))
+            self.queue.put_nowait((user_id, payload, send_web_push))
             return True
         except asyncio.QueueFull:
             self.dropped += 1
@@ -230,10 +289,10 @@ class NotificationDispatcher:
 
     async def _worker(self) -> None:
         while True:
-            user_id, payload = await self.queue.get()
+            user_id, payload, send_web_push = await self.queue.get()
             try:
                 await asyncio.wait_for(
-                    notification_hub.push(user_id, payload),
+                    notification_hub.push_to_sockets(user_id, payload),
                     timeout=self.push_timeout_seconds,
                 )
             except Exception:
@@ -241,6 +300,22 @@ class NotificationDispatcher:
                 logger.exception("Notification dispatch failed for user_id=%s", user_id)
             finally:
                 self.queue.task_done()
+            if send_web_push and should_send_web_push(payload):
+                self._schedule_web_push(user_id, payload)
+
+    def _schedule_web_push(self, user_id: int, payload: dict) -> None:
+        # Off the queue: a slow push service must not delay the next socket event.
+        async def _run() -> None:
+            async with self._web_push_slots:
+                try:
+                    await deliver_web_push_notifications(user_id, payload)
+                except Exception:
+                    self.web_push_failures += 1
+                    logger.exception("Web push failed for user_id=%s", user_id)
+
+        task = asyncio.create_task(_run())
+        self._web_push_tasks.add(task)
+        task.add_done_callback(self._web_push_tasks.discard)
 
     def status(self) -> dict:
         running_workers = [worker for worker in self._workers if not worker.done()]
@@ -253,6 +328,10 @@ class NotificationDispatcher:
             "running": len(running_workers),
             "stopped": max(0, self.worker_count - len(running_workers)),
             "pushTimeoutSeconds": self.push_timeout_seconds,
+            "webPushInFlight": len(self._web_push_tasks),
+            "webPushFailures": self.web_push_failures,
+            "openSockets": notification_hub.connection_count(),
+            "bus": notification_bus.status(),
         }
 
 
@@ -5805,8 +5884,17 @@ async def notifications_ws(websocket: WebSocket):
     await notification_hub.connect(user_id, websocket, selected_subprotocol)
     try:
         while True:
-            await websocket.receive_text()
+            message = await websocket.receive_text()
+            # The browser pings every ~25 s and treats a missing pong as a dead
+            # connection (sleep, Wi-Fi switch, proxy idle timeout) so it can
+            # reconnect instead of silently missing notifications.
+            if message == "ping":
+                await websocket.send_text("pong")
     except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.debug("Notification socket closed with an error for user_id=%s", user_id, exc_info=True)
+    finally:
         notification_hub.disconnect(user_id, websocket)
 
 
@@ -7817,6 +7905,28 @@ def get_web_push_config(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     return _web_push_status_payload()
+
+
+def send_test_notification(
+    current_user: User = Depends(get_current_user_from_session),
+):
+    """Send a test alert to the caller's own devices: open tabs (sound and
+    popup) and, when push is configured, a web push. Lets a user check their
+    browser setup without messaging anyone."""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    queued = notification_dispatcher.enqueue(current_user.id, {
+        "eventType": "notification_test",
+        "title": "Test notification",
+        "message": "Notifications are working on this device.",
+        "metadata": {"sentAt": datetime.utcnow().isoformat()},
+    })
+    return {
+        "success": queued,
+        "webPush": _web_push_status_payload(),
+        "dispatcher": notification_dispatcher.status(),
+    }
 
 
 def subscribe_web_push(

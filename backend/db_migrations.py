@@ -1141,6 +1141,28 @@ def _ensure_postgres_schema(conn) -> None:
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_scope_message ON chat_message_reactions(message_scope, message_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_user_scope ON chat_message_reactions(user_id, message_scope)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_emoji ON chat_message_reactions(emoji)"))
+    # Pinned messages + per-user thread mutes (see utils/chat_threads.py).
+    _pg_add_column_if_missing(conn, "group_chat_messages", "pinned_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "group_chat_messages", "pinned_by", "INTEGER")
+    _pg_add_column_if_missing(conn, "direct_messages", "pinned_at", "TIMESTAMP")
+    _pg_add_column_if_missing(conn, "direct_messages", "pinned_by", "INTEGER")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_group_chat_messages_pinned_at ON group_chat_messages(pinned_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_direct_messages_pinned_at ON direct_messages(pinned_at)"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS chat_thread_mutes (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                message_scope VARCHAR(20) NOT NULL,
+                thread_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_thread_mutes_user_scope_thread ON chat_thread_mutes(user_id, message_scope, thread_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_thread_mutes_user_id ON chat_thread_mutes(user_id)"))
     conn.execute(
         text(
             """
@@ -2261,6 +2283,29 @@ def ensure_operational_schema(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_scope_message ON chat_message_reactions(message_scope, message_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_user_scope ON chat_message_reactions(user_id, message_scope)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_emoji ON chat_message_reactions(emoji)"))
+
+        for chat_table in ("group_chat_messages", "direct_messages"):
+            if _table_exists(conn, chat_table):
+                cols = _table_columns(conn, chat_table)
+                if "pinned_at" not in cols:
+                    conn.execute(text(f"ALTER TABLE {chat_table} ADD COLUMN pinned_at DATETIME"))
+                if "pinned_by" not in cols:
+                    conn.execute(text(f"ALTER TABLE {chat_table} ADD COLUMN pinned_by INTEGER"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS chat_thread_mutes (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    message_scope VARCHAR(20) NOT NULL,
+                    thread_id INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users (id)
+                )
+                """
+            )
+        )
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_thread_mutes_user_scope_thread ON chat_thread_mutes(user_id, message_scope, thread_id)"))
 
         if _table_exists(conn, "it_portal_tool_credentials"):
             credential_cols = _table_columns(conn, "it_portal_tool_credentials")

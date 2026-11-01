@@ -1505,6 +1505,8 @@ class GroupChatMessage(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     edited_at = Column(DateTime)
     deleted_at = Column(DateTime, index=True)
+    pinned_at = Column(DateTime, index=True)
+    pinned_by = Column(Integer, ForeignKey("users.id"))
 
 
 class DirectMessage(Base):
@@ -1520,6 +1522,26 @@ class DirectMessage(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     edited_at = Column(DateTime)
     deleted_at = Column(DateTime, index=True)
+    pinned_at = Column(DateTime, index=True)
+    pinned_by = Column(Integer, ForeignKey("users.id"))
+
+
+class ChatThreadMute(Base):
+    """Per-user mute of a chat thread.
+
+    thread_id is the group id for scope "group" and the other participant's
+    user id for scope "direct" (a direct mute is one-sided).
+    """
+    __tablename__ = "chat_thread_mutes"
+    __table_args__ = (
+        UniqueConstraint("user_id", "message_scope", "thread_id", name="ux_chat_thread_mutes_user_scope_thread"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    message_scope = Column(String(20), nullable=False)
+    thread_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class ChatMessageReadReceipt(Base):

@@ -375,20 +375,23 @@ function AdminSectionAccessTab({ users, setUsers, onViewInfo, loading }) {
           )}
         </div>
 
-        <div className="sap-filters" role="group" aria-label="Filter users by section access">
-          {filterOptions.map((f) => (
-            <button
-              key={f.value}
-              type="button"
-              className={`sap-filter-chip${filter === f.value ? ' active' : ''}`}
-              onClick={() => changeFilter(f.value)}
-              aria-pressed={filter === f.value}
-            >
-              {f.label}
-              {typeof f.count === 'number' && <span className="sap-filter-count">{f.count}</span>}
-            </button>
-          ))}
-        </div>
+        <label className="sap-filter-select">
+          <span>Show</span>
+          <select
+            value={filter}
+            onChange={(e) => changeFilter(e.target.value)}
+            aria-label="Filter users by section access"
+          >
+            <option value="all">All users</option>
+            <option value="none">No sections granted</option>
+            {features.map((f) => (
+              <optgroup key={f.key} label={f.label}>
+                <option value={`has:${f.key}`}>{f.label}: granted ({stats.perFeature[f.key] || 0})</option>
+                <option value={`no:${f.key}`}>{f.label}: hidden ({stats.total - (stats.perFeature[f.key] || 0)})</option>
+              </optgroup>
+            ))}
+          </select>
+        </label>
       </div>
 
       {/* ── Bulk toolbar ── */}

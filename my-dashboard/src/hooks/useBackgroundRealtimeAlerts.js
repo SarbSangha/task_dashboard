@@ -1,12 +1,31 @@
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
-import { subscribeRealtimeNotifications } from '../services/api';
+import { directMessageAPI, groupAPI, subscribeRealtimeNotifications } from '../services/api';
 import { buildTaskPanelCacheKey, invalidateTaskPanelCache } from '../utils/taskPanelCache';
+import { isViewingChat } from '../utils/activeChat';
+import { getCurrentWebPushSubscription } from '../utils/webPush';
 
 const RECENT_EVENT_TTL_MS = 15000;
 const SESSION_PERMISSION_KEY = 'rmw_browser_notifications_prompted_v1';
-const ALWAYS_NOTIFY_EVENT_TYPES = new Set(['group_message', 'direct_message']);
+const ALERT_CLAIMS_STORAGE_KEY = 'rmw_alert_claims_v1';
+const ALERT_CLAIM_TTL_MS = 20000;
+const UNREAD_BASELINE_REFRESH_MS = 2 * 60 * 1000;
+const PUSH_STATUS_REFRESH_MS = 60 * 1000;
+const MESSAGE_EVENT_TYPES = new Set(['group_message', 'direct_message']);
+// Events that play the chime (task events only show a popup, as before).
+const SOUND_EVENT_TYPES = new Set(['group_message', 'direct_message', 'notification_test']);
+// Sync-only events: they keep open panels fresh but are never an alert. They
+// used to fall through to notifyBrowser(), popping "New update" for typing.
+const SILENT_EVENT_TYPES = new Set([
+  'chat_typing',
+  'message_read_receipt',
+  'message_delivery_receipt',
+  'message_updated',
+  'message_deleted',
+  'message_pinned',
+  'message_reaction',
+]);
 const TASK_EVENT_TYPES = new Set([
   'assigned',
   'approved',
@@ -34,11 +53,47 @@ const buildAlertPayload = (payload) => {
     payload?.taskNumber || metadata.taskNumber || '',
     metadata.groupId || '',
     metadata.messageId || '',
+    metadata.sentAt || '',
     title,
     body,
   ].join('::');
 
   return { title, body, key };
+};
+
+const getChatTarget = (payload) => {
+  const metadata = payload?.metadata || {};
+  if (payload?.eventType === 'group_message') return { scope: 'group', threadId: metadata.groupId };
+  if (payload?.eventType === 'direct_message') return { scope: 'direct', threadId: metadata.senderId };
+  return null;
+};
+
+// With several dashboard tabs open, only the first tab to claim an event
+// alerts; the others stay quiet instead of chiming in unison.
+const claimAlert = (key) => {
+  try {
+    const now = Date.now();
+    const claims = JSON.parse(window.localStorage.getItem(ALERT_CLAIMS_STORAGE_KEY) || '{}');
+    if (claims[key] && now - claims[key] < ALERT_CLAIM_TTL_MS) return false;
+    const pruned = Object.fromEntries(
+      Object.entries(claims).filter(([, claimedAt]) => now - claimedAt < ALERT_CLAIM_TTL_MS)
+    );
+    pruned[key] = now;
+    window.localStorage.setItem(ALERT_CLAIMS_STORAGE_KEY, JSON.stringify(pruned));
+    return true;
+  } catch {
+    return true;
+  }
+};
+
+const fetchUnreadTotal = async () => {
+  const [groupResponse, directResponse] = await Promise.all([
+    groupAPI.listUnreadCounts(),
+    directMessageAPI.listUnreadCounts(),
+  ]);
+  // Totals already leave muted chats out (see the unread-counts endpoints).
+  return Number(groupResponse?.data?.totalUnreadMessages || 0)
+    + Number(directResponse?.data?.totalUnreadMessages || 0);
 };
 
 export default function useBackgroundRealtimeAlerts() {
@@ -48,6 +103,8 @@ export default function useBackgroundRealtimeAlerts() {
   const hiddenAlertCountRef = useRef(0);
   const recentEventsRef = useRef(new Map());
   const audioContextRef = useRef(null);
+  const pushCoversHiddenTabRef = useRef(false);
+  const unreadBaselineRef = useRef(null);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -56,6 +113,63 @@ export default function useBackgroundRealtimeAlerts() {
     }
     return undefined;
   }, []);
+
+  // Browsers keep an AudioContext created without a user gesture suspended,
+  // so the first chime after page load was often silent. Create/resume it on
+  // the first click or key press instead.
+  useEffect(() => {
+    if (!user || typeof window === 'undefined') return undefined;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return undefined;
+
+    const unlockAudio = () => {
+      try {
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioContextClass();
+        }
+        if (audioContextRef.current.state === 'suspended') {
+          void audioContextRef.current.resume().catch(() => {});
+        }
+      } catch {
+        // no-op
+      }
+    };
+
+    window.addEventListener('pointerdown', unlockAudio, { capture: true });
+    window.addEventListener('keydown', unlockAudio, { capture: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlockAudio, { capture: true });
+      window.removeEventListener('keydown', unlockAudio, { capture: true });
+    };
+  }, [user]);
+
+  // Whether a web push subscription will show OS notifications for this
+  // browser while the tab is hidden (push-sw.js stays quiet while any
+  // dashboard tab is visible). Without one, the tab must alert by itself.
+  useEffect(() => {
+    if (!user || typeof window === 'undefined') return undefined;
+    let cancelled = false;
+
+    const refreshPushStatus = async () => {
+      try {
+        const current = await getCurrentWebPushSubscription();
+        if (!cancelled) {
+          pushCoversHiddenTabRef.current = !!current?.subscription
+            && 'Notification' in window
+            && Notification.permission === 'granted';
+        }
+      } catch {
+        if (!cancelled) pushCoversHiddenTabRef.current = false;
+      }
+    };
+
+    void refreshPushStatus();
+    const interval = window.setInterval(refreshPushStatus, PUSH_STATUS_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [user]);
 
   useEffect(() => {
     if (!user || typeof window === 'undefined' || typeof document === 'undefined') {
@@ -84,8 +198,7 @@ export default function useBackgroundRealtimeAlerts() {
       });
     };
 
-    const playMessageTone = () => {
-      if (typeof window === 'undefined') return;
+    const playMessageTone = async () => {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) return;
 
@@ -93,21 +206,25 @@ export default function useBackgroundRealtimeAlerts() {
         if (!audioContextRef.current) {
           audioContextRef.current = new AudioContextClass();
         }
-
         const ctx = audioContextRef.current;
-        if (!ctx) return;
         if (ctx.state === 'suspended') {
-          void ctx.resume().catch(() => {});
+          // Notes scheduled before resume() settles land in the past and are
+          // never heard - wait for it (briefly) before scheduling.
+          await Promise.race([
+            ctx.resume(),
+            new Promise((resolve) => window.setTimeout(resolve, 400)),
+          ]);
         }
+        if (ctx.state !== 'running') return;
 
-        const nowAt = ctx.currentTime;
+        const nowAt = ctx.currentTime + 0.02;
         const masterGain = ctx.createGain();
         masterGain.connect(ctx.destination);
-        masterGain.gain.setValueAtTime(0.0001, nowAt);
+        masterGain.gain.setValueAtTime(1, nowAt);
 
         const notes = [
-          { frequency: 880, start: 0, duration: 0.08, gain: 0.05 },
-          { frequency: 1174.66, start: 0.11, duration: 0.12, gain: 0.04 },
+          { frequency: 880, start: 0, duration: 0.09, gain: 0.12 },
+          { frequency: 1174.66, start: 0.12, duration: 0.14, gain: 0.1 },
         ];
 
         notes.forEach((note) => {
@@ -116,7 +233,7 @@ export default function useBackgroundRealtimeAlerts() {
           oscillator.type = 'sine';
           oscillator.frequency.setValueAtTime(note.frequency, nowAt + note.start);
           noteGain.gain.setValueAtTime(0.0001, nowAt + note.start);
-          noteGain.gain.exponentialRampToValueAtTime(note.gain, nowAt + note.start + 0.01);
+          noteGain.gain.exponentialRampToValueAtTime(note.gain, nowAt + note.start + 0.012);
           noteGain.gain.exponentialRampToValueAtTime(0.0001, nowAt + note.start + note.duration);
           oscillator.connect(noteGain);
           noteGain.connect(masterGain);
@@ -136,6 +253,7 @@ export default function useBackgroundRealtimeAlerts() {
         const browserNotification = new Notification(title, {
           body,
           tag,
+          icon: '/rmweye.svg',
           silent: false,
         });
         browserNotification.onclick = () => {
@@ -166,37 +284,94 @@ export default function useBackgroundRealtimeAlerts() {
       }
     };
 
+    const alertUser = ({ title, body, key, withSound }) => {
+      const isHidden = document.visibilityState !== 'visible';
+      if (!claimAlert(key)) return;
+
+      if (isHidden) {
+        hiddenAlertCountRef.current += 1;
+        updateTitle();
+      }
+      if (withSound) {
+        void playMessageTone();
+      }
+      // While hidden, push-sw.js shows the OS notification if this browser is
+      // subscribed; otherwise the tab has to do it or nothing appears.
+      if (!isHidden || !pushCoversHiddenTabRef.current) {
+        notifyBrowser(title, body, key);
+      }
+    };
+
+    const refreshUnreadBaseline = async () => {
+      try {
+        unreadBaselineRef.current = await fetchUnreadTotal();
+      } catch {
+        // Keep the previous baseline; the next refresh will try again.
+      }
+    };
+
+    // Messages sent while the socket was down never arrive as events. After a
+    // reconnect, compare the server's unread total with what we last knew and
+    // alert once for anything that slipped through.
+    const catchUpAfterReconnect = async () => {
+      const previous = unreadBaselineRef.current;
+      try {
+        const current = await fetchUnreadTotal();
+        unreadBaselineRef.current = current;
+        if (previous === null || current <= previous) return;
+        const missed = current - previous;
+        alertUser({
+          title: 'New messages',
+          body: `You have ${missed} new message${missed === 1 ? '' : 's'} you may have missed.`,
+          key: `catch-up::${current}`,
+          withSound: true,
+        });
+      } catch {
+        // Offline again; the next reconnect retries.
+      }
+    };
+
     const unsubscribe = subscribeRealtimeNotifications({
+      onOpen: (info) => {
+        if (info?.reconnected) {
+          void catchUpAfterReconnect();
+        } else {
+          void refreshUnreadBaseline();
+        }
+      },
       onMessage: (payload) => {
         if (!payload?.eventType) return;
         if (TASK_EVENT_TYPES.has(payload.eventType) || payload.taskId) {
           refreshTaskLanes();
         }
+        if (SILENT_EVENT_TYPES.has(payload.eventType)) return;
+        // Muted chat threads still sync in the open panel, but never alert.
+        if (payload.metadata?.muted) return;
 
-        const forceBrowserAlert = ALWAYS_NOTIFY_EVENT_TYPES.has(payload.eventType);
-        const isHidden = document.visibilityState !== 'visible';
-        const supportsWebPush = 'serviceWorker' in navigator && 'PushManager' in window;
-        const shouldShowBrowserNotification = !isHidden || !supportsWebPush;
+        const isMessage = MESSAGE_EVENT_TYPES.has(payload.eventType);
+        if (isMessage && unreadBaselineRef.current !== null) {
+          unreadBaselineRef.current += 1;
+        }
+
+        const chatTarget = getChatTarget(payload);
+        if (chatTarget && isViewingChat(chatTarget.scope, chatTarget.threadId)) return;
 
         const now = Date.now();
         pruneRecentEvents(now);
-
         const nextAlert = buildAlertPayload(payload);
         if (recentEventsRef.current.has(nextAlert.key)) return;
         recentEventsRef.current.set(nextAlert.key, now);
 
-        if (isHidden) {
-          hiddenAlertCountRef.current += 1;
-          updateTitle();
-        }
-        if (forceBrowserAlert && !isHidden) {
-          playMessageTone();
-        }
-        if (shouldShowBrowserNotification) {
-          notifyBrowser(nextAlert.title, nextAlert.body, nextAlert.key);
-        }
+        alertUser({
+          ...nextAlert,
+          withSound: SOUND_EVENT_TYPES.has(payload.eventType),
+        });
       },
     });
+
+    const baselineInterval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshUnreadBaseline();
+    }, UNREAD_BASELINE_REFRESH_MS);
 
     const handleVisibleAgain = () => restoreTitle();
     document.addEventListener('visibilitychange', handleVisibleAgain);
@@ -204,6 +379,7 @@ export default function useBackgroundRealtimeAlerts() {
 
     return () => {
       unsubscribe();
+      window.clearInterval(baselineInterval);
       document.removeEventListener('visibilitychange', handleVisibleAgain);
       window.removeEventListener('focus', handleVisibleAgain);
       restoreTitle();

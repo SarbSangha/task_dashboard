@@ -282,6 +282,41 @@ PROVIDERS: dict[str, ProviderInfo] = {
             "CAPTURE_CONTRACT.md."
         ),
     ),
+    "claude_code": ProviderInfo(
+        slug="claude_code",
+        display_name="Claude Code",
+        tool_slugs=frozenset(),
+        status="in_development",
+        models_module="providers.claude_code.models",
+        migrations_module=None,
+        notes=(
+            "Claude Code (terminal and VS Code extension) is a desktop agent, so like Cursor it isn't "
+            "captured by the browser extension. Claude Code's own OpenTelemetry export posts "
+            "user_prompt and api_request events (tokens, cost_usd, prompt.id) as OTLP/HTTP JSON to "
+            "/otlp/v1/logs. The Cursor Usage Tracker extension switches that on in ~/.claude/settings.json "
+            "with a token issued for its already-connected computer, so the person is always the "
+            "CursorDevice's - disconnecting the computer stops Claude Code too. No CSV/matching: every "
+            "event carries its own tokens, cost and prompt.id. No migrations_module: brand-new tables "
+            "get their full schema from Base.metadata.create_all() alone. See CAPTURE_CONTRACT.md."
+        ),
+    ),
+    "figma": ProviderInfo(
+        slug="figma",
+        display_name="Figma",
+        tool_slugs=frozenset({"figma"}),
+        status="in_development",
+        models_module="providers.figma.models",
+        migrations_module=None,
+        notes=(
+            "Figma AI credits (the agent in Figma Design). content-figma-network.js reads each prompt's "
+            "user_action_uuid (message.clientId of POST /api/cortex/assistant/chat) as it is sent, waits "
+            "for the reply, then asks Figma what it cost (GET /api/files/{fileKey}/ai_credits/"
+            "plan_user_action_credit_usage) - Figma's own number, never an estimate. It also reports the "
+            "account's monthly/daily balance (plan_user_usage_summary). The person is the dashboard launch "
+            "ticket's, since the Figma login is a shared company account. No migrations_module: brand-new "
+            "tables get their full schema from Base.metadata.create_all() alone. See CAPTURE_CONTRACT.md."
+        ),
+    ),
     "grammarly": ProviderInfo(
         slug="grammarly",
         display_name="Grammarly (Docs)",

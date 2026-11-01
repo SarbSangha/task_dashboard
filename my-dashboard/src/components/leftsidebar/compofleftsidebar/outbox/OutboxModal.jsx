@@ -345,23 +345,6 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
     return formatTimeIndia(dateString);
   };
 
-  const getStatusClass = (status) => {
-    switch (status?.toLowerCase()) {
-      case 'pending': return 'status-pending';
-      case 'assigned':
-      case 'forwarded':
-        return 'status-pending';
-      case 'in_progress': return 'status-in-progress';
-      case 'need_improvement':
-      case 'submitted': return 'status-in-progress';
-      case 'approved':
-      case 'completed': return 'status-completed';
-      case 'cancelled': return 'status-cancelled';
-      case 'draft': return 'status-draft';
-      default: return 'status-pending';
-    }
-  };
-
   if (!isOpen) return null;
 
   const restoreWindow = () => {
@@ -553,7 +536,6 @@ const OutboxModal = ({ isOpen, onClose, onEditTask, onMinimizedChange, onActivat
                   currentUser={currentUser}
                   formatDate={formatDate}
                   formatTime={formatTime}
-                  getStatusClass={getStatusClass}
                 />
               ))}
             </div>

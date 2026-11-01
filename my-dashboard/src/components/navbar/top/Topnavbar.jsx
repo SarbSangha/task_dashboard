@@ -11,7 +11,7 @@ const Topnavbar = ({ onHamburgerClick, isMobileMenuOpen }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
-  const { can, isAdmin } = usePermissions();
+  const { can, canSeeSection, isAdmin } = usePermissions();
 
   const canViewCreditReport = can('view_credit_report');
   const pathname = location.pathname || '';
@@ -80,29 +80,35 @@ const Topnavbar = ({ onHamburgerClick, isMobileMenuOpen }) => {
             </button>
           )}
 
-          <button
-            type="button"
-            className={`topnav-quick-pill ${pathname.includes('/workspace') ? 'active' : ''}`}
-            onClick={() => navigate('/dashboard/workspace?tab=Tools')}
-          >
-            <span>AI Tools</span>
-          </button>
+          {canSeeSection('workspace') && (
+            <button
+              type="button"
+              className={`topnav-quick-pill ${pathname.includes('/workspace') ? 'active' : ''}`}
+              onClick={() => navigate('/dashboard/workspace?tab=Tools')}
+            >
+              <span>AI Tools</span>
+            </button>
+          )}
 
-          <button
-            type="button"
-            className={`topnav-quick-pill ${pathname.includes('/inbox') ? 'active' : ''}`}
-            onClick={() => navigate('/dashboard/inbox')}
-          >
-            <span>Inbox</span>
-          </button>
+          {canSeeSection('inbox') && (
+            <button
+              type="button"
+              className={`topnav-quick-pill ${pathname.includes('/inbox') ? 'active' : ''}`}
+              onClick={() => navigate('/dashboard/inbox')}
+            >
+              <span>Inbox</span>
+            </button>
+          )}
 
-          <button
-            type="button"
-            className={`topnav-quick-pill ${pathname.includes('/create-task') ? 'active' : ''}`}
-            onClick={() => navigate('/dashboard/create-task')}
-          >
-            <span>+ Assign Task</span>
-          </button>
+          {canSeeSection('create_task') && (
+            <button
+              type="button"
+              className={`topnav-quick-pill ${pathname.includes('/create-task') ? 'active' : ''}`}
+              onClick={() => navigate('/dashboard/create-task')}
+            >
+              <span>+ Assign Task</span>
+            </button>
+          )}
         </div>
 
         {/* Right Section - User Profile & Icons */}

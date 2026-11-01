@@ -235,3 +235,16 @@
   .apt-table td:nth-child(4),
   .apt-table th:nth-child(4) { display: none; }
 }
+
+.apt-empty-spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  animation: apt-spin 0.8s linear infinite;
+}
+
+@keyframes apt-spin {
+  to { transform: rotate(360deg); }
+}

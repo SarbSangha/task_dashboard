@@ -12,15 +12,17 @@ function TypeBadge({ type }) {
   return <span className={`apt-type apt-type--${cls}`}>{label}</span>;
 }
 
-function EmptyState({ message }) {
+function EmptyState({ message, busy = false }) {
   return (
-    <div className="apt-empty">
-      <svg className="apt-empty-icon" viewBox="0 0 48 48" fill="none" aria-hidden="true">
-        <circle cx="24" cy="24" r="20" stroke="currentColor" strokeWidth="1.8" opacity=".25" />
-        <path d="M16 28c2-4 10-4 12 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity=".4" />
-        <circle cx="18" cy="20" r="2" fill="currentColor" opacity=".45" />
-        <circle cx="30" cy="20" r="2" fill="currentColor" opacity=".45" />
-      </svg>
+    <div className="apt-empty" aria-busy={busy || undefined}>
+      {busy ? (
+        <span className="apt-empty-spinner" aria-hidden="true" />
+      ) : (
+        <svg className="apt-empty-icon" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <circle cx="24" cy="24" r="20" stroke="currentColor" strokeWidth="1.8" opacity=".3" />
+          <path d="m16 24.5 5.5 5.5L32 19" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" opacity=".7" />
+        </svg>
+      )}
       <p className="apt-empty-text">{message}</p>
     </div>
   );
@@ -36,7 +38,7 @@ export default function AdminPendingTab({ requests, search, loading, onReview, f
     });
   }, [requests, search]);
 
-  if (loading) return <EmptyState message="Loading requests…" />;
+  if (loading) return <EmptyState busy message="Loading requests…" />;
 
   if (filtered.length === 0) {
     return (

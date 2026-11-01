@@ -2,6 +2,16 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { UserAvatar } from '../../../common/UserAvatar';
 import { authAPI } from '../../../../services/api';
 import { useCustomDialogs } from '../../../common/CustomDialogs';
+
+// Positions arrive as codes ("normal", "hod"); show people-friendly names.
+const formatPosition = (position) => {
+  const value = `${position || ''}`.trim().toLowerCase();
+  if (!value) return '—';
+  if (value === 'normal' || value === 'member') return 'Member';
+  if (value === 'hod') return 'Head of department';
+  if (value === 'spoc') return 'SPOC';
+  return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+};
 import './WorkplacePolicyPanel.css';
 
 const PAGE_SIZE = 50;
@@ -57,7 +67,7 @@ function PolicyRow({ user, selected, onToggleSelect, onTogglePolicy, onViewInfo 
         <span className="wpp-cell-text">{user.department || '—'}</span>
       </td>
       <td className="wpp-col-position">
-        <span className="wpp-cell-text">{user.position || '—'}</span>
+        <span className="wpp-cell-text">{formatPosition(user.position)}</span>
       </td>
       <td className="wpp-col-access">
         <span className={`wpp-badge wpp-access-badge--${isActive ? 'active' : 'inactive'}`}>

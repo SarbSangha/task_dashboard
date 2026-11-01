@@ -106,7 +106,8 @@ GLOSSARY_TERMS = (
     ("Total spend", "Pay-per-use cost, plus the subscription fees for the period (used or not), plus other AI "
                     "subscriptions. Fees still to confirm are left out."),
     ("Pay-per-use", "Tools bought as credit packs (Kling, HeyGen, Splice): the cost follows the credits used."),
-    ("Subscription", "Tools with a fixed monthly fee (Freepik, ElevenLabs, Higgsfield, Suno, Envato, Epidemic Sound): "
+    ("Subscription", "Tools with a fixed monthly fee (Freepik, ElevenLabs, Higgsfield, Suno, Envato, Epidemic Sound, "
+                     "Figma): "
                      "the fee is the same however much they are used."),
     ("Paid, not used", "The part of a subscription fee for this period that no generated item used."),
     ("Other AI subscriptions", "AI tools the company pays for whose usage the dashboard does not record (ChatGPT, "

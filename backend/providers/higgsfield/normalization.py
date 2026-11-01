@@ -897,7 +897,13 @@ def _extract_fields(payload: dict) -> dict:
 
         "credits_before": _f(_first(credits, "before", "creditsBefore")),
         "credits_after": _f(_first(credits, "after", "creditsAfter")),
-        "credits_used": _f(_first(credits, "used", "creditsUsed", "burned")),
+        # params.use_unlim: the job ran on the plan's Unlimited mode, which
+        # never writes a credit-ledger row - without this every such card
+        # sat at "no credits" forever (2026-11-01 audit: 15 seedream_v4_5
+        # cards).
+        "credits_used": _f(_first(credits, "used", "creditsUsed", "burned"))
+        if _first(credits, "used", "creditsUsed", "burned") is not None
+        else (0.0 if params.get("use_unlim") is True else None),
         "credit_ledger_json": credits.get("ledger") or [],
 
         # Shape #3's listing endpoint only ever returns already-rendered
@@ -978,8 +984,19 @@ def _is_stale_snapshot(generation: HiggsfieldGeneration, fields: dict) -> bool:
     return bool(incoming and stored and incoming < stored)
 
 
+def _is_project_container_row(payload: dict) -> bool:
+    """A Higgsfield project/story folder (medias + video_medias + workspace +
+    category), not a generation. It has no prompt, output or charge of its
+    own - the jobs inside it arrive as their own rows - so storing it made
+    the empty cards (2026-11-01 audit: 7 rows)."""
+    return isinstance(payload.get("video_medias"), list) and "workspace" in payload and "job_set_type" not in payload
+
+
 def normalize_capture_event(db: Session, event: HiggsfieldCaptureEvent) -> Optional[HiggsfieldGeneration]:
     payload = event.payload_json or {}
+    if _is_project_container_row(payload):
+        logger.info("higgsfield normalization skipped capture_event_id=%s: project/story folder, not a generation", event.id)
+        return None
     if _is_credit_ledger_event(payload):
         # A completely different (thinner, no generation-shaped fields at
         # all) payload from everything else this function handles - routed

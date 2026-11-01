@@ -1,12 +1,43 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import './InboxCard.css';
+import '../../../common/taskCard/TaskCard.css';
 import { formatDateTimeIndia } from '../../../../utils/dateTime';
+import {
+  formatShortDateTime,
+  getAvatarHue,
+  getDeadlineInfo,
+  getInitials,
+  getPriorityTone,
+  getStatusTone,
+  humanize,
+} from '../../../../utils/taskPresentation';
+import {
+  IconAlert,
+  IconArrowRight,
+  IconCalendar,
+  IconChat,
+  IconCheckCircle,
+  IconChevronDown,
+  IconClock,
+  IconCopy,
+  IconDownload,
+  IconEye,
+  IconFlag,
+  IconFolder,
+  IconLink,
+  IconMore,
+  IconPaperclip,
+  IconPause,
+  IconRoute,
+  IconUsers,
+} from '../../../common/taskCard/taskIcons';
 import { buildFileDownloadUrl } from '../../../../utils/fileLinks';
 import FilePreviewModal from '../../../common/FilePreviewModal';
 import { taskAPI } from '../../../../services/api';
 
-const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat }) => {
+const InboxCard = ({ task, isUnread = false, onMarkSeen, onTrackClick, onTaskAction, onOpenChat }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
   const [expanded, setExpanded] = useState(false);
   const [copiedKey, setCopiedKey] = useState('');
   const [toastMessage, setToastMessage] = useState('');
@@ -171,8 +202,10 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     : dedupedActions;
   const actions = isRevoked ? [] : withChat;
   const visibleActions = actions;
-  const showInlineApprove = visibleActions.includes('approve');
-  const menuActions = showInlineApprove ? visibleActions.filter((action) => action !== 'approve') : visibleActions;
+  // The next step for this person is promoted to a primary button; the rest
+  // stay in the menu. Chat has its own button.
+  const primaryAction = ['approve', 'submit', 'start', 'edit_submit'].find((action) => visibleActions.includes(action)) || null;
+  const menuActions = visibleActions.filter((action) => action !== primaryAction && action !== 'chat');
   const assignedNames = assignedPeople.map((x) => x.name).join(', ') || 'Unassigned';
   const description = task.description || '';
   const requestTypeLabel = (() => {
@@ -198,16 +231,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     : '';
   const displayTaskName = task.taskName || task.title || task.taskNumber || '-';
   const displayProjectName = task.projectName || task.projectId || '-';
-  const statusTileClass = (() => {
-    if (['pending', 'assigned', 'forwarded'].includes(normalizedStatus)) return 'status-pending';
-    if (normalizedStatus === 'in_progress') return 'status-progress';
-    if (['submitted', 'under_review'].includes(normalizedStatus)) return 'status-submitted';
-    if (normalizedStatus === 'need_improvement') return 'status-improvement';
-    if (['approved', 'completed'].includes(normalizedStatus)) return 'status-complete';
-    if (['cancelled', 'rejected'].includes(normalizedStatus)) return 'status-cancelled';
-    if (normalizedStatus === 'draft') return 'status-draft';
-    return 'status-default';
-  })();
+  const statusTone = getStatusTone(normalizedStatus);
   // Authoritative "require all" roster from the backend
   // (_effective_required_approver_ids) - includes the creator even when
   // they're HOD/admin and so hold no APPROVER participant row, which
@@ -237,111 +261,64 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     }
     return (task.status || '').replace(/_/g, ' ') || '-';
   })();
-  const deadlineInfo = (() => {
-    if (!task.deadline) {
-      return {
-        className: 'deadline-none',
-        label: 'Not set',
-        meta: 'No deadline',
-      };
-    }
-
-    const deadlineDate = new Date(task.deadline);
-    if (Number.isNaN(deadlineDate.getTime())) {
-      return {
-        className: 'deadline-none',
-        label: formatDateTimeIndia(task.deadline) || 'Invalid date',
-        meta: 'Check date',
-      };
-    }
-
-    const terminalStatuses = new Set(['completed', 'cancelled', 'rejected']);
-    const now = Date.now();
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const deadlineDayStart = new Date(deadlineDate);
-    deadlineDayStart.setHours(0, 0, 0, 0);
-    const diffMs = deadlineDate.getTime() - now;
-    const diffDays = Math.round((deadlineDayStart.getTime() - todayStart.getTime()) / (24 * 60 * 60 * 1000));
-    const label = formatDateTimeIndia(task.deadline);
-
-    const isDeadlineMissed = diffMs < 0;
-    const completionCandidates = [task.completedAt, task.approvedAt];
-    if (['completed', 'approved'].includes(normalizedStatus)) {
-      completionCandidates.push(task.updatedAt);
-    }
-    const recordedFinishDate = completionCandidates
-      .filter(Boolean)
-      .map((value) => new Date(value))
-      .find((date) => !Number.isNaN(date.getTime())) || null;
-
-    // A closed task is judged by final approval/completion time. The updated
-    // timestamp is only a compatibility fallback for older completed records.
-    if (recordedFinishDate) {
-      const finishedLate = recordedFinishDate.getTime() > deadlineDate.getTime();
-      return {
-        className: finishedLate ? 'deadline-closed-missed' : 'deadline-complete',
-        label,
-        meta: finishedLate ? 'Completed late' : 'Completed on time',
-      };
-    }
-
-    if (isDeadlineMissed && !terminalStatuses.has(normalizedStatus)) {
-      return {
-        className: 'deadline-overdue',
-        label,
-        meta: 'Overdue',
-      };
-    }
-    if (terminalStatuses.has(normalizedStatus)) {
-      return {
-        className: isDeadlineMissed ? 'deadline-closed-missed' : 'deadline-complete',
-        label,
-        meta: isDeadlineMissed ? 'Closed late' : 'Closed',
-      };
-    }
-    if (diffDays <= 1) {
-      return {
-        className: 'deadline-today',
-        label,
-        meta: diffDays <= 0 ? 'Due today' : 'Due tomorrow',
-      };
-    }
-    if (diffDays <= 3) {
-      return {
-        className: 'deadline-soon',
-        label,
-        meta: `${diffDays} days left`,
-      };
-    }
-    return {
-      className: 'deadline-ok',
-      label,
-      meta: `${diffDays} days left`,
+  const deadlineInfo = getDeadlineInfo(task);
+  // Plain status codes ("in_progress") get tidied; composed sentences such as
+  // "Approved by X - waiting on Y" keep their own wording.
+  const statusText = statusDisplayLabel === (task.status || '').replace(/_/g, ' ')
+    ? humanize(task.status)
+    : `${statusDisplayLabel.charAt(0).toUpperCase()}${statusDisplayLabel.slice(1)}`;
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const closeOnOutside = (event) => {
+      if (!menuRef.current?.contains(event.target)) setMenuOpen(false);
     };
-  })();
-  const renderActionMenu = () => (
-    <div className="card-menu-wrap">
-      <button className="card-menu-btn" onClick={() => setMenuOpen((s) => !s)}>⋮</button>
-      {menuOpen && (
-        <div className="card-menu">
-          {menuActions.map((action) => (
-            <button
-              key={action}
-              onClick={() => {
-                setMenuOpen(false);
-                if (action === 'chat') handleOpenChat();
-                else onTaskAction(task, action);
-              }}
-            >
-              {actionLabel(action)}
-            </button>
-          ))}
-          {menuActions.length === 0 && <span className="card-menu-empty">No actions</span>}
-        </div>
-      )}
-    </div>
-  );
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [menuOpen]);
+
+  const renderActionMenu = () => {
+    if (menuActions.length === 0) return null;
+    return (
+      <div className="tc-menu-wrap" ref={menuRef}>
+        <button
+          type="button"
+          className="tc-btn tc-btn--icon tc-btn--ghost"
+          onClick={() => setMenuOpen((open) => !open)}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-label="More actions"
+          title="More actions"
+        >
+          <IconMore size={16} />
+        </button>
+        {menuOpen && (
+          <div className="tc-menu" role="menu">
+            {menuActions.map((action) => (
+              <button
+                key={action}
+                type="button"
+                role="menuitem"
+                className={action === 'revoke_task' ? 'is-danger' : ''}
+                onClick={() => {
+                  setMenuOpen(false);
+                  onTaskAction(task, action);
+                }}
+              >
+                {humanize(actionLabel(action))}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -770,211 +747,318 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
     );
   };
 
+  const renderTcLinks = (links = [], prefix) => (
+    <ul className="tc-file-list">
+      {links.map((link, idx) => (
+        <li key={`${prefix}-link-${idx}`} className="tc-file">
+          <IconLink size={14} />
+          <a className="tc-file-name" href={link} target="_blank" rel="noreferrer" title={link}>{link}</a>
+          <span className="tc-file-actions">
+            <button
+              type="button"
+              className="tc-mini"
+              onClick={() => copyToClipboard(link, `${prefix}-link-${idx}`)}
+              title={copiedKey === `${prefix}-link-${idx}` ? 'Copied' : 'Copy link'}
+              aria-label="Copy link"
+            >
+              <IconCopy size={14} />
+            </button>
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+
+  const renderTcFiles = (files = [], prefix) => (
+    <ul className="tc-file-list">
+      {files.map((file, idx) => {
+        const label = file?.originalName || file?.filename || `Attachment ${idx + 1}`;
+        return (
+          <li key={`${prefix}-file-${file?.url || file?.filename || idx}-${idx}`} className="tc-file">
+            <IconPaperclip size={14} />
+            <span className="tc-file-name" title={label}>{label}</span>
+            <span className="tc-file-actions">
+              <button type="button" className="tc-mini" onClick={() => setPreviewFile(file)} title="Preview" aria-label={`Preview ${label}`}>
+                <IconEye size={15} />
+              </button>
+              <button type="button" className="tc-mini" onClick={() => forceDownload(file, label)} title="Download" aria-label={`Download ${label}`}>
+                <IconDownload size={15} />
+              </button>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+
+  const taskLinks = Array.isArray(task.links) ? task.links : [];
+  const taskAttachments = Array.isArray(task.attachments) ? task.attachments : [];
+  const resultLinks = Array.isArray(task.resultLinks) ? task.resultLinks : [];
+  const resultAttachments = Array.isArray(task.resultAttachments) ? task.resultAttachments : [];
+  const hasSubmittedResult = !hasWorkerSubmissionSummary
+    && Boolean(task.resultText || resultLinks.length || resultAttachments.length);
+  const forwardHistory = Array.isArray(task.forwardHistory) ? task.forwardHistory : [];
+  const seenPeople = Array.isArray(task.seenBy) ? task.seenBy : [];
+  const creatorName = task.creator?.name || 'Unknown';
+  const detailRows = [
+    ['Priority', task.priority ? humanize(task.priority) : ''],
+    ['Tag', task.taskTag],
+    ['Request type', requestTypeLabel],
+    ['Departments', [task.fromDepartment, task.toDepartment].filter(Boolean).join(' → ')],
+    ['Stage', isWorkflowTask ? activeStageLabel : humanize(task.workflowStage)],
+    ['Customer', task.customerName],
+    ['Created', formatDateTimeIndia(task.createdAt)],
+    ['Last updated', formatDateTimeIndia(task.updatedAt)],
+    ['Deadline', deadlineInfo.full],
+    ['Last forwarded by', task.lastForwardedBy],
+  ].filter(([, value]) => value && value !== 'N/A' && value !== '-');
+
   return (
-    <div className={`inbox-card ${isRevoked ? 'revoked-card' : ''}`}>
+    <article
+      className={[
+        'tc-card',
+        `tone-${statusTone}`,
+        isUnread ? 'is-unread' : '',
+        isRevoked ? 'is-revoked' : '',
+        expanded ? 'is-expanded' : '',
+      ].filter(Boolean).join(' ')}
+    >
       {isRevoked && (
-        <div className="revoked-banner">
-          <strong>This task has been revoked (regularised).</strong>
+        <div className="tc-alert tc-alert--revoked" role="note">
+          <IconAlert size={14} />
           <span>
-            {` By ${revokedBy}${revokedAt ? ` on ${revokedAt}` : ''}${revokedReason ? `. Reason: ${revokedReason}` : ''}`}
+            <strong>Revoked</strong>
+            {` by ${revokedBy}${revokedAt ? ` on ${revokedAt}` : ''}${revokedReason ? ` — ${revokedReason}` : ''}`}
           </span>
         </div>
       )}
       {isHeld && !isRevoked && (
-        <div className="held-banner">
-          <strong>This task is on hold.</strong>
+        <div className="tc-alert tc-alert--held" role="note">
+          <IconPause size={14} />
           <span>
+            <strong>On hold.</strong>
             {holdUntilLabel ? ` Auto-unholds on ${holdUntilLabel}.` : ' The creator must unhold it before work can continue.'}
             {task.holdInfo?.reason ? ` Reason: ${task.holdInfo.reason}` : ''}
           </span>
         </div>
       )}
 
-      <div className="card-grid">
-        <span><strong>Task Name:</strong> {displayTaskName}</span>
-        <span><strong>Project Name:</strong> {displayProjectName}</span>
-        <span><strong>Creator:</strong> {task.creator?.name || 'Unknown'} ({task.creator?.department || 'N/A'})</span>
-        <span className={`status-tile ${statusTileClass}`}>
-          <strong>Overall Status:</strong>
-          <em>{statusDisplayLabel}</em>
+      <div className="tc-main">
+        <span
+          className="tc-avatar"
+          style={{ '--tc-avatar-hue': `${getAvatarHue(creatorName)}deg` }}
+          title={`From ${creatorName}`}
+          aria-hidden="true"
+        >
+          {getInitials(creatorName)}
         </span>
-        {isWorkflowTask && (
-          <span><strong>Active Stage:</strong> {activeStageLabel || '-'}</span>
-        )}
-        <span><strong>Assigned To:</strong> {assignedNames}</span>
-        <span><strong>Request Type:</strong> {requestTypeLabel}</span>
-        <span><strong>Chat:</strong> {task.chatCount || 0}</span>
-        <span><strong>Created:</strong> {task.createdAt ? formatDateTimeIndia(task.createdAt) : '-'}</span>
-        <span><strong>Updated:</strong> {task.updatedAt ? formatDateTimeIndia(task.updatedAt) : '-'}</span>
-        <span><strong>Submitted:</strong> {task.submittedAt ? formatDateTimeIndia(task.submittedAt) : '-'}</span>
-        <span className={`deadline-tile ${deadlineInfo.className}`}>
-          <strong>Deadline:</strong>
-          <em>{deadlineInfo.label}</em>
-          <small>{deadlineInfo.meta}</small>
-        </span>
+
+        <div className="tc-body">
+          <div className="tc-title-line">
+            {isUnread && <span className="tc-unread-dot" title="Unread" aria-label="Unread" />}
+            <button type="button" className="tc-title" onClick={handleToggleExpanded} title={displayTaskName}>
+              {displayTaskName}
+            </button>
+            {requestTypeLabel !== 'Task' && <span className="tc-chip tc-chip--accent">{requestTypeLabel}</span>}
+            {isWorkflowTask && activeStageLabel && <span className="tc-chip">{activeStageLabel}</span>}
+          </div>
+          <div className="tc-sub">
+            {displayProjectName !== '-' && (
+              <span className="tc-truncate"><IconFolder size={13} /> {displayProjectName}</span>
+            )}
+            <span className="tc-truncate">
+              From <strong>{creatorName}</strong>
+              {task.creator?.department ? ` · ${task.creator.department}` : ''}
+            </span>
+            {task.taskNumber && <span className="tc-ref">{task.taskNumber}</span>}
+          </div>
+          <div className="tc-meta">
+            <span className="tc-truncate" title={`Assigned to ${assignedNames}`}>
+              <IconUsers size={13} /> {assignedNames}
+            </span>
+            {task.createdAt && (
+              <span title={formatDateTimeIndia(task.createdAt)}>
+                <IconCalendar size={13} /> Created {formatShortDateTime(task.createdAt)}
+              </span>
+            )}
+            {task.submittedAt && (
+              <span title={formatDateTimeIndia(task.submittedAt)}>
+                <IconCheckCircle size={13} /> Submitted {formatShortDateTime(task.submittedAt)}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="tc-side">
+          <span className={`tc-status tone-${statusTone}`}>{statusText}</span>
+          <div className="tc-side-chips">
+            {task.priority && (
+              <span className={`tc-priority tc-priority--${getPriorityTone(task.priority)}`}>
+                <IconFlag size={12} /> {task.priority}
+              </span>
+            )}
+            <span className={`tc-deadline tc-deadline--${deadlineInfo.tone}`} title={deadlineInfo.full ? `Deadline: ${deadlineInfo.full}` : 'No deadline'}>
+              <IconClock size={12} />
+              {deadlineInfo.tone === 'none'
+                ? 'No deadline'
+                : <><b>{deadlineInfo.meta}</b> · {deadlineInfo.label}</>}
+            </span>
+          </div>
+        </div>
       </div>
+
       {renderWorkerStatusStrip()}
 
       {expanded && (
-        <div className="card-details">
-          <div><strong>Project Name:</strong> {task.projectName || '-'}</div>
-          <div><strong>Customer Name:</strong> {task.customerName || '-'}</div>
-          <div className="full-span"><strong>Reference:</strong> {task.reference || '-'}</div>
-          <div className="full-span">
-            <div className="detail-head">
-              <strong>Task Details:</strong>
-              <button
-                type="button"
-                className="mini-action-btn"
-                onClick={() => copyToClipboard(task.description, 'task-details')}
-                disabled={!task.description}
-              >
-                {copiedKey === 'task-details' ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-            <div className="forward-item">{task.description || '-'}</div>
-          </div>
-          <div><strong>Deadline:</strong> {task.deadline ? formatDateTimeIndia(task.deadline) : 'Not set'}</div>
-          <div><strong>Priority:</strong> {task.priority || '-'}</div>
-          <div><strong>Request Type:</strong> {requestTypeLabel}</div>
-          <div><strong>Tag:</strong> {task.taskTag || '-'}</div>
-          <div><strong>From Department:</strong> {task.fromDepartment || '-'}</div>
-          <div><strong>To Department:</strong> {task.toDepartment || '-'}</div>
-          <div><strong>Workflow Stage:</strong> {task.workflowStage || '-'}</div>
-          {isWorkflowTask && <div><strong>Current Stage:</strong> {activeStageLabel || '-'}</div>}
-          <div><strong>Created By:</strong> {task.creator?.name || '-'}</div>
-          <div><strong>Last Forwarded By:</strong> {task.lastForwardedBy || '-'}</div>
-          {renderWorkflowStages()}
-          {renderWorkerSubmissions()}
-          <div className="forward-history">
-            <strong>Task Links:</strong>
-            {(task.links || []).length === 0 && <div className="forward-item">-</div>}
-            {(task.links || []).map((link, idx) => (
-              <div key={`${link}-${idx}`} className="forward-item">
-                <span>{link}</span>
-                <span className="attachment-actions">
-                  <a href={link} target="_blank" rel="noreferrer">Open</a>
-                  <button
-                    type="button"
-                    className="mini-action-btn"
-                    onClick={() => copyToClipboard(link, `task-link-${idx}`)}
-                  >
-                    {copiedKey === `task-link-${idx}` ? 'Copied' : 'Copy Link'}
-                  </button>
-                </span>
-              </div>
-            ))}
-          </div>
-          <div className="forward-history">
-            <strong>Task Attachments:</strong>
-            {(task.attachments || []).length === 0 && <div className="forward-item">No attachments</div>}
-            {(task.attachments || []).map((file, idx) => (
-              <div key={`${file?.url || file?.filename || idx}-${idx}`} className="forward-item">
-                <span>{file?.originalName || file?.filename || `Attachment ${idx + 1}`}</span>
-                <span className="attachment-actions">
-                  <button
-                    type="button"
-                    className="mini-action-btn"
-                    onClick={() => setPreviewFile(file)}
-                  >
-                    Open
-                  </button>
-                  <button
-                    type="button"
-                    className="mini-action-btn"
-                    onClick={() => forceDownload(file, file?.originalName || file?.filename || `attachment-${idx + 1}`)}
-                  >
-                    Download
-                  </button>
-                </span>
-              </div>
-            ))}
-          </div>
-          {(task.forwardHistory || []).length > 0 && (
-            <div className="forward-history">
-              <strong>Forward History:</strong>
-              {(task.forwardHistory || []).map((f) => (
-                <div key={f.id} className="forward-item">
-                  {f.fromUser} ({f.fromDepartment || '-'}) → {f.toUser || f.toDepartment || '-'} {f.createdAt ? `| ${formatDateTimeIndia(f.createdAt)}` : ''}
-                </div>
-              ))}
-            </div>
-          )}
-          {!hasWorkerSubmissionSummary && (task.resultText || (task.resultLinks || []).length > 0 || (task.resultAttachments || []).length > 0) && (
-            <div className="forward-history">
-              <div className="detail-head">
-                <strong>Submitted Result:</strong>
+        <div className="tc-details">
+          <section className="tc-section tc-section--wide">
+            <div className="tc-section-head">
+              <h4 className="tc-section-title">Brief</h4>
+              {description && (
                 <button
                   type="button"
-                  className="mini-action-btn"
-                  onClick={() => copyToClipboard(task.resultText, 'result-text')}
-                  disabled={!task.resultText}
+                  className="tc-mini"
+                  onClick={() => copyToClipboard(description, 'task-details')}
+                  title={copiedKey === 'task-details' ? 'Copied' : 'Copy brief'}
+                  aria-label="Copy brief"
                 >
-                  {copiedKey === 'result-text' ? 'Copied' : 'Copy'}
+                  <IconCopy size={14} />
                 </button>
-              </div>
-              {task.resultText && <div className="forward-item">{task.resultText}</div>}
-              {(task.resultLinks || []).map((link, idx) => (
-                <div key={`${link}-${idx}`} className="forward-item">
-                  <span>{link}</span>
-                  <span className="attachment-actions">
-                    <a href={link} target="_blank" rel="noreferrer">Open</a>
-                    <button
-                      type="button"
-                      className="mini-action-btn"
-                      onClick={() => copyToClipboard(link, `result-link-${idx}`)}
-                    >
-                      {copiedKey === `result-link-${idx}` ? 'Copied' : 'Copy Link'}
-                    </button>
-                  </span>
-                </div>
-              ))}
-              {(task.resultAttachments || []).map((file, idx) => (
-                <div key={`${file?.url || file?.filename || idx}-${idx}`} className="forward-item">
-                  <span>{file?.originalName || file?.filename || `Attachment ${idx + 1}`}</span>
-                  <span className="attachment-actions">
-                    <button
-                      type="button"
-                      className="mini-action-btn"
-                      onClick={() => setPreviewFile(file)}
-                    >
-                      Open
-                    </button>
-                    <button
-                      type="button"
-                      className="mini-action-btn"
-                      onClick={() => forceDownload(file, file?.originalName || file?.filename || `result-attachment-${idx + 1}`)}
-                    >
-                      Download
-                    </button>
-                  </span>
-                </div>
-              ))}
+              )}
             </div>
+            {description ? <p className="tc-text">{description}</p> : <p className="tc-muted">No brief was added to this task.</p>}
+            {task.reference && (
+              <p className="tc-muted" style={{ marginTop: 8 }}><strong>Reference:</strong> {task.reference}</p>
+            )}
+          </section>
+
+          <section className="tc-section">
+            <div className="tc-section-head"><h4 className="tc-section-title">Details</h4></div>
+            <dl className="tc-kv">
+              {detailRows.map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+
+          <section className="tc-section">
+            <div className="tc-section-head">
+              <h4 className="tc-section-title">Links &amp; files</h4>
+            </div>
+            {taskLinks.length === 0 && taskAttachments.length === 0 ? (
+              <p className="tc-muted">No links or files were shared with this task.</p>
+            ) : (
+              <>
+                {taskLinks.length > 0 && renderTcLinks(taskLinks, 'task')}
+                {taskAttachments.length > 0 && (
+                  <div style={{ marginTop: taskLinks.length ? 6 : 0 }}>{renderTcFiles(taskAttachments, 'task')}</div>
+                )}
+              </>
+            )}
+          </section>
+
+          {hasSubmittedResult && (
+            <section className="tc-section tc-section--wide tc-section--result">
+              <div className="tc-section-head">
+                <h4 className="tc-section-title"><IconCheckCircle size={13} /> Submitted result</h4>
+                {task.resultText && (
+                  <button
+                    type="button"
+                    className="tc-mini"
+                    onClick={() => copyToClipboard(task.resultText, 'result-text')}
+                    title={copiedKey === 'result-text' ? 'Copied' : 'Copy result'}
+                    aria-label="Copy result"
+                  >
+                    <IconCopy size={14} />
+                  </button>
+                )}
+              </div>
+              {task.resultText && <p className="tc-text">{task.resultText}</p>}
+              {resultLinks.length > 0 && <div style={{ marginTop: 8 }}>{renderTcLinks(resultLinks, 'result')}</div>}
+              {resultAttachments.length > 0 && <div style={{ marginTop: 6 }}>{renderTcFiles(resultAttachments, 'result')}</div>}
+            </section>
+          )}
+
+          {isWorkflowTask && <div className="tc-wide">{renderWorkflowStages()}</div>}
+          {hasWorkerSubmissionSummary && <div className="tc-wide">{renderWorkerSubmissions()}</div>}
+
+          {forwardHistory.length > 0 && (
+            <section className="tc-section tc-section--wide">
+              <div className="tc-section-head"><h4 className="tc-section-title">Forward history</h4></div>
+              <ul className="tc-history">
+                {forwardHistory.map((entry) => (
+                  <li key={entry.id}>
+                    <strong>{entry.fromUser}</strong>
+                    {entry.fromDepartment ? <small>({entry.fromDepartment})</small> : null}
+                    <IconArrowRight size={12} />
+                    <strong>{entry.toUser || entry.toDepartment || '-'}</strong>
+                    {entry.createdAt ? <small>· {formatDateTimeIndia(entry.createdAt)}</small> : null}
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
         </div>
       )}
 
-      <div className="card-footer">
-        <span className="seenby">Seen by: {(task.seenBy || []).map((s) => s.name).join(', ') || 'None'}</span>
-        <div className="card-footer-actions">
-          <button className="track-btn" onClick={handleToggleExpanded}>
-            {expanded ? 'Hide Details' : 'Show Details'}
+      <div className="tc-footer">
+        <span className="tc-seen" title={seenPeople.length ? `Seen by ${seenPeople.map((person) => person.name).join(', ')}` : 'Not seen yet'}>
+          {seenPeople.length > 0 ? (
+            <>
+              <span className="tc-seen-stack" aria-hidden="true">
+                {seenPeople.slice(0, 4).map((person) => (
+                  <span
+                    key={person.id || person.name}
+                    className="tc-seen-avatar"
+                    style={{ '--tc-avatar-hue': `${getAvatarHue(person.name)}deg` }}
+                  >
+                    {getInitials(person.name)}
+                  </span>
+                ))}
+              </span>
+              <span className="tc-truncate">
+                Seen by {seenPeople.slice(0, 2).map((person) => person.name).join(', ')}
+                {seenPeople.length > 2 ? ` +${seenPeople.length - 2}` : ''}
+              </span>
+            </>
+          ) : (
+            <span>Not seen yet</span>
+          )}
+        </span>
+
+        <div className="tc-actions">
+          {primaryAction && (
+            <button type="button" className="tc-btn tc-btn--primary" onClick={() => onTaskAction(task, primaryAction)}>
+              {actionLabel(primaryAction)}
+            </button>
+          )}
+          <button type="button" className="tc-btn tc-btn--ghost" onClick={handleToggleExpanded} aria-expanded={expanded}>
+            {expanded ? 'Hide details' : 'Details'}
+            <IconChevronDown size={14} className="tc-chevron" />
           </button>
-          <button className="track-btn" onClick={handleTrack}>Track</button>
-          {showInlineApprove && (
+          <button type="button" className="tc-btn tc-btn--ghost" onClick={handleTrack}>
+            <IconRoute size={14} /> Track
+          </button>
+          {!isRevoked && (
             <button
               type="button"
-              className="track-btn approve-inline-btn"
-              onClick={() => onTaskAction(task, 'approve')}
+              className="tc-btn tc-btn--icon tc-btn--ghost"
+              onClick={handleOpenChat}
+              title="Open task chat"
+              aria-label={`Open task chat${task.chatCount ? `, ${task.chatCount} messages` : ''}`}
             >
-              {actionLabel('approve')}
+              <IconChat size={15} />
+              {Number(task.chatCount) > 0 && <span className="tc-count">{task.chatCount > 99 ? '99+' : task.chatCount}</span>}
             </button>
           )}
           {renderActionMenu()}
         </div>
       </div>
-      {toastMessage && <div className="copy-toast">{toastMessage}</div>}
+
+      {toastMessage && <div className="tc-toast" role="status">{toastMessage}</div>}
       {previewFile ? (
         <FilePreviewModal
           file={previewFile}
@@ -983,7 +1067,7 @@ const InboxCard = ({ task, onMarkSeen, onTrackClick, onTaskAction, onOpenChat })
           onClose={() => setPreviewFile(null)}
         />
       ) : null}
-    </div>
+    </article>
   );
 };
 

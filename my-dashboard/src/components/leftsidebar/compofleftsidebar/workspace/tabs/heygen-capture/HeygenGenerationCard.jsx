@@ -46,7 +46,7 @@ const HeygenCardPreview = React.memo(function HeygenCardPreview({ generation }) 
           className="kling-card-image"
           loading="lazy"
           decoding="async"
-          fetchPriority="low"
+          {...{ fetchpriority: 'low' }}
           onError={() => setCandidateIndex((index) => index + 1)}
         />
       ) : (

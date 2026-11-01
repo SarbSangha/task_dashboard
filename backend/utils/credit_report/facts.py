@@ -60,6 +60,7 @@ from providers.grammarly_docs.models import GrammarlyDocSession
 from providers.heygen.models import HeygenGeneration
 from providers.higgsfield.models import HiggsfieldGeneration
 from providers.splice.models import SpliceDownload
+from providers.figma.models import FigmaPrompt
 from providers.suno.models import SunoGeneration
 from utils.credential_crypto import decrypt_secret
 from utils.usage_intelligence.service import KLING_TOOL_SLUGS, MAX_SANE_KLING_CREDITS, resolve_period
@@ -112,6 +113,8 @@ TOOL_COST_NOTES = {
     "Epidemic Sound": "One row per track downloaded. Downloads cost no credits: ₹ is an equal share of the "
                       "subscription (est.).",
     "Splice": "One row per sample downloaded, 1 Splice credit each, × the account's credit rate.",
+    "Figma": "One row per prompt to Figma's AI agent, with the AI credits Figma itself reported for it. "
+             "₹ is the subscription shared by those credits.",
     "Suno": "Fixed price per song: Suno charges 5 credits per song but shows no per-song cost of its own. "
             "An admin can set a different price from a date (Reports → Credit Rates). "
             "₹ is an equal share of the subscription (est.).",
@@ -183,6 +186,11 @@ TOOL_SOURCES: tuple = (
     # Pay-per-use: every sample download costs 1 Splice credit.
     ToolSource("Splice", SpliceDownload, None, ("asset_title",), ("asset_source_url", "preview_mp3_url"),
                has_provider_created_at=False, fixed_credits=1.0, occurred_at="downloaded_at"),
+    # One row per AI prompt, priced by Figma itself (credits_used); the
+    # subscription is shared by those credits, like Freepik's.
+    ToolSource("Figma", FigmaPrompt, "credits_used", ("prompt_text", "file_name"), ("file_url",),
+               model_label=("file_name",), mirrored_key=False, has_provider_created_at=False,
+               occurred_at="prompted_at"),
     ToolSource("Grammarly", GrammarlyDocSession, None, ("doc_title", "page_name"), ("doc_url", "page_url"),
                mirrored_key=False, has_provider_created_at=False, status_is_lifecycle=True,
                occurred_at="started_at"),
@@ -401,6 +409,8 @@ def _size(src: ToolSource, m, display: DisplayConfig) -> tuple:
         size = case((_num(m.credits_charged) > 0, m.credits_charged),
                     (_num(m.credits_estimated) > 0, m.credits_estimated), else_=zero)
         return cast(size, Float), literal(0, Integer), literal(0, Integer)
+    if src.name == "Figma":
+        return cast(_num(m.credits_used), Float), literal(0, Integer), literal(0, Integer)
     if src.name == "ElevenLabs":
         previews = display.free_preview_models.get(src.name) or []
         model_id = m.metadata_json["model_id"].as_string()

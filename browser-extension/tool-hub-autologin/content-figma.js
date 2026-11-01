@@ -28,6 +28,7 @@ const STATE = {
   launchExpiresAt: 0,
   launchActivatedAt: 0,
   launchPrepared: false,
+  launchCheckFailed: false,
   passwordSavingInFlight: false,
   passwordSavingSuppressed: false,
   passwordSavingRestoreTimer: null,
@@ -134,6 +135,13 @@ function markSignedIn(message) {
 // window keeps it from ever actually lapsing while this tab stays open. See
 // background-main.js's extendActiveLaunch for the other half of this (same
 // fix as content-semrush.js's startLaunchKeepAlive).
+//
+// Started as soon as the launch check says this tab is authorized (see
+// attemptFill), not only once sign-in is detected: a page that never got as
+// far as markSignedIn (e.g. its text tripped isVerificationPage) used to
+// leave the launch un-renewed, so 20 minutes later the next real page load in
+// that tab failed the check and signed every Figma tab out. Extending only
+// renews a launch that is still valid, so this grants nothing new.
 const LAUNCH_KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
 
 function startLaunchKeepAlive() {
@@ -695,6 +703,8 @@ function isVerificationPage() {
     || text.includes('captcha');
 }
 
+const LAUNCH_CHECK_RETRY_DELAYS_MS = [1000, 3000, 6000];
+
 async function loadLaunchState() {
   const directTicket = captureLaunchTicketFromHash() || getStoredLaunchTicket();
   if (directTicket) {
@@ -719,14 +729,24 @@ async function loadLaunchState() {
     clearStoredLaunchTicket();
   }
 
-  const response = await sendRuntimeMessage({
-    type: 'TOOL_HUB_GET_LAUNCH_STATE',
-    toolSlug: TOOL_SLUG,
-    hostname: window.location.hostname,
-    pageUrl: window.location.href,
-  });
+  // Only a real answer from the extension counts. A check that got none (the
+  // service worker restarting, a dropped message port) used to read as "not
+  // launched from the dashboard", and enforceDashboardOnlyAccess then wiped
+  // the Figma cookies - signing out every Figma tab at a random moment.
+  let response = null;
+  for (let attempt = 0; attempt < LAUNCH_CHECK_RETRY_DELAYS_MS.length + 1; attempt += 1) {
+    if (attempt) await new Promise((resolve) => window.setTimeout(resolve, LAUNCH_CHECK_RETRY_DELAYS_MS[attempt - 1]));
+    response = await sendRuntimeMessage({
+      type: 'TOOL_HUB_GET_LAUNCH_STATE',
+      toolSlug: TOOL_SLUG,
+      hostname: window.location.hostname,
+      pageUrl: window.location.href,
+    });
+    if (response?.ok) break;
+  }
 
   STATE.launchChecked = true;
+  STATE.launchCheckFailed = !response?.ok;
   STATE.launchAuthorized = Boolean(response?.ok && response.authorized);
   STATE.launchExpiresAt = Number(response?.ok && response.authorized ? response.expiresAt || 0 : 0);
   STATE.launchActivatedAt = Number(response?.ok && response.authorized ? response.activatedAt || 0 : 0);
@@ -739,13 +759,15 @@ async function clearToolSession(options = {}) {
     type: 'TOOL_HUB_CLEAR_TOOL_SESSION',
     toolSlug: TOOL_SLUG,
     preserveLaunch: Boolean(options.preserveLaunch),
+    // Recorded by the background's session-wipe log (rmw_session_wipe_log).
+    reason: options.reason || 'figma_content_script',
   });
 }
 
 async function enforceDashboardOnlyAccess() {
   const alreadyNotified = window.sessionStorage.getItem(BLOCKED_NOTICE_KEY) === '1';
   if (!isLoginSurfaceOpen() && !findLandingLoginAction()) {
-    await clearToolSession();
+    await clearToolSession({ reason: 'figma_tab_not_launched_from_dashboard' });
     window.sessionStorage.setItem(BLOCKED_NOTICE_KEY, '1');
     window.location.replace(LOGIN_URL);
     return false;
@@ -775,7 +797,7 @@ async function ensureFreshLaunchSession() {
     return true;
   }
 
-  await clearToolSession({ preserveLaunch: true });
+  await clearToolSession({ preserveLaunch: true, reason: 'figma_fresh_dashboard_launch' });
   // Also record it on the launch itself (shared across tabs, and copied onto
   // any tab that inherits this launch) - see attemptFill's prepared check.
   await sendRuntimeMessage({ type: 'TOOL_HUB_MARK_FRESH_SESSION_PREPARED', toolSlug: TOOL_SLUG });
@@ -1025,9 +1047,16 @@ function attemptFill() {
     return;
   }
   if (!STATE.launchAuthorized) {
+    if (STATE.launchCheckFailed) {
+      // No answer is not a "no": leave the session alone.
+      setStatus('Could not reach the Tool Hub extension to check this launch. Reload the page if Figma misbehaves.');
+      STATE.settled = true;
+      return;
+    }
     scheduleAsyncStep(enforceDashboardOnlyAccess);
     return;
   }
+  startLaunchKeepAlive();
   if (STATE.launchActivatedAt && window.sessionStorage.getItem(PREPARED_LAUNCH_KEY) !== `${STATE.launchActivatedAt}`) {
     // sessionStorage is per tab, and a tab Figma opens itself - "Present"
     // opening /proto/... in a new tab - only gets a copy of it when the
@@ -1048,14 +1077,18 @@ function attemptFill() {
     }
   }
 
-  if (isVerificationPage()) {
-    setStatus('Figma requires verification. Complete it manually.');
-    STATE.settled = true;
+  // Signed-in check first: isVerificationPage scans the whole page's text,
+  // and a signed-in Figma page can contain "2FA" (a hex colour), "passcode"
+  // or "authenticate" (a file or layer name) - that used to stop here
+  // without ever marking the tab signed in.
+  if ((isAuthenticatedFigmaPath() || hasLogoutAction()) && !isLoginSurfaceOpen()) {
+    markSignedIn('Signed in successfully');
     return;
   }
 
-  if ((isAuthenticatedFigmaPath() || hasLogoutAction()) && !isLoginSurfaceOpen()) {
-    markSignedIn('Signed in successfully');
+  if (isVerificationPage()) {
+    setStatus('Figma requires verification. Complete it manually.');
+    STATE.settled = true;
     return;
   }
 
@@ -1118,6 +1151,11 @@ function handleMutations() {
 }
 
 function start() {
+  // Top page only. Every Figma file carries hidden www.figma.com/plugin-sandbox
+  // iframes (confirmed 2026-10-30), and running this there meant extra launch
+  // checks that could each wipe the session, plus credential requests into
+  // frames that never show a login form. The login form is on the top page.
+  if (window.top !== window) return;
   ensureStatusBadge();
   captureLaunchTicketFromHash();
   STATE.observer = new MutationObserver(() => handleMutations());
@@ -1126,6 +1164,7 @@ function start() {
   loadLaunchState()
     .catch(() => {
       STATE.launchChecked = true;
+      STATE.launchCheckFailed = true;
       STATE.launchAuthorized = false;
       STATE.launchExpiresAt = 0;
       STATE.launchActivatedAt = 0;
