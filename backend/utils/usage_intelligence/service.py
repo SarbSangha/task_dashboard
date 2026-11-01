@@ -1409,6 +1409,18 @@ def build_snapshot(
 ) -> dict:
     period = resolve_period(preset, start, end)
     people = _load_people(db)
+    # Consolidated report only: current members only. An inactive account
+    # (and a deleted one, which _load_people already drops) stays out of every
+    # sheet, and its generations stay out of the totals so the numbers match
+    # the people listed. Generations with no owner are unaffected. The other
+    # report types keep their existing behaviour.
+    current_members_only = (report_type or "").strip().lower() == "consolidated" and not user_id
+    removed_ids: set = set()
+    if current_members_only:
+        people = [p for p in people if p["isActive"]]
+        removed_ids = {
+            uid for (uid,) in db.query(User.id).filter(or_(User.is_deleted.is_(True), User.is_active.is_(False))).all()
+        }
     leads = _team_leads(people)
     dept_filter = _dept(department) if department and department not in {"all", "*", ""} else None
     if user_id:
@@ -1418,6 +1430,9 @@ def build_snapshot(
     prev_activity = _load_activity(db, period["prev_start"], period["prev_end"])
     facts = _load_generation_facts(db, period, previous=False)
     prev_facts = _load_generation_facts(db, period, previous=True)
+    if removed_ids:
+        facts = {k: v for k, v in facts.items() if k[0] not in removed_ids}
+        prev_facts = {k: v for k, v in prev_facts.items() if k[0] not in removed_ids}
     tool_seconds = _load_dashboard_tool_seconds(db, period["utc_start"], period["utc_end"])
     rates_by_credential, default_rate, _rate_currency = _load_credit_rates(db)
     # _load_client_tool_usage is a bulk scan across every provider (ChatGPT,
@@ -1583,7 +1598,10 @@ def build_snapshot(
         scoped_prev_facts = {k: v for k, v in prev_facts.items() if k[0] in scoped_ids}
         activity_ids = scoped_ids
     else:
-        scoped_facts, scoped_prev_facts, activity_ids = facts, prev_facts, None
+        scoped_facts, scoped_prev_facts = facts, prev_facts
+        # Consolidated: daily activity and tool logins only for the current
+        # members listed (see current_members_only above).
+        activity_ids = {u["userId"] for u in users} if current_members_only else None
 
     teams = _assemble_teams(users, leads, period)
     if dept_filter:
