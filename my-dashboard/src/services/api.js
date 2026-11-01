@@ -1913,18 +1913,24 @@ export const generationRecordsAPI = {
     return response.data;
   },
 
-  // Admin only: upload or replace the card's video.
+  // Admin only: upload or replace the card's video. The file goes straight to
+  // R2 (presigned, multipart for big files) and the API only attaches it: a
+  // request carrying the video itself is cut off by the proxy in front of the
+  // API for large files (68 MB failed with no error body, 6 MB was fine).
   uploadVideo: async (generationId, file, { onProgress, ...requestConfig } = {}) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const response = await api.put(`/api/generations/${generationId}/video`, formData, {
-      ...requestConfig,
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 0,
-      onUploadProgress: (progressEvent) => {
-        if (onProgress && progressEvent.total) onProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
-      },
+    const uploaded = await fileAPI.uploadFiles([file], {
+      onProgress: (percent) => onProgress?.(Math.min(99, Math.round(percent))),
+      allowLegacyFallback: false,
+      signal: requestConfig.signal,
     });
+    const attachment = uploaded?.data?.[0];
+    if (!attachment?.path) throw new Error('The video upload did not finish. Try again.');
+    const response = await api.put(
+      `/api/generations/${generationId}/video/uploaded`,
+      { key: attachment.path, fileName: file.name },
+      { ...requestConfig, timeout: 0 },
+    );
+    onProgress?.(100);
     return response.data;
   },
 
@@ -1954,17 +1960,22 @@ export const generationRecordsAPI = {
 // card (Freepik, Higgsfield, HeyGen, Suno, ElevenLabs, Envato, Flow) - the
 // provider-generic twin of generationRecordsAPI's Kling card edits above.
 export const providerCardAdminAPI = {
+  // Same direct-to-R2 route as generationRecordsAPI.uploadVideo: the file
+  // never passes the API's proxy, which cuts off large request bodies.
   uploadMedia: async (provider, generationId, file, { onProgress, ...requestConfig } = {}) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const response = await api.put(`/api/providers/${provider}/generations/${generationId}/media`, formData, {
-      ...requestConfig,
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 0,
-      onUploadProgress: (progressEvent) => {
-        if (onProgress && progressEvent.total) onProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
-      },
+    const uploaded = await fileAPI.uploadFiles([file], {
+      onProgress: (percent) => onProgress?.(Math.min(99, Math.round(percent))),
+      allowLegacyFallback: false,
+      signal: requestConfig.signal,
     });
+    const attachment = uploaded?.data?.[0];
+    if (!attachment?.path) throw new Error('The upload did not finish. Try again.');
+    const response = await api.put(
+      `/api/providers/${provider}/generations/${generationId}/media/uploaded`,
+      { key: attachment.path, fileName: file.name },
+      { ...requestConfig, timeout: 0 },
+    );
+    onProgress?.(100);
     return response.data;
   },
 

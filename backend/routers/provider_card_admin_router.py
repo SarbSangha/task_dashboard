@@ -29,6 +29,9 @@ from utils.permissions import require_admin
 router = APIRouter(prefix="/api/providers", tags=["Provider Card Admin"])
 
 ADMIN_MEDIA_MAX_BYTES = 90 * 1024 * 1024  # requests pass the proxy only under ~100 MB; same cap as Kling's ADMIN_VIDEO_MAX_BYTES
+# Direct-to-R2 uploads (routers/upload.py presign) never pass the proxy.
+ADMIN_MEDIA_DIRECT_MAX_BYTES = 1024 * 1024 * 1024
+DIRECT_UPLOAD_KEY_PREFIX = "task-attachments/"
 
 # provider slug (its /api/providers/<slug> prefix) -> (generations model, media kinds an admin may upload)
 CARD_PROVIDERS = {
@@ -121,7 +124,6 @@ def upload_generation_media(
         raise HTTPException(status_code=503, detail="File storage is not configured")
 
     _active_generation(db, model, generation_id)
-    admin_id = current_user.id
     key = f"{provider}-admin-uploads/{generation_id}/{uuid4().hex[:12]}{extension}"
 
     # Don't hold a pooled connection idle-in-transaction across an upload of
@@ -133,6 +135,68 @@ def upload_generation_media(
     except Exception:
         raise HTTPException(status_code=502, detail="Could not store the file. Try again.")
 
+    return _attach_admin_media(
+        db, model, generation_id, current_user.id,
+        key=key, kind=kind, file_name=file.filename, content_type=content_type, size_bytes=size_bytes,
+    )
+
+
+class UploadedMediaPayload(BaseModel):
+    key: str
+    fileName: Optional[str] = None
+
+
+@router.put("/{provider}/generations/{generation_id}/media/uploaded")
+def attach_uploaded_generation_media(
+    provider: str,
+    generation_id: int,
+    payload: UploadedMediaPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Same as PUT .../media, for a file the browser already sent straight to
+    R2 through /api/uploads/presign - the way large files go, since a request
+    carrying the file itself is cut off by the proxy in front of the API (see
+    generation_records_router.attach_uploaded_generation_video)."""
+    model, allowed_kinds = _provider_config(provider)
+    source_key = (payload.key or "").strip()
+    if not source_key.startswith(DIRECT_UPLOAD_KEY_PREFIX) or ".." in source_key:
+        raise HTTPException(status_code=400, detail="Unknown upload")
+    file_name = payload.fileName or source_key.rsplit("/", 1)[-1]
+    extension = os.path.splitext(file_name)[1].lower() or os.path.splitext(source_key)[1].lower()
+    content_type, kind = ADMIN_MEDIA_EXTENSIONS.get(extension, (None, None))
+    if kind not in allowed_kinds:
+        allowed = sorted(ext for ext, (_, ext_kind) in ADMIN_MEDIA_EXTENSIONS.items() if ext_kind in allowed_kinds)
+        raise HTTPException(status_code=400, detail=f"Upload a {', '.join(allowed)} file")
+    if not r2_storage.is_configured():
+        raise HTTPException(status_code=503, detail="File storage is not configured")
+
+    _active_generation(db, model, generation_id)
+    size_bytes = r2_storage.object_size(source_key)
+    if not size_bytes:
+        raise HTTPException(status_code=400, detail="The uploaded file was not found. Upload it again.")
+    if size_bytes > ADMIN_MEDIA_DIRECT_MAX_BYTES:
+        _delete_r2_object_quietly(source_key)
+        raise HTTPException(status_code=413, detail=f"File is larger than {ADMIN_MEDIA_DIRECT_MAX_BYTES // (1024 * 1024)} MB")
+
+    key = f"{provider}-admin-uploads/{generation_id}/{uuid4().hex[:12]}{extension}"
+    db.close()
+    try:
+        r2_storage.copy_object(source_key, key, content_type=content_type)
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not store the file. Try again.")
+    _delete_r2_object_quietly(source_key)
+
+    return _attach_admin_media(
+        db, model, generation_id, current_user.id,
+        key=key, kind=kind, file_name=file_name, content_type=content_type, size_bytes=size_bytes,
+    )
+
+
+def _attach_admin_media(db: Session, model, generation_id: int, admin_id: int, *, key: str, kind: str,
+                        file_name: Optional[str], content_type: str, size_bytes: int):
+    """Points the card at admin media already stored at `key`, records the
+    edit, and removes the media it replaces."""
     try:
         generation = _active_generation(db, model, generation_id, for_update=True)
     except HTTPException:
@@ -144,12 +208,12 @@ def upload_generation_media(
         generation,
         admin_id,
         "media_replaced" if previous.get("key") else "media_uploaded",
-        fileName=file.filename,
+        fileName=file_name,
     )
     admin_edit_json["media"] = {
         "key": key,
         "kind": kind,
-        "fileName": file.filename,
+        "fileName": file_name,
         "contentType": content_type,
         "sizeBytes": size_bytes,
         "uploadedByAdminId": admin_id,

@@ -174,8 +174,8 @@ export default function KlingGenerationDrawer({
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file || !detail?.id) return;
-    if (file.size > 90 * 1024 * 1024) {
-      setAdminError('Video is larger than 90 MB.');
+    if (file.size > 1024 * 1024 * 1024) {
+      setAdminError('Video is larger than 1 GB.');
       return;
     }
     setAdminActionPending('upload');
@@ -185,7 +185,7 @@ export default function KlingGenerationDrawer({
       const response = await generationRecordsAPI.uploadVideo(detail.id, file, { onProgress: setUploadProgress });
       applyAdminUpdate(response?.data);
     } catch (error) {
-      setAdminError(error?.response?.data?.detail || 'Could not upload the video.');
+      setAdminError(error?.response?.data?.detail || error?.message || 'Could not upload the video.');
     } finally {
       setAdminActionPending('');
     }

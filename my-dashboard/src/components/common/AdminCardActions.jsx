@@ -10,7 +10,7 @@ import '../leftsidebar/compofleftsidebar/trending/kling/KlingGenerationDrawer.cs
 // KlingGenerationDrawer's admin section; the backend is
 // routers/provider_card_admin_router.py.
 
-const MAX_UPLOAD_BYTES = 90 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // sent straight to R2, see providerCardAdminAPI.uploadMedia
 
 // Mirrors CARD_PROVIDERS in provider_card_admin_router.py; creditField is the
 // card's credit value (CARD_CREDIT_COLUMNS in utils/admin_card_credits.py),
@@ -51,7 +51,7 @@ export default function AdminCardActions({ provider, generation, onUpdated, onDe
     event.target.value = '';
     if (!file) return;
     if (file.size > MAX_UPLOAD_BYTES) {
-      setError('File is larger than 90 MB.');
+      setError('File is larger than 1 GB.');
       return;
     }
     setPending('upload');
@@ -61,7 +61,7 @@ export default function AdminCardActions({ provider, generation, onUpdated, onDe
       const response = await providerCardAdminAPI.uploadMedia(provider, generation.id, file, { onProgress: setUploadProgress });
       if (response?.data) onUpdated?.(response.data);
     } catch (uploadError) {
-      setError(uploadError?.response?.data?.detail || `Could not upload the ${noun.toLowerCase()}.`);
+      setError(uploadError?.response?.data?.detail || uploadError?.message || `Could not upload the ${noun.toLowerCase()}.`);
     } finally {
       setPending('');
     }

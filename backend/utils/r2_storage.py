@@ -123,6 +123,29 @@ def delete_object(key: str, *, client=None) -> None:
     active_client.delete_object(Bucket=_env("R2_BUCKET"), Key=key)
 
 
+def object_size(key: str, *, client=None) -> Optional[int]:
+    """Size in bytes of an existing object, or None when it isn't there."""
+    active_client = client or build_client()
+    try:
+        head = active_client.head_object(Bucket=_env("R2_BUCKET"), Key=key)
+    except Exception:
+        return None
+    return int(head.get("ContentLength") or 0)
+
+
+def copy_object(source_key: str, target_key: str, *, content_type: str = "application/octet-stream", client=None) -> None:
+    """Server-side copy inside the bucket (no download/upload through us);
+    boto3's managed copy switches to multipart copy for large objects."""
+    active_client = client or build_client()
+    bucket = _env("R2_BUCKET")
+    active_client.copy(
+        {"Bucket": bucket, "Key": source_key},
+        bucket,
+        target_key,
+        ExtraArgs={"ContentType": content_type or "application/octet-stream", "MetadataDirective": "REPLACE"},
+    )
+
+
 _shared_client = None
 
 

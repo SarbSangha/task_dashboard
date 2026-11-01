@@ -53,6 +53,10 @@ _WHITESPACE_RE = re.compile(r"\s+")
 ADMIN_VIDEO_MAX_BYTES = 90 * 1024 * 1024  # requests pass the proxy only under ~100 MB; same cap as the frontend's LEGACY_UPLOAD_FALLBACK_MAX_BYTES
 ADMIN_VIDEO_EXTENSIONS = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}
 ADMIN_VIDEO_KEY_PREFIX = "kling-admin-uploads"
+# Direct-to-R2 uploads (routers/upload.py presign) never pass the proxy, so
+# they get a higher cap than ADMIN_VIDEO_MAX_BYTES.
+ADMIN_VIDEO_DIRECT_MAX_BYTES = 1024 * 1024 * 1024
+DIRECT_UPLOAD_KEY_PREFIX = "task-attachments/"
 # The Kling reports zero out credits above their MAX_SANE_KLING_CREDITS (3000)
 # as garbage, so an admin can't enter more than that.
 ADMIN_KLING_MAX_CREDITS = 3000
@@ -1261,7 +1265,6 @@ def upload_generation_video(
         raise HTTPException(status_code=503, detail="File storage is not configured")
 
     _active_kling_generation(db, generation_id)
-    admin_id = current_user.id
     key = f"{ADMIN_VIDEO_KEY_PREFIX}/{generation_id}/{uuid4().hex[:12]}{extension}"
 
     # Don't hold a pooled connection idle-in-transaction across an upload of
@@ -1273,6 +1276,67 @@ def upload_generation_video(
     except Exception:
         raise HTTPException(status_code=502, detail="Could not store the video. Try again.")
 
+    return _attach_admin_video(
+        db, generation_id, current_user.id,
+        key=key, file_name=file.filename, content_type=content_type, size_bytes=size_bytes,
+    )
+
+
+class UploadedVideoPayload(BaseModel):
+    key: str
+    fileName: Optional[str] = None
+
+
+@router.put("/{generation_id}/video/uploaded")
+def attach_uploaded_generation_video(
+    generation_id: int,
+    payload: UploadedVideoPayload,
+    db: Session = Depends(get_operational_db),
+    current_user: User = Depends(require_admin),
+):
+    """Same as PUT /{id}/video, for a file the browser already sent straight
+    to R2 through /api/uploads/presign. Large videos go this way: a request
+    carrying the file itself is cut off by the proxy in front of the API well
+    before ADMIN_VIDEO_MAX_BYTES (6 MB uploaded fine, 68 MB failed with no
+    error body, 2026-11-01). The upload is copied inside the bucket under
+    this card's admin prefix and the staging copy removed."""
+    source_key = (payload.key or "").strip()
+    if not source_key.startswith(DIRECT_UPLOAD_KEY_PREFIX) or ".." in source_key:
+        raise HTTPException(status_code=400, detail="Unknown upload")
+    file_name = payload.fileName or source_key.rsplit("/", 1)[-1]
+    extension = os.path.splitext(file_name)[1].lower() or os.path.splitext(source_key)[1].lower()
+    content_type = ADMIN_VIDEO_EXTENSIONS.get(extension)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="Upload an .mp4, .webm or .mov video")
+    if not r2_storage.is_configured():
+        raise HTTPException(status_code=503, detail="File storage is not configured")
+
+    _active_kling_generation(db, generation_id)
+    size_bytes = r2_storage.object_size(source_key)
+    if not size_bytes:
+        raise HTTPException(status_code=400, detail="The uploaded video was not found. Upload it again.")
+    if size_bytes > ADMIN_VIDEO_DIRECT_MAX_BYTES:
+        _delete_r2_object_quietly(source_key)
+        raise HTTPException(status_code=413, detail=f"Video is larger than {ADMIN_VIDEO_DIRECT_MAX_BYTES // (1024 * 1024)} MB")
+
+    key = f"{ADMIN_VIDEO_KEY_PREFIX}/{generation_id}/{uuid4().hex[:12]}{extension}"
+    db.close()
+    try:
+        r2_storage.copy_object(source_key, key, content_type=content_type)
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not store the video. Try again.")
+    _delete_r2_object_quietly(source_key)
+
+    return _attach_admin_video(
+        db, generation_id, current_user.id,
+        key=key, file_name=file_name, content_type=content_type, size_bytes=size_bytes,
+    )
+
+
+def _attach_admin_video(db: Session, generation_id: int, admin_id: int, *, key: str, file_name: Optional[str],
+                        content_type: str, size_bytes: int):
+    """Points the card at an admin video already stored at `key`, records the
+    edit, and removes the video it replaces."""
     try:
         generation = _active_kling_generation(db, generation_id)
     except HTTPException:
@@ -1284,11 +1348,11 @@ def upload_generation_video(
         generation,
         admin_id,
         "video_replaced" if previous.get("key") else "video_uploaded",
-        fileName=file.filename,
+        fileName=file_name,
     )
     metadata_json["adminVideo"] = {
         "key": key,
-        "fileName": file.filename,
+        "fileName": file_name,
         "contentType": content_type,
         "sizeBytes": size_bytes,
         "uploadedByAdminId": admin_id,

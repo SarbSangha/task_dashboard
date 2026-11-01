@@ -23,7 +23,7 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from sqlalchemy import Text, cast, func, or_
 from sqlalchemy.orm import Session
@@ -1026,6 +1026,106 @@ def _write_summary(ws, tool: ToolSpec, sheet_results, *, generated_by: User, fil
         ws.column_dimensions[letter].width = width
 
 
+EMPLOYEE_CLIENTS_SHOWN = 8
+
+
+def _credits_getter(spec: SheetSpec):
+    if spec.credits_getter:
+        return spec.credits_getter
+    if spec.credits_attr:
+        return lambda record, attr=spec.credits_attr: getattr(record, attr, None)
+    return None
+
+
+def _write_employee_sheet(ws, tool: ToolSpec, sheet_results):
+    """One table per owned sheet: each person's records, credits and the
+    clients they used the tool for most - so every generation can be traced
+    to the client it was made for. Records with no linked client count as
+    "Unallocated"."""
+    ws.title = "By employee"
+    ws["A1"] = f"{tool.label} — usage by employee"
+    ws["A1"].font = TITLE_FONT
+    ws["A2"] = "Client Heavy Use lists each person's clients by number of records, most used first."
+    ws["A2"].font = Font(italic=True, color="64748B")
+
+    row = 4
+    first_table = True
+    for spec, rows, truncated in sheet_results:
+        if spec.owner_attr is None:
+            continue
+        getter = _credits_getter(spec)
+        has_clients = hasattr(spec.model, "linked_client_name")
+        people: dict = {}
+        for record, owner in rows:
+            key = owner.id if owner else None
+            person = people.setdefault(key, {
+                "name": owner.name if owner else "Unassigned",
+                "department": (owner.department if owner else None) or "—",
+                "records": 0,
+                "credits": 0.0,
+                "clients": Counter(),
+            })
+            person["records"] += 1
+            if getter:
+                person["credits"] += float(getter(record) or 0)
+            if has_clients:
+                person["clients"][(getattr(record, "linked_client_name", None) or "").strip() or "Unallocated"] += 1
+
+        cost_label = "Cost (USD)" if spec.credits_attr == "cost_usd" else f"{tool.label} Credits Used"
+        headers = ["Employee Name", "Department", f"{tool.label} {spec.title}"]
+        if getter:
+            headers.append(cost_label)
+        if has_clients:
+            headers.append("Client Heavy Use")
+
+        ordered = sorted(people.values(), key=lambda p: (-p["records"], -p["credits"], p["name"]))
+        table = []
+        for person in ordered:
+            values = [person["name"], person["department"], person["records"]]
+            if getter:
+                values.append(round(person["credits"], 2))
+            if has_clients:
+                names = [name for name, _ in person["clients"].most_common()]
+                shown = ", ".join(names[:EMPLOYEE_CLIENTS_SHOWN])
+                extra = len(names) - EMPLOYEE_CLIENTS_SHOWN
+                values.append(f"{shown} (+{extra} more)" if extra > 0 else shown)
+            table.append(values)
+
+        title = spec.title if len(sheet_results) > 1 else f"{tool.label} {spec.title.lower()} by employee"
+        if truncated:
+            title += f" (first {MAX_ROWS_PER_SHEET:,} records)"
+        header_row = row + 1
+        end_row = _write_table(ws, row, title, headers, table)
+
+        if table:
+            total_row = header_row + len(table) + 1
+            totals = ["Total", "", sum(p["records"] for p in ordered)]
+            if getter:
+                totals.append(round(sum(p["credits"] for p in ordered), 2))
+            for index, value in enumerate(totals, start=1):
+                cell = ws.cell(row=total_row, column=index, value=value)
+                cell.font = Font(bold=True)
+                cell.border = Border(top=Side(style="thin", color="94A3B8"))
+                if isinstance(value, float):
+                    cell.number_format = "#,##0.##"
+            for offset in range(1, len(table) + 1):
+                ws.cell(row=header_row + offset, column=3).number_format = "#,##0"
+                if has_clients:
+                    ws.cell(row=header_row + offset, column=len(headers)).alignment = Alignment(wrap_text=True, vertical="top")
+            if first_table:
+                # Excel allows one autofilter per sheet: the first table gets it.
+                ws.auto_filter.ref = f"A{header_row}:{get_column_letter(len(headers))}{header_row + len(table)}"
+                ws.freeze_panes = f"A{header_row + 1}" if len([s for s in sheet_results if s[0].owner_attr]) == 1 else None
+            first_table = False
+            end_row = total_row + 2
+        row = end_row
+
+    if first_table:
+        ws.cell(row=row, column=1, value="This tool's records are not linked to people.")
+    for letter, width in zip("ABCDE", (26, 20, 18, 22, 70)):
+        ws.column_dimensions[letter].width = width
+
+
 def _range_label(date_from: Optional[date], date_to: Optional[date]) -> str:
     fmt = "%d %b %Y"
     if date_from and date_to:
@@ -1063,6 +1163,8 @@ def _build_workbook(db: Session, tool: ToolSpec, current_user: User, q, date_fro
         summary, tool, sheet_results, generated_by=current_user,
         filters={"q": (q or "").strip(), "range_label": _range_label(date_from, date_to), "applied": applied_filters},
     )
+    if any(spec.owner_attr is not None for spec, _, _ in sheet_results):
+        _write_employee_sheet(workbook.create_sheet("By employee", 1), tool, sheet_results)
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
