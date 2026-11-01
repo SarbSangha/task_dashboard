@@ -45,8 +45,8 @@ const SIDEBAR_GROUPS = [
     ],
   },
   {
-    label: 'Testing Report',
-    items: [{ kind: 'feature', key: 'credit_report', label: 'Credit Report', icon: 'bars', hint: 'Credit Report and Credit Consumption' }],
+    label: 'Credit Report',
+    items: [{ kind: 'feature', key: 'credit_report', label: 'Credit Report', icon: 'bars', hint: 'Opened from Reports & Spend in the top bar' }],
   },
   {
     label: 'Sheets',
@@ -56,7 +56,7 @@ const SIDEBAR_GROUPS = [
         key: 'sheet_activity',
         label: 'Sheets',
         icon: 'sheet',
-        hint: 'Sheets and Sheet Activity',
+        hint: 'Registered Google Sheets',
         children: [{ kind: 'feature', key: 'sheets_add', label: 'Add Sheets', hint: 'Register new sheets' }],
       },
     ],

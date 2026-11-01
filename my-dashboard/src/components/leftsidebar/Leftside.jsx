@@ -14,8 +14,6 @@ import TrendingsButton from './compofleftsidebar/trending/TrendingsButton';
 import BufferButton from './compofleftsidebar/buffer/BufferButton';
 import ReportsButton from './compofleftsidebar/ReportsButton';
 import TaskReportButton from './compofleftsidebar/TaskReportButton';
-import CreditReportButton from './compofleftsidebar/CreditReportButton';
-import SheetActivityButton from './compofleftsidebar/SheetActivityButton';
 import SheetsButton from './compofleftsidebar/SheetsButton';
 import AiLibraryButton from './compofleftsidebar/AiLibraryButton';
 import AssignTaskModal from './compofleftsidebar/asigntask/AssignTaskModal';
@@ -269,17 +267,15 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
     if (!authLoading && authUser) resumePendingOutput(navigate);
   }, [authLoading, authUser, navigate]);
 
-  const openCreditReport = () => goTo('credit-report');
+  // Credit Report / Credit Consumption / Sheet Activity have no sidebar entry
+  // any more; their panels stay reachable by URL (the top bar's Reports &
+  // Spend pill opens /dashboard/credit-report for non-admins).
   const closeCreditReport = () => closePanel('credit-report');
-
-  // The original Credit Consumption Report, on its own.
-  const openCreditConsumption = () => goTo('credit-consumption');
   const closeCreditConsumption = () => closePanel('credit-consumption');
 
   const openSheets = () => goTo('sheets');
   const closeSheets = () => closePanel('sheets');
 
-  const openSheetActivity = () => goTo('sheet-activity');
   const closeSheetActivity = () => closePanel('sheet-activity');
 
   const openAiLibrary = () => goTo('ai-library');
@@ -477,25 +473,6 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
             </div>
           )}
 
-          {/* ── TESTING REPORT (Section Access grant) ── */}
-          {canViewCreditReport && (
-            <div className="nav-section">
-              <div className="nav-section-header">
-                <span className="nav-section-label">Testing Report</span>
-              </div>
-
-              <CreditReportButton
-                isActive={activeItem === 'credit-report'}
-                onClick={openCreditReport}
-              />
-              <CreditReportButton
-                label="Credit Consumption"
-                isActive={activeItem === 'credit-consumption'}
-                onClick={openCreditConsumption}
-              />
-            </div>
-          )}
-
           {/* ── SHEETS (Section Access grant) ── */}
           {canViewSheetActivity && (
             <div className="nav-section">
@@ -506,10 +483,6 @@ const FunctionalMenu = ({ isMobileOpen = false, onMobileClose }) => {
               <SheetsButton
                 isActive={activeItem === 'sheets'}
                 onClick={openSheets}
-              />
-              <SheetActivityButton
-                isActive={activeItem === 'sheet-activity'}
-                onClick={openSheetActivity}
               />
             </div>
           )}

@@ -45,6 +45,7 @@ from providers.freepik.models import FreepikGeneration, FreepikDownload
 from providers.epidemicsound.models import EpidemicDownload, EpidemicAdaptation
 from providers.splice.models import SpliceDownload
 from providers.grammarly_docs.models import GrammarlyDocSession
+from utils import r2_storage
 
 MEDIA_IMAGE = "image"
 MEDIA_VIDEO = "video"
@@ -122,6 +123,12 @@ class BufferFeedItem:
     # resolving every fetched item's name (rather than just the returned
     # page's) would mean N extra User lookups nobody ever sees.
     owner_name: Optional[str] = None
+    # Private R2 copy of the asset (admin upload or mirror). Turned into a
+    # fresh signed URL for the returned page only, by _resolve_asset_urls -
+    # the provider's own URLs (Freepik's CDN especially) are signed and
+    # expire, which left Buffer cards blank while the tool's own tab, which
+    # already shows the R2 copy, still had the image.
+    asset_key: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -145,7 +152,7 @@ def _fetch_envato(db: Session, client_id: int) -> list[BufferFeedItem]:
 
     generations = (
         db.query(EnvatoGeneration)
-        .filter(EnvatoGeneration.linked_client_id == client_id)
+        .filter(EnvatoGeneration.linked_client_id == client_id, EnvatoGeneration.archived_at.is_(None))
         .order_by(EnvatoGeneration.created_at.desc())
         .limit(SOURCE_FETCH_CAP)
         .all()
@@ -158,6 +165,7 @@ def _fetch_envato(db: Session, client_id: int) -> list[BufferFeedItem]:
             media_type=_classify_envato_item_type(row.item_type),
             title=row.title or row.prompt or "Envato generation",
             asset_url=row.thumbnail_url or row.canvas_url or row.fallback_url,
+            asset_key=_admin_media_key(row.admin_edit_json),
             owner_user_id=row.owner_user_id,
             created_at=row.created_at,
         ))
@@ -177,6 +185,7 @@ def _fetch_envato(db: Session, client_id: int) -> list[BufferFeedItem]:
             media_type=_classify_envato_item_type(row.item_type),
             title=row.asset_title or "Envato download",
             asset_url=row.asset_thumbnail_url or row.asset_source_url,
+            asset_key=row.mirrored_asset_key,
             owner_user_id=row.owner_user_id,
             created_at=row.created_at,
         ))
@@ -188,7 +197,7 @@ def _fetch_freepik(db: Session, client_id: int) -> list[BufferFeedItem]:
 
     generations = (
         db.query(FreepikGeneration)
-        .filter(FreepikGeneration.linked_client_id == client_id)
+        .filter(FreepikGeneration.linked_client_id == client_id, FreepikGeneration.archived_at.is_(None))
         .order_by(FreepikGeneration.created_at.desc())
         .limit(SOURCE_FETCH_CAP)
         .all()
@@ -201,6 +210,7 @@ def _fetch_freepik(db: Session, client_id: int) -> list[BufferFeedItem]:
             media_type=_classify_freepik(row.tool, row.tool_name, row.mode, row.service, row.slug),
             title=row.prompt or row.input_prompt or row.name_field or "Freepik generation",
             asset_url=row.thumbnail_url or row.preview_url or row.large_preview_url,
+            asset_key=_admin_media_key(row.admin_edit_json) or row.mirrored_asset_key or row.mirrored_thumbnail_key,
             owner_user_id=row.owner_user_id,
             created_at=row.created_at,
         ))
@@ -232,6 +242,8 @@ def _fetch_generation_record_providers(db: Session, client_id: int) -> list[Buff
         .filter(
             GenerationRecord.linked_client_id == client_id,
             GenerationRecord.provider.notin_(GENERATION_RECORD_EXCLUDED_PROVIDERS),
+            # A card an admin deleted archives its record; keep it out of Buffer too.
+            GenerationRecord.archived_at.is_(None),
         )
         .order_by(GenerationRecord.created_at.desc())
         .limit(SOURCE_FETCH_CAP)
@@ -381,6 +393,26 @@ def _fetch_all(db: Session, client_id: int) -> list[BufferFeedItem]:
     return items
 
 
+def _admin_media_key(admin_edit_json) -> Optional[str]:
+    media = admin_edit_json.get("media") if isinstance(admin_edit_json, dict) else None
+    key = media.get("key") if isinstance(media, dict) else None
+    return key or None
+
+
+def _resolve_asset_urls(items: list[BufferFeedItem]) -> None:
+    """Swaps in a fresh signed URL for every item with a private R2 copy.
+    Falls back to the provider URL already on the item if signing fails."""
+    keyed = [item for item in items if item.asset_key]
+    if not keyed or not r2_storage.is_configured():
+        return
+    client = r2_storage.shared_client()
+    for item in keyed:
+        try:
+            item.asset_url = r2_storage.generate_presigned_url(item.asset_key, client=client, inline=True)
+        except Exception:
+            pass
+
+
 def _resolve_owner_names(db: Session, items: list[BufferFeedItem]) -> None:
     """Sets .owner_name on each item in place - one batched User query for
     every distinct owner on the page, instead of a per-item lookup (or,
@@ -444,6 +476,7 @@ def get_buffer_feed(
     total = len(filtered)
     page = filtered[offset:offset + limit]
     _resolve_owner_names(db, page)
+    _resolve_asset_urls(page)
     return {
         "items": [item.to_dict() for item in page],
         "total": total,
