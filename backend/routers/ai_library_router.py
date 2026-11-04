@@ -8,9 +8,11 @@ the Google account.
 The file bytes never touch this server. For each file:
 
 1. POST /uploads with the name, size, type and client. The server works out
-   the folder - AI Library / <IST date> / <user> / <client> - creating any
-   missing level, asks Drive for a resumable upload session in it, records a
-   "pending" row and returns the session URL.
+   the folder - AI Library / <IST date> / <user> / <client> / <kind>, the
+   kind folder (Images, Videos, Music, ...) from the file's type, so a mixed
+   drop (or a whole folder) lands sorted - creating any missing level, asks
+   Drive for a resumable upload session in it, records a "pending" row and
+   returns the session URL.
 2. The browser PUTs the file to that URL in chunks (see
    my-dashboard/src/utils/driveResumableUpload.js), resuming from Drive's
    own byte count if the connection drops.
@@ -20,6 +22,7 @@ The file bytes never touch this server. For each file:
 """
 
 import logging
+import mimetypes
 import os
 import secrets
 from datetime import date, datetime, timedelta
@@ -39,6 +42,7 @@ from models_new import AiLibraryUpload, GenerationClient, User
 from services import google_drive_service as drive
 from utils.credential_crypto import decrypt_secret
 from utils.permissions import has_any_role, require_admin, require_ai_library_access
+from utils.xlsx_compat import excel_safe
 
 logger = logging.getLogger(__name__)
 
@@ -107,16 +111,52 @@ def _owned_upload(db: Session, upload_id: int, user: User) -> AiLibraryUpload:
     return record
 
 
+# A file's kind decides its folder under the client (history filters by it too).
+KIND_FOLDERS = {"image": "Images", "video": "Videos", "audio": "Music", "document": "Documents",
+                "archive": "Archives", "other": "Other"}
+_VIDEO_EXTS = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".mpg", ".mpeg", ".3gp", ".mts", ".m2ts")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif", ".avif", ".raw",
+               ".cr2", ".nef", ".arw", ".dng", ".ico")
+_AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wma", ".aif", ".aiff", ".mid", ".midi")
+
+
+def file_mime_type(file_name: str, mime_type: Optional[str]) -> str:
+    """The browser's type, else one guessed from the extension (browsers send
+    none for some files, e.g. .mkv)."""
+    given = (mime_type or "").strip().lower()
+    if given and given != "application/octet-stream":
+        return given
+    return mimetypes.guess_type(file_name)[0] or given or "application/octet-stream"
+
+
+def file_kind(file_name: str, mime_type: str) -> str:
+    """One of FILE_KINDS, by the same rules as file_kind_expr (the history's)."""
+    mime, name = (mime_type or "").lower(), file_name.lower()
+    if mime.startswith("video/") or name.endswith(_VIDEO_EXTS):
+        return "video"
+    if mime.startswith("image/") or name.endswith(_IMAGE_EXTS):
+        return "image"
+    if mime.startswith("audio/") or name.endswith(_AUDIO_EXTS):
+        return "audio"
+    if name.endswith(_ARCHIVE_EXTS) or any(k in mime for k in ("zip", "rar", "7z")):
+        return "archive"
+    if (mime.startswith("text/") or mime == "application/pdf" or "officedocument" in mime or "msword" in mime
+            or name.endswith(_DOC_EXTS)):
+        return "document"
+    return "other"
+
+
 def _resolve_target_folder(db: Session, access_token: str, root_id: str, upload_day: date,
-                           user: User, client: GenerationClient, chain: list[str]) -> str:
-    """Folder id for AI Library / <day> / <user> / <client>. Appends each
-    level's id to `chain` as it goes, so a caller that hits a stale cached
-    folder knows which cache entries to drop."""
+                           user: User, client: GenerationClient, kind: str, chain: list[str]) -> str:
+    """Folder id for AI Library / <day> / <user> / <client> / <kind folder>.
+    Appends each level's id to `chain` as it goes, so a caller that hits a
+    stale cached folder knows which cache entries to drop."""
     parent = root_id
     for cache_key, name in (
         (upload_day.isoformat(), upload_day.isoformat()),
         (f"user:{user.id}", drive.clean_folder_name(user.name, f"User {user.id}")),
         (f"client:{client.id}", drive.clean_folder_name(client.name, f"Client {client.id}")),
+        (f"kind:{kind}", KIND_FOLDERS[kind]),
     ):
         parent = drive.ensure_folder(db, access_token, parent, cache_key, name)
         chain.append(parent)
@@ -257,7 +297,8 @@ def create_ai_library_upload(
         raise HTTPException(status_code=400, detail="Pick an active client for this upload.")
 
     file_name = body.fileName.strip().replace("/", "-").replace("\\", "-")[:500] or "file"
-    mime_type = (body.mimeType or "").strip() or "application/octet-stream"
+    mime_type = file_mime_type(file_name, body.mimeType)
+    kind = file_kind(file_name, mime_type)
     upload_day = _ist_today()
     # The browser always sends Origin on this cross-origin POST, and script
     # cannot forge it. A non-browser caller can, but that only decides which
@@ -272,7 +313,8 @@ def create_ai_library_upload(
         for attempt in range(2):
             chain: list[str] = []
             try:
-                folder_id = _resolve_target_folder(db, access_token, root_id, upload_day, current_user, client, chain)
+                folder_id = _resolve_target_folder(db, access_token, root_id, upload_day, current_user, client, kind,
+                                                   chain)
                 # Drive happily accepts uploads into a trashed folder - the file
                 # just lands in the trash too. `trashed` is also true when any
                 # parent is trashed, so checking the leaf covers the whole path.
@@ -317,6 +359,7 @@ def create_ai_library_upload(
             upload_day.isoformat(),
             drive.clean_folder_name(current_user.name, f"User {current_user.id}"),
             drive.clean_folder_name(client.name, f"Client {client.id}"),
+            KIND_FOLDERS[kind],
         ]),
         drive_folder_id=folder_id,
         status="pending",
@@ -404,9 +447,9 @@ def file_kind_expr():
     mime = func.lower(func.coalesce(AiLibraryUpload.mime_type, ""))
     name = func.lower(AiLibraryUpload.file_name)
     return case(
-        (mime.like("video/%"), "video"),
-        (mime.like("image/%"), "image"),
-        (mime.like("audio/%"), "audio"),
+        (or_(mime.like("video/%"), *[name.like(f"%{ext}") for ext in _VIDEO_EXTS]), "video"),
+        (or_(mime.like("image/%"), *[name.like(f"%{ext}") for ext in _IMAGE_EXTS]), "image"),
+        (or_(mime.like("audio/%"), *[name.like(f"%{ext}") for ext in _AUDIO_EXTS]), "audio"),
         (or_(*[name.like(f"%{ext}") for ext in _ARCHIVE_EXTS], mime.like("%zip%"), mime.like("%rar%"),
              mime.like("%7z%")), "archive"),
         (or_(mime.like("text/%"), mime.like("application/pdf"), mime.like("%officedocument%"), mime.like("%msword%"),
@@ -697,7 +740,7 @@ def export_ai_library_uploads(
 
     buffer = io.BytesIO()
     wb.save(buffer)
-    buffer.seek(0)
+    buffer = io.BytesIO(excel_safe(buffer.getvalue()))
     stamp = datetime.now(IST).strftime("%Y-%m-%d")
     filename = f"ai-library_uploads_{stamp}.xlsx"
     return StreamingResponse(

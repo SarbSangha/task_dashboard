@@ -39,6 +39,8 @@ from providers.heygen.models import HeygenGeneration
 from providers.suno.models import SunoGeneration
 from utils import r2_storage
 from utils.permissions import require_admin
+from utils.tool_renewal_service import account_credit_rates
+from utils.xlsx_compat import excel_safe
 
 router = APIRouter(prefix="/api/reports", tags=["Reports"])
 
@@ -134,71 +136,25 @@ def _credits(query) -> float:
 # ---------------------------------------------------------------------------
 # Credit -> currency cost (Tier 1)
 # ---------------------------------------------------------------------------
-# Rates are keyed by Kling account (it_portal_tool_credentials.id). A generation
+# Rates are keyed by tool account (it_portal_tool_credentials.id). A generation
 # record reaches its account via source_usage_event_id -> usage event ->
 # credential_id, so cost queries LEFT JOIN the usage event and the rate CASE keys
-# on ITPortalToolUsageEvent.credential_id. Records with no linkable account (or an
-# account without a configured rate) fall back to the global default rate. The
-# board assumes a single currency (the global default row's).
+# on ITPortalToolUsageEvent.credential_id.
 #
-# An account with Credit System disabled (Admin Queue -> Tool Renew ->
-# Configure) never costs anything, even if a rate row still exists from
-# before it was disabled or a global default rate would otherwise apply --
-# see utils/tool_renewal_service.py. This is the one place that decision is
-# enforced; every report below inherits it through this function.
+# A generation costs only at its own account's current rate
+# (tool_renewal_service.account_credit_rates): correcting an account's rate in
+# Admin Queue -> Tool Renew re-prices every generation of that account. With
+# no rate on the account (or no linkable account) the rate is NULL, so the
+# cost is "Not set" (None in the JSON) -- never another account's rate or a
+# global default. An account that had a rate and then had Credit System
+# turned off costs 0.
 def _credit_rate_context(db: Session):
-    today = datetime.utcnow().date()
-    rows = (
-        db.query(ToolCreditRate)
-        .filter(
-            ToolCreditRate.effective_from <= today,
-            or_(ToolCreditRate.effective_to.is_(None), ToolCreditRate.effective_to >= today),
-        )
-        .order_by(ToolCreditRate.effective_from.desc(), ToolCreditRate.id.desc())
-        .all()
-    )
-    default_rate = 1.0
-    currency = "INR"
-    credential_rates: dict[int, float] = {}
-    global_seen = False
-    for r in rows:
-        if r.rate_per_credit is None:
-            continue
-        rate = float(r.rate_per_credit)
-        if r.credential_id is not None:
-            credential_rates.setdefault(r.credential_id, rate)  # newest row per account wins
-        elif r.provider is None and r.tool_id is None:
-            if not global_seen:  # newest global row wins
-                default_rate = rate
-                currency = r.currency or "INR"
-                global_seen = True
-
-    # Any account with Credit System off never costs anything -- not its own
-    # rate (if one happens to still exist from before it was disabled), and
-    # not the global default either. Scoped to credential_ids that actually
-    # appear on a usage event (bounded, relevant set) rather than every
-    # credential in the company; a usage event with no linkable credential at
-    # all keeps falling back to the global default as before -- unchanged.
-    disabled_credential_ids = {
-        cid for (cid,) in (
-            db.query(ITPortalToolCredential.id)
-            .join(ITPortalToolUsageEvent, ITPortalToolUsageEvent.credential_id == ITPortalToolCredential.id)
-            .filter(ITPortalToolCredential.credit_enabled.is_(False))
-            .distinct()
-            .all()
-        )
-    }
-    # Checked first in the CASE so a disabled account always wins over its
-    # own (stale) rate or the global default.
-    disabled_whens = [(ITPortalToolUsageEvent.credential_id == cid, 0.0) for cid in disabled_credential_ids]
-    rated_whens = [
-        (ITPortalToolUsageEvent.credential_id == cid, rate)
-        for cid, rate in credential_rates.items()
-        if cid not in disabled_credential_ids
+    whens = [
+        (ITPortalToolUsageEvent.credential_id == cid, literal(rate))
+        for cid, rate in account_credit_rates(db).items()
     ]
-    whens = disabled_whens + rated_whens
-    rate_expr = case(*whens, else_=default_rate) if whens else literal(default_rate)
-    return rate_expr, currency, default_rate
+    rate_expr = case(*whens, else_=literal(None)) if whens else literal(None)
+    return rate_expr, "INR"
 
 
 # LEFT JOIN a GenerationRecord query to its source usage event so the rate CASE
@@ -210,12 +166,35 @@ def _with_cost_join(query):
     )
 
 
-def _cost_sum_expr(rate_expr):
-    return func.coalesce(func.sum(GenerationRecord.credits_burned * rate_expr), 0)
+# NULL when none of the group's generations has a rate ("Not set"); otherwise
+# the cost of the ones that do.
+def _cost_sum_expr(rate_expr, credits_col=GenerationRecord.credits_burned):
+    return func.sum(credits_col * rate_expr)
 
 
-def _cost(query, rate_expr) -> float:
-    return float(_with_cost_join(query).with_entities(_cost_sum_expr(rate_expr)).scalar() or 0)
+# Credits of the group's generations whose account has no rate: left out of its cost.
+def _unpriced_credits_expr(rate_expr, credits_col=GenerationRecord.credits_burned):
+    return func.coalesce(func.sum(case((rate_expr.is_(None), credits_col), else_=0)), 0)
+
+
+def _cost(query, rate_expr) -> Optional[float]:
+    value = _with_cost_join(query).with_entities(_cost_sum_expr(rate_expr)).scalar()
+    return float(value) if value is not None else None
+
+
+def _unpriced_credits(query, rate_expr) -> float:
+    return float(_with_cost_join(query).with_entities(_unpriced_credits_expr(rate_expr)).scalar() or 0)
+
+
+def _money(value) -> Optional[float]:
+    """A cost for the JSON: None stays None ("Not set")."""
+    return round(float(value), 2) if value is not None else None
+
+
+def _known_sum(values) -> Optional[float]:
+    """Sum of the costs that are set; None when none of them is."""
+    known = [v for v in values if v is not None]
+    return round(sum(known), 2) if known else None
 
 
 def _success_count(query) -> int:
@@ -1314,7 +1293,7 @@ def kling_export_xlsx(
     wb.save(buf)
     filename = f"Kling-Report_{(end_exclusive - timedelta(days=1)).date()}.xlsx"
     return Response(
-        content=buf.getvalue(),
+        content=excel_safe(buf.getvalue()),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -1403,12 +1382,12 @@ def kling_accounts(
     to one account (combine with by='user' to see who used that shared account).
     """
     start_dt, end_exclusive, _ps, _pe, days = _resolve_period(start, end)
-    rate_expr, currency, _default_rate = _credit_rate_context(db)  # keys on credential_id
+    rate_expr, currency = _credit_rate_context(db)  # keys on credential_id
     sane_credits = case(
         (ITPortalToolUsageEvent.credits_burned.between(0, MAX_SANE_KLING_CREDITS), ITPortalToolUsageEvent.credits_burned),
         else_=0,
     )
-    cost_expr = func.coalesce(func.sum(sane_credits * rate_expr), 0)
+    cost_expr = _cost_sum_expr(rate_expr, sane_credits)
     gen_filter = ITPortalToolUsageEvent.event_type == KLING_GENERATION_EVENT
 
     mode = (by or "account").lower()
@@ -1427,6 +1406,7 @@ def kling_accounts(
             func.count(ITPortalToolUsageEvent.id).filter(gen_filter),
             func.coalesce(func.sum(sane_credits), 0),
             cost_expr,
+            _unpriced_credits_expr(rate_expr, sane_credits),
         )
         .group_by(*group_cols)
         .all()
@@ -1462,14 +1442,15 @@ def kling_accounts(
     accounts = []
     for r in rows:
         keys = r[:ncols]
-        events, gens, credits, cost = r[ncols], r[ncols + 1], r[ncols + 2], r[ncols + 3]
+        events, gens, credits, cost, unpriced = r[ncols], r[ncols + 1], r[ncols + 2], r[ncols + 3], r[ncols + 4]
         credits = float(credits)
         gens = int(gens or 0)
         entry = {
             "events": int(events),
             "generations": gens,
             "credits": round(credits, 1),
-            "cost": round(float(cost), 2),
+            "cost": _money(cost),
+            "creditsWithoutRate": round(float(unpriced or 0), 1),
             "avgCreditsPerGeneration": round(credits / gens, 1) if gens else 0.0,
             "creditSharePct": round(credits / total_credits * 100.0, 1) if total_credits else 0.0,
         }
@@ -1491,7 +1472,7 @@ def kling_accounts(
             alabel, aowner, aemail = account_label(cid)
             entry.update({"credentialId": cid, "userId": None, "label": alabel, "personName": aowner, "accountEmail": aemail})
         accounts.append(entry)
-    accounts.sort(key=lambda a: a["cost"], reverse=True)
+    accounts.sort(key=lambda a: (a["cost"] is not None, a["cost"] or 0, a["credits"]), reverse=True)
 
     return {
         "success": True,
@@ -1500,7 +1481,8 @@ def kling_accounts(
         "totals": {
             "accounts": len(accounts),
             "credits": round(total_credits, 1),
-            "cost": round(sum(a["cost"] for a in accounts), 2),
+            "cost": _known_sum(a["cost"] for a in accounts),
+            "creditsWithoutRate": round(sum(a["creditsWithoutRate"] for a in accounts), 1),
             "generations": sum(a["generations"] for a in accounts),
         },
         "accounts": accounts,
@@ -2042,7 +2024,7 @@ def cost_summary(
     current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, prev_start, prev_end, days = _resolve_period(start, end)
-    rate_expr, currency, _default_rate = _credit_rate_context(db)
+    rate_expr, currency = _credit_rate_context(db)
 
     def block(s, e):
         total_credits = _credits(_gen_query(db, s, e, department))
@@ -2056,6 +2038,7 @@ def cost_summary(
         return {
             "credits": total_credits,
             "cost": total_cost,
+            "unpriced_credits": _unpriced_credits(_gen_query(db, s, e, department), rate_expr),
             "success": success,
             "success_credits": success_credits,
             "success_cost": success_cost,
@@ -2064,14 +2047,24 @@ def cost_summary(
     cur = block(start_dt, end_exclusive)
     prv = block(prev_start, prev_end)
 
+    def wasted_cost(b):
+        return max(b["cost"] - (b["success_cost"] or 0.0), 0.0) if b["cost"] is not None else None
+
+    def cost_metric(current, previous, unit):
+        # No generation has a rate: "Not set", not a ₹0 that looks real.
+        if current is None:
+            return {"value": None, "previous": _money(previous), "deltaPct": None, "direction": "flat", "unit": unit,
+                    "notSet": True}
+        return {**_metric(current, previous), "unit": unit}
+
     wasted_cur = max(cur["credits"] - cur["success_credits"], 0.0)
     wasted_prv = max(prv["credits"] - prv["success_credits"], 0.0)
-    wasted_cost_cur = max(cur["cost"] - cur["success_cost"], 0.0)
-    wasted_cost_prv = max(prv["cost"] - prv["success_cost"], 0.0)
+    wasted_cost_cur = wasted_cost(cur)
+    wasted_cost_prv = wasted_cost(prv)
     cpo_cur = round(cur["credits"] / cur["success"], 2) if cur["success"] else 0.0
     cpo_prv = round(prv["credits"] / prv["success"], 2) if prv["success"] else 0.0
-    cost_po_cur = round(cur["cost"] / cur["success"], 2) if cur["success"] else 0.0
-    cost_po_prv = round(prv["cost"] / prv["success"], 2) if prv["success"] else 0.0
+    cost_po_cur = (round(cur["cost"] / cur["success"], 2) if cur["success"] else 0.0) if cur["cost"] is not None else None
+    cost_po_prv = (round(prv["cost"] / prv["success"], 2) if prv["success"] else 0.0) if prv["cost"] is not None else None
     wasted_pct = round((wasted_cur / cur["credits"]) * 100.0, 1) if cur["credits"] else 0.0
 
     return {
@@ -2080,17 +2073,19 @@ def cost_summary(
         "period": {"start": str(start_dt.date()), "end": str((end_exclusive - timedelta(days=1)).date()), "days": days},
         "kpis": {
             "totalCredits": {**_metric(cur["credits"], prv["credits"]), "unit": "credits"},
-            "totalCost": {**_metric(cur["cost"], prv["cost"]), "unit": currency},
+            "totalCost": cost_metric(cur["cost"], prv["cost"], currency),
             "costPerOutput": {**_metric(cpo_cur, cpo_prv), "unit": "cr/output"},
-            "costPerOutputCurrency": {**_metric(cost_po_cur, cost_po_prv), "unit": f"{currency}/output"},
+            "costPerOutputCurrency": cost_metric(cost_po_cur, cost_po_prv, f"{currency}/output"),
             "wastedCredits": {**_metric(wasted_cur, wasted_prv), "unit": "credits"},
-            "wastedCost": {**_metric(wasted_cost_cur, wasted_cost_prv), "unit": currency},
+            "wastedCost": cost_metric(wasted_cost_cur, wasted_cost_prv, currency),
             "roi": _metric(None, None, baseline_required=True),
         },
+        # Credits on accounts with no rate: not in any cost above.
+        "creditsWithoutRate": round(cur["unpriced_credits"], 2),
         "wastedPct": wasted_pct,
         "spend": [
-            {"label": "Productive", "credits": round(cur["success_credits"], 2), "cost": round(cur["success_cost"], 2)},
-            {"label": "Wasted", "credits": round(wasted_cur, 2), "cost": round(wasted_cost_cur, 2)},
+            {"label": "Productive", "credits": round(cur["success_credits"], 2), "cost": _money(cur["success_cost"])},
+            {"label": "Wasted", "credits": round(wasted_cur, 2), "cost": _money(wasted_cost_cur)},
         ],
     }
 
@@ -2105,7 +2100,7 @@ def cost_breakdown(
     current_user: User = Depends(require_admin),
 ):
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
-    rate_expr, currency, _default_rate = _credit_rate_context(db)
+    rate_expr, currency = _credit_rate_context(db)
     cost_sum = _cost_sum_expr(rate_expr)
 
     daily_rows = (
@@ -2120,7 +2115,7 @@ def cost_breakdown(
         .order_by(func.date(GenerationRecord.created_at).asc())
         .all()
     )
-    daily = [{"date": str(d), "credits": float(cr), "cost": round(float(cost), 2), "generations": int(g)}
+    daily = [{"date": str(d), "credits": float(cr), "cost": _money(cost), "generations": int(g)}
              for d, cr, cost, g in daily_rows]
 
     dept_rows = (
@@ -2144,9 +2139,9 @@ def cost_breakdown(
         .all()
     )
     by_department = [
-        {"department": d or "Unassigned", "credits": float(cr), "cost": round(float(cost), 2), "generations": int(g),
+        {"department": d or "Unassigned", "credits": float(cr), "cost": _money(cost), "generations": int(g),
          "creditsPerOutput": round(float(cr) / int(g), 2) if g else 0.0,
-         "costPerOutput": round(float(cost) / int(g), 2) if g else 0.0}
+         "costPerOutput": (round(float(cost) / int(g), 2) if g else 0.0) if cost is not None else None}
         for d, cr, cost, g in dept_rows
     ]
 
@@ -2174,7 +2169,7 @@ def cost_breakdown(
     # frontend show that activity by count instead, for exactly the
     # providers a cost-only chart would otherwise make invisible.
     by_provider = [
-        {"provider": p or "unknown", "credits": float(cr), "cost": round(float(cost), 2), "generations": int(g)}
+        {"provider": p or "unknown", "credits": float(cr), "cost": _money(cost), "generations": int(g)}
         for p, cr, cost, g in provider_rows
     ]
 
@@ -2211,10 +2206,10 @@ def cost_breakdown(
             "avatar": avatar,
             "department": dept or "Unassigned",
             "credits": float(credits),
-            "cost": round(float(cost), 2),
+            "cost": _money(cost),
             "generations": generations,
             "creditsPerOutput": round(float(credits) / generations, 2) if generations else 0.0,
-            "costPerOutput": round(float(cost) / generations, 2) if generations else 0.0,
+            "costPerOutput": (round(float(cost) / generations, 2) if generations else 0.0) if cost is not None else None,
         })
 
     return {
@@ -2720,7 +2715,7 @@ def users_contributors(
         raise HTTPException(status_code=400, detail=f"Unsupported metric '{metric}'")
 
     start_dt, end_exclusive, _ps, _pe, _days = _resolve_period(start, end)
-    rate_expr, currency, _default = _credit_rate_context(db)
+    rate_expr, currency = _credit_rate_context(db)
 
     video_case = case(
         (and_(GenerationRecord.duration_label.isnot(None), GenerationRecord.duration_label != ""), 1),
@@ -2770,7 +2765,7 @@ def users_contributors(
             active_days.label("days"), first_at.label("first_at"), last_at.label("last_at"),
         )
         .group_by(User.id, User.name, User.avatar, User.department)
-        .order_by(order_by.desc())
+        .order_by(order_by.desc().nullslast())
         .limit(limit)
         .all()
     )
@@ -2791,7 +2786,7 @@ def users_contributors(
             "videos": videos,
             "images": gens - videos,
             "credits": round(float(credits or 0), 2),
-            "cost": round(float(cost or 0), 2),
+            "cost": _money(cost),
             "activeDays": int(days or 0),
             "firstAt": first_at_v.isoformat() if first_at_v else None,
             "lastAt": last_at_v.isoformat() if last_at_v else None,
@@ -2810,7 +2805,7 @@ def users_contributors(
         "totals": {
             "generations": total_gens,
             "credits": round(sum(u["credits"] for u in users), 2),
-            "cost": round(sum(u["cost"] for u in users), 2),
+            "cost": _known_sum(u["cost"] for u in users),
         },
         "users": users,
     }
@@ -2836,7 +2831,7 @@ def user_generation_timeline(
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
 
-    rate_expr, currency, _default = _credit_rate_context(db)
+    rate_expr, currency = _credit_rate_context(db)
     # created_at is stored in UTC; the team works in IST. Bucket the day and the
     # first/last "window" times in IST (+05:30) so production (UTC server) shows
     # the same local days and window as everyone expects, instead of UTC.
@@ -2884,7 +2879,7 @@ def user_generation_timeline(
             "videos": videos,
             "images": gens - videos,
             "credits": round(credits, 2),
-            "cost": round(float(cost or 0), 2),
+            "cost": _money(cost),
             "avgCredits": round(credits / gens, 2) if gens else 0.0,
             "models": int(models or 0),
             "firstAt": first_at.isoformat() if first_at else None,
@@ -2905,7 +2900,7 @@ def user_generation_timeline(
             "videos": sum(t["videos"] for t in timeline),
             "images": sum(t["images"] for t in timeline),
             "credits": round(sum(t["credits"] for t in timeline), 2),
-            "cost": round(sum(t["cost"] for t in timeline), 2),
+            "cost": _known_sum(t["cost"] for t in timeline),
         },
         "timeline": timeline,
     }
@@ -3071,7 +3066,7 @@ def user_day(
     if provider and provider != "all":
         gen_day_q = gen_day_q.filter(GenerationRecord.provider == provider)
 
-    rate_expr, currency, _default_rate = _credit_rate_context(db)
+    rate_expr, currency = _credit_rate_context(db)
 
     # Client Mapping breakdown (level 3, "Client") - always computed over the
     # FULL day (never itself filtered by client_id, since this is the list a
@@ -3095,7 +3090,7 @@ def user_day(
         "clientName": cname,
         "generations": int(gens or 0),
         "credits": round(float(credits or 0), 1),
-        "cost": round(float(cost or 0), 2),
+        "cost": _money(cost),
     } for cid, cname, gens, credits, cost in client_rows]
 
     # Everything below (Tools breakdown + Generations list + totals) is scoped
@@ -3129,7 +3124,7 @@ def user_day(
         "tool": prov or "unknown",
         "generations": int(gens or 0),
         "credits": round(float(credits or 0), 1),
-        "cost": round(float(cost or 0), 2),
+        "cost": _money(cost),
     } for prov, gens, credits, cost in tool_breakdown_rows]
 
     gen_total, gen_credits = (
@@ -3172,7 +3167,7 @@ def user_day(
             "taskActions": len(task_actions),
             "generations": int(gen_total or 0),
             "credits": round(float(gen_credits or 0), 1),
-            "cost": round(float(gen_cost or 0), 2),
+            "cost": _money(gen_cost),
             "toolEvents": sum(t["events"] for t in tool_usage),
         },
     }
@@ -4909,7 +4904,7 @@ def tasks_detail_xlsx(
     department_label = department if department and department != "all" else "All-Departments"
     filename = f"Task-Report_{department_label.replace(' ', '-')}_{(end_exclusive - timedelta(days=1)).date()}.xlsx"
     return Response(
-        content=buf.getvalue(),
+        content=excel_safe(buf.getvalue()),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

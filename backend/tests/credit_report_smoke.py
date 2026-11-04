@@ -916,7 +916,8 @@ def _validate_blocks(wb):
         if is_data(r) and r[li["Charged"]] is True and r[li["Date"]]:
             d = r[li["Date"]].date()
             log_day_items[d] = log_day_items.get(d, 0) + 1
-            log_day_rupees[d] = log_day_rupees.get(d, 0.0) + float(r[li[W.RUPEES]] or 0)
+            rupees = r[li[W.RUPEES]]  # "Not set" (account with no rate) counts as ₹0, as in Excel's SUM
+            log_day_rupees[d] = log_day_rupees.get(d, 0.0) + (float(rupees) if isinstance(rupees, (int, float)) else 0.0)
 
     ITEMS, RUP = "Items", W.RUPEES
     blocks_seen = pct_tables = 0

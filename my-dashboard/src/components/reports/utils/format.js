@@ -56,6 +56,10 @@ export const formatFull = (value) => {
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
 };
 
+// A cost from the reports API: null means the generation's tool account has
+// no credit rate yet (Admin Queue → Tool Renew), so there is no cost to show.
+export const formatCost = (value) => (value == null ? 'Not set' : formatFull(value));
+
 export const formatPct = (value) => {
   if (value == null || Number.isNaN(Number(value))) return '—';
   const n = Number(value);

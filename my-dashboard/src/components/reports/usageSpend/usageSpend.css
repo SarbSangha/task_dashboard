@@ -513,6 +513,102 @@
   color: var(--color-primary);
 }
 
+/* Tools tab: "Show unused" switch and the rows it adds */
+.zrs-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--zrs-line);
+  background: var(--zrs-card);
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.zrs-switch:hover {
+  border-color: var(--color-border-strong);
+}
+
+.zrs-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.zrs-switch-track {
+  position: relative;
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: var(--color-border-strong);
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.zrs-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transition: transform 0.15s ease;
+}
+
+.zrs-switch input:checked + .zrs-switch-track {
+  background: var(--color-primary);
+}
+
+.zrs-switch input:checked + .zrs-switch-track::after {
+  transform: translateX(13px);
+}
+
+.zrs-switch input:focus-visible + .zrs-switch-track {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.zrs-switch-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-hover-surface);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.zrs-tool-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zrs-unused {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px dashed var(--color-border-strong);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.zrs-table tr.is-unused td:not(:first-child):not(:nth-child(2)) {
+  color: var(--color-text-muted);
+}
+
 .zrs-tabs button.zrs-tab-compare {
   margin-left: 6px;
   position: relative;

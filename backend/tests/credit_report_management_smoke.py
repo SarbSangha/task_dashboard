@@ -5,8 +5,8 @@ Clients, the management version). Run: python tests/credit_report_management_smo
 Seeds an in-memory SQLite database whose rupee answers are worked out by
 hand below, then checks:
 
-* costing: pay-per-use = credits x the account's rate (a rate-less account
-  borrows its tool's rate, flagged); subscriptions = the fee pro-rated by
+* costing: pay-per-use = credits x the account's own rate (a rate-less
+  account is "Rate not set": ₹0, flagged, never another account's rate); subscriptions = the fee pro-rated by
   days, shared by size; unused fees are "Paid, not used";
 * Kling jobs recorded twice count once (starter kept; history-only jobs go
   to the account's only starter, flagged), rows with no job ID are listed;
@@ -88,10 +88,10 @@ SEP = 14 / 30                     # previous period: 17-30 Sep
 FEE = {"F1": 3100.0, "F2": None, "E": 3100.0, "S": 62.0, "H": 3100.0, "V": 3100.0}
 OTHER_FEE = 3100.0               # Canva: a paid tool whose usage is not tracked
 LAPSED_FEE = 3100.0              # Higgsfield P: unused, renewal date passed -> to confirm, never counted
-RATE = 0.5                        # Kling account KA; KB has none and borrows it
-# Kling (pay-per-use): J1 100 cr (Asha) + J2 200 cr (Bob, rate assumed) + J3 60 cr (credited to Asha)
+RATE = 0.5                        # Kling account KA; KB has none: "Rate not set", ₹0
+# Kling (pay-per-use): J1 100 cr (Asha) + J2 200 cr (Bob, on KB: rate not set) + J3 60 cr (credited to Asha)
 # + no-job-ID 40 cr (Cara); the second copies of J1 and J3 are removed.
-KLING = {"Asha": (100 + 60) * RATE, "Bob": 200 * RATE, "Cara": 40 * RATE}
+KLING = {"Asha": (100 + 60) * RATE, "Bob": 0.0, "Cara": 40 * RATE}
 # Freepik F1: Asha 30 charged + 10 unlimited-plan estimate share the fee (Tester's item takes none).
 F1 = FEE["F1"] * OCT
 # ElevenLabs E: Bob 100 counted + 300 characters (counter stuck) share it; the preview model gets ₹0.
@@ -105,7 +105,7 @@ NOT_USED = V
 OTHER = OTHER_FEE * OCT
 TO_CONFIRM = LAPSED_FEE * OCT
 TOTAL = ALLOCATED + NOT_USED + OTHER
-ESTIMATED = 200 * RATE + E * 300 / 400 + S + H
+ESTIMATED = E * 300 / 400 + S + H
 PER_TOOL = {"Kling": PAY_PER_USE, "Freepik": F1, "ElevenLabs": E, "Suno": S, "Higgsfield": H}
 ITEMS = 4 + 3 + 3 + 2 + 10        # Kling, Freepik (2 Asha + 1 Bob), ElevenLabs, Suno, Higgsfield
 
@@ -140,8 +140,10 @@ def seed():
             return t.id
 
         def cred(key, tool_id, fee, renewal=None, active=True):
+            # Credit System on, as Tool Renew saves an account with a rate.
             c = ITPortalToolCredential(tool_id=tool_id, scope="company", tool_cost=fee, renewal_type="MONTHLY",
-                                       renewal_date=renewal, is_active=active, auto_renew=False)
+                                       renewal_date=renewal, is_active=active, auto_renew=False,
+                                       credit_enabled=True)
             db.add(c)
             db.flush()
             IDS[key] = c.id
@@ -267,9 +269,12 @@ def test_costing_and_dedupe():
         _assert(not j1.owner_uncertain and j1.kept.id == IDS["J1"], "J1: the starter's (API) row is kept")
         _assert([r.id for r in k.no_job_id] == [IDS["noid"]], "the row with no job ID is listed")
         _assert(not any(g.tool == "Kling" and g.client == NO_CLIENT for g in groups), "Kling rows with no client left out")
-        # Rate fallback: KB has no rate of its own -> KA's (the tool's) rate, flagged; never the ₹1 placeholder.
-        rate, assumed = f.cost.rate_on("Kling", IDS["KB"], date(2026, 10, 4))
-        _assert(rate == RATE and assumed, f"rate assumed for KB: {rate} {assumed}")
+        # No fallback: KB has no rate of its own -> not set (₹0, flagged); never KA's rate or the ₹1 placeholder.
+        rate, not_set = f.cost.rate_on("Kling", IDS["KB"], date(2026, 10, 4))
+        _assert(rate == 0.0 and not_set, f"rate not set for KB: {rate} {not_set}")
+        _assert(f.cost.rate_on("Kling", IDS["KA"], date(2025, 1, 1)) == (RATE, False),
+                "KA's own rate, whatever the day (a corrected rate re-prices its past rows)")
+        _assert(not f.cost.rate_on("Kling", None, date(2026, 10, 4))[0], "no account: not set")
         _assert(f.cost.rate_on("Kling", IDS["KA"], date(2026, 10, 4)) == (RATE, False), "KA's own rate")
     _close(period_fee(3100, date(2026, 10, 1), date(2026, 10, 14)), 1400, "fee pro-rated by days")
     _close(period_fee(3100, date(2026, 9, 17), date(2026, 10, 14)), 3100 * 14 / 30 + 1400, "fee across two months")
@@ -281,7 +286,7 @@ def test_account_filter():
     from utils.credential_crypto import encrypt_secret
     from utils.credit_report.facts import load_options, stream_log
     with SessionLocal() as db:
-        for account, expected in ((IDS["KA"], (100 + 60 + 40) * RATE), (IDS["KB"], 200 * RATE)):
+        for account, expected in ((IDS["KA"], (100 + 60 + 40) * RATE), (IDS["KB"], 0.0)):
             f = _filters(db, tool="Kling", accounts=[account])
             groups = _charged(load_groups(db, f))
             _close(sum(g.rupees for g in groups), expected, f"Kling account {account} ₹")
@@ -382,7 +387,7 @@ def _view(groups, *, prev_groups=(), days=None, subs=(), issues=None, filtered=F
     cur = M.fill_period(M.PeriodView(start=start, end=end, filtered=filtered), list(groups),
                         [DayGroup(1, "Kling", NO_CLIENT, d, CHARGED, 1, 0.0, r) for d, r in (days or {}).items()])
     cur.subscriptions = list(subs)
-    cur.issues = issues or {"rate_assumed": (0, 0.0), "estimated": (0, 0.0), "free_preview": (0, 0.0)}
+    cur.issues = issues or {"rate_not_set": (0, 0.0), "estimated": (0, 0.0), "free_preview": (0, 0.0)}
     prev = M.fill_period(M.PeriodView(start=start - (end - start) - timedelta(days=1), end=start - timedelta(days=1)),
                          list(prev_groups))
     return M.ManagementView(cur=cur, prev=prev, budgets=Budgets(), display=display,
@@ -455,11 +460,11 @@ def test_sentences():
     # Needs attention.
     costly = _sub("Higgsfield #5", 500.0, 5, M.LOW_USE)
     v = _view([_g(1, "A", "Kling", 100, client=NO_CLIENT)], subs=[idle, costly],
-              issues={"rate_assumed": (3, 60.0), "estimated": (0, 0.0), "free_preview": (0, 0.0)}, duplicates=2)
+              issues={"rate_not_set": (3, 120.0), "estimated": (0, 0.0), "free_preview": (0, 0.0)}, duplicates=2)
     _assert(has(I.idle_subscriptions, v, "Envato #9") and has(I.costly_per_item, v, "Higgsfield #5 ₹100 per item"),
             "idle and costly subscriptions")
-    _assert(has(I.assumed_rates, v, "₹60") and has(I.untagged_client, v, "no client") and has(I.double_charges, v),
-            "assumed rates, no client, double charges")
+    _assert(has(I.rates_not_set, v, "3 pay-per-use items (120 credits)") and has(I.untagged_client, v, "no client") and has(I.double_charges, v),
+            "rates not set, no client, double charges")
     items = I.attention_items(v)
     _assert(len(items) == I.MAX_ATTENTION and items[0].text.startswith("₹100 paid for subscriptions not used")
             and items[1].text.startswith("Subscriptions costing over"), [a.text for a in items])
@@ -527,8 +532,10 @@ def test_full_version_totals_and_links():
             "Generation Log": sum(model.log_stats.rupees_by_tool.values()),
         }
         lh, lrows = _table(wb[W.LOG], "tblGenerationLog")
-        detail["Generation Log cells"] = sum(r[lh.index(W.RUPEES)] or 0 for r in lrows
-                                             if r[lh.index("Charge status")] == CHARGED)
+        log_rupees = [r[lh.index(W.RUPEES)] for r in lrows if r[lh.index("Charge status")] == CHARGED]
+        # "Not set" (no rate on the account) is text, which SUM skips in Excel too.
+        detail["Generation Log cells"] = sum(v for v in log_rupees if isinstance(v, (int, float)))
+        _assert("Not set" in log_rupees, "KB's Kling row shows Not set in the log's ₹ column")
         for name, value in detail.items():
             _close(value, ALLOCATED, f"{name} ₹ = spend on items", tol=0.05)
         _close(round(ALLOCATED) + round(NOT_USED) + round(OTHER), round(TOTAL),

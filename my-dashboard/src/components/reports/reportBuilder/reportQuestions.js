@@ -147,7 +147,7 @@ export const ANSWER_BINDINGS = {
         a.klingAccount || a.klingAccountEmail || '—',
         Number(a.generations || 0).toLocaleString(),
         Number(a.credits || 0).toLocaleString(undefined, { maximumFractionDigits: 1 }),
-        `${d.currency || 'INR'} ${Number(a.cost || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
+        a.cost == null ? 'Not set' : `${d.currency || 'INR'} ${Number(a.cost).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
         `${a.creditSharePct ?? 0}%`,
       ]),
     },

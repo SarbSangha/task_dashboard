@@ -23,6 +23,7 @@ from openpyxl.worksheet.filters import AutoFilter, FilterColumn, Filters
 from utils.ai_report import components as C
 from utils.ai_report import theme as T
 from utils.usage_intelligence.service import NO_CLIENT
+from utils.xlsx_compat import excel_safe
 
 XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 LAST = 12
@@ -36,6 +37,16 @@ def _blank(value, fallback=NOT_SET) -> str:
     if not text or text in {"—", "–", "-"}:
         return fallback
     return text
+
+
+def _cost_or_not_set(row):
+    """A row's ₹ cost, or "Not set" when its tool account has no credit rate."""
+    value = row.get("costRupees")
+    return NOT_SET if value is None else value
+
+
+def _cost_text(value) -> str:
+    return f"₹{value}" if value is not None else f"₹ {NOT_SET}"
 
 
 def _finish_axes(chart, *, x_title=None, y_title=None) -> None:
@@ -95,7 +106,7 @@ def build_usage_workbook(snapshot: dict) -> tuple[bytes, str, str]:
     wb.save(buf)
     scope = snapshot.get("reportType") or "organisation"
     filename = f"Usage-Intelligence_{scope}_{period['end']}.xlsx"
-    return buf.getvalue(), XLSX_MIMETYPE, filename
+    return excel_safe(buf.getvalue()), XLSX_MIMETYPE, filename
 
 
 def build_tool_login_workbook(snapshot: dict) -> tuple[bytes, str, str]:
@@ -115,7 +126,7 @@ def build_tool_login_workbook(snapshot: dict) -> tuple[bytes, str, str]:
     buf = io.BytesIO()
     wb.save(buf)
     filename = f"Tool-Logins_{period['end']}.xlsx"
-    return buf.getvalue(), XLSX_MIMETYPE, filename
+    return excel_safe(buf.getvalue()), XLSX_MIMETYPE, filename
 
 
 def _sheet_dashboard(ws, snapshot):
@@ -520,7 +531,7 @@ def _sheet_consolidated(ws, snapshot):
                 continue
             row = C.section_header(
                 ws,
-                f"{entry['department']}  ·  {entry.get('totalGenerations', 0)} generations  ·  {entry.get('totalCredits', 0)} credits  ·  ₹{entry.get('totalCostRupees', 0)}",
+                f"{entry['department']}  ·  {entry.get('totalGenerations', 0)} generations  ·  {entry.get('totalCredits', 0)} credits  ·  {_cost_text(entry.get('totalCostRupees'))}",
                 row=row, last_col=LAST,
             )
             row = C.data_table(ws, [
@@ -531,7 +542,7 @@ def _sheet_consolidated(ws, snapshot):
                 C.Col("Account", 26, key="account"),
                 C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
                 C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
-                C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+                C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, get=_cost_or_not_set),
             ], dept_rows, start_row=row, table_name=f"Dept{i}_{_safe_file_stub(entry['department'])[:18]}")
             row += 1
 
@@ -778,7 +789,7 @@ def _build_consolidated_workbook(snapshot: dict) -> tuple[bytes, str, str]:
     buf = io.BytesIO()
     wb.save(buf)
     filename = f"Consolidated_{period['end']}.xlsx"
-    return buf.getvalue(), XLSX_MIMETYPE, filename
+    return excel_safe(buf.getvalue()), XLSX_MIMETYPE, filename
 
 
 def _sheet_client_usage(ws, snapshot):
@@ -805,7 +816,7 @@ def _sheet_client_usage(ws, snapshot):
             continue
         row = C.section_header(
             ws,
-            f"{entry['client']}  ·  {entry.get('totalGenerations', 0)} generations  ·  {entry.get('totalCredits', 0)} credits  ·  ₹{entry.get('totalCostRupees', 0)}",
+            f"{entry['client']}  ·  {entry.get('totalGenerations', 0)} generations  ·  {entry.get('totalCredits', 0)} credits  ·  {_cost_text(entry.get('totalCostRupees'))}",
             row=row, last_col=LAST,
         )
         row = C.data_table(ws, [
@@ -815,7 +826,7 @@ def _sheet_client_usage(ws, snapshot):
             C.Col("Account", 26, key="account"),
             C.Col("Generations", 14, "right", T.FMT_INT, key="generations"),
             C.Col("Credits", 14, "right", T.FMT_INT, key="credits"),
-            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, get=_cost_or_not_set),
         ], rows, start_row=row, table_name=f"Client{i}_{_safe_file_stub(entry['client'])[:18]}")
         row += 1
         rendered += 1
@@ -958,7 +969,7 @@ def _build_person_workbook(snapshot: dict, person: dict) -> tuple[bytes, str, st
     buf = io.BytesIO()
     wb.save(buf)
     filename = f"Person-Report_{_safe_file_stub(person.get('name'))}_{period['end']}.xlsx"
-    return buf.getvalue(), XLSX_MIMETYPE, filename
+    return excel_safe(buf.getvalue()), XLSX_MIMETYPE, filename
 
 
 def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
@@ -1207,7 +1218,7 @@ def _render_person_sheet(ws, snapshot: dict, person: dict) -> None:
             C.Col("Type", 14, key="category"),
             C.Col("Generations", 13, "right", T.FMT_INT, key="generations"),
             C.Col("Credits", 12, "right", T.FMT_DECIMAL1, key="credits"),
-            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, key="costRupees"),
+            C.Col("Cost (₹)", 14, "right", T.FMT_DECIMAL1, get=_cost_or_not_set),
             C.Col("Status", 14, key="status"),
             C.Col("Task", 22, key="task"),
         ], gen_log, start_row=row, table_name="PersonGens")

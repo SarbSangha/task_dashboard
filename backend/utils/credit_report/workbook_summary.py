@@ -124,9 +124,10 @@ GLOSSARY_TERMS = (
                               "never added across tools: compare tools in ₹."),
     ("Charged", "The tool finished the item and took its cost. Only charged items count in totals."),
     ("Pending", "Still being made when the report was produced; not counted yet."),
-    ("est.", "An estimate: the tool records no per-item cost (shared equally), the account has no rate of its own "
-             "(its tool's rate is used), or the cost is worked out from the text length."),
-    ("Rate assumed", "A pay-per-use account with no rupee rate of its own, costed at its tool's latest rate."),
+    ("est.", "An estimate: the tool records no per-item cost (shared equally), or the cost is worked out from the "
+             "text length."),
+    ("Rate not set", "A pay-per-use account with no rupee rate yet: its items show Not set and are left out of the "
+                     "spend. No other account's rate is used."),
     ("Cost not tracked", "The tool records no cost per item (Higgsfield, Suno, Flow): each item gets an equal "
                          "share of the subscription, marked est."),
     ("Free preview model", "An ElevenLabs preview model that is not charged: ₹0."),
@@ -521,10 +522,9 @@ def write_summary(ws, data_ws, v: ManagementView, *, back_to=None, with_details:
     flag_row = 14
     if cur.accounts_without_rate:
         accounts = ", ".join(f"{t} #{a}" if a is not None else f"{t} (no account)" for t, a in cur.accounts_without_rate)
-        has = "has no rupee rate of its own" if len(cur.accounts_without_rate) == 1 else \
-            "have no rupee rate of their own"
-        p.put(flag_row, "A", f"Rate assumed (est.): {accounts} {has}, so the tool's latest rate is used until one is "
-                             "entered in Reports → Credit Rates.", font=F_SMALL)
+        has = "has no rupee rate" if len(cur.accounts_without_rate) == 1 else "have no rupee rate"
+        p.put(flag_row, "A", f"Rate not set: {accounts} {has}, so their items are not in the spend until one is "
+                             "set in the Tool Renew tab.", font=F_SMALL)
     confirm = _to_confirm_text(cur)
     if confirm:
         p.merge(15, "A", "L", confirm, font=F_BOLD, fill=FILL_WARN, height=15.5 * _lines(confirm, NCOLS))

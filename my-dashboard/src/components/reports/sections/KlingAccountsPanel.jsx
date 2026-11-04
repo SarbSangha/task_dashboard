@@ -60,7 +60,7 @@ const KlingAccountsPanel = ({ filters }) => {
   const timing = timingQ.data || {};
   const funnel = funnelQ.data?.funnel || {};
   const modelMix = funnelQ.data?.modelMix || [];
-  const money = (v) => (v == null ? '—' : `${currency} ${formatFull(v)}`);
+  const money = (v) => (v == null ? 'Not set' : `${currency} ${formatFull(v)}`);
 
   const accountColumns = [
     { key: 'label', label: 'Account / user', render: (r) => <b>{r.label}</b> },
@@ -80,7 +80,7 @@ const KlingAccountsPanel = ({ filters }) => {
 
       <div className="rpt-kpi-grid">
         <KpiCard label="Kling Accounts Used" metric={{ value: totals.accounts ?? 0, deltaPct: null, direction: 'flat' }} />
-        <KpiCard label={`Total Cost (${currency})`} metric={{ value: totals.cost ?? 0, deltaPct: null, direction: 'flat', unit: currency }} format="full" />
+        <KpiCard label={`Total Cost (${currency})`} metric={{ value: totals.cost ?? 0, notSet: totals.cost === null, deltaPct: null, direction: 'flat', unit: currency }} format="full" />
         <KpiCard label="Peak Hour (IST)" metric={{ value: timing.peakHour ? Number(timing.peakHour.hour) : 0, deltaPct: null, direction: 'flat' }} />
         <KpiCard label="Busiest Day" metric={{ value: timing.peakDay?.count ?? 0, deltaPct: null, direction: 'flat', unit: timing.peakDay?.day || '' }} />
       </div>
@@ -114,6 +114,12 @@ const KlingAccountsPanel = ({ filters }) => {
       <div className="rpt-grid cols-2" style={{ marginTop: 16 }}>
         <div>
           <div className="rpt-card-head"><h3 className="rpt-card-title" style={{ fontSize: 14 }}>Cost by Kling account</h3></div>
+          {totals.creditsWithoutRate > 0 && (
+            <p className="rpt-kpi-prev" style={{ marginBottom: 6 }}>
+              {formatFull(totals.creditsWithoutRate)} credits are on accounts with no rate set, so they are not in the cost.
+              Set the rate in Admin Queue → Tool Renew.
+            </p>
+          )}
           <DataTable columns={accountColumns} rows={accounts} initialSort="cost" />
         </div>
 

@@ -199,14 +199,17 @@ def costly_per_item(v: ManagementView) -> Optional[Attention]:
                      "check whether a smaller plan would do", sum(s.period_fee for s in costly))
 
 
-def assumed_rates(v: ManagementView) -> Optional[Attention]:
-    rows, rupees = v.cur.issues.get("rate_assumed", (0, 0.0))
-    if not rows or rupees <= 0:
+def rates_not_set(v: ManagementView) -> Optional[Attention]:
+    """Pay-per-use items whose account has no rate: their cost is unknown, so
+    it is always raised (there are no rupees to rank it by)."""
+    rows, credits = v.cur.issues.get("rate_not_set", (0, 0.0))
+    if not rows:
         return None
     accounts = [f"{t} #{a}" if a is not None else f"{t} (no account)" for t, a in v.cur.accounts_without_rate]
     which = f" ({_names(accounts[:4])})" if accounts else ""
-    return Attention(f"{inr(rupees)} of pay-per-use cost uses an assumed rate: these accounts have no rate of their "
-                     f"own{which}", "enter their rates in Reports → Credit Rates", rupees)
+    return Attention(f"Rate not set: {rows:,} pay-per-use item{'' if rows == 1 else 's'} ({credits:,.0f} credits) "
+                     f"are not in the spend, because their account has no rate{which}",
+                     "set each account's credits and price in the Tool Renew tab", float(rows))
 
 
 def untagged_client(v: ManagementView) -> Optional[Attention]:
@@ -253,8 +256,8 @@ def double_charges(v: ManagementView) -> Optional[Attention]:
                      "raise them with the vendor", v.duplicate_rupees)
 
 
-ALWAYS = (idle_subscriptions, costly_per_item)
-BY_IMPACT = (assumed_rates, untagged_client, untracked_cost, missing_fees, renewals_passed, double_charges)
+ALWAYS = (idle_subscriptions, costly_per_item, rates_not_set)
+BY_IMPACT = (untagged_client, untracked_cost, missing_fees, renewals_passed, double_charges)
 
 
 def attention_items(v: ManagementView) -> list:

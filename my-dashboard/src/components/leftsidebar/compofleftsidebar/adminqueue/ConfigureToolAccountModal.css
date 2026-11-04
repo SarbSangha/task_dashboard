@@ -191,6 +191,55 @@
   color: var(--color-button-primary-text);
 }
 
+/* ── Plan picker: "Subscription" and "Other" chip rows ───────────────── */
+
+.ctam-plan-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ctam-plan-group-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+/* ── Credit usage this period ─────────────────────────────────────────── */
+
+.ctam-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ctam-usage-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border-subtle);
+  overflow: hidden;
+}
+
+.ctam-usage-bar span {
+  display: block;
+  height: 100%;
+  background: var(--color-button-primary-bg);
+}
+
+/* ── One-line plain-language summary of what will be saved ────────────── */
+
+.ctam-summary {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-feedback-info-bg);
+  border: 1px solid var(--color-feedback-info-border);
+  color: var(--color-feedback-info-text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
 /* ── Toggle switch (mirrors the app's existing .toggle-switch pattern) ──── */
 
 .ctam-switch {

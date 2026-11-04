@@ -46,6 +46,7 @@ from providers.suno.models import SunoGeneration
 from utils import r2_storage
 from utils.datetime_utils import serialize_utc_datetime
 from utils.permissions import has_any_role, require_admin, require_rmw_data_access
+from utils.xlsx_compat import excel_safe
 
 router = APIRouter(prefix="/api/rmw-data/export", tags=["RMW Data Export"])
 
@@ -903,7 +904,7 @@ def _write_data_sheet(ws, spec: SheetSpec, rows, project_names: dict[int, str]):
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
         elif col.kind == "number":
             for cell in ws[letter][1:]:
-                cell.number_format = "#,##0.##"
+                cell.number_format = _number_format(cell.value)
         elif col.kind == "url":
             for cell in ws[letter][1:]:
                 if isinstance(cell.value, str) and cell.value.startswith(("http://", "https://")):
@@ -915,6 +916,16 @@ def _write_data_sheet(ws, spec: SheetSpec, rows, project_names: dict[int, str]):
         ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{len(rows) + 1}"
 
 
+def _number_format(value) -> str:
+    """2,530 for a whole number, 86.25 otherwise: "#,##0.##" alone leaves a
+    trailing dot on whole numbers ("2,530.")."""
+    try:
+        whole = round(float(value), 2).is_integer()
+    except (TypeError, ValueError):
+        return "General"
+    return "#,##0" if whole else "#,##0.##"
+
+
 def _write_table(ws, start_row: int, title: str, headers: list[str], rows: list[list]) -> int:
     ws.cell(row=start_row, column=1, value=title).font = SECTION_FONT
     header_row = start_row + 1
@@ -924,8 +935,8 @@ def _write_table(ws, start_row: int, title: str, headers: list[str], rows: list[
     for offset, values in enumerate(rows, start=1):
         for index, value in enumerate(values, start=1):
             cell = ws.cell(row=header_row + offset, column=index, value=value)
-            if isinstance(value, float):
-                cell.number_format = "#,##0.##"
+            if isinstance(value, (int, float)):
+                cell.number_format = _number_format(value)
             if offset % 2 == 0:
                 cell.fill = SUBTLE_FILL
     if not rows:
@@ -1106,8 +1117,8 @@ def _write_employee_sheet(ws, tool: ToolSpec, sheet_results):
                 cell = ws.cell(row=total_row, column=index, value=value)
                 cell.font = Font(bold=True)
                 cell.border = Border(top=Side(style="thin", color="94A3B8"))
-                if isinstance(value, float):
-                    cell.number_format = "#,##0.##"
+                if isinstance(value, (int, float)):
+                    cell.number_format = _number_format(value)
             for offset in range(1, len(table) + 1):
                 ws.cell(row=header_row + offset, column=3).number_format = "#,##0"
                 if has_clients:
@@ -1167,7 +1178,7 @@ def _build_workbook(db: Session, tool: ToolSpec, current_user: User, q, date_fro
         _write_employee_sheet(workbook.create_sheet("By employee", 1), tool, sheet_results)
     buffer = io.BytesIO()
     workbook.save(buffer)
-    return buffer.getvalue()
+    return excel_safe(buffer.getvalue())
 
 
 def _export_response(content: bytes, tool: ToolSpec, date_from, date_to) -> StreamingResponse:

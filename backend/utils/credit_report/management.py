@@ -190,7 +190,7 @@ class PeriodView:
     pay_per_use: float = 0.0
     pay_per_use_est: float = 0.0
     issues: dict = field(default_factory=dict)              # load_issue_counts
-    accounts_without_rate: list = field(default_factory=list)   # [(tool, account)] pay-per-use, rate assumed
+    accounts_without_rate: list = field(default_factory=list)   # [(tool, account)] pay-per-use, rate not set
 
     @property
     def label(self) -> str:
@@ -336,9 +336,9 @@ def build_period(db: Session, filters: ReportFilters, groups: Optional[list] = N
     view.other_subscriptions = _subscription_rows(filters, [], {}, 0.0, which=filters.cost.other_accounts,
                                                   tracked=False)
     view.issues = load_issue_counts(db, filters)
-    own = {r.account for r in filters.cost.rates if r.account is not None}
     view.accounts_without_rate = sorted({(a.tool, a.account) for a in accounts
-                                         if a.tool in PAY_PER_USE_TOOLS and a.rupees_est > 0 and a.account not in own},
+                                         if a.tool in PAY_PER_USE_TOOLS and a.items
+                                         and filters.cost.rates.get(a.account) is None},
                                         key=lambda x: (x[0], x[1] or 0))
     return view
 

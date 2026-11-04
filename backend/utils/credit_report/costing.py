@@ -5,12 +5,12 @@ Every tool counts in its own credits (a Kling credit is not a Freepik
 credit), so credits are never added across tools for money. Each Charged
 generation gets a rupee figure instead, by how the company pays for the tool:
 
-* Pay-per-use (Kling, HeyGen, Splice): credits x the account's rate on the
-  generation's IST date (Reports -> Credit Rates, tool_credit_rates). An
-  account with no rate of its own uses its tool's latest rate on that date,
-  flagged "rate assumed" (never the seeded ₹1 global placeholder, unless the
-  tool has no rate at all). Entering the account's real rate in Credit Rates
-  replaces the assumption with no code change.
+* Pay-per-use (Kling, HeyGen, Splice): credits x the account's own current
+  rate (Admin Queue -> Tool Renew, tool_renewal_service.account_credit_rates),
+  whatever day the generation happened: correcting an account's rate
+  re-prices every generation of that account. An account with no rate is
+  "Rate not set": ₹0 in every sum and "Not set" on its log rows -- never
+  another account's rate, its tool's rate or a global default.
 
 * Subscriptions (every other tracked tool): each company account's fee
   (it_portal_tool_credentials.tool_cost, monthly unless configured annual),
@@ -40,10 +40,11 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Optional
 
-from sqlalchemy import Float, Integer, String, and_, case, cast, func, literal, or_
+from sqlalchemy import Float, Integer, case, cast, func, literal
 from sqlalchemy.orm import Session
 
-from models_new import ITPortalTool, ITPortalToolCredential, ToolCreditRate
+from models_new import ITPortalTool, ITPortalToolCredential
+from utils.tool_renewal_service import account_credit_rates
 
 PAY_PER_USE = "Pay-per-use"
 SUBSCRIPTION = "Subscription"
@@ -86,18 +87,6 @@ def period_fee(monthly: float, start: date, end: date) -> float:
     return total
 
 
-@dataclass(frozen=True)
-class RateRow:
-    account: Optional[int]          # None = a tool-level rate
-    tool: Optional[str]
-    start: date
-    end: Optional[date]
-    rate: float
-
-    def covers(self, day: date) -> bool:
-        return self.start <= day and (self.end is None or day <= self.end)
-
-
 @dataclass
 class Account:
     id: int
@@ -118,8 +107,7 @@ class Account:
 class CostSetup:
     start: date
     end: date
-    rates: list = field(default_factory=list)            # [RateRow] for an account or a tool
-    global_rate: Optional[float] = None
+    rates: dict = field(default_factory=dict)             # account id -> its own ₹ per credit
     accounts: dict = field(default_factory=dict)          # subscription accounts: id -> Account
     other_accounts: list = field(default_factory=list)    # active AI subscriptions with no usage tracked
     default_account: dict = field(default_factory=dict)   # tool -> account id for rows with no account
@@ -128,24 +116,10 @@ class CostSetup:
     # Python twins (tests, previous period checks)
     # ------------------------------------------------------------------ #
     def rate_on(self, tool: str, account: Optional[int], day: date) -> tuple:
-        """(rupees per credit, assumed?) for a pay-per-use generation."""
-        for r in self.rates:
-            if r.account is not None and r.account == account and r.covers(day):
-                return r.rate, False
-        for r in self.rates:
-            if r.account is None and r.tool == tool and r.covers(day):
-                return r.rate, False
-        fallback = self._tool_fallback(tool)
-        for r in fallback:
-            if r.start <= day:
-                return r.rate, True
-        if fallback:
-            return fallback[-1].rate, True
-        return (self.global_rate or 0.0), True
-
-    def _tool_fallback(self, tool: str) -> list:
-        """The tool's rates, newest start first: a rate-less account borrows them."""
-        return sorted((r for r in self.rates if r.tool == tool), key=lambda r: (r.start, r.account or 0), reverse=True)
+        """(rupees per credit, rate not set?) for a pay-per-use generation.
+        The account's own rate whatever the day; 0.0 when it has none."""
+        rate = self.rates.get(account) if account is not None else None
+        return (rate, False) if rate is not None else (0.0, True)
 
     @property
     def subscription_total(self) -> float:
@@ -162,32 +136,15 @@ class CostSetup:
         return func.coalesce(account_col, case(*whens, else_=cast(literal(None), Integer)))
 
     def rate_sql(self, tool_col, account_col, day_col) -> tuple:
-        """(rate expression, assumed 0/1 expression) for pay-per-use rows.
-        day_col is the IST day as 'YYYY-MM-DD' text."""
-        exact, assumed = [], []
-
-        def in_range(r):
-            cond = [day_col >= r.start.isoformat()]
-            if r.end is not None:
-                cond.append(day_col <= r.end.isoformat())
-            return cond
-
-        for r in self.rates:
-            if r.account is not None:
-                exact.append((and_(account_col == r.account, *in_range(r)), r.rate))
-        for r in self.rates:
-            if r.account is None and r.tool:
-                exact.append((and_(tool_col == r.tool, *in_range(r)), r.rate))
-        for tool in PAY_PER_USE_TOOLS:
-            fallback = self._tool_fallback(tool)
-            for r in fallback:
-                assumed.append((and_(tool_col == tool, day_col >= r.start.isoformat()), r.rate))
-            if fallback:
-                assumed.append((tool_col == tool, fallback[-1].rate))
-        default = literal(float(self.global_rate or 0.0), Float)
-        rate = case(*[(c, literal(v, Float)) for c, v in exact + assumed], else_=default) if exact or assumed else default
-        flag = case(*[(c, 0) for c, _v in exact], else_=1) if exact else literal(1, Integer)
-        return rate, flag
+        """(rate expression, rate-not-set 0/1 expression) for pay-per-use rows.
+        Only the row's own account's rate: 0 and flagged when it has none.
+        tool_col and day_col are unused (kept so callers need not change)."""
+        whens = [(account_col == acc, literal(rate, Float)) for acc, rate in sorted(self.rates.items())]
+        if not whens:
+            return literal(0.0, Float), literal(1, Integer)
+        rate = case(*whens, else_=literal(0.0, Float))
+        not_set = case(*[(account_col == acc, 0) for acc, _r in sorted(self.rates.items())], else_=1)
+        return rate, not_set
 
     def fee_sql(self, account_col):
         """The account's fee for the whole report period (0 when none)."""
@@ -201,7 +158,6 @@ def _key(text) -> str:
 
 def load_cost_setup(db: Session, start: date, end: date, display) -> CostSetup:
     setup = CostSetup(start=start, end=end)
-    tool_of_cred = {}
     untracked = {_key(t): t for t in display.untracked_ai_tools}
     c, t = ITPortalToolCredential, ITPortalTool
     # Named columns only: the report's read-only role cannot (and need not) read login secrets.
@@ -210,7 +166,6 @@ def load_cost_setup(db: Session, start: date, end: date, display) -> CostSetup:
             .join(t, c.tool_id == t.id).all())
     for cred in rows:
         name = report_tool(cred.name, cred.slug)
-        tool_of_cred[cred.id] = name
         if (cred.scope or "company") != "company":
             continue
         if name in PAY_PER_USE_TOOLS:
@@ -239,23 +194,7 @@ def load_cost_setup(db: Session, start: date, end: date, display) -> CostSetup:
                 setup.other_accounts.append(account)
             continue
         setup.accounts[cred.id] = account
-    for r in db.query(ToolCreditRate).all():
-        if r.rate_per_credit is None or r.effective_from is None:
-            continue
-        rate = float(r.rate_per_credit)
-        if r.credential_id is not None:
-            setup.rates.append(RateRow(int(r.credential_id), tool_of_cred.get(r.credential_id), r.effective_from,
-                                       r.effective_to, rate))
-        elif r.tool_id is not None or r.provider:
-            tool = None
-            if r.tool_id is not None:
-                t = db.get(ITPortalTool, r.tool_id)
-                tool = report_tool(t.name, t.slug) if t else None
-            tool = tool or report_tool(r.provider)
-            if tool:
-                setup.rates.append(RateRow(None, tool, r.effective_from, r.effective_to, rate))
-        elif r.effective_from <= end and (r.effective_to is None or r.effective_to >= start):
-            setup.global_rate = rate
+    setup.rates = account_credit_rates(db)
     by_tool = {}
     for a in setup.accounts.values():
         by_tool.setdefault(a.tool, []).append(a)
@@ -269,4 +208,4 @@ def load_cost_setup(db: Session, start: date, end: date, display) -> CostSetup:
 
 
 __all__ = ["PAY_PER_USE", "SUBSCRIPTION", "PAY_PER_USE_TOOLS", "SUBSCRIPTION_TOOLS", "CostSetup", "Account",
-           "RateRow", "load_cost_setup", "period_fee", "report_tool"]
+           "load_cost_setup", "period_fee", "report_tool"]

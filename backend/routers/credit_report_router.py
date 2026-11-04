@@ -40,6 +40,7 @@ from utils.credit_report import (
     to_pdf,
 )
 from utils.credit_report.dashboard_workbook import DashboardTooLarge, generate_dashboard_workbook
+from utils.credit_report.xlsx_styles import XLSM_MIMETYPE
 from utils.credit_report.live_cache import shared_build
 from utils.credit_report.live_sheet import build_live_sheet, seed_demo_ai_usage
 from utils.credit_report.output_media import (
@@ -220,7 +221,7 @@ def _export_dashboard(db: Session, start_iso: Optional[str], end_iso: Optional[s
     applies them itself, so the export's own filters cover the whole period)."""
     filters = ReportFilters.build(start=start_iso, end=end_iso, exclude_test_accounts=exclude_test_accounts)
     db.close()
-    fd, path = tempfile.mkstemp(prefix="credit-dashboard-", suffix=".xlsx")
+    fd, path = tempfile.mkstemp(prefix="credit-dashboard-", suffix=".xlsm")
     os.close(fd)
     report_db = _snapshot_session()
     try:
@@ -236,8 +237,8 @@ def _export_dashboard(db: Session, start_iso: Optional[str], end_iso: Optional[s
         _close_snapshot(report_db)
     return FileResponse(
         path,
-        media_type=XLSX_MIMETYPE,
-        filename=f"RMW-AI-Dashboard_{filters.start.isoformat()}_to_{filters.end.isoformat()}.xlsx",
+        media_type=XLSM_MIMETYPE,     # macro-enabled: its filters stay in sync across sheets
+        filename=f"RMW-AI-Dashboard_{filters.start.isoformat()}_to_{filters.end.isoformat()}.xlsm",
         background=BackgroundTask(_remove, path),
     )
 

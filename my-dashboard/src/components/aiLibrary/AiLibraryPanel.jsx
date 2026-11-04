@@ -7,14 +7,17 @@ import { isMobileViewport } from '../../utils/isMobileViewport';
 import { clientsAPI } from '../../services/api';
 import { aiLibraryAPI } from '../../services/aiLibrary';
 import { startDriveUpload, UploadCancelledError } from '../../utils/driveResumableUpload';
+import { getFileRelativePath, openSystemFilePicker } from '../../utils/fileUploads';
 import '../reports/TaskReportPanel.css';
 import AiLibraryHistory from './AiLibraryHistory';
 import { formatBytes } from './aiLibraryFormat';
 import './AiLibraryPanel.css';
 
 /**
- * AI Library: drop files here and they land in the connected Google Drive,
- * under AI Library / <date> / <user> / <client>.
+ * AI Library: drop files or whole folders here and they land in the
+ * connected Google Drive, under AI Library / <date> / <user> / <client> /
+ * <kind> - the server sorts each file into Images, Videos, Music, Documents,
+ * Archives or Other by its type, so a mixed folder arrives sorted.
  *
  * Each file goes browser -> Drive directly: the server only hands out a
  * one-time resumable upload URL (backend/routers/ai_library_router.py) and
@@ -59,6 +62,34 @@ const storeClient = (value) => {
 };
 
 let _itemSeq = 0;
+
+// Files the OS leaves in folders, never worth uploading.
+const SYSTEM_FILE = /^(\.|thumbs\.db$|desktop\.ini$)/i;
+
+// All entries of a dropped folder: readEntries hands them out in batches
+// (about 100 at a time), so keep reading until it returns none.
+const readAllEntries = (reader) => new Promise((resolve, reject) => {
+  const all = [];
+  const next = () => reader.readEntries((batch) => {
+    if (!batch.length) resolve(all);
+    else { all.push(...batch); next(); }
+  }, reject);
+  next();
+});
+
+// Every file under a dropped entry, with its path inside the drop.
+const filesOfEntry = async (entry) => {
+  if (entry.isFile) {
+    if (SYSTEM_FILE.test(entry.name)) return [];
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    return [{ file, path: entry.fullPath.replace(/^\/+/, '') }];
+  }
+  if (entry.isDirectory) {
+    const children = await readAllEntries(entry.createReader());
+    return (await Promise.all(children.map(filesOfEntry))).flat();
+  }
+  return [];
+};
 
 export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onActivate }) {
   const [isMinimized, setIsMinimized] = useState(false);
@@ -215,62 +246,79 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
     return () => window.removeEventListener('beforeunload', warn);
   }, [hasActiveUploads]);
 
-  const enqueue = (fileList, directoryNames = []) => {
+  // sources: Files, or { file, path } for files read out of a dropped
+  // folder. emptyFolders: dropped folders with no files to upload.
+  const enqueue = (sources, emptyFolders = []) => {
     if (!selectedClient) return;
     const maxSize = status?.maxFileSizeBytes || Infinity;
-    const added = Array.from(fileList || []).map((file) => {
-      _itemSeq += 1;
-      const tooBig = file.size > maxSize;
-      return {
-        key: `f${_itemSeq}`,
-        file,
-        clientId: selectedClient.id,
-        clientName: selectedClient.name,
-        status: tooBig ? 'failed' : 'queued',
-        loaded: 0,
-        error: tooBig ? `Larger than the ${formatBytes(maxSize)} limit.` : '',
-        retryable: !tooBig,
-      };
-    });
-    const folders = directoryNames.map((name) => {
+    const added = Array.from(sources || [])
+      .map((source) => (source instanceof File ? { file: source, path: getFileRelativePath(source) } : source))
+      .filter(({ file }) => !SYSTEM_FILE.test(file.name))
+      .map(({ file, path }) => {
+        _itemSeq += 1;
+        const tooBig = file.size > maxSize;
+        return {
+          key: `f${_itemSeq}`,
+          file,
+          path: path || file.name,
+          clientId: selectedClient.id,
+          clientName: selectedClient.name,
+          status: tooBig ? 'failed' : 'queued',
+          loaded: 0,
+          error: tooBig ? `Larger than the ${formatBytes(maxSize)} limit.` : '',
+          retryable: !tooBig,
+        };
+      });
+    const empty = emptyFolders.map((name) => {
       _itemSeq += 1;
       return {
         key: `f${_itemSeq}`,
         file: { name, size: 0 },
+        path: name,
         clientId: selectedClient.id,
         clientName: selectedClient.name,
         status: 'failed',
         loaded: 0,
-        error: 'Folders cannot be uploaded. Open the folder and drop the files inside it.',
+        error: 'This folder has no files to upload.',
         isFolder: true,
         retryable: false,
       };
     });
-    if (added.length || folders.length) setItems((prev) => [...added, ...folders, ...prev]);
+    if (added.length || empty.length) setItems((prev) => [...added, ...empty, ...prev]);
   };
 
-  const handleDrop = (e) => {
+  const handleDrop = async (e) => {
     e.preventDefault();
     dragDepthRef.current = 0;
     setDragActive(false);
     if (!canDrop) return;
-    const entries = Array.from(e.dataTransfer.items || []);
-    const directoryNames = [];
-    const files = [];
-    if (entries.length && typeof entries[0].webkitGetAsEntry === 'function') {
-      entries.forEach((entry) => {
-        if (entry.kind !== 'file') return;
-        const fsEntry = entry.webkitGetAsEntry();
-        if (fsEntry?.isDirectory) directoryNames.push(fsEntry.name);
-        else {
-          const file = entry.getAsFile();
-          if (file) files.push(file);
-        }
-      });
-    } else {
-      files.push(...Array.from(e.dataTransfer.files || []));
+    // The drop's items are only readable during the event: take every entry
+    // now, then walk the folders afterwards.
+    const dropped = Array.from(e.dataTransfer.items || []).filter((item) => item.kind === 'file');
+    const entries = typeof dropped[0]?.webkitGetAsEntry === 'function'
+      ? dropped.map((item) => item.webkitGetAsEntry()).filter(Boolean)
+      : [];
+    if (!entries.length) {
+      enqueue(e.dataTransfer.files);
+      return;
     }
-    enqueue(files, directoryNames);
+    const sources = [];
+    const emptyFolders = [];
+    try {
+      for (const entry of entries) {
+        const found = await filesOfEntry(entry);
+        if (entry.isDirectory && !found.length) emptyFolders.push(entry.name);
+        sources.push(...found);
+      }
+    } catch (err) {
+      setNotice({ tone: 'error', text: readError(err, 'Could not read the dropped folder.') });
+    }
+    enqueue(sources, emptyFolders);
+  };
+
+  const chooseFolder = () => {
+    if (!canDrop) return;
+    openSystemFilePicker({ mode: 'folder', onSelect: (files) => enqueue(files) });
   };
 
   const handleDragEnter = (e) => {
@@ -469,7 +517,7 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
                 </label>
                 {selectedClient && (
                   <span className="ail-destination" title="Where these files will be saved">
-                    Saves to <code>{status?.rootFolderName || 'AI Library'} / today / you / {selectedClient.name}</code>
+                    Saves to <code>{status?.rootFolderName || 'AI Library'} / today / you / {selectedClient.name} / Images · Videos · Music · …</code>
                   </span>
                 )}
               </div>
@@ -485,7 +533,7 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
                 role="button"
                 tabIndex={canDrop ? 0 : -1}
                 aria-disabled={!canDrop}
-                aria-label="Drop files here or press to choose files"
+                aria-label="Drop files or folders here, or press to choose files"
               >
                 <svg className="ail-dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 8.5a4 4 0 0 1-.5 9.5" />
@@ -497,9 +545,10 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
                   <p>Select a client first, then drop files here.</p>
                 ) : (
                   <>
-                    <p><strong>Drop files here</strong> or click to choose</p>
+                    <p><strong>Drop files or folders here</strong> or click to choose files</p>
                     <span className="ail-hint">
-                      Up to {formatBytes(status?.maxFileSizeBytes)} per file · sent straight to Google Drive
+                      Sorted by type into Images, Videos, Music, … · up to {formatBytes(status?.maxFileSizeBytes)} per
+                      file · sent straight to Google Drive
                     </span>
                   </>
                 )}
@@ -510,6 +559,15 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
                   hidden
                   onChange={(e) => { enqueue(e.target.files); e.target.value = ''; }}
                 />
+              </div>
+              <div className="ail-pickers">
+                <button type="button" className="ail-secondary-btn" onClick={() => fileInputRef.current?.click()}
+                        disabled={!canDrop}>
+                  Choose files
+                </button>
+                <button type="button" className="ail-secondary-btn" onClick={chooseFolder} disabled={!canDrop}>
+                  Choose folder
+                </button>
               </div>
 
               {items.length > 0 && (
@@ -525,9 +583,10 @@ export default function AiLibraryPanel({ isOpen, onClose, onMinimizedChange, onA
                       return (
                         <li key={item.key} className={`ail-item ail-item--${item.status}`}>
                           <div className="ail-item-main">
-                            <span className="ail-item-name" title={item.file.name}>{item.file.name}</span>
+                            <span className="ail-item-name" title={item.path}>{item.path}</span>
                             <span className="ail-item-meta">
                               {item.isFolder ? 'Folder' : formatBytes(item.file.size)} · {item.clientName}
+                              {item.folderPath && ` / ${item.folderPath.split(' / ').pop()}`}
                             </span>
                           </div>
                           <div className="ail-progress" aria-hidden={item.status !== 'uploading'}>

@@ -93,8 +93,9 @@ def seed():
             t = ITPortalTool(name=name, slug=slug, website_url=f"https://{slug}.example")
             db.add(t)
             db.flush()
+            # Credit System on, as Tool Renew saves an account with a rate.
             c = ITPortalToolCredential(tool_id=t.id, scope="company", tool_cost=fee, renewal_type="MONTHLY",
-                                       is_active=True, auto_renew=False)
+                                       is_active=True, auto_renew=False, credit_enabled=True)
             db.add(c)
             db.flush()
             return c.id
@@ -197,12 +198,38 @@ def test_chat_links():
     print("ok  Claude / ChatGPT prompts open their real conversation")
 
 
+def test_assigned_unused_tools():
+    """One person picked: tools they hold a seat on but did not use are listed
+    with no figures; a revoked seat is not. Runs last: it adds seats."""
+    with SessionLocal() as db:
+        tool_id = {c.id: c.tool_id for c in db.query(ITPortalToolCredential).all()}
+        for name, active in (("ChatGPT", True), ("Claude", True), ("Semrush", True), ("Splice", False)):
+            db.add(ITPortalToolCredential(tool_id=tool_id[IDS[name]], scope="user", user_id=IDS["Asha"],
+                                          linked_credential_id=IDS[name], is_active=active))
+        db.commit()
+        tools = {t["tool"]: t for t in sheet(db, user_id=IDS["Asha"])["sheets"]["tools"]}
+        check(set(tools) == {"ChatGPT", "Grammarly", "Claude", "Semrush"}, f"Asha's tools: {sorted(tools)}")
+        check(tools["ChatGPT"]["assigned"] and tools["ChatGPT"]["generations"] == 2, "a used, assigned tool")
+        check(tools["Grammarly"]["assigned"] is False, "used without a seat of her own")
+        claude = tools["Claude"]
+        check(claude["generations"] == 0 and claude["assigned"] and claude["tracked"], "assigned, not used")
+        close(claude["totalSpendRupees"], 0, "an unused seat carries no money")
+        check(tools["Semrush"]["tracked"] is False, "an assigned untracked tool says so")
+        only_claude = sheet(db, user_id=IDS["Asha"], tool="Claude")["sheets"]["tools"]
+        check([t["tool"] for t in only_claude] == ["Claude"], "the tool filter applies to unused seats")
+        everyone = {t["tool"] for t in sheet(db)["sheets"]["tools"]}
+        check("assigned" not in next(iter(sheet(db)["sheets"]["tools"])), "no seats without a person picked")
+        check(everyone >= {"ChatGPT", "Claude", "Semrush"}, "the unfiltered sheet is unchanged")
+    print("ok  a picked person's assigned-but-unused tools are listed as not used")
+
+
 def main():
     seed()
     test_all_tools_counted()
     test_people_and_filters()
     test_workbooks_export()
     test_chat_links()
+    test_assigned_unused_tools()
     return 0
 
 

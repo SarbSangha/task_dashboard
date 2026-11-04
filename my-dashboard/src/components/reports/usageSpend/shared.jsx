@@ -7,7 +7,9 @@ export const DEPT_HUES = [160, 262, 330, 38, 200, 20, 290, 85];
 // Claude / ChatGPT rows link to the chat itself; every other tool links to the file.
 export const CHAT_TOOLS = new Set(['Claude', 'ChatGPT']);
 
+// null = the generation's tool account has no credit rate yet.
 export const fmtINR = (val) => {
+  if (val === null) return 'Not set';
   const n = Number(val || 0);
   return `₹${n.toLocaleString('en-IN', { maximumFractionDigits: n >= 1000 ? 0 : 2 })}`;
 };

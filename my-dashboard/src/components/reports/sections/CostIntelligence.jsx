@@ -52,7 +52,8 @@ const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser, onDrill,
   const k = summaryQ.data?.kpis || {};
   const bd = breakdownQ.data || {};
   const currency = summaryQ.data?.currency || breakdownQ.data?.currency || 'INR';
-  const money = (v) => (v == null ? '—' : `${currency} ${formatFull(v)}`);
+  const money = (v) => (v == null ? 'Not set' : `${currency} ${formatFull(v)}`);
+  const creditsWithoutRate = summaryQ.data?.creditsWithoutRate || 0;
   const meta = VIEW_META[view] || VIEW_META['credit-usage'];
 
   const spenderColumns = [
@@ -120,6 +121,10 @@ const CostIntelligence = ({ view = 'credit-usage', filters, onOpenUser, onDrill,
             {k.totalCredits?.deltaPct != null && (<>(<b>{k.totalCredits.deltaPct > 0 ? '+' : ''}{k.totalCredits.deltaPct}%</b> vs prior period) </>)}
             at <b>{formatFull(k.costPerOutput?.value)}</b> credits per successful output.{' '}
             <b>{summaryQ.data?.wastedPct ?? 0}%</b> was lost to failed generations.
+            {creditsWithoutRate > 0 && (
+              <>{' '}<b>{formatFull(creditsWithoutRate)}</b> credits are on tool accounts with no rate set, so their cost
+                is Not set and left out of the total — set the rate in Admin Queue → Tool Renew.</>
+            )}
           </InsightBanner>
 
           <div className="rpt-kpi-grid">

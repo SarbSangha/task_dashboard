@@ -256,9 +256,9 @@ no_origin = api.post("/api/ai-library/uploads",
 check(google.sessions[no_origin["uploadUrl"]]["origin"] == R._frontend_origin(),
       "no Origin header -> session falls back to the dashboard's origin")
 folder_id = google.sessions[session_url]["parent"]
-check(google.path_of(folder_id) == f"AI Library / {today} / Asha / Acme - Corp",
-      "folder is AI Library / date / user / client (slash in client name made safe)")
-check(up["status"] == "pending" and up["folderPath"] == f"AI Library / {today} / Asha / Acme - Corp",
+check(google.path_of(folder_id) == f"AI Library / {today} / Asha / Acme - Corp / Images",
+      "folder is AI Library / date / user / client / kind (slash in client name made safe)")
+check(up["status"] == "pending" and up["folderPath"] == f"AI Library / {today} / Asha / Acme - Corp / Images",
       "pending record carries the folder path")
 check(body["chunkSizeBytes"] % (256 * 1024) == 0, "chunk size is a multiple of 256 KiB")
 
@@ -311,11 +311,11 @@ check([c["name"] for c in opts["clients"]] == ["Acme / Corp"] and len(opts["user
 
 # ── Folder deleted by hand in Drive ──────────────────────────────────────
 as_user("Asha")
-google.items.pop(folder_id)                      # someone deleted the client folder
+google.items.pop(folder_id)                      # someone deleted the Images folder
 r = api.post("/api/ai-library/uploads", headers=ORIGIN,
              json={"fileName": "again.png", "sizeBytes": 7, "clientId": IDS["Acme / Corp"]})
 new_parent = google.sessions[r.json()["uploadUrl"]]["parent"]
-check(r.status_code == 200 and new_parent != folder_id and google.path_of(new_parent).endswith("Asha / Acme - Corp"),
+check(r.status_code == 200 and new_parent != folder_id and google.path_of(new_parent).endswith("Asha / Acme - Corp / Images"),
       "a hand-deleted folder is recreated instead of failing forever")
 as_user("Asha Twin")
 twin2 = api.post("/api/ai-library/uploads", headers=ORIGIN,
@@ -325,7 +325,7 @@ check(google.sessions[twin2["uploadUrl"]]["parent"] == twin_folder and len(googl
 
 as_user("Asha")
 asha_client_folder = new_parent
-asha_user_folder = google.items[asha_client_folder]["parents"][0]
+asha_user_folder = google.items[google.items[asha_client_folder]["parents"][0]]["parents"][0]   # kind -> client -> user
 google.items[asha_user_folder]["trashed"] = True  # trashed (not deleted) - its children look trashed too
 r = api.post("/api/ai-library/uploads", headers=ORIGIN,
              json={"fileName": "fromtrash.png", "sizeBytes": 7, "clientId": IDS["Acme / Corp"]})
@@ -339,6 +339,27 @@ r = api.post("/api/ai-library/uploads", headers=ORIGIN,
              json={"fileName": "again2.png", "sizeBytes": 7, "clientId": IDS["Globex"]})
 check(r.status_code == 200 and google.path_of(google.sessions[r.json()["uploadUrl"]]["parent"]).startswith("AI Library / "),
       "a trashed root is replaced with a new one")
+
+# ── Mixed files: each kind in its own folder ─────────────────────────────
+as_user("Asha")
+kinds = {}
+for name, mime in (("clip.mp4", "video/mp4"), ("raw.mkv", ""), ("song.mp3", "audio/mpeg"), ("voice.m4a", None),
+                   ("photo.heic", ""), ("brief.pdf", "application/pdf"), ("pack.zip", "application/zip"),
+                   ("notes.xyz", "")):
+    body = {"fileName": name, "sizeBytes": 9, "clientId": IDS["Globex"]}
+    if mime is not None:
+        body["mimeType"] = mime
+    r = api.post("/api/ai-library/uploads", headers=ORIGIN, json=body).json()
+    kinds[name] = (google.path_of(google.sessions[r["uploadUrl"]]["parent"]).rsplit(" / ", 1)[1],
+                   r["upload"]["folderPath"].rsplit(" / ", 1)[1])
+check(kinds == {"clip.mp4": ("Videos",) * 2, "raw.mkv": ("Videos",) * 2, "song.mp3": ("Music",) * 2,
+                "voice.m4a": ("Music",) * 2, "photo.heic": ("Images",) * 2, "brief.pdf": ("Documents",) * 2,
+                "pack.zip": ("Archives",) * 2, "notes.xyz": ("Other",) * 2},
+      f"mixed files land in Images / Videos / Music / ... folders, by type or extension ({kinds})")
+check(len(google.folders_named("Videos")) == 1, "one Videos folder per client, reused")
+as_user("Admin")
+check(api.get("/api/ai-library/uploads", params={"kind": "video", "clientId": IDS["Globex"]}).json()["total"] == 2,
+      "history's Video filter counts an .mkv sent with no type")
 
 # ── Token refresh / revoke ───────────────────────────────────────────────
 drive._token_cache.clear()

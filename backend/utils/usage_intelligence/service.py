@@ -27,7 +27,6 @@ from models_new import (
     ITPortalToolAudit,
     ITPortalToolCredential,
     ITPortalToolUsageEvent,
-    ToolCreditRate,
     User,
     UserActivity,
 )
@@ -42,10 +41,12 @@ from utils.credential_crypto import decrypt_secret
 from utils.permissions import resolve_roles
 from utils.tool_renewal_service import (
     DEFAULT_RENEWAL_TYPE,
+    STATUS_LABELS,
     STATUS_NOT_APPLICABLE,
+    account_credit_rates,
     calculate_renewal_status,
-    normalize_renewal_type,
-    resolve_remaining_credits,
+    credit_usage,
+    plan_label,
 )
 
 # --------------------------------------------------------------------------- #
@@ -239,14 +240,25 @@ def _sane_kling_credits():
     )
 
 
-def _rate_case_expr(rates_by_credential: dict[int, float], default_rate: float, credential_col):
+def _rate_case_expr(rates_by_credential: dict[int, float], credential_col):
     """SQL CASE that resolves a per-credit rupee rate from a credential_id column.
 
-    Mirrors reports_router._credit_rate_context's resolution: a configured
-    per-credential rate wins, everything else falls back to the org default rate.
+    Mirrors reports_router._credit_rate_context: only the account's own rate;
+    an account without one is NULL, so its credits add nothing to a cost sum.
     """
-    whens = [(credential_col == cid, rate) for cid, rate in rates_by_credential.items()]
-    return case(*whens, else_=default_rate) if whens else literal(default_rate)
+    whens = [(credential_col == cid, literal(rate)) for cid, rate in rates_by_credential.items()]
+    return case(*whens, else_=literal(None)) if whens else literal(None)
+
+
+def _credit_cost(credits, rate: Optional[float]) -> Optional[float]:
+    """credits x rate, or None ("Not set") when the account has no rate."""
+    return round(float(credits or 0) * rate, 2) if rate is not None else None
+
+
+def _known_cost_sum(values) -> Optional[float]:
+    """Sum of the costs that are set; None when none of them is."""
+    known = [v for v in values if v is not None]
+    return round(sum(known), 2) if known else None
 
 
 def _envato_category(item_type: Optional[str]) -> str:
@@ -618,7 +630,7 @@ def _load_generation_facts(db: Session, period: dict, previous: bool = False) ->
         utc_s, utc_e = period["utc_start"], period["utc_end"]
 
     bucket: dict[tuple, dict] = defaultdict(_empty_tool)
-    rates_by_credential, default_rate, _rate_currency = _load_credit_rates(db)
+    rates_by_credential = _load_credit_rates(db)
 
     # ChatGPT — conversation prompt_count, IST via UTC shift
     prompts = func.coalesce(ConversationRecord.prompt_count, 0)
@@ -654,7 +666,7 @@ def _load_generation_facts(db: Session, period: dict, previous: bool = False) ->
         k_succ = _success_case(ITPortalToolUsageEvent.status)
         k_fail = _fail_case(ITPortalToolUsageEvent.status)
         k_credits_expr = _sane_kling_credits()
-        k_rate = _rate_case_expr(rates_by_credential, default_rate, ITPortalToolUsageEvent.credential_id)
+        k_rate = _rate_case_expr(rates_by_credential, ITPortalToolUsageEvent.credential_id)
         k_rows = (
             db.query(
                 ITPortalToolUsageEvent.user_id,
@@ -688,7 +700,7 @@ def _load_generation_facts(db: Session, period: dict, previous: bool = False) ->
             fail = literal(0)
         credit = func.coalesce(func.sum(credit_col), 0.0) if credit_col is not None else literal(0.0)
         if credit_col is not None:
-            rate_expr = _rate_case_expr(rates_by_credential, default_rate, model.credential_id)
+            rate_expr = _rate_case_expr(rates_by_credential, model.credential_id)
             cost = func.coalesce(func.sum(credit_col * rate_expr), 0.0)
         else:
             cost = literal(0.0)
@@ -762,7 +774,7 @@ def _load_client_tool_usage(db: Session, period: dict, user_ids: Optional[set] =
     credentialId is the tool account the generation was captured under -- it
     feeds ToolCreditRate-based cost conversion downstream. ConversationRecord
     carries no credential linkage either, so ChatGPT rows always report None
-    and fall back to the default rate.
+    and their cost is "Not set".
 
     category mirrors _load_generation_facts' tool -> category mapping so
     "Purpose" (Audio/Video/Image) can be read straight off it; Freepik and
@@ -870,7 +882,7 @@ def _load_client_tool_usage(db: Session, period: dict, user_ids: Optional[set] =
 
 
 def _clients_by_user(
-    usage_rows: list[dict], rates_by_credential: dict[int, float], default_rate: float,
+    usage_rows: list[dict], rates_by_credential: dict[int, float],
 ) -> dict[int, list[dict]]:
     """{userId: [{"client", "generations", "credits", "costRupees"}, ...]}, heaviest
     client first. Built from the same client-attribution rows _load_client_tool_usage
@@ -882,12 +894,10 @@ def _clients_by_user(
     for r in usage_rows:
         if r["client"] == NO_CLIENT:
             continue
-        cred_id = r.get("credentialId")
-        rate = rates_by_credential.get(cred_id, default_rate) if cred_id is not None else default_rate
         slot = by_user[r["userId"]][r["client"]]
         slot["generations"] += r["generations"]
         slot["credits"] += r["credits"]
-        slot["costRupees"] += (r.get("credits") or 0) * rate
+        slot["costRupees"] += _credit_cost(r.get("credits"), rates_by_credential.get(r.get("credentialId"))) or 0.0
     out: dict[int, list[dict]] = {}
     for uid, counts in by_user.items():
         ordered = sorted(counts.items(), key=lambda kv: (-kv[1]["generations"], kv[0]))
@@ -925,54 +935,17 @@ def _org_clients(users_scope: list[dict]) -> list[dict]:
     return rows
 
 
-def _load_credit_rates(db: Session) -> tuple[dict[int, float], float, str]:
-    """Return ({credentialId: rupees per credit}, defaultRatePerCredit, currency).
+def _load_credit_rates(db: Session) -> dict[int, float]:
+    """{credentialId: rupees per credit}: each account's own current rate,
+    0 for an account whose Credit System was turned off after it had a rate
+    (Admin Queue -> Tool Renew).
 
-    Mirrors reports_router._credit_rate_context but returns plain Python
-    structures for use in report code that aggregates credits in Python
-    rather than SQL. A credit-less rate row (rate_per_credit is null) is
-    skipped; the newest row per key wins.
-
-    An account with Credit System disabled (Admin Queue -> Tool Renew) is
-    forced to 0 here -- explicitly present in the dict, not merely absent --
-    so every ``rates_by_credential.get(cred_id, default_rate)`` call site
-    below finds the 0 instead of silently falling through to the global
-    default rate. See utils/tool_renewal_service.py.
-    """
-    today = datetime.utcnow().date()
-    rows = (
-        db.query(ToolCreditRate)
-        .filter(
-            ToolCreditRate.effective_from <= today,
-            or_(ToolCreditRate.effective_to.is_(None), ToolCreditRate.effective_to >= today),
-        )
-        .order_by(ToolCreditRate.effective_from.desc(), ToolCreditRate.id.desc())
-        .all()
-    )
-    default_rate = 0.0
-    currency = "INR"
-    rates_by_credential: dict[int, float] = {}
-    global_seen = False
-    for r in rows:
-        if r.rate_per_credit is None:
-            continue
-        rate = float(r.rate_per_credit)
-        if r.credential_id is not None:
-            rates_by_credential.setdefault(r.credential_id, rate)
-        elif r.provider is None and r.tool_id is None and not global_seen:
-            default_rate = rate
-            currency = r.currency or "INR"
-            global_seen = True
-
-    disabled_ids = (
-        db.query(ITPortalToolCredential.id)
-        .filter(ITPortalToolCredential.credit_enabled.is_(False))
-        .all()
-    )
-    for (cid,) in disabled_ids:
-        rates_by_credential[cid] = 0.0
-
-    return rates_by_credential, default_rate, currency
+    Mirrors reports_router._credit_rate_context, as plain Python for report
+    code that aggregates credits in Python rather than SQL. An account
+    missing from the dict has no rate: ``rates_by_credential.get(cred_id)``
+    is None and the cost is "Not set" -- never another account's rate or a
+    default. See tool_renewal_service.account_credit_rates."""
+    return account_credit_rates(db)
 
 
 def _resolve_account_labels(db: Session, credential_ids: set[int]) -> dict[int, str]:
@@ -991,19 +964,12 @@ def _resolve_account_labels(db: Session, credential_ids: set[int]) -> dict[int, 
     return labels
 
 
-_RENEWAL_STATUS_LABELS = {
-    STATUS_NOT_APPLICABLE: "Not Applicable",
-    "ok": "OK",
-    "renewal_required": "Renewal Required",
-}
-
-
 def _format_credit_enabled(value: bool) -> str:
     return "Yes" if value else "No"
 
 
 def _format_renewal_status(status: str) -> str:
-    return _RENEWAL_STATUS_LABELS.get(status, status)
+    return STATUS_LABELS.get(status, status)
 
 
 def _load_tool_accounts(db: Session) -> list[dict]:
@@ -1063,13 +1029,15 @@ def _load_tool_accounts(db: Session) -> list[dict]:
             out.append({
                 "tool": name, "account": "Not set", "status": "Old", "renewalDate": "Not set",
                 "purchaseDate": "Not set", "creditEnabled": _format_credit_enabled(False),
-                "renewalType": DEFAULT_RENEWAL_TYPE, "remainingCredits": "Not applicable",
+                "renewalType": plan_label(DEFAULT_RENEWAL_TYPE), "remainingCredits": "Not applicable",
                 "renewalStatus": _format_renewal_status(STATUS_NOT_APPLICABLE), "cost": "Not set",
             })
         else:
             for account, status, credential in sorted(distinct, key=lambda x: (x[1] != "Current", x[0].lower())):
-                remaining_credits = resolve_remaining_credits(db, credential)
-                renewal_status = calculate_renewal_status(credential, remaining_credits)["status"]
+                usage = credit_usage(db, credential)
+                remaining_credits = usage["remaining"] if usage else None
+                renewal_status = calculate_renewal_status(
+                    credential, remaining_credits, total_credits=usage["total"] if usage else None)["status"]
                 out.append({
                     "tool": name,
                     "account": account,
@@ -1077,7 +1045,7 @@ def _load_tool_accounts(db: Session) -> list[dict]:
                     "renewalDate": credential.renewal_date.isoformat() if credential.renewal_date else "Not set",
                     "purchaseDate": credential.purchase_date.isoformat() if credential.purchase_date else "Not set",
                     "creditEnabled": _format_credit_enabled(credential.credit_enabled),
-                    "renewalType": normalize_renewal_type(credential.renewal_type),
+                    "renewalType": plan_label(credential.renewal_type),
                     "remainingCredits": round(remaining_credits, 2) if remaining_credits is not None else "Not applicable",
                     "renewalStatus": _format_renewal_status(renewal_status),
                     "cost": float(credential.tool_cost) if credential.tool_cost is not None else "Not set",
@@ -1125,7 +1093,7 @@ def _load_tool_assignments(db: Session, people: list[dict]) -> list[dict]:
             "renewalDate": renewal,
             "purchaseDate": purchase_date,
             "creditEnabled": _format_credit_enabled(bool(effective.credit_enabled) if effective else False),
-            "renewalType": normalize_renewal_type(effective.renewal_type) if effective else DEFAULT_RENEWAL_TYPE,
+            "renewalType": plan_label(effective.renewal_type if effective else DEFAULT_RENEWAL_TYPE),
             "assignedDate": assigned,
         })
     rows.sort(key=lambda r: (r["tool"] or "", r["name"] or ""))
@@ -1169,7 +1137,7 @@ def _gen_row(*, day, client, tool, category, credits, status, task, generations=
         "category": category or "Uncategorised",
         "generations": int(generations or 0),
         "credits": round(float(credits or 0), 2),
-        "costRupees": round(float(cost or 0), 2),
+        "costRupees": round(float(cost), 2) if cost is not None else None,  # None = "Not set"
         "status": (status or "captured").replace("_", " ").title(),
         "task": (task or "").strip() or "None",
     }
@@ -1180,7 +1148,7 @@ def _load_person_generation_log(db: Session, period: dict, user_id: int) -> dict
     utc_s, utc_e = period["utc_start"], period["utc_end"]
     start, end = period["start"], period["end"]
     rows: list[dict] = []
-    rates_by_credential, default_rate, _rate_currency = _load_credit_rates(db)
+    rates_by_credential = _load_credit_rates(db)
 
     cg = (
         db.query(
@@ -1200,7 +1168,7 @@ def _load_person_generation_log(db: Session, period: dict, user_id: int) -> dict
     for created_at, prompt_count, status in cg:
         rows.append(_gen_row(
             day=created_at, client=None, tool="ChatGPT", category="Chat / Text",
-            credits=0, status=status, task=None, generations=int(prompt_count or 0),
+            credits=0, status=status, task=None, generations=int(prompt_count or 0), cost=None,
         ))
 
     tool_ids = _kling_tool_ids(db)
@@ -1226,10 +1194,10 @@ def _load_person_generation_log(db: Session, period: dict, user_id: int) -> dict
             burned = float(credits or 0)
             if not (0 <= burned <= MAX_SANE_KLING_CREDITS):
                 burned = 0.0
-            rate = rates_by_credential.get(cred_id, default_rate) if cred_id is not None else default_rate
             rows.append(_gen_row(
                 day=event_date, client=client, tool="Kling", category="Video",
-                credits=burned, status=status, task=task, cost=burned * rate,
+                credits=burned, status=status, task=task,
+                cost=_credit_cost(burned, rates_by_credential.get(cred_id)),
             ))
 
     def _provider(model, tool, category, credit_col, status_col, category_fn=None):
@@ -1260,10 +1228,10 @@ def _load_person_generation_log(db: Session, period: dict, user_id: int) -> dict
                 cat = "Video" if rec[6] == FREEPIK_VIDEO_TOOL else "Image"
             elif category_fn == "envato":
                 cat = _envato_category(rec[6])
-            rate = rates_by_credential.get(cred_id, default_rate) if cred_id is not None else default_rate
             rows.append(_gen_row(
                 day=when, client=client, tool=tool, category=cat,
-                credits=credits, status=status, task=task, cost=float(credits or 0) * rate,
+                credits=credits, status=status, task=task,
+                cost=_credit_cost(credits, rates_by_credential.get(cred_id)),
             ))
 
     _provider(FreepikGeneration, "Freepik", "Image", FreepikGeneration.credits_charged, FreepikGeneration.status, "freepik")
@@ -1283,12 +1251,12 @@ def _load_person_generation_log(db: Session, period: dict, user_id: int) -> dict
         slot = by_client[row["client"]]
         slot["generations"] += row["generations"]
         slot["credits"] += row["credits"]
-        slot["costRupees"] += row["costRupees"]
+        slot["costRupees"] += row["costRupees"] or 0.0
         slot["tools"].add(row["tool"])
         pair = by_pair[(row["client"], row["tool"])]
         pair["generations"] += row["generations"]
         pair["credits"] += row["credits"]
-        pair["costRupees"] += row["costRupees"]
+        pair["costRupees"] += row["costRupees"] or 0.0
 
     total_credits = sum(v["credits"] for v in by_client.values()) or 0.0
     clients = []
@@ -1434,7 +1402,7 @@ def build_snapshot(
         facts = {k: v for k, v in facts.items() if k[0] not in removed_ids}
         prev_facts = {k: v for k, v in prev_facts.items() if k[0] not in removed_ids}
     tool_seconds = _load_dashboard_tool_seconds(db, period["utc_start"], period["utc_end"])
-    rates_by_credential, default_rate, _rate_currency = _load_credit_rates(db)
+    rates_by_credential = _load_credit_rates(db)
     # _load_client_tool_usage is a bulk scan across every provider (ChatGPT,
     # Kling, Freepik, Envato, HeyGen, Higgsfield, ElevenLabs, Flow) for the
     # whole period -- the heaviest query this function runs. It feeds the
@@ -1448,7 +1416,7 @@ def build_snapshot(
     compute_clients = not user_id and (include_clients or raw_report_type == "consolidated")
     if compute_clients:
         usage_rows_all = _load_client_tool_usage(db, period)
-        clients_by_user = _clients_by_user(usage_rows_all, rates_by_credential, default_rate)
+        clients_by_user = _clients_by_user(usage_rows_all, rates_by_credential)
     else:
         usage_rows_all = []
         clients_by_user = {}
@@ -1634,10 +1602,8 @@ def build_snapshot(
         # instead of a second _load_client_tool_usage round trip.
         usage_rows = usage_rows_all if scope_ids is None else [r for r in usage_rows_all if r["userId"] in scope_ids]
 
-        def _row_cost(r: dict) -> float:
-            cred_id = r.get("credentialId")
-            rate = rates_by_credential.get(cred_id, default_rate) if cred_id is not None else default_rate
-            return round((r.get("credits") or 0) * rate, 2)
+        def _row_cost(r: dict) -> Optional[float]:
+            return _credit_cost(r.get("credits"), rates_by_credential.get(r.get("credentialId")))
 
         # _load_client_tool_usage groups per provider by credential_id (each
         # Kling/Freepik/... account has its own rate), so the same person can
@@ -1687,7 +1653,7 @@ def build_snapshot(
                 "rows": entries,
                 "totalCredits": round(sum(x["credits"] for x in entries), 2),
                 "totalGenerations": sum(x["generations"] for x in entries),
-                "totalCostRupees": round(sum(x["costRupees"] for x in entries), 2),
+                "totalCostRupees": _known_cost_sum(x["costRupees"] for x in entries),
             })
         client_usage.sort(key=lambda c: (c["client"] == NO_CLIENT, -c["totalCredits"], c["client"]))
 
@@ -1698,7 +1664,7 @@ def build_snapshot(
                 "rows": entries,
                 "totalCredits": round(sum(x["credits"] for x in entries), 2),
                 "totalGenerations": sum(x["generations"] for x in entries),
-                "totalCostRupees": round(sum(x["costRupees"] for x in entries), 2),
+                "totalCostRupees": _known_cost_sum(x["costRupees"] for x in entries),
             })
         department_usage.sort(key=lambda d: (-d["totalCredits"], d["department"] or ""))
 

@@ -41,6 +41,7 @@ from models_new import (
 from services.feature_access_service import FEATURE_BUFFER_SHEET_EDIT, has_feature_access, is_feature_exempt
 from utils.buffer_feed import MEDIA_AUDIO, MEDIA_IMAGE, MEDIA_OTHER, MEDIA_VIDEO, get_buffer_feed
 from utils.permissions import has_any_role, require_buffer_access
+from utils.xlsx_compat import excel_safe
 
 router = APIRouter(prefix="/api/buffer", tags=["Buffer"])
 
@@ -765,7 +766,7 @@ def export_sheet_xlsx(
     wb.save(buf)
     filename = f"Buffer-Sheet_{date.today().isoformat()}.xlsx"
     return Response(
-        content=buf.getvalue(),
+        content=excel_safe(buf.getvalue()),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

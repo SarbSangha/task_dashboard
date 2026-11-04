@@ -600,7 +600,7 @@ def _costed(raw, filters: ReportFilters, dialect: str):
         func.sum(weight).over(partition_by=[raw.c.tool, account]).label("weight_total"),
         _day_of_timestamp(raw.c.occurred_at, dialect).label("day"),
     ).subquery("costing")
-    rate, assumed = cost.rate_sql(l1.c.tool, l1.c.account, l1.c.day)
+    rate, not_set = cost.rate_sql(l1.c.tool, l1.c.account, l1.c.day)
     l1_charged = charge_status_expr(l1.c.status) == CHARGED
     l1_ppu = l1.c.tool.in_(PAY_PER_USE_TOOLS)
     rupees = case(
@@ -609,14 +609,15 @@ def _costed(raw, filters: ReportFilters, dialect: str):
         (l1.c.weight_total > 0, cost.fee_sql(l1.c.account) * l1.c.weight / l1.c.weight_total),
         else_=literal(0.0, Float),
     )
-    rate_assumed = case((and_(l1_charged, l1_ppu), assumed), else_=0)
-    estimated = case((rate_assumed == 1, 1), (and_(l1_charged, ~l1_ppu, l1.c.size_est == 1), 1), else_=0)
+    # A pay-per-use row whose account has no rate: ₹0 in every sum, "Not set" on the row.
+    rate_not_set = case((and_(l1_charged, l1_ppu), not_set), else_=0)
+    estimated = case((and_(l1_charged, ~l1_ppu, l1.c.size_est == 1), 1), else_=0)
     out = [c for c in l1.c if c.name not in ("weight", "weight_total")]
     return select(
         *out,
         cast(rupees, Float).label("rupees"),
         cast(estimated, Integer).label("estimated"),
-        cast(rate_assumed, Integer).label("rate_assumed"),
+        cast(rate_not_set, Integer).label("rate_not_set"),
         case((l1_ppu, PAY_PER_USE), else_=SUBSCRIPTION).label("basis"),
     ).subquery("facts")
 
@@ -860,19 +861,21 @@ def load_account_groups(db: Session, filters: ReportFilters) -> list:
 
 
 def load_issue_counts(db: Session, filters: ReportFilters) -> dict:
-    """Charged rows and rupees behind the cost notes: {issue: (rows, rupees)}
-    for "rate assumed", "estimated" and "free preview model"."""
+    """Charged rows behind the cost notes: {issue: (rows, rupees)} for
+    "estimated" and "free preview model", and {"rate_not_set": (rows,
+    credits)} -- those rows have no ₹ to count, so their credits are given."""
     prepare(db, filters)
     facts = _facts(db, filters)
     charged = charge_status_expr(facts.c.status) == CHARGED
 
-    def pair(cond):
+    def pair(cond, amount=facts.c.rupees):
         return (func.coalesce(func.sum(case((and_(charged, cond), 1), else_=0)), 0),
-                func.coalesce(func.sum(case((and_(charged, cond), facts.c.rupees), else_=0.0)), 0.0))
+                func.coalesce(func.sum(case((and_(charged, cond), amount), else_=0.0)), 0.0))
 
-    cols = [*pair(facts.c.rate_assumed == 1), *pair(facts.c.estimated == 1), *pair(facts.c.preview == 1)]
+    cols = [*pair(facts.c.rate_not_set == 1, facts.c.credits), *pair(facts.c.estimated == 1),
+            *pair(facts.c.preview == 1)]
     r = db.execute(_scoped(select(*cols), facts, filters)).one()
-    return {"rate_assumed": (int(r[0]), float(r[1])), "estimated": (int(r[2]), float(r[3])),
+    return {"rate_not_set": (int(r[0]), float(r[1])), "estimated": (int(r[2]), float(r[3])),
             "free_preview": (int(r[4]), float(r[5]))}
 
 
@@ -1061,7 +1064,7 @@ def _log_select(facts, owner_key):
         facts.c.has_output,
         facts.c.rupees,
         facts.c.estimated,
-        facts.c.rate_assumed,
+        facts.c.rate_not_set,
         facts.c.preview,
         facts.c.size_est,
         facts.c.basis,
@@ -1076,8 +1079,8 @@ def cost_note(row) -> str:
         return ""
     if getattr(row, "preview", 0):
         return "Free preview model"
-    if getattr(row, "rate_assumed", 0):
-        return "est. · rate assumed"
+    if getattr(row, "rate_not_set", 0):
+        return "Rate not set for this account"
     if getattr(row, "size_est", 0):
         return "est. · no per-item cost recorded" if row.tool != "ElevenLabs" else "est. · from text length"
     return ""

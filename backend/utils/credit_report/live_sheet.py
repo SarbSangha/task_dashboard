@@ -42,6 +42,7 @@ from .facts import (
     KLING,
     NO_CLIENT,
     PENDING,
+    TOOL_NAMES,
     UNASSIGNED,
     UNASSIGNED_DEPARTMENT,
     UNASSIGNED_USER_ID,
@@ -56,6 +57,7 @@ from .facts import (
     recent_log,
     stream_log,
 )
+from .costing import report_tool
 from .management import build_management, change_text, period_label
 from .model import build_model
 
@@ -136,6 +138,54 @@ def classify_generation(tool: str, model_label: Optional[str], prompt: Optional[
         label = f"{out_type} ({m})" if m else out_type
 
     return out_type, label
+
+
+def load_seats(db: Session, display, user_ids=None) -> dict[int, dict[str, set[int]]]:
+    """Tools each person holds a seat on: user id -> {report tool name -> the
+    account ids behind it (their seat and the shared login it points at)}.
+    Same rule as the Tools page: a person's newest user-scope row per tool,
+    if active, and, when it points at a shared login, that login still
+    active. `user_ids`: only these people (None = everyone)."""
+    c, t = ITPortalToolCredential, ITPortalTool
+    # Named columns only: the report's read-only role cannot read login secrets.
+    query = (
+        db.query(c.id, c.user_id, c.tool_id, c.is_active, c.linked_credential_id, t.name, t.slug)
+        .join(t, t.id == c.tool_id)
+        .filter(c.scope == "user", c.user_id.isnot(None), t.is_active.is_(True))
+    )
+    if user_ids is not None:
+        query = query.filter(c.user_id.in_(list(user_ids)))
+    latest = {}
+    for row in query.order_by(c.updated_at.desc(), c.created_at.desc()).all():
+        latest.setdefault((row.user_id, row.tool_id), row)
+    seats = [r for r in latest.values() if r.is_active]
+    linked = {r.linked_credential_id for r in seats if r.linked_credential_id}
+    live_linked = (
+        {i for (i,) in db.query(c.id).filter(c.id.in_(linked), c.is_active.is_(True)).all()} if linked else set()
+    )
+
+    def key(text) -> str:
+        return "".join(str(text or "").lower().split())
+
+    untracked = {key(n): n for n in display.untracked_ai_tools}
+    out: dict[int, dict[str, set[int]]] = {}
+    for r in seats:
+        if r.linked_credential_id and r.linked_credential_id not in live_linked:
+            continue
+        name = (report_tool(r.name, r.slug) or untracked.get(key(r.name)) or untracked.get(key(r.slug))
+                or (r.name or r.slug or "").strip())
+        if not name:
+            continue
+        ids = out.setdefault(int(r.user_id), {}).setdefault(name, set())
+        ids.add(int(r.id))
+        if r.linked_credential_id:
+            ids.add(int(r.linked_credential_id))
+    return out
+
+
+def load_assigned_tools(db: Session, user_id: int, display) -> dict[str, set[int]]:
+    """One person's seats: report tool name -> account ids (see load_seats)."""
+    return load_seats(db, display, [user_id]).get(int(user_id), {})
 
 
 def _month_label(ym: str) -> str:
@@ -318,7 +368,9 @@ def build_live_sheet(
                     "accountId": raw_row.account,
                     "account": filters.display.account_label(raw_row.account, raw_row.tool),
                     "credits": round(float(raw_row.credits or 0.0), 2),
-                    "spendRupees": round(float(raw_row.rupees or 0.0), 2),
+                    # null = the account has no rate ("Not set"), not ₹0
+                    "spendRupees": (None if raw_row.charge_status == CHARGED and getattr(raw_row, "rate_not_set", 0)
+                                    else round(float(raw_row.rupees or 0.0), 2)),
                     "chargeStatus": raw_row.charge_status,
                     "basis": raw_row.basis,
                     "costNote": cost_note(raw_row),
@@ -482,6 +534,46 @@ def build_live_sheet(
                 "costNote": "Paid, not used in this period" if info["tracked"]
                             else "Paid, not tracked: the dashboard captures no usage for this tool",
                 "tracked": info["tracked"],
+            })
+
+    # One person picked: list every tool they hold a seat on, including the
+    # ones they did not use in the period ("Assigned, not used"). Rows carry
+    # no money: a fee belongs to the login, not to one of its people.
+    person_dept = user_meta.get(user_id, {}).get("department") if user_id else None
+    if user_id and (not clean_dept or person_dept == clean_dept):
+        assigned = load_assigned_tools(db, user_id, filters.display)
+        for row in tools_sheet:
+            row["assigned"] = row["tool"] in assigned
+        listed = {row["tool"] for row in tools_sheet}
+        for name in sorted(assigned, key=str.lower):
+            if name in listed or (clean_tool and name != clean_tool):
+                continue
+            if filters.accounts and not assigned[name].intersection(filters.accounts):
+                continue
+            if search_q and search_q not in name.lower():
+                continue
+            tracked = name in TOOL_NAMES
+            tools_sheet.append({
+                "tool": name,
+                "outputCategory": TOOL_OUTPUT_CATEGORY.get(name, "AI Output" if tracked else "Not tracked"),
+                "users": 0,
+                "topUser": "—",
+                "topDepartment": "—",
+                "generations": 0,
+                "avgGenerationsPerDay": 0.0,
+                "avgGenerationsPerMonth": 0.0,
+                "credits": 0.0,
+                "itemSpendRupees": 0.0,
+                "subscriptionFeeRupees": 0.0,
+                "unusedFeeRupees": 0.0,
+                "totalSpendRupees": 0.0,
+                "avgSpendPerDay": 0.0,
+                "avgSpendPerOutput": 0.0,
+                "sharePct": 0.0,
+                "costNote": "Assigned, not used in this period" if tracked
+                            else "Assigned, not tracked: the dashboard captures no usage for this tool",
+                "tracked": tracked,
+                "assigned": True,
             })
 
     # Build Sheet 4A: Daily breakdown

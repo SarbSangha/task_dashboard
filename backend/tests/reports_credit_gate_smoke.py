@@ -1,8 +1,11 @@
-"""Regression guard for the exact bug this feature closes: reports_router's
-cost calculation (_credit_rate_context) must never charge a rupee cost to an
-account whose Credit System is disabled (Admin Queue -> Tool Renew ->
-Configure), even when a global default rate exists and even when that
-account still has a leftover ToolCreditRate row from before it was disabled.
+"""Regression guard for reports_router's cost calculation (_credit_rate_context):
+
+* an account whose Credit System is disabled (Admin Queue -> Tool Renew ->
+  Configure) costs 0, even with a leftover ToolCreditRate row of its own;
+* a generation is costed only at its own account's rate: an account with no
+  rate, or a record with no linkable account, is "Not set" (None) -- never
+  another account's rate or the global default row;
+* correcting an account's rate re-prices its earlier generations too.
 """
 import os
 import sys
@@ -63,9 +66,8 @@ def main() -> int:
         db.commit()
         db.refresh(tool)
 
-        # A global default rate exists (as it would in the real app for
-        # legacy/unlinkable records) -- this is the exact fallback a disabled
-        # account must never be allowed to fall through to.
+        # A global default rate row exists (as it does in the real app) --
+        # no generation may ever be costed at it.
         db.add(ToolCreditRate(
             credential_id=None, provider=None, tool_id=None,
             package_credits=1000, package_rupees=1000, rate_per_credit=1.0,
@@ -84,19 +86,37 @@ def main() -> int:
             effective_from=today - timedelta(days=30),
         ))
 
-        # Enabled account with no rate of its own -> legitimately falls back
-        # to the global default (unaffected by this feature).
+        # Enabled account with no rate of its own -> "Not set".
         enabled_no_rate = ITPortalToolCredential(tool_id=tool.id, scope="company", credit_enabled=True)
         db.add(enabled_no_rate)
+        # Credit System off by default, never had a rate -> "Not set" too, not ₹0.
+        never_configured = ITPortalToolCredential(tool_id=tool.id, scope="company")
+        db.add(never_configured)
+        # Enabled account with a rate: first entered wrong (10,000 credits for
+        # 4,000 = 0.40), corrected the next day (20,000 for 4,000 = 0.20).
+        rated = ITPortalToolCredential(tool_id=tool.id, scope="company", credit_enabled=True)
+        db.add(rated)
         db.commit()
         db.refresh(enabled_no_rate)
+        db.refresh(never_configured)
+        db.refresh(rated)
+        db.add(ToolCreditRate(
+            credential_id=rated.id, tool_id=tool.id,
+            package_credits=10000, package_rupees=4000, rate_per_credit=0.4,
+            effective_from=today - timedelta(days=1), effective_to=today - timedelta(days=1),
+        ))
+        db.add(ToolCreditRate(
+            credential_id=rated.id, tool_id=tool.id,
+            package_credits=20000, package_rupees=4000, rate_per_credit=0.2,
+            effective_from=today,
+        ))
 
         db.commit()
 
-        def _record_for(credential_id, credits_burned):
+        def _record_for(credential_id, credits_burned, day=today):
             event = ITPortalToolUsageEvent(
                 tool_id=tool.id, credential_id=credential_id, user_id=user.id,
-                event_type="generate_click", event_date=today, credits_burned=credits_burned,
+                event_type="generate_click", event_date=day, credits_burned=credits_burned,
             )
             db.add(event)
             db.flush()
@@ -111,6 +131,9 @@ def main() -> int:
 
         disabled_record = _record_for(disabled_credential.id, 100)
         enabled_record = _record_for(enabled_no_rate.id, 100)
+        never_configured_record = _record_for(never_configured.id, 100)
+        yesterday_record = _record_for(rated.id, 1000, day=today - timedelta(days=1))
+        today_record = _record_for(rated.id, 1000)
         unlinkable_record = GenerationRecord(
             provider="freepik", provider_generation_id="gen-unlinked",
             credits_burned=100, owner_user_id=user.id,
@@ -118,20 +141,38 @@ def main() -> int:
         db.add(unlinkable_record)
         db.commit()
 
-        rate_expr, currency, default_rate = _credit_rate_context(db)
-        _assert(default_rate == 1.0, f"expected global default rate 1.0, got {default_rate}")
+        rate_expr, currency = _credit_rate_context(db)
+        _assert(currency == "INR", f"expected INR, got {currency}")
 
-        disabled_cost = _cost(db.query(GenerationRecord).filter(GenerationRecord.id == disabled_record.id), rate_expr)
+        def cost_of(record):
+            return _cost(db.query(GenerationRecord).filter(GenerationRecord.id == record.id), rate_expr)
+
+        disabled_cost = cost_of(disabled_record)
         _assert(disabled_cost == 0, f"disabled account must cost 0 even with a leftover rate + global default, got {disabled_cost}")
         print("PASS disabled account with a stale own-rate costs 0, not its old rate")
 
-        enabled_cost = _cost(db.query(GenerationRecord).filter(GenerationRecord.id == enabled_record.id), rate_expr)
-        _assert(enabled_cost == 100 * 1.0, f"enabled account with no own rate should fall back to the global default, got {enabled_cost}")
-        print("PASS enabled account with no own rate still uses the global default (unchanged behavior)")
+        enabled_cost = cost_of(enabled_record)
+        _assert(enabled_cost is None, f"enabled account with no own rate must be Not set, got {enabled_cost}")
+        print("PASS enabled account with no own rate is Not set (no global default, no other account's rate)")
 
-        unlinkable_cost = _cost(db.query(GenerationRecord).filter(GenerationRecord.id == unlinkable_record.id), rate_expr)
-        _assert(unlinkable_cost == 100 * 1.0, f"a record with no linkable credential at all should still use the global default, got {unlinkable_cost}")
-        print("PASS record with no linkable account still uses the global default (unchanged behavior)")
+        never_configured_cost = cost_of(never_configured_record)
+        _assert(never_configured_cost is None,
+                f"an account never given a rate (Credit System off by default) must be Not set, got {never_configured_cost}")
+        print("PASS account with Credit System off by default and no rate is Not set, not 0")
+
+        unlinkable_cost = cost_of(unlinkable_record)
+        _assert(unlinkable_cost is None, f"a record with no linkable account must be Not set, got {unlinkable_cost}")
+        print("PASS record with no linkable account is Not set")
+
+        for record in (yesterday_record, today_record):
+            cost = cost_of(record)
+            _assert(abs(cost - 200.0) < 1e-6, f"1,000 credits at the corrected 0.20 must cost 200, got {cost}")
+        print("PASS corrected rate re-prices the account's earlier generation too (200, not 400)")
+
+        both = _cost(db.query(GenerationRecord).filter(GenerationRecord.id.in_([enabled_record.id, today_record.id])),
+                     rate_expr)
+        _assert(abs(both - 200.0) < 1e-6, f"a group's cost counts only its priced generations, got {both}")
+        print("PASS a mixed group costs only the generations whose account has a rate")
 
     engine.dispose()
     print("SMOKE TESTS PASSED")

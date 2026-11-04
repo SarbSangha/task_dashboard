@@ -37,13 +37,95 @@
   color: var(--color-text-muted);
 }
 
-/* Renewal Required pill -- the one status act-status's active/inactive
-   pair (green/gray) doesn't already cover. */
+/* Renewal status pills beyond act-status's active/inactive (green/gray)
+   pair: due soon / credits low, overdue / used up, and renews soon. */
 .act-status--warning {
   background: var(--color-feedback-warning-bg);
   border-color: var(--color-feedback-warning-border);
   color: var(--color-feedback-warning-text);
 }
+
+.act-status--danger {
+  background: var(--color-feedback-error-bg);
+  border-color: var(--color-feedback-error-border);
+  color: var(--color-feedback-error-text);
+}
+
+.act-status--info {
+  background: var(--color-feedback-info-bg);
+  border-color: var(--color-feedback-info-border);
+  color: var(--color-feedback-info-text);
+}
+
+/* ── Filter chips above the table ─────────────────────────────────────── */
+
+.art-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+
+.art-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.art-filter:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+.art-filter.is-active {
+  background: var(--color-button-primary-bg);
+  border-color: var(--color-button-primary-bg);
+  color: var(--color-button-primary-text);
+}
+
+.art-filter-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--color-surface-elevated);
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.art-filter.has-alert:not(.is-active) .art-filter-count {
+  background: var(--color-feedback-warning-bg);
+  color: var(--color-feedback-warning-text);
+}
+
+/* ── Credits left: number, bar, reset date ────────────────────────────── */
+
+.art-credits {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 110px;
+}
+
+.art-credit-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border-subtle);
+  overflow: hidden;
+}
+
+.art-credit-bar span { display: block; height: 100%; }
+.art-credit-bar--ok span { background: var(--color-feedback-success-text); }
+.art-credit-bar--low span { background: var(--color-feedback-warning-text); }
+.art-credit-bar--empty span { background: var(--color-feedback-error-text); }
 
 .art-row-menu-btn {
   width: 30px;

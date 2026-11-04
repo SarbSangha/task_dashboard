@@ -1,6 +1,10 @@
 import React from 'react';
 import { Avatar, DeptPill, OutputLink, ShareBar, ToolTag, fmtINR, fmtNum } from './shared';
 
+// A Tools-tab row with no output in the period: a paid tool nobody used, or
+// (one person picked) a tool assigned to them that they did not use.
+export const isUnusedTool = (t) => !Number(t.generations);
+
 /**
  * Column definitions for every table tab. Each column has
  * - sort(row): value to sort by (omit = not sortable)
@@ -134,7 +138,16 @@ export function buildColumns({ drill, openOutput }) {
         key: 'tool',
         label: 'Tool',
         sort: (t) => t.tool,
-        cell: (t) => <ToolTag name={t.tool} onClick={() => drill({ tool: t.tool })} />,
+        cell: (t) => (
+          <div className="zrs-tool-cell">
+            <ToolTag name={t.tool} onClick={() => drill({ tool: t.tool })} />
+            {isUnusedTool(t) && (
+              <span className="zrs-unused" title={t.costNote || 'Not used in this period'}>
+                Not used
+              </span>
+            )}
+          </div>
+        ),
       },
       { key: 'category', label: 'Category', sort: (t) => t.outputCategory, td: 'zrs-muted', cell: (t) => t.outputCategory },
       { key: 'people', label: 'People', num: true, sort: (t) => t.users, cell: (t) => t.users },

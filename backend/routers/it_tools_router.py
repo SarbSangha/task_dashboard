@@ -27,13 +27,21 @@ from auth import get_request_session_token, resolve_session_user, verify_session
 from database_config import OperationalSessionLocal, get_operational_db
 from models_new import ITPortalTool, ITPortalToolAudit, ITPortalToolCredential, ITPortalToolMailbox, ITPortalToolUsageEvent, ToolCreditRate, User
 from utils.tool_renewal_service import (
+    CREDIT_RESET_CYCLE,
+    CREDIT_RESETS,
     DEFAULT_RENEWAL_TYPE,
+    NO_COST_TYPES,
+    NOT_PURCHASED,
+    PLAN_PERIOD_MONTHS,
+    RENEWAL_TYPES,
     calculate_renewal_status,
+    credit_usage,
     get_current_rate,
+    is_valid_credit_reset,
     is_valid_renewal_type,
+    normalize_credit_reset,
     normalize_renewal_type,
     process_auto_renewal,
-    resolve_remaining_credits,
 )
 from services.otp_mail_service import fetch_auth_link_from_gmail, fetch_otp_from_gmail, latest_otp_uid_from_gmail
 from services.totp_service import generate_totp_code, parse_totp_config
@@ -190,6 +198,7 @@ class CredentialUpsertPayload(BaseModel):
     credit_enabled: Optional[bool] = None
     renewal_type: Optional[str] = None
     auto_renew: Optional[bool] = None
+    credit_reset: Optional[str] = None
     purchase_date: Optional[str] = None
     tool_cost: Optional[float] = None
     is_active: bool = True
@@ -484,12 +493,42 @@ def _serialize_credential_summary(credential: ITPortalToolCredential) -> dict:
         "creditEnabled": bool(credential.credit_enabled),
         "renewalType": normalize_renewal_type(credential.renewal_type),
         "autoRenew": bool(credential.auto_renew),
+        "creditReset": normalize_credit_reset(credential.credit_reset),
         "purchaseDate": credential.purchase_date.isoformat() if credential.purchase_date else None,
         "toolCost": float(credential.tool_cost) if credential.tool_cost is not None else None,
         "isActive": bool(credential.is_active),
         "createdAt": credential.created_at.isoformat() if credential.created_at else None,
         "updatedAt": credential.updated_at.isoformat() if credential.updated_at else None,
     }
+
+
+def _renewal_config_snapshot(credential: ITPortalToolCredential) -> dict:
+    """The Tool Renew fields an audit entry records old -> new (credits,
+    cost, plan, credit reset, purchase date, auto-renew)."""
+    return {
+        "renewalDate": credential.renewal_date.isoformat() if credential.renewal_date else None,
+        "creditEnabled": bool(credential.credit_enabled),
+        "renewalType": normalize_renewal_type(credential.renewal_type),
+        "autoRenew": bool(credential.auto_renew),
+        "creditReset": normalize_credit_reset(credential.credit_reset),
+        "purchaseDate": credential.purchase_date.isoformat() if credential.purchase_date else None,
+        "toolCost": float(credential.tool_cost) if credential.tool_cost is not None else None,
+    }
+
+
+def _apply_plan_rules(credential: ITPortalToolCredential) -> None:
+    """Keep the stored fields consistent with the plan, whatever the caller
+    sent: only subscriptions auto-renew; a free or not-purchased account
+    costs nothing (so reports never count a fee for it); a not-purchased
+    account has no renewal pending and no credit balance."""
+    plan = normalize_renewal_type(credential.renewal_type)
+    if plan not in PLAN_PERIOD_MONTHS:
+        credential.auto_renew = False
+    if plan in NO_COST_TYPES:
+        credential.tool_cost = 0
+    if plan == NOT_PURCHASED:
+        credential.renewal_date = None
+        credential.credit_enabled = False
 
 
 def _attach_tool_renew_fields(db: Session, credential: ITPortalToolCredential, serialized: dict, rate=None) -> dict:
@@ -502,14 +541,20 @@ def _attach_tool_renew_fields(db: Session, credential: ITPortalToolCredential, s
     -- a disabled account has nothing to look up."""
     if rate is None and credential.credit_enabled:
         rate = get_current_rate(db, credential.id)
-    remaining_credits = resolve_remaining_credits(db, credential, rate=rate)
-    status = calculate_renewal_status(credential, remaining_credits)
+    usage = credit_usage(db, credential, rate=rate)
+    total_credits = float(rate.package_credits) if rate and rate.package_credits is not None else None
+    status = calculate_renewal_status(credential, usage["remaining"] if usage else None,
+                                      total_credits=usage["total"] if usage else None)
     serialized.update({
-        "totalCredits": float(rate.package_credits) if rate and rate.package_credits is not None else None,
+        "totalCredits": total_credits,
         "costPerCredit": float(rate.rate_per_credit) if rate and rate.rate_per_credit is not None else None,
-        "remainingCredits": remaining_credits,
+        "remainingCredits": usage["remaining"] if usage else None,
+        "usedCredits": usage["used"] if usage else None,
+        "creditPeriodStart": usage["periodStart"].isoformat() if usage and usage["periodStart"] else None,
+        "creditsResetOn": usage["resetsOn"].isoformat() if usage and usage["resetsOn"] else None,
         "renewalStatus": status["status"],
         "renewalRequiresAction": status["requiresRenewal"],
+        "daysToRenewal": status["daysLeft"],
     })
     return serialized
 
@@ -4431,6 +4476,7 @@ def upsert_credential(
         credential.credit_enabled = False
         credential.renewal_type = DEFAULT_RENEWAL_TYPE
         credential.auto_renew = False
+        credential.credit_reset = CREDIT_RESET_CYCLE
         credential.purchase_date = None
         credential.tool_cost = None
     else:
@@ -4482,30 +4528,28 @@ def upsert_credential(
         # old -> new for exactly the fields this feature is required to be
         # auditable for (requirement 16: credits, cost, renewal type,
         # purchase date, auto-renew).
-        renewal_config_before = {
-            "renewalDate": credential.renewal_date.isoformat() if credential.renewal_date else None,
-            "creditEnabled": bool(credential.credit_enabled),
-            "renewalType": normalize_renewal_type(credential.renewal_type),
-            "autoRenew": bool(credential.auto_renew),
-            "purchaseDate": credential.purchase_date.isoformat() if credential.purchase_date else None,
-            "toolCost": float(credential.tool_cost) if credential.tool_cost is not None else None,
-        }
+        renewal_config_before = _renewal_config_snapshot(credential)
         if payload.renewal_date is not None:
             credential.renewal_date = _parse_optional_date(payload.renewal_date)
         if payload.credit_enabled is not None:
             credential.credit_enabled = payload.credit_enabled
         if payload.renewal_type is not None:
             if not is_valid_renewal_type(payload.renewal_type):
-                raise HTTPException(status_code=400, detail="renewal_type must be one of MANUAL, MONTHLY, YEARLY, CREDIT_CONSUMPTION")
+                raise HTTPException(status_code=400, detail=f"renewal_type must be one of {', '.join(RENEWAL_TYPES)}")
             credential.renewal_type = normalize_renewal_type(payload.renewal_type)
         if payload.auto_renew is not None:
             credential.auto_renew = payload.auto_renew
+        if payload.credit_reset is not None:
+            if not is_valid_credit_reset(payload.credit_reset):
+                raise HTTPException(status_code=400, detail=f"credit_reset must be one of {', '.join(CREDIT_RESETS)}")
+            credential.credit_reset = normalize_credit_reset(payload.credit_reset)
         if payload.purchase_date is not None:
             credential.purchase_date = _parse_optional_date(payload.purchase_date, field_label="purchase date")
         if payload.tool_cost is not None:
             if payload.tool_cost < 0:
                 raise HTTPException(status_code=400, detail="tool_cost must be 0 or greater")
             credential.tool_cost = payload.tool_cost
+        _apply_plan_rules(credential)
     if scope == "user":
         credential.linked_credential_id = effective_linked_credential.id if effective_linked_credential else None
     else:
@@ -4529,14 +4573,7 @@ def upsert_credential(
         "assignedUserCount": len(payload.assigned_user_ids or []),
     }
     if renewal_config_before is not None:
-        renewal_config_after = {
-            "renewalDate": credential.renewal_date.isoformat() if credential.renewal_date else None,
-            "creditEnabled": bool(credential.credit_enabled),
-            "renewalType": normalize_renewal_type(credential.renewal_type),
-            "autoRenew": bool(credential.auto_renew),
-            "purchaseDate": credential.purchase_date.isoformat() if credential.purchase_date else None,
-            "toolCost": float(credential.tool_cost) if credential.tool_cost is not None else None,
-        }
+        renewal_config_after = _renewal_config_snapshot(credential)
         if renewal_config_after != renewal_config_before:
             audit_details["renewalConfig"] = {"before": renewal_config_before, "after": renewal_config_after}
     _add_audit(

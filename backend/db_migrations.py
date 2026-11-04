@@ -382,6 +382,7 @@ def _ensure_postgres_schema(conn) -> None:
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "credit_enabled", "BOOLEAN NOT NULL DEFAULT FALSE")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "renewal_type", "VARCHAR(20) NOT NULL DEFAULT 'MANUAL'")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "auto_renew", "BOOLEAN NOT NULL DEFAULT FALSE")
+    _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "credit_reset", "VARCHAR(20) NOT NULL DEFAULT 'CYCLE'")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "purchase_date", "DATE")
     _pg_add_column_if_missing(conn, "it_portal_tool_credentials", "tool_cost", "NUMERIC(12,2)")
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_it_portal_tool_credentials_renewal_type ON it_portal_tool_credentials(renewal_type)"))
@@ -2370,6 +2371,8 @@ def ensure_operational_schema(engine) -> None:
                 conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN renewal_type VARCHAR(20) DEFAULT 'MANUAL'"))
             if "auto_renew" not in credential_cols:
                 conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN auto_renew BOOLEAN DEFAULT 0"))
+            if "credit_reset" not in credential_cols:
+                conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN credit_reset VARCHAR(20) DEFAULT 'CYCLE'"))
             if "purchase_date" not in credential_cols:
                 conn.execute(text("ALTER TABLE it_portal_tool_credentials ADD COLUMN purchase_date DATE"))
             if "tool_cost" not in credential_cols:

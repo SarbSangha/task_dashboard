@@ -261,7 +261,7 @@ const costTrendItems = (d) => (d?.daily || []).slice(-30).map((x) => ({ label: x
 const costDeptItems = (d) => (d?.byDepartment || []).map((x) => ({ label: x.department || '—', value: x.credits }));
 const costToolItems = (d) => (d?.byProvider || []).map((x) => ({ label: x.provider || '—', value: x.credits }));
 const costSpenderRows = (d) => (d?.topUsers || []).slice(0, 25).map((u) => [
-  u.rank, u.name || '—', u.department || '—', num(u.credits), `${d?.currency || 'INR'} ${num(u.cost)}`, num(u.generations), num(u.creditsPerOutput),
+  u.rank, u.name || '—', u.department || '—', num(u.credits), u.cost == null ? 'Not set' : `${d?.currency || 'INR'} ${num(u.cost)}`, num(u.generations), num(u.creditsPerOutput),
 ]);
 
 // Exposed so the builder can bake live values into a saved definition (snapshotItems).

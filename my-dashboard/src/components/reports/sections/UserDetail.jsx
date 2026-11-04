@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { generationRecordsAPI } from '../../../services/api';
 import { reportsAPI } from '../../../services/reports';
-import { formatNumber, formatFull, initialsOf } from '../utils/format';
+import { formatNumber, formatFull, formatCost, initialsOf } from '../utils/format';
 import { ToCanvasButton } from './ExecutiveDashboard';
 
 const daysSince = (iso) => {
@@ -438,7 +438,7 @@ const GenerationTimeline = ({ userId, userName, provider, focusDate, onAddToCanv
         <h3 className="rpt-card-title">Generation timeline</h3>
         <span className="rpt-card-hint">
           {totals.days
-            ? `${totals.days} generating days · ${formatNumber(totals.generations)} generations · ${formatFull(totals.credits)} credits · ${formatFull(totals.cost)} cost · click a date for that day`
+            ? `${totals.days} generating days · ${formatNumber(totals.generations)} generations · ${formatFull(totals.credits)} credits · ${formatCost(totals.cost)} cost · click a date for that day`
             : 'Days this person generated on'}
         </span>
         {onAddToCanvas && (
@@ -587,7 +587,7 @@ const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas })
           <div className="rpt-card-head">
             <h3 className="rpt-card-title" style={{ fontSize: 13 }}>Client</h3>
             <span className="rpt-card-hint">
-              {formatNumber(t.generations || 0)} generations · {formatFull(t.credits || 0)} credits · {formatFull(t.cost || 0)} cost · click a client
+              {formatNumber(t.generations || 0)} generations · {formatFull(t.credits || 0)} credits · {formatCost(t.cost)} cost · click a client
             </span>
           </div>
           {clients.length ? (
@@ -600,7 +600,7 @@ const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas })
                   onClick={() => chooseClient(c.clientId, c.clientName)}
                   title="See this client's tool breakdown and generations"
                 >
-                  {c.clientName} · {formatNumber(c.generations)} gen · {formatFull(c.credits)} cr · {formatFull(c.cost)} cost
+                  {c.clientName} · {formatNumber(c.generations)} gen · {formatFull(c.credits)} cr · {formatCost(c.cost)} cost
                 </span>
               ))}
             </div>
@@ -617,7 +617,7 @@ const DayDetail = ({ userId, userName, date, provider, onClose, onAddToCanvas })
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
                   {toolBreakdown.map((x) => (
                     <span key={x.tool} className="rpt-pill muted">
-                      {x.tool} · {formatNumber(x.generations)} gen · {formatFull(x.credits)} cr · {formatFull(x.cost)} cost
+                      {x.tool} · {formatNumber(x.generations)} gen · {formatFull(x.credits)} cr · {formatCost(x.cost)} cost
                     </span>
                   ))}
                 </div>

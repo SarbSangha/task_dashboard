@@ -607,3 +607,6 @@
   .ail-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ail-toolbar-date { width: 100%; }
 }
+
+/* Choose files / Choose folder, under the drop zone */
+.ail-pickers { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }

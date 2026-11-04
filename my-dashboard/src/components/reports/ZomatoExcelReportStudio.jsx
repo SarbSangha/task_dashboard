@@ -24,7 +24,7 @@ import ComparePanel, { COMPARE_MODES } from './usageSpend/ComparePanel';
 import ChatTranscriptModal from './usageSpend/ChatTranscriptModal';
 import OutputPreviewModal from './usageSpend/OutputPreviewModal';
 import PeopleReportModal from './usageSpend/PeopleReportModal';
-import { buildColumns, ROW_KEYS } from './usageSpend/sheetColumns';
+import { buildColumns, isUnusedTool, ROW_KEYS } from './usageSpend/sheetColumns';
 import {
   Avatar,
   CHART_PALETTE,
@@ -158,6 +158,9 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
   const [toolMode, setToolMode] = useState('outputs');
   const [deptMode, setDeptMode] = useState('spend');
   const [hiddenCols, setHiddenCols] = useState(() => new Set());
+  // Tools tab: also list tools with no output in the period (assigned to the
+  // picked person but not used, or paid for and not used).
+  const [showUnused, setShowUnused] = useState(true);
   const [exportOpen, setExportOpen] = useState(false);
   const [colsOpen, setColsOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
@@ -386,7 +389,8 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
         ...(dashboard ? { search: params.search, excludeTestAccounts: false } : {}),
       });
       const stem = { management: 'RMW-Management-Summary', dashboard: 'RMW-AI-Dashboard' }[version] || 'RMW-AI-Spend';
-      downloadBlobResponse(res, `${stem}_${params.start}_to_${params.end}.xlsx`);
+      // the interactive dashboard is macro-enabled (.xlsm): its filters stay in sync across sheets
+      downloadBlobResponse(res, `${stem}_${params.start}_to_${params.end}.${dashboard ? 'xlsm' : 'xlsx'}`);
       notify('Excel downloaded.');
     } catch (error) {
       // A blob request's error body is a Blob: read the server's reason from it.
@@ -484,9 +488,14 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
   const sheetCols = isTable ? columns[sheet].filter((c) => sheet !== 'log' || !hiddenCols.has(c.key)) : [];
   const sort = sorts[sheet] || null;
   const setSort = (next) => setSorts((s) => ({ ...s, [sheet]: next }));
+  const unusedTools = useMemo(() => (sheets.tools || []).filter(isUnusedTool).length, [sheets.tools]);
+  const toolRows = useMemo(
+    () => (showUnused ? sheets.tools || [] : (sheets.tools || []).filter((t) => !isUnusedTool(t))),
+    [sheets.tools, showUnused]
+  );
   const sortedRows = useMemo(
-    () => (isTable ? sortRows(sheets[sheet] || [], columns[sheet], sort) : []),
-    [isTable, sheets, sheet, columns, sort]
+    () => (isTable ? sortRows(sheet === 'tools' ? toolRows : sheets[sheet] || [], columns[sheet], sort) : []),
+    [isTable, sheets, sheet, toolRows, columns, sort]
   );
   const sortChoices = useMemo(() => (isTable ? sortOptions(columns[sheet]) : []), [isTable, columns, sheet]);
   // What ← / → steps through in the player: playable outputs, in the order the Activity tab shows them.
@@ -501,7 +510,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
   const counts = {
     log: sheets.log?.length,
     users: sheets.users?.length,
-    tools: sheets.tools?.length,
+    tools: sheets.tools && toolRows.length,
     clients: sheets.clients?.length,
     daily: sheets.daily?.length,
     monthly: sheets.monthly?.length,
@@ -916,6 +925,21 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
           </nav>
           {isTable && (
             <div className="zrs-sheet-actions">
+              {sheet === 'tools' && unusedTools > 0 && (
+                <label
+                  className="zrs-switch"
+                  title={
+                    userId !== 'all'
+                      ? 'Also list tools assigned to this person that they did not use in this period'
+                      : 'Also list paid tools nobody used in this period'
+                  }
+                >
+                  <input type="checkbox" checked={showUnused} onChange={(e) => setShowUnused(e.target.checked)} />
+                  <span className="zrs-switch-track" aria-hidden="true" />
+                  Show unused
+                  <span className="zrs-switch-count">{unusedTools}</span>
+                </label>
+              )}
               <Dropdown
                 value={sort ? `${sort.key}:${sort.dir}` : ''}
                 options={sortChoices}
@@ -1006,7 +1030,7 @@ export default function ZomatoExcelReportStudio({ onSwitchToAdvanced }) {
                     </tr>
                   ) : (
                     sortedRows.map((r, i) => (
-                      <tr key={ROW_KEYS[sheet](r)}>
+                      <tr key={ROW_KEYS[sheet](r)} className={sheet === 'tools' && isUnusedTool(r) ? 'is-unused' : undefined}>
                         <td className="num zrs-sno">{i + 1}</td>
                         {sheetCols.map((c) => (
                           <td

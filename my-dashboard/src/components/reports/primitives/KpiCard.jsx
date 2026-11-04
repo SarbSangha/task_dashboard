@@ -55,8 +55,8 @@ const KpiCard = ({ label, metric, format = 'number' }) => {
       </div>
 
       <div className="rpt-kpi-value">
-        {fmt(m.value)}{pctUnit}
-        {unit && <span className="unit">{unit}</span>}
+        {m.notSet ? 'Not set' : <>{fmt(m.value)}{pctUnit}</>}
+        {unit && !m.notSet && <span className="unit">{unit}</span>}
       </div>
 
       {series && series.length > 1 ? (

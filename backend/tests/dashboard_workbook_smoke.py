@@ -71,6 +71,9 @@ def evaluate(folder: str) -> None:
                 idx = ranks.index(k + 1) if (k + 1) in ranks else None
                 got = named(f"{block}_name", idx) if idx is not None else None
                 check(got == expected_name, f"{block} #{k + 1} = {expected_name!r} (got {got!r})")
+        if "tools_listed" in case:
+            listed = sum(1 for i in range(case["sizes"]["t"]) if named("t_rank", i) not in ("", None))
+            check(listed == case["tools_listed"], f"Tools tab lists {case['tools_listed']} tools (got {listed})")
         for i, expected_name in enumerate(case["donut"]):
             got = named("dn_name", i)
             check((got or "") == expected_name, f"donut slice {i + 1} = {expected_name!r} (got {got!r})")
@@ -96,8 +99,9 @@ def evaluate(folder: str) -> None:
 
 
 # Activity column showing each Data link field (the field a link to Activity matches on)
-ACTIVITY_FIELD_COL = {"dLnkPerson": "E", "dLnkTool": "F", "dLnkClient": "K", "dLnkDate": "C"}
-TAB_HEAD = 5
+# (links into Activity use its own filter scope: names suffixed _ac)
+ACTIVITY_FIELD_COL = {"dLnkDate_ac": "C"}
+TAB_HEAD = 7
 
 
 def check_links(path, value, named, names, check) -> None:
@@ -111,9 +115,12 @@ def check_links(path, value, named, names, check) -> None:
 
     wb = load_workbook(path)
     ranked_re = re.compile(r"MATCH\(MATCH\(INDEX\(([A-Za-z_]+),(\$A\d+|\d+)\),([a-z_]+),0\),'([A-Za-z]+)'!\$A\$(\d+):\$A\$(\d+),0\)")
-    activity_re = re.compile(r"MATCH\(INDEX\(([a-zA-Z_]+),(\$A\d+|\d+)\),(dLnk[A-Za-z]+),0\)")
-    places = [(s, range(6, 9)) for s in ("Activity", "People", "Tools", "Clients", "Daily", "Departments")]
-    places.append(("Dashboard", range(35, 37)))
+    activity_re = re.compile(r"MATCH\(INDEX\(([a-zA-Z_]+),(\$A\d+|\d+)\),(dLnk[A-Za-z_]+),0\)")
+    group_re = re.compile(r"INDEX\((g[ptc])Land,MATCH\(INDEX\(([A-Za-z_]+),(\$A\d+|\d+)\),g[ptc]Name,0\)\)")
+    group_tab = {"gp": "Person activity", "gt": "Tool activity", "gc": "Client activity"}
+    places = [(s, range(8, 11)) for s in ("Activity", "People", "Tools", "Clients", "Daily", "Departments")
+              + tuple(group_tab.values())]
+    places.append(("Dashboard", range(21, 23)))     # the donut's legend
     seen, data_rows = set(), [None]
 
     def lookup_value(sheet, ref, pos):
@@ -126,7 +133,8 @@ def check_links(path, value, named, names, check) -> None:
             for cell in wb[sheet][r]:
                 formula = cell.value if isinstance(cell.value, str) else ""
                 ranked, activity = ranked_re.search(formula), activity_re.search(formula)
-                if not (ranked or activity):
+                group = group_re.search(formula)
+                if not (ranked or activity or group):
                     continue
                 shown = value(f"'{sheet}'!{cell.coordinate}")      # KeyError here = never computed
                 if shown in ("", None):
@@ -142,6 +150,18 @@ def check_links(path, value, named, names, check) -> None:
                     landed = value(f"'{tsheet}'!C{landing}")
                     landed = landed.replace("■  ", "") if isinstance(landed, str) else landed
                     check(landed == want, f"{sheet}!{cell.coordinate} {shown!r} opens {tsheet}!C{landing} ({landed!r})")
+                elif group:
+                    # lands on the entity's section header, whose rows below are its own
+                    pre, ref, pos = group.groups()
+                    tsheet = group_tab[pre]
+                    want = lookup_value(sheet, ref, pos)
+                    first, last = (int(re.sub(r"\D", "", x)) for x in wb.defined_names[f"{pre}Name"].attr_text
+                                   .split("!")[1].split(":"))
+                    names = [named(f"{pre}Name", i) for i in range(last - first + 1)]
+                    land = named(f"{pre}Land", names.index(want))
+                    landing = TAB_HEAD + int(land)
+                    landed = value(f"'{tsheet}'!C{landing}")
+                    check(landed == want, f"{sheet}!{cell.coordinate} {shown!r} opens {tsheet}!C{landing} ({landed!r})")
                 else:
                     ref, pos, helper = activity.groups()
                     tsheet = "Activity"
@@ -150,16 +170,17 @@ def check_links(path, value, named, names, check) -> None:
                         n = len(wb["Data"]["A"]) - 1
                         data_rows[0] = n
                     helpers = [named(helper, i) for i in range(data_rows[0])]
-                    seq = named("dSeq", helpers.index(want))
+                    seq = named("dSeq_ac", helpers.index(want))
                     landing = TAB_HEAD + int(seq)
                     landed = value(f"'Activity'!{ACTIVITY_FIELD_COL[helper]}{landing}")
                     check(landed == want, f"{sheet}!{cell.coordinate} {shown!r} opens Activity row {landing} ({landed!r})")
                 seen.add((sheet, tsheet))
     expected = {("Activity", "People"), ("Activity", "Tools"), ("Activity", "Clients"), ("Activity", "Departments"),
-                ("Activity", "Daily"), ("People", "Activity"), ("People", "Departments"), ("People", "Clients"),
-                ("Tools", "Activity"), ("Tools", "People"), ("Clients", "Activity"), ("Clients", "People"),
+                ("Activity", "Daily"), ("People", "Person activity"), ("People", "Departments"), ("People", "Clients"),
+                ("Tools", "Tool activity"), ("Tools", "People"), ("Clients", "Client activity"), ("Clients", "People"),
                 ("Clients", "Tools"), ("Daily", "Activity"), ("Daily", "Tools"), ("Departments", "People"),
-                ("Departments", "Tools"), ("Dashboard", "Tools"), ("Dashboard", "Departments")}
+                ("Departments", "Tools"), ("Dashboard", "Tools"), ("Person activity", "Tools"),
+                ("Tool activity", "People"), ("Client activity", "People")}
     check(expected <= seen, f"every interlink route present ({len(seen)} checked; missing {sorted(expected - seen)})")
 
 
@@ -198,6 +219,10 @@ PEOPLE = {"Asha": "Creative", "Bilal": "Creative", "Chen": "Gen AI", "Dev": "Gen
 TOOLS = {"Kling": PAY_PER_USE, "Freepik": SUBSCRIPTION, "Suno": SUBSCRIPTION, "ChatGPT": SUBSCRIPTION}
 CLIENTS = ["Acme", "Globex", "No client"]
 ACCOUNTS = {"Kling": "kling@x.com", "Freepik": "fp@x.com", "Suno": "suno@x.com", "ChatGPT": "gpt@x.com"}
+# tools assigned to a person (person, tool, login): Esha holds seats she may not use;
+# Grammarly is in no row at all, Semrush is a paid, untracked tool
+SEATS = [("Esha", "Suno", "suno@x.com"), ("Esha", "Grammarly", "g@x.com"), ("Esha", "Semrush", "—"),
+         ("Dev", "Kling", "kling@x.com")]
 
 
 def make_rows(period: str, start: date, n: int, seed: int) -> list:
@@ -230,20 +255,27 @@ def build_data() -> W.DashboardData:
         plan_fee={"Freepik": 900.0, "Suno": 500.0, "ChatGPT": 300.0}, unused={"Freepik": 120.0, "Suno": 75.5},
         untracked={"Semrush": 400.0}, prev_unused=50.0, prev_untracked=400.0,
         people={p: d for p, d in PEOPLE.items()}, person_by_id={}, account_by_id={},
+        seats=SEATS,
     )
 
 
 def expected(data: W.DashboardData, f: dict) -> dict:
     """The page's figures for filter selection f, by its rules."""
+    lo = max(min(f.get("from") or data.start, data.end), data.start)
+    hi = max(min(f.get("to") or data.end, data.end), lo)
+    whole = lo == data.start and hi == data.end
+    shift = timedelta(days=(data.start - data.prev_start).days)
+
     def match(r):
+        day = r.day + shift if r.period == W.PREV else r.day
         return all((f.get("tool") in (None, r.tool), f.get("account") in (None, r.account),
                     f.get("department") in (None, r.dept), f.get("person") in (None, r.person),
-                    f.get("client") in (None, r.client)))
+                    f.get("client") in (None, r.client), whole or lo <= day <= hi))
     search = (f.get("search") or "").lower()
 
     cur = [r for r in data.rows if r.status == CHARGED and match(r)]
     prev = [r for r in data.prev_rows if r.status == CHARGED and match(r)]
-    flt = any(f.get(k) for k in ("tool", "account", "department", "person", "client"))
+    flt = any(f.get(k) for k in ("tool", "account", "department", "person", "client")) or not whole
     item = sum(r.cost for r in cur)
     ppu = sum(r.cost for r in cur if r.basis == PAY_PER_USE)
     plans = item - ppu + (0 if flt else sum(data.unused.values()))
@@ -264,8 +296,17 @@ def expected(data: W.DashboardData, f: dict) -> dict:
         for t, v in list(data.unused.items()) + list(data.untracked.items()):
             spend_tool[t] = spend_tool.get(t, 0) + v
     outs_tool = by(lambda r: r.tool, lambda r: 1)
-    tool_keys = sorted({t for t in spend_tool if outs_tool.get(t, 0) > 0 or spend_tool[t] > 0},
-                       key=lambda t: (-round(spend_tool[t], 2), W._layout(data).tools.index(t)))
+    show_unused = f.get("show_unused", "Yes") != "No"
+    seated = set()
+    if f.get("person"):
+        seated = {t for p, t, a in data.seats if p == f["person"] and f.get("tool") in (None, t)
+                  and f.get("account") in (None, a) and f.get("department") in (None, PEOPLE.get(p))
+                  and (not search or search in t.lower())}
+    listed = {t for t in spend_tool if outs_tool.get(t, 0) > 0 or spend_tool[t] > 0} | seated
+    listed = {t for t in listed if outs_tool.get(t, 0) > 0 or show_unused}
+    # used tools rank ahead of a not-used one at the same total
+    tool_keys = sorted(listed, key=lambda t: (-(round(spend_tool.get(t, 0), 2) + (0.001 if outs_tool.get(t, 0) else 0)),
+                                              W._layout(data).tools.index(t)))
     measure = {"By outputs": outs_tool, "By spend": spend_tool,
                "By credits": by(lambda r: r.tool, lambda r: r.credits)}[f.get("tool_measure", "By outputs")]
     order = W._layout(data).tools
@@ -302,9 +343,11 @@ def expected(data: W.DashboardData, f: dict) -> dict:
             "kTotal": round(total, 2), "kItem": round(item, 2), "kPPU": round(ppu, 2), "kPlans": round(plans, 2),
             "kPrevTotal": round(prev_total, 2), "kOutputs": len(cur), "kCredits": round(sum(r.credits for r in cur), 2),
             "kPeople": len(named), "kTools": len({r.tool for r in cur}), "kFlt": 1 if flt else 0,
-            "kActCount": len(acts), "kChange": change_text,
+            "kActCount": len(acts), "kChange": change_text, "kDays": (hi - lo).days + 1,
+            "kShowUnused": 1 if show_unused else 0,
         },
-        "ranked": {"t": tool_keys[:3], "p": people_rank[:3], "c": clients_rank[:3], "d": depts_rank[:3]},
+        "ranked": {"t": tool_keys[:6], "p": people_rank[:3], "c": clients_rank[:3], "d": depts_rank[:3]},
+        "tools_listed": len(tool_keys),
         "donut": donut,
         "dept_chart": dept_chart + [""] * (6 - len(dept_chart)),
         "activity": [(i, r.person, r.tool) for i, r in enumerate(acts[:3])],
@@ -325,7 +368,16 @@ SCENARIOS = [
     ("account kling@x.com", {"account": "kling@x.com"}),
     ("search 'cat 1'", {"search": "prompt 1"}),
     ("spend measure", {"tool_measure": "By spend"}),
+    ("dates 3-6 Oct", {"from": date(2026, 10, 3), "to": date(2026, 10, 6)}),
+    ("dates 2-8 Oct + tool Kling", {"from": date(2026, 10, 2), "to": date(2026, 10, 8), "tool": "Kling"}),
+    ("from 8 Oct only", {"from": date(2026, 10, 8)}),
+    ("to before from", {"from": date(2026, 10, 7), "to": date(2026, 10, 5)}),
+    ("person Esha: assigned tools not used", {"person": "Esha"}),
+    ("person Esha, Show unused = No", {"person": "Esha", "show_unused": "No"}),
+    ("person Esha + tool Grammarly", {"person": "Esha", "tool": "Grammarly"}),
 ]
+CELL_EDITS = {"tool_measure": "mTool", "from": "fFrom", "to": "fTo",   # set in the workbook, as a viewer would
+              "show_unused": "fShowUnused"}
 
 
 def main() -> None:
@@ -333,12 +385,15 @@ def main() -> None:
     folder = tempfile.mkdtemp(prefix="dashboard-workbook-")
     cases = []
     for i, (name, f) in enumerate(SCENARIOS):
-        initial = {k: v for k, v in f.items() if k != "tool_measure"}
-        path = os.path.join(folder, f"case{i}.xlsx")
+        initial = {k: v for k, v in f.items() if k not in CELL_EDITS}
+        path = os.path.join(folder, f"case{i}.xlsm")
         W.write_dashboard_workbook(data, path, initial=initial)
-        if f.get("tool_measure"):          # the toggle cell, as a viewer would change it
-            wb = load_workbook(path)
-            wb["Dashboard"][named_cell(wb, "mTool")] = f["tool_measure"]
+        edits = {CELL_EDITS[k]: v for k, v in f.items() if k in CELL_EDITS}
+        if edits:
+            wb = load_workbook(path, keep_vba=True)
+            for cell_name, value in edits.items():
+                sheet = wb.defined_names[cell_name].attr_text.split("!")[0].strip("'")
+                wb[sheet][named_cell(wb, cell_name)] = value
             wb.save(path)
         exp = expected(data, f)
         lay = W._layout(data)
@@ -347,21 +402,58 @@ def main() -> None:
                                 "d": len(lay.depts), "data": len(data.rows)}})
 
     # structure
-    wb = load_workbook(os.path.join(folder, "case0.xlsx"))
+    wb = load_workbook(os.path.join(folder, "case0.xlsm"))
     check(wb.sheetnames[:9] == ["Dashboard", "Activity", "People", "Tools", "Clients", "Daily", "Monthly",
                                 "Departments", "Compare"], "visible sheets in the page's tab order")
-    check(all(wb[s].sheet_state == "hidden" for s in ("Data", "Agg", "Calc", "Lists")), "helper sheets hidden")
-    for name in ("fTool", "fAcct", "fDept", "fPerson", "fClient", "fSearch", "mTool", "mDept", "kTotal", "aCost"):
+    check(all(wb[s].sheet_state == "hidden" for s in ("Data", "Agg", "Calc", "Lists", "Groups")), "helper sheets hidden")
+    check(wb.sheetnames[9:12] == list(W.GROUP_TABS), "grouped Activity tabs after Compare")
+    for tab, pre, *_x in W.GROUPINGS:
+        for name in ("Name", "Land", "Pos", "Total"):
+            check(pre + name in wb.defined_names, f"{tab}: name {pre}{name} defined")
+    people = wb["People"]
+    check(any("gpLand" in str(c.value) for c in people[8]), "People names open their Person activity section")
+    for name in ("fTool", "fAcct", "fDept", "fPerson", "fClient", "fSearch", "fFrom", "fTo", "mTool", "mDept",
+                 "kTotal", "aCost", "fShowUnused", "sPerson", "sTool", "sAcct", "cMode", "cPick"):
         check(name in wb.defined_names, f"name {name} defined")
+    # every other sheet: its own filter boxes, Calc copy and Match columns
+    for sheet, sfx in W.SCOPES.items():
+        if not sfx:
+            continue
+        for name in W.FILTER_NAMES + ("kTotal", "aMatch"):
+            check(name + sfx in wb.defined_names, f"{sheet}: name {name}{sfx} defined")
+        check(wb[sheet][f"B{W.R_BAR}"].value is not None, f"{sheet}: filter bar has a value")
+        check(wb[W.CALC + sfx].sheet_state == "hidden", f"{sheet}: its Calc copy is hidden")
     check(len(wb["Dashboard"]._charts) == 3, "three charts on the Dashboard")
-    check(len(wb["Dashboard"].data_validations.dataValidation) >= 7, "filter and measure dropdowns present")
+    check(len(wb["Dashboard"].data_validations.dataValidation) >= 9, "filter, date and measure validations present")
+    dash = wb["Dashboard"]
+    check(dash[named_cell(wb, "fFrom")].value.date() == data.start and dash[named_cell(wb, "fTo")].value.date() == data.end,
+          "From / To start as the whole period")
+    # Each filter box is one merged range starting at its named cell, so
+    # Excel's dropdown arrow sits at the box's right edge.
+    merged = {str(m) for m in dash.merged_cells.ranges}
+    for name in ("fTool", "fAcct", "fDept", "fPerson", "fClient", "fSearch", "fFrom", "fTo"):
+        cell = named_cell(wb, name)
+        col = cell.rstrip("0123456789")
+        row = cell[len(col):]
+        right = chr(ord(col) + 1)
+        check(f"{cell}:{right}{row}" in merged, f"{name} box {cell}:{right}{row} is merged")
+    dropdown_cells = {str(rng).split(":")[0] for dv in dash.data_validations.dataValidation for rng in dv.sqref.ranges}
+    check(named_cell(wb, "fTool") in dropdown_cells, "the Tool dropdown is on the merged box's first cell")
     check(wb.calculation.fullCalcOnLoad, "recalculates on open")
-    wb1 = load_workbook(os.path.join(folder, "case1.xlsx"))
+    import zipfile
+    with zipfile.ZipFile(os.path.join(folder, "case0.xlsm")) as z:
+        types = z.read("[Content_Types].xml").decode()
+        check("xl/vbaProject.bin" in z.namelist() and "macroEnabled.main" in types
+              and 'codeName="ThisWorkbook"' in z.read("xl/workbook.xml").decode(),
+              "the filter-sync macro is in the workbook (macro-enabled)")
+    check(sum(1 for n in wb.defined_names if n.startswith("bx_")) == len(W.FILTER_NAMES) * (len(W.SCOPES) - 1),
+          "every sheet's filter box is named for the macro")
+    wb1 = load_workbook(os.path.join(folder, "case1.xlsm"))
     check(wb1["Dashboard"][named_cell(wb1, "fTool")].value == "Freepik",
           "the page's filters become the starting filter values")
     for sheet in ("Activity", "People", "Tools", "Clients", "Daily", "Monthly", "Departments"):
         ref = wb[sheet].auto_filter.ref or ""
-        check(ref.startswith("A5:"), f"{sheet}: header filter from the hidden key column ({ref})")
+        check(ref.startswith("A7:"), f"{sheet}: header filter from the hidden key column ({ref})")
 
     (Path(folder) / "expected.json").write_text(json.dumps(cases, indent=1, default=str), encoding="utf-8")
     try:

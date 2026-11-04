@@ -37,6 +37,7 @@ from models_new import (
 )
 from utils.datetime_utils import serialize_utc_datetime
 from utils.permissions import require_admin
+from utils.xlsx_compat import excel_safe
 
 router = APIRouter(prefix="/api/reports/task-report", tags=["Task Report"])
 
@@ -675,7 +676,7 @@ def task_report_export(
     wb.save(buffer)
     stamp = datetime.now(IST).strftime("%Y-%m-%d")
     return Response(
-        content=buffer.getvalue(),
+        content=excel_safe(buffer.getvalue()),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="task-report_{stamp}.xlsx"', "Cache-Control": "no-store"},
     )

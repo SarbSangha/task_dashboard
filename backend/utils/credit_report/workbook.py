@@ -108,16 +108,16 @@ EXCLUDED = "Test & admin accounts excluded"
 RECORDED_TWICE = "Kling job recorded twice"
 OWNER_UNCERTAIN = "Owner uncertain"
 NO_JOB_ID = "Kling row with no job ID"
-RATE_ASSUMED = "Rate assumed"
+RATE_NOT_SET = "Rate not set"
 FREE_PREVIEW = "Free preview model"
 UPLOADS = "Uploads (not generations)"
 QUALITY_ISSUES = (UNASSIGNED, NO_CLIENT, PENDING, STALE_PENDING, FAILED, DUPLICATE_LABEL, RECORDED_TWICE,
-                  OWNER_UNCERTAIN, NO_JOB_ID, ZERO_MISSED, NOT_CAPTURED, RATE_ASSUMED, FREE_PREVIEW, UPLOADS, EXCLUDED)
+                  OWNER_UNCERTAIN, NO_JOB_ID, ZERO_MISSED, NOT_CAPTURED, RATE_NOT_SET, FREE_PREVIEW, UPLOADS, EXCLUDED)
 QUALITY_LINK_COL = "F"
 # Fixed short names for the log's "⬅ Data Quality" cells (they fit the column).
 QUALITY_SHORT = {PENDING: "Pending", STALE_PENDING: "Pending 24h+", FAILED: "Failed",
                  DUPLICATE_LABEL: "Double charge", ZERO_MISSED: "Zero credits", NOT_CAPTURED: "No cost",
-                 OWNER_UNCERTAIN: "Owner uncertain", NO_JOB_ID: "No job ID", RATE_ASSUMED: "Rate assumed",
+                 OWNER_UNCERTAIN: "Owner uncertain", NO_JOB_ID: "No job ID", RATE_NOT_SET: "Rate not set",
                  FREE_PREVIEW: "Free preview"}
 
 # Plain names for the reader (Step 4): table headers as shown, outside the log.
@@ -697,8 +697,8 @@ def _log_issues(r, e, credits: float, stale_before: datetime, marks: KlingMarks 
         issues.append(NO_JOB_ID)
     if r.charge_status == CHARGED and credits == 0:
         issues.append(NOT_CAPTURED if r.tool in CREDITS_NOT_CAPTURED else ZERO_MISSED)
-    if r.charge_status == CHARGED and getattr(r, "rate_assumed", 0):
-        issues.append(RATE_ASSUMED)
+    if r.charge_status == CHARGED and getattr(r, "rate_not_set", 0):
+        issues.append(RATE_NOT_SET)
     if r.charge_status == CHARGED and getattr(r, "preview", 0):
         issues.append(FREE_PREVIEW)
     return issues
@@ -917,7 +917,8 @@ def _write_log(sheets, model: ReportModel, lay: Layout, rows: Iterable, dashboar
             "Output": output,
             "Credits": w.credits(credits, align=TOP_ALIGN,
                                  fill=FILL_WARN if ZERO_MISSED in issues else None),
-            RUPEES: w.cell(round(rupees, 2), fmt=INR2_FMT, align=TOP_ALIGN),
+            RUPEES: (w.text("Not set", align=TOP_ALIGN) if RATE_NOT_SET in issues
+                     else w.cell(round(rupees, 2), fmt=INR2_FMT, align=TOP_ALIGN)),
             "Cost note": w.text(cost_note(r), align=TOP_ALIGN),
             "Charge status": w.text(r.charge_status, align=TOP_ALIGN,
                                     fill=FILL_PENDING if r.charge_status == PENDING else (FILL_WARN if r.charge_status == FAILED else None)),
@@ -1422,10 +1423,11 @@ def _write_quality(sheets, model, lay, stats: LogStats, period_label, kling: "Kl
                        "set in Reports → Credit Rates). Their ₹ is an equal share of the subscription (est.). "
                        + (f"By tool: {per_tool(stats.not_captured_by_tool)}." if not_captured else ""),
                        first_row_link(NOT_CAPTURED, f"{0:,.2f}")),
-        RATE_ASSUMED: (*counted(RATE_ASSUMED),
-                       "Pay-per-use rows from a tool account with no rate of its own in Reports → Credit Rates: costed "
-                       "at the tool's latest rate (est.). Enter the account's rate to make it exact.",
-                       first_row_link(RATE_ASSUMED, RATE_ASSUMED)),
+        RATE_NOT_SET: (*counted(RATE_NOT_SET),
+                       "Pay-per-use rows from a tool account with no rate (its credits and price in the Tool Renew "
+                       "tab): their cost is Not set and they are not in any ₹ total. No other account's rate is "
+                       "used. Set the account's rate and every one of its rows is costed at it.",
+                       first_row_link(RATE_NOT_SET, RATE_NOT_SET)),
         FREE_PREVIEW: (*counted(FREE_PREVIEW),
                        "ElevenLabs preview models that are not charged (eleven_v3_dpo, eleven_v4_exp): ₹0.",
                        first_row_link(FREE_PREVIEW, FREE_PREVIEW)),
